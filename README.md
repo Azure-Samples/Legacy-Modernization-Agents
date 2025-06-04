@@ -121,81 +121,6 @@ nano Config/ai-config.local.env
 
 The Semantic Kernel process function is an AI-powered COBOL-to-Java migration system that uses Microsoft Semantic Kernel framework to orchestrate multiple specialized AI agents. Here's how it works:
 
-## 🏗️ System Architecture
-
-```mermaid
-graph TB
-    %% User Interaction Layer
-    CLI[👤 Command Line Interface<br/>Program.cs]
-    
-    %% Configuration Layer
-    CONFIG[⚙️ Configuration Layer<br/>appsettings.json<br/>Environment Variables]
-    
-    %% Core Process Orchestrator
-    PROCESS[🎯 Migration Process<br/>MigrationProcess.cs<br/>Main Orchestrator]
-    
-    %% AI Agents Layer
-    subgraph AGENTS ["🤖 AI Agents (Semantic Kernel)"]
-        COBOL_AGENT[🔍 CobolAnalyzerAgent<br/>Analyzes COBOL Structure]
-        JAVA_AGENT[☕ JavaConverterAgent<br/>Converts to Java Quarkus]
-        DEP_AGENT[🗺️ DependencyMapperAgent<br/>Maps Dependencies]
-    end
-    
-    %% AI Service Layer
-    subgraph AI_SERVICES ["🧠 AI Services"]
-        AZURE_OPENAI[🌐 Azure OpenAI<br/>GPT-4.1 Models]
-        OPENAI[🤖 OpenAI API<br/>Alternative Provider]
-    end
-    
-    %% Helper Services
-    subgraph HELPERS ["🛠️ Helper Services"]
-        FILE_HELPER[📁 FileHelper<br/>File Operations]
-        LOGGER[📊 EnhancedLogger<br/>API Call Tracking]
-        CHAT_LOGGER[💬 ChatLogger<br/>Conversation Logging]
-    end
-    
-    %% Data Models
-    subgraph MODELS ["📋 Data Models"]
-        COBOL_MODEL[📄 CobolFile<br/>Source Data]
-        ANALYSIS_MODEL[🔬 CobolAnalysis<br/>Analysis Results]
-        JAVA_MODEL[☕ JavaFile<br/>Generated Code]
-        DEP_MODEL[🗺️ DependencyMap<br/>Relationships]
-    end
-    
-    %% Input/Output
-    INPUT[📂 Input<br/>COBOL Files (.cbl, .cpy)]
-    OUTPUT[📤 Output<br/>Java Files + Reports]
-    
-    %% Connections
-    CLI --> CONFIG
-    CLI --> PROCESS
-    CONFIG --> PROCESS
-    PROCESS --> AGENTS
-    AGENTS --> AI_SERVICES
-    PROCESS --> HELPERS
-    AGENTS --> HELPERS
-    HELPERS --> MODELS
-    AGENTS --> MODELS
-    INPUT --> PROCESS
-    PROCESS --> OUTPUT
-    
-    %% Styling
-    classDef userLayer fill:#e1f5fe,stroke:#0277bd,stroke-width:2px
-    classDef processLayer fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
-    classDef agentLayer fill:#e8f5e8,stroke:#388e3c,stroke-width:2px
-    classDef serviceLayer fill:#fff3e0,stroke:#f57c00,stroke-width:2px
-    classDef helperLayer fill:#fce4ec,stroke:#c2185b,stroke-width:2px
-    classDef modelLayer fill:#f1f8e9,stroke:#689f38,stroke-width:2px
-    classDef ioLayer fill:#e0f2f1,stroke:#00796b,stroke-width:2px
-    
-    class CLI,CONFIG userLayer
-    class PROCESS processLayer
-    class COBOL_AGENT,JAVA_AGENT,DEP_AGENT agentLayer
-    class AZURE_OPENAI,OPENAI serviceLayer
-    class FILE_HELPER,LOGGER,CHAT_LOGGER helperLayer
-    class COBOL_MODEL,ANALYSIS_MODEL,JAVA_MODEL,DEP_MODEL modelLayer
-    class INPUT,OUTPUT ioLayer
-```
 
 ## 🔄 Migration Process Flow (6 Main Steps)
 
@@ -674,5 +599,12 @@ graph LR
     style D fill:#f1f8e9
     style E fill:#fff3e0
 ```
+
+## Disclaimer
+### Important
+
+This software is provided for demonstration purposes only. It is not intended to be relied upon for any purpose. The creators of this software make no representations or warranties of any kind, express or implied, about the completeness, accuracy, reliability, suitability or availability with respect to the software or the information, products, services, or related graphics contained in the software for any purpose. Any reliance you place on such information is therefore strictly at your own risk.
+
+
 
 **Summary:** The Semantic Kernel process functions are the **core engine** that powers every AI interaction in the migration tool, providing a consistent, observable, and manageable way to orchestrate complex AI workflows across multiple specialized agents! 🚀
