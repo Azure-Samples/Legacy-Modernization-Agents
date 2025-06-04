@@ -600,6 +600,19 @@ graph LR
     style E fill:#fff3e0
 ```
 
+## Work in prograss and good to know before you start
+- The project will create a Java-output folder will create a migration report with a summary of the generated files, dependencies analysis, metrics etc.
+- The Logs folder will have analysis, apiCalls ConversionsOutput and a full chat log of the conversion as markdown.
+- Depending on the Cobol file size you can always adjust the tokensize. GPT-4.1 has a limit for approx 32768 tokens, hence this specific setting. Ajust these accordingly for each agent.
+- You can try different models, just remember to change the settings in the projects.
+
+### Known issues
+Will be updated as we go.
+- Content filtering can stop calls to Azure OpenAI.
+- Make sure you do not increase your tokensize above the agents setting as it't already at it hightest limit.
+
+
+
 ## Disclaimer
 ### Important
 
