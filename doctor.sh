@@ -327,12 +327,12 @@ run_test() {
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}✅ .NET version: $dotnet_version${NC}"
         
-        # Check if it's .NET 9.0 or higher
+        # Check if it's .NET 8.0 or higher
         major_version=$(echo $dotnet_version | cut -d. -f1)
-        if [ "$major_version" -ge 9 ]; then
-            echo -e "${GREEN}✅ .NET 9.0+ requirement satisfied${NC}"
+        if [ "$major_version" -ge 8 ]; then
+            echo -e "${GREEN}✅ .NET 8.0+ requirement satisfied${NC}"
         else
-            echo -e "${YELLOW}⚠️  Warning: .NET 9.0+ recommended (current: $dotnet_version)${NC}"
+            echo -e "${YELLOW}⚠️  Warning: .NET 8.0+ recommended (current: $dotnet_version)${NC}"
         fi
     else
         echo -e "${RED}❌ .NET is not installed or not in PATH${NC}"

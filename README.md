@@ -1,12 +1,29 @@
-# 🧠 Semantic Kernel COBOL Migration Process Function
+# 🧠 Legacy Modernization Agents to migrate COBOL to Java developed with the Semantic Kernel Process Function
+
+This migration framework was developed to demonstrate AI Agents capabilities for converting legacy code like COBOL to Java. Each Agent has a persona that can be edited depending on the desired outcome.
+The migration is using Semantic Kernel Process Function where it does analysis of the COBOL code and it’s dependencies. This information then used to converting Java Quarkus.
+
+## Call-to-Action
+We are looking for real COBOL code to further improve this framework. If you want to actively collaborate, please reach out to us by opening an issue in this repository. - Gustav Kaleta & Julia Kordick
+
+## Table of Contents
+- [Quick Start](#-quick-start)
+  - [Prerequisites](#prerequisites)
+- [How It Works - Complete Architecture & Flow](#how-it-works---complete-architecture--flow)
+- [Known issues](#known-issues)
+- [Project ideas](#project-ideas)
+  - [Improvements](#improvements)
+- [Disclaimer](#disclaimer)
+- [Summary](#summary)
 
 ## 🚀 Quick Start
 
 ### Prerequisites
-- .NET 9.0 or higher
+- .NET 8.0.x
+- Semantic Kernel SDK
 - Azure OpenAI account with GPT-4.1 model deployed
 
-### 🔐 **Step 1: Configure Azure OpenAI Credentials**
+### 🔐 Configure Azure OpenAI Credentials
 
 The project uses a secure two-file configuration system:
 
@@ -17,14 +34,14 @@ The project uses a secure two-file configuration system:
 
 ```bash
 # 1. Copy the template to create your local config
-cp Config/ai-config.local.env.template Config/ai-config.local.env
+cp Config/ai-config.local.env.example Config/ai-config.local.env
 
 # 2. Edit your local config with real values
 nano Config/ai-config.local.env
 ```
 
 **In `Config/ai-config.local.env`, update these lines:**
-```bashª
+```bash
 # Replace with your actual Azure OpenAI endpoint
 AZURE_OPENAI_ENDPOINT="https://YOUR-RESOURCE-NAME.openai.azure.com/"
 
@@ -36,9 +53,9 @@ AZURE_OPENAI_DEPLOYMENT_NAME="gpt-4.1"
 ```
 
 **🔍 How to find your Azure OpenAI values:**
-- **Endpoint**: Azure Portal → Your OpenAI Resource → "Keys and Endpoint" 
-- **API Key**: Azure Portal → Your OpenAI Resource → "Keys and Endpoint" → Key 1
-- **Deployment Name**: Azure AI Studio → Your deployment name (must be "gpt-4.1")
+- **Endpoint**: Azure Portal → Your OpenAI Resource → "Resource Management" → "Keys and Endpoint" → Endpoint
+- **API Key**: Azure Portal → Your OpenAI Resource → "Resource Management" → "Keys and Endpoint" → Key 1
+- **Deployment Name**: Azure AI Foundry → Your deployment name (must be "gpt-4.1")
 
 **📋 Example `ai-config.local.env` with real values:**
 ```bash
@@ -101,25 +118,18 @@ The project uses a secure two-file configuration system:
 
 | File | Purpose | Contains | Git Status |
 |------|---------|----------|------------|
-| `Config/ai-config.env` | Template/defaults | Placeholder values | ✅ Safe to commit |
+| `Config/ai-config.env.example` | Template/defaults | Placeholder values | ✅ Safe to commit |
 | `Config/ai-config.local.env` | Your credentials | **Real API keys** | ❌ **Never commit** |
-| `Config/ai-config.local.env.template` | Example | Copy this to create local | ✅ Safe to commit |
+| `Config/ai-config.local.env.example` | Example | Copy this to create local | ✅ Safe to commit |
 
 **Why two files?**
 - ✅ **Security**: Your API keys never accidentally get committed to git
 - ✅ **Team-friendly**: Each developer has their own credentials  
 - ✅ **CI/CD ready**: Production can use environment variables
 
-**Quick setup:**
-```bash
-# Copy template and edit with your values
-cp Config/ai-config.local.env.template Config/ai-config.local.env
-nano Config/ai-config.local.env
-```
-
 ## How It Works - Complete Architecture & Flow
 
-The Semantic Kernel process function is an AI-powered COBOL-to-Java migration system that uses Microsoft Semantic Kernel framework to orchestrate multiple specialized AI agents. Here's how it works:
+The Semantic Kernel process function is used to build an AI-powered COBOL-to-Java migration system that uses Microsoft Semantic Kernel framework to orchestrate multiple specialized AI agents. Here's how it works:
 
 
 ## 🔄 Migration Process Flow (6 Main Steps)
@@ -610,6 +620,11 @@ graph LR
 Will be updated as we go.
 - Content filtering can stop calls to Azure OpenAI.
 - Make sure you do not increase your tokensize above the agents setting as it't already at it hightest limit.
+
+## Project ideas
+### Improvements
+- tbd
+- feel free to contribute with ideas and improvements
 
 
 
