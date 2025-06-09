@@ -27,8 +27,8 @@ We are looking for real COBOL code to further improve this framework. If you wan
 
 The project uses a secure two-file configuration system:
 
-1. **`Config/ai-config.env`** - Template with default values (safe to commit)
-2. **`Config/ai-config.local.env`** - Your actual credentials (never commit)
+1. **`Config/ai-config.env`** - Template with default values (✅ safe to commit)
+2. **`Config/ai-config.local.env`** - Your actual credentials (❌ never commit)
 
 **Setup your credentials:**
 
@@ -111,21 +111,6 @@ The `doctor.sh` script consolidates all functionality:
 - `./doctor.sh doctor` - Diagnose issues
 - `./doctor.sh resume` - Resume interrupted migration
 - `./doctor.sh help` - Show all commands
-
-## 📁 **Configuration Files Explained**
-
-The project uses a secure two-file configuration system:
-
-| File | Purpose | Contains | Git Status |
-|------|---------|----------|------------|
-| `Config/ai-config.env.example` | Template/defaults | Placeholder values | ✅ Safe to commit |
-| `Config/ai-config.local.env` | Your credentials | **Real API keys** | ❌ **Never commit** |
-| `Config/ai-config.local.env.example` | Example | Copy this to create local | ✅ Safe to commit |
-
-**Why two files?**
-- ✅ **Security**: Your API keys never accidentally get committed to git
-- ✅ **Team-friendly**: Each developer has their own credentials  
-- ✅ **CI/CD ready**: Production can use environment variables
 
 ## How It Works - Complete Architecture & Flow
 
