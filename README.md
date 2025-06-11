@@ -601,6 +601,10 @@ graph LR
 - The Logs folder will have analysis, apiCalls ConversionsOutput and a full chat log of the conversion as markdown.
 - Depending on the Cobol file size you can always adjust the tokensize. GPT-4.1 has a limit for approx 32768 tokens, hence this specific setting. Ajust these accordingly for each agent.
 - You can try different models, just remember to change the settings in the projects.
+- If you want to change the agents output, you can change their persona and their tasks.
+  - If you for example do not want to convert code to Java you can change it to only do .NET
+  - If you for example only want to create documentation you can change the Java agent persona or create a new agent.
+  - If you want it to focus on specific areas you change or add those into the agents persona directly. For example it needs to focus on DB2 migration to PostgreSQL
 
 ### Known issues
 Will be updated as we go.
