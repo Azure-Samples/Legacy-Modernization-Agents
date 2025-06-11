@@ -22,6 +22,7 @@ We are looking for real COBOL code to further improve this framework. If you wan
 - .NET 8.0.x
 - Semantic Kernel SDK
 - Azure OpenAI account with GPT-4.1 model deployed
+- GPT-4.1 supports up to 1M Token per minute which you need edit in https://oai.azure.com/
 
 ### 🔐 Configure Azure OpenAI Credentials
 
