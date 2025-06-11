@@ -46,7 +46,7 @@ graph TB
     end
     
     %% Input/Output
-    INPUT[📂 Input<br/>COBOL Files (.cbl, .cpy)]
+    INPUT[📂 Input<br/>COBOL Files .cbl, .cpy]
     OUTPUT[📤 Output<br/>Java Files + Reports]
     
     %% Connections
