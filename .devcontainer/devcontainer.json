@@ -1,0 +1,32 @@
+{
+	"name": "COBOL to Quarkus Migration",
+	"dockerFile": "Dockerfile",
+	"forwardPorts": [],
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"ms-dotnettools.csharp",
+				"ms-dotnettools.csdevkit",
+				"redhat.java",
+				"vscjava.vscode-java-pack",
+				"redhat.vscode-quarkus",
+				"ms-semantic-kernel.semantic-kernel",
+				"github.copilot",
+				"github.copilot-chat"
+			],
+			"settings": {
+				"editor.formatOnSave": true,
+				"omnisharp.enableRoslynAnalyzers": true,
+				"omnisharp.enableEditorConfigSupport": true
+			}
+		}
+	},
+	"remoteUser": "vscode",
+	"features": {
+		"ghcr.io/devcontainers/features/dotnet:1": {
+			"version": "8.0"
+		},
+		"ghcr.io/devcontainers/features/azure-cli:1": {}
+	},
+	"postCreateCommand": "dotnet restore && dotnet build"
+}
