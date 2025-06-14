@@ -9,6 +9,7 @@ We are looking for real COBOL code to further improve this framework. If you wan
 ## Table of Contents
 - [Quick Start](#-quick-start)
   - [Prerequisites](#prerequisites)
+  - [Dev Container](#dev-container)
 - [How It Works - Complete Architecture & Flow](#how-it-works---complete-architecture--flow)
 - [Known issues](#known-issues)
 - [Project ideas](#project-ideas)
@@ -23,6 +24,28 @@ We are looking for real COBOL code to further improve this framework. If you wan
 - Semantic Kernel SDK
 - Azure OpenAI account with GPT-4.1 model deployed
 - GPT-4.1 supports up to 1M Token per minute which you need edit in https://oai.azure.com/
+
+### Dev Container
+This project includes a dev container configuration for Visual Studio Code, which ensures a consistent development environment for all contributors.
+
+> **Note on Java Version**: The project uses Java 17 in the dev container because it's the latest version available in the standard Debian Bookworm repositories. Our dev container is based on `mcr.microsoft.com/devcontainers/dotnet:8.0`, which uses Debian Bookworm as its base image.
+
+#### Requirements to use the Dev Container
+- Docker installed on your machine
+- Visual Studio Code with the "Dev Containers" extension installed
+
+#### Getting Started with the Dev Container
+1. Clone this repository
+2. Open the project folder in Visual Studio Code
+3. When prompted, click "Reopen in Container", or run the "Dev Containers: Reopen in Container" command from the command palette
+4. Wait for the container to build and initialize (this may take a few minutes the first time)
+5. The container includes all required dependencies:
+   - .NET 8.0
+   - Java 17 with Maven
+   - Azure CLI
+   - Required VS Code extensions
+
+After the container is built, the project will be automatically restored and built.
 
 ### 🔐 Configure Azure OpenAI Credentials
 
