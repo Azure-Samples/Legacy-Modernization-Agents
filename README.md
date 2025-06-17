@@ -25,6 +25,9 @@ We are looking for real COBOL code to further improve this framework. If you wan
 - Azure OpenAI account with GPT-4.1 model deployed
 - GPT-4.1 supports up to 1M Token per minute which you need edit in https://oai.azure.com/
 
+
+> **INFO:** Remember to read the entire repo to grasp of the project and how you can utilize it for your code base. 
+
 ### Dev Container
 This project includes a dev container configuration for Visual Studio Code, which ensures a consistent development environment for all contributors.
 
@@ -627,7 +630,18 @@ graph LR
 - If you want to change the agents output, you can change their persona and their tasks.
   - If you for example do not want to convert code to Java you can change it to only do .NET
   - If you for example only want to create documentation you can change the Java agent persona or create a new agent.
-  - If you want it to focus on specific areas you change or add those into the agents persona directly. For example it needs to focus on DB2 migration to PostgreSQL
+  - If you want it to focus on specific areas or ouput you change or add those into the agents persona directly.
+    -   For example it needs to focus on DB2 migration to PostgreSQL
+    -   For example you want to reflect the SQL queries in a desired way add those to the agent's.
+    -   For example if you want the Java folder struckture to reflect Maven so it you can easily build your project
+    -   For example you want to the output to be .NET focused in instead - change that Java Agent for this specifically
+    -   (Experimental) For example you have another legacy code language you can use the same approach like with APL
+        - Replace cobol code with APL and remember to update the agents to focus on APL and not Cobol
+        - Update the Java agent or create a new  agent to reflect the desired programming language output
+
+### ℹ️ Your desired outcome. 
+> Please dicuss what the desires AI agents persona in order to reflect your desired outcome
+        
 
 ### Known issues
 Will be updated as we go.
