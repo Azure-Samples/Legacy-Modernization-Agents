@@ -63,13 +63,13 @@ graph TB
     PROCESS --> OUTPUT
     
     %% Styling
-    classDef userLayer fill:#e1f5fe,stroke:#0277bd,stroke-width:2px
-    classDef processLayer fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
-    classDef agentLayer fill:#e8f5e8,stroke:#388e3c,stroke-width:2px
-    classDef serviceLayer fill:#fff3e0,stroke:#f57c00,stroke-width:2px
-    classDef helperLayer fill:#fce4ec,stroke:#c2185b,stroke-width:2px
-    classDef modelLayer fill:#f1f8e9,stroke:#689f38,stroke-width:2px
-    classDef ioLayer fill:#e0f2f1,stroke:#00796b,stroke-width:2px
+    classDef userLayer fill:#e1f5fe,stroke:#0277bd,stroke-width:2px,color:#000000
+    classDef processLayer fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px,color:#000000
+    classDef agentLayer fill:#e8f5e8,stroke:#388e3c,stroke-width:2px,color:#000000
+    classDef serviceLayer fill:#fff3e0,stroke:#f57c00,stroke-width:2px,color:#000000
+    classDef helperLayer fill:#fce4ec,stroke:#c2185b,stroke-width:2px,color:#000000
+    classDef modelLayer fill:#f1f8e9,stroke:#689f38,stroke-width:2px,color:#000000
+    classDef ioLayer fill:#e0f2f1,stroke:#00796b,stroke-width:2px,color:#000000
     
     class CLI,CONFIG userLayer
     class PROCESS processLayer
@@ -178,10 +178,10 @@ graph TB
     AGENT_LIFECYCLE --> AI_MODELS
     
     %% Enhanced Styling
-    classDef kernelStyle fill:#e3f2fd,stroke:#1976d2,stroke-width:3px,color:#0d47a1
-    classDef lifecycleStyle fill:#f1f8e9,stroke:#689f38,stroke-width:3px,color:#1b5e20
-    classDef modelStyle fill:#fff3e0,stroke:#f57c00,stroke-width:3px,color:#e65100
-    classDef stepStyle fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px,color:#4a148c
+    classDef kernelStyle fill:#e3f2fd,stroke:#1976d2,stroke-width:3px,color:#000000
+    classDef lifecycleStyle fill:#f1f8e9,stroke:#689f38,stroke-width:3px,color:#000000
+    classDef modelStyle fill:#fff3e0,stroke:#f57c00,stroke-width:3px,color:#000000
+    classDef stepStyle fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px,color:#000000
     
     class KERNEL,PROMPT_ENGINE,EXECUTION kernelStyle
     class INIT,PROMPT,EXECUTE,PROCESS_RESPONSE,LOG stepStyle
@@ -553,9 +553,9 @@ graph LR
     D --> E[AI Service Call]
     E --> F[Structured Response]
     
-    style A fill:#e3f2fd
-    style D fill:#f1f8e9
-    style E fill:#fff3e0
+    style A fill:#e3f2fd,color:#000000
+    style D fill:#f1f8e9,color:#000000
+    style E fill:#fff3e0,color:#000000
 ```
 
 **Summary:** The Semantic Kernel process functions are the **core engine** that powers every AI interaction in the migration tool, providing a consistent, observable, and manageable way to orchestrate complex AI workflows across multiple specialized agents! 🚀
