@@ -82,6 +82,11 @@ cobol-files/
 *.cpy
 *.cob
 
+# Allow sample COBOL files for demonstration
+!sample-code/**/*.cbl
+!sample-code/**/*.cpy
+!sample-code/**/*.cob
+
 # Generated Java Output (Contains converted business logic)
 java-output/
 Java-Output/
