@@ -82,18 +82,15 @@ cobol-files/
 *.cpy
 *.cob
 
-# Allow sample COBOL files for demonstration
-!sample-code/
-!sample-code/cobol-source/
-!sample-code/**/*.cbl
-!sample-code/**/*.cpy
-!sample-code/**/*.cob
-
 # Generated Java Output (Contains converted business logic)
 java-output/
 Java-Output/
 JavaOutput/
 generated-java/
+
+# Allow everything inside sample-code (override other ignore rules)
+!sample-code/
+!sample-code/**
 
 # =============================================================================
 # LOGS AND TEMPORARY FILES

@@ -1,0 +1,265 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2018-05-01/subscriptionDeploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.18.4.5664",
+      "templateHash": "16995279892650463740"
+    }
+  },
+  "parameters": {
+    "rgName": {
+      "type": "string",
+      "defaultValue": "rg-sample-java-output",
+      "metadata": {
+        "description": "Name of the resource group to create"
+      }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "eastus",
+      "metadata": {
+        "description": "Location for the resource group"
+      }
+    },
+    "acrName": {
+      "type": "string",
+      "defaultValue": "samplejavaacr",
+      "metadata": {
+        "description": "Name for the Container Registry"
+      }
+    },
+    "acrSku": {
+      "type": "string",
+      "defaultValue": "Basic",
+      "metadata": {
+        "description": "SKU for the Container Registry"
+      }
+    },
+    "envName": {
+      "type": "string",
+      "defaultValue": "sample-containerenv",
+      "metadata": {
+        "description": "Name for the Container Apps managed environment"
+      }
+    },
+    "jobImage": {
+      "type": "string",
+      "defaultValue": "mcr.microsoft.com/azuredocs/containerapps-helloworld:latest",
+      "metadata": {
+        "description": "Container image for the job"
+      }
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Resources/resourceGroups",
+      "apiVersion": "2021-04-01",
+      "name": "[parameters('rgName')]",
+      "location": "[parameters('location')]",
+      "properties": {}
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2022-09-01",
+      "name": "deployRgResources",
+      "resourceGroup": "[parameters('rgName')]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "acrName": {
+            "value": "[parameters('acrName')]"
+          },
+          "acrSku": {
+            "value": "[parameters('acrSku')]"
+          },
+          "envName": {
+            "value": "[parameters('envName')]"
+          },
+          "jobName": {
+            "value": "sample-scheduled-job"
+          },
+          "jobImage": {
+            "value": "[parameters('jobImage')]"
+          },
+          "jobCron": {
+            "value": "*/1 * * * *"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.18.4.5664",
+              "templateHash": "8008481048357796018"
+            }
+          },
+          "parameters": {
+            "location": {
+              "type": "string",
+              "metadata": {
+                "description": "Location for the resources in this resource group"
+              }
+            },
+            "acrName": {
+              "type": "string",
+              "metadata": {
+                "description": "Name for the Container Registry"
+              }
+            },
+            "acrSku": {
+              "type": "string",
+              "defaultValue": "Basic",
+              "metadata": {
+                "description": "SKU for the Container Registry"
+              }
+            },
+            "envName": {
+              "type": "string",
+              "metadata": {
+                "description": "Name for the Container Apps managed environment"
+              }
+            },
+            "containerAppName": {
+              "type": "string",
+              "defaultValue": "",
+              "metadata": {
+                "description": "Container image to deploy to the Container App (kept for compatibility)"
+              }
+            },
+            "containerImage": {
+              "type": "string",
+              "defaultValue": ""
+            },
+            "jobName": {
+              "type": "string",
+              "metadata": {
+                "description": "Name for the scheduled job"
+              }
+            },
+            "jobImage": {
+              "type": "string",
+              "metadata": {
+                "description": "Container image for the scheduled job"
+              }
+            },
+            "jobCron": {
+              "type": "string",
+              "defaultValue": "*/1 * * * *",
+              "metadata": {
+                "description": "Cron schedule for the job"
+              }
+            }
+          },
+          "resources": [
+            {
+              "type": "Microsoft.ContainerRegistry/registries",
+              "apiVersion": "2023-01-01-preview",
+              "name": "[parameters('acrName')]",
+              "location": "[parameters('location')]",
+              "sku": {
+                "name": "[parameters('acrSku')]"
+              },
+              "properties": {
+                "adminUserEnabled": false
+              }
+            },
+            {
+              "type": "Microsoft.App/managedEnvironments",
+              "apiVersion": "2024-03-01",
+              "name": "[parameters('envName')]",
+              "location": "[parameters('location')]",
+              "properties": {}
+            },
+            {
+              "condition": "[not(empty(parameters('jobName')))]",
+              "type": "Microsoft.App/jobs",
+              "apiVersion": "2024-03-01",
+              "name": "[parameters('jobName')]",
+              "location": "[parameters('location')]",
+              "properties": {
+                "environmentId": "[resourceId('Microsoft.App/managedEnvironments', parameters('envName'))]",
+                "configuration": {
+                  "triggerType": "Schedule",
+                  "scheduleTriggerConfig": {
+                    "cronExpression": "[parameters('jobCron')]",
+                    "parallelism": 1,
+                    "replicaCompletionCount": 1
+                  },
+                  "replicaTimeout": 300,
+                  "replicaRetryLimit": 0
+                },
+                "template": {
+                  "containers": [
+                    {
+                      "name": "job",
+                      "image": "[parameters('jobImage')]",
+                      "command": [
+                        "/bin/sh",
+                        "-c"
+                      ],
+                      "args": [
+                        "echo \"Scheduled job run\"; sleep 1; exit 0"
+                      ]
+                    }
+                  ]
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.App/managedEnvironments', parameters('envName'))]"
+              ]
+            }
+          ],
+          "outputs": {
+            "jobId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.App/jobs', parameters('jobName'))]"
+            },
+            "acrLoginServer": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName')), '2023-01-01-preview').loginServer]"
+            },
+            "containerEnvironmentId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.App/managedEnvironments', parameters('envName'))]"
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "[subscriptionResourceId('Microsoft.Resources/resourceGroups', parameters('rgName'))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "resourceGroupName": {
+      "type": "string",
+      "value": "[parameters('rgName')]"
+    },
+    "resourceGroupLocation": {
+      "type": "string",
+      "value": "[reference(subscriptionResourceId('Microsoft.Resources/resourceGroups', parameters('rgName')), '2021-04-01', 'full').location]"
+    },
+    "acrLoginServer": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('rgName')), 'Microsoft.Resources/deployments', 'deployRgResources'), '2022-09-01').outputs.acrLoginServer.value]"
+    },
+    "containerEnvironmentId": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('rgName')), 'Microsoft.Resources/deployments', 'deployRgResources'), '2022-09-01').outputs.containerEnvironmentId.value]"
+    },
+    "jobId": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('rgName')), 'Microsoft.Resources/deployments', 'deployRgResources'), '2022-09-01').outputs.jobId.value]"
+    }
+  }
+}
