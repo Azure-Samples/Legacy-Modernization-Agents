@@ -88,6 +88,10 @@ Java-Output/
 JavaOutput/
 generated-java/
 
+# Allow everything inside sample-code (override other ignore rules)
+!sample-code/
+!sample-code/**
+
 # =============================================================================
 # LOGS AND TEMPORARY FILES
 # =============================================================================
