@@ -1,48 +1,91 @@
-targetScope = 'subscription'
+@minLength(3)
+@description('A unique suffix for all resources')
+param suffix string
 
-@description('Name of the resource group to create')
-param rgName string = 'rg-sample-java-output'
-
-@description('Location for the resource group')
-param location string = 'eastus'
-
-resource rg 'Microsoft.Resources/resourceGroups@2021-04-01' = {
-  name: rgName
-  location: location
-  properties: {}
-}
-
-output resourceGroupName string = rg.name
-output resourceGroupLocation string = rg.location
-
-// Parameters for container app and registry
-@description('Name for the Container Registry')
-param acrName string = 'samplejavaacr'
+@description('Location for the resources in this resource group')
+param location string = resourceGroup().location
 
 @description('SKU for the Container Registry')
 param acrSku string = 'Basic'
 
-@description('Name for the Container Apps managed environment')
-param envName string = 'sample-containerenv'
+@description('Container image for the scheduled job')
+param jobImage string = 'mcr.microsoft.com/azuredocs/aci-helloworld:latest'
 
-@description('Container image for the job')
-param jobImage string = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
+@description('Cron schedule for the job')
+param jobCron string = '*/1 * * * *' // every minute
 
-// Deploy resource-group scoped resources using a module
-module rgModule 'rg.bicep' = {
-  name: 'deployRgResources'
-  scope: resourceGroup(rg.name)
-  params: {
-    location: location
-    acrName: acrName
-    acrSku: acrSku
-    envName: envName
-    jobName: 'sample-scheduled-job'
-    jobImage: jobImage
-    jobCron: '*/1 * * * *'
+// Generate unique resource names based on suffix and Azure best practice abbreviations
+var acrName = toLower('acr${suffix}') // Azure Container Registry (does not allow hyphens)
+var caeName = toLower('cae-${suffix}') // Container Apps Environment
+var cajName = toLower('caj-${suffix}') // Container Apps Job
+var logAnalyticsName = toLower('log-${suffix}') // Log Analytics Workspace
+
+// Log Analytics workspace for monitoring
+resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2025-02-01' = {
+  name: logAnalyticsName
+  location: location
+  properties: {
+    sku: {
+      name: 'PerGB2018'
+    }
+    retentionInDays: 30
   }
 }
 
-output acrLoginServer string = rgModule.outputs.acrLoginServer
-output containerEnvironmentId string = rgModule.outputs.containerEnvironmentId
-output jobId string = rgModule.outputs.jobId
+resource acr 'Microsoft.ContainerRegistry/registries@2025-04-01' = {
+  name: acrName
+  location: location
+  sku: {
+    name: acrSku
+  }
+  properties: {
+    adminUserEnabled: false
+  }
+}
+
+resource containerEnv 'Microsoft.App/managedEnvironments@2025-01-01' = {
+  name: caeName
+  location: location
+  properties: {
+    appLogsConfiguration: {
+      destination: 'log-analytics'
+      logAnalyticsConfiguration: {
+        customerId: logAnalytics.properties.customerId
+        sharedKey: logAnalytics.listKeys().primarySharedKey
+      }
+    }
+  }
+}
+
+resource job 'Microsoft.App/jobs@2025-01-01' = {
+  name: cajName
+  location: location
+  properties: {
+    environmentId: containerEnv.id
+    configuration: {
+      triggerType: 'Schedule'
+      scheduleTriggerConfig: {
+        cronExpression: jobCron
+        parallelism: 1
+        replicaCompletionCount: 1
+      }
+      replicaTimeout: 300
+      replicaRetryLimit: 0
+    }
+    template: {
+      containers: [
+        {
+          name: 'job'
+          image: jobImage
+        }
+      ]
+    }
+  }
+}
+
+
+output logAnalyticsWorkspaceId string = logAnalytics.id
+output logAnalyticsWorkspaceName string = logAnalytics.name
+
+output acrLoginServer string = acr.properties.loginServer
+output containerEnvironmentId string = containerEnv.id

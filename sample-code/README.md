@@ -36,6 +36,6 @@ Recommend add the following to the prompt in JavaConverterAgent.cs
 
 ### Running the Java code on Azure
 1. Provision Azure Container Registry, Azure Container Apps, Azure Log Analytics. There is sample Bicep in the  `infra/` directory.
-2. Build container and push the image to Azure Container Registry
+2. Build container and push the image to Azure Container Registry (e.g., using `az acr build`)
 3. Have the Azure Container Apps pull the image from the Azure Container Registry
 4. View Log Analytics to see "Hello, world!" being logged
