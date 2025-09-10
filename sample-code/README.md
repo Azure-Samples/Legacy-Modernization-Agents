@@ -10,7 +10,7 @@ There are various types of COBOL code that could be targets for migration, for e
 - **COBOL dialect**: For example, IBM Enterprise COBOL for z/OS, Micro Focus Visual COBOL, Fujitsu NetCOBOL, regional variants (e.g., Hitachi, NEC), or GnuCOBOL (open-source).
 - **Amount of code**: Migration estates range from a few hundred programs to tens of thousands. Individual COBOL programs are often thousands of lines long, with larger outliers. Total portfolios commonly reach millions of lines.
 
-## Hello World Sample (Printing "Hello, World!")
+## Hello World Sample (Printing "Hello, world!")
 
 - **Trigger type**: Scheduled job
 - **COBOL dialect**: GnuCOBOL
@@ -40,4 +40,4 @@ We recommend adding the following instructions to the prompt in `JavaConverterAg
 1. **Provision Azure resources**: Azure Container Registry, Azure Container Apps, and Azure Log Analytics. Sample Bicep templates are available in the `infra/` directory.
 2. **Build and push container image**: Build the container and push the image to Azure Container Registry (e.g., using `az acr build`)
 3. **Deploy to Container Apps**: Configure Azure Container Apps to pull the image from the Azure Container Registry
-4. **Monitor logs**: View Log Analytics to see "Hello, World!" being logged
+4. **Monitor logs**: View Log Analytics to see "Hello, world!" being logged
