@@ -4,19 +4,15 @@ This migration framework was developed to demonstrate AI Agents capabilities for
 The migration is using Semantic Kernel Process Function where it does analysis of the COBOL code and it’s dependencies. This information then used to converting Java Quarkus.
 
 ## Acknowledgements of collaboration
-
 This project is a collaboration between Microsoft's Global Black Belt team and [Bankdata](https://www.bankdata.dk/). If you want to learn more about the collaboration and background of this project, have a look at [this](https://aka.ms/cobol-blog) and [this](https://www.bankdata.dk/about/news/microsoft-and-bankdata-launch-open-source-ai-framework-for-modernizing-legacy-systems) blog post.
 
 ## Call-to-Action
-
 We are looking for real COBOL code to further improve this framework. If you want to actively collaborate, please reach out to us by opening an issue in this repository. - Gustav Kaleta & Julia Kordick
 
 ## Table of Contents
-
 - [Quick Start](#-quick-start)
   - [Prerequisites](#prerequisites)
   - [Dev Container](#dev-container)
-    - [Using the sample COBOL code](#using-the-sample-cobol-code)
 - [How It Works - Complete Architecture & Flow](#how-it-works---complete-architecture--flow)
 - [Known issues](#known-issues)
 - [Project ideas](#project-ideas)
@@ -27,27 +23,24 @@ We are looking for real COBOL code to further improve this framework. If you wan
 ## 🚀 Quick Start
 
 ### Prerequisites
-
 - .NET 8.0.x
 - Semantic Kernel SDK
 - Azure OpenAI account with GPT-4.1 model deployed
 - GPT-4.1 supports up to 1M Token per minute which you need edit in https://oai.azure.com/
 
-> **INFO:** Remember to read the entire repo to grasp of the project and how you can utilize it for your code base.
+
+> **INFO:** Remember to read the entire repo to grasp of the project and how you can utilize it for your code base. 
 
 ### Dev Container
-
 This project includes a dev container configuration for Visual Studio Code, which ensures a consistent development environment for all contributors.
 
 > **Note on Java Version**: The project uses Java 17 in the dev container because it's the latest version available in the standard Debian Bookworm repositories. Our dev container is based on `mcr.microsoft.com/devcontainers/dotnet:8.0`, which uses Debian Bookworm as its base image.
 
 #### Requirements to use the Dev Container
-
 - Docker installed on your machine
 - Visual Studio Code with the "Dev Containers" extension installed
 
 #### Getting Started with the Dev Container
-
 1. Clone this repository
 2. Open the project folder in Visual Studio Code
 3. When prompted, click "Reopen in Container", or run the "Dev Containers: Reopen in Container" command from the command palette
@@ -78,12 +71,11 @@ nano Config/ai-config.local.env
 ```
 
 **In `Config/ai-config.local.env`, update these lines:**
-
 ```bash
 # Replace with your actual Azure OpenAI endpoint
 AZURE_OPENAI_ENDPOINT="https://YOUR-RESOURCE-NAME.openai.azure.com/"
 
-# Replace with your actual API key
+# Replace with your actual API key  
 AZURE_OPENAI_API_KEY="your-32-character-api-key-here"
 
 # Update deployment name to match your Azure setup
@@ -91,13 +83,11 @@ AZURE_OPENAI_DEPLOYMENT_NAME="gpt-4.1"
 ```
 
 **🔍 How to find your Azure OpenAI values:**
-
 - **Endpoint**: Azure Portal → Your OpenAI Resource → "Resource Management" → "Keys and Endpoint" → Endpoint
 - **API Key**: Azure Portal → Your OpenAI Resource → "Resource Management" → "Keys and Endpoint" → Key 1
 - **Deployment Name**: Azure AI Foundry → Your deployment name (must be "gpt-4.1")
 
 **📋 Example `ai-config.local.env` with real values:**
-
 ```bash
 # Example - replace with your actual values
 AZURE_OPENAI_ENDPOINT="https://my-company-openai.openai.azure.com/"
@@ -106,19 +96,17 @@ AZURE_OPENAI_DEPLOYMENT_NAME="gpt-4.1"
 AZURE_OPENAI_MODEL_ID="gpt-4.1"
 ```
 
-**⚠️ IMPORTANT**:
-
+**⚠️ IMPORTANT**: 
 - Make sure your endpoint ends with `/`
 - API key should be 32 characters long
 - Deployment name must be exactly "gpt-4.1" to match project configuration
 
 ### Setup & Run
-
 ```bash
 # 1. Validate your configuration
 ./doctor.sh doctor
 
-# 2. Test configuration
+# 2. Test configuration  
 ./doctor.sh test
 
 # 3. Add your COBOL files to cobol-source/ (or use the included samples)
@@ -126,15 +114,6 @@ cp your-cobol-files/* ./cobol-source/
 
 # 4. Run migration
 ./doctor.sh run
-```
-
-#### Using the sample COBOL code
-
-Quick example (recommended): copy the included samples into the default input folder and run the standard workflow.
-
-```bash
-# copy sample COBOL files into the input folder
-cp -r sample-code/cobol-source/* cobol-source/
 ```
 
 ### ⚠️ **Configuration Troubleshooting**
@@ -150,14 +129,12 @@ If you see configuration errors:
 
 # Common issues:
 # ❌ "test-api-key-for-validation" → You need to set real API key
-# ❌ "test-resource.openai.azure.com" → You need to set real endpoint
+# ❌ "test-resource.openai.azure.com" → You need to set real endpoint  
 # ❌ Model not found → Check your deployment name matches Azure
 ```
 
 ### All-in-One Management
-
 The `doctor.sh` script consolidates all functionality:
-
 - `./doctor.sh setup` - Interactive configuration
 - `./doctor.sh test` - System validation
 - `./doctor.sh run` - Start migration
@@ -168,6 +145,7 @@ The `doctor.sh` script consolidates all functionality:
 ## How It Works - Complete Architecture & Flow
 
 The Semantic Kernel process function is used to build an AI-powered COBOL-to-Java migration system that uses Microsoft Semantic Kernel framework to orchestrate multiple specialized AI agents. Here's how it works:
+
 
 ## 🔄 Migration Process Flow (6 Main Steps)
 
@@ -180,23 +158,23 @@ sequenceDiagram
     participant AI as 🧠 Azure OpenAI
     participant Files as 📁 FileHelper
     participant Logs as 📊 Loggers
-
+    
     User->>CLI: ./doctor.sh run or dotnet run
     CLI->>CLI: Parse command line args
     CLI->>Process: Initialize with settings
-
+    
     Note over Process: Step 1: File Discovery
     Process->>Files: Scan COBOL directory
     Files-->>Process: List of .cbl and .cpy files
     Process->>Logs: Log file discovery stats
-
+    
     Note over Process: Step 2: Dependency Analysis
     Process->>Agents: DependencyMapperAgent.AnalyzeDependenciesAsync()
     Agents->>AI: Analyze COBOL relationships
     AI-->>Agents: Dependency insights
     Agents-->>Process: DependencyMap with Mermaid diagram
     Process->>Files: Save dependency-map.json
-
+    
     Note over Process: Step 3: COBOL Analysis
     loop For each COBOL file
         Process->>Agents: CobolAnalyzerAgent.AnalyzeCobolFileAsync()
@@ -205,7 +183,7 @@ sequenceDiagram
         Agents-->>Process: CobolAnalysis object
         Process->>Logs: Log analysis progress
     end
-
+    
     Note over Process: Step 4: Java Conversion
     loop For each analyzed file
         Process->>Agents: JavaConverterAgent.ConvertToJavaAsync()
@@ -214,14 +192,14 @@ sequenceDiagram
         Agents-->>Process: JavaFile object
         Process->>Logs: Log conversion progress
     end
-
+    
     Note over Process: Step 5: File Generation
     loop For each Java file
         Process->>Files: Save Java file to output directory
         Files-->>Process: Confirmation
         Process->>Logs: Log file save progress
     end
-
+    
     Note over Process: Step 6: Report Generation
     Process->>Files: Generate migration-report.md
     Process->>Logs: Export conversation logs
@@ -240,7 +218,7 @@ graph TB
         PROMPT_ENGINE["📝 Prompt Engineering<br/>• System Prompts<br/>• User Prompts<br/>• Context Management"]
         EXECUTION["⚙️ Execution Settings<br/>• Token Limits (32K)<br/>• Temperature (0.1)<br/>• Model Selection"]
     end
-
+    
     subgraph AGENT_LIFECYCLE ["🔄 Agent Lifecycle Process"]
         direction TB
         INIT["1️⃣ Initialize Agent<br/>• Load Model Configuration<br/>• Set Specialized Prompts<br/>• Configure Logging"]
@@ -248,30 +226,30 @@ graph TB
         EXECUTE["3️⃣ Execute via Kernel<br/>• Send to AI Service<br/>• Monitor API Call<br/>• Handle Timeouts"]
         PROCESS_RESPONSE["4️⃣ Process Response<br/>• Parse AI Output<br/>• Validate Results<br/>• Extract Structured Data"]
         LOG["5️⃣ Log & Track<br/>• Record API Metrics<br/>• Track Performance<br/>• Store Conversation"]
-
+        
         INIT --> PROMPT
         PROMPT --> EXECUTE
         EXECUTE --> PROCESS_RESPONSE
         PROCESS_RESPONSE --> LOG
     end
-
+    
     subgraph AI_MODELS ["🤖 AI Model Specialization"]
         direction TB
         ANALYZER_MODEL["🔍 COBOL Analyzer<br/>• Structure Analysis<br/>• Variable Mapping<br/>• Logic Flow Analysis<br/>• Copybook Detection"]
         CONVERTER_MODEL["☕ Java Converter<br/>• Code Translation<br/>• Quarkus Integration<br/>• Best Practices<br/>• Error Handling"]
         DEPENDENCY_MODEL["🗺️ Dependency Mapper<br/>• Relationship Analysis<br/>• Mermaid Diagrams<br/>• Usage Patterns<br/>• Metrics Calculation"]
     end
-
+    
     %% Connections
     SK_KERNEL --> AGENT_LIFECYCLE
     AGENT_LIFECYCLE --> AI_MODELS
-
+    
     %% Enhanced Styling
     classDef kernelStyle fill:#e3f2fd,stroke:#1976d2,stroke-width:3px,color:#0d47a1
     classDef lifecycleStyle fill:#f1f8e9,stroke:#689f38,stroke-width:3px,color:#1b5e20
     classDef modelStyle fill:#fff3e0,stroke:#f57c00,stroke-width:3px,color:#e65100
     classDef stepStyle fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px,color:#4a148c
-
+    
     class KERNEL,PROMPT_ENGINE,EXECUTION kernelStyle
     class INIT,PROMPT,EXECUTE,PROCESS_RESPONSE,LOG stepStyle
     class ANALYZER_MODEL,CONVERTER_MODEL,DEPENDENCY_MODEL modelStyle
@@ -280,7 +258,6 @@ graph TB
 ## 🎯 Core Components Explained
 
 ### 1. **Program.cs - Entry Point**
-
 - **Purpose**: Command-line interface and configuration setup
 - **Key Functions**:
   - Parses command-line arguments (`--cobol-source`, `--java-output`, `--config`)
@@ -290,7 +267,6 @@ graph TB
   - Creates and configures the main MigrationProcess
 
 ### 2. **MigrationProcess.cs - Orchestrator**
-
 - **Purpose**: Main workflow orchestrator that coordinates all migration steps
 - **Key Responsibilities**:
   - **Agent Initialization**: Creates and configures all AI agents
@@ -304,7 +280,6 @@ graph TB
 ### 3. **AI Agents - Specialized Experts**
 
 #### **CobolAnalyzerAgent**
-
 - **Purpose**: Expert in COBOL code analysis
 - **AI Prompt**: Specialized system prompt for understanding COBOL structure
 - **Output**: Structured analysis including:
@@ -314,7 +289,6 @@ graph TB
   - Copybook references
 
 #### **JavaConverterAgent**
-
 - **Purpose**: Expert in COBOL-to-Java conversion
 - **AI Prompt**: Specialized for Java Quarkus code generation
 - **Output**: Complete Java classes with:
@@ -324,7 +298,6 @@ graph TB
   - Error handling and best practices
 
 #### **DependencyMapperAgent**
-
 - **Purpose**: Expert in dependency analysis and visualization
 - **Capabilities**:
   - Analyzes COBOL program relationships
@@ -335,7 +308,6 @@ graph TB
 ### 4. **Helper Services**
 
 #### **FileHelper**
-
 - **Purpose**: Handles all file operations
 - **Functions**:
   - Scanning directories for COBOL files
@@ -344,7 +316,6 @@ graph TB
   - Saving JSON and Markdown reports
 
 #### **EnhancedLogger**
-
 - **Purpose**: Advanced logging with API call tracking
 - **Features**:
   - Behind-the-scenes activity logging
@@ -353,7 +324,6 @@ graph TB
   - Cost analysis and token tracking
 
 #### **ChatLogger**
-
 - **Purpose**: Records AI conversations
 - **Output**:
   - Complete chat logs in Markdown format
@@ -363,7 +333,6 @@ graph TB
 ## 🔧 Configuration & Settings
 
 ### **appsettings.json Structure**
-
 ```json
 {
   "AISettings": {
@@ -386,7 +355,6 @@ graph TB
 ## 📊 Performance & Metrics
 
 ### **Real Migration Statistics**
-
 - **📁 Source Files**: 102 COBOL files processed
 - **☕ Generated Files**: 99 Java files created
 - **🔗 Dependencies**: Complex relationship mapping
@@ -396,9 +364,7 @@ graph TB
 - **🎯 Success Rate**: 97% successful conversion
 
 ### **Output Artifacts**
-
 1. **Java Packages**: Organized by functionality
-
    - `com.example.*` - Business logic (85 files)
    - `org.example.*` - Batch processors (5 files)
    - `com.company.*` - Domain-specific logic (2 files)
@@ -406,7 +372,6 @@ graph TB
    - `model.*` - Data models (2 files)
 
 2. **Documentation**:
-
    - `dependency-map.json` - Complete dependency analysis
    - `dependency-diagram.md` - Mermaid visualization
    - `migration-report.md` - Comprehensive migration summary
@@ -458,7 +423,6 @@ var migrationProcess = new MigrationProcess(kernelBuilder, logger, fileHelper, s
 ```
 
 **What this does:**
-
 - **Creates the Semantic Kernel foundation** that all agents will use
 - **Configures AI service connection** (Azure OpenAI or OpenAI)
 - **Sets up HTTP client** with extended timeouts for large COBOL files
@@ -478,14 +442,14 @@ public void InitializeAgents()
         _settings.AISettings.CobolAnalyzerModelId,
         _enhancedLogger,
         _chatLogger);
-
+    
     _javaConverterAgent = new JavaConverterAgent(
         _kernelBuilder,  // ← Semantic Kernel builder passed here
         logger,
         _settings.AISettings.JavaConverterModelId,
         _enhancedLogger,
         _chatLogger);
-
+    
     _dependencyMapperAgent = new DependencyMapperAgent(
         _kernelBuilder,  // ← Semantic Kernel builder passed here
         logger,
@@ -496,7 +460,6 @@ public void InitializeAgents()
 ```
 
 **What this does:**
-
 - **Distributes the kernel builder** to each specialized AI agent
 - **Enables each agent** to create their own kernel instances
 - **Maintains consistency** in AI service configuration across agents
@@ -510,12 +473,12 @@ public async Task<CobolAnalysis> AnalyzeCobolFileAsync(CobolFile cobolFile)
 {
     // Build kernel instance from the builder
     var kernel = _kernelBuilder.Build();  // ← Creates Semantic Kernel instance
-
+    
     // Create specialized prompts for COBOL analysis
     var systemPrompt = "You are an expert COBOL analyzer...";
     var prompt = $"Analyze the following COBOL program:\n\n{cobolFile.Content}";
     var fullPrompt = $"{systemPrompt}\n\n{prompt}";
-
+    
     // Configure execution settings
     var executionSettings = new OpenAIPromptExecutionSettings
     {
@@ -523,23 +486,22 @@ public async Task<CobolAnalysis> AnalyzeCobolFileAsync(CobolFile cobolFile)
         Temperature = 0.1,
         TopP = 0.5
     };
-
+    
     var kernelArguments = new KernelArguments(executionSettings);
-
+    
     // Execute AI call through Semantic Kernel
     var functionResult = await kernel.InvokePromptAsync(  // ← SK process function call
         fullPrompt,
         kernelArguments);
-
+    
     var analysisText = functionResult.GetValue<string>();
     // Parse response into structured CobolAnalysis object
 }
 ```
 
 **What this does:**
-
 - **Creates kernel instance** from the shared builder
-- **Uses specialized COBOL analysis prompts**
+- **Uses specialized COBOL analysis prompts** 
 - **Configures AI parameters** (tokens, temperature)
 - **Executes AI call** through `kernel.InvokePromptAsync()` - **this is the core SK process function**
 - **Returns structured analysis** of COBOL code
@@ -553,23 +515,22 @@ public async Task<JavaFile> ConvertToJavaAsync(CobolFile cobolFile, CobolAnalysi
 {
     // Build kernel instance
     var kernel = _kernelBuilder.Build();  // ← Creates SK instance
-
+    
     // Create Java conversion prompts
     var systemPrompt = "You are an expert in converting COBOL to Java Quarkus...";
     var prompt = $"Convert the following COBOL program to Java:\n\n{cobolFile.Content}";
-
+    
     // Execute conversion through Semantic Kernel
     var functionResult = await kernel.InvokePromptAsync(  // ← SK process function call
         fullPrompt,
         kernelArguments);
-
+    
     var javaCode = functionResult.GetValue<string>();
     // Parse and structure Java output
 }
 ```
 
 **What this does:**
-
 - **Uses same kernel builder** but with Java conversion expertise
 - **Applies specialized Java/Quarkus prompts**
 - **Executes conversion** through `kernel.InvokePromptAsync()` - **core SK process function**
@@ -584,15 +545,15 @@ public async Task<DependencyMap> AnalyzeDependenciesAsync(List<CobolFile> files,
 {
     // Build kernel for dependency analysis
     var kernel = _kernelBuilder.Build();  // ← Creates SK instance
-
+    
     // Create dependency analysis prompts
     var systemPrompt = "You are an expert in analyzing COBOL dependencies...";
-
+    
     // Execute dependency analysis through Semantic Kernel
     var functionResult = await kernel.InvokePromptAsync(  // ← SK process function call
         fullPrompt,
         kernelArguments);
-
+    
     // Parse dependency relationships and generate Mermaid diagrams
 }
 
@@ -600,18 +561,17 @@ private async Task<string> GenerateMermaidDiagramAsync(DependencyMap dependencyM
 {
     // Build kernel for diagram generation
     var kernel = _kernelBuilder.Build();  // ← Creates SK instance
-
+    
     // Execute Mermaid generation through Semantic Kernel
     var functionResult = await kernel.InvokePromptAsync(  // ← SK process function call
         diagramPrompt,
         kernelArguments);
-
+    
     return functionResult.GetValue<string>();
 }
 ```
 
 **What this does:**
-
 - **Analyzes program relationships** using AI through SK
 - **Generates Mermaid diagrams** using AI through SK
 - **Maps copybook usage** and dependencies
@@ -622,34 +582,28 @@ private async Task<string> GenerateMermaidDiagramAsync(DependencyMap dependencyM
 ## 🔧 **Key Semantic Kernel Process Functions Used**
 
 ### **Primary SK Function:**
-
 ```csharp
 kernel.InvokePromptAsync(prompt, kernelArguments)
 ```
-
 - **Used in**: All 3 AI agents for every AI call
 - **Purpose**: Execute AI prompts through configured AI service
-- **Parameters**:
+- **Parameters**: 
   - `prompt` - The system + user prompt
   - `kernelArguments` - Execution settings (tokens, temperature, etc.)
 
 ### **Kernel Creation:**
-
 ```csharp
 var kernel = _kernelBuilder.Build()
 ```
-
 - **Used in**: Each agent method that needs AI
 - **Purpose**: Create kernel instance from shared configuration
 - **Result**: Ready-to-use kernel with AI service connection
 
 ### **Configuration Functions:**
-
 ```csharp
 kernelBuilder.AddAzureOpenAIChatCompletion(...)
 kernelBuilder.AddOpenAIChatCompletion(...)
 ```
-
 - **Used in**: Program.cs initialization
 - **Purpose**: Configure AI service connection
 - **Result**: Kernel builder ready for agent distribution
@@ -665,14 +619,13 @@ graph LR
     C --> D[kernel.InvokePromptAsync]
     D --> E[AI Service Call]
     E --> F[Structured Response]
-
+    
     style A fill:#e3f2fd
     style D fill:#f1f8e9
     style E fill:#fff3e0
 ```
 
 ## Work in prograss and good to know before you start
-
 - The project will create a Java-output folder will create a migration report with a summary of the generated files, dependencies analysis, metrics etc.
 - The Logs folder will have analysis, apiCalls ConversionsOutput and a full chat log of the conversion as markdown.
 - Depending on the Cobol file size you can always adjust the tokensize. GPT-4.1 has a limit for approx 32768 tokens, hence this specific setting. Ajust these accordingly for each agent.
@@ -681,39 +634,40 @@ graph LR
   - If you for example do not want to convert code to Java you can change it to only do .NET
   - If you for example only want to create documentation you can change the Java agent persona or create a new agent.
   - If you want it to focus on specific areas or ouput you change or add those into the agents persona directly.
-    - For example it needs to focus on DB2 migration to PostgreSQL
-    - For example you want to reflect the SQL queries in a desired way add those to the agent's.
-    - For example if you want the Java folder struckture to reflect Maven so it you can easily build your project
-    - For example you want to the output to be .NET focused in instead - change that Java Agent for this specifically
-    - (Experimental) For example you have another legacy code language you can use the same approach like with APL
-      - Replace cobol code with APL and remember to update the agents to focus on APL and not Cobol
-      - Update the Java agent or create a new agent to reflect the desired programming language output
+    -   For example it needs to focus on DB2 migration to PostgreSQL
+    -   For example you want to reflect the SQL queries in a desired way add those to the agent's.
+    -   For example if you want the Java folder struckture to reflect Maven so it you can easily build your project
+    -   For example you want to the output to be .NET focused in instead - change that Java Agent for this specifically
+    -   (Experimental) For example you have another legacy code language you can use the same approach like with APL
+        - Replace cobol code with APL and remember to update the agents to focus on APL and not Cobol
+        - Update the Java agent or create a new  agent to reflect the desired programming language output
 
-### ℹ️ Your desired outcome.
-
+### ℹ️ Your desired outcome. 
 > Please dicuss what the desires AI agents persona in order to reflect your desired outcome
+        
 
 ### Known issues
-
 Will be updated as we go.
-
 - Content filtering can stop calls to Azure OpenAI.
 - Make sure you do not increase your tokensize above the agents setting as it't already at it hightest limit.
 
 ## Project ideas
-
 ### Improvements
-
 - tbd
 - feel free to contribute with ideas and improvements
 
-## Disclaimer
 
+
+## Disclaimer
 ### Important
 
 This software is provided for demonstration purposes only. It is not intended to be relied upon for any purpose. The creators of this software make no representations or warranties of any kind, express or implied, about the completeness, accuracy, reliability, suitability or availability with respect to the software or the information, products, services, or related graphics contained in the software for any purpose. Any reliance you place on such information is therefore strictly at your own risk.
 
+
+
 **Summary:** The Semantic Kernel process functions are the **core engine** that powers every AI interaction in the migration tool, providing a consistent, observable, and manageable way to orchestrate complex AI workflows across multiple specialized agents! 🚀
+
+
 
 MIT License
 
