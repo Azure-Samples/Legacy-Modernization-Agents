@@ -9,6 +9,9 @@ This project is a collaboration between Microsoft's Global Black Belt team and [
 ## Call-to-Action
 We are looking for real COBOL code to further improve this framework. If you want to actively collaborate, please reach out to us by opening an issue in this repository. - Gustav Kaleta & Julia Kordick
 
+# Want to see the framework in action?
+Have a look at the talk Julia did at the WeAreDevelopers World Congress 2025: https://www.youtube.com/watch?v=62OI_y-KRlw
+
 ## Table of Contents
 - [Quick Start](#-quick-start)
   - [Prerequisites](#prerequisites)
