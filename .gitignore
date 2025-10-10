@@ -54,6 +54,7 @@ local.settings.json
 # Azure OpenAI Credentials and API Keys
 Config/ai-config.local.env
 Config/*.local.env
+Config/appsettings.json
 Config/appsettings.local.json
 Config/appsettings.secrets.json
 *.key
@@ -155,3 +156,7 @@ Temporary Items
 !docs/examples/*.md
 !examples/migration-report-sample.md
 !examples/dependency-diagram-sample.md
+
+# Database files (auto-created on first run)
+Data/*.db
+Data/*.db-*

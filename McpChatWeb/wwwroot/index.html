@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>COBOL Migration MCP Chat</title>
+  <link rel="stylesheet" href="styles.css">
+  <script type="text/javascript" src="https://unpkg.com/vis-network@9.1.2/standalone/umd/vis-network.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>COBOL Migration Insights</h1>
+    <p>Ask questions about your COBOL to Java Quarkus migration</p>
+  </header>
+
+    <main>
+    <section class="panel resources-panel">
+      <h2>MCP Resources</h2>
+      <button id="showAllRunsBtn" class="info-button">📊 View All Runs & Data Guide</button>
+      <div id="resources-list" class="resource-list"></div>
+    </section>
+
+    <section class="panel chat-panel">
+      <h2>Ask a Question</h2>
+      
+      <!-- Suggested Prompts -->
+      <div id="suggestions" class="suggestions">
+        <h3>💡 Try asking:</h3>
+        <div class="suggestion-chips">
+          <button class="suggestion-chip" data-prompt="What are the circular dependencies in this codebase?">🔄 Circular Dependencies</button>
+          <button class="suggestion-chip" data-prompt="Which files are most critical based on their connections?">⭐ Critical Files</button>
+          <button class="suggestion-chip" data-prompt="Show me the impact analysis for BDSMFJL.cbl">📊 Impact Analysis</button>
+          <button class="suggestion-chip" data-prompt="What copybooks are used most frequently?">📚 Copybook Usage</button>
+          <button class="suggestion-chip" data-prompt="Summarize the dependency structure">🗂️ Dependency Summary</button>
+          <button class="suggestion-chip" data-prompt="What are the main programs in this migration?">🎯 Main Programs</button>
+        </div>
+      </div>
+      
+      <form id="chat-form">
+        <label for="prompt">Prompt</label>
+        <textarea id="prompt" rows="5" placeholder="e.g., What are the circular dependencies in this codebase?"></textarea>
+        <button type="submit">Send</button>
+      </form>
+      
+      <!-- Enhanced multi-stage loading indicator -->
+      <div id="loading-indicator" class="loading-indicator" hidden>
+        <div class="loading-stages">
+          <div class="stage" id="stage-db">
+            <div class="stage-icon">
+              <div class="spinner-small"></div>
+            </div>
+            <div class="stage-info">
+              <div class="stage-title">Database Query</div>
+              <div class="stage-status">Fetching migration data...</div>
+            </div>
+          </div>
+          
+          <div class="stage-arrow">→</div>
+          
+          <div class="stage" id="stage-ai">
+            <div class="stage-icon">
+              <div class="spinner-small"></div>
+            </div>
+            <div class="stage-info">
+              <div class="stage-title">Azure OpenAI</div>
+              <div class="stage-status">Processing with gpt-5-mini...</div>
+            </div>
+          </div>
+          
+          <div class="stage-arrow">→</div>
+          
+          <div class="stage" id="stage-response">
+            <div class="stage-icon">
+              <div class="spinner-small"></div>
+            </div>
+            <div class="stage-info">
+              <div class="stage-title">Building Response</div>
+              <div class="stage-status">Formatting results...</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <article id="response" class="response" hidden>
+        <h3>Response</h3>
+        <pre id="response-body"></pre>
+      </article>
+    </section>
+
+    <section class="panel graph-panel">
+      <h2>Dependency Graph <span class="run-id-badge">| Run <span id="current-run-id">...</span></span></h2>
+      <div class="graph-toolbar">
+        <div class="graph-controls">
+          <label for="query-select">Query:</label>
+          <select id="query-select">
+            <option value="full">Full Dependency Graph</option>
+            <option value="circular">Circular Dependencies</option>
+            <option value="critical">Critical Files</option>
+            <option value="programs">Programs Only</option>
+            <option value="copybooks">Copybook Usage</option>
+          </select>
+          <label for="layout-select">Layout:</label>
+          <select id="layout-select">
+            <option value="force">Force Directed</option>
+            <option value="hierarchical">Hierarchical</option>
+          </select>
+        </div>
+        <div class="graph-buttons">
+          <button id="refresh-graph" type="button">⟳ Refresh</button>
+          <button id="fit-graph" type="button">⊡ Fit</button>
+          <button id="stabilize-graph" type="button">⚡ Stabilize</button>
+        </div>
+      </div>
+      <div id="graph-legend">
+        <div class="legend-item">
+          <span class="legend-color" style="background: #68bdf6"></span>
+          <span>Program (.cbl)</span>
+        </div>
+        <div class="legend-item">
+          <span class="legend-color" style="background: #f16667"></span>
+          <span>Copybook (.cpy)</span>
+        </div>
+        <div class="legend-item">
+          <span class="legend-color" style="background: #94d486"></span>
+          <span>Relationship</span>
+        </div>
+      </div>
+      <div id="dependency-graph"></div>
+      <div id="graph-info" class="graph-info"></div>
+      <div id="node-details" class="node-details" hidden>
+        <h3>Node Details</h3>
+        <button id="close-details" type="button">×</button>
+        <div id="details-content"></div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <p>&copy; 2025 COBOL Migration Portal | Powered by Model Context Protocol & Neo4j</p>
+  </footer>
+
+  <!-- All Runs & Data Guide Modal -->
+  <div id="allRunsModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>📊 All Migration Runs & Data Retrieval Guide</h2>
+        <span class="close">&times;</span>
+      </div>
+      <div class="modal-body">
+        <div class="tabs">
+          <button class="tab-button active" data-tab="runs">All Runs</button>
+          <button class="tab-button" data-tab="sqlite">SQLite Guide</button>
+          <button class="tab-button" data-tab="neo4j">Neo4j Guide</button>
+          <button class="tab-button" data-tab="api">API Guide</button>
+        </div>
+        
+        <div id="runsTab" class="tab-content active">
+          <h3>Available Migration Runs</h3>
+          <div id="runsList" class="runs-list"></div>
+        </div>
+        
+        <div id="sqliteTab" class="tab-content">
+          <h3>📊 SQLite Database Access</h3>
+          <div class="info-box">
+            <p><strong>Location:</strong> <code>Data/migration.db</code></p>
+            <p><strong>Purpose:</strong> Stores migration metadata, COBOL files, analyses, Java code</p>
+          </div>
+          
+          <h4>Common Queries</h4>
+          <div class="query-box">
+            <pre><code>-- List all migration runs
+SELECT id, status, started_at, completed_at, 
+       total_files, successful_conversions 
+FROM migration_runs 
+ORDER BY id DESC;
+
+-- Get files for specific run
+SELECT file_name, file_type, file_path 
+FROM cobol_files 
+WHERE migration_run_id = 43;
+
+-- Get analyses for specific run
+SELECT cobol_file_id, analysis_json 
+FROM analyses 
+WHERE migration_run_id = 43;
+
+-- Get generated Java for specific run
+SELECT file_name, java_code, target_path 
+FROM java_files 
+WHERE migration_run_id = 43;</code></pre>
+          </div>
+          
+          <h4>Access Tools</h4>
+          <ul>
+            <li><strong>sqlite3 CLI:</strong> <code>sqlite3 Data/migration.db</code></li>
+            <li><strong>DB Browser for SQLite:</strong> <a href="https://sqlitebrowser.org/" target="_blank">Download</a></li>
+            <li><strong>VS Code Extension:</strong> Search for "SQLite" by alexcvzz</li>
+          </ul>
+        </div>
+        
+        <div id="neo4jTab" class="tab-content">
+          <h3>🔗 Neo4j Graph Database Access</h3>
+          <div class="info-box">
+            <p><strong>Location:</strong> <code>bolt://localhost:7687</code></p>
+            <p><strong>Browser:</strong> <a href="http://localhost:7474" target="_blank">http://localhost:7474</a></p>
+            <p><strong>Credentials:</strong> neo4j / YOUR_NEO4J_PASSWORD</p>
+            <p><strong>Purpose:</strong> Stores dependency graphs and file relationships</p>
+          </div>
+          
+          <h4>Common Cypher Queries</h4>
+          <div class="query-box">
+            <pre><code>// List all runs
+MATCH (r:Run) 
+RETURN r.runId, r.status, r.totalFiles, r.startedAt 
+ORDER BY r.runId DESC;
+
+// Get all files for specific run
+MATCH (r:Run {runId: 43})-[:CONTAINS]->(f:CobolFile) 
+RETURN f.fileName, f.fileType;
+
+// Get dependencies for specific run
+MATCH (r:Run {runId: 43})-[:CONTAINS]->(source:CobolFile)
+      -[d:DEPENDS_ON]->(target:CobolFile) 
+RETURN source.fileName, target.fileName, d.dependencyType;
+
+// Find circular dependencies
+MATCH (r:Run {runId: 43})-[:CONTAINS]->(f:CobolFile) 
+MATCH path = (f)-[:DEPENDS_ON*2..]->(f) 
+RETURN [node in nodes(path) | node.fileName] as cycle;
+
+// Get critical files (high fan-in)
+MATCH (r:Run {runId: 43})-[:CONTAINS]->(f:CobolFile) 
+OPTIONAL MATCH (f)<-[d:DEPENDS_ON]-() 
+WITH f, count(d) as dependents 
+WHERE dependents > 0 
+RETURN f.fileName, dependents 
+ORDER BY dependents DESC;</code></pre>
+          </div>
+          
+          <h4>Access Tools</h4>
+          <ul>
+            <li><strong>Neo4j Browser:</strong> <a href="http://localhost:7474" target="_blank">Open in Browser</a></li>
+            <li><strong>Cypher Shell:</strong> <code>cypher-shell -a bolt://localhost:7687 -u neo4j -p YOUR_NEO4J_PASSWORD</code></li>
+            <li><strong>Neo4j Desktop:</strong> <a href="https://neo4j.com/download/" target="_blank">Download</a></li>
+          </ul>
+        </div>
+        
+        <div id="apiTab" class="tab-content">
+          <h3>🌐 MCP API Access</h3>
+          <div class="info-box">
+            <p><strong>Base URL:</strong> <code>http://localhost:5250</code></p>
+            <p><strong>Purpose:</strong> REST API for accessing migration data via MCP</p>
+          </div>
+          
+          <h4>Available Endpoints</h4>
+          <div class="query-box">
+            <pre><code># Get all run IDs
+curl http://localhost:5250/api/runs/all
+
+# Get dependencies for specific run
+curl http://localhost:5250/api/runs/43/dependencies | jq '.'
+
+# List all MCP resources
+curl http://localhost:5250/api/resources
+
+# Ask questions via chat
+curl -X POST http://localhost:5250/api/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"Show me all dependencies for run 43"}'
+
+# Get current run info
+curl http://localhost:5250/api/runinfo
+
+# Get data retrieval guide (this info as JSON)
+curl http://localhost:5250/api/data-retrieval-guide</code></pre>
+          </div>
+          
+          <h4>MCP Resource URIs</h4>
+          <ul>
+            <li><code>insights://runs/{runId}/summary</code> - Migration run overview</li>
+            <li><code>insights://runs/{runId}/files</code> - All COBOL files list</li>
+            <li><code>insights://runs/{runId}/graph</code> - Full dependency graph</li>
+            <li><code>insights://runs/{runId}/circular-dependencies</code> - Circular deps</li>
+            <li><code>insights://runs/{runId}/critical-files</code> - High-impact files</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="graph.js"></script>
+  <script src="main.js"></script>
+  <script src="runs-viewer.js"></script>
+</body>
+</html>

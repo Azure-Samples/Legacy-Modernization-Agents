@@ -1,7 +1,23 @@
 {
-	"name": "COBOL to Quarkus Migration",
+	"name": "COBOL to Quarkus Migration with Neo4j",
 	"dockerFile": "Dockerfile",
-	"forwardPorts": [],
+	"forwardPorts": [5250, 7474, 7687],
+	"portsAttributes": {
+		"5250": {
+			"label": "Migration Portal (McpChatWeb)",
+			"onAutoForward": "openBrowser",
+			"protocol": "http"
+		},
+		"7474": {
+			"label": "Neo4j Browser",
+			"onAutoForward": "notify",
+			"protocol": "http"
+		},
+		"7687": {
+			"label": "Neo4j Bolt Protocol",
+			"onAutoForward": "silent"
+		}
+	},
 	"customizations": {
 		"vscode": {
 			"extensions": [
@@ -12,21 +28,57 @@
 				"redhat.vscode-quarkus",
 				"ms-semantic-kernel.semantic-kernel",
 				"github.copilot",
-				"github.copilot-chat"
+				"github.copilot-chat",
+				"ms-azuretools.vscode-docker",
+				"neo4j.neo4j-vscode",
+				"alexcvzz.vscode-sqlite"
 			],
 			"settings": {
 				"editor.formatOnSave": true,
+				"editor.defaultFormatter": "ms-dotnettools.csharp",
 				"omnisharp.enableRoslynAnalyzers": true,
-				"omnisharp.enableEditorConfigSupport": true
+				"omnisharp.enableEditorConfigSupport": true,
+				"dotnet.server.useOmnisharp": false,
+				"files.watcherExclude": {
+					"**/Data/*.db": true,
+					"**/Data/*.db-shm": true,
+					"**/Data/*.db-wal": true,
+					"**/neo4j_data/**": true,
+					"**/bin/**": true,
+					"**/obj/**": true
+				},
+				"files.exclude": {
+					"**/.git": true,
+					"**/.DS_Store": true,
+					"**/bin": true,
+					"**/obj": true
+				}
 			}
 		}
 	},
 	"remoteUser": "vscode",
 	"features": {
 		"ghcr.io/devcontainers/features/dotnet:1": {
-			"version": "8.0"
+			"version": "9.0",
+			"installUsingApt": true
 		},
-		"ghcr.io/devcontainers/features/azure-cli:1": {}
+		"ghcr.io/devcontainers/features/docker-in-docker:2": {
+			"version": "latest",
+			"dockerDashComposeVersion": "v2"
+		},
+		"ghcr.io/devcontainers/features/azure-cli:1": {},
+		"ghcr.io/devcontainers/features/node:1": {
+			"version": "lts"
+		}
 	},
-	"postCreateCommand": "dotnet restore && dotnet build"
+	"postCreateCommand": "bash -c 'dotnet restore && dotnet build && docker-compose up -d neo4j && echo \"✅ Dev container ready! Run ./demo.sh to start the portal.\"'",
+	"postStartCommand": "docker start cobol-migration-neo4j 2>/dev/null || true",
+	"mounts": [
+		"source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
+	],
+	"runArgs": [
+		"--name=cobol-migration-devcontainer"
+	],
+	"workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
+	"workspaceFolder": "/workspace"
 }

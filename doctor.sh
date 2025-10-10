@@ -13,8 +13,53 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m' # No Color
 
-# Get script directory
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Get repository root (directory containing this script)
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Determine the preferred dotnet CLI (favor .NET 9 installations when available)
+detect_dotnet_cli() {
+    local default_cli="dotnet"
+    local cli_candidate="$default_cli"
+
+    # Check if default dotnet has .NET 9 runtime
+    if command -v "$default_cli" >/dev/null 2>&1; then
+        if "$default_cli" --list-runtimes 2>/dev/null | grep -q "Microsoft.NETCore.App 9."; then
+            echo "$default_cli"
+            return
+        fi
+    fi
+
+    # Fallback: Check Homebrew .NET 9 location
+    local homebrew_dotnet9="/opt/homebrew/opt/dotnet/libexec/dotnet"
+    if [ -x "$homebrew_dotnet9" ]; then
+        export DOTNET_ROOT="/opt/homebrew/opt/dotnet/libexec"
+        export PATH="$DOTNET_ROOT:$PATH"
+        echo "$homebrew_dotnet9"
+        return
+    fi
+
+    # Use whatever dotnet is available
+    echo "$cli_candidate"
+}
+
+DOTNET_CMD="$(detect_dotnet_cli)"
+detect_python() {
+    if command -v python3 >/dev/null 2>&1; then
+        echo python3
+        return
+    fi
+
+    if command -v python >/dev/null 2>&1; then
+        echo python
+        return
+    fi
+
+    echo ""
+}
+
+PYTHON_CMD="$(detect_python)"
+DEFAULT_MCP_HOST="localhost"
+DEFAULT_MCP_PORT=5028
 
 # Function to show usage
 show_usage() {
@@ -42,10 +87,169 @@ show_usage() {
     echo
 }
 
+# Resolve the migration database path (absolute) from config or environment
+get_migration_db_path() {
+    local base_dir="$REPO_ROOT"
+
+    if [[ -n "$MIGRATION_DB_PATH" ]]; then
+        if [[ -z "$PYTHON_CMD" ]]; then
+            echo "$MIGRATION_DB_PATH"
+            return
+        fi
+
+        PY_BASE="$base_dir" PY_DB_PATH="$MIGRATION_DB_PATH" "$PYTHON_CMD" - <<'PY'
+import os
+base = os.environ["PY_BASE"]
+path = os.environ["PY_DB_PATH"]
+if not os.path.isabs(path):
+    path = os.path.abspath(os.path.join(base, path))
+else:
+    path = os.path.abspath(path)
+print(path)
+PY
+        return
+    fi
+
+    if [[ -z "$PYTHON_CMD" ]]; then
+        if [[ -f "$base_dir/Data/migration.db" ]]; then
+            echo "$base_dir/Data/migration.db"
+        else
+            echo ""
+        fi
+        return
+    fi
+
+    PY_BASE="$base_dir" "$PYTHON_CMD" - <<'PY'
+import json
+import os
+
+base = os.environ["PY_BASE"]
+config_path = os.path.join(base, "Config", "appsettings.json")
+fallback = "Data/migration.db"
+try:
+    with open(config_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+        path = data.get("ApplicationSettings", {}).get("MigrationDatabasePath") or fallback
+except FileNotFoundError:
+    path = fallback
+
+if not os.path.isabs(path):
+    path = os.path.abspath(os.path.join(base, path))
+else:
+    path = os.path.abspath(path)
+
+print(path)
+PY
+}
+
+# Fetch the latest migration run summary from SQLite (if available)
+get_latest_run_summary() {
+    local db_path="$1"
+    if [[ -z "$db_path" || ! -f "$db_path" ]]; then
+        return 1
+    fi
+
+    if [[ -z "$PYTHON_CMD" ]]; then
+        return 1
+    fi
+
+    PY_DB_PATH="$db_path" "$PYTHON_CMD" - <<'PY'
+import os
+import sqlite3
+
+db_path = os.environ["PY_DB_PATH"]
+if not os.path.exists(db_path):
+    raise SystemExit
+
+query = """
+SELECT id, status, coalesce(completed_at, updated_at, created_at)
+FROM migration_runs
+ORDER BY created_at DESC
+LIMIT 1
+"""
+
+with sqlite3.connect(db_path) as conn:
+    row = conn.execute(query).fetchone()
+
+if row:
+    run_id, status, completed_at = row
+    completed_at = completed_at or ""
+    print(f"{run_id}|{status}|{completed_at}")
+PY
+}
+
+open_url_in_browser() {
+    local url="$1"
+    local auto_open="${MCP_AUTO_OPEN:-1}"
+    if [[ "$auto_open" != "1" ]]; then
+        return
+    fi
+
+    case "$(uname -s)" in
+        Darwin)
+            if command -v open >/dev/null 2>&1; then
+                open "$url" >/dev/null 2>&1 &
+            fi
+            ;;
+        Linux)
+            if command -v xdg-open >/dev/null 2>&1; then
+                xdg-open "$url" >/dev/null 2>&1 &
+            fi
+            ;;
+        CYGWIN*|MINGW*|MSYS*|Windows_NT)
+            if command -v powershell.exe >/dev/null 2>&1; then
+                powershell.exe -NoProfile -Command "Start-Process '$url'" >/dev/null 2>&1 &
+            elif command -v cmd.exe >/dev/null 2>&1; then
+                cmd.exe /c start "" "$url"
+            fi
+            ;;
+    esac
+}
+
+launch_mcp_web_ui() {
+    local db_path="$1"
+    local host="${MCP_WEB_HOST:-$DEFAULT_MCP_HOST}"
+    local port="${MCP_WEB_PORT:-$DEFAULT_MCP_PORT}"
+    local url="http://$host:$port"
+
+    echo ""
+    echo -e "${BLUE}🌐 Launching MCP Web UI...${NC}"
+    echo "================================"
+    echo -e "Using database: ${BOLD}$db_path${NC}"
+
+    if summary=$(get_latest_run_summary "$db_path" 2>/dev/null); then
+        IFS='|' read -r run_id status completed_at <<<"$summary"
+        echo -e "Latest migration run: ${GREEN}#${run_id}${NC} (${status})"
+        if [[ -n "$completed_at" ]]; then
+            echo -e "Completed at: $completed_at"
+        fi
+        echo ""
+    fi
+
+    echo -e "${BLUE}➡️  Starting web server at${NC} ${BOLD}$url${NC}"
+    
+    # Check if port is already in use and clean up
+    if lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; then
+        echo -e "${YELLOW}⚠️  Port $port is already in use. Cleaning up...${NC}"
+        local pid=$(lsof -ti:$port)
+        if [[ -n "$pid" ]]; then
+            kill -9 $pid 2>/dev/null && echo -e "${GREEN}✅ Killed existing process on port $port${NC}" || true
+            sleep 1
+        fi
+    fi
+    
+    echo -e "${BLUE}➡️  Press Ctrl+C to stop the UI and exit.${NC}"
+
+    open_url_in_browser "$url"
+
+    export MIGRATION_DB_PATH="$db_path"
+    ASPNETCORE_URLS="$url" ASPNETCORE_HTTP_PORTS="$port" "$DOTNET_CMD" run --project "$REPO_ROOT/McpChatWeb"
+}
+
 # Function to load configuration
 load_configuration() {
-    if [[ -f "$SCRIPT_DIR/Config/load-config.sh" ]]; then
-        source "$SCRIPT_DIR/Config/load-config.sh"
+    if [[ -f "$REPO_ROOT/Config/load-config.sh" ]]; then
+        source "$REPO_ROOT/Config/load-config.sh"
         return $?
     else
         echo -e "${RED}❌ Configuration loader not found: Config/load-config.sh${NC}"
@@ -66,7 +270,7 @@ run_doctor() {
     config_files_ok=true
 
     # Check template configuration
-    if [[ -f "$SCRIPT_DIR/Config/ai-config.env" ]]; then
+    if [[ -f "$REPO_ROOT/Config/ai-config.env" ]]; then
         echo -e "${GREEN}✅ Template configuration found: Config/ai-config.env${NC}"
     else
         echo -e "${RED}❌ Missing template configuration: Config/ai-config.env${NC}"
@@ -74,7 +278,7 @@ run_doctor() {
     fi
 
     # Check local configuration
-    if [[ -f "$SCRIPT_DIR/Config/ai-config.local.env" ]]; then
+    if [[ -f "$REPO_ROOT/Config/ai-config.local.env" ]]; then
         echo -e "${GREEN}✅ Local configuration found: Config/ai-config.local.env${NC}"
         local_config_exists=true
     else
@@ -83,7 +287,7 @@ run_doctor() {
     fi
 
     # Check configuration loader
-    if [[ -f "$SCRIPT_DIR/Config/load-config.sh" ]]; then
+    if [[ -f "$REPO_ROOT/Config/load-config.sh" ]]; then
         echo -e "${GREEN}✅ Configuration loader found: Config/load-config.sh${NC}"
     else
         echo -e "${RED}❌ Missing configuration loader: Config/load-config.sh${NC}"
@@ -91,7 +295,7 @@ run_doctor() {
     fi
 
     # Check appsettings.json
-    if [[ -f "$SCRIPT_DIR/Config/appsettings.json" ]]; then
+    if [[ -f "$REPO_ROOT/Config/appsettings.json" ]]; then
         echo -e "${GREEN}✅ Application settings found: Config/appsettings.json${NC}"
     else
         echo -e "${RED}❌ Missing application settings: Config/appsettings.json${NC}"
@@ -109,8 +313,8 @@ run_doctor() {
         read -p "Would you like me to create Config/ai-config.local.env from the template? (y/n): " create_local
         
         if [[ "$create_local" =~ ^[Yy]$ ]]; then
-            if [[ -f "$SCRIPT_DIR/Config/ai-config.local.env.template" ]]; then
-                cp "$SCRIPT_DIR/Config/ai-config.local.env.template" "$SCRIPT_DIR/Config/ai-config.local.env"
+            if [[ -f "$REPO_ROOT/Config/ai-config.local.env.template" ]]; then
+                cp "$REPO_ROOT/Config/ai-config.local.env.template" "$REPO_ROOT/Config/ai-config.local.env"
                 echo -e "${GREEN}✅ Created Config/ai-config.local.env from template${NC}"
                 echo -e "${YELLOW}⚠️  You must edit this file with your actual Azure OpenAI credentials before running the migration tool.${NC}"
                 local_config_exists=true
@@ -209,7 +413,7 @@ run_setup() {
     echo ""
 
     # Check if local config already exists
-    LOCAL_CONFIG="$SCRIPT_DIR/Config/ai-config.local.env"
+    LOCAL_CONFIG="$REPO_ROOT/Config/ai-config.local.env"
     if [ -f "$LOCAL_CONFIG" ]; then
         echo -e "${YELLOW}⚠️  Local configuration already exists:${NC} $LOCAL_CONFIG"
         echo ""
@@ -223,7 +427,7 @@ run_setup() {
 
     # Create local config from template
     echo -e "${BLUE}📁 Creating local configuration file...${NC}"
-    TEMPLATE_CONFIG="$SCRIPT_DIR/Config/ai-config.local.env.template"
+    TEMPLATE_CONFIG="$REPO_ROOT/Config/ai-config.local.env.template"
 
     if [ ! -f "$TEMPLATE_CONFIG" ]; then
         echo -e "${RED}❌ Template configuration file not found: $TEMPLATE_CONFIG${NC}"
@@ -292,6 +496,8 @@ run_test() {
     echo -e "${BOLD}${BLUE}COBOL to Java Quarkus Migration Tool - Test Suite${NC}"
     echo "=================================================="
 
+    echo -e "${BLUE}Using dotnet CLI:${NC} $DOTNET_CMD"
+
     # Load configuration
     echo "🔧 Loading AI configuration..."
     if ! load_configuration; then
@@ -323,16 +529,16 @@ run_test() {
     # Check .NET version
     echo ""
     echo "Checking .NET version..."
-    dotnet_version=$(dotnet --version 2>/dev/null)
+    dotnet_version=$("$DOTNET_CMD" --version 2>/dev/null)
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}✅ .NET version: $dotnet_version${NC}"
         
-        # Check if it's .NET 8.0 or higher
+        # Check if it's .NET 9.0 or higher
         major_version=$(echo $dotnet_version | cut -d. -f1)
-        if [ "$major_version" -ge 8 ]; then
-            echo -e "${GREEN}✅ .NET 8.0+ requirement satisfied${NC}"
+        if [ "$major_version" -ge 9 ]; then
+            echo -e "${GREEN}✅ .NET 9.0+ requirement satisfied${NC}"
         else
-            echo -e "${YELLOW}⚠️  Warning: .NET 8.0+ recommended (current: $dotnet_version)${NC}"
+            echo -e "${YELLOW}⚠️  Warning: .NET 9.0+ recommended (current: $dotnet_version)${NC}"
         fi
     else
         echo -e "${RED}❌ .NET is not installed or not in PATH${NC}"
@@ -342,8 +548,8 @@ run_test() {
     # Check Semantic Kernel dependencies
     echo ""
     echo "Checking Semantic Kernel dependencies..."
-    if dotnet list package | grep -q "Microsoft.SemanticKernel"; then
-        sk_version=$(dotnet list package | grep "Microsoft.SemanticKernel" | awk '{print $3}' | head -1)
+    if "$DOTNET_CMD" list package | grep -q "Microsoft.SemanticKernel"; then
+        sk_version=$("$DOTNET_CMD" list package | grep "Microsoft.SemanticKernel" | awk '{print $3}' | head -1)
         echo -e "${GREEN}✅ Semantic Kernel dependencies resolved (version: $sk_version)${NC}"
     else
         echo -e "${YELLOW}⚠️  Semantic Kernel packages not found, checking project file...${NC}"
@@ -353,7 +559,7 @@ run_test() {
     echo ""
     echo "Building project and restoring packages..."
     echo "="
-    if timeout 30s dotnet build --no-restore --verbosity quiet 2>/dev/null || dotnet build --verbosity minimal; then
+    if timeout 30s "$DOTNET_CMD" build --no-restore --verbosity quiet 2>/dev/null || "$DOTNET_CMD" build --verbosity minimal; then
         echo -e "${GREEN}✅ Project builds successfully${NC}"
     else
         echo -e "${RED}❌ Project build failed${NC}"
@@ -364,7 +570,7 @@ run_test() {
     # Check source folders
     echo ""
     echo "Checking source folders..."
-    cobol_files=$(find "$SCRIPT_DIR/cobol-source" -name "*.cbl" -o -name "*.cpy" 2>/dev/null | wc -l)
+    cobol_files=$(find "$REPO_ROOT/cobol-source" -name "*.cbl" -o -name "*.cpy" 2>/dev/null | wc -l)
     if [ "$cobol_files" -gt 0 ]; then
         echo -e "${GREEN}✅ Found $(printf "%8d" $cobol_files) COBOL files in cobol-source directory${NC}"
     else
@@ -375,8 +581,8 @@ run_test() {
     # Check output directories
     echo ""
     echo "Checking output directories..."
-    if [ -d "$SCRIPT_DIR/java-output" ]; then
-        java_files=$(find "$SCRIPT_DIR/java-output" -name "*.java" 2>/dev/null | wc -l)
+    if [ -d "$REPO_ROOT/java-output" ]; then
+        java_files=$(find "$REPO_ROOT/java-output" -name "*.java" 2>/dev/null | wc -l)
         if [ "$java_files" -gt 0 ]; then
             echo -e "${GREEN}✅ Found previous Java output ($java_files files)${NC}"
         else
@@ -389,11 +595,11 @@ run_test() {
     # Check logging infrastructure
     echo ""
     echo "Checking logging infrastructure..."
-    if [ -d "$SCRIPT_DIR/Logs" ]; then
-        log_files=$(find "$SCRIPT_DIR/Logs" -name "*.log" 2>/dev/null | wc -l)
+    if [ -d "$REPO_ROOT/Logs" ]; then
+        log_files=$(find "$REPO_ROOT/Logs" -name "*.log" 2>/dev/null | wc -l)
         echo -e "${GREEN}✅ Log directory exists with $(printf "%8d" $log_files) log files${NC}"
     else
-        mkdir -p "$SCRIPT_DIR/Logs"
+    mkdir -p "$REPO_ROOT/Logs"
         echo -e "${GREEN}✅ Created Logs directory${NC}"
     fi
 
@@ -418,6 +624,8 @@ run_migration() {
     echo -e "${BLUE}🚀 Starting COBOL to Java Quarkus Migration...${NC}"
     echo "=============================================="
 
+    echo -e "${BLUE}Using dotnet CLI:${NC} $DOTNET_CMD"
+
     # Load configuration
     echo "🔧 Loading AI configuration..."
     if ! load_configuration; then
@@ -436,13 +644,38 @@ run_migration() {
     echo "=============================================="
 
     # Run the application with updated folder structure
-    dotnet run -- --cobol-source ./cobol-source --java-output ./java-output
+    "$DOTNET_CMD" run -- --cobol-source ./cobol-source --java-output ./java-output
+    local migration_exit=$?
+
+    if [[ $migration_exit -ne 0 ]]; then
+        echo ""
+        echo -e "${RED}❌ Migration process failed (exit code $migration_exit). Skipping MCP web UI launch.${NC}"
+        return $migration_exit
+    fi
+
+    local db_path
+    if ! db_path="$(get_migration_db_path)" || [[ -z "$db_path" ]]; then
+        echo ""
+        echo -e "${YELLOW}⚠️  Could not resolve migration database path. MCP web UI will not be started automatically.${NC}"
+        return 0
+    fi
+
+    if [[ "${MCP_AUTO_LAUNCH:-1}" != "1" ]]; then
+        echo ""
+        echo -e "${BLUE}ℹ️  MCP web UI launch skipped (MCP_AUTO_LAUNCH set to ${MCP_AUTO_LAUNCH}).${NC}"
+    echo -e "Use ${BOLD}MIGRATION_DB_PATH=$db_path ASPNETCORE_URLS=http://$DEFAULT_MCP_HOST:$DEFAULT_MCP_PORT $DOTNET_CMD run --project \"$REPO_ROOT/McpChatWeb\"${NC} to start manually."
+        return 0
+    fi
+
+    launch_mcp_web_ui "$db_path"
 }
 
 # Function to resume migration
 run_resume() {
     echo -e "${BLUE}🔄 Resuming COBOL to Java Migration...${NC}"
     echo "======================================"
+
+    echo -e "${BLUE}Using dotnet CLI:${NC} $DOTNET_CMD"
 
     # Load configuration
     if ! load_configuration || ! load_ai_config; then
@@ -454,7 +687,7 @@ run_resume() {
     echo "Checking for resumable migration state..."
     
     # Check for existing partial results
-    if [ -d "$SCRIPT_DIR/java-output" ] && [ "$(ls -A $SCRIPT_DIR/java-output 2>/dev/null)" ]; then
+    if [ -d "$REPO_ROOT/java-output" ] && [ "$(ls -A $REPO_ROOT/java-output 2>/dev/null)" ]; then
         echo -e "${GREEN}✅ Found existing migration output${NC}"
         echo "Resuming from last position..."
     else
@@ -463,7 +696,7 @@ run_resume() {
     fi
 
     # Run with resume logic
-    dotnet run -- --cobol-source ./cobol-source --java-output ./java-output --resume
+    "$DOTNET_CMD" run -- --cobol-source ./cobol-source --java-output ./java-output --resume
 }
 
 # Function to monitor migration
@@ -471,7 +704,7 @@ run_monitor() {
     echo -e "${BLUE}📊 Migration Progress Monitor${NC}"
     echo "============================"
 
-    if [ ! -d "$SCRIPT_DIR/Logs" ]; then
+    if [ ! -d "$REPO_ROOT/Logs" ]; then
         echo -e "${YELLOW}⚠️  No logs directory found${NC}"
         return 1
     fi
@@ -481,13 +714,15 @@ run_monitor() {
     echo ""
 
     # Monitor log files for progress
-    tail -f "$SCRIPT_DIR/Logs"/*.log 2>/dev/null || echo "No active log files found"
+    tail -f "$REPO_ROOT/Logs"/*.log 2>/dev/null || echo "No active log files found"
 }
 
 # Function to test chat logging
 run_chat_test() {
     echo -e "${BLUE}💬 Testing Chat Logging Functionality${NC}"
     echo "====================================="
+
+    echo -e "${BLUE}Using dotnet CLI:${NC} $DOTNET_CMD"
 
     # Load configuration
     if ! load_configuration || ! load_ai_config; then
@@ -498,7 +733,7 @@ run_chat_test() {
     echo "Testing chat logging system..."
     
     # Run a simple test
-    dotnet run -- --test-chat-logging
+    "$DOTNET_CMD" run -- --test-chat-logging
 }
 
 # Function to validate system
@@ -526,7 +761,7 @@ run_validate() {
     )
 
     for file in "${required_files[@]}"; do
-        if [ -f "$SCRIPT_DIR/$file" ]; then
+    if [ -f "$REPO_ROOT/$file" ]; then
             echo -e "${GREEN}✅ $file${NC}"
         else
             echo -e "${RED}❌ Missing: $file${NC}"
@@ -536,11 +771,11 @@ run_validate() {
 
     # Check directories
     for dir in "cobol-source" "java-output"; do
-        if [ -d "$SCRIPT_DIR/$dir" ]; then
+    if [ -d "$REPO_ROOT/$dir" ]; then
             echo -e "${GREEN}✅ Directory: $dir${NC}"
         else
             echo -e "${YELLOW}⚠️  Creating directory: $dir${NC}"
-            mkdir -p "$SCRIPT_DIR/$dir"
+            mkdir -p "$REPO_ROOT/$dir"
         fi
     done
 
@@ -557,6 +792,8 @@ run_validate() {
 run_conversation() {
     echo -e "${BLUE}💭 Interactive Conversation Mode${NC}"
     echo "================================"
+
+    echo -e "${BLUE}Using dotnet CLI:${NC} $DOTNET_CMD"
     
     # Load configuration
     if ! load_configuration || ! load_ai_config; then
@@ -568,13 +805,13 @@ run_conversation() {
     echo "Type 'exit' to quit"
     echo ""
 
-    dotnet run -- --interactive
+    "$DOTNET_CMD" run -- --interactive
 }
 
 # Main command routing
 main() {
     # Create required directories if they don't exist
-    mkdir -p "$SCRIPT_DIR/cobol-source" "$SCRIPT_DIR/java-output" "$SCRIPT_DIR/Logs"
+    mkdir -p "$REPO_ROOT/cobol-source" "$REPO_ROOT/java-output" "$REPO_ROOT/Logs"
 
     case "${1:-doctor}" in
         "setup")

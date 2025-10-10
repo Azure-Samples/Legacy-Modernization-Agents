@@ -2,10 +2,17 @@ using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using Microsoft.SemanticKernel.Connectors.OpenAI;
+using Microsoft.SemanticKernel.Http;
 using CobolToQuarkusMigration.Agents.Interfaces;
 using CobolToQuarkusMigration.Models;
 using CobolToQuarkusMigration.Helpers;
+using System.ClientModel;
 using System.Diagnostics;
+using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Net.Sockets;
+using System.Reflection;
 
 namespace CobolToQuarkusMigration.Agents;
 
@@ -97,10 +104,12 @@ Provide a detailed, structured analysis as described in your instructions.
             // Create execution settings
             var executionSettings = new OpenAIPromptExecutionSettings
             {
-                MaxTokens = 32768, // Setting max limit within model
-                Temperature = 0.1,
-                TopP = 0.5
+                // gpt-5-mini only supports default temperature (1) and topP (1)
                 // Model ID/deployment name is handled at the kernel level
+                ExtensionData = new Dictionary<string, object>
+                {
+                    ["max_completion_tokens"] = 32768  // gpt-5-mini uses max_completion_tokens
+                }
             };
             
             // Create the full prompt including system and user message
@@ -143,6 +152,23 @@ Provide a detailed, structured analysis as described in your instructions.
             
             return analysis;
         }
+        catch (Exception ex) when (ShouldFallback(ex))
+        {
+            stopwatch.Stop();
+
+            if (apiCallId > 0)
+            {
+                _enhancedLogger?.LogApiCallError(apiCallId, ex.Message);
+            }
+
+            var reason = GetFallbackReason(ex);
+            var fallback = CreateFallbackAnalysis(cobolFile, reason);
+            _enhancedLogger?.LogBehindTheScenes("WARNING", "COBOL_ANALYSIS_FALLBACK",
+                $"Skipping AI analysis for {cobolFile.FileName}: {reason}", ex.GetType().Name);
+            _logger.LogWarning(ex, "Skipping AI analysis for {FileName}. Using fallback analysis. Reason: {Reason}", cobolFile.FileName, reason);
+
+            return fallback;
+        }
         catch (Exception ex)
         {
             stopwatch.Stop();
@@ -181,5 +207,112 @@ Provide a detailed, structured analysis as described in your instructions.
         _logger.LogInformation("Completed analysis of {Count} COBOL files", cobolFiles.Count);
         
         return analyses;
+    }
+
+    private static CobolAnalysis CreateFallbackAnalysis(CobolFile cobolFile, string reason)
+    {
+        var message = $"AI analysis unavailable for {cobolFile.FileName}: {reason}";
+
+        return new CobolAnalysis
+        {
+            FileName = cobolFile.FileName,
+            FilePath = cobolFile.FilePath,
+            ProgramDescription = $"Analysis skipped because the AI service was unavailable. Reason: {reason}",
+            RawAnalysisData = message,
+            Paragraphs =
+            {
+                new CobolParagraph
+                {
+                    Name = "FALLBACK",
+                    Description = "AI analysis unavailable",
+                    Logic = message,
+                    VariablesUsed = new List<string>(),
+                    ParagraphsCalled = new List<string>()
+                }
+            }
+        };
+    }
+
+    private static bool IsUnauthorizedException(Exception exception)
+    {
+        var statusCode = ExtractStatusCode(exception);
+        return statusCode is 401 or 403;
+    }
+
+    private static bool ShouldFallback(Exception exception)
+    {
+        return IsUnauthorizedException(exception) || IsNetworkException(exception);
+    }
+
+    private static bool IsNetworkException(Exception exception)
+    {
+        switch (exception)
+        {
+            case HttpRequestException:
+            case SocketException:
+                return true;
+            case HttpOperationException http when http.InnerException != null:
+                return IsNetworkException(http.InnerException);
+            case ClientResultException client when client.InnerException != null:
+                return IsNetworkException(client.InnerException);
+            case AggregateException aggregate:
+                return aggregate.InnerExceptions.Any(IsNetworkException);
+            default:
+                return exception.InnerException != null && IsNetworkException(exception.InnerException);
+        }
+    }
+
+    private static string GetFallbackReason(Exception exception)
+    {
+        var innermost = exception;
+        while (innermost.InnerException != null)
+        {
+            innermost = innermost.InnerException;
+        }
+
+        var message = innermost.Message;
+        return string.IsNullOrWhiteSpace(message)
+            ? exception.Message
+            : message.Replace('\r', ' ').Replace('\n', ' ').Trim();
+    }
+
+    private static int? ExtractStatusCode(Exception exception)
+    {
+        switch (exception)
+        {
+            case HttpOperationException httpException when httpException.StatusCode.HasValue:
+                return (int)httpException.StatusCode.Value;
+            case ClientResultException clientException:
+                return clientException.Status;
+            case AggregateException aggregateException:
+                foreach (var inner in aggregateException.InnerExceptions)
+                {
+                    var aggregateStatus = ExtractStatusCode(inner);
+                    if (aggregateStatus.HasValue)
+                    {
+                        return aggregateStatus;
+                    }
+                }
+                break;
+        }
+
+        var statusCodeProperty = exception.GetType().GetRuntimeProperty("StatusCode");
+        if (statusCodeProperty?.GetValue(exception) is HttpStatusCode httpStatus)
+        {
+            return (int)httpStatus;
+        }
+
+        if (statusCodeProperty?.GetValue(exception) is int statusInt)
+        {
+            return statusInt;
+        }
+
+        var statusProperty = exception.GetType().GetRuntimeProperty("Status");
+        if (statusProperty?.GetValue(exception) is int status)
+        {
+            return status;
+        }
+
+        return exception.InnerException != null ? ExtractStatusCode(exception.InnerException) : null;
     }
 }
