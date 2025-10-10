@@ -1,4 +1,4 @@
-# 🧠 Legacy Modernization Agents to migrate COBOL to Java developed with the Semantic Kernel Process Function
+# Legacy Modernization Agents to migrate COBOL to Java developed with the Semantic Kernel Process Function
 
 This migration framework was developed to demonstrate AI Agents capabilities for converting legacy code like COBOL to Java. Each Agent has a persona that can be edited depending on the desired outcome.
 The migration is using Semantic Kernel Process Function where it does analysis of the COBOL code and it’s dependencies. This information then used to converting Java Quarkus.
@@ -15,8 +15,27 @@ Have a look at the talk Julia did at the WeAreDevelopers World Congress 2025: ht
 ## Table of Contents
 - [Quick Start](#-quick-start)
   - [Prerequisites](#prerequisites)
-  - [Dev Container](#dev-container)
+  - [Dev Container Setup](#dev-container-setup)
+  - [Neo4j Database Setup](#-neo4j-database-setup)
+  - [Demo Mode - Quick Launch](#-demo-mode---quick-launch)
+- [🆕 Latest Features](#-latest-features)
+  - [File Content Analysis](#1-file-content-analysis)
+  - [Multi-Run Query Support](#2-multi-run-query-support)
+  - [Dynamic Graph Updates](#3-dynamic-graph-updates)
+  - [Data Retrieval Guide](#4-data-retrieval-guide)
+- [Complete Architecture](#-complete-architecture)
+  - [Hybrid Database Architecture](#-hybrid-database-architecture)
+  - [System Architecture Overview](#-system-architecture-overview)
+  - [Three-Panel Portal UI](#-three-panel-portal-ui)
+- [Step-by-Step Guide](#step-by-step-guide)
+  - [1. Configure credentials and storage](#1-configure-credentials-and-storage)
+  - [2. Run a migration](#2-run-a-migration)
+  - [3. Inspect the generated assets](#3-inspect-the-generated-assets)
+  - [4. Launch the MCP server](#4-launch-the-mcp-server)
+  - [5. Connect a client](#5-connect-a-client)
+  - [6. Chat through the web UI](#6-chat-through-the-web-ui)
 - [How It Works - Complete Architecture & Flow](#how-it-works---complete-architecture--flow)
+- [Persistence and MCP Architecture](#persistence-and-mcp-architecture)
 - [Known issues](#known-issues)
 - [Project ideas](#project-ideas)
   - [Improvements](#improvements)
@@ -26,37 +45,624 @@ Have a look at the talk Julia did at the WeAreDevelopers World Congress 2025: ht
 ## 🚀 Quick Start
 
 ### Prerequisites
-- .NET 8.0.x
-- Semantic Kernel SDK
-- Azure OpenAI account with GPT-4.1 model deployed
+- **.NET 9.0 SDK** (Required - project standardized on .NET 9)
+- **Docker Desktop** - Required for Neo4j graph database
+- **Semantic Kernel SDK** - Included via NuGet
+- **Azure OpenAI** account with GPT-4.1 (or gpt-5-mini) model deployed
+- **Neo4j 5.15.0** - Graph database for dependency analysis
+- **Modern web browser** - For interactive dependency graph visualization (Chrome, Edge, Firefox, Safari)
 - GPT-4.1 supports up to 1M Token per minute which you need edit in https://oai.azure.com/
 
+> **⚠️ IMPORTANT:** This project requires **.NET 9.0 SDK**. If you have .NET 8 installed, you may see build errors. Install .NET 9.0 from https://dotnet.microsoft.com/download/dotnet/9.0
 
-> **INFO:** Remember to read the entire repo to grasp of the project and how you can utilize it for your code base. 
+> **INFO:** This project uses a **hybrid database approach** with both SQLite (metadata) and Neo4j (dependency graphs). Read the complete architecture section below to understand how they work together.
 
-### Dev Container
-This project includes a dev container configuration for Visual Studio Code, which ensures a consistent development environment for all contributors.
+### Dev Container Setup
 
-> **Note on Java Version**: The project uses Java 17 in the dev container because it's the latest version available in the standard Debian Bookworm repositories. Our dev container is based on `mcr.microsoft.com/devcontainers/dotnet:8.0`, which uses Debian Bookworm as its base image.
+This project includes a **fully configured dev container** that sets up everything automatically - including Neo4j!
 
-#### Requirements to use the Dev Container
-- Docker installed on your machine
-- Visual Studio Code with the "Dev Containers" extension installed
+#### 📦 What's Included in the Dev Container
+- ✅ **.NET 9.0 SDK** - Latest .NET runtime for the migration framework
+- ✅ **Java 17 + Maven** - For Quarkus development and Java output validation
+- ✅ **Docker-in-Docker** - Enables running Neo4j container inside dev container
+- ✅ **Neo4j 5.15.0** - Graph database (auto-starts via `docker-compose up -d neo4j`)
+- ✅ **SQLite3** - Command-line tool for database inspection and queries
+- ✅ **cypher-shell** - Neo4j CLI for running Cypher queries
+- ✅ **Azure CLI** - For Azure OpenAI resource management
+- ✅ **Node.js LTS** - For frontend development and tooling
+- ✅ **VS Code Extensions**:
+  - C# Dev Kit (C# development)
+  - Java Extension Pack (Java development)
+  - Quarkus Extension (Quarkus support)
+  - Semantic Kernel Extension (SK debugging)
+  - GitHub Copilot (AI assistance)
+  - Neo4j Extension (graph visualization)
+  - SQLite Extension (database inspection)
+- ✅ **Helpful Bash Aliases**:
+  - `demo` - Launch portal in demo mode
+  - `migration-run` - Run full migration
+  - `portal-start` - Start McpChatWeb portal
+  - `neo4j-status` - Check Neo4j status
+  - `neo4j-start/stop/logs` - Manage Neo4j
 
-#### Getting Started with the Dev Container
-1. Clone this repository
-2. Open the project folder in Visual Studio Code
-3. When prompted, click "Reopen in Container", or run the "Dev Containers: Reopen in Container" command from the command palette
-4. Wait for the container to build and initialize (this may take a few minutes the first time)
-5. The container includes all required dependencies:
-   - .NET 8.0
-   - Java 17 with Maven
-   - Azure CLI
-   - Required VS Code extensions
+#### 🚀 Quick Start with Dev Container
 
-After the container is built, the project will be automatically restored and built.
+**Requirements:**
+- Docker Desktop installed and running
+- Visual Studio Code with "Dev Containers" extension
+
+**Steps:**
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/your-org/Legacy-Modernization-Agents.git
+   cd Legacy-Modernization-Agents
+   ```
+
+2. **Open in VS Code**
+   ```bash
+   code .
+   ```
+
+3. **Reopen in Container**
+   - When prompted, click **"Reopen in Container"**
+   - Or use Command Palette: `Dev Containers: Reopen in Container`
+
+4. **Wait for initialization** (first time takes 3-5 minutes)
+   - ✅ Container builds with .NET 9.0 and Java 17
+   - ✅ Neo4j container starts automatically (`docker-compose up -d neo4j`)
+   - ✅ Project restores dependencies (`dotnet restore`)
+   - ✅ Project builds successfully (`dotnet build`)
+   - ✅ All tools and extensions install
+   - ✅ **SQLite database** - Created automatically in `Data/` on first migration run
+   - ✅ **Neo4j database** - Initialized automatically when Neo4j container starts
+
+5. **Verify databases are ready**
+   ```bash
+   # Check Neo4j is running
+   docker ps | grep neo4j
+   # Should show: cobol-migration-neo4j (healthy)
+   
+   # Neo4j will be accessible at:
+   # - Browser: http://localhost:7474
+   # - Bolt: bolt://localhost:7687
+   # - Credentials: neo4j / YOUR_NEO4J_PASSWORD
+   
+   # SQLite database will be created at:
+   # Data/migration.db (created on first run)
+   ```
+
+6. **Configure Azure OpenAI credentials** (see section below)
+
+7. **Run your first demo**
+   ```bash
+   ./demo.sh
+   ```
+
+**🎯 After container starts, you're ready to go!**
+- ✅ Neo4j running and ready for graph storage
+- ✅ SQLite will be created automatically on first migration
+- ✅ .NET 9.0 and all tools configured
+- ✅ No manual database setup required!
+
+### 📊 Neo4j Database Setup
+
+This project uses **Neo4j 5.15.0** as a graph database to store and visualize COBOL file dependencies.
+
+#### Why Neo4j?
+- **Graph Relationships**: Perfect for dependency mapping
+- **Cypher Queries**: Powerful graph query language
+- **Visualization**: Built-in browser for exploring dependencies
+- **Performance**: Fast traversal of complex relationships
+
+#### Installation Options
+
+**Option 1: Dev Container (Easiest - Recommended)**
+```bash
+# Neo4j starts automatically when you open the dev container!
+# No manual setup needed
+```
+
+**Option 2: Docker Compose (Local Development)**
+```bash
+# Start Neo4j with docker-compose
+docker-compose up -d neo4j
+
+# Verify it's running
+docker ps | grep neo4j
+
+# Access Neo4j Browser
+open http://localhost:7474
+```
+
+**Option 3: Manual Docker Run**
+```bash
+docker run -d \
+  --name cobol-migration-neo4j \
+  -p 7474:7474 \
+  -p 7687:7687 \
+  -e NEO4J_AUTH=neo4j/cobol-migration-2025 \
+  -e NEO4J_PLUGINS='["apoc"]' \
+  neo4j:5.15.0
+```
+
+#### Neo4j Connection Details
+- **HTTP (Browser)**: http://localhost:7474
+- **Bolt (Driver)**: bolt://localhost:7687
+- **Username**: `neo4j`
+- **Password**: `cobol-migration-2025`
+
+#### Verify Neo4j Connection
+```bash
+# Check if Neo4j is healthy
+curl http://localhost:7474
+
+# Or use the demo script which includes health checks
+./demo.sh
+```
+
+### 🎬 Demo Mode - Quick Launch
+
+The easiest way to see the portal in action **without running a full migration**:
+
+```bash
+# One command to start everything!
+./demo.sh
+```
+
+**What `demo.sh` does:**
+1. ✅ Checks prerequisites (Docker, .NET)
+2. ✅ Starts Neo4j if not running
+3. ✅ Finds your latest migration run
+4. ✅ Cleans up old portal instances
+5. ✅ Launches web portal at http://localhost:5250
+6. ✅ Displays existing data (no new migration)
+
+**Demo script output:**
+```
+╔══════════════════════════════════════════════════════════════╗
+║   COBOL Migration Portal - Demo Mode                        ║
+║   (View existing data - No new analysis)                    ║
+╚══════════════════════════════════════════════════════════════╝
+
+🔍 Checking prerequisites...
+✅ All prerequisites met
+
+📊 Starting Neo4j...
+✅ Neo4j is running
+
+💾 Checking database...
+✅ Database found with Run 43
+
+🚀 Starting web portal...
+⏳ Waiting for portal to start ✅
+
+🌐 Access your demo:
+   Portal:        http://localhost:5250
+   Neo4j Browser: http://localhost:7474
+
+📊 Portal Features:
+   • Three-panel dashboard layout
+   • 8 MCP resources (summary, files, dependencies, graph)
+   • AI-powered chat interface
+   • Interactive dependency graph visualization
+   • Multi-run support (query any historical run)
+   • File content analysis ("what functions are in BDSDA23.cbl")
+   • Real-time run detection and graph updates
+   • Data retrieval guide modal
+```
+
+**Stop the demo:**
+```bash
+# Stop portal
+pkill -f "dotnet.*McpChatWeb"
+
+# Stop Neo4j
+docker-compose down
+```
+
+## � Latest Features
+
+### 1. 🔍 File Content Analysis
+
+Ask natural language questions about COBOL file contents directly in the chat interface:
+
+**Example Queries:**
+```plaintext
+"What functions are in BDSDA23.cbl?"
+"What methods are used in RGNB649.cbl?"
+"What does the copybook RENI033.cpy contain code wise?"
+"Show me the variables in BDSIW13.cbl"
+"What paragraphs are in AGSFZ01.cbl?"
+```
+
+**What You Get:**
+- ✅ **Program Purpose**: High-level description of what the file does
+- ✅ **All Functions/Paragraphs**: Complete list with descriptions and logic summaries
+- ✅ **Variables**: Top 15 variables with PIC clauses, types, levels, usage
+- ✅ **Copybooks Referenced**: All COPY statements and dependencies
+- ✅ **Data Source**: MCP resource URI with API endpoint reference
+
+**How It Works:**
+1. Chat endpoint detects file-related queries using regex pattern
+2. Queries MCP resource: `insights://runs/{runId}/analyses/{fileName}`
+3. Parses `rawAnalysisData` JSON field for detailed structure
+4. Extracts from nested arrays: `paragraphs-and-sections-summary`, `variables`, `copybooksReferenced`
+5. Falls back to SQLite direct query if MCP unavailable
+
+**Example Response:**
+```markdown
+📄 Analysis for BDSDA23.cbl (Run 43)
+
+**Purpose:**
+Batch data synchronization agent for daily transaction processing
+
+**Functions/Paragraphs (23):**
+- **`MAIN-PROCESS`**: Main entry point, orchestrates batch workflow
+- **`VALIDATE-INPUT`**: Validates input file records for completeness
+- **`PROCESS-TRANSACTIONS`**: Iterates through transactions and updates database
+...
+
+**Variables (15):**
+- `WS-RECORD-COUNT` PIC 9(8) (numeric)
+- `WS-TRANSACTION-DATE` PIC X(10) (alphanumeric)
+- `WS-ERROR-FLAG` PIC X (boolean)
+... and 8 more
+
+**Copybooks Referenced (5):**
+- RENI033.cpy
+- BDSCOPY1.cpy
+- COMMON.cpy
+
+**Data Source:** MCP Resource URI: `insights://runs/43/analyses/BDSDA23.cbl`
+**API:** `GET /api/file-analysis/BDSDA23.cbl?runId=43`
+```
+
+---
+
+### 2. 🔄 Multi-Run Query Support
+
+Query any historical migration run directly from chat - no need to manually change database settings!
+
+**Example Queries:**
+```plaintext
+"Show me run 42"
+"What's in run id 40?"
+"Display run 35 data"
+"Tell me about run 38"
+```
+
+**What Happens:**
+1. ✅ Chat detects run ID mention (regex: `\brun\s*(?:id\s*)?(\d+)\b`)
+2. ✅ Queries **both** SQLite and Neo4j for that specific run
+3. ✅ Returns comprehensive data from both databases with clear source labels
+4. ✅ Graph visualization **automatically updates** to show the requested run
+5. ✅ Response includes `runId` field to trigger frontend updates
+
+**Response Format:**
+```json
+{
+  "response": "📊 Data for Run 42...\n\n**SQLite Data:**\n- Status: Running\n- Started: 2025-10-08T07:06:16Z\n- Files: 102\n\n**Neo4j Data:**\n- Nodes: 128\n- Edges: 64\n- Graph available: Yes\n\n**Source:** SQLite (Data/migration.db) + Neo4j (bolt://localhost:7687)",
+  "runId": 42
+}
+```
+
+**API Endpoints:**
+- `GET /api/search/run/{runId}` - Query specific run from both databases
+- `GET /api/graph?runId={id}` - Get dependency graph for specific run
+- `GET /api/runs/{runId}/combined-data` - Redirect to search endpoint
+
+---
+
+### 3. 📊 Dynamic Graph Updates
+
+The dependency graph visualization **automatically updates** when you ask about different runs in chat!
+
+**How It Works:**
+1. User types: "show me run 42"
+2. Chat returns response with `runId: 42` field
+3. Frontend (`main.js`) detects `runId` in response
+4. Calls `window.dependencyGraph.loadGraphForRun(42)`
+5. Graph fetches `/api/graph?runId=42` and renders new data
+6. Graph title updates to: **"Dependency Graph | Run 42"**
+
+**Features:**
+- ✅ **Automatic Updates**: No manual refresh needed
+- ✅ **Visual Feedback**: Graph title shows current run
+- ✅ **Retry Logic**: 500ms delay if graph not ready yet
+- ✅ **Console Logging**: "✅ Updating graph to Run 42" messages for debugging
+
+**Code Integration:**
+```javascript
+// main.js - Detects runId in chat response
+if (payload.runId && window.dependencyGraph) {
+    console.log(`✅ Updating graph to Run ${payload.runId}`);
+    window.dependencyGraph.loadGraphForRun(payload.runId);
+}
+
+// graph.js - Exposes public method
+loadGraphForRun(runId) {
+    console.log(`🔄 Loading graph for run ${runId}`);
+    this.fetchGraphData(runId);
+}
+```
+
+---
+
+### 4. 📚 Data Retrieval Guide
+
+Access comprehensive data access documentation directly in the portal via the **"📖 Data Retrieval Guide"** button.
+
+**What's Included:**
+- 🗄️ **SQLite Instructions**: 
+  - Database location and schema
+  - 5 example queries (runs, files, analyses, Java code, dependencies)
+  - Tool recommendations (sqlite3 CLI, DB Browser, VS Code extension)
+  
+- 🔗 **Neo4j Instructions**:
+  - Connection details (bolt://localhost:7687)
+  - Credentials (neo4j / cobol-migration-2025)
+  - 5 Cypher queries (runs, files, dependencies, circular deps, critical files)
+  - Tool recommendations (Neo4j Browser, Desktop, cypher-shell)
+
+- 🎯 **MCP API Instructions**:
+  - All available MCP resource URIs
+  - REST API endpoints (/api/resources, /api/chat, /api/graph)
+  - Example API calls with curl commands
+
+- 📋 **Copy-Paste Examples**:
+  - Three complete workflows (SQLite, Neo4j, API)
+  - Step-by-step commands ready to use
+  - No configuration needed
+
+**API Endpoint:**
+```bash
+GET /api/data-retrieval-guide
+```
+
+**Modal Features:**
+- Dark theme matching portal design
+- Syntax highlighting for code blocks
+- Organized in collapsible sections
+- Close with X button or click outside
+
+---
+
+## �🏗️ Complete Architecture
+
+### 🗄️ Hybrid Database Architecture
+
+This project uses a **dual-database approach** for optimal performance and functionality:
+
+```mermaid
+flowchart TB
+    subgraph INPUT["📁 Input Layer"]
+        COBOL["COBOL Source Files<br/>(.cbl, .cpy)"]
+    end
+    
+    subgraph PROCESS["🔄 Migration Process"]
+        ANALYZER["🔍 CobolAnalyzerAgent<br/>Structure Analysis"]
+        CONVERTER["☕ JavaConverterAgent<br/>Code Translation"]
+        MAPPER["🗺️ DependencyMapperAgent<br/>Relationship Analysis"]
+    end
+    
+    subgraph STORAGE["💾 Hybrid Storage Layer"]
+        SQLITE[("📊 SQLite Database<br/>Data/migration.db<br/><br/>• Run metadata<br/>• File content<br/>• AI analyses<br/>• Java code<br/>• Metrics")]
+        NEO4J[("🔗 Neo4j Graph DB<br/>bolt://localhost:7687<br/><br/>• Dependencies<br/>• Relationships<br/>• Graph data<br/>• Visualizations")]
+    end
+    
+    subgraph REPO["🔀 Repository Layer"]
+        HYBRID["HybridMigrationRepository<br/>Coordinates both databases"]
+    end
+    
+    subgraph ACCESS["🌐 Access Layer"]
+        MCP["🎯 MCP Server<br/>JSON-RPC API"]
+        PORTAL["🖥️ Web Portal<br/>localhost:5250"]
+        BROWSER["🔍 Neo4j Browser<br/>localhost:7474"]
+    end
+    
+    subgraph OUTPUT["📦 Output"]
+        JAVA["☕ Java Quarkus Code"]
+        REPORTS["📊 Reports & Logs"]
+    end
+    
+    COBOL --> PROCESS
+    PROCESS --> ANALYZER
+    PROCESS --> CONVERTER
+    PROCESS --> MAPPER
+    
+    ANALYZER --> HYBRID
+    CONVERTER --> HYBRID
+    MAPPER --> HYBRID
+    
+    HYBRID --> SQLITE
+    HYBRID --> NEO4J
+    
+    SQLITE --> MCP
+    NEO4J --> MCP
+    NEO4J --> BROWSER
+    
+    MCP --> PORTAL
+    
+    PROCESS --> JAVA
+    PROCESS --> REPORTS
+    
+    classDef inputStyle fill:#e3f2fd,stroke:#1976d2,stroke-width:3px
+    classDef processStyle fill:#f1f8e9,stroke:#689f38,stroke-width:3px
+    classDef storageStyle fill:#fff3e0,stroke:#f57c00,stroke-width:3px
+    classDef accessStyle fill:#f3e5f5,stroke:#7b1fa2,stroke-width:3px
+    classDef outputStyle fill:#e8f5e9,stroke:#388e3c,stroke-width:3px
+    
+    class COBOL inputStyle
+    class ANALYZER,CONVERTER,MAPPER processStyle
+    class SQLITE,NEO4J,HYBRID storageStyle
+    class MCP,PORTAL,BROWSER accessStyle
+    class JAVA,REPORTS outputStyle
+```
+
+#### 📊 SQLite Database Stores:
+- ✅ **Migration run metadata** (ID, status, timestamps, statistics)
+- ✅ **COBOL file content** (original source code)
+- ✅ **AI-generated analyses** (structured insights)
+- ✅ **Generated Java code** (converted output)
+- ✅ **Historical data** (all previous runs)
+- ✅ **Metrics and performance** (tokens, costs, timings)
+
+**Location**: `Data/migration.db` (configurable via `MIGRATION_DB_PATH`)
+
+#### 🔗 Neo4j Graph Database Stores:
+- ✅ **File-to-file dependencies** (program → copybook)
+- ✅ **Call relationships** (program → program)
+- ✅ **Transitive dependencies** (indirect relationships)
+- ✅ **Graph visualization data** (for UI rendering)
+- ✅ **Impact analysis** (what files are affected by changes)
+
+**Connection**: `bolt://localhost:7687` (configured in `appsettings.json`)
+
+#### 🔀 Why Both Databases?
+
+| Aspect | SQLite | Neo4j |
+|--------|--------|-------|
+| **Purpose** | Document storage | Relationship mapping |
+| **Strength** | Fast queries, simple setup | Graph traversal, visualization |
+| **Data Type** | Flat/relational data | Connected graph data |
+| **Use Case** | "What's in this file?" | "What depends on this file?" |
+| **Query Style** | SQL SELECT statements | Cypher graph queries |
+
+**Together they provide**: Fast metadata access + Powerful relationship insights 🚀
+
+### 🌐 System Architecture Overview
+
+```mermaid
+flowchart LR
+    subgraph CLIENTS["👥 Client Applications"]
+        BROWSER["🌐 Web Browser"]
+        CLAUDE["💬 Claude Desktop"]
+        CURSOR["⌨️ Cursor IDE"]
+    end
+    
+    subgraph PORTAL["🖥️ McpChatWeb Portal<br/>:5250"]
+        UI["Three-Panel UI<br/>Resources | Chat | Graph"]
+        API["/api endpoints"]
+    end
+    
+    subgraph MCP_LAYER["🎯 MCP Server Layer"]
+        MCP_SERVER["MCP JSON-RPC Server<br/>(STDIO)"]
+        MCP_CLIENT["McpProcessClient<br/>(Bridge)"]
+    end
+    
+    subgraph DATA_LAYER["💾 Data Layer"]
+        HYBRID_REPO["HybridMigrationRepository"]
+        SQLITE_REPO["SqliteMigrationRepository"]
+        NEO4J_REPO["Neo4jMigrationRepository"]
+    end
+    
+    subgraph DATABASES["🗄️ Databases"]
+        SQLITE_DB[("📊 SQLite<br/>migration.db")]
+        NEO4J_DB[("🔗 Neo4j<br/>:7687")]
+    end
+    
+    BROWSER --> PORTAL
+    CLAUDE --> MCP_SERVER
+    CURSOR --> MCP_SERVER
+    
+    PORTAL --> API
+    API --> MCP_CLIENT
+    MCP_CLIENT --> MCP_SERVER
+    
+    MCP_SERVER --> HYBRID_REPO
+    HYBRID_REPO --> SQLITE_REPO
+    HYBRID_REPO --> NEO4J_REPO
+    
+    SQLITE_REPO --> SQLITE_DB
+    NEO4J_REPO --> NEO4J_DB
+    
+    classDef clientStyle fill:#e3f2fd,stroke:#1976d2,stroke-width:2px
+    classDef portalStyle fill:#f1f8e9,stroke:#689f38,stroke-width:2px
+    classDef mcpStyle fill:#fff3e0,stroke:#f57c00,stroke-width:2px
+    classDef dataStyle fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    classDef dbStyle fill:#ffebee,stroke:#c62828,stroke-width:2px
+    
+    class BROWSER,CLAUDE,CURSOR clientStyle
+    class UI,API portalStyle
+    class MCP_SERVER,MCP_CLIENT mcpStyle
+    class HYBRID_REPO,SQLITE_REPO,NEO4J_REPO dataStyle
+    class SQLITE_DB,NEO4J_DB dbStyle
+```
+
+### 🖼️ Three-Panel Portal UI
+
+The web portal at `localhost:5250` features a modern three-panel layout:
+
+```mermaid
+graph TB
+    subgraph PORTAL["🌐 Web Portal Layout (localhost:5250)"]
+        direction LR
+        subgraph LEFT["📋 Left Panel<br/>(300px)"]
+            RESOURCES["MCP Resources<br/>• Migration Runs<br/>• COBOL Files<br/>• Dependencies<br/>• Java Files<br/>• Graph Queries"]
+        end
+        
+        subgraph CENTER["💬 Center Panel<br/>(Flexible)"]
+            CHAT["Chat Interface<br/>• Ask questions<br/>• AI responses<br/>• Conversation history"]
+            CHIPS["6 Suggestion Chips<br/>• Circular Dependencies<br/>• Critical Files<br/>• Impact Analysis<br/>• File Relationships<br/>• Dependency Summary<br/>• Conversion Stats"]
+        end
+        
+        subgraph RIGHT["📊 Right Panel<br/>(500px)"]
+            GRAPH["Dependency Graph<br/>• Interactive visualization<br/>• Zoom & pan<br/>• Click for details<br/>• Query filters<br/>• Layout options"]
+        end
+    end
+    
+    LEFT -.-> CENTER
+    CENTER -.-> RIGHT
+    
+    classDef leftStyle fill:#e3f2fd,stroke:#1976d2,stroke-width:2px
+    classDef centerStyle fill:#f1f8e9,stroke:#689f38,stroke-width:2px
+    classDef rightStyle fill:#fff3e0,stroke:#f57c00,stroke-width:2px
+    
+    class LEFT,RESOURCES leftStyle
+    class CENTER,CHAT,CHIPS centerStyle
+    class RIGHT,GRAPH rightStyle
+```
+
+**Portal Features:**
+- 🎨 **Responsive Design**: Adapts to different screen sizes
+- 🌓 **Dark Theme**: Easy on the eyes for long sessions
+- 🔄 **Real-time Updates**: Graph updates as you query
+- 🎯 **Interactive Graph**: Click nodes for details, zoom, pan, hover for tooltips
+- 💬 **AI Chat**: Natural language queries about your migration
+- 🏷️ **Quick Suggestions**: Pre-built query chips for common questions
+- 📊 **Graph Visualization**: 
+  - **49 unique nodes** (5 COBOL programs + 44 copybooks)
+  - **64 dependency edges** (COPY relationships)
+  - **Color coding**: Blue nodes = programs, Red nodes = copybooks
+  - **Query filters**: Full graph, circular dependencies, critical files, programs only, copybooks only
+  - **Layout options**: Force-directed, hierarchical, circular
+  - **Interactive controls**: Zoom in/out, fit to view, physics toggle
+  - **Auto-deduplication**: Server and client-side duplicate node prevention
+- 🔍 **Dynamic Run Detection**: Automatically displays current migration run ID
+- 🔎 **Multi-Run Query Support**: Ask about any historical run ("show me run 42")
+  - Automatically queries both SQLite and Neo4j databases
+  - Clear source indicators (SQLite vs Neo4j data)
+  - Graph visualization updates to match requested run
+- 📝 **File Content Analysis**: Query COBOL file internals with natural language
+  - "What functions are in BDSDA23.cbl?"
+  - "What methods are used in RGNB649.cbl?"
+  - "What does the copybook RENI033.cpy contain code wise?"
+  - Returns: Program purpose, all functions/paragraphs, variables (with PIC clauses), copybooks referenced
+  - Data sourced from MCP resources with SQLite fallback
+- 📚 **Data Retrieval Guide**: Interactive modal with comprehensive instructions
+  - SQLite query examples and tools
+  - Neo4j Cypher query examples
+  - MCP resource URIs and API endpoints
+  - Copy-paste ready commands
 
 ### 🔐 Configure Azure OpenAI Credentials
+
+The project requires Azure OpenAI for **two purposes**:
+
+1. **Migration Agents** (CobolAnalyzer, JavaConverter, DependencyMapper) - For code analysis and conversion
+2. **MCP Chat Server** - For natural language queries about migration data
+
+**Both use the same Azure OpenAI configuration** from `Config/appsettings.json`.
 
 The project uses a secure two-file configuration system:
 
@@ -102,7 +708,66 @@ AZURE_OPENAI_MODEL_ID="gpt-4.1"
 **⚠️ IMPORTANT**: 
 - Make sure your endpoint ends with `/`
 - API key should be 32 characters long
-- Deployment name must be exactly "gpt-4.1" to match project configuration
+- Deployment name must match your Azure OpenAI deployment (e.g., "gpt-4o", "gpt-4.1")
+
+#### 🔍 Where Azure OpenAI Configuration is Used
+
+**1. Main Migration Process** (`Program.cs`)
+- Reads from `Config/appsettings.json` → `AISettings` section
+- Creates Semantic Kernel builder with Azure OpenAI connection
+- Distributes to all three AI agents (Analyzer, Converter, Mapper)
+
+```csharp
+// Program.cs - Main migration entry point
+var kernelBuilder = Kernel.CreateBuilder();
+kernelBuilder.AddAzureOpenAIChatCompletion(
+    deploymentName: settings.AISettings.DeploymentName,
+    endpoint: settings.AISettings.Endpoint,
+    apiKey: settings.AISettings.ApiKey
+);
+```
+
+**2. MCP Server** (`Mcp/McpServer.cs`)
+- Reads from same `Config/appsettings.json` → `AISettings` section
+- Initializes Semantic Kernel for natural language chat queries
+- Powers the web portal's AI chat feature
+
+```csharp
+// McpServer.cs - Chat server initialization
+if (_aiSettings != null) {
+    var kernelBuilder = Kernel.CreateBuilder();
+    kernelBuilder.AddAzureOpenAIChatCompletion(
+        deploymentName: _aiSettings.DeploymentName,
+        endpoint: _aiSettings.Endpoint,
+        apiKey: _aiSettings.ApiKey
+    );
+    _kernel = kernelBuilder.Build();
+}
+```
+
+**Configuration File Structure** (`Config/appsettings.json`):
+```json
+{
+  "AISettings": {
+    "ServiceType": "AzureOpenAI",
+    "Endpoint": "https://your-resource.openai.azure.com/",
+    "ApiKey": "YOUR_API_KEY",
+    "ModelId": "gpt-4o",
+    "DeploymentName": "gpt-4o",
+    "CobolAnalyzerModelId": "gpt-4o",
+    "JavaConverterModelId": "gpt-4o",
+    "DependencyMapperModelId": "gpt-4o",
+    "MaxTokens": 32000,
+    "Temperature": 0.1
+  }
+}
+```
+
+**One Configuration, Two Uses:**
+- ✅ Same credentials used for migration and chat
+- ✅ Can use different models per agent if needed
+- ✅ Configured once in `appsettings.json`
+- ✅ No separate MCP server configuration required
 
 ### Setup & Run
 ```bash
@@ -115,13 +780,47 @@ AZURE_OPENAI_MODEL_ID="gpt-4.1"
 # 3. Add your COBOL files to cobol-source/ (or use the included samples)
 cp your-cobol-files/* ./cobol-source/
 
-# 4. Run migration
+# 4. Run migration (automatically launches the MCP web UI)
 ./doctor.sh run
 ```
 
-### ⚠️ **Configuration Troubleshooting**
+### ✅ Run the integration tests
 
-If you see configuration errors:
+The `McpChatWeb` project ships with lightweight integration tests that spin up the minimal API with a fake MCP client. To execute them you need the .NET 9.0 SDK:
+
+```bash
+dotnet test McpChatWeb.Tests/McpChatWeb.Tests.csproj
+```
+
+### ⚠️ **Troubleshooting**
+
+#### .NET Version Issues
+
+If you see this error:
+```
+error NETSDK1045: The current .NET SDK does not support targeting .NET 9.0
+```
+
+**Solution:** Install .NET 9.0 SDK
+```bash
+# Download from Microsoft
+https://dotnet.microsoft.com/download/dotnet/9.0
+
+# Or use Homebrew (macOS)
+brew install dotnet
+
+# Verify installation
+dotnet --version
+# Should show: 9.0.x
+
+# Clean and rebuild
+cd Legacy-Modernization-Agents
+dotnet clean
+dotnet restore
+dotnet build
+```
+
+#### Configuration Issues
 
 ```bash
 # Check what's configured
@@ -136,6 +835,22 @@ If you see configuration errors:
 # ❌ Model not found → Check your deployment name matches Azure
 ```
 
+#### Neo4j Connection Issues
+
+```bash
+# Check if Neo4j is running
+docker ps | grep neo4j
+
+# Start Neo4j
+docker-compose up -d neo4j
+
+# Check logs
+docker logs cobol-migration-neo4j
+
+# Restart if needed
+docker restart cobol-migration-neo4j
+```
+
 ### All-in-One Management
 The `doctor.sh` script consolidates all functionality:
 - `./doctor.sh setup` - Interactive configuration
@@ -145,12 +860,395 @@ The `doctor.sh` script consolidates all functionality:
 - `./doctor.sh resume` - Resume interrupted migration
 - `./doctor.sh help` - Show all commands
 
+## Step-by-Step Guide
+
+Follow these five steps to go from a clean checkout to an interactive MCP session over your migration insights.
+
+### 1. Configure credentials and storage
+- Copy `Config/ai-config.local.env.example` to `Config/ai-config.local.env` and fill in your Azure OpenAI details (see [Configure Azure OpenAI Credentials](#-configure-azure-openai-credentials)).
+- Optional: set the `MIGRATION_DB_PATH` environment variable if you prefer to store the SQLite database somewhere other than `Data/migration.db`.
+  - Relative paths are resolved from the repository root.
+  - The database will be created automatically on first run.
+
+### 2. Run a migration
+- Place your COBOL sources in the folder configured by `ApplicationSettings.CobolSourceFolder` (default `cobol-source`).
+- Either run the helper script:
+  ```bash
+  ./doctor.sh run
+  ```
+  or execute the console app directly:
+  ```bash
+  dotnet run -- --cobol-source cobol-source --java-output java-output
+  ```
+- The helper script now *automatically* starts the `McpChatWeb` experience once the migration finishes. By default it serves <http://localhost:5028>, opens your browser, and attaches to the latest migration database so you can explore the resources immediately. Set `MCP_AUTO_LAUNCH=0` if you prefer to skip the automatic web startup.
+- The process analyzes dependencies, converts COBOL to Java Quarkus, and persists every run in SQLite.
+
+### 3. Inspect the generated assets
+- Generated Java code lands in the configured `java-output` directory.
+- Detailed reports, conversations, and API metrics are written to `Logs/`.
+- The SQLite database (default `Data/migration.db`) contains structured copies of every run, COBOL file, analysis, dependency map, and generated Java artifact.
+
+### 4. Launch the MCP server
+- `./doctor.sh run` automatically boots the MCP-backed `McpChatWeb` minimal API on <http://localhost:5028> and points it at the most recent migration run so you can immediately browse resources and chat.
+- To launch manually (or target a different run), run:
+  ```bash
+  MIGRATION_DB_PATH=/absolute/path/to/migration.db ASPNETCORE_URLS=http://localhost:5028 dotnet run --project McpChatWeb
+  ```
+  Use `MCP_WEB_HOST` and `MCP_WEB_PORT` to change the host or port when using the helper script.
+- If you still want to connect directly over STDIO, you can run the legacy host: 
+  ```bash
+  dotnet run -- mcp --config Config/appsettings.json [--run-id <id>]
+  ```
+- The MCP process selects the latest successful run by default and remains compatible with any MCP-capable client.
+
+### 5. Connect a client
+- Use your preferred MCP client (for example, Claude Desktop, Cursor, or the reference CLI) and point it at the running process.
+- Typical first commands:
+  - `resources/list` – discover available resource URIs (runs, files, dependency maps).
+  - `resources/read` – fetch structured JSON payloads for analysis in your tooling.
+  - `messages/create` – ask natural-language questions about the surfaced run (conversion summaries, dependency overviews, etc.).
+
+### 6. Chat through the web UI
+Once you have migration data stored in SQLite you can browse it via the bundled `McpChatWeb` minimal API + SPA frontend. `./doctor.sh run` launches it automatically, but you can also start it manually:
+
+```bash
+# Run from the solution root
+MIGRATION_DB_PATH=/absolute/path/to/migration.db ASPNETCORE_URLS=http://localhost:5250 dotnet run --project McpChatWeb
+```
+
+Then open <http://localhost:5250> (or the port shown in the console). The portal features:
+
+#### **🖥️ Three-Panel Dashboard**
+- **Left Panel (300px)**: MCP Resources list with all available data
+- **Center Panel**: AI chat interface with suggestion chips
+- **Right Panel (500px)**: Interactive dependency graph visualization
+
+#### **💬 Chat Features**
+- **Natural Language Queries**: Ask questions in plain English
+- **Multi-Run Support**: Query any historical run ("show me run 42")
+- **File Content Analysis**: Ask about specific files ("what functions are in BDSDA23.cbl")
+- **Suggestion Chips**: Quick access to common queries:
+  - 🔄 Circular Dependencies
+  - ⭐ Critical Files (High Impact)
+  - 🎯 File Impact Analysis
+  - 📊 Show All Relationships
+  - 📈 Dependency Summary
+  - ✅ Conversion Statistics
+
+#### **📊 Graph Visualization**
+- **Interactive Controls**: Zoom, pan, click nodes for details
+- **Query Filters**: Full graph, circular dependencies, critical files, programs only, copybooks only
+- **Layout Options**: Force-directed, hierarchical, circular
+- **Physics Toggle**: Enable/disable force simulation
+- **Auto-Updates**: Graph changes when you query different runs
+
+#### **📚 Additional Features**
+- **Data Retrieval Guide**: Click "📖 Data Retrieval Guide" for comprehensive data access instructions
+- **Run Detection**: Badge shows current run ID in graph header
+- **Source Indicators**: Clear labels for SQLite vs Neo4j data
+- **Dark Theme**: Professional dark UI for comfortable viewing
+
+> ℹ️ The web app uses the existing migration assembly as its MCP backend. Ensure the `Config/appsettings.json` and the generated SQLite database are accessible from the working directory before launching.
+
+#### Architecture at a glance
+
+```mermaid
+flowchart LR
+  subgraph Client
+    user["🧑‍💻 Browser<br/>index.html + main.js"]
+  end
+
+  subgraph WebApp["ASP.NET Core (McpChatWeb)"]
+    api["/api/resources /api/chat"]
+    service["IMcpClient (McpProcessClient)"]
+  end
+
+  subgraph MCPProcess["dotnet CobolToQuarkusMigration.dll"]
+    server["MCP server mode\n(resources/list, messages/create)"]
+  end
+
+  db[("SQLite migration DB\n(Data/migration.db)")]
+
+  user -->|HTTP fetch /api/*| api
+  api --> service
+  service -->|JSON-RPC over STDIO| server
+  server --> db
+  db --> server
+```
+
+The browser UI calls the minimal API endpoints, which forward requests to the MCP process bridge (`McpProcessClient`). The bridge launches the existing migration executable in MCP mode over STDIO, giving the chat UI access to the same insights persisted in SQLite.
+
+### MCP automation environment variables
+- `MCP_AUTO_LAUNCH` (default `1`): set to `0` to skip starting `McpChatWeb` after `./doctor.sh run`.
+- `MCP_AUTO_OPEN` (default `1`): set to `0` to prevent auto-opening a browser window.
+- `MCP_WEB_HOST` / `MCP_WEB_PORT` (default `localhost:5250`): override the host or port used by the helper script.
+
+---
+
+## 📖 How to Use the Migration Portal
+
+### Getting Started
+
+1. **Launch the portal:**
+   ```bash
+   ./demo.sh
+   # Or manually:
+   cd McpChatWeb && dotnet run
+   ```
+
+2. **Open your browser:**
+   - Portal: http://localhost:5250
+   - Neo4j Browser: http://localhost:7474
+
+3. **Verify data is loaded:**
+   - Look for "Run 43" badge in graph header
+   - Check that MCP resources list shows 8 resources
+   - Graph should display nodes and edges
+
+### Common Usage Scenarios
+
+#### 🔍 Scenario 1: Explore File Contents
+
+**Goal:** Understand what's inside a specific COBOL file
+
+**Steps:**
+1. Type in chat: `"What functions are in BDSDA23.cbl?"`
+2. Wait for AI response with:
+   - Program purpose
+   - All functions/paragraphs with descriptions
+   - Variables with PIC clauses
+   - Copybooks referenced
+3. Click on suggested follow-up chips if available
+
+**Pro Tips:**
+- Works for both programs (.cbl) and copybooks (.cpy)
+- Ask about methods, functions, paragraphs, or sections - all work
+- Response shows top 15 variables, use "... and X more" indicator to know total count
+
+#### 🔄 Scenario 2: Query Different Runs
+
+**Goal:** Compare different migration runs or investigate historical data
+
+**Steps:**
+1. Type in chat: `"Show me run 42"`
+2. Watch the graph automatically update to Run 42
+3. Check graph header badge changes from "Run 43" to "Run 42"
+4. Response shows data from both SQLite and Neo4j with source labels
+
+**Pro Tips:**
+- Graph updates automatically - no manual refresh needed
+- Can query any run ID (1-43 in demo data)
+- Use "run id X" or "run X" - both work
+- Check browser console for debug messages
+
+#### 📊 Scenario 3: Analyze Dependencies
+
+**Goal:** Understand file relationships and dependencies
+
+**Steps:**
+1. Click suggestion chip: **"🔄 Circular Dependencies"**
+2. AI analyzes the graph and reports circular dependency chains
+3. Click on graph nodes to see individual file details
+4. Use filters to focus on specific node types:
+   - **Programs Only**: Shows just .cbl files
+   - **Copybooks Only**: Shows just .cpy files
+   - **Full Graph**: Shows everything
+
+**Pro Tips:**
+- Circular dependencies can cause compilation issues - fix them first!
+- Red nodes = copybooks, Blue nodes = programs
+- Hover over nodes for tooltips with file info
+- Zoom with mouse wheel, pan by dragging
+
+#### ⭐ Scenario 4: Find Critical Files
+
+**Goal:** Identify high-impact files that many programs depend on
+
+**Steps:**
+1. Click suggestion chip: **"⭐ Critical Files (High Impact)"**
+2. AI identifies files with high fan-in (many dependencies)
+3. These are critical files - changes affect many programs
+4. Use graph filter **"Critical Files"** to visualize them
+
+**Pro Tips:**
+- Critical files should be tested thoroughly before changes
+- High fan-in means many programs COPY this file
+- Consider refactoring if a file has too many dependents
+
+#### 🎯 Scenario 5: Impact Analysis
+
+**Goal:** Understand what will be affected if you change a specific file
+
+**Steps:**
+1. Type in chat: `"What depends on RENI033.cpy?"`
+2. AI lists all programs that reference this copybook
+3. Click graph nodes to explore relationships visually
+4. Use **"Show All Relationships"** to see the full impact
+
+**Pro Tips:**
+- Impact analysis helps with change management
+- Test all dependent programs after modifying a copybook
+- Use Neo4j Browser for more complex graph queries
+
+#### 📈 Scenario 6: View Statistics
+
+**Goal:** Get overview of migration progress and metrics
+
+**Steps:**
+1. Click suggestion chip: **"📈 Dependency Summary"**
+2. AI provides comprehensive statistics:
+   - Total files processed
+   - Programs vs copybooks ratio
+   - Dependency counts and averages
+   - Conversion success rate
+3. Click **"✅ Conversion Statistics"** for Java-specific metrics
+
+**Pro Tips:**
+- Use statistics to track migration progress over time
+- Compare stats across different runs
+- Check success rate to identify problem files
+
+### Advanced Features
+
+#### 📚 Data Retrieval Guide
+
+**Access raw data** using the comprehensive guide:
+
+1. Click **"📖 Data Retrieval Guide"** button at bottom of chat
+2. Modal opens with three sections:
+   - **SQLite**: Database queries for metadata
+   - **Neo4j**: Graph queries for dependencies  
+   - **MCP API**: Programmatic access endpoints
+3. Copy example commands and run in your terminal
+4. Close modal with X or click outside
+
+**Example SQLite Query:**
+```bash
+sqlite3 Data/migration.db
+SELECT * FROM runs WHERE id = 43;
+SELECT file_name, is_copybook FROM cobol_files WHERE run_id = 43 LIMIT 10;
+```
+
+**Example Neo4j Query:**
+```bash
+echo 'MATCH (r:Run {runId: 43})-[:CONTAINS]->(f:CobolFile) RETURN f.fileName LIMIT 25;' | \
+cypher-shell -u neo4j -p cobol-migration-2025
+```
+
+**Example API Call:**
+```bash
+curl http://localhost:5250/api/search/run/43 | jq '.'
+curl http://localhost:5250/api/graph?runId=43 | jq '.nodes | length'
+```
+
+#### 🎨 Graph Customization
+
+**Customize the visualization** using controls:
+
+1. **Layout Options:**
+   - Force-directed (default) - organic, dynamic layout
+   - Hierarchical - top-down tree structure
+   - Circular - nodes arranged in circle
+
+2. **Physics Toggle:**
+   - ON: Nodes move dynamically, settling into optimal positions
+   - OFF: Static layout, good for screenshots
+
+3. **Zoom Controls:**
+   - Zoom In/Out: + and - buttons
+   - Fit to View: See all nodes at once
+   - Mouse wheel: Smooth zoom
+
+4. **Node Interaction:**
+   - Click: Select and highlight
+   - Hover: Show tooltip with details
+   - Drag: Move individual nodes
+
+### Troubleshooting
+
+#### Graph Not Updating
+
+**Symptom:** Asked about run 42 but graph still shows run 43
+
+**Solutions:**
+1. Check browser console for errors (F12)
+2. Verify API response includes `runId` field:
+   ```bash
+   curl -X POST http://localhost:5250/api/chat \
+     -H "Content-Type: application/json" \
+     -d '{"prompt":"show me run 42"}' | jq '.runId'
+   ```
+3. Manually reload graph: Click any filter button
+4. Refresh browser page (F5)
+
+#### No Data Showing
+
+**Symptom:** Portal loads but shows no resources or empty graph
+
+**Solutions:**
+1. Verify database exists:
+   ```bash
+   ls -lh Data/migration.db
+   ```
+2. Check Neo4j is running:
+   ```bash
+   docker ps | grep neo4j
+   ```
+3. Restart portal:
+   ```bash
+   pkill -f "dotnet.*McpChatWeb"
+   ./demo.sh
+   ```
+
+#### Chat Not Responding
+
+**Symptom:** Type message but no response from AI
+
+**Solutions:**
+1. Check MCP server logs in terminal
+2. Verify Azure OpenAI credentials:
+   ```bash
+   ./doctor.sh doctor
+   ```
+3. Check for rate limiting (429 errors)
+4. Try simpler query first: "hello"
+
+#### File Analysis Returns Empty
+
+**Symptom:** Asked about file but got "No analysis data available"
+
+**Solutions:**
+1. Verify file exists in run:
+   ```bash
+   sqlite3 Data/migration.db "SELECT file_name FROM cobol_files WHERE run_id = 43 AND file_name = 'BDSDA23.cbl';"
+   ```
+2. Check MCP resource manually:
+   ```bash
+   curl http://localhost:5250/api/resources | jq '.[] | select(.uri | contains("analyses"))'
+   ```
+3. Try different run: "what functions are in BDSDA23.cbl for run 42"
+
+### Performance Tips
+
+- ✅ **Large Graphs**: Use filters to reduce visible nodes
+- ✅ **Slow Queries**: Be specific in questions to reduce AI processing
+- ✅ **Browser Performance**: Close other tabs if graph is laggy
+- ✅ **Database Size**: Archive old runs if database > 1GB
+
+### Keyboard Shortcuts
+
+- `Enter` - Send chat message
+- `Ctrl+/` or `Cmd+/` - Focus chat input
+- `Esc` - Close modal
+- Mouse wheel - Zoom graph
+- `Shift+Drag` - Pan graph
+
 ## How It Works - Complete Architecture & Flow
 
 The Semantic Kernel process function is used to build an AI-powered COBOL-to-Java migration system that uses Microsoft Semantic Kernel framework to orchestrate multiple specialized AI agents. Here's how it works:
 
 
-## 🔄 Migration Process Flow (6 Main Steps)
+## 🔄 Migration Process Flow (8 Main Steps)
 
 ```mermaid
 sequenceDiagram
@@ -159,23 +1257,34 @@ sequenceDiagram
     participant Process as 🎯 MigrationProcess
     participant Agents as 🤖 AI Agents
     participant AI as 🧠 Azure OpenAI
+    participant Repo as 🔀 HybridRepository
+    participant SQLite as 📊 SQLite DB
+    participant Neo4j as 🔗 Neo4j DB
     participant Files as 📁 FileHelper
     participant Logs as 📊 Loggers
     
     User->>CLI: ./doctor.sh run or dotnet run
     CLI->>CLI: Parse command line args
+    CLI->>CLI: Load Config/appsettings.json
     CLI->>Process: Initialize with settings
+    Process->>Repo: Create migration run (ID, timestamp)
+    Repo->>SQLite: INSERT INTO runs
     
     Note over Process: Step 1: File Discovery
     Process->>Files: Scan COBOL directory
     Files-->>Process: List of .cbl and .cpy files
+    Process->>Repo: Save COBOL files metadata
+    Repo->>SQLite: INSERT INTO cobol_files
     Process->>Logs: Log file discovery stats
     
     Note over Process: Step 2: Dependency Analysis
     Process->>Agents: DependencyMapperAgent.AnalyzeDependenciesAsync()
     Agents->>AI: Analyze COBOL relationships
     AI-->>Agents: Dependency insights
-    Agents-->>Process: DependencyMap with Mermaid diagram
+    Agents-->>Process: DependencyMap with graph
+    Process->>Repo: Save dependency map
+    Repo->>SQLite: INSERT INTO dependency_maps
+    Repo->>Neo4j: CREATE nodes & relationships
     Process->>Files: Save dependency-map.json
     
     Note over Process: Step 3: COBOL Analysis
@@ -184,6 +1293,8 @@ sequenceDiagram
         Agents->>AI: Analyze COBOL structure
         AI-->>Agents: Structured analysis
         Agents-->>Process: CobolAnalysis object
+        Process->>Repo: Save analysis
+        Repo->>SQLite: INSERT INTO analyses
         Process->>Logs: Log analysis progress
     end
     
@@ -193,6 +1304,8 @@ sequenceDiagram
         Agents->>AI: Convert COBOL to Java Quarkus
         AI-->>Agents: Java code
         Agents-->>Process: JavaFile object
+        Process->>Repo: Save Java file
+        Repo->>SQLite: INSERT INTO java_files
         Process->>Logs: Log conversion progress
     end
     
@@ -203,60 +1316,217 @@ sequenceDiagram
         Process->>Logs: Log file save progress
     end
     
-    Note over Process: Step 6: Report Generation
+    Note over Process: Step 6: Metrics Collection
+    Process->>Repo: Save performance metrics
+    Repo->>SQLite: INSERT INTO metrics
+    Process->>Logs: Log API call statistics
+    
+    Note over Process: Step 7: Report Generation
     Process->>Files: Generate migration-report.md
     Process->>Logs: Export conversation logs
     Process->>Logs: Show API statistics
+    
+    Note over Process: Step 8: Finalization
+    Process->>Repo: Mark run as completed
+    Repo->>SQLite: UPDATE runs SET status='Completed'
     Process-->>CLI: Migration complete
-    CLI-->>User: Success message + metrics
+    CLI-->>User: Success + metrics
+    CLI->>CLI: Auto-launch McpChatWeb portal
 ```
 
 ## 🧠 How Semantic Kernel Orchestrates AI Agents
 
+Semantic Kernel acts as the **intelligent orchestration layer** that coordinates multiple specialized AI agents throughout the migration process.
+
 ```mermaid
-graph TB
-    subgraph SK_KERNEL ["🧠 Semantic Kernel Framework"]
-        direction TB
-        KERNEL["🔧 Kernel Builder<br/>• Chat Completion Services<br/>• Service Configuration<br/>• API Connection Management"]
-        PROMPT_ENGINE["📝 Prompt Engineering<br/>• System Prompts<br/>• User Prompts<br/>• Context Management"]
-        EXECUTION["⚙️ Execution Settings<br/>• Token Limits (32K)<br/>• Temperature (0.1)<br/>• Model Selection"]
+flowchart TB
+    subgraph CONFIG["⚙️ Configuration Phase"]
+        SETTINGS["📋 Load Settings<br/>appsettings.json"]
+        ENV["🔐 Load Credentials<br/>ai-config.local.env"]
+        BUILDER["🏗️ Kernel Builder<br/>Configure AI Service"]
     end
     
-    subgraph AGENT_LIFECYCLE ["🔄 Agent Lifecycle Process"]
-        direction TB
-        INIT["1️⃣ Initialize Agent<br/>• Load Model Configuration<br/>• Set Specialized Prompts<br/>• Configure Logging"]
-        PROMPT["2️⃣ Create Task Prompt<br/>• Build System Context<br/>• Add COBOL Content<br/>• Define Output Format"]
-        EXECUTE["3️⃣ Execute via Kernel<br/>• Send to AI Service<br/>• Monitor API Call<br/>• Handle Timeouts"]
-        PROCESS_RESPONSE["4️⃣ Process Response<br/>• Parse AI Output<br/>• Validate Results<br/>• Extract Structured Data"]
-        LOG["5️⃣ Log & Track<br/>• Record API Metrics<br/>• Track Performance<br/>• Store Conversation"]
+    subgraph KERNEL["🧠 Semantic Kernel Core"]
+        SK["Kernel Instance"]
+        PROMPT_ENGINE["📝 Prompt Engine<br/>System + User Prompts"]
+        EXEC_SETTINGS["⚙️ Execution Settings<br/>MaxTokens: 32000<br/>Temperature: 0.1<br/>TopP: 0.5"]
+        API_HANDLER["🔌 API Handler<br/>Azure OpenAI<br/>Connection Pool<br/>Retry Logic"]
+    end
+    
+    subgraph AGENTS["🤖 Specialized AI Agents"]
+        direction LR
+        ANALYZER["� CobolAnalyzerAgent<br/><br/>Mission:<br/>• Analyze COBOL structure<br/>• Map variables & data<br/>• Identify logic flow<br/>• Detect copybooks<br/><br/>Output:<br/>CobolAnalysis JSON"]
         
-        INIT --> PROMPT
-        PROMPT --> EXECUTE
-        EXECUTE --> PROCESS_RESPONSE
-        PROCESS_RESPONSE --> LOG
+        CONVERTER["☕ JavaConverterAgent<br/><br/>Mission:<br/>• Translate COBOL → Java<br/>• Apply Quarkus patterns<br/>• Generate clean code<br/>• Handle edge cases<br/><br/>Output:<br/>JavaFile with code"]
+        
+        MAPPER["🗺️ DependencyMapperAgent<br/><br/>Mission:<br/>• Map relationships<br/>• Create graph data<br/>• Generate Mermaid<br/>• Calculate metrics<br/><br/>Output:<br/>DependencyMap"]
     end
     
-    subgraph AI_MODELS ["🤖 AI Model Specialization"]
+    subgraph PROCESS["🔄 Agent Execution Flow"]
         direction TB
-        ANALYZER_MODEL["🔍 COBOL Analyzer<br/>• Structure Analysis<br/>• Variable Mapping<br/>• Logic Flow Analysis<br/>• Copybook Detection"]
-        CONVERTER_MODEL["☕ Java Converter<br/>• Code Translation<br/>• Quarkus Integration<br/>• Best Practices<br/>• Error Handling"]
-        DEPENDENCY_MODEL["🗺️ Dependency Mapper<br/>• Relationship Analysis<br/>• Mermaid Diagrams<br/>• Usage Patterns<br/>• Metrics Calculation"]
+        STEP1["1️⃣ Agent.Initialize()<br/>Load specialized prompts<br/>Configure model settings"]
+        STEP2["2️⃣ BuildPrompt()<br/>System context + COBOL content<br/>Define output format"]
+        STEP3["3️⃣ kernel.InvokePromptAsync()<br/>⚡ Send to AI service<br/>Monitor progress<br/>Handle timeouts"]
+        STEP4["4️⃣ ParseResponse()<br/>Extract structured data<br/>Validate output<br/>Apply sanitization"]
+        STEP5["5️⃣ PersistData()<br/>Save to SQLite<br/>Save to Neo4j<br/>Log metrics"]
+        
+        STEP1 --> STEP2
+        STEP2 --> STEP3
+        STEP3 --> STEP4
+        STEP4 --> STEP5
     end
     
-    %% Connections
-    SK_KERNEL --> AGENT_LIFECYCLE
-    AGENT_LIFECYCLE --> AI_MODELS
+    subgraph STORAGE["💾 Persistence Layer"]
+        HYBRID["🔀 HybridRepository<br/>Coordinates both databases"]
+        SQLITE[("📊 SQLite<br/>Metadata & Content")]
+        NEO4J[("� Neo4j<br/>Dependencies & Graph")]
+    end
     
-    %% Enhanced Styling
-    classDef kernelStyle fill:#e3f2fd,stroke:#1976d2,stroke-width:3px,color:#0d47a1
-    classDef lifecycleStyle fill:#f1f8e9,stroke:#689f38,stroke-width:3px,color:#1b5e20
-    classDef modelStyle fill:#fff3e0,stroke:#f57c00,stroke-width:3px,color:#e65100
-    classDef stepStyle fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px,color:#4a148c
+    subgraph LOGGING["📊 Observability"]
+        ENHANCED["📈 EnhancedLogger<br/>API call tracking<br/>Performance metrics<br/>Cost analysis"]
+        CHAT["� ChatLogger<br/>Conversation history<br/>Token counting<br/>Export to Markdown"]
+    end
     
-    class KERNEL,PROMPT_ENGINE,EXECUTION kernelStyle
-    class INIT,PROMPT,EXECUTE,PROCESS_RESPONSE,LOG stepStyle
-    class ANALYZER_MODEL,CONVERTER_MODEL,DEPENDENCY_MODEL modelStyle
+    %% Flow connections
+    SETTINGS --> BUILDER
+    ENV --> BUILDER
+    BUILDER --> SK
+    
+    SK --> PROMPT_ENGINE
+    SK --> EXEC_SETTINGS
+    SK --> API_HANDLER
+    
+    SK -.distributes to.-> ANALYZER
+    SK -.distributes to.-> CONVERTER
+    SK -.distributes to.-> MAPPER
+    
+    ANALYZER --> PROCESS
+    CONVERTER --> PROCESS
+    MAPPER --> PROCESS
+    
+    PROCESS --> HYBRID
+    HYBRID --> SQLITE
+    HYBRID --> NEO4J
+    
+    PROCESS --> ENHANCED
+    PROCESS --> CHAT
+    
+    %% Styling
+    classDef configStyle fill:#e3f2fd,stroke:#1976d2,stroke-width:2px
+    classDef kernelStyle fill:#f1f8e9,stroke:#689f38,stroke-width:3px
+    classDef agentStyle fill:#fff3e0,stroke:#f57c00,stroke-width:3px
+    classDef processStyle fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    classDef storageStyle fill:#ffebee,stroke:#c62828,stroke-width:2px
+    classDef logStyle fill:#e0f2f1,stroke:#00695c,stroke-width:2px
+    
+    class SETTINGS,ENV,BUILDER configStyle
+    class SK,PROMPT_ENGINE,EXEC_SETTINGS,API_HANDLER kernelStyle
+    class ANALYZER,CONVERTER,MAPPER agentStyle
+    class STEP1,STEP2,STEP3,STEP4,STEP5 processStyle
+    class HYBRID,SQLITE,NEO4J storageStyle
+    class ENHANCED,CHAT logStyle
 ```
+
+### 🔑 Key Semantic Kernel Features in Use
+
+#### 1. **Kernel Builder Pattern**
+```csharp
+// Program.cs - Creates the foundation
+var kernelBuilder = Kernel.CreateBuilder();
+kernelBuilder.AddAzureOpenAIChatCompletion(
+    deploymentName: "gpt-5-mini",
+    endpoint: settings.AISettings.Endpoint,
+    apiKey: settings.AISettings.ApiKey
+);
+```
+
+#### 2. **Agent Distribution**
+```csharp
+// MigrationProcess.cs - Shares kernel with agents
+_cobolAnalyzerAgent = new CobolAnalyzerAgent(_kernelBuilder, logger, ...);
+_javaConverterAgent = new JavaConverterAgent(_kernelBuilder, logger, ...);
+_dependencyMapperAgent = new DependencyMapperAgent(_kernelBuilder, logger, ...);
+```
+
+#### 3. **Prompt Execution**
+```csharp
+// Inside each agent
+var kernel = _kernelBuilder.Build();
+var functionResult = await kernel.InvokePromptAsync(
+    prompt: $"{systemPrompt}\n\n{userPrompt}",
+    arguments: new KernelArguments(executionSettings)
+);
+```
+
+#### 4. **Execution Settings**
+```csharp
+var executionSettings = new OpenAIPromptExecutionSettings
+{
+    MaxTokens = 32000,        // Large context window
+    Temperature = 0.1,        // Deterministic output
+    TopP = 0.5,              // Focused sampling
+    ExtensionData = new Dictionary<string, object>
+    {
+        ["max_completion_tokens"] = 32000  // For gpt-5-mini
+    }
+};
+```
+
+### 🎯 Agent Specialization via Prompts
+
+Each agent has a **distinct system prompt** that shapes its behavior:
+
+**CobolAnalyzerAgent System Prompt:**
+```
+You are an expert COBOL code analyzer with deep knowledge of:
+- COBOL syntax (all dialects: COBOL-74, COBOL-85, Enterprise COBOL)
+- Data structures (01 levels, OCCURS, REDEFINES)
+- Program flow (PERFORM, GO TO, EVALUATE)
+- Copybook dependencies and includes
+...
+```
+
+**JavaConverterAgent System Prompt:**
+```
+You are an expert in converting COBOL to modern Java using Quarkus framework.
+Rules:
+1. Use Java 17+ features (records, switch expressions, var)
+2. Apply Quarkus CDI patterns (@ApplicationScoped, @Inject)
+3. Generate clean, idiomatic Java code
+4. Use ONLY simple lowercase package names (com.example.cobol)
+5. Return ONLY valid Java code - NO explanations or markdown
+...
+```
+
+**DependencyMapperAgent System Prompt:**
+```
+You are an expert in analyzing COBOL program dependencies.
+Your tasks:
+1. Identify all COPY statements and their targets
+2. Map program-to-program CALL relationships
+3. Analyze data flow between programs
+4. Generate Mermaid diagram syntax
+5. Calculate dependency metrics (fan-in, fan-out, depth)
+...
+```
+
+### 📊 Observability & Metrics
+
+Semantic Kernel enables comprehensive tracking:
+
+- **API Call Metrics**: Response times, token counts, costs
+- **Conversation Logs**: Full chat history in Markdown
+- **Error Tracking**: Failed calls, retries, error messages
+- **Performance Analysis**: Bottleneck identification
+- **Cost Analysis**: Per-agent and total migration costs
+
+**Example from a real migration:**
+- 📞 **205 API calls** across 3 agents
+- ⏱️ **1.2 hours** total processing time
+- 💰 **$0.31** total cost
+- 🎯 **97% success rate** (99/102 files)
+
+This Semantic Kernel orchestration provides a **robust, observable, and extensible** foundation for complex AI agent workflows! 🚀
 
 ## 🎯 Core Components Explained
 
@@ -350,7 +1620,8 @@ graph TB
   },
   "ApplicationSettings": {
     "CobolSourceFolder": "cobol-source",
-    "JavaOutputFolder": "java-output"
+    "JavaOutputFolder": "java-output",
+    "MigrationDatabasePath": "Data/migration.db"
   }
 }
 ```
@@ -397,6 +1668,30 @@ graph TB
 7. **📈 Scalability**: Efficient processing of large COBOL codebases
 
 This Semantic Kernel-based architecture transforms the complex task of COBOL-to-Java migration into a manageable, observable, and highly effective automated process! 🚀
+
+## Persistence and MCP Architecture
+
+### SQLite-backed migration history
+- Every invocation of `MigrationProcess` opens (or creates) the SQLite database defined by `ApplicationSettings.MigrationDatabasePath`.
+- The repository layer (`Persistence/SqliteMigrationRepository.cs`) captures:
+  - `migration_runs` – one record per execution (status, timestamps, statistics).
+  - `cobol_files` – original source contents and metadata.
+  - `analyses` – structured COBOL analysis results serialized as JSON.
+  - `dependency_maps` – relationship graphs plus Mermaid diagrams.
+  - `java_files` – generated Java source plus target paths.
+- Transactions ensure that partially failed runs cannot corrupt previous history.
+
+### MCP server capabilities
+- `dotnet run -- mcp` spins up `Mcp/McpServer.cs`, a JSON-RPC STDIO host implementing the Model Context Protocol.
+- Each run and its artifacts are exposed as MCP resources (e.g., `migration-run/{id}`, `cobol-file/{id}`) with rich JSON payloads.
+- `messages/create` asks natural-language questions; answers are grounded in the persisted analyses, dependencies, and generated Java code.
+- The server selects the most recent run by default, but you can target a specific run id with `--run-id`.
+
+### Data flow overview
+1. CLI loads configuration, establishes the SQLite repository, and starts a `migration_runs` transaction.
+2. Agents execute as before, but now persist their outputs through `IMigrationRepository`.
+3. When the run completes, the transaction is committed and metrics are stored alongside artifacts.
+4. The MCP server reads the same database to serve resources and conversational responses to MCP clients.
 
 ## 📍 Where Semantic Kernel Process Functions Are Used
 

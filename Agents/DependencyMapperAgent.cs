@@ -4,6 +4,11 @@ using Microsoft.SemanticKernel.Connectors.OpenAI;
 using CobolToQuarkusMigration.Agents.Interfaces;
 using CobolToQuarkusMigration.Models;
 using CobolToQuarkusMigration.Helpers;
+using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Net.Sockets;
+using System.Reflection;
 using System.Text.RegularExpressions;
 using System.Text;
 using System.Diagnostics;
@@ -50,8 +55,8 @@ public class DependencyMapperAgent : IDependencyMapperAgent
         var dependencyMap = new DependencyMap();
         var kernel = _kernelBuilder.Build();
 
-        try
-        {
+    try
+    {
             // First, analyze copybook usage patterns
             _enhancedLogger?.LogBehindTheScenes("PROCESSING", "COPYBOOK_ANALYSIS", 
                 "Analyzing copybook usage patterns");
@@ -65,7 +70,7 @@ public class DependencyMapperAgent : IDependencyMapperAgent
             // Analyze detailed dependencies using AI
             _enhancedLogger?.LogBehindTheScenes("AI_PROCESSING", "DETAILED_ANALYSIS", 
                 "Performing AI-powered detailed dependency analysis");
-            await AnalyzeDetailedDependenciesAsync(kernel, cobolFiles, analyses, dependencyMap);
+            var aiAnalysisSucceeded = await AnalyzeDetailedDependenciesAsync(kernel, cobolFiles, analyses, dependencyMap);
             
             // Calculate metrics
             _enhancedLogger?.LogBehindTheScenes("PROCESSING", "METRICS_CALCULATION", 
@@ -75,7 +80,7 @@ public class DependencyMapperAgent : IDependencyMapperAgent
             // Generate Mermaid diagram
             _enhancedLogger?.LogBehindTheScenes("AI_PROCESSING", "DIAGRAM_GENERATION", 
                 "Generating Mermaid dependency diagram");
-            dependencyMap.MermaidDiagram = await GenerateMermaidDiagramAsync(dependencyMap);
+            dependencyMap.MermaidDiagram = await GenerateMermaidDiagramAsync(dependencyMap, aiAnalysisSucceeded);
 
             stopwatch.Stop();
             _enhancedLogger?.LogBehindTheScenes("AI_PROCESSING", "DEPENDENCY_ANALYSIS_COMPLETE", 
@@ -116,10 +121,16 @@ public class DependencyMapperAgent : IDependencyMapperAgent
     }
 
     /// <inheritdoc/>
-    public async Task<string> GenerateMermaidDiagramAsync(DependencyMap dependencyMap)
+    public async Task<string> GenerateMermaidDiagramAsync(DependencyMap dependencyMap, bool enableAiGeneration = true)
     {
         _logger.LogInformation("Generating Mermaid diagram for dependency map");
         
+        if (!enableAiGeneration)
+        {
+            _logger.LogWarning("Skipping Azure OpenAI Mermaid generation because previous analysis failed.");
+            return GenerateFallbackMermaidDiagram(dependencyMap);
+        }
+
         var kernel = _kernelBuilder.Build();
         
         try
@@ -156,9 +167,11 @@ Create a clear, organized Mermaid diagram that shows these relationships.
 
             var executionSettings = new OpenAIPromptExecutionSettings
             {
-                MaxTokens = 32768,
-                Temperature = 0.1,
-                TopP = 0.5
+                // gpt-5-mini only supports default temperature (1) and topP (1)
+                ExtensionData = new Dictionary<string, object>
+                {
+                    ["max_completion_tokens"] = 32768  // gpt-5-mini uses max_completion_tokens
+                }
             };
 
             var fullPrompt = $"{systemPrompt}\n\n{prompt}";
@@ -183,6 +196,16 @@ Create a clear, organized Mermaid diagram that shows these relationships.
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error generating Mermaid diagram");
+            var reason = GetFallbackReason(ex);
+            if (IsNetworkException(ex))
+            {
+                dependencyMap.AnalysisInsights =
+                    "Dependency insights unavailable: Unable to reach Azure OpenAI while generating diagram.";
+            }
+            else if (string.IsNullOrWhiteSpace(dependencyMap.AnalysisInsights))
+            {
+                dependencyMap.AnalysisInsights = $"Dependency insights unavailable: {reason}";
+            }
             return GenerateFallbackMermaidDiagram(dependencyMap);
         }
     }
@@ -245,7 +268,7 @@ Create a clear, organized Mermaid diagram that shows these relationships.
         }
     }
 
-    private async Task AnalyzeDetailedDependenciesAsync(Kernel kernel, List<CobolFile> cobolFiles, 
+    private async Task<bool> AnalyzeDetailedDependenciesAsync(Kernel kernel, List<CobolFile> cobolFiles, 
         List<CobolAnalysis> analyses, DependencyMap dependencyMap)
     {
         _logger.LogInformation("Performing detailed dependency analysis using AI");
@@ -315,8 +338,11 @@ Provide insights about the dependency architecture.
 
                 var executionSettings = new OpenAIPromptExecutionSettings
                 {
-                    MaxTokens = 32768,
-                    Temperature = 0.2
+                    // gpt-5-mini only supports default temperature (1) and topP (1)
+                    ExtensionData = new Dictionary<string, object>
+                    {
+                        ["max_completion_tokens"] = 32768  // gpt-5-mini uses max_completion_tokens
+                    }
                 };
 
                 var kernelArguments = new KernelArguments(executionSettings);
@@ -339,6 +365,8 @@ Provide insights about the dependency architecture.
                 // Store insights in the dependency map
                 dependencyMap.AnalysisInsights = insights;
             }
+
+            return true;
         }
         catch (Exception ex)
         {
@@ -351,6 +379,50 @@ Provide insights about the dependency architecture.
                 $"Error in detailed dependency analysis: {ex.Message}", ex);
             
             _logger.LogWarning(ex, "Error during detailed dependency analysis, continuing with basic analysis");
+            var reason = GetFallbackReason(ex);
+
+            if (IsNetworkException(ex))
+            {
+                dependencyMap.AnalysisInsights =
+                    $"Dependency insights unavailable: Unable to reach Azure OpenAI ({reason}).";
+            }
+            else if (ex is HttpOperationException httpEx)
+            {
+                HandleHttpError(httpEx.StatusCode, dependencyMap, reason);
+            }
+            else if (ex.InnerException is HttpOperationException innerHttp)
+            {
+                HandleHttpError(innerHttp.StatusCode, dependencyMap, reason);
+            }
+            else if (ExtractStatusCode(ex) is int status)
+            {
+                HandleHttpError((HttpStatusCode)status, dependencyMap, reason);
+            }
+            else if (string.IsNullOrWhiteSpace(dependencyMap.AnalysisInsights))
+            {
+                dependencyMap.AnalysisInsights = $"Dependency insights unavailable: {reason}";
+            }
+
+            return false;
+        }
+    }
+
+    private void HandleHttpError(HttpStatusCode? statusCode, DependencyMap dependencyMap, string? reason = null)
+    {
+        if (statusCode == HttpStatusCode.Unauthorized)
+        {
+            dependencyMap.AnalysisInsights =
+                "Dependency insights unavailable: Azure OpenAI returned 401 (unauthorized). Verify your endpoint and API key.";
+        }
+        else if (statusCode.HasValue)
+        {
+            dependencyMap.AnalysisInsights =
+                $"Dependency insights unavailable: Azure OpenAI returned {(int)statusCode} ({statusCode}).";
+        }
+
+        if (!string.IsNullOrWhiteSpace(reason))
+        {
+            dependencyMap.AnalysisInsights += $" Details: {reason}.";
         }
     }
 
@@ -438,5 +510,73 @@ Provide insights about the dependency architecture.
         }
         
         return sb.ToString();
+    }
+
+    private static bool IsNetworkException(Exception exception)
+    {
+        switch (exception)
+        {
+            case HttpRequestException:
+            case SocketException:
+                return true;
+            case HttpOperationException http when http.InnerException != null:
+                return IsNetworkException(http.InnerException);
+            case AggregateException aggregate:
+                return aggregate.InnerExceptions.Any(IsNetworkException);
+            default:
+                return exception.InnerException != null && IsNetworkException(exception.InnerException);
+        }
+    }
+
+    private static string GetFallbackReason(Exception exception)
+    {
+        var innermost = exception;
+        while (innermost.InnerException != null)
+        {
+            innermost = innermost.InnerException;
+        }
+
+        var message = innermost.Message;
+        return string.IsNullOrWhiteSpace(message)
+            ? exception.Message
+            : message.Replace('\r', ' ').Replace('\n', ' ').Trim();
+    }
+
+    private static int? ExtractStatusCode(Exception exception)
+    {
+        switch (exception)
+        {
+            case HttpOperationException httpException when httpException.StatusCode.HasValue:
+                return (int)httpException.StatusCode.Value;
+            case AggregateException aggregateException:
+                foreach (var inner in aggregateException.InnerExceptions)
+                {
+                    var innerStatus = ExtractStatusCode(inner);
+                    if (innerStatus.HasValue)
+                    {
+                        return innerStatus;
+                    }
+                }
+                break;
+        }
+
+        var statusCodeProperty = exception.GetType().GetRuntimeProperty("StatusCode");
+        if (statusCodeProperty?.GetValue(exception) is HttpStatusCode httpStatus)
+        {
+            return (int)httpStatus;
+        }
+
+        if (statusCodeProperty?.GetValue(exception) is int statusInt)
+        {
+            return statusInt;
+        }
+
+        var statusProperty = exception.GetType().GetRuntimeProperty("Status");
+        if (statusProperty?.GetValue(exception) is int status)
+        {
+            return status;
+        }
+
+        return exception.InnerException != null ? ExtractStatusCode(exception.InnerException) : null;
     }
 }

@@ -22,8 +22,9 @@ public interface IDependencyMapperAgent
     /// Generates a Mermaid flowchart for COBOL dependencies.
     /// </summary>
     /// <param name="dependencyMap">The dependency map to visualize.</param>
+    /// <param name="enableAiGeneration">Whether to call Azure OpenAI for the diagram (false skips to fallback).</param>
     /// <returns>A Mermaid diagram as a string.</returns>
-    Task<string> GenerateMermaidDiagramAsync(DependencyMap dependencyMap);
+    Task<string> GenerateMermaidDiagramAsync(DependencyMap dependencyMap, bool enableAiGeneration = true);
 
     /// <summary>
     /// Analyzes copybook usage patterns across COBOL programs.

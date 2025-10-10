@@ -96,9 +96,34 @@ public class FileHelper
             Directory.CreateDirectory(outputDirectory);
         }
         
+        // Sanitize and validate package name
+        var sanitizedPackageName = SanitizePackageName(javaFile.PackageName);
+        if (string.IsNullOrEmpty(sanitizedPackageName))
+        {
+            // Extract package from content if package name is invalid
+            sanitizedPackageName = ExtractPackageNameFromContent(javaFile.Content);
+            _logger.LogWarning("Invalid package name '{OriginalPackage}' replaced with '{SanitizedPackage}'", 
+                javaFile.PackageName, sanitizedPackageName);
+        }
+        
         // Create package directory structure
-        var packagePath = javaFile.PackageName.Replace('.', Path.DirectorySeparatorChar);
+        var packagePath = sanitizedPackageName.Replace('.', Path.DirectorySeparatorChar);
         var packageDirectory = Path.Combine(outputDirectory, packagePath);
+        
+        // Validate the full path length before creating
+        var potentialFilePath = Path.Combine(packageDirectory, sanitizedFileName);
+        if (potentialFilePath.Length > 240) // Leave some margin before the 260 limit
+        {
+            _logger.LogWarning("Path too long ({Length} chars), using shortened package name", potentialFilePath.Length);
+            // Use just the last part of the package name
+            var parts = sanitizedPackageName.Split('.');
+            sanitizedPackageName = parts.Length > 2 
+                ? string.Join('.', parts.TakeLast(2))
+                : sanitizedPackageName;
+            packagePath = sanitizedPackageName.Replace('.', Path.DirectorySeparatorChar);
+            packageDirectory = Path.Combine(outputDirectory, packagePath);
+            potentialFilePath = Path.Combine(packageDirectory, sanitizedFileName);
+        }
         
         if (!Directory.Exists(packageDirectory))
         {
@@ -150,6 +175,60 @@ public class FileHelper
     }
 
     /// <summary>
+    /// Sanitizes a package name by removing invalid characters and content
+    /// </summary>
+    private string SanitizePackageName(string packageName)
+    {
+        if (string.IsNullOrWhiteSpace(packageName))
+            return "com.example.generated";
+            
+        // Take only the first line and remove whitespace
+        var firstLine = packageName.Split('\n', StringSplitOptions.RemoveEmptyEntries)[0].Trim();
+        
+        // If it contains any invalid characters for a package name, reject it
+        if (firstLine.Any(c => !char.IsLetterOrDigit(c) && c != '.' && c != '_'))
+        {
+            return "com.example.generated";
+        }
+        
+        // Remove any leading/trailing dots
+        firstLine = firstLine.Trim('.');
+        
+        // Ensure it doesn't have consecutive dots
+        while (firstLine.Contains(".."))
+        {
+            firstLine = firstLine.Replace("..", ".");
+        }
+        
+        // Validate it looks like a package name (only lowercase letters, dots, numbers)
+        if (string.IsNullOrEmpty(firstLine) || !firstLine.Contains('.'))
+        {
+            return "com.example.generated";
+        }
+        
+        return firstLine.ToLowerInvariant();
+    }
+
+    /// <summary>
+    /// Extracts the package name from Java content
+    /// </summary>
+    private string ExtractPackageNameFromContent(string content)
+    {
+        var lines = content.Split('\n');
+        foreach (var line in lines)
+        {
+            var trimmedLine = line.Trim();
+            if (trimmedLine.StartsWith("package ") && trimmedLine.EndsWith(";"))
+            {
+                var packageName = trimmedLine.Substring(8, trimmedLine.Length - 9).Trim();
+                return SanitizePackageName(packageName);
+            }
+        }
+        
+        return "com.example.generated";
+    }
+
+    /// <summary>
     /// Extracts the class name from Java content
     /// </summary>
     private string ExtractClassNameFromContent(string content)
@@ -158,14 +237,15 @@ public class FileHelper
         foreach (var line in lines)
         {
             var trimmedLine = line.Trim();
-            if (trimmedLine.StartsWith("public class "))
+            if (trimmedLine.StartsWith("public class ") || trimmedLine.StartsWith("class "))
             {
                 var parts = trimmedLine.Split(' ');
-                if (parts.Length >= 3)
+                var classIndex = Array.IndexOf(parts, "class") + 1;
+                if (classIndex > 0 && classIndex < parts.Length)
                 {
-                    var className = parts[2];
+                    var className = parts[classIndex];
                     // Remove any trailing characters like { or implements
-                    className = className.Split('{', ' ')[0];
+                    className = className.Split('{', ' ', '<')[0];
                     return className;
                 }
             }

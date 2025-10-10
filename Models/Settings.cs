@@ -1,3 +1,5 @@
+using System.IO;
+
 namespace CobolToQuarkusMigration.Models;
 
 /// <summary>
@@ -130,4 +132,45 @@ public class ApplicationSettings
     /// Gets or sets the folder for test output files.
     /// </summary>
     public string TestOutputFolder { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Gets or sets the path to the migration insights database.
+    /// </summary>
+    public string MigrationDatabasePath { get; set; } = Path.Combine("Data", "migration.db");
+
+    /// <summary>
+    /// Gets or sets the Neo4j graph database settings.
+    /// </summary>
+    public Neo4jSettings? Neo4j { get; set; }
+}
+
+/// <summary>
+/// Represents Neo4j graph database settings.
+/// </summary>
+public class Neo4jSettings
+{
+    /// <summary>
+    /// Gets or sets whether Neo4j integration is enabled.
+    /// </summary>
+    public bool Enabled { get; set; } = false;
+
+    /// <summary>
+    /// Gets or sets the Neo4j connection URI (e.g., bolt://localhost:7687).
+    /// </summary>
+    public string Uri { get; set; } = "bolt://localhost:7687";
+
+    /// <summary>
+    /// Gets or sets the Neo4j username.
+    /// </summary>
+    public string Username { get; set; } = "neo4j";
+
+    /// <summary>
+    /// Gets or sets the Neo4j password.
+    /// </summary>
+    public string Password { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Gets or sets the database name (default is "neo4j").
+    /// </summary>
+    public string Database { get; set; } = "neo4j";
 }
