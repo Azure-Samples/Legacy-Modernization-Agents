@@ -85,6 +85,13 @@ This project includes a **fully configured dev container** that sets up everythi
   - `neo4j-status` - Check Neo4j status
   - `neo4j-start/stop/logs` - Manage Neo4j
 
+#### New Portal expierence
+<img width="1715" height="963" alt="Portal expierence with meta data and graph data fronted by mcp " src="https://github.com/user-attachments/assets/c1faca51-dc21-41cf-9a51-70da5a3c8255" />
+
+#### Meta data and MCP service fronting Neo4J
+<img width="802" height="855" alt="mcp fronting graph db with azure openai" src="https://github.com/user-attachments/assets/2b93d018-0d54-479a-a090-2d6eb40f391e" />
+
+
 #### 🚀 Quick Start with Dev Container
 
 **Requirements:**
