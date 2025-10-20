@@ -73,6 +73,7 @@ show_usage() {
     echo -e "  ${GREEN}test${NC}            Full system validation and testing"
     echo -e "  ${GREEN}run${NC}             Start the migration process"
     echo -e "  ${GREEN}doctor${NC}          Diagnose configuration issues (default)"
+    echo -e "  ${GREEN}reverse-eng${NC}     Run reverse engineering analysis only"
     echo -e "  ${GREEN}resume${NC}          Resume interrupted migration"
     echo -e "  ${GREEN}monitor${NC}         Monitor migration progress"
     echo -e "  ${GREEN}chat-test${NC}       Test chat logging functionality"
@@ -80,10 +81,11 @@ show_usage() {
     echo -e "  ${GREEN}conversation${NC}    Start interactive conversation mode"
     echo
     echo -e "${BOLD}Examples:${NC}"
-    echo -e "  $0              ${CYAN}# Run configuration doctor${NC}"
-    echo -e "  $0 setup        ${CYAN}# Interactive setup${NC}"
-    echo -e "  $0 test         ${CYAN}# Test configuration and dependencies${NC}"
-    echo -e "  $0 run          ${CYAN}# Start migration${NC}"
+    echo -e "  $0                   ${CYAN}# Run configuration doctor${NC}"
+    echo -e "  $0 setup             ${CYAN}# Interactive setup${NC}"
+    echo -e "  $0 test              ${CYAN}# Test configuration and dependencies${NC}"
+    echo -e "  $0 reverse-eng       ${CYAN}# Extract business logic from COBOL${NC}"
+    echo -e "  $0 run               ${CYAN}# Start full migration${NC}"
     echo
 }
 
@@ -304,6 +306,52 @@ run_doctor() {
 
     echo
 
+    # Check reverse engineering components
+    echo -e "${BLUE}🔍 Checking Reverse Engineering Components...${NC}"
+    echo
+
+    # Check models
+    if [[ -f "$REPO_ROOT/Models/BusinessLogic.cs" ]]; then
+        echo -e "${GREEN}✅ BusinessLogic model found${NC}"
+    else
+        echo -e "${YELLOW}⚠️  Missing BusinessLogic model (optional feature)${NC}"
+    fi
+
+    if [[ -f "$REPO_ROOT/Models/UtilityCodeAnalysis.cs" ]]; then
+        echo -e "${GREEN}✅ UtilityCodeAnalysis model found${NC}"
+    else
+        echo -e "${YELLOW}⚠️  Missing UtilityCodeAnalysis model (optional feature)${NC}"
+    fi
+
+    # Check agents
+    if [[ -f "$REPO_ROOT/Agents/BusinessLogicExtractorAgent.cs" ]]; then
+        echo -e "${GREEN}✅ BusinessLogicExtractorAgent found${NC}"
+    else
+        echo -e "${YELLOW}⚠️  Missing BusinessLogicExtractorAgent (optional feature)${NC}"
+    fi
+
+    if [[ -f "$REPO_ROOT/Agents/UtilityCodeAnalyzerAgent.cs" ]]; then
+        echo -e "${GREEN}✅ UtilityCodeAnalyzerAgent found${NC}"
+    else
+        echo -e "${YELLOW}⚠️  Missing UtilityCodeAnalyzerAgent (optional feature)${NC}"
+    fi
+
+    # Check process
+    if [[ -f "$REPO_ROOT/Processes/ReverseEngineeringProcess.cs" ]]; then
+        echo -e "${GREEN}✅ ReverseEngineeringProcess found${NC}"
+    else
+        echo -e "${YELLOW}⚠️  Missing ReverseEngineeringProcess (optional feature)${NC}"
+    fi
+
+    # Check documentation
+    if [[ -f "$REPO_ROOT/REVERSE_ENGINEERING.md" ]]; then
+        echo -e "${GREEN}✅ Reverse engineering documentation found${NC}"
+    else
+        echo -e "${YELLOW}⚠️  Missing reverse engineering documentation${NC}"
+    fi
+
+    echo
+
     # If local config doesn't exist, offer to create it
     if [[ "$local_config_exists" == false ]]; then
         echo -e "${YELLOW}🔧 Local Configuration Setup${NC}"
@@ -389,10 +437,12 @@ run_doctor() {
     echo
     echo -e "${BLUE}🔧 Available Commands${NC}"
     echo "===================="
-    echo "• ./doctor.sh setup - Interactive configuration setup"
-    echo "• ./doctor.sh test - Full system validation"
-    echo "• ./doctor.sh run - Start migration"
-    echo "• CONFIGURATION_GUIDE.md - Detailed setup instructions"
+    echo "• ./doctor.sh setup         - Interactive configuration setup"
+    echo "• ./doctor.sh test          - Full system validation"
+    echo "• ./doctor.sh run           - Start migration"
+    echo "• ./doctor.sh reverse-eng   - Run reverse engineering only"
+    echo "• CONFIGURATION_GUIDE.md    - Detailed setup instructions"
+    echo "• REVERSE_ENGINEERING.md    - Reverse engineering guide"
 
     echo
     echo -e "${BLUE}💡 Troubleshooting Tips${NC}"
@@ -592,6 +642,18 @@ run_test() {
         echo -e "${BLUE}ℹ️  Output directory will be created during migration${NC}"
     fi
 
+    # Check reverse engineering output
+    if [ -d "$REPO_ROOT/reverse-engineering-output" ]; then
+        md_files=$(find "$REPO_ROOT/reverse-engineering-output" -name "*.md" 2>/dev/null | wc -l)
+        if [ "$md_files" -gt 0 ]; then
+            echo -e "${GREEN}✅ Found previous reverse engineering output ($md_files markdown files)${NC}"
+        else
+            echo -e "${BLUE}ℹ️  No previous reverse engineering output found${NC}"
+        fi
+    else
+        echo -e "${BLUE}ℹ️  Reverse engineering output directory will be created during analysis${NC}"
+    fi
+
     # Check logging infrastructure
     echo ""
     echo "Checking logging infrastructure..."
@@ -603,13 +665,42 @@ run_test() {
         echo -e "${GREEN}✅ Created Logs directory${NC}"
     fi
 
+    # Check for reverse engineering agents and models
+    echo ""
+    echo "Checking reverse engineering components..."
+    re_components=0
+    re_components_total=5
+    
+    [ -f "$REPO_ROOT/Models/BusinessLogic.cs" ] && ((re_components++))
+    [ -f "$REPO_ROOT/Models/UtilityCodeAnalysis.cs" ] && ((re_components++))
+    [ -f "$REPO_ROOT/Agents/BusinessLogicExtractorAgent.cs" ] && ((re_components++))
+    [ -f "$REPO_ROOT/Agents/UtilityCodeAnalyzerAgent.cs" ] && ((re_components++))
+    [ -f "$REPO_ROOT/Processes/ReverseEngineeringProcess.cs" ] && ((re_components++))
+    
+    if [ $re_components -eq $re_components_total ]; then
+        echo -e "${GREEN}✅ All reverse engineering components present ($re_components/$re_components_total)${NC}"
+    elif [ $re_components -gt 0 ]; then
+        echo -e "${YELLOW}⚠️  Partial reverse engineering support ($re_components/$re_components_total components)${NC}"
+    else
+        echo -e "${BLUE}ℹ️  Reverse engineering feature not installed${NC}"
+    fi
+
     echo ""
     echo -e "${GREEN}🚀 Ready to run migration!${NC}"
     echo ""
     echo "Migration Options:"
-    echo "  Quick Start:  ./doctor.sh run"
-    echo "  Manual:       dotnet run -- --cobol-source ./cobol-source --java-output ./java-output --verbose"
+    echo "  Standard:         ./doctor.sh run"
+    echo "  Reverse Engineer: dotnet run reverse-engineer --cobol-source ./cobol-source"
+    echo "  Full Migration:   dotnet run -- --cobol-source ./cobol-source --java-output ./java-output --verbose"
     echo ""
+    if [ $re_components -eq $re_components_total ]; then
+        echo "Reverse Engineering Available:"
+        echo "  Extract business logic from COBOL before migration"
+        echo "  Detect utility code vs. business-specific patterns"
+        echo "  Generate documentation in markdown format"
+        echo "  Run: dotnet run reverse-engineer --cobol-source ./cobol-source --output ./reverse-engineering-output"
+        echo ""
+    fi
     if [ "$cobol_files" -gt 0 ]; then
         echo "Expected Results:"
         echo "  - Process $cobol_files COBOL files"
@@ -770,7 +861,7 @@ run_validate() {
     done
 
     # Check directories
-    for dir in "cobol-source" "java-output"; do
+    for dir in "cobol-source" "java-output" "reverse-engineering-output"; do
     if [ -d "$REPO_ROOT/$dir" ]; then
             echo -e "${GREEN}✅ Directory: $dir${NC}"
         else
@@ -778,6 +869,25 @@ run_validate() {
             mkdir -p "$REPO_ROOT/$dir"
         fi
     done
+
+    # Validate reverse engineering components
+    echo ""
+    echo "Checking reverse engineering feature..."
+    re_valid=0
+    [ -f "$REPO_ROOT/Models/BusinessLogic.cs" ] && ((re_valid++))
+    [ -f "$REPO_ROOT/Models/UtilityCodeAnalysis.cs" ] && ((re_valid++))
+    [ -f "$REPO_ROOT/Agents/BusinessLogicExtractorAgent.cs" ] && ((re_valid++))
+    [ -f "$REPO_ROOT/Agents/UtilityCodeAnalyzerAgent.cs" ] && ((re_valid++))
+    [ -f "$REPO_ROOT/Processes/ReverseEngineeringProcess.cs" ] && ((re_valid++))
+    
+    if [ $re_valid -eq 5 ]; then
+        echo -e "${GREEN}✅ Reverse engineering feature: Complete (5/5 components)${NC}"
+    elif [ $re_valid -gt 0 ]; then
+        echo -e "${YELLOW}⚠️  Reverse engineering feature: Incomplete ($re_valid/5 components)${NC}"
+        ((errors++))
+    else
+        echo -e "${BLUE}ℹ️  Reverse engineering feature: Not installed (optional)${NC}"
+    fi
 
     if [ $errors -eq 0 ]; then
         echo -e "${GREEN}🎉 System validation passed!${NC}"
@@ -808,10 +918,84 @@ run_conversation() {
     "$DOTNET_CMD" run -- --interactive
 }
 
+# Function for reverse engineering
+run_reverse_engineering() {
+    echo -e "${BLUE}🔍 Running Reverse Engineering Analysis${NC}"
+    echo "========================================"
+
+    echo -e "${BLUE}Using dotnet CLI:${NC} $DOTNET_CMD"
+
+    # Load configuration
+    echo "🔧 Loading AI configuration..."
+    if ! load_configuration; then
+        echo -e "${RED}❌ Configuration loading failed. Please run: ./doctor.sh setup${NC}"
+        return 1
+    fi
+
+    # Load and validate configuration
+    if ! load_ai_config; then
+        echo -e "${RED}❌ Configuration loading failed. Please check your ai-config.local.env file.${NC}"
+        return 1
+    fi
+
+    # Check if reverse engineering components are present
+    if [ ! -f "$REPO_ROOT/Processes/ReverseEngineeringProcess.cs" ]; then
+        echo -e "${RED}❌ Reverse engineering feature not found.${NC}"
+        echo "This feature may not be available in your version."
+        return 1
+    fi
+
+    echo ""
+    echo "🔍 Starting Reverse Engineering Analysis..."
+    echo "=========================================="
+    echo ""
+    echo "This will:"
+    echo "  • Extract business logic as user stories and features"
+    echo "  • Detect utility code patterns vs. business-specific code"
+    echo "  • Analyze modernization opportunities"
+    echo "  • Generate markdown documentation"
+    echo ""
+
+    # Check for COBOL files
+    cobol_count=$(find "$REPO_ROOT/cobol-source" -name "*.cbl" 2>/dev/null | wc -l)
+    if [ "$cobol_count" -eq 0 ]; then
+        echo -e "${YELLOW}⚠️  No COBOL files found in ./cobol-source/${NC}"
+        echo "Add COBOL files to analyze and try again."
+        return 1
+    fi
+
+    echo -e "Found ${GREEN}$cobol_count${NC} COBOL file(s) to analyze"
+    echo ""
+
+    # Run the reverse engineering command
+    "$DOTNET_CMD" run reverse-engineer --cobol-source ./cobol-source --output ./reverse-engineering-output
+
+    local exit_code=$?
+
+    if [ $exit_code -eq 0 ]; then
+        echo ""
+        echo -e "${GREEN}✅ Reverse engineering completed successfully!${NC}"
+        echo ""
+        echo "Output files created in: ./reverse-engineering-output/"
+        echo "  • business-logic.md      - User stories and features"
+        echo "  • technical-details.md   - Utility code analysis"
+        echo "  • summary.md             - Overall findings"
+        echo ""
+        echo "Next steps:"
+        echo "  • Review the generated documentation"
+        echo "  • Run full migration: ./doctor.sh run"
+    else
+        echo ""
+        echo -e "${RED}❌ Reverse engineering failed (exit code $exit_code)${NC}"
+    fi
+
+    return $exit_code
+}
+
 # Main command routing
 main() {
     # Create required directories if they don't exist
-    mkdir -p "$REPO_ROOT/cobol-source" "$REPO_ROOT/java-output" "$REPO_ROOT/Logs"
+    mkdir -p "$REPO_ROOT/cobol-source" "$REPO_ROOT/java-output" "$REPO_ROOT/Logs" "$REPO_ROOT/reverse-engineering-output"
 
     case "${1:-doctor}" in
         "setup")
@@ -825,6 +1009,9 @@ main() {
             ;;
         "doctor"|"")
             run_doctor
+            ;;
+        "reverse-eng"|"reverse-engineer"|"reverse")
+            run_reverse_engineering
             ;;
         "resume")
             run_resume

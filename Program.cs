@@ -2,6 +2,8 @@
 using CobolToQuarkusMigration.Mcp;
 using CobolToQuarkusMigration.Models;
 using CobolToQuarkusMigration.Persistence;
+using CobolToQuarkusMigration.Processes;
+using CobolToQuarkusMigration.Agents;
 using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
 using System.CommandLine;
@@ -44,6 +46,20 @@ internal static class Program
         javaOutputOption.AddAlias("-j");
         rootCommand.AddOption(javaOutputOption);
 
+        var reverseEngineerOutputOption = new Option<string>("--reverse-engineer-output", () => "reverse-engineering-output", "Path to the folder for reverse engineering output")
+        {
+            Arity = ArgumentArity.ZeroOrOne
+        };
+        reverseEngineerOutputOption.AddAlias("-reo");
+        rootCommand.AddOption(reverseEngineerOutputOption);
+
+        var reverseEngineerOnlyOption = new Option<bool>("--reverse-engineer-only", () => false, "Run only reverse engineering (skip Java conversion)")
+        {
+            Arity = ArgumentArity.ZeroOrOne
+        };
+        reverseEngineerOnlyOption.AddAlias("-reo-only");
+        rootCommand.AddOption(reverseEngineerOnlyOption);
+
         var configOption = new Option<string>("--config", () => "Config/appsettings.json", "Path to the configuration file")
         {
             Arity = ArgumentArity.ZeroOrOne
@@ -57,10 +73,13 @@ internal static class Program
         var mcpCommand = BuildMcpCommand(loggerFactory, settingsHelper);
         rootCommand.AddCommand(mcpCommand);
 
-        rootCommand.SetHandler(async (string cobolSource, string javaOutput, string configPath) =>
+        var reverseEngineerCommand = BuildReverseEngineerCommand(loggerFactory, fileHelper, settingsHelper);
+        rootCommand.AddCommand(reverseEngineerCommand);
+
+        rootCommand.SetHandler(async (string cobolSource, string javaOutput, string reverseEngineerOutput, bool reverseEngineerOnly, string configPath) =>
         {
-            await RunMigrationAsync(loggerFactory, logger, fileHelper, settingsHelper, cobolSource, javaOutput, configPath);
-        }, cobolSourceOption, javaOutputOption, configOption);
+            await RunMigrationAsync(loggerFactory, logger, fileHelper, settingsHelper, cobolSource, javaOutput, reverseEngineerOutput, reverseEngineerOnly, configPath);
+        }, cobolSourceOption, javaOutputOption, reverseEngineerOutputOption, reverseEngineerOnlyOption, configOption);
 
         return rootCommand;
     }
@@ -99,21 +118,59 @@ internal static class Program
     {
         var mcpCommand = new Command("mcp", "Expose migration insights over the Model Context Protocol");
 
-        var runIdOption = new Option<int?>("--run-id", description: "Specific migration run id to expose")
+        var runIdOption = new Option<int?>("--run-id", () => null, "Specific run ID to expose via MCP (defaults to latest)")
         {
             Arity = ArgumentArity.ZeroOrOne
         };
+        runIdOption.AddAlias("-r");
         mcpCommand.AddOption(runIdOption);
 
-        var mcpConfigOption = new Option<string>("--config", () => "Config/appsettings.json", "Path to the configuration file");
-        mcpCommand.AddOption(mcpConfigOption);
+        var configOption = new Option<string>("--config", () => "Config/appsettings.json", "Path to the configuration file")
+        {
+            Arity = ArgumentArity.ZeroOrOne
+        };
+        configOption.AddAlias("-c");
+        mcpCommand.AddOption(configOption);
 
         mcpCommand.SetHandler(async (int? runId, string configPath) =>
         {
             await RunMcpServerAsync(loggerFactory, settingsHelper, runId, configPath);
-        }, runIdOption, mcpConfigOption);
+        }, runIdOption, configOption);
 
         return mcpCommand;
+    }
+
+    private static Command BuildReverseEngineerCommand(ILoggerFactory loggerFactory, FileHelper fileHelper, SettingsHelper settingsHelper)
+    {
+        var reverseEngineerCommand = new Command("reverse-engineer", "Extract business logic and analyze utility code from COBOL applications");
+
+        var cobolSourceOption = new Option<string>("--cobol-source", "Path to the folder containing COBOL source files")
+        {
+            Arity = ArgumentArity.ExactlyOne
+        };
+        cobolSourceOption.AddAlias("-s");
+        reverseEngineerCommand.AddOption(cobolSourceOption);
+
+        var outputOption = new Option<string>("--output", () => "reverse-engineering-output", "Path to the output folder")
+        {
+            Arity = ArgumentArity.ZeroOrOne
+        };
+        outputOption.AddAlias("-o");
+        reverseEngineerCommand.AddOption(outputOption);
+
+        var configOption = new Option<string>("--config", () => "Config/appsettings.json", "Path to the configuration file")
+        {
+            Arity = ArgumentArity.ZeroOrOne
+        };
+        configOption.AddAlias("-c");
+        reverseEngineerCommand.AddOption(configOption);
+
+        reverseEngineerCommand.SetHandler(async (string cobolSource, string output, string configPath) =>
+        {
+            await RunReverseEngineeringAsync(loggerFactory, fileHelper, settingsHelper, cobolSource, output, configPath);
+        }, cobolSourceOption, outputOption, configOption);
+
+        return reverseEngineerCommand;
     }
 
     private static async Task GenerateConversationAsync(ILoggerFactory loggerFactory, string sessionId, string logDir, bool live)
@@ -248,7 +305,7 @@ internal static class Program
         }
     }
 
-    private static async Task RunMigrationAsync(ILoggerFactory loggerFactory, ILogger logger, FileHelper fileHelper, SettingsHelper settingsHelper, string cobolSource, string javaOutput, string configPath)
+    private static async Task RunMigrationAsync(ILoggerFactory loggerFactory, ILogger logger, FileHelper fileHelper, SettingsHelper settingsHelper, string cobolSource, string javaOutput, string reverseEngineerOutput, bool reverseEngineerOnly, string configPath)
     {
         try
         {
@@ -604,6 +661,139 @@ internal static class Program
             Console.WriteLine($"❌ Error during configuration validation: {ex.Message}");
             Console.WriteLine("Please check your configuration files and try again.");
             return false;
+        }
+    }
+
+    private static async Task RunReverseEngineeringAsync(ILoggerFactory loggerFactory, FileHelper fileHelper, SettingsHelper settingsHelper, string cobolSource, string output, string configPath)
+    {
+        var logger = loggerFactory.CreateLogger("ReverseEngineering");
+
+        try
+        {
+            logger.LogInformation("Loading settings from {ConfigPath}", configPath);
+            AppSettings? loadedSettings = await settingsHelper.LoadSettingsAsync<AppSettings>(configPath);
+            var settings = loadedSettings ?? new AppSettings();
+
+            LoadEnvironmentVariables();
+            OverrideSettingsFromEnvironment(settings);
+
+            // Override with CLI arguments
+            if (!string.IsNullOrEmpty(cobolSource))
+            {
+                settings.ApplicationSettings.CobolSourceFolder = cobolSource;
+            }
+
+            if (string.IsNullOrEmpty(settings.ApplicationSettings.CobolSourceFolder))
+            {
+                logger.LogError("COBOL source folder not specified. Use --cobol-source option.");
+                Environment.Exit(1);
+            }
+
+            if (string.IsNullOrEmpty(settings.AISettings.ApiKey) ||
+                string.IsNullOrEmpty(settings.AISettings.Endpoint) ||
+                string.IsNullOrEmpty(settings.AISettings.DeploymentName))
+            {
+                logger.LogError("Azure OpenAI configuration incomplete. Please ensure API key, endpoint, and deployment name are configured.");
+                Environment.Exit(1);
+            }
+
+            var kernelBuilder = Kernel.CreateBuilder();
+
+            if (settings.AISettings.ServiceType.Equals("AzureOpenAI", StringComparison.OrdinalIgnoreCase))
+            {
+                var httpClient = new HttpClient
+                {
+                    Timeout = TimeSpan.FromMinutes(10)
+                };
+
+                kernelBuilder.AddAzureOpenAIChatCompletion(
+                    deploymentName: settings.AISettings.DeploymentName,
+                    endpoint: settings.AISettings.Endpoint,
+                    apiKey: settings.AISettings.ApiKey,
+                    httpClient: httpClient);
+
+                logger.LogInformation("Using Azure OpenAI service");
+            }
+            else
+            {
+                kernelBuilder.AddOpenAIChatCompletion(
+                    modelId: settings.AISettings.ModelId,
+                    apiKey: settings.AISettings.ApiKey);
+
+                logger.LogInformation("Using OpenAI service");
+            }
+
+            // Initialize agents
+            var enhancedLogger = new EnhancedLogger();
+            var chatLogger = new ChatLogger(fileHelper);
+
+            var cobolAnalyzerAgent = new CobolAnalyzerAgent(
+                kernelBuilder,
+                loggerFactory.CreateLogger<CobolAnalyzerAgent>(),
+                settings.AISettings.ModelId,
+                enhancedLogger,
+                chatLogger);
+
+            var businessLogicExtractorAgent = new BusinessLogicExtractorAgent(
+                kernelBuilder,
+                loggerFactory.CreateLogger<BusinessLogicExtractorAgent>(),
+                settings.AISettings.ModelId,
+                enhancedLogger,
+                chatLogger);
+
+            var utilityCodeAnalyzerAgent = new UtilityCodeAnalyzerAgent(
+                kernelBuilder,
+                loggerFactory.CreateLogger<UtilityCodeAnalyzerAgent>(),
+                settings.AISettings.ModelId,
+                enhancedLogger,
+                chatLogger);
+
+            var reverseEngineeringProcess = new ReverseEngineeringProcess(
+                cobolAnalyzerAgent,
+                businessLogicExtractorAgent,
+                utilityCodeAnalyzerAgent,
+                fileHelper,
+                loggerFactory.CreateLogger<ReverseEngineeringProcess>(),
+                enhancedLogger);
+
+            Console.WriteLine("Starting reverse engineering process...");
+            Console.WriteLine();
+
+            var result = await reverseEngineeringProcess.RunAsync(
+                settings.ApplicationSettings.CobolSourceFolder,
+                output,
+                (status, current, total) =>
+                {
+                    Console.WriteLine($"{status} - {current}/{total}");
+                });
+
+            Console.WriteLine();
+            Console.WriteLine("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            Console.WriteLine("✨ Reverse Engineering Complete!");
+            Console.WriteLine("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            Console.WriteLine();
+            Console.WriteLine($"📊 Summary:");
+            Console.WriteLine($"   • Files Analyzed: {result.TotalFilesAnalyzed}");
+            Console.WriteLine($"   • User Stories: {result.TotalUserStories}");
+            Console.WriteLine($"   • Features: {result.TotalFeatures}");
+            Console.WriteLine($"   • Business Rules: {result.TotalBusinessRules}");
+            Console.WriteLine($"   • Modernization Opportunities: {result.TotalModernizationOpportunities}");
+            Console.WriteLine();
+            Console.WriteLine($"📁 Output Location: {Path.GetFullPath(output)}");
+            Console.WriteLine("   • business-logic.md - User stories and features");
+            Console.WriteLine("   • technical-details.md - Utility code analysis and recommendations");
+            Console.WriteLine("   • summary.md - Overview and next steps");
+            Console.WriteLine();
+            Console.WriteLine("🎯 Next Steps:");
+            Console.WriteLine("   1. Review the generated documentation");
+            Console.WriteLine("   2. Decide on your modernization strategy");
+            Console.WriteLine("   3. Run full migration if desired: dotnet run --cobol-source <path> --java-output <path>");
+            Console.WriteLine();
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Error during reverse engineering");
+            Environment.Exit(1);
         }
     }
 }
