@@ -43,6 +43,7 @@ RUN mkdir -p /workspace/Data \
              /workspace/Logs \
              /workspace/cobol-source \
              /workspace/java-output \
+             /workspace/reverse-engineering-output \
              /workspace/McpChatWeb/wwwroot && \
     chown -R vscode:vscode /workspace
 
@@ -53,6 +54,7 @@ RUN echo 'alias neo4j-status="docker ps | grep neo4j"' >> /home/vscode/.bashrc &
     echo 'alias neo4j-logs="docker logs cobol-migration-neo4j"' >> /home/vscode/.bashrc && \
     echo 'alias portal-start="cd /workspace/McpChatWeb && dotnet run"' >> /home/vscode/.bashrc && \
     echo 'alias migration-run="cd /workspace && ./doctor.sh run"' >> /home/vscode/.bashrc && \
+    echo 'alias reverse-eng="cd /workspace && ./doctor.sh reverse-eng"' >> /home/vscode/.bashrc && \
     echo 'alias demo="cd /workspace && ./demo.sh"' >> /home/vscode/.bashrc
 
 # Environment variables
@@ -64,5 +66,5 @@ ENV MIGRATION_DB_PATH=/workspace/Data/migration.db
 
 # Welcome message
 RUN echo 'echo "🚀 COBOL Migration Dev Container Ready!"' >> /home/vscode/.bashrc && \
-    echo 'echo "📊 Quick commands: demo | migration-run | portal-start | neo4j-status"' >> /home/vscode/.bashrc && \
+    echo 'echo "📊 Quick commands: demo | migration-run | reverse-eng | portal-start | neo4j-status"' >> /home/vscode/.bashrc && \
     echo 'echo "🌐 Portal: http://localhost:5250 | Neo4j: http://localhost:7474"' >> /home/vscode/.bashrc
