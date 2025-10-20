@@ -27,6 +27,11 @@ Have a look at the talk Julia did at the WeAreDevelopers World Congress 2025: ht
   - [Hybrid Database Architecture](#-hybrid-database-architecture)
   - [System Architecture Overview](#-system-architecture-overview)
   - [Three-Panel Portal UI](#-three-panel-portal-ui)
+- [CLI Commands Reference](#-cli-commands-reference)
+  - [Doctor.sh Commands](#doctorsh-commands-recommended)
+  - [Direct .NET CLI Commands](#direct-net-cli-commands)
+  - [Available Options](#available-options)
+  - [Quick Start Examples](#quick-start-examples)
 - [Step-by-Step Guide](#step-by-step-guide)
   - [1. Configure credentials and storage](#1-configure-credentials-and-storage)
   - [2. Run a migration](#2-run-a-migration)
@@ -775,6 +780,164 @@ if (_aiSettings != null) {
 - ✅ Can use different models per agent if needed
 - ✅ Configured once in `appsettings.json`
 - ✅ No separate MCP server configuration required
+
+## 🎯 CLI Commands Reference
+
+The migration tool provides multiple commands for different workflows:
+
+### Doctor.sh Commands (Recommended)
+
+The `doctor.sh` helper script provides a user-friendly wrapper around all functionality:
+
+```bash
+# Configuration Management
+./doctor.sh                    # Run configuration diagnostics (default)
+./doctor.sh doctor            # Same as above - diagnose configuration
+./doctor.sh setup             # Interactive configuration setup
+./doctor.sh validate          # Validate system requirements
+
+# Testing & Verification
+./doctor.sh test              # Full system validation and component check
+
+# Migration Operations
+./doctor.sh run               # Run full migration + launch MCP web UI
+./doctor.sh resume            # Resume interrupted migration
+./doctor.sh monitor           # Monitor migration progress
+
+# Reverse Engineering (New!)
+./doctor.sh reverse-eng       # Extract business logic from COBOL
+                             # Aliases: reverse-engineer, reverse
+
+# Other Operations
+./doctor.sh chat-test         # Test chat logging functionality
+./doctor.sh conversation      # Generate conversation logs
+```
+
+**What `doctor.sh` does:**
+- ✅ Validates configuration before running
+- ✅ Checks for all required components
+- ✅ Provides helpful error messages
+- ✅ Auto-launches MCP web UI after migration
+- ✅ Manages directories and dependencies
+
+### Direct .NET CLI Commands
+
+For advanced users or CI/CD integration, use these direct commands:
+
+#### 1. Full Migration (Default Command)
+```bash
+# Basic migration
+dotnet run -- --cobol-source ./cobol-source --java-output ./java-output
+
+# With verbose logging
+dotnet run -- --cobol-source ./cobol-source --java-output ./java-output --verbose
+
+# Custom configuration
+dotnet run -- --cobol-source ./my-cobol --java-output ./my-java --config ./my-config.json
+```
+
+#### 2. Reverse Engineering Command
+```bash
+# Extract business logic and detect utility code
+dotnet run reverse-engineer --cobol-source ./cobol-source
+
+# Custom output location
+dotnet run reverse-engineer --cobol-source ./cobol-source --output ./my-analysis
+
+# Integrated mode (reverse engineer, then convert)
+dotnet run -- --cobol-source ./cobol-source --java-output ./java-output --reverse-engineer-only
+```
+
+**Output:** Generates markdown files in `reverse-engineering-output/`:
+- `business-logic.md` - User stories, features, and business rules
+- `technical-details.md` - Utility code analysis and modernization opportunities
+- `summary.md` - Overview, statistics, and next steps
+
+See [REVERSE_ENGINEERING.md](REVERSE_ENGINEERING.md) for detailed documentation.
+
+#### 3. MCP Server Command
+```bash
+# Start MCP server with latest migration run
+dotnet run mcp
+
+# Start MCP server for a specific run
+dotnet run mcp --run-id 42
+
+# Custom configuration
+dotnet run mcp --config ./Config/appsettings.json
+```
+
+**What it does:**
+- Exposes migration insights via Model Context Protocol
+- Serves 9 MCP resources per run (summary, files, graph, dependencies, etc.)
+- Powers the web portal's data access layer
+- Enables AI assistants (Claude, Cursor) to query migration data
+
+#### 4. Conversation Log Command
+```bash
+# Generate conversation log from latest session
+dotnet run conversation
+
+# Generate log for specific session
+dotnet run conversation --session-id abc123
+
+# Custom log directory
+dotnet run conversation --log-dir ./my-logs
+
+# Live conversation feed (updates in real-time)
+dotnet run conversation --live
+```
+
+**What it does:**
+- Converts raw migration logs into readable conversation format
+- Shows AI agent interactions and decisions
+- Useful for debugging and understanding migration process
+
+### Available Options
+
+#### Global Options (for default migration command)
+- `--cobol-source <path>` - Path to COBOL source files (required)
+- `--java-output <path>` - Path for Java output files (required)
+- `--reverse-engineer-output <path>` - Custom output for reverse engineering
+- `--reverse-engineer-only` - Run reverse engineering as part of full migration
+- `--config <path>` - Custom configuration file path
+- `--verbose` - Enable detailed logging
+
+#### Reverse Engineer Options
+- `--cobol-source <path>` - Path to COBOL source files (required)
+- `--output <path>` - Output directory for markdown files (default: `./reverse-engineering-output`)
+
+#### MCP Server Options
+- `--run-id <number>` - Specific migration run to expose (default: latest)
+- `-r <number>` - Alias for --run-id
+- `--config <path>` - Configuration file path
+- `-c <path>` - Alias for --config
+
+#### Conversation Log Options
+- `--session-id <id>` - Specific session to process (default: latest)
+- `-sid <id>` - Alias for --session-id
+- `--log-dir <path>` - Logs directory (default: `./Logs`)
+- `-ld <path>` - Alias for --log-dir
+- `--live` - Enable live feed mode
+- `-l` - Alias for --live
+
+### Quick Start Examples
+
+```bash
+# First time setup
+./doctor.sh setup              # Interactive configuration
+./doctor.sh test               # Validate everything works
+
+# Extract business logic only
+./doctor.sh reverse-eng        # Quick business analysis
+
+# Full migration workflow
+./doctor.sh run                # Analyze + convert + launch web UI
+
+# Advanced: Custom paths
+dotnet run reverse-engineer --cobol-source ./legacy --output ./analysis
+dotnet run -- --cobol-source ./legacy --java-output ./modernized
+```
 
 ### Setup & Run
 ```bash
