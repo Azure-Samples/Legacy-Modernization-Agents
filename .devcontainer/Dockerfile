@@ -31,9 +31,10 @@ RUN curl -fsSL https://get.docker.com | sh && \
     curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose && \
     chmod +x /usr/local/bin/docker-compose
 
-# Install Neo4j cypher-shell for database queries
+# Install Neo4j cypher-shell compatible with Java 17
+# Using version 5.x which works with Java 17
 RUN wget -O - https://debian.neo4j.com/neotechnology.gpg.key | apt-key add - && \
-    echo 'deb https://debian.neo4j.com stable latest' > /etc/apt/sources.list.d/neo4j.list && \
+    echo 'deb https://debian.neo4j.com stable 5' > /etc/apt/sources.list.d/neo4j.list && \
     apt-get update && \
     apt-get install -y cypher-shell && \
     apt-get clean -y && rm -rf /var/lib/apt/lists/*
