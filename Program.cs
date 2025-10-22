@@ -724,8 +724,10 @@ internal static class Program
             }
 
             // Initialize agents
-            var enhancedLogger = new EnhancedLogger();
-            var chatLogger = new ChatLogger(fileHelper);
+            var enhancedLogger = new EnhancedLogger(
+                loggerFactory.CreateLogger<EnhancedLogger>());
+            var chatLogger = new ChatLogger(
+                loggerFactory.CreateLogger<ChatLogger>());
 
             var cobolAnalyzerAgent = new CobolAnalyzerAgent(
                 kernelBuilder,

@@ -51,7 +51,7 @@ public class ReverseEngineeringProcess
 
         try
         {
-            _enhancedLogger.ShowHeader("REVERSE ENGINEERING PROCESS");
+            _enhancedLogger.ShowSectionHeader("REVERSE ENGINEERING PROCESS", "Extracting Business Logic and Technical Details");
             _logger.LogInformation("Starting reverse engineering process");
             _logger.LogInformation("Source folder: {SourceFolder}", cobolSourceFolder);
             _logger.LogInformation("Output folder: {OutputFolder}", outputFolder);
@@ -62,7 +62,7 @@ public class ReverseEngineeringProcess
             _enhancedLogger.ShowStep(1, totalSteps, "File Discovery", "Scanning for COBOL files");
             progressCallback?.Invoke("Scanning for COBOL files", 1, totalSteps);
 
-            var cobolFiles = _fileHelper.GetCobolFiles(cobolSourceFolder);
+            var cobolFiles = await _fileHelper.ScanDirectoryForCobolFilesAsync(cobolSourceFolder);
             _enhancedLogger.ShowSuccess($"Found {cobolFiles.Count} COBOL files");
             _logger.LogInformation("Found {Count} COBOL files", cobolFiles.Count);
 
@@ -80,7 +80,7 @@ public class ReverseEngineeringProcess
 
             var analyses = await _cobolAnalyzerAgent.AnalyzeCobolFilesAsync(
                 cobolFiles,
-                (processed, total) => _enhancedLogger.ShowProgress(processed, total, "files analyzed"));
+                (processed, total) => _enhancedLogger.ShowProgressBar(processed, total, "files analyzed"));
 
             _enhancedLogger.ShowSuccess($"Completed technical analysis of {analyses.Count} files");
             result.TechnicalAnalyses = analyses;
@@ -92,7 +92,7 @@ public class ReverseEngineeringProcess
             var businessLogicList = await _businessLogicExtractorAgent.ExtractBusinessLogicAsync(
                 cobolFiles,
                 analyses,
-                (processed, total) => _enhancedLogger.ShowProgress(processed, total, "files processed"));
+                (processed, total) => _enhancedLogger.ShowProgressBar(processed, total, "files processed"));
 
             _enhancedLogger.ShowSuccess($"Extracted business logic from {businessLogicList.Count} files");
             result.BusinessLogicExtracts = businessLogicList;
@@ -109,7 +109,7 @@ public class ReverseEngineeringProcess
             var utilityAnalyses = await _utilityCodeAnalyzerAgent.AnalyzeUtilityCodeAsync(
                 cobolFiles,
                 analyses,
-                (processed, total) => _enhancedLogger.ShowProgress(processed, total, "files analyzed"));
+                (processed, total) => _enhancedLogger.ShowProgressBar(processed, total, "files analyzed"));
 
             _enhancedLogger.ShowSuccess($"Completed utility code analysis for {utilityAnalyses.Count} files");
             result.UtilityCodeAnalyses = utilityAnalyses;
@@ -118,11 +118,13 @@ public class ReverseEngineeringProcess
             result.TotalModernizationOpportunities = utilityAnalyses.Sum(ua => ua.ModernizationOpportunities.Count);
 
             // Generate output files
-            _enhancedLogger.ShowInfo("Generating documentation...");
+            _logger.LogInformation("Generating documentation...");
+            Console.WriteLine("📝 Generating documentation...");
             await GenerateOutputAsync(outputFolder, result);
 
             _enhancedLogger.ShowSuccess("✓ Reverse engineering complete!");
-            _enhancedLogger.ShowInfo($"Output location: {outputFolder}");
+            _logger.LogInformation("Output location: {OutputFolder}", outputFolder);
+            Console.WriteLine($"📂 Output location: {outputFolder}");
 
             result.Success = true;
             result.OutputFolder = outputFolder;
