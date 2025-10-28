@@ -42,9 +42,8 @@ RUN wget -O - https://debian.neo4j.com/neotechnology.gpg.key | apt-key add - && 
 # Set up working directory permissions and create necessary folders
 RUN mkdir -p /workspace/Data \
              /workspace/Logs \
-             /workspace/cobol-source \
-             /workspace/java-output \
-             /workspace/reverse-engineering-output \
+             /workspace/source \
+             /workspace/output \
              /workspace/McpChatWeb/wwwroot && \
     chown -R vscode:vscode /workspace
 

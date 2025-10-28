@@ -1,5 +1,4 @@
 ﻿using CobolToQuarkusMigration.Helpers;
-using CobolToQuarkusMigration.Mcp;
 using CobolToQuarkusMigration.Models;
 using CobolToQuarkusMigration.Persistence;
 using CobolToQuarkusMigration.Processes;
@@ -15,7 +14,7 @@ internal static class Program
     public static async Task<int> Main(string[] args)
     {
         using var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole());
-    var logger = loggerFactory.CreateLogger(nameof(Program));
+        var logger = loggerFactory.CreateLogger(nameof(Program));
         var fileHelper = new FileHelper(loggerFactory.CreateLogger<FileHelper>());
         var settingsHelper = new SettingsHelper(loggerFactory.CreateLogger<SettingsHelper>());
 
@@ -32,21 +31,21 @@ internal static class Program
     {
         var rootCommand = new RootCommand("COBOL to Java Quarkus Migration Tool");
 
-        var cobolSourceOption = new Option<string>("--cobol-source", "Path to the folder containing COBOL source files and copybooks")
+        var cobolSourceOption = new Option<string>("--source", "Path to the folder containing COBOL source files and copybooks")
         {
             Arity = ArgumentArity.ZeroOrOne
         };
         cobolSourceOption.AddAlias("-s");
         rootCommand.AddOption(cobolSourceOption);
 
-        var javaOutputOption = new Option<string>("--java-output", "Path to the folder for Java output files")
+        var javaOutputOption = new Option<string>("--java-output", () => "output", "Path to the folder for Java output files")
         {
             Arity = ArgumentArity.ZeroOrOne
         };
         javaOutputOption.AddAlias("-j");
         rootCommand.AddOption(javaOutputOption);
 
-        var reverseEngineerOutputOption = new Option<string>("--reverse-engineer-output", () => "reverse-engineering-output", "Path to the folder for reverse engineering output")
+        var reverseEngineerOutputOption = new Option<string>("--reverse-engineer-output", () => "output", "Path to the folder for reverse engineering output")
         {
             Arity = ArgumentArity.ZeroOrOne
         };
@@ -142,16 +141,16 @@ internal static class Program
 
     private static Command BuildReverseEngineerCommand(ILoggerFactory loggerFactory, FileHelper fileHelper, SettingsHelper settingsHelper)
     {
-        var reverseEngineerCommand = new Command("reverse-engineer", "Extract business logic and analyze utility code from COBOL applications");
+        var reverseEngineerCommand = new Command("reverse-engineer", "Extract business logic from COBOL applications");
 
-        var cobolSourceOption = new Option<string>("--cobol-source", "Path to the folder containing COBOL source files")
+        var cobolSourceOption = new Option<string>("--source", "Path to the folder containing COBOL source files")
         {
             Arity = ArgumentArity.ExactlyOne
         };
         cobolSourceOption.AddAlias("-s");
         reverseEngineerCommand.AddOption(cobolSourceOption);
 
-        var outputOption = new Option<string>("--output", () => "reverse-engineering-output", "Path to the output folder")
+        var outputOption = new Option<string>("--output", () => "output", "Path to the output folder")
         {
             Arity = ArgumentArity.ZeroOrOne
         };
@@ -286,8 +285,8 @@ internal static class Program
                 targetRunId = latest.RunId;
             }
 
-            var serverLogger = loggerFactory.CreateLogger<McpServer>();
-            var server = new McpServer(repository, targetRunId.Value, serverLogger, settings.AISettings);
+            var serverLogger = loggerFactory.CreateLogger<RunMcpServerProcess>();
+            var server = new RunMcpServerProcess(repository, targetRunId.Value, serverLogger, settings.AISettings);
             var cts = new CancellationTokenSource();
 
             Console.CancelKeyPress += (sender, args) =>
@@ -318,7 +317,7 @@ internal static class Program
 
             if (string.IsNullOrEmpty(settings.ApplicationSettings.CobolSourceFolder))
             {
-                logger.LogError("COBOL source folder not specified. Use --cobol-source option or set in config file.");
+                logger.LogError("COBOL source folder not specified. Use --source option or set in config file.");
                 Environment.Exit(1);
             }
 
@@ -685,7 +684,7 @@ internal static class Program
 
             if (string.IsNullOrEmpty(settings.ApplicationSettings.CobolSourceFolder))
             {
-                logger.LogError("COBOL source folder not specified. Use --cobol-source option.");
+                logger.LogError("COBOL source folder not specified. Use --source option.");
                 Environment.Exit(1);
             }
 
@@ -743,17 +742,9 @@ internal static class Program
                 enhancedLogger,
                 chatLogger);
 
-            var utilityCodeAnalyzerAgent = new UtilityCodeAnalyzerAgent(
-                kernelBuilder,
-                loggerFactory.CreateLogger<UtilityCodeAnalyzerAgent>(),
-                settings.AISettings.ModelId,
-                enhancedLogger,
-                chatLogger);
-
             var reverseEngineeringProcess = new ReverseEngineeringProcess(
                 cobolAnalyzerAgent,
                 businessLogicExtractorAgent,
-                utilityCodeAnalyzerAgent,
                 fileHelper,
                 loggerFactory.CreateLogger<ReverseEngineeringProcess>(),
                 enhancedLogger);
@@ -776,20 +767,17 @@ internal static class Program
             Console.WriteLine();
             Console.WriteLine($"📊 Summary:");
             Console.WriteLine($"   • Files Analyzed: {result.TotalFilesAnalyzed}");
-            Console.WriteLine($"   • User Stories: {result.TotalUserStories}");
+            Console.WriteLine($"   • Feature Descriptions: {result.TotalUserStories}");
             Console.WriteLine($"   • Features: {result.TotalFeatures}");
             Console.WriteLine($"   • Business Rules: {result.TotalBusinessRules}");
-            Console.WriteLine($"   • Modernization Opportunities: {result.TotalModernizationOpportunities}");
             Console.WriteLine();
             Console.WriteLine($"📁 Output Location: {Path.GetFullPath(output)}");
-            Console.WriteLine("   • business-logic.md - User stories and features");
-            Console.WriteLine("   • technical-details.md - Utility code analysis and recommendations");
-            Console.WriteLine("   • summary.md - Overview and next steps");
+            Console.WriteLine("   • reverse-engineering-details.md - Complete analysis with business logic and technical details");
             Console.WriteLine();
             Console.WriteLine("🎯 Next Steps:");
             Console.WriteLine("   1. Review the generated documentation");
             Console.WriteLine("   2. Decide on your modernization strategy");
-            Console.WriteLine("   3. Run full migration if desired: dotnet run --cobol-source <path> --java-output <path>");
+            Console.WriteLine("   3. Run full migration if desired: dotnet run --source <path> --java-output <path>");
             Console.WriteLine();
         }
         catch (Exception ex)

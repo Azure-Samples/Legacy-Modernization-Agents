@@ -3,6 +3,7 @@ using CobolToQuarkusMigration.Agents;
 using CobolToQuarkusMigration.Agents.Interfaces;
 using CobolToQuarkusMigration.Helpers;
 using CobolToQuarkusMigration.Models;
+using System.Text.Json;
 
 namespace CobolToQuarkusMigration.Processes;
 
@@ -14,22 +15,20 @@ public class ReverseEngineeringProcess
 {
     private readonly ICobolAnalyzerAgent _cobolAnalyzerAgent;
     private readonly BusinessLogicExtractorAgent _businessLogicExtractorAgent;
-    private readonly UtilityCodeAnalyzerAgent _utilityCodeAnalyzerAgent;
     private readonly FileHelper _fileHelper;
     private readonly ILogger<ReverseEngineeringProcess> _logger;
     private readonly EnhancedLogger _enhancedLogger;
+    private Glossary? _glossary;
 
     public ReverseEngineeringProcess(
         ICobolAnalyzerAgent cobolAnalyzerAgent,
         BusinessLogicExtractorAgent businessLogicExtractorAgent,
-        UtilityCodeAnalyzerAgent utilityCodeAnalyzerAgent,
         FileHelper fileHelper,
         ILogger<ReverseEngineeringProcess> logger,
         EnhancedLogger enhancedLogger)
     {
         _cobolAnalyzerAgent = cobolAnalyzerAgent;
         _businessLogicExtractorAgent = businessLogicExtractorAgent;
-        _utilityCodeAnalyzerAgent = utilityCodeAnalyzerAgent;
         _fileHelper = fileHelper;
         _logger = logger;
         _enhancedLogger = enhancedLogger;
@@ -56,7 +55,10 @@ public class ReverseEngineeringProcess
             _logger.LogInformation("Source folder: {SourceFolder}", cobolSourceFolder);
             _logger.LogInformation("Output folder: {OutputFolder}", outputFolder);
 
-            var totalSteps = 4;
+            // Load glossary if available
+            await LoadGlossaryAsync();
+
+            var totalSteps = 3;
 
             // Step 1: Scan for COBOL files
             _enhancedLogger.ShowStep(1, totalSteps, "File Discovery", "Scanning for COBOL files");
@@ -86,36 +88,22 @@ public class ReverseEngineeringProcess
             result.TechnicalAnalyses = analyses;
 
             // Step 3: Extract business logic
-            _enhancedLogger.ShowStep(3, totalSteps, "Business Logic Extraction", "Extracting user stories and features");
+            _enhancedLogger.ShowStep(3, totalSteps, "Business Logic Extraction", "Extracting feature descriptions and use cases");
             progressCallback?.Invoke("Extracting business logic", 3, totalSteps);
 
             var businessLogicList = await _businessLogicExtractorAgent.ExtractBusinessLogicAsync(
                 cobolFiles,
                 analyses,
+                _glossary,
                 (processed, total) => _enhancedLogger.ShowProgressBar(processed, total, "files processed"));
 
             _enhancedLogger.ShowSuccess($"Extracted business logic from {businessLogicList.Count} files");
             result.BusinessLogicExtracts = businessLogicList;
 
-            // Count user stories and features
+            // Count feature descriptions and features
             result.TotalUserStories = businessLogicList.Sum(bl => bl.UserStories.Count);
             result.TotalFeatures = businessLogicList.Sum(bl => bl.Features.Count);
             result.TotalBusinessRules = businessLogicList.Sum(bl => bl.BusinessRules.Count);
-
-            // Step 4: Analyze utility code
-            _enhancedLogger.ShowStep(4, totalSteps, "Utility Code Analysis", "Identifying modernization opportunities");
-            progressCallback?.Invoke("Analyzing utility code", 4, totalSteps);
-
-            var utilityAnalyses = await _utilityCodeAnalyzerAgent.AnalyzeUtilityCodeAsync(
-                cobolFiles,
-                analyses,
-                (processed, total) => _enhancedLogger.ShowProgressBar(processed, total, "files analyzed"));
-
-            _enhancedLogger.ShowSuccess($"Completed utility code analysis for {utilityAnalyses.Count} files");
-            result.UtilityCodeAnalyses = utilityAnalyses;
-
-            // Count modernization opportunities
-            result.TotalModernizationOpportunities = utilityAnalyses.Sum(ua => ua.ModernizationOpportunities.Count);
 
             // Generate output files
             _logger.LogInformation("Generating documentation...");
@@ -141,47 +129,72 @@ public class ReverseEngineeringProcess
         }
     }
 
+    private async Task LoadGlossaryAsync()
+    {
+        try
+        {
+            var glossaryPath = Path.Combine("Data", "glossary.json");
+
+            if (!File.Exists(glossaryPath))
+            {
+                _logger.LogInformation("No glossary file found at {Path}", glossaryPath);
+                return;
+            }
+
+            var json = await File.ReadAllTextAsync(glossaryPath);
+            _glossary = JsonSerializer.Deserialize<Glossary>(json, new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true
+            });
+
+            if (_glossary?.Terms?.Any() == true)
+            {
+                _logger.LogInformation("Loaded glossary with {Count} terms", _glossary.Terms.Count);
+                Console.WriteLine($"📖 Loaded glossary with {_glossary.Terms.Count} terms");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to load glossary file");
+        }
+    }
+
     private async Task GenerateOutputAsync(string outputFolder, ReverseEngineeringResult result)
     {
         Directory.CreateDirectory(outputFolder);
 
-        // Generate business-logic.md
-        var businessLogicContent = GenerateBusinessLogicMarkdown(result);
-        var businessLogicPath = Path.Combine(outputFolder, "business-logic.md");
-        await File.WriteAllTextAsync(businessLogicPath, businessLogicContent);
-        _logger.LogInformation("Generated business logic documentation: {Path}", businessLogicPath);
-
-        // Generate technical-details.md
-        var technicalDetailsContent = GenerateTechnicalDetailsMarkdown(result);
-        var technicalDetailsPath = Path.Combine(outputFolder, "technical-details.md");
-        await File.WriteAllTextAsync(technicalDetailsPath, technicalDetailsContent);
-        _logger.LogInformation("Generated technical details documentation: {Path}", technicalDetailsPath);
-
-        // Generate summary.md
-        var summaryContent = GenerateSummaryMarkdown(result);
-        var summaryPath = Path.Combine(outputFolder, "summary.md");
-        await File.WriteAllTextAsync(summaryPath, summaryContent);
-        _logger.LogInformation("Generated summary: {Path}", summaryPath);
+        // Generate single unified reverse-engineering-details.md
+        var content = GenerateReverseEngineeringDetailsMarkdown(result);
+        var outputPath = Path.Combine(outputFolder, "reverse-engineering-details.md");
+        await File.WriteAllTextAsync(outputPath, content);
+        _logger.LogInformation("Generated reverse engineering documentation: {Path}", outputPath);
     }
 
-    private string GenerateBusinessLogicMarkdown(ReverseEngineeringResult result)
+    private string GenerateReverseEngineeringDetailsMarkdown(ReverseEngineeringResult result)
     {
         var sb = new System.Text.StringBuilder();
 
-        sb.AppendLine("# Business Logic Documentation");
+        // Calculate program vs copybook counts
+        var programCount = result.BusinessLogicExtracts.Count(bl => !bl.IsCopybook);
+        var copybookCount = result.BusinessLogicExtracts.Count(bl => bl.IsCopybook);
+
+        sb.AppendLine("# Reverse Engineering Details");
         sb.AppendLine();
         sb.AppendLine($"**Generated**: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
-        sb.AppendLine($"**Total Files Analyzed**: {result.TotalFilesAnalyzed}");
-        sb.AppendLine($"**Total User Stories**: {result.TotalUserStories}");
+        sb.AppendLine($"**Total Files Analyzed**: {result.TotalFilesAnalyzed} ({programCount} programs, {copybookCount} copybooks)");
+        sb.AppendLine($"**Total Feature Descriptions**: {result.TotalUserStories}");
         sb.AppendLine($"**Total Features**: {result.TotalFeatures}");
         sb.AppendLine($"**Total Business Rules**: {result.TotalBusinessRules}");
         sb.AppendLine();
         sb.AppendLine("---");
         sb.AppendLine();
+        sb.AppendLine("## Business Logic");
+        sb.AppendLine();
 
         foreach (var businessLogic in result.BusinessLogicExtracts)
         {
-            sb.AppendLine($"## {businessLogic.FileName}");
+            var fileTypeLabel = businessLogic.IsCopybook ? " [Copybook]" : "";
+            sb.AppendLine($"## {businessLogic.FileName}{fileTypeLabel}");
             sb.AppendLine();
 
             if (!string.IsNullOrWhiteSpace(businessLogic.BusinessPurpose))
@@ -191,10 +204,10 @@ public class ReverseEngineeringProcess
                 sb.AppendLine();
             }
 
-            // User Stories
+            // Feature Descriptions
             if (businessLogic.UserStories.Any())
             {
-                sb.AppendLine("### User Stories");
+                sb.AppendLine("### Feature Descriptions");
                 sb.AppendLine();
 
                 foreach (var story in businessLogic.UserStories)
@@ -203,21 +216,21 @@ public class ReverseEngineeringProcess
                     sb.AppendLine();
                     if (!string.IsNullOrWhiteSpace(story.Role))
                     {
-                        sb.AppendLine($"**As a** {story.Role}");
+                        sb.AppendLine($"**Trigger:** {story.Role}");
                     }
                     if (!string.IsNullOrWhiteSpace(story.Action))
                     {
-                        sb.AppendLine($"**I want to** {story.Action}");
+                        sb.AppendLine($"**Description:** {story.Action}");
                     }
                     if (!string.IsNullOrWhiteSpace(story.Benefit))
                     {
-                        sb.AppendLine($"**So that** {story.Benefit}");
+                        sb.AppendLine($"**Benefit:** {story.Benefit}");
                     }
                     sb.AppendLine();
 
                     if (story.AcceptanceCriteria.Any())
                     {
-                        sb.AppendLine("**Acceptance Criteria:**");
+                        sb.AppendLine("**Business Rules:**");
                         foreach (var criteria in story.AcceptanceCriteria)
                         {
                             sb.AppendLine($"- {criteria}");
@@ -297,127 +310,19 @@ public class ReverseEngineeringProcess
                 }
             }
 
-            // Business Rules
-            if (businessLogic.BusinessRules.Any())
-            {
-                sb.AppendLine("### Business Rules");
-                sb.AppendLine();
-
-                foreach (var rule in businessLogic.BusinessRules)
-                {
-                    sb.AppendLine($"#### {rule.Id}");
-                    sb.AppendLine($"**Description:** {rule.Description}");
-                    if (!string.IsNullOrWhiteSpace(rule.Condition))
-                    {
-                        sb.AppendLine($"**Condition:** {rule.Condition}");
-                    }
-                    if (!string.IsNullOrWhiteSpace(rule.Action))
-                    {
-                        sb.AppendLine($"**Action:** {rule.Action}");
-                    }
-                    if (!string.IsNullOrWhiteSpace(rule.SourceLocation))
-                    {
-                        sb.AppendLine($"*Source: {rule.SourceLocation}*");
-                    }
-                    sb.AppendLine();
-                }
-            }
-
             sb.AppendLine("---");
             sb.AppendLine();
         }
 
-        return sb.ToString();
-    }
-
-    private string GenerateTechnicalDetailsMarkdown(ReverseEngineeringResult result)
-    {
-        var sb = new System.Text.StringBuilder();
-
-        sb.AppendLine("# Technical Details");
-        sb.AppendLine();
-        sb.AppendLine($"**Generated**: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
-        sb.AppendLine($"**Total Files**: {result.TotalFilesAnalyzed}");
-        sb.AppendLine($"**Modernization Opportunities**: {result.TotalModernizationOpportunities}");
-        sb.AppendLine();
+        // Add technical analysis section
         sb.AppendLine("---");
         sb.AppendLine();
-
-        sb.AppendLine("## Utility Code Analysis & Modernization Opportunities");
+        sb.AppendLine("## Technical Analysis");
         sb.AppendLine();
-
-        foreach (var utilityAnalysis in result.UtilityCodeAnalyses)
-        {
-            sb.AppendLine($"### {utilityAnalysis.FileName}");
-            sb.AppendLine();
-
-            // Group patterns by type
-            var patternsByType = utilityAnalysis.UtilityPatterns.GroupBy(p => p.Type);
-
-            foreach (var group in patternsByType)
-            {
-                sb.AppendLine($"#### {group.Key} Patterns");
-                sb.AppendLine();
-
-                foreach (var pattern in group)
-                {
-                    sb.AppendLine($"**{pattern.Description}**");
-                    sb.AppendLine($"- **Location:** {pattern.SourceLocation}");
-                    sb.AppendLine($"- **Classification:** {(pattern.IsBusinessSpecific ? "Business-Specific" : "Standard Utility")}");
-                    if (!string.IsNullOrWhiteSpace(pattern.ClassificationReason))
-                    {
-                        sb.AppendLine($"- **Reasoning:** {pattern.ClassificationReason}");
-                    }
-                    if (!string.IsNullOrWhiteSpace(pattern.CobolCode))
-                    {
-                        sb.AppendLine("```cobol");
-                        sb.AppendLine(pattern.CobolCode);
-                        sb.AppendLine("```");
-                    }
-                    sb.AppendLine();
-                }
-            }
-
-            // Modernization Opportunities
-            if (utilityAnalysis.ModernizationOpportunities.Any())
-            {
-                sb.AppendLine("#### Modernization Recommendations");
-                sb.AppendLine();
-
-                foreach (var opp in utilityAnalysis.ModernizationOpportunities)
-                {
-                    sb.AppendLine($"##### {opp.CurrentImplementation}");
-                    sb.AppendLine($"- **Location:** {opp.SourceLocation}");
-                    sb.AppendLine($"- **Modern Equivalent:** {opp.ModernEquivalent}");
-                    sb.AppendLine($"- **Confidence:** {opp.Confidence}");
-                    sb.AppendLine($"- **Migration Effort:** {opp.Effort}");
-                    if (!string.IsNullOrWhiteSpace(opp.Reasoning))
-                    {
-                        sb.AppendLine($"- **Reasoning:** {opp.Reasoning}");
-                    }
-                    if (!string.IsNullOrWhiteSpace(opp.ExampleCode))
-                    {
-                        sb.AppendLine();
-                        sb.AppendLine("**Example Modern Implementation:**");
-                        sb.AppendLine("```java");
-                        sb.AppendLine(opp.ExampleCode);
-                        sb.AppendLine("```");
-                    }
-                    sb.AppendLine();
-                }
-            }
-
-            sb.AppendLine("---");
-            sb.AppendLine();
-        }
-
-        // Add technical analysis details
-        sb.AppendLine("## COBOL Structure Analysis");
-        sb.AppendLine();
-
         foreach (var analysis in result.TechnicalAnalyses)
         {
-            sb.AppendLine($"### {analysis.FileName}");
+            var fileTypeLabel = analysis.IsCopybook ? " [Copybook]" : "";
+            sb.AppendLine($"### {analysis.FileName}{fileTypeLabel}");
             sb.AppendLine();
 
             if (!string.IsNullOrWhiteSpace(analysis.ProgramDescription))
@@ -462,55 +367,6 @@ public class ReverseEngineeringProcess
 
         return sb.ToString();
     }
-
-    private string GenerateSummaryMarkdown(ReverseEngineeringResult result)
-    {
-        var sb = new System.Text.StringBuilder();
-
-        sb.AppendLine("# Reverse Engineering Summary");
-        sb.AppendLine();
-        sb.AppendLine($"**Generated**: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
-        sb.AppendLine($"**Status**: {(result.Success ? "✓ Completed Successfully" : "✗ Failed")}");
-        sb.AppendLine();
-
-        sb.AppendLine("## Overview");
-        sb.AppendLine();
-        sb.AppendLine($"- **Files Analyzed**: {result.TotalFilesAnalyzed}");
-        sb.AppendLine($"- **User Stories Extracted**: {result.TotalUserStories}");
-        sb.AppendLine($"- **Features Identified**: {result.TotalFeatures}");
-        sb.AppendLine($"- **Business Rules Documented**: {result.TotalBusinessRules}");
-        sb.AppendLine($"- **Modernization Opportunities**: {result.TotalModernizationOpportunities}");
-        sb.AppendLine();
-
-        sb.AppendLine("## Output Files");
-        sb.AppendLine();
-        sb.AppendLine("1. **business-logic.md** - User stories, features, and business rules extracted from COBOL code");
-        sb.AppendLine("2. **technical-details.md** - Utility code analysis, modernization recommendations, and technical structure");
-        sb.AppendLine("3. **summary.md** - This file");
-        sb.AppendLine();
-
-        sb.AppendLine("## Next Steps");
-        sb.AppendLine();
-        sb.AppendLine("### Option 1: Documentation Only");
-        sb.AppendLine("- Review the business logic documentation");
-        sb.AppendLine("- Use for RFP/contractor briefing");
-        sb.AppendLine("- Plan modernization strategy");
-        sb.AppendLine();
-
-        sb.AppendLine("### Option 2: Continue with Full Migration");
-        sb.AppendLine("- Review the reverse engineering output");
-        sb.AppendLine("- Run the full migration process to convert to Java/Quarkus");
-        sb.AppendLine("- Use business logic docs for validation");
-        sb.AppendLine();
-
-        sb.AppendLine("### Option 3: Selective Modernization");
-        sb.AppendLine("- Review modernization opportunities");
-        sb.AppendLine("- Prioritize based on confidence and effort");
-        sb.AppendLine("- Implement high-value, low-effort improvements first");
-        sb.AppendLine();
-
-        return sb.ToString();
-    }
 }
 
 /// <summary>
@@ -528,5 +384,4 @@ public class ReverseEngineeringResult
     public int TotalModernizationOpportunities { get; set; }
     public List<CobolAnalysis> TechnicalAnalyses { get; set; } = new List<CobolAnalysis>();
     public List<BusinessLogic> BusinessLogicExtracts { get; set; } = new List<BusinessLogic>();
-    public List<UtilityCodeAnalysis> UtilityCodeAnalyses { get; set; } = new List<UtilityCodeAnalysis>();
 }

@@ -7,7 +7,7 @@ using CobolToQuarkusMigration.Models;
 using CobolToQuarkusMigration.Persistence;
 using System.Text;
 
-namespace CobolToQuarkusMigration;
+namespace CobolToQuarkusMigration.Processes;
 
 /// <summary>
 /// Main class for the COBOL to Java Quarkus migration process.

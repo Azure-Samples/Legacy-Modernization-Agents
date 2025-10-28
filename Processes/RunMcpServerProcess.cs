@@ -8,16 +8,16 @@ using Microsoft.SemanticKernel.ChatCompletion;
 using CobolToQuarkusMigration.Models;
 using CobolToQuarkusMigration.Persistence;
 
-namespace CobolToQuarkusMigration.Mcp;
+namespace CobolToQuarkusMigration.Processes;
 
 /// <summary>
 /// Minimal Model Context Protocol server that exposes migration insights backed by SQLite.
 /// </summary>
-public sealed class McpServer
+public sealed class RunMcpServerProcess
 {
     private readonly IMigrationRepository _repository;
     private readonly int _runId;
-    private readonly ILogger<McpServer> _logger;
+    private readonly ILogger<RunMcpServerProcess> _logger;
     private readonly StreamReader _reader;
     private readonly StreamWriter _writer;
     private readonly Stream _outputStream;
@@ -33,7 +33,7 @@ public sealed class McpServer
     private DependencyMap? _dependencyMapCache;
     private IReadOnlyList<CobolAnalysis>? _analysisCache;
 
-    public McpServer(IMigrationRepository repository, int runId, ILogger<McpServer> logger, AISettings? aiSettings = null)
+    public RunMcpServerProcess(IMigrationRepository repository, int runId, ILogger<RunMcpServerProcess> logger, AISettings? aiSettings = null)
     {
         _repository = repository;
         _runId = runId;

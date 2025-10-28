@@ -5,98 +5,99 @@ All notable changes to this repository are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - 2025-10-21
+## [Unreleased] - 2025-10-28
 
-### Added - Reverse Engineering Feature
-- **🔍 Business Logic Extraction**: Standalone reverse engineering capability
+### Added - Reverse Engineering & Project Enhancements
+
+#### 🔍 Reverse Engineering Feature
+- **Business Logic Extraction**: Standalone reverse engineering capability
   - New `reverse-engineer` command for extracting business logic without full migration
-  - Generates user stories from interactive/transactional COBOL logic
+  - Generates feature descriptions from interactive/transactional COBOL logic
   - Creates feature descriptions for batch/calculation processes
   - Extracts business rules, data entities, and domain models
-  - Output format: Markdown files in `reverse-engineering-output/` folder
+  - Output format: Unified markdown file in `output/` folder
 
-- **🛠️ Utility Code Analysis**: Identifies modernization opportunities
-  - Detects date/time operations, string manipulation, and mathematical operations
-  - Classifies code as standard utility vs. business-specific
-  - Multi-criteria detection using pattern matching, business constants, and domain data analysis
-  - Provides modern Java equivalents with confidence levels (HIGH/MEDIUM/LOW)
-  - Estimates migration effort and provides example code
-
-- **📝 New Agents**:
+- **New AI Agents**:
   - `BusinessLogicExtractorAgent` - Extracts WHAT the code does (business perspective)
-  - `UtilityCodeAnalyzerAgent` - Identifies utility patterns and modernization opportunities
 
-- **🏗️ New Data Models**:
-  - `BusinessLogic` - Structured business logic with user stories, features, and rules
-  - `UserStory` - User story format with role, action, benefit, and acceptance criteria
+- **Data Models**:
+  - `BusinessLogic` - Structured business logic with feature descriptions, use cases, and rules
+  - `UserStory` - Feature description format with role, action, benefit, and business rules
   - `FeatureDescription` - Feature format for batch processes with inputs/outputs
   - `BusinessRule` - Business rules with conditions and actions
-  - `UtilityCodeAnalysis` - Utility code patterns and modernization recommendations
-  - `ModernizationOpportunity` - Specific recommendations with confidence and effort estimates
+  - `Glossary` - Business-friendly term translations (e.g., ARTNR → Article Number)
 
-- **📊 Reverse Engineering Process**:
+- **Reverse Engineering Process**:
   - `ReverseEngineeringProcess` - Standalone orchestrator that can run independently
-  - Four-step process: File Discovery → Technical Analysis → Business Logic Extraction → Utility Analysis
-  - Generates three output files:
-    - `business-logic.md` - User stories, features, and business rules
-    - `technical-details.md` - Utility code analysis and modernization recommendations
-    - `summary.md` - Overview, statistics, and next steps
+  - Three-step process: File Discovery → Technical Analysis → Business Logic Extraction
+  - Generates unified output file: `reverse-engineering-details.md`
+  - New architecture documentation: `REVERSE_ENGINEERING_ARCHITECTURE.md`
 
-- **💻 CLI Commands**:
-  - `dotnet run reverse-engineer --cobol-source <path>` - Run reverse engineering only
-  - `--reverse-engineer-output <path>` - Specify custom output folder
-  - `--reverse-engineer-only` - Skip Java conversion in integrated mode
+- **CLI Commands**:
+  - `dotnet run reverse-engineer --source <path>` - Run reverse engineering only
+  - `--skip-reverse-engineering` - Skip reverse engineering step in full migration (saves API costs)
+  - `./doctor.sh reverse-eng` - Dedicated reverse engineering command with validation
 
-- **🩺 Enhanced Configuration Doctor**: Added reverse engineering component validation
-  - Checks for all 5 reverse engineering components (models, agents, process)
-  - Displays individual component status in doctor diagnostics
-  - Shows component count (e.g., "5/5 components present")
-  - Reports incomplete installations with warning messages
+- **Enhanced doctor.sh Script**:
+  - Reverse engineering component validation (3 components)
+  - COBOL file and copybook counting
+  - Auto-creates `source/` and `output/` directories
+  - Validates feature completeness before execution
+  - Improved error messages and help text
 
-- **🧪 Enhanced Test Suite**: Added reverse engineering validation
-  - Component counting and availability checks
-  - Output directory detection and file counting
-  - Updated migration options to include reverse engineering
-  - Shows expected results for reverse engineering runs
+#### 📁 Project Structure Improvements
+- **Simplified Directory Structure**:
+  - Renamed `cobol-source/` → `source/` (cleaner, more intuitive)
+  - Renamed `java-output/` → `output/` (unified output location)
+  - Removed `reverse-engineering-output/` (now uses main `output/` folder)
+  - Moved utility scripts to `helper-scripts/` folder
 
-- **✅ Enhanced Validation**: Added reverse engineering feature check
-  - Validates all 5 components are present
-  - Auto-creates `reverse-engineering-output` directory
-  - Reports feature status (Complete/Incomplete/Not Installed)
+- **Helper Scripts Organization**:
+  - `helper-scripts/cleanup-databases.sh` - Database cleanup utility
+  - `helper-scripts/demo.sh` - Portal demo mode launcher
+  - `helper-scripts/test_mcp_communication.sh` - MCP server testing
 
-- **🚀 New `reverse-eng` Command**: Dedicated command for reverse engineering
-  - Usage: `./doctor.sh reverse-eng` (aliases: reverse-engineer, reverse)
-  - Configuration validation before execution
-  - Component availability check with helpful error messages
-  - COBOL file count verification
-  - Detailed progress output with next steps guidance
-  - Success/failure reporting with exit codes
+- **Glossary Support**:
+  - `Data/glossary.json` - Business term translations for COBOL variables
+  - Improves business logic extraction accuracy
+  - Maps technical terms to business-friendly names
 
-- **📚 Documentation Updates**:
-  - Updated help text with reverse-eng command
-  - Added usage examples for reverse engineering
-  - Reference to REVERSE_ENGINEERING.md in available commands
-  - Clear separation between technical and business analysis
+### Changed - Documentation & Configuration
 
-- **🛠️ Directory Management**:
-  - Auto-creates `reverse-engineering-output` directory
-  - Validates directory structure on all commands
-  - Checks for existing reverse engineering output
+#### 📚 Documentation Consolidation
+- **Streamlined Documentation Structure**: Reduced from 7 to 4 essential markdown files
+  - Consolidated `DEMO.md` content into README's "Demo Mode" section
+  - Merged `QUERY_GUIDE.md` examples into README's "Portal Usage Guide"
+  - Integrated `NEO4J_RUN43_QUERIES.md` into README's "Data Retrieval Guide"
+  - Removed redundant `REVERSE_ENGINEERING.md` (content in architecture doc)
+  - **Result**: Cleaner repository with README.md as single source of truth
 
-### Changed
-- **doctor.sh**: Comprehensive reverse engineering integration
-  - Added reverse engineering section to doctor diagnostics
-  - Enhanced test command with component validation
-  - Enhanced validate command with feature detection
-  - Added `run_reverse_engineering()` function
-  - Updated main routing with reverse-eng aliases
-  - Updated directory creation to include reverse-engineering-output
+- **Documentation Files Retained**:
+  1. **README.md** - Comprehensive guide (main entry point)
+  2. **CHANGELOG.md** - Version history and changes (this file)
+  3. **REVERSE_ENGINEERING_ARCHITECTURE.md** - Specialized architecture documentation
+  4. **QUICK_START.md** - Beginner-friendly quick start guide
+
+#### 🛠️ Path Updates Throughout Project
+- Updated all references from `cobol-source/` to `source/`
+- Updated all references from `java-output/` to `output/`
+- Updated `doctor.sh` with new directory structure
+- Updated `README.md` examples and quickstart commands
+- Updated `QUICK_START.md` setup instructions
+- Updated migration process default paths
+
+#### 🔧 Configuration Enhancements
+- Simplified reverse engineering validation (3 components instead of 5)
+- Improved directory auto-creation logic
+- Better error messages for missing components
+- Enhanced test suite with correct directory checks
 
 ### Use Cases Supported
 1. **Documentation Only**: Extract business logic for RFP/contractor briefing without migration
 2. **Assessment Before Migration**: Review what needs migration before committing to full process
 3. **Selective Modernization**: Identify high-value, low-effort improvements
-4. **Integrated Workflow**: Run as part of full migration pipeline with review step
+4. **Integrated Workflow**: Run as part of full migration pipeline with optional review step
+5. **Cost Optimization**: Skip reverse engineering step when reusing existing analysis
 
 ## [1.2.0] - 2025-10-10
 

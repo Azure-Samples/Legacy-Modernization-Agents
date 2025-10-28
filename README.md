@@ -221,7 +221,9 @@ The easiest way to see the portal in action **without running a full migration**
 ./demo.sh
 ```
 
-**What `demo.sh` does:**
+#### What Demo Mode Does
+
+**Automatic Setup:**
 1. ✅ Checks prerequisites (Docker, .NET)
 2. ✅ Starts Neo4j if not running
 3. ✅ Finds your latest migration run
@@ -229,7 +231,7 @@ The easiest way to see the portal in action **without running a full migration**
 5. ✅ Launches web portal at http://localhost:5250
 6. ✅ Displays existing data (no new migration)
 
-**Demo script output:**
+**Demo Script Output:**
 ```
 ╔══════════════════════════════════════════════════════════════╗
 ║   COBOL Migration Portal - Demo Mode                        ║
@@ -263,14 +265,92 @@ The easiest way to see the portal in action **without running a full migration**
    • Data retrieval guide modal
 ```
 
-**Stop the demo:**
-```bash
-# Stop portal
-pkill -f "dotnet.*McpChatWeb"
+#### Features Available in Demo Mode
 
-# Stop Neo4j
+**Portal (http://localhost:5250)**
+- 💬 **Chat Interface** - Ask questions about COBOL code
+- 🎯 **Suggestion Chips** - 6 pre-configured queries:
+  - Circular dependencies
+  - Critical files
+  - Impact analysis
+  - Copybook usage
+  - Dependency summary
+  - Main programs
+- 📊 **Dependency Graph** - Interactive vis-network visualization
+- 📋 **Resource Browser** - View all available MCP resources
+
+**Neo4j Browser (http://localhost:7474)**
+- 🔍 **Graph Visualization** - Full Neo4j Browser experience
+- 📈 **Query Interface** - Run custom Cypher queries
+- 🔗 **Relationship Explorer** - Trace dependencies visually
+- **Credentials:** Username: `neo4j` / Password: `cobol-migration-2025`
+
+#### Example Demo Flow
+
+1. **Start the demo:**
+   ```bash
+   ./demo.sh
+   ```
+
+2. **Open portal:** http://localhost:5250
+
+3. **Try a suggestion chip:**
+   - Click "🔄 Circular Dependencies"
+   - See the AI analyze the codebase
+
+4. **View the graph:**
+   - Look at the right panel
+   - See nodes and edges representing COBOL files
+   - Click nodes for details
+
+5. **Ask custom questions:**
+   - "Which files depend on BDSMFJLI.cpy?"
+   - "Show me all copybooks used by BDSMFJL.cbl"
+   - "What are the most complex programs?"
+
+6. **Explore Neo4j:**
+   - Open http://localhost:7474
+   - Login with credentials above
+   - Run: `MATCH (f:CobolFile) RETURN f LIMIT 25`
+
+#### Stopping the Demo
+
+**Stop portal only:**
+```bash
+pkill -f "dotnet.*McpChatWeb"
+```
+
+**Stop everything:**
+```bash
 docker-compose down
 ```
+
+#### Troubleshooting Demo Mode
+
+**Port Already in Use:**
+```bash
+# Kill existing process
+pkill -f "dotnet.*McpChatWeb"
+# Then run demo.sh again
+./demo.sh
+```
+
+**Neo4j Not Starting:**
+```bash
+# Check Docker is running
+docker ps
+
+# Restart Neo4j
+docker-compose restart neo4j
+```
+
+**No Data Showing:**
+The portal displays data from the latest successful migration run. If no data appears:
+- Check `Data/migration.db` exists
+- Verify Neo4j contains data: http://localhost:7474
+- Run a full migration with `./doctor.sh run` to populate data
+
+> **Note:** Demo mode uses existing data from SQLite (`Data/migration.db`) and Neo4j. No new analysis is performed - perfect for demos and presentations!
 
 ## � Latest Features
 
@@ -830,7 +910,7 @@ For advanced users or CI/CD integration, use these direct commands:
 dotnet run -- --cobol-source ./cobol-source --java-output ./java-output
 
 # With verbose logging
-dotnet run -- --cobol-source ./cobol-source --java-output ./java-output --verbose
+dotnet run -- --cobol-source ./source --java-output ./java-output --verbose
 
 # Custom configuration
 dotnet run -- --cobol-source ./my-cobol --java-output ./my-java --config ./my-config.json
@@ -838,20 +918,18 @@ dotnet run -- --cobol-source ./my-cobol --java-output ./my-java --config ./my-co
 
 #### 2. Reverse Engineering Command
 ```bash
-# Extract business logic and detect utility code
+# Extract business logic from COBOL
 dotnet run reverse-engineer --cobol-source ./cobol-source
 
 # Custom output location
-dotnet run reverse-engineer --cobol-source ./cobol-source --output ./my-analysis
+dotnet run reverse-engineer --cobol-source ./source --output ./my-analysis
 
 # Integrated mode (reverse engineer, then convert)
-dotnet run -- --cobol-source ./cobol-source --java-output ./java-output --reverse-engineer-only
+dotnet run -- --cobol-source ./source --java-output ./java-output --reverse-engineer-only
 ```
 
-**Output:** Generates markdown files in `reverse-engineering-output/`:
-- `business-logic.md` - User stories, features, and business rules
-- `technical-details.md` - Utility code analysis and modernization opportunities
-- `summary.md` - Overview, statistics, and next steps
+**Output:** Generates markdown file in `output/`:
+- `reverse-engineering-details.md` - Business logic, feature descriptions, use cases, and technical analysis
 
 See [REVERSE_ENGINEERING.md](REVERSE_ENGINEERING.md) for detailed documentation.
 
@@ -947,8 +1025,8 @@ dotnet run -- --cobol-source ./legacy --java-output ./modernized
 # 2. Test configuration  
 ./doctor.sh test
 
-# 3. Add your COBOL files to cobol-source/ (or use the included samples)
-cp your-cobol-files/* ./cobol-source/
+# 3. Add your COBOL files to source/ (or use the included samples)
+cp your-cobol-files/* ./source/
 
 # 4. Run migration (automatically launches the MCP web UI)
 ./doctor.sh run
@@ -1041,14 +1119,14 @@ Follow these five steps to go from a clean checkout to an interactive MCP sessio
   - The database will be created automatically on first run.
 
 ### 2. Run a migration
-- Place your COBOL sources in the folder configured by `ApplicationSettings.CobolSourceFolder` (default `cobol-source`).
+- Place your COBOL sources in the folder configured by `ApplicationSettings.CobolSourceFolder` (default `source`).
 - Either run the helper script:
   ```bash
   ./doctor.sh run
   ```
   or execute the console app directly:
   ```bash
-  dotnet run -- --cobol-source cobol-source --java-output java-output
+  dotnet run -- --cobol-source source --java-output java-output
   ```
 - The helper script now *automatically* starts the `McpChatWeb` experience once the migration finishes. By default it serves <http://localhost:5028>, opens your browser, and attaches to the latest migration database so you can explore the resources immediately. Set `MCP_AUTO_LAUNCH=0` if you prefer to skip the automatic web startup.
 - The process analyzes dependencies, converts COBOL to Java Quarkus, and persists every run in SQLite.
@@ -1155,7 +1233,7 @@ The browser UI calls the minimal API endpoints, which forward requests to the MC
 
 ---
 
-## 📖 How to Use the Migration Portal
+## 📖 Portal Usage Guide
 
 ### Getting Started
 
@@ -1299,9 +1377,22 @@ SELECT * FROM runs WHERE id = 43;
 SELECT file_name, is_copybook FROM cobol_files WHERE run_id = 43 LIMIT 10;
 ```
 
-**Example Neo4j Query:**
+**Example Neo4j Queries:**
 ```bash
-echo 'MATCH (r:Run {runId: 43})-[:CONTAINS]->(f:CobolFile) RETURN f.fileName LIMIT 25;' | \
+# View all files in a run
+echo 'MATCH (r:Run {id: 43})-[:ANALYZED]->(f:CobolFile) RETURN f.fileName, f.isCopybook ORDER BY f.isCopybook DESC;' | \
+cypher-shell -u neo4j -p cobol-migration-2025
+
+# Find hub files (most connected)
+echo 'MATCH (f:CobolFile) WHERE f.runId = 43 OPTIONAL MATCH (f)<-[incoming:DEPENDS_ON]-() OPTIONAL MATCH (f)-[outgoing:DEPENDS_ON]->() WITH f, count(DISTINCT incoming) as inCount, count(DISTINCT outgoing) as outCount RETURN f.fileName, inCount + outCount as TotalConnections ORDER BY TotalConnections DESC LIMIT 10;' | \
+cypher-shell -u neo4j -p cobol-migration-2025
+
+# Find circular dependencies
+echo 'MATCH path = (start:CobolFile)-[:DEPENDS_ON*2..10]->(start) WHERE start.runId = 43 RETURN [node in nodes(path) | node.fileName] as Cycle, length(path) as Length ORDER BY Length LIMIT 20;' | \
+cypher-shell -u neo4j -p cobol-migration-2025
+
+# Impact analysis for a specific file
+echo 'MATCH (source:CobolFile {fileName: "BDSMFJL.cbl", runId: 43}) OPTIONAL MATCH path1 = (source)<-[:DEPENDS_ON*1..5]-(affected) OPTIONAL MATCH path2 = (source)-[:DEPENDS_ON*1..5]->(dependency) RETURN source.fileName, collect(DISTINCT affected.fileName) as AffectedFiles, collect(DISTINCT dependency.fileName) as Dependencies;' | \
 cypher-shell -u neo4j -p cobol-migration-2025
 ```
 
