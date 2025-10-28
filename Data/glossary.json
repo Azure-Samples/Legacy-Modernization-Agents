@@ -1,0 +1,28 @@
+{
+  "terms": [
+    {
+      "term": "ARTNR",
+      "translation": "Article Number"
+    },
+    {
+      "term": "KDUTGAVA",
+      "translation": "Release Version"
+    },
+    {
+      "term": "PRIMDOK",
+      "translation": "Primary Document"
+    },
+    {
+      "term": "EVENTLOG",
+      "translation": "Event Log"
+    },
+    {
+      "term": "YTBEH",
+      "translation": "Surface Treatment"
+    },
+    {
+      "term": "D-MARKING",
+      "translation": "Product Marking"
+    }
+  ]
+}

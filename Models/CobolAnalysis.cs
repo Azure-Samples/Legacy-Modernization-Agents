@@ -16,6 +16,11 @@ public class CobolAnalysis
     public string FilePath { get; set; } = string.Empty;
     
     /// <summary>
+    /// Gets or sets whether this is a copybook file.
+    /// </summary>
+    public bool IsCopybook { get; set; }
+    
+    /// <summary>
     /// Gets or sets the overall description of the COBOL program.
     /// </summary>
     public string ProgramDescription { get; set; } = string.Empty;

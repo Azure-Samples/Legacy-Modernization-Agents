@@ -83,11 +83,14 @@ cobol-files/
 *.cpy
 *.cob
 
-# Generated Java Output (Contains converted business logic)
+# Generated Output (Contains converted business logic and reverse engineering results)
+output/
+Output/
 java-output/
 Java-Output/
 JavaOutput/
 generated-java/
+reverse-engineering-output/
 
 # =============================================================================
 # LOGS AND TEMPORARY FILES

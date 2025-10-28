@@ -20,13 +20,13 @@ public class FileHelper
     }
 
     /// <summary>
-    /// Scans a directory for COBOL files.
+    /// Scans a directory for COBOL files including both programs (.cbl) and copybooks (.cpy).
     /// </summary>
     /// <param name="directory">The directory to scan.</param>
-    /// <returns>A list of COBOL files.</returns>
+    /// <returns>A list of COBOL files including both programs and copybooks.</returns>
     public async Task<List<CobolFile>> ScanDirectoryForCobolFilesAsync(string directory)
     {
-        _logger.LogInformation("Scanning directory for COBOL files: {Directory}", directory);
+        _logger.LogInformation("Scanning directory for COBOL files and copybooks: {Directory}", directory);
         
         if (!Directory.Exists(directory))
         {

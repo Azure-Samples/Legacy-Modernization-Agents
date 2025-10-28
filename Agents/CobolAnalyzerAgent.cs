@@ -141,6 +141,7 @@ Provide a detailed, structured analysis as described in your instructions.
             {
                 FileName = cobolFile.FileName,
                 FilePath = cobolFile.FilePath,
+                IsCopybook = cobolFile.IsCopybook,
                 RawAnalysisData = analysisText
             };
             
@@ -217,6 +218,7 @@ Provide a detailed, structured analysis as described in your instructions.
         {
             FileName = cobolFile.FileName,
             FilePath = cobolFile.FilePath,
+            IsCopybook = cobolFile.IsCopybook,
             ProgramDescription = $"Analysis skipped because the AI service was unavailable. Reason: {reason}",
             RawAnalysisData = message,
             Paragraphs =

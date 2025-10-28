@@ -317,23 +317,11 @@ run_doctor() {
         echo -e "${YELLOW}⚠️  Missing BusinessLogic model (optional feature)${NC}"
     fi
 
-    if [[ -f "$REPO_ROOT/Models/UtilityCodeAnalysis.cs" ]]; then
-        echo -e "${GREEN}✅ UtilityCodeAnalysis model found${NC}"
-    else
-        echo -e "${YELLOW}⚠️  Missing UtilityCodeAnalysis model (optional feature)${NC}"
-    fi
-
     # Check agents
     if [[ -f "$REPO_ROOT/Agents/BusinessLogicExtractorAgent.cs" ]]; then
         echo -e "${GREEN}✅ BusinessLogicExtractorAgent found${NC}"
     else
         echo -e "${YELLOW}⚠️  Missing BusinessLogicExtractorAgent (optional feature)${NC}"
-    fi
-
-    if [[ -f "$REPO_ROOT/Agents/UtilityCodeAnalyzerAgent.cs" ]]; then
-        echo -e "${GREEN}✅ UtilityCodeAnalyzerAgent found${NC}"
-    else
-        echo -e "${YELLOW}⚠️  Missing UtilityCodeAnalyzerAgent (optional feature)${NC}"
     fi
 
     # Check process
@@ -620,38 +608,41 @@ run_test() {
     # Check source folders
     echo ""
     echo "Checking source folders..."
-    cobol_files=$(find "$REPO_ROOT/cobol-source" -name "*.cbl" -o -name "*.cpy" 2>/dev/null | wc -l)
-    if [ "$cobol_files" -gt 0 ]; then
-        echo -e "${GREEN}✅ Found $(printf "%8d" $cobol_files) COBOL files in cobol-source directory${NC}"
+    cobol_files=$(find "$REPO_ROOT/source" -name "*.cbl" 2>/dev/null | wc -l)
+    copybook_files=$(find "$REPO_ROOT/source" -name "*.cpy" 2>/dev/null | wc -l)
+    total_files=$((cobol_files + copybook_files))
+    
+    if [ "$total_files" -gt 0 ]; then
+        if [ "$cobol_files" -gt 0 ]; then
+            echo -e "${GREEN}✅ Found $(printf "%8d" $cobol_files) COBOL files in source directory${NC}"
+        fi
+        if [ "$copybook_files" -gt 0 ]; then
+            echo -e "${GREEN}✅ Found $(printf "%8d" $copybook_files) copybooks in source directory${NC}"
+        fi
     else
-        echo -e "${YELLOW}⚠️  No COBOL files found in cobol-source directory${NC}"
-        echo "   Add your COBOL files to ./cobol-source/ to test migration"
+        echo -e "${YELLOW}⚠️  No COBOL files or copybooks found in source directory${NC}"
+        echo "   Add your COBOL files to ./source/ to test migration"
     fi
 
     # Check output directories
     echo ""
     echo "Checking output directories..."
-    if [ -d "$REPO_ROOT/java-output" ]; then
-        java_files=$(find "$REPO_ROOT/java-output" -name "*.java" 2>/dev/null | wc -l)
+    if [ -d "$REPO_ROOT/output" ]; then
+        java_files=$(find "$REPO_ROOT/output" -name "*.java" 2>/dev/null | wc -l)
         if [ "$java_files" -gt 0 ]; then
             echo -e "${GREEN}✅ Found previous Java output ($java_files files)${NC}"
         else
             echo -e "${BLUE}ℹ️  No previous Java output found (will be created during migration)${NC}"
         fi
-    else
-        echo -e "${BLUE}ℹ️  Output directory will be created during migration${NC}"
-    fi
 
-    # Check reverse engineering output
-    if [ -d "$REPO_ROOT/reverse-engineering-output" ]; then
-        md_files=$(find "$REPO_ROOT/reverse-engineering-output" -name "*.md" 2>/dev/null | wc -l)
+        md_files=$(find "$REPO_ROOT/output" -name "*.md" 2>/dev/null | wc -l)
         if [ "$md_files" -gt 0 ]; then
             echo -e "${GREEN}✅ Found previous reverse engineering output ($md_files markdown files)${NC}"
         else
             echo -e "${BLUE}ℹ️  No previous reverse engineering output found${NC}"
         fi
     else
-        echo -e "${BLUE}ℹ️  Reverse engineering output directory will be created during analysis${NC}"
+        echo -e "${BLUE}ℹ️  Output directory will be created during migration${NC}"
     fi
 
     # Check logging infrastructure
@@ -669,12 +660,10 @@ run_test() {
     echo ""
     echo "Checking reverse engineering components..."
     re_components=0
-    re_components_total=5
+    re_components_total=3
     
     [ -f "$REPO_ROOT/Models/BusinessLogic.cs" ] && ((re_components++))
-    [ -f "$REPO_ROOT/Models/UtilityCodeAnalysis.cs" ] && ((re_components++))
     [ -f "$REPO_ROOT/Agents/BusinessLogicExtractorAgent.cs" ] && ((re_components++))
-    [ -f "$REPO_ROOT/Agents/UtilityCodeAnalyzerAgent.cs" ] && ((re_components++))
     [ -f "$REPO_ROOT/Processes/ReverseEngineeringProcess.cs" ] && ((re_components++))
     
     if [ $re_components -eq $re_components_total ]; then
@@ -690,20 +679,19 @@ run_test() {
     echo ""
     echo "Migration Options:"
     echo "  Standard:         ./doctor.sh run"
-    echo "  Reverse Engineer: dotnet run reverse-engineer --cobol-source ./cobol-source"
-    echo "  Full Migration:   dotnet run -- --cobol-source ./cobol-source --java-output ./java-output --verbose"
+    echo "  Reverse Engineer: dotnet run reverse-engineer --source ./source"
+    echo "  Full Migration:   dotnet run -- --source ./source"
     echo ""
     if [ $re_components -eq $re_components_total ]; then
         echo "Reverse Engineering Available:"
         echo "  Extract business logic from COBOL before migration"
-        echo "  Detect utility code vs. business-specific patterns"
         echo "  Generate documentation in markdown format"
-        echo "  Run: dotnet run reverse-engineer --cobol-source ./cobol-source --output ./reverse-engineering-output"
+        echo "  Run: dotnet run reverse-engineer --source ./source"
         echo ""
     fi
-    if [ "$cobol_files" -gt 0 ]; then
+    if [ "$total_files" -gt 0 ]; then
         echo "Expected Results:"
-        echo "  - Process $cobol_files COBOL files"
+        echo "  - Process $cobol_files COBOL files and $copybook_files copybooks"
         echo "  - Generate $cobol_files+ Java files"
         echo "  - Create dependency maps"
         echo "  - Generate migration reports"
@@ -734,8 +722,33 @@ run_migration() {
     echo "🚀 Starting COBOL to Java Quarkus Migration..."
     echo "=============================================="
 
+    # Check if reverse engineering results already exist
+    local re_output_file="$REPO_ROOT/output/reverse-engineering-details.md"
+    local skip_reverse_eng=""
+    
+    if [ -f "$re_output_file" ]; then
+        echo ""
+        echo -e "${GREEN}✅ Found existing reverse engineering results:${NC} $(basename "$re_output_file")"
+        echo -e "${BLUE}ℹ️  Skipping reverse engineering step to save time and API costs${NC}"
+        echo ""
+        read -p "Do you want to re-run reverse engineering anyway? (y/N): " -n 1 -r
+        echo ""
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            skip_reverse_eng="--skip-reverse-engineering"
+            echo -e "${BLUE}ℹ️  Proceeding with existing reverse engineering results${NC}"
+        else
+            echo -e "${BLUE}ℹ️  Will re-run reverse engineering as requested${NC}"
+        fi
+        echo ""
+    else
+        echo ""
+        echo -e "${BLUE}ℹ️  No previous reverse engineering results found${NC}"
+        echo -e "${BLUE}ℹ️  Full analysis will be performed (including reverse engineering)${NC}"
+        echo ""
+    fi
+
     # Run the application with updated folder structure
-    "$DOTNET_CMD" run -- --cobol-source ./cobol-source --java-output ./java-output
+    "$DOTNET_CMD" run -- --source ./source $skip_reverse_eng
     local migration_exit=$?
 
     if [[ $migration_exit -ne 0 ]]; then
@@ -778,7 +791,7 @@ run_resume() {
     echo "Checking for resumable migration state..."
     
     # Check for existing partial results
-    if [ -d "$REPO_ROOT/java-output" ] && [ "$(ls -A $REPO_ROOT/java-output 2>/dev/null)" ]; then
+    if [ -d "$REPO_ROOT/output" ] && [ "$(ls -A $REPO_ROOT/output 2>/dev/null)" ]; then
         echo -e "${GREEN}✅ Found existing migration output${NC}"
         echo "Resuming from last position..."
     else
@@ -787,7 +800,7 @@ run_resume() {
     fi
 
     # Run with resume logic
-    "$DOTNET_CMD" run -- --cobol-source ./cobol-source --java-output ./java-output --resume
+    "$DOTNET_CMD" run -- --source ./source --resume
 }
 
 # Function to monitor migration
@@ -861,7 +874,7 @@ run_validate() {
     done
 
     # Check directories
-    for dir in "cobol-source" "java-output" "reverse-engineering-output"; do
+    for dir in "source" "output"; do
     if [ -d "$REPO_ROOT/$dir" ]; then
             echo -e "${GREEN}✅ Directory: $dir${NC}"
         else
@@ -875,15 +888,13 @@ run_validate() {
     echo "Checking reverse engineering feature..."
     re_valid=0
     [ -f "$REPO_ROOT/Models/BusinessLogic.cs" ] && ((re_valid++))
-    [ -f "$REPO_ROOT/Models/UtilityCodeAnalysis.cs" ] && ((re_valid++))
     [ -f "$REPO_ROOT/Agents/BusinessLogicExtractorAgent.cs" ] && ((re_valid++))
-    [ -f "$REPO_ROOT/Agents/UtilityCodeAnalyzerAgent.cs" ] && ((re_valid++))
     [ -f "$REPO_ROOT/Processes/ReverseEngineeringProcess.cs" ] && ((re_valid++))
     
-    if [ $re_valid -eq 5 ]; then
-        echo -e "${GREEN}✅ Reverse engineering feature: Complete (5/5 components)${NC}"
+    if [ $re_valid -eq 3 ]; then
+        echo -e "${GREEN}✅ Reverse engineering feature: Complete (3/3 components)${NC}"
     elif [ $re_valid -gt 0 ]; then
-        echo -e "${YELLOW}⚠️  Reverse engineering feature: Incomplete ($re_valid/5 components)${NC}"
+        echo -e "${YELLOW}⚠️  Reverse engineering feature: Incomplete ($re_valid/3 components)${NC}"
         ((errors++))
     else
         echo -e "${BLUE}ℹ️  Reverse engineering feature: Not installed (optional)${NC}"
@@ -950,25 +961,32 @@ run_reverse_engineering() {
     echo "=========================================="
     echo ""
     echo "This will:"
-    echo "  • Extract business logic as user stories and features"
-    echo "  • Detect utility code patterns vs. business-specific code"
+    echo "  • Extract business logic as feature descriptions and use cases"
     echo "  • Analyze modernization opportunities"
     echo "  • Generate markdown documentation"
     echo ""
 
     # Check for COBOL files
-    cobol_count=$(find "$REPO_ROOT/cobol-source" -name "*.cbl" 2>/dev/null | wc -l)
-    if [ "$cobol_count" -eq 0 ]; then
-        echo -e "${YELLOW}⚠️  No COBOL files found in ./cobol-source/${NC}"
+    cobol_count=$(find "$REPO_ROOT/source" -name "*.cbl" 2>/dev/null | wc -l)
+    copybook_count=$(find "$REPO_ROOT/source" -name "*.cpy" 2>/dev/null | wc -l)
+    total_count=$((cobol_count + copybook_count))
+    
+    if [ "$total_count" -eq 0 ]; then
+        echo -e "${YELLOW}⚠️  No COBOL files or copybooks found in ./source/${NC}"
         echo "Add COBOL files to analyze and try again."
         return 1
     fi
 
-    echo -e "Found ${GREEN}$cobol_count${NC} COBOL file(s) to analyze"
+    if [ "$cobol_count" -gt 0 ]; then
+        echo -e "Found ${GREEN}$cobol_count${NC} COBOL file(s) to analyze"
+    fi
+    if [ "$copybook_count" -gt 0 ]; then
+        echo -e "Found ${GREEN}$copybook_count${NC} copybook(s) to analyze"
+    fi
     echo ""
 
     # Run the reverse engineering command
-    "$DOTNET_CMD" run reverse-engineer --cobol-source ./cobol-source --output ./reverse-engineering-output
+    "$DOTNET_CMD" run reverse-engineer --source ./source
 
     local exit_code=$?
 
@@ -976,10 +994,8 @@ run_reverse_engineering() {
         echo ""
         echo -e "${GREEN}✅ Reverse engineering completed successfully!${NC}"
         echo ""
-        echo "Output files created in: ./reverse-engineering-output/"
-        echo "  • business-logic.md      - User stories and features"
-        echo "  • technical-details.md   - Utility code analysis"
-        echo "  • summary.md             - Overall findings"
+        echo "Output files created in: ./output/"
+        echo "  • reverse-engineering-details.md - Complete analysis with business logic and technical details"
         echo ""
         echo "Next steps:"
         echo "  • Review the generated documentation"
@@ -995,7 +1011,7 @@ run_reverse_engineering() {
 # Main command routing
 main() {
     # Create required directories if they don't exist
-    mkdir -p "$REPO_ROOT/cobol-source" "$REPO_ROOT/java-output" "$REPO_ROOT/Logs" "$REPO_ROOT/reverse-engineering-output"
+    mkdir -p "$REPO_ROOT/source" "$REPO_ROOT/output" "$REPO_ROOT/Logs"
 
     case "${1:-doctor}" in
         "setup")
