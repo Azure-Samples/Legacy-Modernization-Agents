@@ -4,6 +4,7 @@ using CobolToQuarkusMigration.Agents;
 using CobolToQuarkusMigration.Agents.Interfaces;
 using CobolToQuarkusMigration.Helpers;
 using CobolToQuarkusMigration.Models;
+using CobolToQuarkusMigration.Persistence;
 using System.Text;
 
 namespace CobolToQuarkusMigration;
@@ -19,6 +20,8 @@ public class MigrationProcess
     private readonly AppSettings _settings;
     private readonly EnhancedLogger _enhancedLogger;
     private readonly ChatLogger _chatLogger;
+    private readonly IMigrationRepository _migrationRepository;
+    private int? _activeRunId;
     
     private ICobolAnalyzerAgent? _cobolAnalyzerAgent;
     private IJavaConverterAgent? _javaConverterAgent;
@@ -35,7 +38,8 @@ public class MigrationProcess
         IKernelBuilder kernelBuilder,
         ILogger<MigrationProcess> logger,
         FileHelper fileHelper,
-        AppSettings settings)
+        AppSettings settings,
+        IMigrationRepository migrationRepository)
     {
         _kernelBuilder = kernelBuilder;
         _logger = logger;
@@ -43,6 +47,7 @@ public class MigrationProcess
         _settings = settings;
         _enhancedLogger = new EnhancedLogger(logger);
         _chatLogger = new ChatLogger(LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger<ChatLogger>());
+        _migrationRepository = migrationRepository;
     }
 
     /// <summary>
@@ -109,6 +114,8 @@ public class MigrationProcess
         
         var totalSteps = 6;
         var startTime = DateTime.UtcNow;
+        var runId = await _migrationRepository.StartRunAsync(cobolSourceFolder, javaOutputFolder);
+        _activeRunId = runId;
         
         try
         {
@@ -119,12 +126,14 @@ public class MigrationProcess
             progressCallback?.Invoke("Scanning for COBOL files", 1, totalSteps);
             
             var cobolFiles = await _fileHelper.ScanDirectoryForCobolFilesAsync(cobolSourceFolder);
+            await _migrationRepository.SaveCobolFilesAsync(runId, cobolFiles);
             
             if (cobolFiles.Count == 0)
             {
                 _enhancedLogger.LogBehindTheScenes("WARNING", "NO_FILES_FOUND", 
                     $"No COBOL files discovered in {cobolSourceFolder}");
                 _enhancedLogger.ShowWarning($"No COBOL files found in folder: {cobolSourceFolder}");
+                await _migrationRepository.CompleteRunAsync(runId, "NoFiles", "No COBOL programs discovered");
                 return;
             }
             
@@ -148,6 +157,7 @@ public class MigrationProcess
                 $"Saving dependency map to {dependencyMapPath}");
             await _fileHelper.SaveDependencyMapAsync(dependencyMap, dependencyMapPath);
             await File.WriteAllTextAsync(mermaidDiagramPath, $"# COBOL Dependency Diagram\n\n```mermaid\n{dependencyMap.MermaidDiagram}\n```");
+            await _migrationRepository.SaveDependencyMapAsync(runId, dependencyMap);
             
             _enhancedLogger.LogBehindTheScenes("MIGRATION", "DEPENDENCIES_ANALYZED", 
                 $"Found {dependencyMap.Dependencies.Count} dependencies, {dependencyMap.CopybookUsage.Count} copybook relationships");
@@ -168,6 +178,7 @@ public class MigrationProcess
                         $"Analyzing file {current}/{total}");
                     progressCallback?.Invoke($"Analyzing COBOL files ({current}/{total})", 3, totalSteps);
                 });
+            await _migrationRepository.SaveAnalysesAsync(runId, cobolAnalyses);
             
             _enhancedLogger.LogBehindTheScenes("MIGRATION", "COBOL_ANALYSIS_COMPLETE", 
                 $"Completed analysis of {cobolAnalyses.Count} COBOL files");
@@ -258,6 +269,7 @@ public class MigrationProcess
             _enhancedLogger.LogBehindTheScenes("MIGRATION", "COMPLETION", 
                 $"Total migration completed in {totalTime.TotalSeconds:F1} seconds");
             _logger.LogInformation("Total migration time: {TotalTime}", totalTime);
+            await _migrationRepository.CompleteRunAsync(runId, "Completed");
             
             progressCallback?.Invoke("Migration completed successfully", totalSteps, totalSteps);
         }
@@ -265,6 +277,17 @@ public class MigrationProcess
         {
             _enhancedLogger.ShowError($"Error in migration process: {ex.Message}", ex);
             progressCallback?.Invoke($"Error: {ex.Message}", 0, 0);
+            if (_activeRunId.HasValue)
+            {
+                try
+                {
+                    await _migrationRepository.CompleteRunAsync(_activeRunId.Value, "Failed", ex.Message);
+                }
+                catch (Exception repoEx)
+                {
+                    _logger.LogWarning(repoEx, "Failed to mark migration run {RunId} as failed", _activeRunId.Value);
+                }
+            }
             throw;
         }
     }

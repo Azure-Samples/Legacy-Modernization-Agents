@@ -1,7 +1,23 @@
 {
-	"name": "COBOL to Quarkus Migration",
+	"name": "COBOL to Quarkus Migration with Neo4j",
 	"dockerFile": "Dockerfile",
-	"forwardPorts": [],
+	"forwardPorts": [5028, 7474, 7687],
+	"portsAttributes": {
+		"5028": {
+			"label": "Migration Portal (McpChatWeb)",
+			"onAutoForward": "openBrowser",
+			"protocol": "http"
+		},
+		"7474": {
+			"label": "Neo4j Browser",
+			"onAutoForward": "notify",
+			"protocol": "http"
+		},
+		"7687": {
+			"label": "Neo4j Bolt Protocol",
+			"onAutoForward": "silent"
+		}
+	},
 	"customizations": {
 		"vscode": {
 			"extensions": [
@@ -12,21 +28,57 @@
 				"redhat.vscode-quarkus",
 				"ms-semantic-kernel.semantic-kernel",
 				"github.copilot",
-				"github.copilot-chat"
+				"github.copilot-chat",
+				"ms-azuretools.vscode-docker",
+				"neo4j.neo4j-vscode",
+				"alexcvzz.vscode-sqlite"
 			],
 			"settings": {
 				"editor.formatOnSave": true,
+				"editor.defaultFormatter": "ms-dotnettools.csharp",
 				"omnisharp.enableRoslynAnalyzers": true,
-				"omnisharp.enableEditorConfigSupport": true
+				"omnisharp.enableEditorConfigSupport": true,
+				"dotnet.server.useOmnisharp": false,
+				"files.watcherExclude": {
+					"**/Data/*.db": true,
+					"**/Data/*.db-shm": true,
+					"**/Data/*.db-wal": true,
+					"**/neo4j_data/**": true,
+					"**/bin/**": true,
+					"**/obj/**": true
+				},
+				"files.exclude": {
+					"**/.git": true,
+					"**/.DS_Store": true,
+					"**/bin": true,
+					"**/obj": true
+				}
 			}
 		}
 	},
 	"remoteUser": "vscode",
 	"features": {
 		"ghcr.io/devcontainers/features/dotnet:1": {
-			"version": "8.0"
+			"version": "9.0",
+			"installUsingApt": true
 		},
-		"ghcr.io/devcontainers/features/azure-cli:1": {}
+		"ghcr.io/devcontainers/features/docker-in-docker:2": {
+			"version": "latest",
+			"dockerDashComposeVersion": "v2"
+		},
+		"ghcr.io/devcontainers/features/azure-cli:1": {},
+		"ghcr.io/devcontainers/features/node:1": {
+			"version": "lts"
+		}
 	},
-	"postCreateCommand": "dotnet restore && dotnet build"
+	"postCreateCommand": "bash -c 'echo \"📦 Installing dependencies...\" && dotnet restore && echo \"🔨 Building project...\" && dotnet build && echo \"🐳 Starting Neo4j...\" && docker-compose up -d neo4j && sleep 5 && docker ps | grep neo4j && echo \"\" && echo \"✅ Dev container ready!\" && echo \"\" && echo \"🚀 Quick Start:\" && echo \"  ./doctor.sh run  - Run migration and auto-start portal\" && echo \"  ./demo.sh        - View existing migration data\" && echo \"\" && echo \"📍 Fixed Ports (cannot change):\" && echo \"  Portal:  http://localhost:5028\" && echo \"  Neo4j:   http://localhost:7474\" && echo \"  Bolt:    bolt://localhost:7687\"'",
+	"postStartCommand": "bash -c 'echo \"♻️  Restarting Neo4j...\" && docker start cobol-migration-neo4j 2>/dev/null || docker-compose up -d neo4j 2>/dev/null || true && sleep 3 && if [ -f \"./Data/migration.db\" ]; then echo \"\" && echo \"📊 Previous migration detected!\" && echo \"\" && echo \"🚀 Auto-starting portal...\" && cd McpChatWeb && nohup dotnet run --urls http://localhost:5028 > /tmp/portal.log 2>&1 & sleep 3 && echo \"✅ Portal running at http://localhost:5028\" && echo \"📊 Neo4j Browser at http://localhost:7474\" && echo \"\" && echo \"💡 Use ./doctor.sh to manage services\"; else echo \"\" && echo \"ℹ️  No previous migration found\" && echo \"Run ./doctor.sh run to start migration\"; fi'",
+	"mounts": [
+		"source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
+	],
+	"runArgs": [
+		"--name=cobol-migration-devcontainer"
+	],
+	"workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
+	"workspaceFolder": "/workspace"
 }
