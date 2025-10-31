@@ -54,6 +54,7 @@ local.settings.json
 # Azure OpenAI Credentials and API Keys
 Config/ai-config.local.env
 Config/*.local.env
+Config/appsettings.json
 Config/appsettings.local.json
 Config/appsettings.secrets.json
 *.key
@@ -75,7 +76,8 @@ Config/appsettings.secrets.json
 # =============================================================================
 
 # COBOL Source Files (Contains proprietary business logic)
-cobol-source/
+cobol-source/*
+!cobol-source/.gitkeep
 COBOL-Source/
 cobol-files/
 *.cbl
@@ -83,10 +85,28 @@ cobol-files/
 *.cob
 
 # Generated Java Output (Contains converted business logic)
-java-output/
+java-output/*
+!java-output/.gitkeep
 Java-Output/
 JavaOutput/
 generated-java/
+
+# =============================================================================
+# DATABASE FILES - Persistent Local Storage
+# =============================================================================
+
+# SQLite migration database (Contains all run data, persists locally)
+Data/
+Data/migration.db
+Data/migration.db-*
+*.db
+*.db-shm
+*.db-wal
+
+# Database backups
+*.db.backup
+*.sql.backup
+migration_backup*.sql
 
 # =============================================================================
 # LOGS AND TEMPORARY FILES
