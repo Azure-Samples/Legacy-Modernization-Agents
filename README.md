@@ -37,7 +37,7 @@ Have a look at the talk Julia did at the WeAreDevelopers World Congress 2025: ht
   - [6. Chat through the web UI](#6-chat-through-the-web-ui)
 - [How It Works - Complete Architecture & Flow](#how-it-works---complete-architecture--flow)
 - [Persistence and MCP Architecture](#persistence-and-mcp-architecture)
-- [📦 Data Persistence](#-data-persistence)
+- [Data Persistence](#-data-persistence)
 - [Known issues](#known-issues)
 - [Project ideas](#project-ideas)
   - [Improvements](#improvements)
@@ -2145,7 +2145,7 @@ This Semantic Kernel-based architecture transforms the complex task of COBOL-to-
 3. When the run completes, the transaction is committed and metrics are stored alongside artifacts.
 4. The MCP server reads the same database to serve resources and conversational responses to MCP clients.
 
-## � Data Persistence
+## Data Persistence
 
 ### Storage and Durability Guarantees
 
