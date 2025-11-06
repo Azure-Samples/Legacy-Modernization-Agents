@@ -2,7 +2,7 @@ using Microsoft.Extensions.Logging;
 using System.Text;
 using System.Text.Json;
 
-namespace CobolToQuarkusMigration.Helpers;
+namespace CobolModernization.Helpers;
 
 /// <summary>
 /// Enhanced logger with ASCII progress bars, API call tracking, color-coded console output, and comprehensive file logging, because its cool .
@@ -15,7 +15,7 @@ public class EnhancedLogger
     private readonly List<ConversationEntry> _agentConversations = new List<ConversationEntry>();
     private readonly List<ApiCallEntry> _apiCalls = new List<ApiCallEntry>();
     private int _apiCallCounter = 0;
-    
+
     // File logging paths
     private readonly string _baseLogPath;
     private readonly string _apiCallLogPath;
@@ -29,7 +29,7 @@ public class EnhancedLogger
     {
         public const string Reset = "\u001b[0m";
         public const string Bold = "\u001b[1m";
-        
+
         // Standard Colors
         public const string Black = "\u001b[30m";
         public const string Red = "\u001b[31m";
@@ -39,7 +39,7 @@ public class EnhancedLogger
         public const string Magenta = "\u001b[35m";
         public const string Cyan = "\u001b[36m";
         public const string White = "\u001b[37m";
-        
+
         // Bright Colors
         public const string BrightBlack = "\u001b[90m";
         public const string BrightRed = "\u001b[91m";
@@ -49,7 +49,7 @@ public class EnhancedLogger
         public const string BrightMagenta = "\u001b[95m";
         public const string BrightCyan = "\u001b[96m";
         public const string BrightWhite = "\u001b[97m";
-        
+
         // Background Colors
         public const string BgRed = "\u001b[41m";
         public const string BgGreen = "\u001b[42m";
@@ -132,12 +132,12 @@ public class EnhancedLogger
             progressBar.Append($"{Colors.BrightGreen}{new string('█', filled)}{Colors.Reset}");
             progressBar.Append($"{Colors.BrightBlack}{new string('░', empty)}{Colors.Reset}");
             progressBar.Append($"{Colors.BrightBlue}]{Colors.Reset}");
-            
+
             var percentText = $"{Colors.BrightYellow}{percentage:P1}{Colors.Reset}".PadLeft(15);
             var countText = $"{Colors.BrightCyan}({current}/{total}){Colors.Reset}".PadLeft(20);
-            
+
             Console.Write($"\r{Colors.BrightWhite}{message}{Colors.Reset}: {progressBar} {percentText} {countText}");
-            
+
             if (current >= total)
             {
                 Console.WriteLine(); // New line when complete
@@ -156,20 +156,20 @@ public class EnhancedLogger
         {
             var width = 80;
             var border = new string('═', width);
-            
+
             Console.WriteLine();
             Console.WriteLine($"{Colors.BrightCyan}{Colors.Bold}╔{border}╗{Colors.Reset}");
             Console.WriteLine($"{Colors.BrightCyan}║{Colors.Reset}{Colors.BrightWhite}{Colors.Bold}{title.PadLeft((width + title.Length) / 2).PadRight(width)}{Colors.Reset}{Colors.BrightCyan}║{Colors.Reset}");
-            
+
             if (!string.IsNullOrEmpty(subtitle))
             {
                 Console.WriteLine($"{Colors.BrightCyan}║{Colors.Reset}{Colors.BrightYellow}{subtitle.PadLeft((width + subtitle.Length) / 2).PadRight(width)}{Colors.Reset}{Colors.BrightCyan}║{Colors.Reset}");
             }
-            
+
             Console.WriteLine($"{Colors.BrightCyan}╚{border}╝{Colors.Reset}");
             Console.WriteLine();
         }
-        
+
         _logger.LogInformation("=== {Title} {Subtitle} ===", title, subtitle ?? "");
     }
 
@@ -186,16 +186,16 @@ public class EnhancedLogger
         {
             Console.Write($"{Colors.BrightGreen}Step {stepNumber}/{totalSteps}:{Colors.Reset} ");
             Console.Write($"{Colors.BrightYellow}{Colors.Bold}{stepName}{Colors.Reset}");
-            
+
             if (!string.IsNullOrEmpty(description))
             {
                 Console.Write($"{Colors.BrightBlue} - {description}{Colors.Reset}");
             }
-            
+
             Console.WriteLine();
         }
-        
-        _logger.LogInformation("Step {StepNumber}/{TotalSteps}: {StepName} - {Description}", 
+
+        _logger.LogInformation("Step {StepNumber}/{TotalSteps}: {StepName} - {Description}",
             stepNumber, totalSteps, stepName, description ?? "");
     }
 
@@ -267,7 +267,7 @@ public class EnhancedLogger
 
             var totalCalls = _agentConversations.Count;
             var totalTime = _agentConversations.Sum(c => c.Duration.TotalMilliseconds);
-            
+
             Console.ForegroundColor = ConsoleColor.Green;
             Console.WriteLine($"\n📊 Overall Stats:");
             Console.ResetColor();
@@ -290,7 +290,7 @@ public class EnhancedLogger
             Console.WriteLine($"⚠️  Warning: {message}");
             Console.ResetColor();
         }
-        
+
         _logger.LogWarning(message);
     }
 
@@ -311,7 +311,7 @@ public class EnhancedLogger
             }
             Console.ResetColor();
         }
-        
+
         if (exception != null)
         {
             _logger.LogError(exception, message);
@@ -334,7 +334,7 @@ public class EnhancedLogger
             Console.WriteLine($"✅ {message}");
             Console.ResetColor();
         }
-        
+
         _logger.LogInformation(message);
     }
 
@@ -395,7 +395,7 @@ public class EnhancedLogger
         {
             var callId = ++_apiCallCounter;
             var truncatedRequest = request.Length > 100 ? request.Substring(0, 100) + "..." : request;
-            
+
             var apiCall = new ApiCallEntry
             {
                 CallId = callId,
@@ -406,24 +406,24 @@ public class EnhancedLogger
                 Model = model,
                 Request = truncatedRequest
             };
-            
+
             _apiCalls.Add(apiCall);
-            
+
             // Color-coded console output
             Console.WriteLine($"{Colors.BrightCyan}🌐 API CALL #{callId:D3}{Colors.Reset} " +
                             $"{Colors.Yellow}[{agent}]{Colors.Reset} " +
                             $"{Colors.Blue}{method}{Colors.Reset} → " +
                             $"{Colors.Magenta}{model}{Colors.Reset} " +
                             $"{Colors.Green}@ {DateTime.Now:HH:mm:ss.fff}{Colors.Reset}");
-            
+
             if (!string.IsNullOrEmpty(truncatedRequest))
             {
                 Console.WriteLine($"   {Colors.BrightBlue}📤 Request:{Colors.Reset} {truncatedRequest}");
             }
-            
-            _logger.LogInformation("API Call #{CallId} started: {Agent} -> {Method} {Endpoint} using {Model}", 
+
+            _logger.LogInformation("API Call #{CallId} started: {Agent} -> {Method} {Endpoint} using {Model}",
                 callId, agent, method, endpoint, model);
-            
+
             return callId;
         }
     }
@@ -447,7 +447,7 @@ public class EnhancedLogger
                 apiCall.IsSuccess = true;
                 apiCall.TokensUsed = tokensUsed;
                 apiCall.Cost = cost;
-                
+
                 // Log to file
                 LogApiCallToFile(apiCall);
                 // Color-coded success output
@@ -455,14 +455,14 @@ public class EnhancedLogger
                                 $"{Colors.Cyan}⏱️ {apiCall.Duration.TotalMilliseconds:F0}ms{Colors.Reset} " +
                                 $"{Colors.Yellow}🔤 {tokensUsed} tokens{Colors.Reset} " +
                                 $"{Colors.Green}💰 ${cost:F4}{Colors.Reset}");
-                
+
                 if (!string.IsNullOrEmpty(apiCall.Response))
                 {
                     Console.WriteLine($"   {Colors.BrightGreen}📥 Response:{Colors.Reset} {apiCall.Response}");
                 }
             }
-            
-            _logger.LogInformation("API Call #{CallId} completed in {Duration}ms with {Tokens} tokens", 
+
+            _logger.LogInformation("API Call #{CallId} completed in {Duration}ms with {Tokens} tokens",
                 callId, apiCall?.Duration.TotalMilliseconds ?? 0, tokensUsed);
         }
     }
@@ -482,16 +482,16 @@ public class EnhancedLogger
                 apiCall.Duration = DateTime.UtcNow - apiCall.Timestamp;
                 apiCall.IsSuccess = false;
                 apiCall.Error = error;
-                
+
                 // Log to file
                 LogApiCallToFile(apiCall);
-                
+
                 // Color-coded error output
                 Console.WriteLine($"{Colors.BrightRed}❌ API CALL #{callId:D3} FAILED{Colors.Reset} " +
                                 $"{Colors.Cyan}⏱️ {apiCall.Duration.TotalMilliseconds:F0}ms{Colors.Reset}");
                 Console.WriteLine($"   {Colors.BrightRed}💥 Error:{Colors.Reset} {error}");
             }
-            
+
             _logger.LogError("API Call #{CallId} failed: {Error}", callId, error);
         }
     }
@@ -534,7 +534,7 @@ public class EnhancedLogger
         {
             WriteIndented = true
         });
-        
+
         await File.WriteAllTextAsync(filePath, json);
         Console.WriteLine($"{Colors.BrightGreen}📁 API call log exported:{Colors.Reset} {filePath}");
     }
@@ -552,21 +552,21 @@ public class EnhancedLogger
         {
             var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
             var categoryColor = GetCategoryColor(category);
-            var truncatedData = data?.ToString()?.Length > 150 ? 
-                data.ToString()!.Substring(0, 150) + "..." : 
+            var truncatedData = data?.ToString()?.Length > 150 ?
+                data.ToString()!.Substring(0, 150) + "..." :
                 data?.ToString() ?? "";
 
             Console.WriteLine($"{Colors.BrightBlack}[{timestamp}]{Colors.Reset} " +
                             $"{categoryColor}[{category}]{Colors.Reset} " +
                             $"{Colors.BrightWhite}{operation}{Colors.Reset} " +
                             $"{Colors.BrightBlue}→{Colors.Reset} {details}");
-            
+
             if (!string.IsNullOrEmpty(truncatedData))
             {
                 Console.WriteLine($"   {Colors.BrightBlack}💾 Data:{Colors.Reset} {truncatedData}");
             }
         }
-        
+
         // Log to appropriate file based on category
         switch (category.ToUpper())
         {
@@ -588,7 +588,7 @@ public class EnhancedLogger
                 LogToFile($"BEHIND_SCENES_{category}", $"{operation}: {details}", _baseLogPath, data);
                 break;
         }
-        
+
         _logger.LogDebug("[{Category}] {Operation}: {Details}", category, operation, details);
     }
 
@@ -648,10 +648,10 @@ public class EnhancedLogger
                 Console.WriteLine($"   {memoryColor}🧠 Memory:{Colors.Reset} {memoryUsed:F1} MB");
             }
         }
-        
+
         // Log to performance file
         LogPerformanceToFile(operation, duration, itemsProcessed, memoryUsed);
-        
+
         _logger.LogInformation("Performance: {Operation} completed in {Duration}ms, processed {Items} items, used {Memory}MB",
             operation, duration.TotalMilliseconds, itemsProcessed, memoryUsed);
     }
@@ -753,7 +753,7 @@ public class EnhancedLogger
         lock (_consoleLock)
         {
             Console.WriteLine($"\n{Colors.BrightCyan}📞 Recent API Calls (Last {count}):{Colors.Reset}");
-            
+
             var recentCalls = _apiCalls
                 .OrderByDescending(c => c.Timestamp)
                 .Take(count);
@@ -761,14 +761,14 @@ public class EnhancedLogger
             foreach (var call in recentCalls)
             {
                 var statusIcon = call.IsSuccess ? $"{Colors.Green}✅" : $"{Colors.Red}❌";
-                var durationColor = call.Duration.TotalMilliseconds < 1000 ? Colors.Green : 
+                var durationColor = call.Duration.TotalMilliseconds < 1000 ? Colors.Green :
                                   call.Duration.TotalMilliseconds < 5000 ? Colors.Yellow : Colors.Red;
-                
+
                 Console.WriteLine($"   {statusIcon} [{call.CallId:D3}] {Colors.BrightWhite}{call.Agent}{Colors.Reset}");
                 Console.WriteLine($"       {Colors.Cyan}Model:{Colors.Reset} {call.Model}");
                 Console.WriteLine($"       {durationColor}Duration:{Colors.Reset} {call.Duration.TotalMilliseconds:F1}ms");
                 Console.WriteLine($"       {Colors.BrightBlue}Tokens:{Colors.Reset} {call.TokensUsed}");
-                
+
                 if (!call.IsSuccess && !string.IsNullOrEmpty(call.Error))
                 {
                     Console.WriteLine($"       {Colors.Red}Error:{Colors.Reset} {call.Error}");
@@ -860,8 +860,8 @@ public class EnhancedLogger
                         }
                         else
                         {
-                            serializedData = JsonSerializer.Serialize(data, new JsonSerializerOptions 
-                            { 
+                            serializedData = JsonSerializer.Serialize(data, new JsonSerializerOptions
+                            {
                                 WriteIndented = true,
                                 PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
                                 ReferenceHandler = System.Text.Json.Serialization.ReferenceHandler.IgnoreCycles,
@@ -884,8 +884,8 @@ public class EnhancedLogger
                     Data = serializedData
                 };
 
-                var jsonLog = JsonSerializer.Serialize(logEntry, new JsonSerializerOptions 
-                { 
+                var jsonLog = JsonSerializer.Serialize(logEntry, new JsonSerializerOptions
+                {
                     WriteIndented = true,
                     PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
                     ReferenceHandler = System.Text.Json.Serialization.ReferenceHandler.IgnoreCycles,
@@ -926,9 +926,9 @@ public class EnhancedLogger
                 apiCall.Cost
             };
 
-            LogToFile($"API_CALL_{apiCall.Agent}", 
-                     $"API Call #{apiCall.CallId} - {apiCall.Method} {apiCall.Endpoint}", 
-                     _apiCallLogPath, 
+            LogToFile($"API_CALL_{apiCall.Agent}",
+                     $"API Call #{apiCall.CallId} - {apiCall.Method} {apiCall.Endpoint}",
+                     _apiCallLogPath,
                      callData);
 
             // Also create a live tracking file that's constantly updated
@@ -961,8 +961,8 @@ public class EnhancedLogger
                     Calls = allCalls
                 };
 
-                File.WriteAllText(liveTrackingPath, JsonSerializer.Serialize(liveData, new JsonSerializerOptions 
-                { 
+                File.WriteAllText(liveTrackingPath, JsonSerializer.Serialize(liveData, new JsonSerializerOptions
+                {
                     WriteIndented = true,
                     PropertyNamingPolicy = JsonNamingPolicy.CamelCase
                 }));
@@ -991,9 +991,9 @@ public class EnhancedLogger
             Data = data
         };
 
-        LogToFile("MIGRATION_STEP", 
-                 $"Step: {step} | Status: {status} | {details}", 
-                 _migrationLogPath, 
+        LogToFile("MIGRATION_STEP",
+                 $"Step: {step} | Status: {status} | {details}",
+                 _migrationLogPath,
                  stepData);
 
         // Update live migration progress
@@ -1011,8 +1011,8 @@ public class EnhancedLogger
                     Details = details
                 };
 
-                File.WriteAllText(liveProgressPath, JsonSerializer.Serialize(progressData, new JsonSerializerOptions 
-                { 
+                File.WriteAllText(liveProgressPath, JsonSerializer.Serialize(progressData, new JsonSerializerOptions
+                {
                     WriteIndented = true,
                     PropertyNamingPolicy = JsonNamingPolicy.CamelCase
                 }));
@@ -1042,9 +1042,9 @@ public class EnhancedLogger
             ResultLength = result.Length
         };
 
-        LogToFile($"ANALYSIS_{analysisType}", 
-                 $"Analyzed {fileName} in {duration.TotalMilliseconds:F2}ms", 
-                 _analysisLogPath, 
+        LogToFile($"ANALYSIS_{analysisType}",
+                 $"Analyzed {fileName} in {duration.TotalMilliseconds:F2}ms",
+                 _analysisLogPath,
                  analysisData);
     }
 
@@ -1068,9 +1068,9 @@ public class EnhancedLogger
             AdditionalMetrics = additionalMetrics ?? new Dictionary<string, object>()
         };
 
-        LogToFile("PERFORMANCE", 
-                 $"Operation: {operation} | Duration: {duration.TotalMilliseconds:F2}ms | Items: {itemsProcessed}", 
-                 _performanceLogPath, 
+        LogToFile("PERFORMANCE",
+                 $"Operation: {operation} | Duration: {duration.TotalMilliseconds:F2}ms | Items: {itemsProcessed}",
+                 _performanceLogPath,
                  performanceData);
 
         // Update live performance dashboard
@@ -1089,8 +1089,8 @@ public class EnhancedLogger
                     Throughput = itemsProcessed > 0 ? itemsProcessed / duration.TotalSeconds : 0
                 };
 
-                File.WriteAllText(livePerfPath, JsonSerializer.Serialize(dashboard, new JsonSerializerOptions 
-                { 
+                File.WriteAllText(livePerfPath, JsonSerializer.Serialize(dashboard, new JsonSerializerOptions
+                {
                     WriteIndented = true,
                     PropertyNamingPolicy = JsonNamingPolicy.CamelCase
                 }));
@@ -1110,14 +1110,14 @@ public class EnhancedLogger
         try
         {
             var summaryPath = Path.Combine(_baseLogPath, $"session_summary_{_sessionId}.json");
-            
+
             var summary = new
             {
                 SessionId = _sessionId,
                 StartTime = _apiCalls.FirstOrDefault()?.Timestamp ?? DateTime.Now,
                 EndTime = DateTime.Now,
-                TotalDuration = _apiCalls.Any() ? 
-                    DateTime.Now - (_apiCalls.FirstOrDefault()?.Timestamp ?? DateTime.Now) : 
+                TotalDuration = _apiCalls.Any() ?
+                    DateTime.Now - (_apiCalls.FirstOrDefault()?.Timestamp ?? DateTime.Now) :
                     TimeSpan.Zero,
                 ApiCallSummary = new
                 {
@@ -1138,8 +1138,8 @@ public class EnhancedLogger
                 }
             };
 
-            File.WriteAllText(summaryPath, JsonSerializer.Serialize(summary, new JsonSerializerOptions 
-            { 
+            File.WriteAllText(summaryPath, JsonSerializer.Serialize(summary, new JsonSerializerOptions
+            {
                 WriteIndented = true,
                 PropertyNamingPolicy = JsonNamingPolicy.CamelCase
             }));

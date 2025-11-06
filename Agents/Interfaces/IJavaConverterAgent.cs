@@ -1,7 +1,7 @@
 using Microsoft.SemanticKernel;
-using CobolToQuarkusMigration.Models;
+using CobolModernization.Models;
 
-namespace CobolToQuarkusMigration.Agents.Interfaces;
+namespace CobolModernization.Agents.Interfaces;
 
 /// <summary>
 /// Interface for the Java converter agent.

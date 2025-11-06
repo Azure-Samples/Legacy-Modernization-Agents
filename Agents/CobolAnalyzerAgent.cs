@@ -2,12 +2,12 @@ using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using Microsoft.SemanticKernel.Connectors.OpenAI;
-using CobolToQuarkusMigration.Agents.Interfaces;
-using CobolToQuarkusMigration.Models;
-using CobolToQuarkusMigration.Helpers;
+using CobolModernization.Agents.Interfaces;
+using CobolModernization.Models;
+using CobolModernization.Helpers;
 using System.Diagnostics;
 
-namespace CobolToQuarkusMigration.Agents;
+namespace CobolModernization.Agents;
 
 /// <summary>
 /// Implementation of the COBOL analyzer agent with enhanced API call tracking.

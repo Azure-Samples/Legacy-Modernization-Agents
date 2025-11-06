@@ -19,15 +19,15 @@ PROJECT_DIR="$SCRIPT_DIR"  # Save the project directory
 
 # Function to show usage
 show_usage() {
-    echo -e "${BOLD}${BLUE}🧠 COBOL Migration Tool - Multi-Language Support${NC}"
-    echo -e "${BLUE}=================================================${NC}"
+    echo -e "${BOLD}${BLUE}🧠 COBOL to Java Quarkus Migration Tool${NC}"
+    echo -e "${BLUE}==========================================${NC}"
     echo
-    echo -e "${BOLD}Usage:${NC} $0 [command] [options]"
+    echo -e "${BOLD}Usage:${NC} $0 [command]"
     echo
     echo -e "${BOLD}Available Commands:${NC}"
     echo -e "  ${GREEN}setup${NC}           Interactive configuration setup"
     echo -e "  ${GREEN}test${NC}            Full system validation and testing"
-    echo -e "  ${GREEN}run${NC}             Start the migration process (interactive language selection)"
+    echo -e "  ${GREEN}run${NC}             Start the migration process"
     echo -e "  ${GREEN}doctor${NC}          Diagnose configuration issues (default)"
     echo -e "  ${GREEN}resume${NC}          Resume interrupted migration"
     echo -e "  ${GREEN}monitor${NC}         Monitor migration progress"
@@ -35,19 +35,11 @@ show_usage() {
     echo -e "  ${GREEN}validate${NC}        Validate system requirements"
     echo -e "  ${GREEN}conversation${NC}    Start interactive conversation mode"
     echo
-    echo -e "${BOLD}Run Command Options:${NC}"
-    echo -e "  --target java     Convert to Java Quarkus"
-    echo -e "  --target csharp   Convert to C# .NET"
-    echo -e "  --target both     Convert to both languages"
-    echo
     echo -e "${BOLD}Examples:${NC}"
     echo -e "  $0              ${CYAN}# Run configuration doctor${NC}"
     echo -e "  $0 setup        ${CYAN}# Interactive setup${NC}"
     echo -e "  $0 test         ${CYAN}# Test configuration and dependencies${NC}"
-    echo -e "  $0 run          ${CYAN}# Start migration (interactive language selection)${NC}"
-    echo -e "  $0 run --target java     ${CYAN}# Convert to Java only${NC}"
-    echo -e "  $0 run --target csharp   ${CYAN}# Convert to C# only${NC}"
-    echo -e "  $0 run --target both     ${CYAN}# Convert to both languages${NC}"
+    echo -e "  $0 run          ${CYAN}# Start migration${NC}"
     echo
 }
 
@@ -298,8 +290,8 @@ run_setup() {
 
 # Function for comprehensive testing
 run_test() {
-    echo -e "${BOLD}${BLUE}COBOL Migration Tool - Test Suite${NC}"
-    echo "=================================="
+    echo -e "${BOLD}${BLUE}COBOL to Java Quarkus Migration Tool - Test Suite${NC}"
+    echo "=================================================="
 
     # Load configuration
     echo "🔧 Loading AI configuration..."
@@ -351,8 +343,8 @@ run_test() {
     # Check Semantic Kernel dependencies
     echo ""
     echo "Checking Semantic Kernel dependencies..."
-    if dotnet list "$PROJECT_DIR/CobolModernization.csproj" package 2>/dev/null | grep -q "Microsoft.SemanticKernel"; then
-        sk_version=$(dotnet list "$PROJECT_DIR/CobolModernization.csproj" package | grep "Microsoft.SemanticKernel" | awk '{print $3}' | head -1)
+    if dotnet list "$PROJECT_DIR/CobolToQuarkusMigration.csproj" package 2>/dev/null | grep -q "Microsoft.SemanticKernel"; then
+        sk_version=$(dotnet list "$PROJECT_DIR/CobolToQuarkusMigration.csproj" package | grep "Microsoft.SemanticKernel" | awk '{print $3}' | head -1)
         echo -e "${GREEN}✅ Semantic Kernel dependencies resolved (version: $sk_version)${NC}"
     else
         echo -e "${YELLOW}⚠️  Semantic Kernel packages not found, checking project file...${NC}"
@@ -362,11 +354,11 @@ run_test() {
     echo ""
     echo "Building project and restoring packages..."
     echo "="
-    if timeout 30s dotnet build "$PROJECT_DIR/CobolModernization.csproj" --no-restore --verbosity quiet 2>/dev/null || dotnet build "$PROJECT_DIR/CobolModernization.csproj" --verbosity minimal; then
+    if timeout 30s dotnet build "$PROJECT_DIR/CobolToQuarkusMigration.csproj" --no-restore --verbosity quiet 2>/dev/null || dotnet build "$PROJECT_DIR/CobolToQuarkusMigration.csproj" --verbosity minimal; then
         echo -e "${GREEN}✅ Project builds successfully${NC}"
     else
         echo -e "${RED}❌ Project build failed${NC}"
-        echo "Try running: dotnet restore $PROJECT_DIR/CobolModernization.csproj"
+        echo "Try running: dotnet restore $PROJECT_DIR/CobolToQuarkusMigration.csproj"
         return 1
     fi
 
@@ -392,18 +384,7 @@ run_test() {
             echo -e "${BLUE}ℹ️  No previous Java output found (will be created during migration)${NC}"
         fi
     else
-        echo -e "${BLUE}ℹ️  Java output directory will be created during migration${NC}"
-    fi
-
-    if [ -d "$SCRIPT_DIR/csharp-output" ]; then
-        csharp_files=$(find "$SCRIPT_DIR/csharp-output" -name "*.cs" 2>/dev/null | wc -l)
-        if [ "$csharp_files" -gt 0 ]; then
-            echo -e "${GREEN}✅ Found previous C# output ($csharp_files files)${NC}"
-        else
-            echo -e "${BLUE}ℹ️  No previous C# output found (will be created during migration)${NC}"
-        fi
-    else
-        echo -e "${BLUE}ℹ️  C# output directory will be created during migration${NC}"
+        echo -e "${BLUE}ℹ️  Output directory will be created during migration${NC}"
     fi
 
     # Check logging infrastructure
@@ -421,15 +402,13 @@ run_test() {
     echo -e "${GREEN}🚀 Ready to run migration!${NC}"
     echo ""
     echo "Migration Options:"
-    echo "  Interactive:  ./doctor.sh run"
-    echo "  Java:         ./doctor.sh run --target java"
-    echo "  C#:           ./doctor.sh run --target csharp"
-    echo "  Both:         ./doctor.sh run --target both"
+    echo "  Quick Start:  ./doctor.sh run"
+    echo "  Manual:       dotnet run --project CobolToQuarkusMigration.csproj -- --cobol-source ./cobol-source --java-output ./java-output --verbose"
     echo ""
     if [ "$cobol_files" -gt 0 ]; then
         echo "Expected Results:"
         echo "  - Process $cobol_files COBOL files"
-        echo "  - Generate $cobol_files+ output files per language"
+        echo "  - Generate $cobol_files+ Java files"
         echo "  - Create dependency maps"
         echo "  - Generate migration reports"
     fi
@@ -437,9 +416,8 @@ run_test() {
 
 # Function to run migration
 run_migration() {
-    echo -e "${BLUE}🚀 Starting COBOL Migration...${NC}"
-    echo "=============================="
-    echo
+    echo -e "${BLUE}🚀 Starting COBOL to Java Quarkus Migration...${NC}"
+    echo "=============================================="
 
     # Load configuration
     echo "🔧 Loading AI configuration..."
@@ -454,116 +432,12 @@ run_migration() {
         return 1
     fi
 
-    # Parse command line arguments for --target option
-    TARGET_LANG=""
-    shift # Remove the 'run' command
-    while [[ $# -gt 0 ]]; do
-        case $1 in
-            --target)
-                TARGET_LANG="$2"
-                shift 2
-                ;;
-            *)
-                echo -e "${RED}❌ Unknown option: $1${NC}"
-                return 1
-                ;;
-        esac
-    done
+    echo ""
+    echo "🚀 Starting COBOL to Java Quarkus Migration..."
+    echo "=============================================="
 
-    # If no target specified, show interactive menu
-    if [ -z "$TARGET_LANG" ]; then
-        echo -e "${CYAN}${BOLD}Select Target Language for Conversion:${NC}"
-        echo "======================================"
-        echo
-        echo "1) Java Quarkus    - Convert to modern Java microservices"
-        echo "2) C# .NET         - Convert to modern C# applications"
-        echo "3) Both            - Convert to both Java and C# (parallel evaluation)"
-        echo
-        read -p "Enter your choice (1-3): " choice
-
-        case $choice in
-            1)
-                TARGET_LANG="java"
-                echo -e "${GREEN}✅ Selected: Java Quarkus${NC}"
-                ;;
-            2)
-                TARGET_LANG="csharp"
-                echo -e "${GREEN}✅ Selected: C# .NET${NC}"
-                ;;
-            3)
-                TARGET_LANG="both"
-                echo -e "${GREEN}✅ Selected: Both Languages${NC}"
-                ;;
-            *)
-                echo -e "${RED}❌ Invalid choice. Defaulting to Java.${NC}"
-                TARGET_LANG="java"
-                ;;
-        esac
-        echo
-    fi
-
-    # Normalize target language
-    TARGET_LANG=$(echo "$TARGET_LANG" | tr '[:upper:]' '[:lower:]')
-
-    # Set output folders based on target language
-    case $TARGET_LANG in
-        "java")
-            echo -e "${BLUE}🚀 Starting COBOL to Java Quarkus Migration...${NC}"
-            echo "=============================================="
-            echo
-            dotnet run --project "$PROJECT_DIR/CobolModernization.csproj" -- \
-                --cobol-source ./cobol-source \
-                --java-output ./java-output \
-                --target Java
-            ;;
-        "csharp"|"cs")
-            echo -e "${BLUE}🚀 Starting COBOL to C# .NET Migration...${NC}"
-            echo "=========================================="
-            echo
-            dotnet run --project "$PROJECT_DIR/CobolModernization.csproj" -- \
-                --cobol-source ./cobol-source \
-                --csharp-output ./csharp-output \
-                --target CSharp
-            ;;
-        "both")
-            echo -e "${BLUE}🚀 Starting COBOL to Java & C# Migration...${NC}"
-            echo "==========================================="
-            echo
-            echo -e "${YELLOW}⚠️  Note: This will take approximately 2x the time and API costs${NC}"
-            echo
-            dotnet run --project "$PROJECT_DIR/CobolModernization.csproj" -- \
-                --cobol-source ./cobol-source \
-                --java-output ./java-output \
-                --csharp-output ./csharp-output \
-                --target Both
-            ;;
-        *)
-            echo -e "${RED}❌ Invalid target language: $TARGET_LANG${NC}"
-            echo "Valid options: java, csharp, both"
-            return 1
-            ;;
-    esac
-
-    # Show completion message
-    echo
-    echo -e "${GREEN}✅ Migration completed!${NC}"
-    echo
-    case $TARGET_LANG in
-        "java")
-            echo "📁 Output location: ./java-output/"
-            echo "📄 Migration report: ./java-output/migration-report.md"
-            ;;
-        "csharp"|"cs")
-            echo "📁 Output location: ./csharp-output/"
-            echo "📄 Migration report: ./csharp-output/migration-report.md"
-            ;;
-        "both")
-            echo "📁 Java output: ./java-output/"
-            echo "📁 C# output: ./csharp-output/"
-            echo "📄 Migration report: ./java-output/migration-report.md"
-            ;;
-    esac
-    echo
+    # Run the application with updated folder structure
+    dotnet run --project "$PROJECT_DIR/CobolToQuarkusMigration.csproj" -- --cobol-source ./cobol-source --java-output ./java-output
 }
 
 # Function to resume migration
@@ -590,7 +464,7 @@ run_resume() {
     fi
 
     # Run with resume logic
-    dotnet run --project "$PROJECT_DIR/CobolModernization.csproj" -- --cobol-source ./cobol-source --java-output ./java-output --resume
+    dotnet run --project "$PROJECT_DIR/CobolToQuarkusMigration.csproj" -- --cobol-source ./cobol-source --java-output ./java-output --resume
 }
 
 # Function to monitor migration
@@ -625,7 +499,7 @@ run_chat_test() {
     echo "Testing chat logging system..."
     
     # Run a simple test
-    dotnet run --project "$PROJECT_DIR/CobolModernization.csproj" -- --test-chat-logging
+    dotnet run --project "$PROJECT_DIR/CobolToQuarkusMigration.csproj" -- --test-chat-logging
 }
 
 # Function to validate system
@@ -648,7 +522,7 @@ run_validate() {
         "Config/ai-config.env"
         "Config/load-config.sh"
         "Config/appsettings.json"
-        "CobolModernization.csproj"
+        "CobolToQuarkusMigration.csproj"
         "Program.cs"
     )
 
@@ -662,7 +536,7 @@ run_validate() {
     done
 
     # Check directories
-    for dir in "cobol-source" "java-output" "csharp-output"; do
+    for dir in "cobol-source" "java-output"; do
         if [ -d "$SCRIPT_DIR/$dir" ]; then
             echo -e "${GREEN}✅ Directory: $dir${NC}"
         else
@@ -695,13 +569,13 @@ run_conversation() {
     echo "Type 'exit' to quit"
     echo ""
 
-    dotnet run --project "$PROJECT_DIR/CobolModernization.csproj" -- --interactive
+    dotnet run --project "$PROJECT_DIR/CobolToQuarkusMigration.csproj" -- --interactive
 }
 
 # Main command routing
 main() {
     # Create required directories if they don't exist
-    mkdir -p "$SCRIPT_DIR/cobol-source" "$SCRIPT_DIR/java-output" "$SCRIPT_DIR/csharp-output" "$SCRIPT_DIR/Logs"
+    mkdir -p "$SCRIPT_DIR/cobol-source" "$SCRIPT_DIR/java-output" "$SCRIPT_DIR/Logs"
 
     case "${1:-doctor}" in
         "setup")
@@ -711,8 +585,7 @@ main() {
             run_test
             ;;
         "run")
-            shift # Remove 'run' from arguments
-            run_migration "$@"
+            run_migration
             ;;
         "doctor"|"")
             run_doctor

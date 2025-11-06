@@ -1,4 +1,4 @@
-namespace CobolToQuarkusMigration.Models;
+namespace CobolModernization.Models;
 
 /// <summary>
 /// Represents a COBOL source file or copybook.
@@ -9,17 +9,17 @@ public class CobolFile
     /// Gets or sets the file name.
     /// </summary>
     public string FileName { get; set; } = string.Empty;
-    
+
     /// <summary>
     /// Gets or sets the full path to the file.
     /// </summary>
     public string FilePath { get; set; } = string.Empty;
-    
+
     /// <summary>
     /// Gets or sets the file content.
     /// </summary>
     public string Content { get; set; } = string.Empty;
-    
+
     /// <summary>
     /// Gets or sets whether this file is a copybook.
     /// </summary>

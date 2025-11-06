@@ -1,7 +1,7 @@
 using Microsoft.Extensions.Logging;
 using System.Text.Json;
 
-namespace CobolToQuarkusMigration.Helpers;
+namespace CobolModernization.Helpers;
 
 /// <summary>
 /// Helper class for application settings.
@@ -28,13 +28,13 @@ public class SettingsHelper
     public async Task<T> LoadSettingsAsync<T>(string filePath) where T : new()
     {
         _logger.LogInformation("Loading settings from file: {FilePath}", filePath);
-        
+
         if (!File.Exists(filePath))
         {
             _logger.LogWarning("Settings file not found: {FilePath}", filePath);
             return new T();
         }
-        
+
         try
         {
             var json = await File.ReadAllTextAsync(filePath);
@@ -42,15 +42,15 @@ public class SettingsHelper
             {
                 PropertyNameCaseInsensitive = true
             });
-            
+
             if (settings == null)
             {
                 _logger.LogWarning("Failed to deserialize settings from file: {FilePath}", filePath);
                 return new T();
             }
-            
+
             _logger.LogInformation("Successfully loaded settings from file: {FilePath}", filePath);
-            
+
             return settings;
         }
         catch (Exception ex)
@@ -70,22 +70,22 @@ public class SettingsHelper
     public async Task SaveSettingsAsync<T>(T settings, string filePath)
     {
         _logger.LogInformation("Saving settings to file: {FilePath}", filePath);
-        
+
         try
         {
             var json = JsonSerializer.Serialize(settings, new JsonSerializerOptions
             {
                 WriteIndented = true
             });
-            
+
             var directory = Path.GetDirectoryName(filePath);
             if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
             {
                 Directory.CreateDirectory(directory);
             }
-            
+
             await File.WriteAllTextAsync(filePath, json);
-            
+
             _logger.LogInformation("Successfully saved settings to file: {FilePath}", filePath);
         }
         catch (Exception ex)

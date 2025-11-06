@@ -1,7 +1,7 @@
 using Microsoft.Extensions.Logging;
-using CobolToQuarkusMigration.Models;
+using CobolModernization.Models;
 
-namespace CobolToQuarkusMigration.Helpers;
+namespace CobolModernization.Helpers;
 
 /// <summary>
 /// Helper class for file operations.
@@ -27,15 +27,15 @@ public class FileHelper
     public async Task<List<CobolFile>> ScanDirectoryForCobolFilesAsync(string directory)
     {
         _logger.LogInformation("Scanning directory for COBOL files: {Directory}", directory);
-        
+
         if (!Directory.Exists(directory))
         {
             _logger.LogError("Directory not found: {Directory}", directory);
             throw new DirectoryNotFoundException($"Directory not found: {directory}");
         }
-        
+
         var cobolFiles = new List<CobolFile>();
-        
+
         // Get all .cbl files (COBOL programs)
         var cblFiles = Directory.GetFiles(directory, "*.cbl", SearchOption.AllDirectories);
         foreach (var filePath in cblFiles)
@@ -49,7 +49,7 @@ public class FileHelper
                 IsCopybook = false
             });
         }
-        
+
         // Get all .cpy files (COBOL copybooks)
         var cpyFiles = Directory.GetFiles(directory, "*.cpy", SearchOption.AllDirectories);
         foreach (var filePath in cpyFiles)
@@ -63,10 +63,10 @@ public class FileHelper
                 IsCopybook = true
             });
         }
-        
-        _logger.LogInformation("Found {Count} COBOL files ({CblCount} programs, {CpyCount} copybooks)", 
+
+        _logger.LogInformation("Found {Count} COBOL files ({CblCount} programs, {CpyCount} copybooks)",
             cobolFiles.Count, cblFiles.Length, cpyFiles.Length);
-        
+
         return cobolFiles;
     }
 
@@ -84,33 +84,33 @@ public class FileHelper
         {
             // Extract class name from content if filename is invalid
             sanitizedFileName = ExtractClassNameFromContent(javaFile.Content) + ".java";
-            _logger.LogWarning("Invalid filename '{OriginalFileName}' replaced with '{SanitizedFileName}'", 
+            _logger.LogWarning("Invalid filename '{OriginalFileName}' replaced with '{SanitizedFileName}'",
                 javaFile.FileName, sanitizedFileName);
         }
-        
+
         _logger.LogInformation("Saving Java file: {FileName}", sanitizedFileName);
-        
+
         if (!Directory.Exists(outputDirectory))
         {
             _logger.LogInformation("Creating output directory: {Directory}", outputDirectory);
             Directory.CreateDirectory(outputDirectory);
         }
-        
+
         // Create package directory structure
         var packagePath = javaFile.PackageName.Replace('.', Path.DirectorySeparatorChar);
         var packageDirectory = Path.Combine(outputDirectory, packagePath);
-        
+
         if (!Directory.Exists(packageDirectory))
         {
             _logger.LogInformation("Creating package directory: {Directory}", packageDirectory);
             Directory.CreateDirectory(packageDirectory);
         }
-        
+
         var filePath = Path.Combine(packageDirectory, sanitizedFileName);
         await File.WriteAllTextAsync(filePath, javaFile.Content);
-        
+
         _logger.LogInformation("Saved Java file: {FilePath}", filePath);
-        
+
         return filePath;
     }
 
@@ -121,22 +121,22 @@ public class FileHelper
     {
         if (string.IsNullOrWhiteSpace(fileName))
             return string.Empty;
-            
+
         // Remove any content that looks like Java code or comments
         var lines = fileName.Split('\n', StringSplitOptions.RemoveEmptyEntries);
         var firstLine = lines[0].Trim();
-        
+
         // If the first line contains Java keywords or symbols, it's not a valid filename
-        if (firstLine.Contains("public class") || firstLine.Contains("*/") || 
+        if (firstLine.Contains("public class") || firstLine.Contains("*/") ||
             firstLine.Contains("@") || firstLine.Contains("{") || firstLine.Contains("}"))
         {
             return string.Empty;
         }
-        
+
         // Remove invalid path characters
         var invalidChars = Path.GetInvalidFileNameChars();
         var sanitized = new string(firstLine.Where(c => !invalidChars.Contains(c)).ToArray());
-        
+
         // Ensure it ends with .java
         if (!sanitized.EndsWith(".java", StringComparison.OrdinalIgnoreCase))
         {
@@ -145,7 +145,7 @@ public class FileHelper
             else if (!string.IsNullOrEmpty(sanitized))
                 sanitized += ".java";
         }
-        
+
         return sanitized;
     }
 
@@ -170,7 +170,113 @@ public class FileHelper
                 }
             }
         }
-        
+
+        // Fallback to a default name
+        return "GeneratedClass";
+    }
+
+    /// <summary>
+    /// Saves a C# file to disk.
+    /// </summary>
+    /// <param name="csharpFile">The C# file to save.</param>
+    /// <param name="outputDirectory">The output directory.</param>
+    /// <returns>The full path to the saved file.</returns>
+    public async Task<string> SaveCSharpFileAsync(CSharpFile csharpFile, string outputDirectory)
+    {
+        // Validate and sanitize the filename
+        var sanitizedFileName = SanitizeCSharpFileName(csharpFile.FileName);
+        if (string.IsNullOrEmpty(sanitizedFileName))
+        {
+            // Extract class name from content if filename is invalid
+            sanitizedFileName = ExtractCSharpClassNameFromContent(csharpFile.Content) + ".cs";
+            _logger.LogWarning("Invalid filename '{OriginalFileName}' replaced with '{SanitizedFileName}'",
+                csharpFile.FileName, sanitizedFileName);
+        }
+
+        _logger.LogInformation("Saving C# file: {FileName}", sanitizedFileName);
+
+        if (!Directory.Exists(outputDirectory))
+        {
+            _logger.LogInformation("Creating output directory: {Directory}", outputDirectory);
+            Directory.CreateDirectory(outputDirectory);
+        }
+
+        // Create namespace directory structure
+        var namespacePath = csharpFile.Namespace.Replace('.', Path.DirectorySeparatorChar);
+        var namespaceDirectory = Path.Combine(outputDirectory, namespacePath);
+
+        if (!Directory.Exists(namespaceDirectory))
+        {
+            _logger.LogInformation("Creating namespace directory: {Directory}", namespaceDirectory);
+            Directory.CreateDirectory(namespaceDirectory);
+        }
+
+        var filePath = Path.Combine(namespaceDirectory, sanitizedFileName);
+        await File.WriteAllTextAsync(filePath, csharpFile.Content);
+
+        _logger.LogInformation("Saved C# file: {FilePath}", filePath);
+
+        return filePath;
+    }
+
+    /// <summary>
+    /// Sanitizes a C# filename by removing invalid characters and content
+    /// </summary>
+    private string SanitizeCSharpFileName(string fileName)
+    {
+        if (string.IsNullOrWhiteSpace(fileName))
+            return string.Empty;
+
+        // Remove any content that looks like C# code or comments
+        var lines = fileName.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        var firstLine = lines[0].Trim();
+
+        // If the first line contains C# keywords or symbols, it's not a valid filename
+        if (firstLine.Contains("public class") || firstLine.Contains("namespace") ||
+            firstLine.Contains("*/") || firstLine.Contains("using") ||
+            firstLine.Contains("{") || firstLine.Contains("}"))
+        {
+            return string.Empty;
+        }
+
+        // Remove invalid path characters
+        var invalidChars = Path.GetInvalidFileNameChars();
+        var sanitized = new string(firstLine.Where(c => !invalidChars.Contains(c)).ToArray());
+
+        // Ensure it ends with .cs
+        if (!sanitized.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+        {
+            if (sanitized.EndsWith("."))
+                sanitized = sanitized.TrimEnd('.') + ".cs";
+            else if (!string.IsNullOrEmpty(sanitized))
+                sanitized += ".cs";
+        }
+
+        return sanitized;
+    }
+
+    /// <summary>
+    /// Extracts the class name from C# content
+    /// </summary>
+    private string ExtractCSharpClassNameFromContent(string content)
+    {
+        var lines = content.Split('\n');
+        foreach (var line in lines)
+        {
+            var trimmedLine = line.Trim();
+            if (trimmedLine.Contains(" class "))
+            {
+                var classIndex = trimmedLine.IndexOf(" class ");
+                var start = classIndex + " class ".Length;
+                var remaining = trimmedLine.Substring(start);
+                var parts = remaining.Split(' ', ':', '{', '<');
+                if (parts.Length > 0 && !string.IsNullOrWhiteSpace(parts[0]))
+                {
+                    return parts[0].Trim();
+                }
+            }
+        }
+
         // Fallback to a default name
         return "GeneratedClass";
     }
@@ -183,20 +289,20 @@ public class FileHelper
     public async Task SaveDependencyMapAsync(DependencyMap dependencyMap, string filePath)
     {
         _logger.LogInformation("Saving dependency map: {FilePath}", filePath);
-        
+
         var directory = Path.GetDirectoryName(filePath);
         if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
         {
             _logger.LogInformation("Creating directory: {Directory}", directory);
             Directory.CreateDirectory(directory);
         }
-        
+
         var json = System.Text.Json.JsonSerializer.Serialize(dependencyMap, new System.Text.Json.JsonSerializerOptions
         {
             WriteIndented = true,
             PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
         });
-        
+
         await File.WriteAllTextAsync(filePath, json);
         _logger.LogInformation("Dependency map saved: {FilePath}", filePath);
     }

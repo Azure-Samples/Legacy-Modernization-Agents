@@ -2,7 +2,7 @@ using Microsoft.Extensions.Logging;
 using System.Text;
 using System.Text.Json;
 
-namespace CobolToQuarkusMigration.Helpers;
+namespace CobolModernization.Helpers;
 
 /// <summary>
 /// Logger for capturing full-length conversations between agents and Azure OpenAI
@@ -21,7 +21,7 @@ public class ChatLogger
         _logDirectory = logDirectory;
         _messages = new List<ChatMessage>();
         _sessionId = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
-        
+
         // Ensure log directory exists
         Directory.CreateDirectory(_logDirectory);
     }
@@ -43,9 +43,9 @@ public class ChatLogger
                 Content = prompt,
                 TokenCount = EstimateTokens(prompt + systemMessage)
             };
-            
+
             _messages.Add(message);
-            _logger.LogInformation("Chat: {Agent} → Azure OpenAI for {File} ({Tokens} tokens)", 
+            _logger.LogInformation("Chat: {Agent} → Azure OpenAI for {File} ({Tokens} tokens)",
                 agentName, fileName, message.TokenCount);
         }
     }
@@ -66,9 +66,9 @@ public class ChatLogger
                 Content = response,
                 TokenCount = actualTokens > 0 ? actualTokens : EstimateTokens(response)
             };
-            
+
             _messages.Add(message);
-            _logger.LogInformation("Chat: Azure OpenAI → {Agent} for {File} ({Tokens} tokens)", 
+            _logger.LogInformation("Chat: Azure OpenAI → {Agent} for {File} ({Tokens} tokens)",
                 agentName, fileName, message.TokenCount);
         }
     }
@@ -80,10 +80,10 @@ public class ChatLogger
     {
         var fileName = $"FULL_CHAT_LOG_{_sessionId}.md";
         var filePath = Path.Combine(_logDirectory, fileName);
-        
+
         var chatContent = GenerateReadableChatLog();
         await File.WriteAllTextAsync(filePath, chatContent);
-        
+
         _logger.LogInformation("Complete chat log saved to: {FilePath}", filePath);
     }
 
@@ -94,16 +94,16 @@ public class ChatLogger
     {
         var fileName = $"FULL_CHAT_LOG_{_sessionId}.json";
         var filePath = Path.Combine(_logDirectory, fileName);
-        
+
         var options = new JsonSerializerOptions
         {
             WriteIndented = true,
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase
         };
-        
+
         var jsonContent = JsonSerializer.Serialize(_messages, options);
         await File.WriteAllTextAsync(filePath, jsonContent);
-        
+
         _logger.LogInformation("Chat log JSON saved to: {FilePath}", filePath);
     }
 
@@ -113,7 +113,7 @@ public class ChatLogger
     private string GenerateReadableChatLog()
     {
         var sb = new StringBuilder();
-        
+
         // Header
         sb.AppendLine("# 🤖 Complete Azure OpenAI Chat Log");
         sb.AppendLine($"**Session ID:** {_sessionId}");
@@ -135,19 +135,19 @@ public class ChatLogger
             sb.AppendLine();
 
             var fileMessages = fileGroup.OrderBy(m => m.Timestamp).ToList();
-            
+
             for (int i = 0; i < fileMessages.Count; i++)
             {
                 var message = fileMessages[i];
                 var messageNumber = i + 1;
-                
+
                 if (message.MessageType == "USER_TO_AI")
                 {
                     sb.AppendLine($"### 👤 Human → AI (Message {messageNumber})");
                     sb.AppendLine($"**Time:** {message.Timestamp:HH:mm:ss}");
                     sb.AppendLine($"**Tokens:** {message.TokenCount:N0}");
                     sb.AppendLine();
-                    
+
                     if (!string.IsNullOrEmpty(message.SystemMessage))
                     {
                         sb.AppendLine("**System Message:**");
@@ -156,7 +156,7 @@ public class ChatLogger
                         sb.AppendLine("```");
                         sb.AppendLine();
                     }
-                    
+
                     sb.AppendLine("**User Prompt:**");
                     sb.AppendLine("```");
                     sb.AppendLine(message.Content);
@@ -173,7 +173,7 @@ public class ChatLogger
                     sb.AppendLine(message.Content);
                     sb.AppendLine("```");
                 }
-                
+
                 sb.AppendLine();
                 sb.AppendLine("---");
                 sb.AppendLine();
@@ -183,7 +183,7 @@ public class ChatLogger
         // Summary
         sb.AppendLine("## 📊 Session Summary");
         sb.AppendLine();
-        
+
         var agentStats = _messages.GroupBy(m => m.AgentName)
                                  .Select(g => new
                                  {
@@ -196,12 +196,12 @@ public class ChatLogger
 
         sb.AppendLine("| Agent | Messages | Files Processed | Total Tokens |");
         sb.AppendLine("|-------|----------|-----------------|--------------|");
-        
+
         foreach (var stat in agentStats)
         {
             sb.AppendLine($"| {stat.Agent} | {stat.Messages} | {stat.Files} | {stat.Tokens:N0} |");
         }
-        
+
         sb.AppendLine();
         sb.AppendLine($"**Total Session Tokens:** {_messages.Sum(m => m.TokenCount):N0}");
         sb.AppendLine($"**Average Tokens per Message:** {(_messages.Count > 0 ? _messages.Average(m => m.TokenCount) : 0):F0}");
@@ -216,7 +216,7 @@ public class ChatLogger
     private int EstimateTokens(string text)
     {
         if (string.IsNullOrEmpty(text)) return 0;
-        
+
         // Rough estimate: 1 token ≈ 4 characters for English text
         // This is a simplified calculation - actual tokenization is more complex
         return text.Length / 4;
@@ -233,8 +233,8 @@ public class ChatLogger
             {
                 TotalMessages = _messages.Count,
                 TotalTokens = _messages.Sum(m => m.TokenCount),
-                SessionDuration = _messages.Count > 0 ? 
-                    _messages.Max(m => m.Timestamp) - _messages.Min(m => m.Timestamp) : 
+                SessionDuration = _messages.Count > 0 ?
+                    _messages.Max(m => m.Timestamp) - _messages.Min(m => m.Timestamp) :
                     TimeSpan.Zero,
                 AgentBreakdown = _messages.GroupBy(m => m.AgentName)
                                          .ToDictionary(g => g.Key, g => g.Count())

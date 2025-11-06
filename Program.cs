@@ -1,9 +1,9 @@
 ﻿using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
 using System.CommandLine;
-using CobolToQuarkusMigration;
-using CobolToQuarkusMigration.Helpers;
-using CobolToQuarkusMigration.Models;
+using CobolModernization;
+using CobolModernization.Helpers;
+using CobolModernization.Models;
 
 // Create logger factory
 var loggerFactory = LoggerFactory.Create(builder =>
@@ -22,7 +22,7 @@ if (!ValidateAndLoadConfiguration())
 }
 
 // Parse command line arguments
-var rootCommand = new RootCommand("COBOL to Java Quarkus Migration Tool");
+var rootCommand = new RootCommand("COBOL Migration Tool - Convert COBOL to Java and/or C#");
 
 // Define command-line options
 var cobolSourceOption = new Option<string>(
@@ -36,6 +36,19 @@ var javaOutputOption = new Option<string>(
     "Path to the folder for Java output files");
 javaOutputOption.AddAlias("-j");
 rootCommand.AddOption(javaOutputOption);
+
+var csharpOutputOption = new Option<string>(
+    "--csharp-output",
+    "Path to the folder for C# output files");
+csharpOutputOption.AddAlias("-cs");
+rootCommand.AddOption(csharpOutputOption);
+
+var targetLanguageOption = new Option<string>(
+    "--target",
+    () => "Java",
+    "Target language: Java, CSharp, or Both");
+targetLanguageOption.AddAlias("-t");
+rootCommand.AddOption(targetLanguageOption);
 
 var configOption = new Option<string>(
     "--config",
@@ -73,9 +86,9 @@ conversationCommand.SetHandler(async (string sessionId, string logDir, bool live
     {
         var enhancedLogger = new EnhancedLogger(loggerFactory.CreateLogger<EnhancedLogger>());
         var logCombiner = new LogCombiner(logDir, enhancedLogger);
-        
+
         Console.WriteLine("🤖 Generating conversation log from migration data...");
-        
+
         string outputPath;
         if (live)
         {
@@ -84,7 +97,7 @@ conversationCommand.SetHandler(async (string sessionId, string logDir, bool live
             Console.WriteLine($"✅ Live conversation feed created: {outputPath}");
             Console.WriteLine("📝 The conversation will update automatically as new logs are generated.");
             Console.WriteLine("Press Ctrl+C to stop monitoring.");
-            
+
             // Keep the application running for live updates
             await Task.Delay(-1);
         }
@@ -92,13 +105,13 @@ conversationCommand.SetHandler(async (string sessionId, string logDir, bool live
         {
             outputPath = await logCombiner.CreateConversationNarrativeAsync(sessionId);
             Console.WriteLine($"✅ Conversation narrative created: {outputPath}");
-            
+
             // Show preview of the conversation
             if (File.Exists(outputPath))
             {
                 var preview = await File.ReadAllTextAsync(outputPath);
                 var lines = preview.Split('\n').Take(20).ToArray();
-                
+
                 Console.WriteLine("\n📖 Preview of conversation:");
                 Console.WriteLine("═══════════════════════════════════════");
                 foreach (var line in lines)
@@ -123,34 +136,66 @@ conversationCommand.SetHandler(async (string sessionId, string logDir, bool live
 rootCommand.AddCommand(conversationCommand);
 
 // Set up the command handler
-rootCommand.SetHandler(async (string cobolSource, string javaOutput, string configPath) =>
+rootCommand.SetHandler(async (string cobolSource, string javaOutput, string csharpOutput, string targetLang, string configPath) =>
 {
     try
     {
         // Load settings
         logger.LogInformation("Loading settings from {ConfigPath}", configPath);
         var settings = await settingsHelper.LoadSettingsAsync<AppSettings>(configPath);
-        
+
         // Load environment variables from centralized config
         LoadEnvironmentVariables();
-        
+
         // Override settings with environment variables if they exist
         OverrideSettingsFromEnvironment(settings);
-        
+
+        // Override with command line arguments
+        if (!string.IsNullOrEmpty(cobolSource))
+            settings.ApplicationSettings.CobolSourceFolder = cobolSource;
+        if (!string.IsNullOrEmpty(javaOutput))
+            settings.ApplicationSettings.JavaOutputFolder = javaOutput;
+        if (!string.IsNullOrEmpty(csharpOutput))
+            settings.ApplicationSettings.CSharpOutputFolder = csharpOutput;
+        if (!string.IsNullOrEmpty(targetLang))
+            settings.ApplicationSettings.TargetLanguage = targetLang;
+
+        // Validate target language
+        var targetLanguage = settings.ApplicationSettings.TargetLanguage;
+        if (!targetLanguage.Equals("Java", StringComparison.OrdinalIgnoreCase) &&
+            !targetLanguage.Equals("CSharp", StringComparison.OrdinalIgnoreCase) &&
+            !targetLanguage.Equals("Both", StringComparison.OrdinalIgnoreCase))
+        {
+            logger.LogError("Invalid target language: {TargetLanguage}. Valid options: Java, CSharp, Both", targetLanguage);
+            Environment.Exit(1);
+        }
+
         if (string.IsNullOrEmpty(settings.ApplicationSettings.CobolSourceFolder))
         {
             logger.LogError("COBOL source folder not specified. Use --cobol-source option or set in config file.");
             Environment.Exit(1);
         }
-        
-        if (string.IsNullOrEmpty(settings.ApplicationSettings.JavaOutputFolder))
+
+        // Validate output folders based on target language
+        var convertToJava = targetLanguage.Equals("Java", StringComparison.OrdinalIgnoreCase) ||
+                           targetLanguage.Equals("Both", StringComparison.OrdinalIgnoreCase);
+        var convertToCSharp = targetLanguage.Equals("CSharp", StringComparison.OrdinalIgnoreCase) ||
+                             targetLanguage.Equals("Both", StringComparison.OrdinalIgnoreCase);
+
+        if (convertToJava && string.IsNullOrEmpty(settings.ApplicationSettings.JavaOutputFolder))
         {
             logger.LogError("Java output folder not specified. Use --java-output option or set in config file.");
             Environment.Exit(1);
         }
-        
+
+        if (convertToCSharp && string.IsNullOrEmpty(settings.ApplicationSettings.CSharpOutputFolder))
+        {
+            logger.LogError("C# output folder not specified. Use --csharp-output option or set in config file.");
+            Environment.Exit(1);
+        }
+
         // Validate API configuration
-        if (string.IsNullOrEmpty(settings.AISettings.ApiKey) || 
+        if (string.IsNullOrEmpty(settings.AISettings.ApiKey) ||
             string.IsNullOrEmpty(settings.AISettings.Endpoint) ||
             string.IsNullOrEmpty(settings.AISettings.DeploymentName))
         {
@@ -158,10 +203,10 @@ rootCommand.SetHandler(async (string cobolSource, string javaOutput, string conf
             logger.LogError("You can set them in Config/ai-config.local.env or as environment variables.");
             Environment.Exit(1);
         }
-        
+
         // Initialize kernel builder
         var kernelBuilder = Kernel.CreateBuilder();
-        
+
         if (settings.AISettings.ServiceType.Equals("OpenAI", StringComparison.OrdinalIgnoreCase))
         {
             kernelBuilder.AddOpenAIChatCompletion(
@@ -173,15 +218,15 @@ rootCommand.SetHandler(async (string cobolSource, string javaOutput, string conf
             // Create HttpClient with extended timeout for large COBOL files
             var httpClient = new HttpClient();
             httpClient.Timeout = TimeSpan.FromMinutes(10); // 10 minute timeout instead of default 100 seconds
-            
+
             kernelBuilder.AddAzureOpenAIChatCompletion(
                 deploymentName: settings.AISettings.DeploymentName,
                 endpoint: settings.AISettings.Endpoint,
                 apiKey: settings.AISettings.ApiKey,
                 httpClient: httpClient);
-            
-            logger.LogInformation("Using Azure OpenAI service with endpoint: {Endpoint} and deployment: {DeploymentName}", 
-                settings.AISettings.Endpoint, 
+
+            logger.LogInformation("Using Azure OpenAI service with endpoint: {Endpoint} and deployment: {DeploymentName}",
+                settings.AISettings.Endpoint,
                 settings.AISettings.DeploymentName);
         }
         else
@@ -189,27 +234,29 @@ rootCommand.SetHandler(async (string cobolSource, string javaOutput, string conf
             logger.LogError("Unsupported AI service type: {ServiceType}", settings.AISettings.ServiceType);
             Environment.Exit(1);
         }
-        
+
         // Initialize migration process
         var migrationProcess = new MigrationProcess(
             kernelBuilder,
             loggerFactory.CreateLogger<MigrationProcess>(),
             fileHelper,
             settings);
-        
+
         migrationProcess.InitializeAgents();
-        
+
         // Run migration process
-        Console.WriteLine("Starting COBOL to Java Quarkus migration process...");
-        
+        Console.WriteLine($"Starting COBOL to {targetLanguage} migration process...");
+
         await migrationProcess.RunAsync(
             settings.ApplicationSettings.CobolSourceFolder,
             settings.ApplicationSettings.JavaOutputFolder,
+            settings.ApplicationSettings.CSharpOutputFolder,
+            settings.ApplicationSettings.TargetLanguage,
             (status, current, total) =>
             {
                 Console.WriteLine($"{status} - {current}/{total}");
             });
-        
+
         Console.WriteLine("Migration process completed successfully.");
     }
     catch (Exception ex)
@@ -217,7 +264,7 @@ rootCommand.SetHandler(async (string cobolSource, string javaOutput, string conf
         logger.LogError(ex, "Error in migration process");
         Environment.Exit(1);
     }
-}, cobolSourceOption, javaOutputOption, configOption);
+}, cobolSourceOption, javaOutputOption, csharpOutputOption, targetLanguageOption, configOption);
 
 // Execute the command
 return await rootCommand.InvokeAsync(args);
@@ -234,13 +281,13 @@ static void LoadEnvironmentVariables()
         string configDir = Path.Combine(currentDir, "Config"); // Use current directory instead of base directory
         string localConfigFile = Path.Combine(configDir, "ai-config.local.env");
         string templateConfigFile = Path.Combine(configDir, "ai-config.env");
-        
+
         // Load template configuration first (provides defaults)
         if (File.Exists(templateConfigFile))
         {
             LoadEnvFile(templateConfigFile);
         }
-        
+
         // Load local configuration (overrides template)
         if (File.Exists(localConfigFile))
         {
@@ -266,17 +313,17 @@ static void LoadEnvFile(string filePath)
     foreach (string line in File.ReadAllLines(filePath))
     {
         string trimmedLine = line.Trim();
-        
+
         // Skip comments and empty lines
         if (string.IsNullOrEmpty(trimmedLine) || trimmedLine.StartsWith('#'))
             continue;
-            
+
         var parts = trimmedLine.Split('=', 2);
         if (parts.Length == 2)
         {
             string key = parts[0].Trim();
             string value = parts[1].Trim().Trim('"', '\'');
-            
+
             // Set the environment variable (local config overrides template config)
             Environment.SetEnvironmentVariable(key, value);
         }
@@ -292,48 +339,56 @@ static void OverrideSettingsFromEnvironment(AppSettings settings)
     var endpoint = Environment.GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT");
     if (!string.IsNullOrEmpty(endpoint))
         settings.AISettings.Endpoint = endpoint;
-        
+
     var apiKey = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_KEY");
     if (!string.IsNullOrEmpty(apiKey))
         settings.AISettings.ApiKey = apiKey;
-        
+
     var deploymentName = Environment.GetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT_NAME");
     if (!string.IsNullOrEmpty(deploymentName))
         settings.AISettings.DeploymentName = deploymentName;
-        
+
     var modelId = Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL_ID");
     if (!string.IsNullOrEmpty(modelId))
         settings.AISettings.ModelId = modelId;
-        
+
     var cobolModel = Environment.GetEnvironmentVariable("AZURE_OPENAI_COBOL_ANALYZER_MODEL");
     if (!string.IsNullOrEmpty(cobolModel))
         settings.AISettings.CobolAnalyzerModelId = cobolModel;
-        
+
     var javaModel = Environment.GetEnvironmentVariable("AZURE_OPENAI_JAVA_CONVERTER_MODEL");
     if (!string.IsNullOrEmpty(javaModel))
         settings.AISettings.JavaConverterModelId = javaModel;
-        
+
     var depModel = Environment.GetEnvironmentVariable("AZURE_OPENAI_DEPENDENCY_MAPPER_MODEL");
     if (!string.IsNullOrEmpty(depModel))
         settings.AISettings.DependencyMapperModelId = depModel;
-        
+
     var testModel = Environment.GetEnvironmentVariable("AZURE_OPENAI_UNIT_TEST_MODEL");
     if (!string.IsNullOrEmpty(testModel))
         settings.AISettings.UnitTestModelId = testModel;
-        
+
     var serviceType = Environment.GetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE");
     if (!string.IsNullOrEmpty(serviceType))
         settings.AISettings.ServiceType = serviceType;
-        
+
     // Application Settings
     var cobolSource = Environment.GetEnvironmentVariable("COBOL_SOURCE_FOLDER");
     if (!string.IsNullOrEmpty(cobolSource))
         settings.ApplicationSettings.CobolSourceFolder = cobolSource;
-        
+
     var javaOutput = Environment.GetEnvironmentVariable("JAVA_OUTPUT_FOLDER");
     if (!string.IsNullOrEmpty(javaOutput))
         settings.ApplicationSettings.JavaOutputFolder = javaOutput;
-        
+
+    var csharpOutput = Environment.GetEnvironmentVariable("CSHARP_OUTPUT_FOLDER");
+    if (!string.IsNullOrEmpty(csharpOutput))
+        settings.ApplicationSettings.CSharpOutputFolder = csharpOutput;
+
+    var targetLanguage = Environment.GetEnvironmentVariable("TARGET_LANGUAGE");
+    if (!string.IsNullOrEmpty(targetLanguage))
+        settings.ApplicationSettings.TargetLanguage = targetLanguage;
+
     var testOutput = Environment.GetEnvironmentVariable("TEST_OUTPUT_FOLDER");
     if (!string.IsNullOrEmpty(testOutput))
         settings.ApplicationSettings.TestOutputFolder = testOutput;
@@ -349,7 +404,7 @@ static bool ValidateAndLoadConfiguration()
     {
         // Load environment variables from centralized config files
         LoadEnvironmentVariables();
-        
+
         // Validate required Azure OpenAI settings
         var requiredSettings = new Dictionary<string, string>
         {
@@ -390,7 +445,7 @@ static bool ValidateAndLoadConfiguration()
         {
             Console.WriteLine("❌ Configuration Validation Failed");
             Console.WriteLine("=====================================");
-            
+
             if (missingSettings.Any())
             {
                 Console.WriteLine("Missing required settings:");
@@ -418,7 +473,7 @@ static bool ValidateAndLoadConfiguration()
             Console.WriteLine("4. Ensure your model deployment names match your Azure OpenAI setup");
             Console.WriteLine();
             Console.WriteLine("For detailed instructions, see: CONFIGURATION_GUIDE.md");
-            
+
             return false;
         }
 
@@ -427,7 +482,7 @@ static bool ValidateAndLoadConfiguration()
         var modelId = Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL_ID");
         var deployment = Environment.GetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT_NAME");
         var apiKey = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_KEY");
-        
+
         Console.WriteLine("✅ Configuration Validation Successful");
         Console.WriteLine("=====================================");
         Console.WriteLine($"Endpoint: {endpoint}");

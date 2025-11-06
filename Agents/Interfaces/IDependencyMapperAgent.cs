@@ -1,9 +1,9 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.Connectors.OpenAI;
-using CobolToQuarkusMigration.Models;
+using CobolModernization.Models;
 
-namespace CobolToQuarkusMigration.Agents.Interfaces;
+namespace CobolModernization.Agents.Interfaces;
 
 /// <summary>
 /// Interface for the COBOL dependency mapper agent.
