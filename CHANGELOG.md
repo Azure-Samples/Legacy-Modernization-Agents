@@ -5,225 +5,51 @@ All notable changes to this repository are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Added - October 29, 2025 - Portal UI & Multi-Source Chat
-
-#### 🎨 Enhanced Portal UI
-- Fixed dark theme consistency for legend box and tooltips
-- Enhanced dependency graph with rich colors and dynamic node sizing
-- Added connection-based metrics showing node importance
-- Fixed run selection bug - correctly filters by runId from URI
-- Added Run 49 to SQLite database for consistency with Neo4j
-- Run dropdown now only shows runs with actual graph data (44, 49)
-- Added example queries section with COBOL analysis and migration planning prompts
-- Removed technical MCP URIs from user-facing interface
-  
-#### 🔍 Intelligent Multi-Source Chat
-- Chat augments prompts with SQLite context (run metadata, file counts, copybook lists)
-- Fixed SQLite schema queries to match actual database structure
-  - Seamlessly combines relational metadata with graph dependencies
-  - Provides comprehensive answers using both data sources
-  - Generic model reference ("Processing with AI") instead of hardcoded model names
-
-- **📁 Directory Structure Preservation** - Ensure folders exist on clone and devcontainer load (Oct 29, 2025)
-  - Added `.gitkeep` files to `cobol-source/` and `java-output/` directories
-  - Updated `.gitignore` to preserve directory structure while ignoring contents
-  - Directories now present immediately after repo clone and devcontainer creation
-  - No manual directory creation needed before running migrations
-
-- **📊 Real-time LOC Calculation** - AI can now answer Lines of Code questions (Oct 31, 2025)
-  - Added SQLite query to calculate LOC from COBOL file content
-  - Excludes comments (lines starting with `*`) and blank lines
-  - Provides top 5 files by LOC when user asks about file size or complexity
-  - AI receives actual LOC data for accurate ASCII tables and analysis
-
-### Changed
-- **📚 Complete Documentation Alignment** - All docs updated with current architecture (Oct 31, 2025)
-  - README.md: Enhanced "Three Ways to Run" with database connection details
-  - README.md: Added comprehensive "Complete End-to-End Architecture Flow" section
-  - README.md: Updated DevContainer section with auto-connect database information
-  - DEVCONTAINER_AUTO_START.md: Added "View Portal Without Running Migration" guide
-  - DEVCONTAINER_AUTO_START.md: Documented all three options (demo.sh, manual, auto-start)
-  - All documentation now reflects SQLite + Neo4j dual database architecture
-  - Step-by-step guides for portal access without running migrations
-  - Complete troubleshooting section for portal-only mode
+## [2.0.0] - 2025-11-11
 
 ### Added
-- **� Smart Neo4j Detection** - Both demo.sh and doctor.sh now detect ANY Neo4j container
-  - Scripts detect any Neo4j container on ports 7474/7687 (not just specific container names)
-  - Gracefully handles existing Neo4j instances (neo4j-test, cobol-migration-neo4j, etc.)
-  - Port conflict detection with helpful error messages
-  - Auto-uses accessible Neo4j instead of failing with port conflicts
-  - Consistent behavior across demo.sh and doctor.sh
-  - Better diagnostics when Neo4j ports are blocked but not accessible
-  - Updated DEMO.md with Neo4j troubleshooting section
-  
-- **�💾 Data Persistence Documentation** - Comprehensive guide to data storage and persistence
-  - New documentation: `DATA_PERSISTENCE.md` (complete 15KB guide)
-  - Explains SQLite (Data/migration.db) and Neo4j (Docker volumes) storage
-  - Confirms 44 migration runs currently stored and persisted
-  - Details what survives restarts, shutdowns, and container deletions
-  - Backup and restore procedures for both databases
-  - Security considerations and .gitignore exclusions
-  - Added explicit Data/ directory exclusion to .gitignore
-  - Documented database schema and volume configuration
-  
-- **🌐 Portal Preview Mode** - Run portal without COBOL migration to explore UI
-  - New documentation: `PORTAL_PREVIEW.md` with complete preview guide
-  - Command: `cd McpChatWeb && dotnet run --urls http://localhost:5028`
-  - Perfect for first-time users, testing, development, and demos
-  - Shows portal interface, API docs, and empty graph visualization
-  - Updated `doctor.sh` help text to include preview command
-  - Added preview sections to `DEVCONTAINER_AUTO_START.md` and `DEMO.md`
-  
-- **🚀 DevContainer Auto-Start** - Portal and dashboards start automatically after migration
-  - `postStartCommand` detects previous migration (`Data/migration.db`) and auto-starts portal
-  - Portal launches automatically on container restart at http://localhost:5028
-  - Neo4j restarts automatically on container reopen
-  - Clear status messages show which services are running
-  - New documentation: `DEVCONTAINER_AUTO_START.md` with full configuration guide
-  
-- **🔒 Locked Port Configuration** - Ports cannot change to ensure consistency
-  - Portal permanently locked to port 5028 (was inconsistent 5250/5028)
-  - Neo4j Browser locked to port 7474
-  - Neo4j Bolt locked to port 7687
-  - All scripts enforce exact ports with validation
-  - DevContainer `portsAttributes` configured with labels and auto-forward behavior
+- **🔍 Reverse Engineering** - Standalone business logic extraction without full migration
+  - New `reverse-engineer` command extracts business rules, user stories, and domain models
+  - `BusinessLogicExtractorAgent` generates human-readable documentation from COBOL
+  - Output: Unified markdown file with features, use cases, and business rules
+  - `--skip-reverse-engineering` flag to optimize API costs in migration pipeline
+  - Glossary support (`Data/glossary.json`) translates technical terms to business language
 
-- **🛠️ Enhanced Doctor.sh Auto-Fixing** - Automatic issue detection and resolution
-  - Detects Neo4j container not running → Auto-starts it
-  - Detects Azure OpenAI misconfiguration → Shows setup command
-  - Detects port 5028 conflicts → Kills conflicting processes
-  - Comprehensive diagnostics run automatically on migration failure
-  - Better error messages with actionable fix commands
-  - Port validation ensures 5028 is available before portal launch
-  - Neo4j health check before starting portal
-  - Explicit port enforcement: `export MCP_WEB_PORT=5028`, `ASPNETCORE_URLS`, `ASPNETCORE_HTTP_PORTS`
+- **🗄️ SQLite Integration** - Dual database architecture with SQLite + Neo4j
+  - Real-time LOC calculation from COBOL content (excludes comments and blank lines)
+  - Multi-run queries: "show me run 42" automatically switches context
+  - File content analysis: "what functions are in X.cbl" returns detailed structure
+  - 44 migration runs persisted with metadata, file counts, and analysis data
+  - Chat augments prompts with SQLite context for comprehensive answers
 
-### Fixed
-- **Windows File Writing Issues** - Comprehensive cross-platform file writing improvements
-  - Added retry logic for Windows file locking issues (3 retries with 100ms delay)
-  - Added Windows reserved filename detection (CON, PRN, AUX, NUL, COM1-9, LPT1-9)
-  - Improved Windows MAX_PATH (260 char) handling with automatic path shortening
-  - Added fallback to flat directory structure when paths exceed limits
-  - Fixed UTF-8 encoding to not include BOM for better Java compatibility
-  - Normalized line endings to platform-specific format (CRLF on Windows, LF on Unix/Mac)
-  - Enhanced directory creation with retry logic for transient failures
-  - Improved error messages for path-too-long, access-denied, and I/O errors
-  - Added detection of Windows platform to apply OS-specific path length validation
-  - Sanitized filenames to remove leading/trailing spaces and dots (Windows requirement)
+- **🌐 Enhanced Portal UI**
+  - Run selector dropdown with historical runs (filters to runs with graph data)
+  - Dynamic dependency graph syncs with selected run
+  - Example queries section for COBOL analysis and migration planning
+  - Dark theme consistency with rich colors and connection-based node sizing
+  - Data retrieval guide modal with SQLite, Neo4j, and MCP API examples
 
-- **Port Consistency Across All Files** - Standardized to port 5028
-  - Fixed `demo.sh` port check from 5250 to 5028 (line 26: `portal_running()` function)
-  - Updated `QUICK_START.md` - All 7 references changed from 5250 to 5028
-  - Updated `McpChatWeb/wwwroot/index.html` - All API examples use 5028
-  - Updated `QUERY_GUIDE.md` - Portal URL changed to 5028
-  - Updated `DOCS_UPDATE_2025_10_08.md` - Port verification updated to 5028
-  - Updated `MCP_CONNECTION_FIX.md` - All curl examples use 5028
-  - `doctor.sh` already used correct port 5028 (no changes needed)
+- **🚀 DevContainer Auto-Start** - Services launch automatically on container restart
+  - Portal auto-starts at http://localhost:5028 when `Data/migration.db` exists
+  - Neo4j restarts automatically with health checks
+  - Locked ports (5028, 7474, 7687) prevent configuration drift
+
+- **📁 Directory Cleanup** - Simplified from `cobol-source/`/`java-output/` to `source/`/`output/`
+  - `.gitkeep` files preserve directory structure on clone
+  - Scripts moved to `helper-scripts/` folder
+  - Documentation consolidated: 7 files → 4 (README, CHANGELOG, QUICK_START, architecture)
 
 ### Changed
-- **DevContainer Startup Messages** - Enhanced with clear instructions and service URLs
-  - `postCreateCommand` shows Quick Start guide with fixed ports
-  - `postStartCommand` detects previous migration and shows auto-start status
-  - All messages include service URLs: Portal (5028), Neo4j (7474), Bolt (7687)
-- **Doctor.sh Launch Flow** - Portal starts with better feedback and validation
-  - Always uses port 5028 with explicit environment variables
-  - Shows success message: "✅ Migration completed successfully!"
-  - Displays "🚀 Starting Portal and Dashboards..."
-  - Outputs service URLs: Portal and Neo4j Browser
-  - Working directory changes to `McpChatWeb` before launch
+- **Port Standardization** - All services use consistent ports (5028, 7474, 7687)
+- **doctor.sh Enhancements** - Auto-fixes Neo4j container issues, port conflicts, Azure config
+- **Windows Compatibility** - Retry logic for file locking, MAX_PATH handling, reserved filename detection
 
-### Added - October 28, 2025 - Reverse Engineering & Project Enhancements
-
-#### 🔍 Reverse Engineering Feature
-- **Business Logic Extraction**: Standalone reverse engineering capability
-  - New `reverse-engineer` command for extracting business logic without full migration
-  - Generates user stories from interactive/transactional COBOL logic
-  - Creates feature descriptions for batch/calculation processes
-  - Extracts business rules, data entities, and domain models
-  - Output format: Unified markdown file in `output/` folder
-
-- **New AI Agents**:
-  - `BusinessLogicExtractorAgent` - Extracts WHAT the code does (business perspective)
-
-- **Data Models**:
-  - `BusinessLogic` - Structured business logic with feature descriptions, use cases, and rules
-  - `UserStory` - User story format with role, action, benefit, and business rules
-  - `FeatureDescription` - Feature format for batch processes with inputs/outputs
-  - `BusinessRule` - Business rules with conditions and actions
-  - `Glossary` - Business-friendly term translations (e.g., ARTNR → Article Number)
-
-- **Reverse Engineering Process**:
-  - `ReverseEngineeringProcess` - Standalone orchestrator that can run independently
-  - Three-step process: File Discovery → Technical Analysis → Business Logic Extraction
-  - Generates unified output file: `reverse-engineering-details.md`
-  - New architecture documentation: `REVERSE_ENGINEERING_ARCHITECTURE.md`
-
-- **CLI Commands**:
-  - `dotnet run reverse-engineer --source <path>` - Run reverse engineering only
-  - `--skip-reverse-engineering` - Skip reverse engineering step in full migration (saves API costs)
-  - `./doctor.sh reverse-eng` - Dedicated reverse engineering command with validation
-
-- **Enhanced doctor.sh Script**:
-  - Reverse engineering component validation (3 components)
-  - COBOL file and copybook counting
-  - Auto-creates `source/` and `output/` directories
-  - Validates feature completeness before execution
-  - Improved error messages and help text
-
-#### 📁 Project Structure Improvements
-- **Simplified Directory Structure**:
-  - Renamed `cobol-source/` → `source/` (cleaner, more intuitive)
-  - Renamed `java-output/` → `output/` (unified output location)
-  - Removed `reverse-engineering-output/` (now uses main `output/` folder)
-  - Moved utility scripts to `helper-scripts/` folder
-
-- **Helper Scripts Organization**:
-  - `helper-scripts/cleanup-databases.sh` - Database cleanup utility
-  - `helper-scripts/demo.sh` - Portal demo mode launcher
-  - `helper-scripts/test_mcp_communication.sh` - MCP server testing
-
-- **Glossary Support**:
-  - `Data/glossary.json` - Business term translations for COBOL variables
-  - Improves business logic extraction accuracy
-  - Maps technical terms to business-friendly names
-
-#### 📚 Documentation Consolidation
-- **Streamlined Documentation Structure**: Reduced from 7 to 4 essential markdown files
-  - Consolidated `DEMO.md` content into README's "Demo Mode" section
-  - Merged `QUERY_GUIDE.md` examples into README's "Portal Usage Guide"
-  - Integrated `NEO4J_RUN43_QUERIES.md` into README's "Data Retrieval Guide"
-  - Removed redundant `REVERSE_ENGINEERING.md` (content in architecture doc)
-  - **Result**: Cleaner repository with README.md as single source of truth
-
-- **Documentation Files Retained**:
-  1. **README.md** - Comprehensive guide (main entry point)
-  2. **CHANGELOG.md** - Version history and changes (this file)
-  3. **REVERSE_ENGINEERING_ARCHITECTURE.md** - Specialized architecture documentation
-  4. **QUICK_START.md** - Beginner-friendly quick start guide
-
-#### 🛠️ Path Updates Throughout Project
-- Updated all references from `cobol-source/` to `source/`
-- Updated all references from `java-output/` to `output/`
-- Updated `doctor.sh` with new directory structure
-- Updated `README.md` examples and quickstart commands
-- Updated `QUICK_START.md` setup instructions
-- Updated migration process default paths
-
-#### 🔧 Configuration Enhancements
-- Simplified reverse engineering validation (3 components instead of 5)
-- Improved directory auto-creation logic
-- Better error messages for missing components
-- Enhanced test suite with correct directory checks
-
-#### Use Cases Supported
-1. **Documentation Only**: Extract business logic for RFP/contractor briefing without migration
-2. **Assessment Before Migration**: Review what needs migration before committing to full process
-3. **Selective Modernization**: Identify high-value, low-effort improvements
-4. **Integrated Workflow**: Run as part of full migration pipeline with optional review step
-5. **Cost Optimization**: Skip reverse engineering step when reusing existing analysis
+### Fixed
+- Port conflicts resolved (launchSettings.json 5250 → 5028)
+- JavaScript caching issues with DOM ready checks
+- Graph layout configuration errors (invalid `parentCentralization` option)
+- Zero build warnings (CS1998, CS8602 resolved)
+- MCP server stream buffering and duplicate node errors
 
 ## [1.3.0] - 2025-10-23
 
@@ -276,7 +102,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Graph Initialization**: Now passes `runId` to `loadAndRender()` on initial load
 - **Run Selector Integration**: Dropdown added to header with live run detection
 - **JavaScript Architecture**: Refactored to use initialization pattern with DOM ready checks
->>>>>>> feature/mcp-sqlite
 
 ## [1.2.0] - 2025-10-10
 
@@ -351,7 +176,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Dashboard UI** - Added "Run {id}" badge to graph panel header showing current migration run
 - **Dev container ports** - Changed McpChatWeb auto-forward from "notify" to "openBrowser" for immediate access
 - **Dev container VS Code settings** - Added better defaults for .NET development and file watching exclusions
-- **Portal URL standardized** - All documentation now references http://localhost:5250 (was inconsistent 5028/5250)
+- **Portal URL standardized** - All documentation now references http://localhost:5028 (was inconsistent 5028/5250)
 
 ### Fixed
 - **✅ Zero build warnings** - Project now builds cleanly with 0 warnings, 0 errors
