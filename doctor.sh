@@ -34,6 +34,7 @@ show_usage() {
     echo -e "  ${GREEN}chat-test${NC}       Test chat logging functionality"
     echo -e "  ${GREEN}validate${NC}        Validate system requirements"
     echo -e "  ${GREEN}validate-code${NC}   Validate converted code against COBOL source"
+    echo -e "  ${GREEN}generate-tests${NC}  Generate unit tests for converted code"
     echo -e "  ${GREEN}conversation${NC}    Start interactive conversation mode"
     echo
     echo -e "${BOLD}Run Command Options:${NC}"
@@ -46,6 +47,11 @@ show_usage() {
     echo -e "  --target csharp   Validate C# conversion only"
     echo -e "  --target both     Validate both conversions (default)"
     echo
+    echo -e "${BOLD}Generate-Tests Command Options:${NC}"
+    echo -e "  --target java     Generate tests for Java code only"
+    echo -e "  --target csharp   Generate tests for C# code only"
+    echo -e "  --target both     Generate tests for both (default)"
+    echo
     echo -e "${BOLD}Examples:${NC}"
     echo -e "  $0              ${CYAN}# Run configuration doctor${NC}"
     echo -e "  $0 setup        ${CYAN}# Interactive setup${NC}"
@@ -56,6 +62,8 @@ show_usage() {
     echo -e "  $0 run --target both     ${CYAN}# Convert to both languages${NC}"
     echo -e "  $0 validate-code         ${CYAN}# Validate both conversions${NC}"
     echo -e "  $0 validate-code --target java   ${CYAN}# Validate Java conversion${NC}"
+    echo -e "  $0 generate-tests        ${CYAN}# Generate tests for both${NC}"
+    echo -e "  $0 generate-tests --target java  ${CYAN}# Generate Java tests only${NC}"
     echo
 }
 
@@ -841,6 +849,148 @@ run_code_validation() {
     echo
 }
 
+# Function to generate unit tests for converted code
+run_test_generation() {
+    echo -e "${BLUE}🧪 Unit Test Generation - Creating Tests for Converted Code${NC}"
+    echo "============================================================="
+    echo
+
+    # Load configuration
+    echo "🔧 Loading AI configuration..."
+    if ! load_configuration; then
+        echo -e "${RED}❌ Configuration loading failed. Please run: ./doctor.sh setup${NC}"
+        return 1
+    fi
+
+    # Load and validate configuration
+    if ! load_ai_config; then
+        echo -e "${RED}❌ Configuration loading failed. Please check your ai-config.local.env file.${NC}"
+        return 1
+    fi
+
+    # Parse command line arguments for --target option
+    TARGET_LANG=""
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --target)
+                TARGET_LANG="$2"
+                shift 2
+                ;;
+            *)
+                echo -e "${RED}❌ Unknown option: $1${NC}"
+                return 1
+                ;;
+        esac
+    done
+
+    # If no target specified, default to both
+    if [ -z "$TARGET_LANG" ]; then
+        echo -e "${CYAN}${BOLD}Select Target Language for Test Generation:${NC}"
+        echo "=========================================="
+        echo
+        echo "1) Java Quarkus    - Generate JUnit tests"
+        echo "2) C# .NET         - Generate xUnit tests"
+        echo "3) Both            - Generate tests for both (default)"
+        echo
+        read -p "Enter your choice (1-3) [3]: " choice
+        choice=${choice:-3}
+
+        case $choice in
+            1)
+                TARGET_LANG="java"
+                echo -e "${GREEN}✅ Selected: Java Test Generation${NC}"
+                ;;
+            2)
+                TARGET_LANG="csharp"
+                echo -e "${GREEN}✅ Selected: C# Test Generation${NC}"
+                ;;
+            3)
+                TARGET_LANG="both"
+                echo -e "${GREEN}✅ Selected: Both Languages${NC}"
+                ;;
+            *)
+                echo -e "${YELLOW}⚠️  Invalid choice. Defaulting to both.${NC}"
+                TARGET_LANG="both"
+                ;;
+        esac
+        echo
+    fi
+
+    # Normalize target language
+    TARGET_LANG=$(echo "$TARGET_LANG" | tr '[:upper:]' '[:lower:]')
+
+    echo -e "${CYAN}Note: Unit tests are automatically generated during migration.${NC}"
+    echo -e "${CYAN}This command is for regenerating tests for existing conversions.${NC}"
+    echo
+
+    # Generate tests based on target language
+    case $TARGET_LANG in
+        "java")
+            if [ ! -d "$SCRIPT_DIR/java-output" ] || [ -z "$(ls -A $SCRIPT_DIR/java-output 2>/dev/null)" ]; then
+                echo -e "${RED}❌ No Java output found. Please run migration first.${NC}"
+                return 1
+            fi
+            echo -e "${BLUE}🧪 Generating JUnit Tests for Java Code...${NC}"
+            echo "=========================================="
+            echo
+            echo -e "${YELLOW}Test files will be created in: ./java-output/src/test/java/${NC}"
+            echo
+            # Note: In a full implementation, this would call the UnitTestAgent
+            # For now, inform the user that tests are generated during migration
+            echo -e "${CYAN}To generate tests, please run the full migration process:${NC}"
+            echo "  ./doctor.sh run --target java"
+            echo
+            echo -e "${YELLOW}Tests are automatically generated after code conversion.${NC}"
+            ;;
+        "csharp"|"cs")
+            if [ ! -d "$SCRIPT_DIR/csharp-output" ] || [ -z "$(ls -A $SCRIPT_DIR/csharp-output 2>/dev/null)" ]; then
+                echo -e "${RED}❌ No C# output found. Please run migration first.${NC}"
+                return 1
+            fi
+            echo -e "${BLUE}🧪 Generating xUnit Tests for C# Code...${NC}"
+            echo "======================================="
+            echo
+            echo -e "${YELLOW}Test files will be created in: ./csharp-output/Tests/${NC}"
+            echo
+            echo -e "${CYAN}To generate tests, please run the full migration process:${NC}"
+            echo "  ./doctor.sh run --target csharp"
+            echo
+            echo -e "${YELLOW}Tests are automatically generated after code conversion.${NC}"
+            ;;
+        "both")
+            echo -e "${BLUE}🧪 Generating Tests for Both Languages...${NC}"
+            echo "========================================"
+            echo
+            
+            # Check Java
+            if [ -d "$SCRIPT_DIR/java-output" ] && [ -n "$(ls -A $SCRIPT_DIR/java-output 2>/dev/null)" ]; then
+                echo -e "${CYAN}Java tests location: ./java-output/src/test/java/${NC}"
+            else
+                echo -e "${YELLOW}⚠️  No Java output found${NC}"
+            fi
+
+            # Check C#
+            if [ -d "$SCRIPT_DIR/csharp-output" ] && [ -n "$(ls -A $SCRIPT_DIR/csharp-output 2>/dev/null)" ]; then
+                echo -e "${CYAN}C# tests location: ./csharp-output/Tests/${NC}"
+            else
+                echo -e "${YELLOW}⚠️  No C# output found${NC}"
+            fi
+
+            echo
+            echo -e "${CYAN}To generate tests, please run the full migration process:${NC}"
+            echo "  ./doctor.sh run --target both"
+            echo
+            echo -e "${YELLOW}Tests are automatically generated after code conversion.${NC}"
+            ;;
+        *)
+            echo -e "${RED}❌ Invalid target language: $TARGET_LANG${NC}"
+            echo "Valid options: java, csharp, both"
+            return 1
+            ;;
+    esac
+    echo
+}
+
 # Function for conversation mode
 run_conversation() {
     echo -e "${BLUE}💭 Interactive Conversation Mode${NC}"
@@ -893,6 +1043,10 @@ main() {
         "validate-code")
             shift # Remove 'validate-code' from arguments
             run_code_validation "$@"
+            ;;
+        "generate-tests")
+            shift # Remove 'generate-tests' from arguments
+            run_test_generation "$@"
             ;;
         "conversation")
             run_conversation

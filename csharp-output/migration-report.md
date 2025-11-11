@@ -1,6 +1,6 @@
 # COBOL to CSharp Migration Report
-Generated: 2025-11-11 05:46:38 UTC
-Total Migration Time: 00:18:17.6403650
+Generated: 2025-11-11 06:42:23 UTC
+Total Migration Time: 00:33:50.7995930
 
 ## 📊 Migration Overview
 - **Source Files**: 12 COBOL files
@@ -12,18 +12,18 @@ Total Migration Time: 00:18:17.6403650
 ## 🗂️ C# File Mapping
 | COBOL File | C# File | Type |
 |------------|---------|------|
-| DBDRIVR1.cbl | PolicyDriver | Program |
-| DBDRIVR2.cbl | LinkArea | Program |
-| FLDRIVR1.cbl | AgentFileDriverInput | Program |
-| FLDRIVR2.cbl | FileOperationRequest | Program |
-| MAINPGM.cbl | PolicyBatchProcessor | Program |
-| AGNTNTFY.cpy | for | Copybook |
-| CAGENT.cpy | containing | Copybook |
+| DBDRIVR1.cbl | PolicyDataDriver | Program |
+| DBDRIVR2.cbl | TrackingRecord | Program |
+| FLDRIVR1.cbl | AgentFileException | Program |
+| FLDRIVR2.cbl | NotificationFileDriver | Program |
+| MAINPGM.cbl | PolicyExpiryBatch | Program |
+| AGNTNTFY.cpy | AgentNotifyService | Copybook |
+| CAGENT.cpy | AgentRecord | Copybook |
 | CPOLICY.cpy | containing | Copybook |
-| CUSTNTFY.cpy | containing | Copybook |
+| CUSTNTFY.cpy | is | Copybook |
 | DCOVERAG.cpy | maps | Copybook |
 | DPOLICY.cpy | mapped | Copybook |
-| DTRAKING.cpy | is | Copybook |
+| DTRAKING.cpy | for | Copybook |
 
 ## 🔗 Dependency Analysis
 ### Most Used Copybooks
@@ -37,7 +37,7 @@ Total Migration Time: 00:18:17.6403650
 - **AGNTNTFY.cpy**: Used by 1 programs
 
 ## 📈 Migration Metrics
-- **Files per Minute**: 0.7
+- **Files per Minute**: 0.4
 - **Average File Size**: 5175 characters
 - **Total Lines of Code**: 1,372
 

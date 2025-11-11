@@ -25,6 +25,7 @@ public class MigrationProcess
     private ICSharpConverterAgent? _csharpConverterAgent;
     private IDependencyMapperAgent? _dependencyMapperAgent;
     private IValidationAgent? _validationAgent;
+    private IUnitTestAgent? _unitTestAgent;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="MigrationProcess"/> class.
@@ -59,7 +60,7 @@ public class MigrationProcess
             builder.AddConsole();
         });
 
-        _enhancedLogger.ShowStep(1, 4, "CobolAnalyzerAgent", "Analyzing COBOL code structure and patterns");
+        _enhancedLogger.ShowStep(1, 5, "CobolAnalyzerAgent", "Analyzing COBOL code structure and patterns");
         _cobolAnalyzerAgent = new CobolAnalyzerAgent(
             _kernelBuilder,
             loggerFactory.CreateLogger<CobolAnalyzerAgent>(),
@@ -67,7 +68,7 @@ public class MigrationProcess
             _enhancedLogger,
             _chatLogger);
 
-        _enhancedLogger.ShowStep(2, 4, "JavaConverterAgent", "Converting COBOL to Java Quarkus");
+        _enhancedLogger.ShowStep(2, 5, "JavaConverterAgent", "Converting COBOL to Java Quarkus");
         _javaConverterAgent = new JavaConverterAgent(
             _kernelBuilder,
             loggerFactory.CreateLogger<JavaConverterAgent>(),
@@ -75,7 +76,7 @@ public class MigrationProcess
             _enhancedLogger,
             _chatLogger);
 
-        _enhancedLogger.ShowStep(3, 4, "CSharpConverterAgent", "Converting COBOL to C# .NET");
+        _enhancedLogger.ShowStep(3, 5, "CSharpConverterAgent", "Converting COBOL to C# .NET");
         _csharpConverterAgent = new CSharpConverterAgent(
             _kernelBuilder,
             loggerFactory.CreateLogger<CSharpConverterAgent>(),
@@ -83,11 +84,19 @@ public class MigrationProcess
             _enhancedLogger,
             _chatLogger);
 
-        _enhancedLogger.ShowStep(4, 4, "DependencyMapperAgent", "Mapping COBOL dependencies and generating diagrams");
+        _enhancedLogger.ShowStep(4, 5, "DependencyMapperAgent", "Mapping COBOL dependencies and generating diagrams");
         _dependencyMapperAgent = new DependencyMapperAgent(
             _kernelBuilder,
             loggerFactory.CreateLogger<DependencyMapperAgent>(),
             _settings.AISettings.DependencyMapperModelId ?? _settings.AISettings.CobolAnalyzerModelId,
+            _enhancedLogger,
+            _chatLogger);
+
+        _enhancedLogger.ShowStep(5, 5, "UnitTestAgent", "Generating unit tests for converted code");
+        _unitTestAgent = new UnitTestAgent(
+            _kernelBuilder,
+            loggerFactory.CreateLogger<UnitTestAgent>(),
+            _settings.AISettings.UnitTestModelId,
             _enhancedLogger,
             _chatLogger);
 
@@ -326,6 +335,42 @@ public class MigrationProcess
                     _enhancedLogger.LogBehindTheScenes("MIGRATION", "JAVA_VALIDATION_COMPLETE",
                         $"Validation score: {javaValidationReport.AccuracyScore}%, {javaValidationReport.Differences.Count} differences found");
                 }
+
+                // Generate unit tests for Java
+                if (_unitTestAgent != null && javaFiles.Any())
+                {
+                    currentStep++;
+                    _enhancedLogger.ShowStep(currentStep, totalSteps, "Java Unit Tests", "Generating JUnit tests for Java code");
+                    _enhancedLogger.LogBehindTheScenes("MIGRATION", "JAVA_TEST_GENERATION_START",
+                        $"Generating unit tests for {javaFiles.Count} Java files");
+
+                    var javaTestFiles = await _unitTestAgent.GenerateUnitTestsAsync(
+                        javaFiles,
+                        cobolAnalyses,
+                        (current, total) =>
+                        {
+                            _enhancedLogger.ShowProgressBar(current, total, "Generating Java tests");
+                            _enhancedLogger.LogBehindTheScenes("PROGRESS", "JAVA_TEST_GENERATION",
+                                $"Generated tests {current}/{total}");
+                        });
+
+                    // Save test files to test directory
+                    var testOutputFolder = Path.Combine(javaOutputFolder, "src", "test", "java");
+                    Directory.CreateDirectory(testOutputFolder);
+
+                    for (int i = 0; i < javaTestFiles.Count; i++)
+                    {
+                        var testFile = javaTestFiles[i];
+                        await _fileHelper.SaveJavaFileAsync(testFile, testOutputFolder);
+                        _enhancedLogger.ShowProgressBar(i + 1, javaTestFiles.Count, "Saving Java test files");
+                        _enhancedLogger.LogBehindTheScenes("FILE_OUTPUT", "JAVA_TEST_FILE_SAVED",
+                            $"Saved {testFile.FileName} ({testFile.Content.Length} chars)");
+                    }
+
+                    _enhancedLogger.ShowSuccess($"Generated {javaTestFiles.Count} Java test files");
+                    _enhancedLogger.LogBehindTheScenes("MIGRATION", "JAVA_TEST_GENERATION_COMPLETE",
+                        $"Successfully generated {javaTestFiles.Count} JUnit test files");
+                }
             }
 
             // Convert to C# if requested
@@ -386,6 +431,42 @@ public class MigrationProcess
                     _enhancedLogger.ShowSuccess($"C# validation complete - Accuracy: {csharpValidationReport.AccuracyScore:F1}%, Status: {csharpValidationReport.Status}");
                     _enhancedLogger.LogBehindTheScenes("MIGRATION", "CSHARP_VALIDATION_COMPLETE",
                         $"Validation score: {csharpValidationReport.AccuracyScore}%, {csharpValidationReport.Differences.Count} differences found");
+                }
+
+                // Generate unit tests for C#
+                if (_unitTestAgent != null && csharpFiles.Any())
+                {
+                    currentStep++;
+                    _enhancedLogger.ShowStep(currentStep, totalSteps, "C# Unit Tests", "Generating xUnit tests for C# code");
+                    _enhancedLogger.LogBehindTheScenes("MIGRATION", "CSHARP_TEST_GENERATION_START",
+                        $"Generating unit tests for {csharpFiles.Count} C# files");
+
+                    var csharpTestFiles = await _unitTestAgent.GenerateUnitTestsAsync(
+                        csharpFiles,
+                        cobolAnalyses,
+                        (current, total) =>
+                        {
+                            _enhancedLogger.ShowProgressBar(current, total, "Generating C# tests");
+                            _enhancedLogger.LogBehindTheScenes("PROGRESS", "CSHARP_TEST_GENERATION",
+                                $"Generated tests {current}/{total}");
+                        });
+
+                    // Save test files to test directory
+                    var testOutputFolder = Path.Combine(csharpOutputFolder, "Tests");
+                    Directory.CreateDirectory(testOutputFolder);
+
+                    for (int i = 0; i < csharpTestFiles.Count; i++)
+                    {
+                        var testFile = csharpTestFiles[i];
+                        await _fileHelper.SaveCSharpFileAsync(testFile, testOutputFolder);
+                        _enhancedLogger.ShowProgressBar(i + 1, csharpTestFiles.Count, "Saving C# test files");
+                        _enhancedLogger.LogBehindTheScenes("FILE_OUTPUT", "CSHARP_TEST_FILE_SAVED",
+                            $"Saved {testFile.FileName} ({testFile.Content.Length} chars)");
+                    }
+
+                    _enhancedLogger.ShowSuccess($"Generated {csharpTestFiles.Count} C# test files");
+                    _enhancedLogger.LogBehindTheScenes("MIGRATION", "CSHARP_TEST_GENERATION_COMPLETE",
+                        $"Successfully generated {csharpTestFiles.Count} xUnit test files");
                 }
             }
 

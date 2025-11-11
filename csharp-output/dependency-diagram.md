@@ -3,12 +3,12 @@
 ```mermaid
 graph TB
   %% Styles
-  classDef program fill:#e3f2fd,stroke:#1976d2,stroke-width:2px,color:#0d47a1,rx:8,ry:8;
-  classDef copybook fill:#fff3e0,stroke:#f57c00,stroke-width:2px,color:#e65100,rx:8,ry:8;
-  classDef header fill:#c8e6c9,stroke:#388e3c,stroke-width:2px,color:#1b5e20,rx:8,ry:8;
+  classDef program fill:#e3f2fd,stroke:#1976d2,stroke-width:2px,color:#0d47a1;
+  classDef copybook fill:#fff3e0,stroke:#f57c00,stroke-width:2px,color:#e65100;
+  classDef mainProgram fill:#c8e6c9,stroke:#388e3c,stroke-width:3px,color:#1b5e20;
 
-  %% Subgraph: COBOL Programs
-  subgraph COBOL Programs
+  %% Programs Subgraph
+  subgraph Programs
     direction TB
     DBDRIVR1["DBDRIVR1.cbl"]
     DBDRIVR2["DBDRIVR2.cbl"]
@@ -17,7 +17,7 @@ graph TB
     MAINPGM["MAINPGM.cbl"]
   end
 
-  %% Subgraph: Copybooks
+  %% Copybooks Subgraph
   subgraph Copybooks
     direction TB
     SQLCA["SQLCA.cpy"]
@@ -46,7 +46,8 @@ graph TB
   MAINPGM -->|COPY| CUSTNTFY
   MAINPGM -->|COPY| AGNTNTFY
 
-  %% Styling
-  class DBDRIVR1,DBDRIVR2,FLDRIVR1,FLDRIVR2,MAINPGM program;
+  %% Assign styles
+  class DBDRIVR1,DBDRIVR2,FLDRIVR1,FLDRIVR2 program;
+  class MAINPGM mainProgram;
   class SQLCA,DPOLICY,DCOVERAG,DTRAKING,CAGENT,CPOLICY,CUSTNTFY,AGNTNTFY copybook;
 ```
