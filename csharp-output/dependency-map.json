@@ -1,19 +1,144 @@
 {
-  "dependencies": [],
+  "dependencies": [
+    {
+      "sourceFile": "DBDRIVR1.cbl",
+      "targetFile": "SQLCA.cpy",
+      "dependencyType": "COPY",
+      "lineNumber": 0,
+      "context": "Copybook inclusion"
+    },
+    {
+      "sourceFile": "DBDRIVR1.cbl",
+      "targetFile": "DPOLICY.cpy",
+      "dependencyType": "COPY",
+      "lineNumber": 0,
+      "context": "Copybook inclusion"
+    },
+    {
+      "sourceFile": "DBDRIVR1.cbl",
+      "targetFile": "DCOVERAG.cpy",
+      "dependencyType": "COPY",
+      "lineNumber": 0,
+      "context": "Copybook inclusion"
+    },
+    {
+      "sourceFile": "DBDRIVR1.cbl",
+      "targetFile": "DTRAKING.cpy",
+      "dependencyType": "COPY",
+      "lineNumber": 0,
+      "context": "Copybook inclusion"
+    },
+    {
+      "sourceFile": "DBDRIVR2.cbl",
+      "targetFile": "SQLCA.cpy",
+      "dependencyType": "COPY",
+      "lineNumber": 0,
+      "context": "Copybook inclusion"
+    },
+    {
+      "sourceFile": "DBDRIVR2.cbl",
+      "targetFile": "DTRAKING.cpy",
+      "dependencyType": "COPY",
+      "lineNumber": 0,
+      "context": "Copybook inclusion"
+    },
+    {
+      "sourceFile": "FLDRIVR1.cbl",
+      "targetFile": "CAGENT.cpy",
+      "dependencyType": "COPY",
+      "lineNumber": 0,
+      "context": "Copybook inclusion"
+    },
+    {
+      "sourceFile": "MAINPGM.cbl",
+      "targetFile": "CPOLICY.cpy",
+      "dependencyType": "COPY",
+      "lineNumber": 0,
+      "context": "Copybook inclusion"
+    },
+    {
+      "sourceFile": "MAINPGM.cbl",
+      "targetFile": "CAGENT.cpy",
+      "dependencyType": "COPY",
+      "lineNumber": 0,
+      "context": "Copybook inclusion"
+    },
+    {
+      "sourceFile": "MAINPGM.cbl",
+      "targetFile": "CUSTNTFY.cpy",
+      "dependencyType": "COPY",
+      "lineNumber": 0,
+      "context": "Copybook inclusion"
+    },
+    {
+      "sourceFile": "MAINPGM.cbl",
+      "targetFile": "AGNTNTFY.cpy",
+      "dependencyType": "COPY",
+      "lineNumber": 0,
+      "context": "Copybook inclusion"
+    }
+  ],
   "copybookUsage": {
-    "customer_master_update.cbl": []
+    "DBDRIVR1.cbl": [
+      "SQLCA.cpy",
+      "DPOLICY.cpy",
+      "DCOVERAG.cpy",
+      "DTRAKING.cpy"
+    ],
+    "DBDRIVR2.cbl": [
+      "SQLCA.cpy",
+      "DTRAKING.cpy"
+    ],
+    "FLDRIVR1.cbl": [
+      "CAGENT.cpy"
+    ],
+    "FLDRIVR2.cbl": [],
+    "MAINPGM.cbl": [
+      "CPOLICY.cpy",
+      "CAGENT.cpy",
+      "CUSTNTFY.cpy",
+      "AGNTNTFY.cpy"
+    ]
   },
-  "reverseDependencies": {},
-  "mermaidDiagram": "graph TB\n    %% Subgraph for COBOL Programs\n    subgraph COBOL Programs\n        CMU[/\u0022customer_master_update.cbl\u0022/]\n    end\n\n    %% Style for COBOL Programs\n    style CMU fill:#4F81BD,stroke:#1F4E79,stroke-width:2px,color:#fff\n\n    %% No copybooks or dependencies to display",
-  "analysisInsights": "Certainly! Here\u2019s an analysis framework for your COBOL project\u2019s dependency structure, based on the provided context:\n\n---\n\n## 1. Data Flow Dependencies Between Copybooks\n\n**customer_master_update.cbl** uses several copybooks. In COBOL, copybooks are typically used for:\n\n- Defining data structures (record layouts, file definitions)\n- Reusing common code (validation, error handling, I/O routines)\n\n**Data flow dependencies** arise when:\n- One copybook defines data structures that are referenced or updated by code in another copybook.\n- Copybooks are included in a specific order, affecting initialization and processing logic.\n- Shared data areas (e.g., WORKING-STORAGE) are defined in copybooks and manipulated across the program.\n\n**Typical patterns:**\n- If \u0060customer_master_update.cbl\u0060 includes copybooks like \u0060CUST-REC-DEF\u0060, \u0060CUST-ADDRESS-DEF\u0060, and \u0060CUST-UPDATE-ROUTINES\u0060, then data flows from input records (defined in one copybook) through processing routines (in another), possibly updating output records (in a third).\n- If copybooks define both data and code, there may be tight coupling between them.\n\n---\n\n## 2. Potential Circular Dependencies\n\n**Circular dependencies** occur when:\n- Copybook A includes copybook B, and copybook B (directly or indirectly) includes copybook A.\n- This can also happen if copybooks reference each other\u2019s data structures or routines.\n\n**Risks:**\n- Compilation errors or unpredictable behavior.\n- Difficult maintenance and debugging.\n\n**Detection:**\n- Review the include hierarchy. If any copybook is included more than once in a chain, a circular dependency may exist.\n- Tools or scripts can help visualize the copybook inclusion graph.\n\n---\n\n## 3. Modularity Recommendations\n\nTo improve modularity:\n\n- **Single Responsibility:** Each copybook should have a clear, single purpose (e.g., only data definitions, only I/O routines).\n- **Avoid Data/Code Mixing:** Separate data structure copybooks from procedural logic copybooks.\n- **Limit Scope:** Use copybooks only where needed; avoid global inclusions.\n- **Encapsulation:** If possible, encapsulate related data and routines together, but avoid cross-inclusion.\n- **Documentation:** Clearly document what each copybook provides and its dependencies.\n\n---\n\n## 4. Legacy Patterns Affecting Dependencies\n\nCommon legacy COBOL patterns that increase dependency complexity:\n\n- **Monolithic Copybooks:** Large copybooks with mixed data and code.\n- **Global Data Areas:** Shared WORKING-STORAGE or COMMON areas included everywhere.\n- **Unstructured Includes:** Copybooks included in arbitrary order, leading to hidden dependencies.\n- **Reused Names:** Identical data names in multiple copybooks, causing overlay or confusion.\n\n**Impact:**  \nThese patterns make the codebase harder to maintain, increase the risk of side effects, and hinder modularization.\n\n---\n\n## Brief Analysis \u0026 Recommendations\n\n### Dependency Structure Insights\n\n- **customer_master_update.cbl** relies on multiple copybooks, likely for data definitions and business logic.\n- If copybooks are not well-separated by function, there is a risk of tight coupling and hidden dependencies.\n- Without explicit copybook names, assume standard patterns: input/output record layouts, utility routines, and possibly error handling.\n\n### Recommendations\n\n1. **Audit Copybooks:** List all copybooks used, their contents, and where they are included.\n2. **Visualize Dependencies:** Create a dependency graph to spot circular or excessive dependencies.\n3. **Refactor for Modularity:** Split large or mixed-purpose copybooks. Separate data from code.\n4. **Legacy Remediation:** Replace global data areas with more localized structures. Standardize naming.\n5. **Documentation:** Maintain up-to-date documentation of copybook purposes and relationships.\n\n---\n\n**Summary:**  \nThe dependency architecture of \u0060customer_master_update.cbl\u0060 likely reflects common COBOL legacy patterns, with potential for tight coupling and circular dependencies if not carefully managed. Improving modularity and clarifying copybook roles will enhance maintainability and reduce risk.\n\nIf you provide the actual list of copybooks or their contents, I can offer a more detailed, file-specific analysis.",
+  "reverseDependencies": {
+    "SQLCA.cpy": [
+      "DBDRIVR1.cbl",
+      "DBDRIVR2.cbl"
+    ],
+    "DPOLICY.cpy": [
+      "DBDRIVR1.cbl"
+    ],
+    "DCOVERAG.cpy": [
+      "DBDRIVR1.cbl"
+    ],
+    "DTRAKING.cpy": [
+      "DBDRIVR1.cbl",
+      "DBDRIVR2.cbl"
+    ],
+    "CAGENT.cpy": [
+      "FLDRIVR1.cbl",
+      "MAINPGM.cbl"
+    ],
+    "CPOLICY.cpy": [
+      "MAINPGM.cbl"
+    ],
+    "CUSTNTFY.cpy": [
+      "MAINPGM.cbl"
+    ],
+    "AGNTNTFY.cpy": [
+      "MAINPGM.cbl"
+    ]
+  },
+  "mermaidDiagram": "graph TB\n  %% Subgraph: COBOL Programs\n  subgraph COBOL Programs\n    style COBOL Programs fill:#e3f2fd,stroke:#1976d2,stroke-width:2px\n    DBDRIVR1[\u0022DBDRIVR1.cbl\u0022]\n    DBDRIVR2[\u0022DBDRIVR2.cbl\u0022]\n    FLDRIVR1[\u0022FLDRIVR1.cbl\u0022]\n    FLDRIVR2[\u0022FLDRIVR2.cbl\u0022]\n    MAINPGM[\u0022MAINPGM.cbl\u0022]\n    %% Program node styles\n    style DBDRIVR1 fill:#bbdefb,stroke:#1976d2,stroke-width:2px\n    style DBDRIVR2 fill:#bbdefb,stroke:#1976d2,stroke-width:2px\n    style FLDRIVR1 fill:#bbdefb,stroke:#1976d2,stroke-width:2px\n    style FLDRIVR2 fill:#bbdefb,stroke:#1976d2,stroke-width:2px\n    style MAINPGM fill:#bbdefb,stroke:#1976d2,stroke-width:2px\n  end\n\n  %% Subgraph: Copybooks\n  subgraph Copybooks\n    style Copybooks fill:#fff3e0,stroke:#f57c00,stroke-width:2px\n    SQLCA[\u0022SQLCA.cpy\u0022]\n    DPOLICY[\u0022DPOLICY.cpy\u0022]\n    DCOVERAG[\u0022DCOVERAG.cpy\u0022]\n    DTRAKING[\u0022DTRAKING.cpy\u0022]\n    CAGENT[\u0022CAGENT.cpy\u0022]\n    CPOLICY[\u0022CPOLICY.cpy\u0022]\n    CUSTNTFY[\u0022CUSTNTFY.cpy\u0022]\n    AGNTNTFY[\u0022AGNTNTFY.cpy\u0022]\n    %% Copybook node styles\n    style SQLCA fill:#ffe0b2,stroke:#f57c00,stroke-width:2px\n    style DPOLICY fill:#ffe0b2,stroke:#f57c00,stroke-width:2px\n    style DCOVERAG fill:#ffe0b2,stroke:#f57c00,stroke-width:2px\n    style DTRAKING fill:#ffe0b2,stroke:#f57c00,stroke-width:2px\n    style CAGENT fill:#ffe0b2,stroke:#f57c00,stroke-width:2px\n    style CPOLICY fill:#ffe0b2,stroke:#f57c00,stroke-width:2px\n    style CUSTNTFY fill:#ffe0b2,stroke:#f57c00,stroke-width:2px\n    style AGNTNTFY fill:#ffe0b2,stroke:#f57c00,stroke-width:2px\n  end\n\n  %% Dependencies\n  DBDRIVR1 --\u003E|COPY| SQLCA\n  DBDRIVR1 --\u003E|COPY| DPOLICY\n  DBDRIVR1 --\u003E|COPY| DCOVERAG\n  DBDRIVR1 --\u003E|COPY| DTRAKING\n\n  DBDRIVR2 --\u003E|COPY| SQLCA\n  DBDRIVR2 --\u003E|COPY| DTRAKING\n\n  FLDRIVR1 --\u003E|COPY| CAGENT\n\n  MAINPGM --\u003E|COPY| CPOLICY\n  MAINPGM --\u003E|COPY| CAGENT\n  MAINPGM --\u003E|COPY| CUSTNTFY\n  MAINPGM --\u003E|COPY| AGNTNTFY",
+  "analysisInsights": "**COBOL Dependency Structure Analysis**\n\n### 1. Data Flow Dependencies Between Copybooks\n\n**DBDRIVR1.cbl**\n- Uses: \u0060SQLCA.cpy\u0060, \u0060DPOLICY.cpy\u0060, \u0060DCOVERAG.cpy\u0060, \u0060DTRAKING.cpy\u0060\n  - **SQLCA.cpy**: Standard SQL communication area, likely for DB error/status.\n  - **DPOLICY.cpy**, **DCOVERAG.cpy**, **DTRAKING.cpy**: Data structures for policy, coverage, and tracking.\n\n**DBDRIVR2.cbl**\n- Uses: \u0060SQLCA.cpy\u0060, \u0060DTRAKING.cpy\u0060\n  - Shares \u0060SQLCA.cpy\u0060 and \u0060DTRAKING.cpy\u0060 with DBDRIVR1, suggesting similar DB and tracking logic.\n\n**FLDRIVR1.cbl**\n- Uses: \u0060CAGENT.cpy\u0060\n  - Agent data structure, likely for field operations.\n\n**FLDRIVR2.cbl**\n- Uses: *(none)*\n  - No copybooks; possibly standalone logic or legacy code.\n\n**MAINPGM.cbl**\n- Uses: \u0060CPOLICY.cpy\u0060, \u0060CAGENT.cpy\u0060, \u0060CUSTNTFY.cpy\u0060, \u0060AGNTNTFY.cpy\u0060\n  - Central program, aggregates policy, agent, customer notification, and agent notification data.\n\n**Data Flow Observations:**\n- **DBDRIVR1/2**: Share DB and tracking structures, likely interact with policy/coverage/tracking tables.\n- **FLDRIVR1**: Isolated agent data flow.\n- **MAINPGM**: Centralizes multiple business entities, likely orchestrates overall logic.\n\n### 2. Potential Circular Dependencies\n\n- **Copybooks** are included by programs, not vice versa. No evidence of copybooks including other copybooks.\n- **No direct circular dependencies** detected from the usage patterns provided.\n- If copybooks themselves include other copybooks (not shown), circularity could arise. **Recommend verifying copybook contents.**\n\n### 3. Modularity Recommendations\n\n- **Separation of Concerns**: Each driver program (DBDRIVR*, FLDRIVR*) uses distinct copybooks, indicating modularity by business function (DB vs. Field).\n- **MAINPGM**: Aggregates multiple copybooks\u2014could be a candidate for refactoring if logic is monolithic.\n  - **Recommendation**: Break MAINPGM into smaller modules or subprograms, each handling a specific entity (policy, agent, notification).\n- **Copybook Reuse**: \u0060CAGENT.cpy\u0060 is used by both FLDRIVR1 and MAINPGM, suggesting shared agent logic. Ensure copybook fields are not overloaded for different contexts.\n- **Unused Copybooks**: FLDRIVR2 does not use any copybooks. If possible, standardize data definitions via copybooks for consistency.\n\n### 4. Legacy Patterns Affecting Dependencies\n\n- **SQLCA.cpy**: Indicates embedded SQL, a legacy pattern. Modernization might involve abstracting DB logic.\n- **Monolithic MAINPGM**: Large size (28K chars) suggests legacy procedural style. Modularization would improve maintainability.\n- **Copybook Overloading**: If copybooks contain unrelated fields, this can cause tight coupling and maintenance issues.\n- **Lack of Copybook in FLDRIVR2**: May indicate hardcoded data structures or legacy code not aligned with current modular practices.\n\n---\n\n## Summary \u0026 Recommendations\n\n**Dependency Architecture Insights:**\n- Programs are modular by function, but MAINPGM is a central orchestrator with multiple dependencies.\n- No circular dependencies detected, but copybook contents should be checked for nested includes.\n- Copybooks are reused across programs, which is good for consistency but can lead to coupling if not well-structured.\n\n**Recommendations:**\n1. **Refactor MAINPGM** into smaller subprograms or modules for each business entity.\n2. **Standardize copybook usage** across all programs, including FLDRIVR2.\n3. **Review copybook contents** for unnecessary field inclusion or nested copybook usage.\n4. **Modernize SQL handling** by abstracting DB logic from business logic.\n5. **Document copybook dependencies** to prevent future circularity and improve onboarding.\n\n**Legacy Patterns to Address:**\n- Embedded SQL via SQLCA.cpy.\n- Large, monolithic programs.\n- Potential copybook overloading.\n\n**Overall:** The project shows reasonable modularity, but MAINPGM and legacy patterns present maintainability risks. Refactoring and standardization will improve dependency management and future extensibility.",
   "metrics": {
-    "totalPrograms": 1,
-    "totalCopybooks": 0,
-    "totalDependencies": 0,
-    "averageDependenciesPerProgram": 0,
-    "mostUsedCopybook": "",
-    "mostUsedCopybookCount": 0,
+    "totalPrograms": 5,
+    "totalCopybooks": 7,
+    "totalDependencies": 11,
+    "averageDependenciesPerProgram": 2.2,
+    "mostUsedCopybook": "SQLCA.cpy",
+    "mostUsedCopybookCount": 2,
     "circularDependencies": []
   },
-  "createdAt": "2025-11-06T17:45:46.1325458Z"
+  "createdAt": "2025-11-11T01:28:25.2872532Z"
 }
