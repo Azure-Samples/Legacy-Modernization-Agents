@@ -1,9 +1,19 @@
-const resourcesList = document.getElementById('resources');
-const refreshButton = document.getElementById('refresh');
-const chatForm = document.getElementById('chat-form');
-const promptInput = document.getElementById('prompt');
-const responseCard = document.getElementById('response');
-const responseBody = document.getElementById('response-body');
+let resourcesList, refreshButton, chatForm, promptInput, responseCard, responseBody, loadingIndicator, loadingStages;
+
+function initializeElements() {
+  resourcesList = document.getElementById('resources-list');
+  refreshButton = document.getElementById('refresh-graph');
+  chatForm = document.getElementById('chat-form');
+  promptInput = document.getElementById('prompt');
+  responseCard = document.getElementById('response');
+  responseBody = document.getElementById('response-body');
+  loadingIndicator = document.getElementById('loading-indicator');
+  loadingStages = {
+    db: document.getElementById('stage-db'),
+    ai: document.getElementById('stage-ai'),
+    response: document.getElementById('stage-response')
+  };
+}
 
 async function fetchResources() {
   toggleLoading(refreshButton, true);
@@ -22,6 +32,10 @@ async function fetchResources() {
 }
 
 function renderResources(resources, errorMessage) {
+  if (!resourcesList) {
+    console.warn('Resources list element not found');
+    return;
+  }
   resourcesList.innerHTML = '';
   if (errorMessage) {
     const errorItem = document.createElement('li');
@@ -38,34 +52,60 @@ function renderResources(resources, errorMessage) {
     return;
   }
 
-  for (const resource of resources) {
-    const item = document.createElement('li');
-    const title = document.createElement('strong');
-    title.textContent = resource.name ?? resource.uri;
+  // Add example queries section at the top
+  const queriesSection = document.createElement('div');
+  queriesSection.className = 'example-queries';
+  queriesSection.innerHTML = `
+    <h3>💡 Example Queries</h3>
+    <div class="query-grid">
+      <div class="query-card">
+        <strong>COBOL Analysis</strong>
+        <ul>
+          <li class="clickable-query" data-query="Describe the top 3 critical copybooks and what they do">"Describe the top 3 critical copybooks and what they do"</li>
+          <li class="clickable-query" data-query="Suggest a carveout strategy and where I should start">"Suggest a carveout strategy and where I should start"</li>
+          <li class="clickable-query" data-query="Give me an overview of what the COBOL code is responsible for">"Give me an overview of what the COBOL code is responsible for"</li>
+          <li class="clickable-query" data-query="Which COBOL files have the highest impact?">"Which COBOL files have the highest impact?"</li>
+        </ul>
+      </div>
+      <div class="query-card">
+        <strong>Migration Planning</strong>
+        <ul>
+          <li class="clickable-query" data-query="What's the recommended migration order for these programs?">"What's the recommended migration order for these programs?"</li>
+          <li class="clickable-query" data-query="Identify the main entry point programs">"Identify the main entry point programs"</li>
+          <li class="clickable-query" data-query="Which copybooks are shared across the most programs?">"Which copybooks are shared across the most programs?"</li>
+          <li class="clickable-query" data-query="Show complexity metrics for BDSMFJL.cbl">"Show complexity metrics for BDSMFJL.cbl"</li>
+        </ul>
+      </div>
+      <div class="query-card">
+        <strong>Java Conversion</strong>
+        <ul>
+          <li class="clickable-query" data-query="How would BDSDA23.cbl be structured in Java?">"How would BDSDA23.cbl be structured in Java?"</li>
+          <li class="clickable-query" data-query="What Java patterns should replace COBOL copybooks?">"What Java patterns should replace COBOL copybooks?"</li>
+          <li class="clickable-query" data-query="Suggest a Quarkus architecture for this codebase">"Suggest a Quarkus architecture for this codebase"</li>
+          <li class="clickable-query" data-query="Compare COBOL file I/O with modern Java alternatives">"Compare COBOL file I/O with modern Java alternatives"</li>
+        </ul>
+      </div>
+    </div>
+  `;
+  resourcesList.appendChild(queriesSection);
 
-    const uri = document.createElement('code');
-    uri.textContent = resource.uri;
-
-    const description = document.createElement('p');
-    description.textContent = resource.description ?? '';
-
-    item.appendChild(title);
-    item.appendChild(uri);
-    if (description.textContent.trim().length > 0) {
-      item.appendChild(description);
-    }
-    resourcesList.appendChild(item);
-  }
+  // Add click handlers for example queries
+  queriesSection.querySelectorAll('.clickable-query').forEach(item => {
+    item.addEventListener('click', () => {
+      const query = item.getAttribute('data-query');
+      if (promptInput) {
+        promptInput.value = query;
+        promptInput.focus();
+        // Scroll to chat panel
+        document.querySelector('.chat-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    });
+  });
 }
 
-const loadingIndicator = document.getElementById('loading-indicator');
-const loadingStages = {
-  db: document.getElementById('stage-db'),
-  ai: document.getElementById('stage-ai'),
-  response: document.getElementById('stage-response')
-};
-
 function setLoadingStage(stage) {
+  if (!loadingIndicator || !loadingStages) return;
+  
   const stages = ['db', 'ai', 'response'];
   const currentIndex = stages.indexOf(stage);
   
@@ -73,7 +113,9 @@ function setLoadingStage(stage) {
     // Hide all stages
     loadingIndicator.hidden = true;
     stages.forEach(s => {
-      loadingStages[s].classList.remove('active', 'complete');
+      if (loadingStages[s]) {
+        loadingStages[s].classList.remove('active', 'complete');
+      }
     });
     return;
   }
@@ -82,6 +124,8 @@ function setLoadingStage(stage) {
   
   stages.forEach((s, index) => {
     const stageElement = loadingStages[s];
+    if (!stageElement) return;
+    
     if (index < currentIndex) {
       stageElement.classList.remove('active');
       stageElement.classList.add('complete');
@@ -95,13 +139,15 @@ function setLoadingStage(stage) {
 }
 
 function updateStageStatus(stage, status) {
+  if (!loadingStages || !loadingStages[stage]) return;
+  
   const statusElement = loadingStages[stage].querySelector('.stage-status');
   if (statusElement) {
     statusElement.textContent = status;
   }
 }
 
-chatForm.addEventListener('submit', async (event) => {
+async function handleChatSubmit(event) {
   event.preventDefault();
   const prompt = promptInput.value.trim();
   if (prompt.length === 0) {
@@ -118,7 +164,7 @@ chatForm.addEventListener('submit', async (event) => {
     // Move to stage 2: Azure OpenAI
     setTimeout(() => {
       setLoadingStage('ai');
-      updateStageStatus('ai', 'Processing with gpt-5-mini...');
+      updateStageStatus('ai', 'Processing with AI...');
     }, 300);
     
     const res = await fetch('/api/chat', {
@@ -172,11 +218,7 @@ chatForm.addEventListener('submit', async (event) => {
     setLoadingStage('done');
     toggleLoading(chatForm.querySelector('button'), false);
   }
-});
-
-refreshButton.addEventListener('click', () => {
-  fetchResources();
-});
+}
 
 function toggleLoading(element, isLoading) {
   if (!element) return;
@@ -190,14 +232,45 @@ function toggleLoading(element, isLoading) {
 }
 
 // Handle suggestion chip clicks
-document.querySelectorAll('.suggestion-chip').forEach(chip => {
-  chip.addEventListener('click', () => {
-    const prompt = chip.getAttribute('data-prompt');
-    promptInput.value = prompt;
-    promptInput.focus();
-    // Optional: auto-submit
-    // chatForm.dispatchEvent(new Event('submit'));
+function initializeSuggestionChips() {
+  document.querySelectorAll('.suggestion-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      const prompt = chip.getAttribute('data-prompt');
+      if (promptInput) {
+        promptInput.value = prompt;
+        promptInput.focus();
+      }
+      // Optional: auto-submit
+      // chatForm.dispatchEvent(new Event('submit'));
+    });
   });
-});
+}
 
-fetchResources();
+// Initialize everything when DOM is ready
+function initializeApp() {
+  initializeElements();
+  
+  if (!chatForm) {
+    console.error('Required elements not found in DOM');
+    return;
+  }
+  
+  // Set up event listeners
+  chatForm.addEventListener('submit', handleChatSubmit);
+  
+  if (refreshButton) {
+    refreshButton.addEventListener('click', () => {
+      fetchResources();
+    });
+  }
+  
+  initializeSuggestionChips();
+  fetchResources();
+}
+
+// Ensure DOM is ready before initializing
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initializeApp);
+} else {
+  initializeApp();
+}

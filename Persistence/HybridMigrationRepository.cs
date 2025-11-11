@@ -175,4 +175,24 @@ public class HybridMigrationRepository : IMigrationRepository
             return null;
         }
     }
+
+    public async Task<List<int>> GetAvailableRunsAsync()
+    {
+        if (_neo4jRepo == null)
+        {
+            _logger.LogWarning("Neo4j repository not available");
+            return new List<int>();
+        }
+
+        try
+        {
+            return await _neo4jRepo.GetAvailableRunsAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to get available runs from Neo4j");
+            return new List<int>();
+        }
+    }
 }
+

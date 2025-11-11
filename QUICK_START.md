@@ -2,6 +2,19 @@
 
 Get up and running with the COBOL Migration Portal in 5 minutes!
 
+## 📌 What's New (Oct 29, 2025)
+
+✨ **Enhanced Portal UI**
+- Dark theme consistency across all components
+- Rich graph visualization with dynamic node sizing
+- Smart run selection with data-only filtering
+- Interactive example query suggestions
+
+🔍 **Intelligent Multi-Source Chat**
+- Combines SQLite metadata with Neo4j graph insights
+- Context-aware responses using both databases
+- Schema-accurate queries for reliable results
+
 ## 🎯 Prerequisites Checklist
 
 - [ ] Docker Desktop installed and running
@@ -34,7 +47,7 @@ nano Config/ai-config.local.env
 ./demo.sh
 ```
 
-✅ **Done!** Portal opens at http://localhost:5250
+✅ **Done!** Portal opens at http://localhost:5028
 
 ---
 
@@ -119,7 +132,7 @@ dotnet build
 # 1. Ensure Neo4j is running
 # 2. cd McpChatWeb
 # 3. dotnet run
-# 4. Open http://localhost:5250
+# 4. Open http://localhost:5028
 ```
 
 ---
@@ -148,7 +161,7 @@ After running `./demo.sh`, you'll see:
 ⏳ Waiting for portal to start ✅
 
 🌐 Access your demo:
-   Portal:        http://localhost:5250
+   Portal:        http://localhost:5028
    Neo4j Browser: http://localhost:7474
 
 📊 Portal Features:
@@ -159,7 +172,7 @@ After running `./demo.sh`, you'll see:
    • File analysis
 ```
 
-**Browser automatically opens** to http://localhost:5250
+**Browser automatically opens** to http://localhost:5028
 
 ---
 
@@ -176,7 +189,7 @@ After running `./demo.sh`, you'll see:
 **If not working:**
 ```bash
 # Check portal logs
-# Look for "Now listening on: http://localhost:5250"
+# Look for "Now listening on: http://localhost:5028"
 ```
 
 ### 2. Test Chat
@@ -291,7 +304,7 @@ Now that you're set up, explore these areas:
 
 1. **Run a Full Migration:**
    ```bash
-   # Place COBOL files in source/
+   # Place COBOL files in cobol-source/
    ./doctor.sh run
    ```
 
@@ -382,7 +395,7 @@ ls -lh Data/migration.db
 2. Check Console tab for JavaScript errors
 3. Verify `/api/graph` endpoint returns data:
    ```bash
-   curl http://localhost:5250/api/graph | jq '.nodes | length'
+   curl http://localhost:5028/api/graph | jq '.nodes | length'
    # Should show: 49
    ```
 4. Hard refresh browser (Ctrl+Shift+R or Cmd+Shift+R)
@@ -403,7 +416,7 @@ ls -lh Data/migration.db
 
 You're all set when:
 
-- ✅ Portal loads at http://localhost:5250
+- ✅ Portal loads at http://localhost:5028
 - ✅ Chat responds to queries
 - ✅ Graph displays nodes and edges
 - ✅ File analysis returns detailed data

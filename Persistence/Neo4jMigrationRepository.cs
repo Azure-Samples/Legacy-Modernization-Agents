@@ -211,10 +211,12 @@ public class Neo4jMigrationRepository
 
     public async Task<GraphVisualizationData> GetDependencyGraphDataAsync(int runId)
     {
+        _logger.LogInformation("🔍 Neo4j GetDependencyGraphDataAsync called with runId: {RunId}", runId);
         await using var session = _driver.AsyncSession();
         
         var result = await session.ExecuteReadAsync(async tx =>
         {
+            _logger.LogInformation("🔍 Executing Neo4j query WHERE source.runId = {RunId} AND target.runId = {RunId2}", runId, runId);
             var cursor = await tx.RunAsync(@"
                 MATCH (source:CobolFile)-[d:DEPENDS_ON]->(target:CobolFile)
                 WHERE source.runId = $runId AND target.runId = $runId
@@ -247,6 +249,7 @@ public class Neo4jMigrationRepository
                 });
             }
 
+            _logger.LogInformation("✅ Neo4j query result: {NodeCount} unique nodes, {EdgeCount} edges for runId {RunId}", nodes.Count, edges.Count, runId);
             return new GraphVisualizationData
             {
                 Nodes = nodes.ToList(),
@@ -254,6 +257,31 @@ public class Neo4jMigrationRepository
             };
         });
 
+        return result;
+    }
+
+    public async Task<List<int>> GetAvailableRunsAsync()
+    {
+        await using var session = _driver.AsyncSession();
+        
+        var result = await session.ExecuteReadAsync(async tx =>
+        {
+            var cursor = await tx.RunAsync(@"
+                MATCH (f:CobolFile)
+                WHERE f.runId IS NOT NULL
+                RETURN DISTINCT f.runId as runId
+                ORDER BY runId DESC");
+
+            var runIds = new List<int>();
+            await foreach (var record in cursor)
+            {
+                runIds.Add(record["runId"].As<int>());
+            }
+            
+            return runIds;
+        });
+
+        _logger.LogInformation("Found {Count} runs with graph data in Neo4j", result.Count);
         return result;
     }
 

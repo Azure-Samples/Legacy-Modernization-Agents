@@ -1,9 +1,13 @@
 {
 	"name": "COBOL to Quarkus Migration with Neo4j",
 	"dockerFile": "Dockerfile",
-	"forwardPorts": [5250, 7474, 7687],
+	"forwardPorts": [
+		5028,
+		7474,
+		7687
+	],
 	"portsAttributes": {
-		"5250": {
+		"5028": {
 			"label": "Migration Portal (McpChatWeb)",
 			"onAutoForward": "openBrowser",
 			"protocol": "http"
@@ -71,8 +75,8 @@
 			"version": "lts"
 		}
 	},
-	"postCreateCommand": "bash -c 'dotnet restore && dotnet build && docker-compose up -d neo4j && echo \"✅ Dev container ready! Run ./demo.sh to start the portal.\"'",
-	"postStartCommand": "docker start cobol-migration-neo4j 2>/dev/null || true",
+	"postCreateCommand": "bash -c 'echo \"📦 Installing dependencies...\" && dotnet restore && echo \"🔨 Building project...\" && dotnet build && echo \"🐳 Starting Neo4j...\" && docker-compose up -d neo4j && sleep 5 && docker ps | grep neo4j && echo \"\" && echo \"✅ Dev container ready!\" && echo \"\" && echo \"🚀 Quick Start:\" && echo \"  ./doctor.sh run  - Run migration and auto-start portal\" && echo \"  ./demo.sh        - View existing migration data\" && echo \"\" && echo \"📍 Fixed Ports (cannot change):\" && echo \"  Portal:  http://localhost:5028\" && echo \"  Neo4j:   http://localhost:7474\" && echo \"  Bolt:    bolt://localhost:7687\"'",
+	"postStartCommand": "bash -c 'echo \"♻️  Restarting Neo4j...\" && docker start cobol-migration-neo4j 2>/dev/null || docker-compose up -d neo4j 2>/dev/null || true && sleep 3 && if [ -f \"./Data/migration.db\" ]; then echo \"\" && echo \"📊 Previous migration detected!\" && echo \"\" && echo \"🚀 Auto-starting portal...\" && cd McpChatWeb && nohup dotnet run --urls http://localhost:5028 > /tmp/portal.log 2>&1 & sleep 3 && echo \"✅ Portal running at http://localhost:5028\" && echo \"📊 Neo4j Browser at http://localhost:7474\" && echo \"\" && echo \"💡 Use ./doctor.sh to manage services\"; else echo \"\" && echo \"ℹ️  No previous migration found\" && echo \"Run ./doctor.sh run to start migration\"; fi'",
 	"mounts": [
 		"source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
 	],

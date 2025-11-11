@@ -3,11 +3,13 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using McpChatWeb.Configuration;
 using McpChatWeb.Models;
 using McpChatWeb.Services;
+using Neo4j.Driver;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -471,7 +473,7 @@ app.MapPost("/api/chat", async (ChatRequest request, IMcpClient client, Cancella
    - Status: {(graphAvailable ? "✓ Available" : "⚠ Limited availability")}
    - Nodes: {nodeCount}
    - Edges: {edgeCount}
-   - To query: cypher-shell -u neo4j -p YOUR_NEO4J_PASSWORD
+   - To query: cypher-shell -u neo4j -p cobol-migration-2025
    - Cypher: MATCH (n) WHERE n.runId = {requestedRunId} RETURN n LIMIT 25;
 
 **How to Access Full Data:**
@@ -500,7 +502,7 @@ app.MapPost("/api/chat", async (ChatRequest request, IMcpClient client, Cancella
 
 **To see this data in the UI:**
 1. Use the browser console: `fetch('/api/search/run/{requestedRunId}').then(r => r.json()).then(console.log)`
-2. Or use curl: `curl http://localhost:5250/api/search/run/{requestedRunId} | jq .`
+2. Or use curl: `curl http://localhost:5028/api/search/run/{requestedRunId} | jq .`
 
 Note: The MCP server currently provides detailed analysis only for Run 43. For other runs, use the direct database queries above or the /api/search/run endpoint.";
 
@@ -513,15 +515,100 @@ Note: The MCP server currently provides detailed analysis only for Run 43. For o
 You can still access the data directly:
 • API: GET /api/search/run/{requestedRunId}
 • SQLite: sqlite3 ""Data/migration.db"" ""SELECT * FROM runs WHERE id = {requestedRunId};""
-• Neo4j: cypher-shell -u neo4j -p YOUR_NEO4J_PASSWORD";
+• Neo4j: cypher-shell -u neo4j -p cobol-migration-2025";
 			
 			return Results.Ok(new ChatResponse(errorResponse, requestedRunId));
 		}
 	}
 	
-	// Normal chat flow
-	var normalResponse = await client.SendChatAsync(request.Prompt, cancellationToken);
-	return Results.Ok(new ChatResponse(normalResponse, null));
+	// Normal chat flow - augment with SQLite context for better answers
+	try
+	{
+		// Get context from SQLite database
+		var dbPath = Path.Combine(Directory.GetCurrentDirectory(), "..", "Data", "migration.db");
+		var contextData = "";
+		
+		if (File.Exists(dbPath))
+		{
+			using (var connection = new SqliteConnection($"Data Source={dbPath}"))
+			{
+				await connection.OpenAsync(cancellationToken);
+				
+				// Get run summary
+				using var runCmd = connection.CreateCommand();
+				runCmd.CommandText = "SELECT id, status, started_at FROM runs ORDER BY id DESC LIMIT 5";
+				var runs = new List<string>();
+				using (var reader = await runCmd.ExecuteReaderAsync(cancellationToken))
+				{
+					while (await reader.ReadAsync(cancellationToken))
+					{
+						runs.Add($"Run {reader.GetInt32(0)} ({reader.GetString(1)})");
+					}
+				}
+				if (runs.Count > 0)
+				{
+					contextData += $"Available runs: {string.Join(", ", runs)}\n";
+				}
+				
+				// Get file count and complexity stats
+				using var fileCmd = connection.CreateCommand();
+				fileCmd.CommandText = @"
+					SELECT 
+						COUNT(*) as total_files,
+						SUM(CASE WHEN is_copybook = 1 THEN 1 ELSE 0 END) as copybooks,
+						SUM(CASE WHEN is_copybook = 0 THEN 1 ELSE 0 END) as programs
+					FROM cobol_files";
+				using (var reader = await fileCmd.ExecuteReaderAsync(cancellationToken))
+				{
+					if (await reader.ReadAsync(cancellationToken))
+					{
+						contextData += $"Total COBOL files: {reader.GetInt32(0)} ({reader.GetInt32(2)} programs, {reader.GetInt32(1)} copybooks)\n";
+					}
+				}
+				
+				// Get copybook list if asking about copybooks
+				if (request.Prompt.Contains("copybook", StringComparison.OrdinalIgnoreCase))
+				{
+					using var copybookCmd = connection.CreateCommand();
+					copybookCmd.CommandText = @"
+						SELECT file_name 
+						FROM cobol_files 
+						WHERE is_copybook = 1 
+						LIMIT 20";
+					var copybooks = new List<string>();
+					using (var reader = await copybookCmd.ExecuteReaderAsync(cancellationToken))
+					{
+						while (await reader.ReadAsync(cancellationToken))
+						{
+							copybooks.Add(reader.GetString(0));
+						}
+					}
+					if (copybooks.Count > 0)
+					{
+						contextData += $"\nAvailable copybooks: {string.Join(", ", copybooks)}\n";
+					}
+				}
+			}
+		}
+		
+		// Augment the prompt with SQLite context
+		var augmentedPrompt = request.Prompt;
+		if (!string.IsNullOrEmpty(contextData))
+		{
+			augmentedPrompt = $"CONTEXT FROM DATABASE:\n{contextData}\n\nUSER QUESTION: {request.Prompt}";
+			Console.WriteLine($"💡 Augmented prompt with SQLite context ({contextData.Length} chars)");
+		}
+		
+		var normalResponse = await client.SendChatAsync(augmentedPrompt, cancellationToken);
+		return Results.Ok(new ChatResponse(normalResponse, null));
+	}
+	catch (Exception ex)
+	{
+		Console.WriteLine($"Error augmenting chat with SQLite context: {ex.Message}");
+		// Fallback to MCP only
+		var normalResponse = await client.SendChatAsync(request.Prompt, cancellationToken);
+		return Results.Ok(new ChatResponse(normalResponse, null));
+	}
 });
 
 // Graph endpoint - defaults to current MCP run or accepts specific run ID
@@ -530,10 +617,14 @@ app.MapGet("/api/graph", async (IMcpClient client, int? runId, CancellationToken
 	try
 	{
 		string graphUri;
+		int actualRunId;
+		
 		if (runId.HasValue)
 		{
 			// Use specific run ID
-			graphUri = $"insights://runs/{runId.Value}/graph";
+			actualRunId = runId.Value;
+			graphUri = $"insights://runs/{actualRunId}/graph";
+			Console.WriteLine($"📊 Fetching graph for specific run: {actualRunId}");
 		}
 		else
 		{
@@ -541,15 +632,24 @@ app.MapGet("/api/graph", async (IMcpClient client, int? runId, CancellationToken
 			var resources = await client.ListResourcesAsync(cancellationToken);
 			var graphResource = resources.FirstOrDefault(r => r.Uri.Contains("/graph"));
 			graphUri = graphResource?.Uri ?? "insights://runs/43/graph"; // Fallback to 43
+			
+			// Extract run ID from URI
+			var match = System.Text.RegularExpressions.Regex.Match(graphUri, @"runs/(\d+)/");
+			actualRunId = match.Success ? int.Parse(match.Groups[1].Value) : 43;
+			Console.WriteLine($"📊 Fetching graph for current run: {actualRunId}");
 		}
+		
+		Console.WriteLine($"📊 Graph URI: {graphUri}");
 		
 		// Fetch the actual graph data from MCP
 		var graphJson = await client.ReadResourceAsync(graphUri, cancellationToken);
+		Console.WriteLine($"📦 MCP returned {graphJson?.Length ?? 0} chars for {graphUri}");
 		
 		if (!string.IsNullOrEmpty(graphJson))
 		{
 			// Parse the graph data
 			var graphData = JsonSerializer.Deserialize<JsonObject>(graphJson);
+			Console.WriteLine($"📦 Parsed graph data: {graphData?.ToJsonString()?.Substring(0, Math.Min(200, graphData?.ToJsonString()?.Length ?? 0))}...");
 			
 			// Deduplicate nodes by ID
 			if (graphData != null && graphData.TryGetPropertyValue("nodes", out var nodesValue) && nodesValue is JsonArray nodesArray)
@@ -579,12 +679,19 @@ app.MapGet("/api/graph", async (IMcpClient client, int? runId, CancellationToken
 					deduplicatedArray.Add(node);
 				}
 				graphData["nodes"] = deduplicatedArray;
+				
+				Console.WriteLine($"✅ Graph loaded: {deduplicatedArray.Count} nodes for run {actualRunId}");
 			}
 			
 			// Add metadata about which run this is
 			if (graphData != null)
 			{
-				graphData["runId"] = runId ?? 43;
+				graphData["runId"] = actualRunId;
+				
+				var nodeCount = graphData.TryGetPropertyValue("nodes", out var n) && n is JsonArray na ? na.Count : 0;
+				var edgeCount = graphData.TryGetPropertyValue("edges", out var e) && e is JsonArray ea ? ea.Count : 0;
+				
+				Console.WriteLine($"📊 Returning graph for run {actualRunId}: {nodeCount} nodes, {edgeCount} edges");
 			}
 			
 			return Results.Ok(graphData);
@@ -592,7 +699,7 @@ app.MapGet("/api/graph", async (IMcpClient client, int? runId, CancellationToken
 	}
 	catch (Exception ex)
 	{
-		Console.WriteLine($"Error fetching graph data for run {runId}: {ex.Message}");
+		Console.WriteLine($"❌ Error fetching graph data for run {runId}: {ex.Message}");
 	}
 
 	// Return empty graph if fetch fails
@@ -630,29 +737,46 @@ app.MapGet("/api/runinfo", async (IMcpClient client, CancellationToken cancellat
 	return Results.Ok(new { runId = 0 });
 });
 
-app.MapGet("/api/runs/all", async (IMcpClient client, CancellationToken cancellationToken) =>
+app.MapGet("/api/runs/all", async () =>
 {
 	try
 	{
-		// This would ideally query the database directly, but for now we'll return info from MCP
-		var resources = await client.ListResourcesAsync(cancellationToken);
+		// Query Neo4j to get runs that have graph data
+		var runIds = new List<int>();
 		
-		// Extract unique run IDs from resources
-		var runIds = new HashSet<int>();
-		foreach (var resource in resources)
+		// Use Neo4j.Driver to query directly
+		var neo4jUri = Environment.GetEnvironmentVariable("NEO4J_URI") ?? "bolt://localhost:7687";
+		var neo4jUser = Environment.GetEnvironmentVariable("NEO4J_USER") ?? "neo4j";
+		var neo4jPassword = Environment.GetEnvironmentVariable("NEO4J_PASSWORD") ?? "cobol-migration-2025";
+		
+		using var driver = Neo4j.Driver.GraphDatabase.Driver(neo4jUri, Neo4j.Driver.AuthTokens.Basic(neo4jUser, neo4jPassword));
+		await using var session = driver.AsyncSession();
+		
+		var result = await session.ExecuteReadAsync(async tx =>
 		{
-			var match = System.Text.RegularExpressions.Regex.Match(resource.Uri, @"runs/(\d+)/");
-			if (match.Success)
+			var cursor = await tx.RunAsync(@"
+				MATCH (f:CobolFile)
+				WHERE f.runId IS NOT NULL
+				RETURN DISTINCT f.runId as runId
+				ORDER BY runId DESC");
+			
+			var ids = new List<int>();
+			await foreach (var record in cursor)
 			{
-				runIds.Add(int.Parse(match.Groups[1].Value));
+				ids.Add(record["runId"].As<int>());
 			}
-		}
+			return ids;
+		});
 		
-		return Results.Ok(new { runs = runIds.OrderDescending().ToList() });
+		runIds = result;
+		Console.WriteLine($"📊 Found {runIds.Count} runs with graph data: {string.Join(", ", runIds)}");
+		
+		return Results.Ok(new { runs = runIds });
 	}
 	catch (Exception ex)
 	{
-		Console.WriteLine($"Error getting all runs: {ex.Message}");
+		Console.WriteLine($"❌ Error getting available runs: {ex.Message}");
+		// Fallback to empty list if Neo4j is not available
 		return Results.Ok(new { runs = new List<int>() });
 	}
 });
@@ -797,10 +921,10 @@ app.MapGet("/api/search/run/{runId}", async (int runId, IMcpClient client, Cance
 				},
 				neo4j = new
 				{
-				source = "Neo4j Graph Database",
-				location = "bolt://localhost:7687",
-				credentials = new { username = "neo4j", password = "YOUR_NEO4J_PASSWORD" },
-				data = neo4jData
+					source = "Neo4j Graph Database",
+					location = "bolt://localhost:7687",
+					credentials = new { username = "neo4j", password = "cobol-migration-2025" },
+					data = neo4jData
 				}
 			},
 			howToQuery = new
@@ -817,7 +941,7 @@ app.MapGet("/api/search/run/{runId}", async (int runId, IMcpClient client, Cance
 				},
 				neo4j = new
 				{
-					cypher_shell = $"echo 'MATCH (n) WHERE n.runId = {runId} RETURN n LIMIT 25;' | cypher-shell -u neo4j -p YOUR_NEO4J_PASSWORD",
+					cypher_shell = $"echo 'MATCH (n) WHERE n.runId = {runId} RETURN n LIMIT 25;' | cypher-shell -u neo4j -p cobol-migration-2025",
 					queries = new[]
 					{
 						$"MATCH (n) WHERE n.runId = {runId} RETURN n LIMIT 25;",
@@ -878,11 +1002,11 @@ app.MapGet("/api/data-retrieval-guide", async () =>
 			},
 			new
 			{
-			name = "Neo4j",
-			location = "bolt://localhost:7687",
-			purpose = "Stores dependency graph relationships and file connections",
-			credentials = new { username = "neo4j", password = "YOUR_NEO4J_PASSWORD" },
-			queries = new[]
+				name = "Neo4j",
+				location = "bolt://localhost:7687",
+				purpose = "Stores dependency graph relationships and file connections",
+				credentials = new { username = "neo4j", password = "cobol-migration-2025" },
+				queries = new[]
 				{
 					new { description = "List all runs in Neo4j", cypher = "MATCH (r:Run) RETURN r.runId, r.status, r.totalFiles, r.startedAt ORDER BY r.runId DESC;" },
 					new { description = "Get all files for specific run", cypher = "MATCH (r:Run {runId: $runId})-[:CONTAINS]->(f:CobolFile) RETURN f.fileName, f.fileType;" },
@@ -894,7 +1018,7 @@ app.MapGet("/api/data-retrieval-guide", async () =>
 				{
 					new { name = "Neo4j Browser", url = "http://localhost:7474" },
 					new { name = "Neo4j Desktop", url = "https://neo4j.com/download/" },
-					new { name = "Cypher Shell", command = "cypher-shell -a bolt://localhost:7687 -u neo4j -p YOUR_NEO4J_PASSWORD" }
+					new { name = "Cypher Shell", command = "cypher-shell -a bolt://localhost:7687 -u neo4j -p cobol-migration-2025" }
 				}
 			}
 		},
@@ -936,9 +1060,9 @@ app.MapGet("/api/data-retrieval-guide", async () =>
 				title = "Retrieve Run 43 Graph from Neo4j",
 				steps = new[]
 				{
-				"Open http://localhost:7474 in browser",
-				"Login: neo4j / YOUR_NEO4J_PASSWORD",
-				"Run: MATCH (r:Run {runId: 43})-[:CONTAINS]->(f:CobolFile) RETURN f LIMIT 25;",
+					"Open http://localhost:7474 in browser",
+					"Login: neo4j / cobol-migration-2025",
+					"Run: MATCH (r:Run {runId: 43})-[:CONTAINS]->(f:CobolFile) RETURN f LIMIT 25;",
 					"Visualize dependencies: MATCH path = (r:Run {runId: 43})-[:CONTAINS]->()-[d:DEPENDS_ON]->() RETURN path;"
 				}
 			},
@@ -947,9 +1071,9 @@ app.MapGet("/api/data-retrieval-guide", async () =>
 				title = "Retrieve via MCP API",
 				steps = new[]
 				{
-					"curl http://localhost:5250/api/runs/all",
-					"curl http://localhost:5250/api/runs/43/dependencies | jq '.'",
-					"curl -X POST http://localhost:5250/api/chat -H 'Content-Type: application/json' -d '{\"prompt\":\"Show me all dependencies for run 43\"}'"
+					"curl http://localhost:5028/api/runs/all",
+					"curl http://localhost:5028/api/runs/43/dependencies | jq '.'",
+					"curl -X POST http://localhost:5028/api/chat -H 'Content-Type: application/json' -d '{\"prompt\":\"Show me all dependencies for run 43\"}'"
 				}
 			}
 		}
@@ -957,6 +1081,40 @@ app.MapGet("/api/data-retrieval-guide", async () =>
 	
 	await Task.CompletedTask;
 	return Results.Ok(guide);
+});
+
+app.MapPost("/api/switch-run", async (SwitchRunRequest request, IMcpClient client) =>
+{
+	if (request.RunId <= 0)
+	{
+		return Results.BadRequest(new { error = "Invalid run ID" });
+	}
+
+	try
+	{
+		// Update the MCP client to use the new run ID
+		var mcpClient = client as McpProcessClient;
+		if (mcpClient != null)
+		{
+			// The MCP server uses MCP_RUN_ID environment variable
+			// We need to restart the MCP connection with the new run ID
+			Environment.SetEnvironmentVariable("MCP_RUN_ID", request.RunId.ToString());
+			
+			// Note: In a production system, you'd want to properly handle reconnection
+			// For now, the client will pick up the new run ID on next operation
+		}
+
+		return Results.Ok(new 
+		{ 
+			success = true, 
+			runId = request.RunId,
+			message = $"Switched to run {request.RunId}. Note: You may need to refresh resources to see updated data."
+		});
+	}
+	catch (Exception ex)
+	{
+		return Results.Problem($"Failed to switch run: {ex.Message}");
+	}
 });
 
 app.MapFallbackToFile("index.html");

@@ -77,19 +77,38 @@ class DependencyGraph {
       if (runInfoResponse.ok) {
         const runInfo = await runInfoResponse.json();
         this.runId = runInfo.runId;
-        document.getElementById('current-run-id').textContent = this.runId || 'Unknown';
+        this.updateGraphTitle(this.runId);
+        console.log(`📊 Initial graph load for Run ${this.runId}`);
       }
     } catch (error) {
       console.error('Error fetching run ID:', error);
     }
     
-    await this.loadAndRender();
+    // Pass runId to loadAndRender to ensure correct data is fetched
+    await this.loadAndRender(this.runId);
+  }
+  
+  updateGraphTitle(runId) {
+    const currentRunIdSpan = document.getElementById('current-run-id');
+    const graphRunBadge = document.getElementById('graph-run-badge');
+    
+    if (currentRunIdSpan && runId) {
+      currentRunIdSpan.textContent = runId;
+    }
+    
+    if (graphRunBadge && runId) {
+      graphRunBadge.style.display = 'inline';
+    } else if (graphRunBadge) {
+      graphRunBadge.style.display = 'none';
+    }
   }
 
   async fetchGraphData(runId = null) {
     try {
       // Fetch from the MCP-powered API endpoint with optional runId
       const url = runId ? `/api/graph?runId=${runId}` : '/api/graph';
+      console.log(`🔍 Fetching graph data from: ${url}${runId ? ` (Run ${runId})` : ' (current run)'}`);
+      
       const response = await fetch(url);
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -104,10 +123,17 @@ class DependencyGraph {
       
       const data = await response.json();
       
+      console.log(`📦 Received graph data:`, {
+        requestedRunId: runId,
+        returnedRunId: data.runId,
+        nodeCount: data.nodes?.length || 0,
+        edgeCount: data.edges?.length || 0
+      });
+      
       // Update runId if returned in response
       if (data.runId) {
         this.runId = data.runId;
-        console.log(`📊 Graph data received for Run ${this.runId}`);
+        console.log(`📊 Graph data confirmed for Run ${this.runId}`);
         
         // Update the graph header title
         const graphHeader = document.querySelector('h2');
@@ -177,14 +203,15 @@ class DependencyGraph {
         randomSeed: 42
       },
       'hierarchical': {
-        enabled: true,
-        direction: 'UD',
-        sortMethod: 'directed',
-        nodeSpacing: 150,
-        levelSeparation: 200,
-        blockShifting: true,
-        edgeMinimization: true,
-        parentCentralization: true
+        hierarchical: {
+          enabled: true,
+          direction: 'UD',
+          sortMethod: 'directed',
+          nodeSpacing: 150,
+          levelSeparation: 200,
+          blockShifting: true,
+          edgeMinimization: true
+        }
       }
     };
 
@@ -244,25 +271,53 @@ class DependencyGraph {
     
     console.log(`Graph data: ${graphData.nodes.length} raw nodes, ${deduplicatedNodes.length} unique nodes, ${graphData.edges.length} edges`);
 
-    // Transform data for vis-network
+    // Calculate node importance (number of connections)
+    const nodeConnections = new Map();
+    graphData.edges.forEach(e => {
+      nodeConnections.set(e.source, (nodeConnections.get(e.source) || 0) + 1);
+      nodeConnections.set(e.target, (nodeConnections.get(e.target) || 0) + 1);
+    });
+
+    // Transform data for vis-network with enhanced details
     const nodes = new vis.DataSet(
-      deduplicatedNodes.map(n => ({
-        id: n.id,
-        label: n.label,
-        title: `<strong>${n.label}</strong><br/>Type: ${n.isCopybook ? 'Copybook' : 'Program'}`,
-        color: {
-          background: n.isCopybook ? '#f16667' : '#68bdf6',
-          border: n.isCopybook ? '#dc2626' : '#1d4ed8',
-          highlight: {
-            background: n.isCopybook ? '#fca5a5' : '#93c5fd',
-            border: n.isCopybook ? '#991b1b' : '#1e3a8a'
-          }
-        },
-        font: { color: '#e2e8f0', size: 14 },
-        shape: 'dot',
-        size: 25,
-        isCopybook: n.isCopybook
-      }))
+      deduplicatedNodes.map(n => {
+        const connections = nodeConnections.get(n.id) || 0;
+        const nodeSize = 20 + (connections * 3); // Size based on connections
+        const importance = connections > 5 ? 'Critical' : connections > 2 ? 'Important' : 'Standard';
+        
+        return {
+          id: n.id,
+          label: n.label,
+          title: `${n.label}\nType: ${n.isCopybook ? 'Copybook (.cpy)' : 'Program (.cbl)'}\nDependencies: ${connections}\nPriority: ${importance}`,
+          color: {
+            background: n.isCopybook ? '#f16667' : '#68bdf6',
+            border: n.isCopybook ? '#dc2626' : '#1d4ed8',
+            highlight: {
+              background: n.isCopybook ? '#fca5a5' : '#93c5fd',
+              border: n.isCopybook ? '#991b1b' : '#1e3a8a'
+            }
+          },
+          font: { 
+            color: '#ffffff',
+            size: 12 + Math.min(connections, 8),
+            face: 'system-ui',
+            strokeWidth: 3,
+            strokeColor: '#0f172a'
+          },
+          shape: 'dot',
+          size: nodeSize,
+          borderWidth: 2 + Math.min(connections, 4),
+          shadow: {
+            enabled: true,
+            color: n.isCopybook ? 'rgba(241, 102, 103, 0.5)' : 'rgba(104, 189, 246, 0.5)',
+            size: 10,
+            x: 2,
+            y: 2
+          },
+          isCopybook: n.isCopybook,
+          connections: connections
+        };
+      })
     );
 
     const edges = new vis.DataSet(
@@ -270,13 +325,41 @@ class DependencyGraph {
         id: idx,
         from: e.source,
         to: e.target,
-        label: e.type,
-        title: `${e.type}`,
-        arrows: 'to',
-        color: { color: '#94d486', highlight: '#fbbf24' },
-        width: 2,
-        font: { size: 12, color: '#94a3b8', align: 'top' },
-        smooth: { enabled: true, type: 'dynamic' }
+        label: e.type || 'DEPENDS_ON',
+        title: `${e.type || 'DEPENDS_ON'}\nFrom: ${graphData.nodes.find(n => n.id === e.source)?.label || e.source}\nTo: ${graphData.nodes.find(n => n.id === e.target)?.label || e.target}`,
+        arrows: {
+          to: {
+            enabled: true,
+            scaleFactor: 0.8,
+            type: 'arrow'
+          }
+        },
+        color: { 
+          color: '#94d486',
+          highlight: '#fbbf24',
+          hover: '#10b981',
+          opacity: 0.8
+        },
+        width: 2.5,
+        font: { 
+          size: 11,
+          color: '#a8dadc',
+          align: 'horizontal',
+          background: 'rgba(15, 23, 42, 0.8)',
+          strokeWidth: 0
+        },
+        smooth: { 
+          enabled: true,
+          type: 'dynamic',
+          roundness: 0.5
+        },
+        shadow: {
+          enabled: true,
+          color: 'rgba(148, 212, 134, 0.3)',
+          size: 5,
+          x: 1,
+          y: 1
+        }
       }))
     );
 
@@ -284,15 +367,35 @@ class DependencyGraph {
 
     const options = {
       nodes: {
-        borderWidth: 2,
-        shadow: true
+        borderWidth: 3,
+        shadow: {
+          enabled: true,
+          color: 'rgba(0, 0, 0, 0.5)',
+          size: 10,
+          x: 3,
+          y: 3
+        },
+        shapeProperties: {
+          interpolation: true
+        },
+        scaling: {
+          min: 20,
+          max: 60,
+          label: {
+            enabled: true,
+            min: 12,
+            max: 20
+          }
+        }
       },
       edges: {
         smooth: {
           enabled: true,
           type: 'dynamic',
           roundness: 0.5
-        }
+        },
+        hoverWidth: 1.5,
+        selectionWidth: 2
       },
       layout: this.getVisLayoutConfig(),
       physics: this.currentLayout === 'force' ? {
@@ -331,7 +434,13 @@ class DependencyGraph {
     // Event handlers
     this.network.on('stabilizationIterationsDone', () => {
       this.network.setOptions({ physics: false });
-      this.updateInfo(`Graph loaded: ${graphData.nodes.length} nodes, ${graphData.edges.length} dependencies`);
+      
+      // Calculate statistics
+      const programs = deduplicatedNodes.filter(n => !n.isCopybook).length;
+      const copybooks = deduplicatedNodes.filter(n => n.isCopybook).length;
+      const avgConnections = Array.from(nodeConnections.values()).reduce((a, b) => a + b, 0) / deduplicatedNodes.length;
+      
+      this.updateInfo(`📊 Graph: ${deduplicatedNodes.length} nodes (${programs} programs, ${copybooks} copybooks) • ${graphData.edges.length} dependencies • Avg ${avgConnections.toFixed(1)} connections/node`);
     });
 
     this.network.on('click', (params) => {
@@ -356,17 +465,48 @@ class DependencyGraph {
     
     if (!detailsPanel || !detailsContent) return;
     
-    let html = '<table class="details-table">';
-    html += `<tr><th colspan="2">${node.label || 'Unknown'}</th></tr>`;
-    html += `<tr><td>Type</td><td>${node.isCopybook ? 'Copybook' : 'Program'}</td></tr>`;
+    const typeIcon = node.isCopybook ? '📚' : '⚙️';
+    const typeColor = node.isCopybook ? '#f16667' : '#68bdf6';
+    const priorityText = node.connections > 5 ? 'Critical' : node.connections > 2 ? 'Important' : 'Standard';
+    const priorityColor = node.connections > 5 ? '#f87171' : node.connections > 2 ? '#fbbf24' : '#10b981';
     
-    // Get connections
+    let html = '<table class="details-table">';
+    html += `<tr><th colspan="2" style="background: ${typeColor}; color: white;">${typeIcon} ${node.label || 'Unknown'}</th></tr>`;
+    html += `<tr><td>File Type</td><td style="color: ${typeColor}; font-weight: 600;">${node.isCopybook ? 'COBOL Copybook (.cpy)' : 'COBOL Program (.cbl)'}</td></tr>`;
+    
+    // Get dependency information
     if (this.network) {
       const connectedEdges = this.network.getConnectedEdges(node.id);
-      html += `<tr><td>Connections</td><td>${connectedEdges.length}</td></tr>`;
+      const connectedNodeIds = this.network.getConnectedNodes(node.id);
       
-      const connectedNodes = this.network.getConnectedNodes(node.id);
-      html += `<tr><td>Connected Files</td><td>${connectedNodes.length}</td></tr>`;
+      // Separate incoming and outgoing dependencies
+      const edges = this.network.body.data.edges;
+      let dependsOn = 0;
+      let usedBy = 0;
+      
+      connectedEdges.forEach(edgeId => {
+        const edge = edges.get(edgeId);
+        if (edge) {
+          if (edge.from === node.id) dependsOn++;
+          if (edge.to === node.id) usedBy++;
+        }
+      });
+      
+      html += `<tr><td>Total Dependencies</td><td style="color: #10b981; font-weight: bold;">${connectedEdges.length}</td></tr>`;
+      html += `<tr><td>Uses (COPY/CALL)</td><td style="color: #38bdf8;">${dependsOn} files</td></tr>`;
+      html += `<tr><td>Used By</td><td style="color: #fbbf24;">${usedBy} files</td></tr>`;
+      html += `<tr><td>Impact Level</td><td style="color: ${priorityColor}; font-weight: 600;">${priorityText}</td></tr>`;
+      
+      // Show description based on type
+      if (node.isCopybook) {
+        html += `<tr><td colspan="2" style="padding-top: 8px; font-size: 11px; color: #94a3b8; border-top: 1px solid rgba(59, 130, 246, 0.2);">
+          Copybooks are reusable code modules included via COPY statements. High usage indicates critical shared data structures or common routines.
+        </td></tr>`;
+      } else {
+        html += `<tr><td colspan="2" style="padding-top: 8px; font-size: 11px; color: #94a3b8; border-top: 1px solid rgba(59, 130, 246, 0.2);">
+          Programs are executable COBOL modules. Dependencies show which copybooks and subprograms are used.
+        </td></tr>`;
+      }
     }
     
     html += '</table>';
