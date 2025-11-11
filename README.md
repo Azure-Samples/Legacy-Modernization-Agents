@@ -299,27 +299,27 @@ sequenceDiagram
         end
     end
     
-    alt Target includes C#
-        Note over Process: Step 4b: C# Conversion
+    alt Target includes C
+        Note over Process: Step 4b: C Conversion
         loop For each analyzed file
             Process->>Agents: CSharpConverterAgent.ConvertToCSharpAsync()
-            Agents->>AI: Convert COBOL to C# .NET
-            AI-->>Agents: C# code
+            Agents->>AI: Convert COBOL to C .NET
+            AI-->>Agents: C code
             Agents-->>Process: CSharpFile object
-            Process->>Logs: Log C# conversion progress
+            Process->>Logs: Log C conversion progress
         end
         
-        Note over Process: Step 5b: C# Validation
-        loop For each C# file
+        Note over Process: Step 5b: C Validation
+        loop For each C file
             Process->>Agents: ValidationAgent.ValidateConversionAsync()
-            Agents->>AI: Validate C# code completeness & consistency
+            Agents->>AI: Validate C code completeness & consistency
             AI-->>Agents: Validation results
             Agents-->>Process: ValidationReport
             Process->>Logs: Log validation metrics
         end
         
-        Note over Process: Step 6b: C# Unit Test Generation
-        loop For each C# file
+        Note over Process: Step 6b: C Unit Test Generation
+        loop For each C file
             Process->>Agents: UnitTestAgent.GenerateUnitTestsAsync()
             Agents->>AI: Generate xUnit + Moq tests
             AI-->>Agents: Test code
@@ -327,13 +327,13 @@ sequenceDiagram
             Process->>Logs: Log test generation progress
         end
         
-        Note over Process: Step 7b: C# Test Report
+        Note over Process: Step 7b: C Test Report
         Process->>Agents: UnitTestAgent.GenerateTestReportAsync()
         Agents-->>Process: UnitTestReport with metrics
         Process->>Files: Save unit-test-report.md (C#)
         
-        Note over Process: Step 8b: C# File Generation
-        loop For each C# file + test
+        Note over Process: Step 8b: C File Generation
+        loop For each C file + test
             Process->>Files: Save to csharp-output/
             Files-->>Process: Confirmation
             Process->>Logs: Log file save progress
