@@ -76,9 +76,8 @@ Config/appsettings.secrets.json
 # =============================================================================
 
 # COBOL Source Files (Contains proprietary business logic)
-cobol-source/*
-!cobol-source/.gitkeep
-COBOL-Source/
+source/*
+!source/.gitkeep
 cobol-files/
 *.cbl
 *.cpy
