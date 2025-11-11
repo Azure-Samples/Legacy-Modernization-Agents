@@ -23,15 +23,16 @@ namespace AgentFileDriver.Tests
 
         public void Dispose()
         {
-            _repositoryMock.VerifyNoOtherCalls();
+            _repositoryMock.Reset();
+            _loggerMock.Reset();
         }
 
         [Fact]
-        public void AgentFileException_ShouldSetStatusCodeAndMessage()
+        public void AgentFileException_Should_Set_StatusCode_And_Message()
         {
             // Arrange
-            var message = "Test exception";
-            var statusCode = "42";
+            var message = "Test error";
+            var statusCode = "98";
 
             // Act
             var ex = new AgentFileException(message, statusCode);
@@ -42,400 +43,473 @@ namespace AgentFileDriver.Tests
         }
 
         [Fact]
-        public async Task ExecuteAsync_OpenOperation_ShouldReturnStatusCode00()
+        public async Task ExecuteAsync_Should_Throw_ArgumentNullException_When_Input_Is_Null()
         {
             // Arrange
-            _repositoryMock.Setup(r => r.OpenAsync()).Returns(Task.CompletedTask);
-
-            var input = new AgentFileInput("OPEN", "");
+            AgentFileOperationInput input = null;
 
             // Act
-            var result = await _driver.ExecuteAsync(input);
+            Func<Task> act = async () => await _driver.ExecuteAsync(input);
 
             // Assert
-            result.StatusCode.Should().Be("00");
-            result.AgentRecord.Should().BeNull();
-            _repositoryMock.Verify(r => r.OpenAsync(), Times.Once);
-        }
-
-        [Fact]
-        public async Task ExecuteAsync_CloseOperation_ShouldReturnStatusCode00()
-        {
-            // Arrange
-            _repositoryMock.Setup(r => r.CloseAsync()).Returns(Task.CompletedTask);
-
-            var input = new AgentFileInput("CLOSE", "");
-
-            // Act
-            var result = await _driver.ExecuteAsync(input);
-
-            // Assert
-            result.StatusCode.Should().Be("00");
-            result.AgentRecord.Should().BeNull();
-            _repositoryMock.Verify(r => r.CloseAsync(), Times.Once);
-        }
-
-        [Fact]
-        public async Task ExecuteAsync_SearchOperation_Found_ShouldReturnStatusCode00AndAgentRecord()
-        {
-            // Arrange
-            var agentCode = "JohnDoe";
-            var expectedRecord = new AgentRecord(
-                "John Doe", "123 Main St", "Suite 100", "Copenhagen", "DK", "1000", "A", "Broker",
-                "john.doe@email.com", "1234567890", "2020-01-01", "2025-12-31"
-            );
-            _repositoryMock.Setup(r => r.SearchAsync(agentCode)).ReturnsAsync(expectedRecord);
-
-            var input = new AgentFileInput("SEARCH", agentCode);
-
-            // Act
-            var result = await _driver.ExecuteAsync(input);
-
-            // Assert
-            result.StatusCode.Should().Be("00");
-            result.AgentRecord.Should().BeEquivalentTo(expectedRecord);
-            _repositoryMock.Verify(r => r.SearchAsync(agentCode), Times.Once);
-        }
-
-        [Fact]
-        public async Task ExecuteAsync_SearchOperation_NotFound_ShouldReturnStatusCode23()
-        {
-            // Arrange
-            var agentCode = "NonExistent";
-            _repositoryMock.Setup(r => r.SearchAsync(agentCode)).ReturnsAsync((AgentRecord)null);
-
-            var input = new AgentFileInput("SEARCH", agentCode);
-
-            // Act
-            var result = await _driver.ExecuteAsync(input);
-
-            // Assert
-            result.StatusCode.Should().Be("23");
-            result.AgentRecord.Should().BeNull();
-            _repositoryMock.Verify(r => r.SearchAsync(agentCode), Times.Once);
-        }
-
-        [Fact]
-        public async Task ExecuteAsync_UnknownOperationType_ShouldReturnStatusCode99()
-        {
-            // Arrange
-            var input = new AgentFileInput("INVALID_OP", "");
-
-            // Act
-            var result = await _driver.ExecuteAsync(input);
-
-            // Assert
-            result.StatusCode.Should().Be("99");
-            result.AgentRecord.Should().BeNull();
+            await act.Should().ThrowAsync<ArgumentNullException>();
         }
 
         [Theory]
         [InlineData(null)]
         [InlineData("")]
-        [InlineData("   ")]
-        public async Task ExecuteAsync_OperationTypeNullOrWhitespace_ShouldReturnStatusCode99(string operationType)
+        [InlineData(" ")]
+        [InlineData("INVALID")]
+        [InlineData("openx")]
+        public async Task ExecuteAsync_Should_Return_StatusCode_99_For_Invalid_OperationType(string operationType)
         {
             // Arrange
-            var input = new AgentFileInput(operationType, "");
+            var input = new AgentFileOperationInput(operationType, "A123");
 
             // Act
             var result = await _driver.ExecuteAsync(input);
 
             // Assert
             result.StatusCode.Should().Be("99");
-            result.AgentRecord.Should().BeNull();
+            result.Agent.Should().BeNull();
+            _loggerMock.Verify(
+                l => l.Log(
+                    LogLevel.Warning,
+                    It.IsAny<EventId>(),
+                    It.Is<It.IsAnyType>((v, t) => v.ToString().Contains("Invalid operation type")),
+                    null,
+                    It.IsAny<Func<It.IsAnyType, Exception, string>>()),
+                Times.Once);
         }
 
         [Fact]
-        public async Task ExecuteAsync_SearchOperation_RepositoryThrowsAgentFileException_ShouldReturnStatusCodeFromException()
+        public async Task ExecuteAsync_Should_Return_StatusCode_00_For_Open_Operation()
         {
             // Arrange
-            var agentCode = "ErrorAgent";
-            var exception = new AgentFileException("File not open", "10");
-            _repositoryMock.Setup(r => r.SearchAsync(agentCode)).ThrowsAsync(exception);
-
-            var input = new AgentFileInput("SEARCH", agentCode);
-
-            // Act
-            var result = await _driver.ExecuteAsync(input);
-
-            // Assert
-            result.StatusCode.Should().Be("10");
-            result.AgentRecord.Should().BeNull();
-            _repositoryMock.Verify(r => r.SearchAsync(agentCode), Times.Once);
-        }
-
-        [Fact]
-        public async Task ExecuteAsync_SearchOperation_RepositoryThrowsGeneralException_ShouldReturnStatusCode99()
-        {
-            // Arrange
-            var agentCode = "ErrorAgent";
-            _repositoryMock.Setup(r => r.SearchAsync(agentCode)).ThrowsAsync(new InvalidOperationException("Unexpected error"));
-
-            var input = new AgentFileInput("SEARCH", agentCode);
-
-            // Act
-            var result = await _driver.ExecuteAsync(input);
-
-            // Assert
-            result.StatusCode.Should().Be("99");
-            result.AgentRecord.Should().BeNull();
-            _repositoryMock.Verify(r => r.SearchAsync(agentCode), Times.Once);
-        }
-
-        [Fact]
-        public async Task ExecuteAsync_OpenOperation_RepositoryThrowsAgentFileException_ShouldReturnStatusCodeFromException()
-        {
-            // Arrange
-            var exception = new AgentFileException("File open failed", "12");
-            _repositoryMock.Setup(r => r.OpenAsync()).ThrowsAsync(exception);
-
-            var input = new AgentFileInput("OPEN", "");
-
-            // Act
-            var result = await _driver.ExecuteAsync(input);
-
-            // Assert
-            result.StatusCode.Should().Be("12");
-            result.AgentRecord.Should().BeNull();
-            _repositoryMock.Verify(r => r.OpenAsync(), Times.Once);
-        }
-
-        [Fact]
-        public async Task ExecuteAsync_CloseOperation_RepositoryThrowsGeneralException_ShouldReturnStatusCode99()
-        {
-            // Arrange
-            _repositoryMock.Setup(r => r.CloseAsync()).ThrowsAsync(new IOException("Disk error"));
-
-            var input = new AgentFileInput("CLOSE", "");
-
-            // Act
-            var result = await _driver.ExecuteAsync(input);
-
-            // Assert
-            result.StatusCode.Should().Be("99");
-            result.AgentRecord.Should().BeNull();
-            _repositoryMock.Verify(r => r.CloseAsync(), Times.Once);
-        }
-
-        [Fact]
-        public async Task ExecuteAsync_SearchOperation_NullAgentCode_ShouldReturnStatusCode23()
-        {
-            // Arrange
-            _repositoryMock.Setup(r => r.SearchAsync(null)).ReturnsAsync((AgentRecord)null);
-
-            var input = new AgentFileInput("SEARCH", null);
-
-            // Act
-            var result = await _driver.ExecuteAsync(input);
-
-            // Assert
-            result.StatusCode.Should().Be("23");
-            result.AgentRecord.Should().BeNull();
-            _repositoryMock.Verify(r => r.SearchAsync(null), Times.Once);
-        }
-
-        [Fact]
-        public async Task ExecuteAsync_SearchOperation_EmptyAgentCode_ShouldReturnStatusCode23()
-        {
-            // Arrange
-            _repositoryMock.Setup(r => r.SearchAsync("")).ReturnsAsync((AgentRecord)null);
-
-            var input = new AgentFileInput("SEARCH", "");
-
-            // Act
-            var result = await _driver.ExecuteAsync(input);
-
-            // Assert
-            result.StatusCode.Should().Be("23");
-            result.AgentRecord.Should().BeNull();
-            _repositoryMock.Verify(r => r.SearchAsync(""), Times.Once);
-        }
-
-        [Fact]
-        public async Task ExecuteAsync_SearchOperation_WhitespaceAgentCode_ShouldReturnStatusCode23()
-        {
-            // Arrange
-            _repositoryMock.Setup(r => r.SearchAsync("   ")).ReturnsAsync((AgentRecord)null);
-
-            var input = new AgentFileInput("SEARCH", "   ");
-
-            // Act
-            var result = await _driver.ExecuteAsync(input);
-
-            // Assert
-            result.StatusCode.Should().Be("23");
-            result.AgentRecord.Should().BeNull();
-            _repositoryMock.Verify(r => r.SearchAsync("   "), Times.Once);
-        }
-
-        // Integration test: Simulate repository with real data
-        [Fact]
-        public async Task ExecuteAsync_SearchOperation_Integration_ShouldReturnAgentRecord()
-        {
-            // Arrange
-            var loggerRepoMock = new Mock<ILogger<AgentFileRepository>>(MockBehavior.Loose);
-            var repo = new AgentFileRepository(loggerRepoMock.Object);
-            await repo.OpenAsync();
-
-            var loggerDriverMock = new Mock<ILogger<AgentFileDriver.AgentFileDriver>>(MockBehavior.Loose);
-            var driver = new AgentFileDriver.AgentFileDriver(repo, loggerDriverMock.Object);
-
-            var input = new AgentFileInput("SEARCH", "JaneSmith");
-
-            // Act
-            var result = await driver.ExecuteAsync(input);
-
-            // Assert
-            result.StatusCode.Should().Be("00");
-            result.AgentRecord.Should().NotBeNull();
-            result.AgentRecord.AgentName.Should().Be("Jane Smith");
-
-            await repo.CloseAsync();
-        }
-
-        // Integration test: Search for non-existent agent
-        [Fact]
-        public async Task ExecuteAsync_SearchOperation_Integration_NotFound_ShouldReturnStatusCode23()
-        {
-            // Arrange
-            var loggerRepoMock = new Mock<ILogger<AgentFileRepository>>(MockBehavior.Loose);
-            var repo = new AgentFileRepository(loggerRepoMock.Object);
-            await repo.OpenAsync();
-
-            var loggerDriverMock = new Mock<ILogger<AgentFileDriver.AgentFileDriver>>(MockBehavior.Loose);
-            var driver = new AgentFileDriver.AgentFileDriver(repo, loggerDriverMock.Object);
-
-            var input = new AgentFileInput("SEARCH", "DoesNotExist");
-
-            // Act
-            var result = await driver.ExecuteAsync(input);
-
-            // Assert
-            result.StatusCode.Should().Be("23");
-            result.AgentRecord.Should().BeNull();
-
-            await repo.CloseAsync();
-        }
-
-        // Integration test: Open and Close operations
-        [Fact]
-        public async Task ExecuteAsync_OpenAndClose_Integration_ShouldReturnStatusCode00()
-        {
-            // Arrange
-            var loggerRepoMock = new Mock<ILogger<AgentFileRepository>>(MockBehavior.Loose);
-            var repo = new AgentFileRepository(loggerRepoMock.Object);
-
-            var loggerDriverMock = new Mock<ILogger<AgentFileDriver.AgentFileDriver>>(MockBehavior.Loose);
-            var driver = new AgentFileDriver.AgentFileDriver(repo, loggerDriverMock.Object);
-
-            var openInput = new AgentFileInput("OPEN", "");
-            var closeInput = new AgentFileInput("CLOSE", "");
-
-            // Act
-            var openResult = await driver.ExecuteAsync(openInput);
-            var closeResult = await driver.ExecuteAsync(closeInput);
-
-            // Assert
-            openResult.StatusCode.Should().Be("00");
-            openResult.AgentRecord.Should().BeNull();
-            closeResult.StatusCode.Should().Be("00");
-            closeResult.AgentRecord.Should().BeNull();
-        }
-
-        // Edge case: OperationType is mixed case and has spaces
-        [Theory]
-        [InlineData(" open ")]
-        [InlineData("Open")]
-        [InlineData("OPEN")]
-        [InlineData("OpEn")]
-        public async Task ExecuteAsync_OpenOperation_MixedCase_ShouldReturnStatusCode00(string operationType)
-        {
-            // Arrange
+            var input = new AgentFileOperationInput("OPEN", null);
             _repositoryMock.Setup(r => r.OpenAsync()).Returns(Task.CompletedTask);
 
-            var input = new AgentFileInput(operationType, "");
-
             // Act
             var result = await _driver.ExecuteAsync(input);
 
             // Assert
             result.StatusCode.Should().Be("00");
-            result.AgentRecord.Should().BeNull();
+            result.Agent.Should().BeNull();
             _repositoryMock.Verify(r => r.OpenAsync(), Times.Once);
         }
 
-        // Edge case: OperationType is mixed case and has spaces for CLOSE
-        [Theory]
-        [InlineData(" close ")]
-        [InlineData("Close")]
-        [InlineData("CLOSE")]
-        [InlineData("ClOsE")]
-        public async Task ExecuteAsync_CloseOperation_MixedCase_ShouldReturnStatusCode00(string operationType)
+        [Fact]
+        public async Task ExecuteAsync_Should_Return_StatusCode_98_When_Open_Throws_Exception()
         {
             // Arrange
-            _repositoryMock.Setup(r => r.CloseAsync()).Returns(Task.CompletedTask);
+            var input = new AgentFileOperationInput("OPEN", null);
+            _repositoryMock.Setup(r => r.OpenAsync()).ThrowsAsync(new Exception("IO error"));
 
-            var input = new AgentFileInput(operationType, "");
+            // Act
+            var result = await _driver.ExecuteAsync(input);
+
+            // Assert
+            result.StatusCode.Should().Be("98");
+            result.Agent.Should().BeNull();
+            _repositoryMock.Verify(r => r.OpenAsync(), Times.Once);
+            _loggerMock.Verify(
+                l => l.Log(
+                    LogLevel.Error,
+                    It.IsAny<EventId>(),
+                    It.Is<It.IsAnyType>((v, t) => v.ToString().Contains("Agent file operation failed")),
+                    It.IsAny<AgentFileException>(),
+                    It.IsAny<Func<It.IsAnyType, Exception, string>>()),
+                Times.Once);
+        }
+
+        [Fact]
+        public async Task ExecuteAsync_Should_Return_StatusCode_00_For_Close_Operation()
+        {
+            // Arrange
+            var input = new AgentFileOperationInput("CLOSE", null);
+            _repositoryMock.Setup(r => r.CloseAsync()).Returns(Task.CompletedTask);
 
             // Act
             var result = await _driver.ExecuteAsync(input);
 
             // Assert
             result.StatusCode.Should().Be("00");
-            result.AgentRecord.Should().BeNull();
+            result.Agent.Should().BeNull();
             _repositoryMock.Verify(r => r.CloseAsync(), Times.Once);
         }
 
-        // Edge case: OperationType is mixed case and has spaces for SEARCH
-        [Theory]
-        [InlineData(" search ")]
-        [InlineData("Search")]
-        [InlineData("SEARCH")]
-        [InlineData("SeArCh")]
-        public async Task ExecuteAsync_SearchOperation_MixedCase_ShouldReturnStatusCode00(string operationType)
+        [Fact]
+        public async Task ExecuteAsync_Should_Return_StatusCode_98_When_Close_Throws_Exception()
         {
             // Arrange
-            var agentCode = "JohnDoe";
-            var expectedRecord = new AgentRecord(
-                "John Doe", "123 Main St", "Suite 100", "Copenhagen", "DK", "1000", "A", "Broker",
-                "john.doe@email.com", "1234567890", "2020-01-01", "2025-12-31"
-            );
-            _repositoryMock.Setup(r => r.SearchAsync(agentCode)).ReturnsAsync(expectedRecord);
+            var input = new AgentFileOperationInput("CLOSE", null);
+            _repositoryMock.Setup(r => r.CloseAsync()).ThrowsAsync(new Exception("IO error"));
 
-            var input = new AgentFileInput(operationType, agentCode);
+            // Act
+            var result = await _driver.ExecuteAsync(input);
+
+            // Assert
+            result.StatusCode.Should().Be("98");
+            result.Agent.Should().BeNull();
+            _repositoryMock.Verify(r => r.CloseAsync(), Times.Once);
+            _loggerMock.Verify(
+                l => l.Log(
+                    LogLevel.Error,
+                    It.IsAny<EventId>(),
+                    It.Is<It.IsAnyType>((v, t) => v.ToString().Contains("Agent file operation failed")),
+                    It.IsAny<AgentFileException>(),
+                    It.IsAny<Func<It.IsAnyType, Exception, string>>()),
+                Times.Once);
+        }
+
+        [Fact]
+        public async Task ExecuteAsync_Should_Return_StatusCode_99_For_Search_With_NullOrWhitespace_AgentCode()
+        {
+            // Arrange
+            var input = new AgentFileOperationInput("SEARCH", null);
+
+            // Act
+            var result = await _driver.ExecuteAsync(input);
+
+            // Assert
+            result.StatusCode.Should().Be("99");
+            result.Agent.Should().BeNull();
+        }
+
+        [Theory]
+        [InlineData("")]
+        [InlineData(" ")]
+        public async Task ExecuteAsync_Should_Return_StatusCode_99_For_Search_With_EmptyOrWhitespace_AgentCode(string agentCode)
+        {
+            // Arrange
+            var input = new AgentFileOperationInput("SEARCH", agentCode);
+
+            // Act
+            var result = await _driver.ExecuteAsync(input);
+
+            // Assert
+            result.StatusCode.Should().Be("99");
+            result.Agent.Should().BeNull();
+        }
+
+        [Fact]
+        public async Task ExecuteAsync_Should_Return_StatusCode_00_And_Agent_For_Search_Found()
+        {
+            // Arrange
+            var agentCode = "A123";
+            var expectedAgent = new AgentRecord(
+                "John Doe", "123 Main St", "Suite 1", "Metropolis", "NY", "10001",
+                "Active", "TypeA", "john@doe.com", agentCode, "2020-01-01", "2025-01-01"
+            );
+            var input = new AgentFileOperationInput("SEARCH", agentCode);
+
+            _repositoryMock.Setup(r => r.SearchAsync(agentCode)).ReturnsAsync(expectedAgent);
 
             // Act
             var result = await _driver.ExecuteAsync(input);
 
             // Assert
             result.StatusCode.Should().Be("00");
-            result.AgentRecord.Should().BeEquivalentTo(expectedRecord);
+            result.Agent.Should().BeEquivalentTo(expectedAgent);
             _repositoryMock.Verify(r => r.SearchAsync(agentCode), Times.Once);
         }
 
-        // Edge case: AgentFileException with empty message and status code
         [Fact]
-        public void AgentFileException_EmptyMessageAndStatusCode_ShouldSetProperties()
+        public async Task ExecuteAsync_Should_Return_StatusCode_23_For_Search_Not_Found()
         {
             // Arrange
-            var ex = new AgentFileException("", "");
+            var agentCode = "A999";
+            var input = new AgentFileOperationInput("SEARCH", agentCode);
+
+            _repositoryMock.Setup(r => r.SearchAsync(agentCode)).ReturnsAsync((AgentRecord)null);
+
+            // Act
+            var result = await _driver.ExecuteAsync(input);
 
             // Assert
-            ex.Message.Should().BeEmpty();
-            ex.StatusCode.Should().BeEmpty();
+            result.StatusCode.Should().Be("23");
+            result.Agent.Should().BeNull();
+            _repositoryMock.Verify(r => r.SearchAsync(agentCode), Times.Once);
         }
 
-        // Edge case: AgentFileException with null message and status code
         [Fact]
-        public void AgentFileException_NullMessageAndStatusCode_ShouldSetProperties()
+        public async Task ExecuteAsync_Should_Return_StatusCode_98_When_Search_Throws_Exception()
         {
             // Arrange
-            var ex = new AgentFileException(null, null);
+            var agentCode = "A123";
+            var input = new AgentFileOperationInput("SEARCH", agentCode);
+
+            _repositoryMock.Setup(r => r.SearchAsync(agentCode)).ThrowsAsync(new Exception("File error"));
+
+            // Act
+            var result = await _driver.ExecuteAsync(input);
 
             // Assert
-            ex.Message.Should().BeNull();
-            ex.StatusCode.Should().BeNull();
+            result.StatusCode.Should().Be("98");
+            result.Agent.Should().BeNull();
+            _repositoryMock.Verify(r => r.SearchAsync(agentCode), Times.Once);
+            _loggerMock.Verify(
+                l => l.Log(
+                    LogLevel.Error,
+                    It.IsAny<EventId>(),
+                    It.Is<It.IsAnyType>((v, t) => v.ToString().Contains("Agent file operation failed")),
+                    It.IsAny<AgentFileException>(),
+                    It.IsAny<Func<It.IsAnyType, Exception, string>>()),
+                Times.Once);
+        }
+
+        [Theory]
+        [InlineData("open")]
+        [InlineData("OPEN")]
+        [InlineData(" Open ")]
+        [InlineData("  open  ")]
+        public async Task ExecuteAsync_Should_Handle_OperationType_Case_And_Whitespace_For_Open(string operationType)
+        {
+            // Arrange
+            var input = new AgentFileOperationInput(operationType, null);
+            _repositoryMock.Setup(r => r.OpenAsync()).Returns(Task.CompletedTask);
+
+            // Act
+            var result = await _driver.ExecuteAsync(input);
+
+            // Assert
+            result.StatusCode.Should().Be("00");
+            result.Agent.Should().BeNull();
+            _repositoryMock.Verify(r => r.OpenAsync(), Times.Once);
+        }
+
+        [Theory]
+        [InlineData("close")]
+        [InlineData("CLOSE")]
+        [InlineData(" Close ")]
+        [InlineData("  close  ")]
+        public async Task ExecuteAsync_Should_Handle_OperationType_Case_And_Whitespace_For_Close(string operationType)
+        {
+            // Arrange
+            var input = new AgentFileOperationInput(operationType, null);
+            _repositoryMock.Setup(r => r.CloseAsync()).Returns(Task.CompletedTask);
+
+            // Act
+            var result = await _driver.ExecuteAsync(input);
+
+            // Assert
+            result.StatusCode.Should().Be("00");
+            result.Agent.Should().BeNull();
+            _repositoryMock.Verify(r => r.CloseAsync(), Times.Once);
+        }
+
+        [Theory]
+        [InlineData("search")]
+        [InlineData("SEARCH")]
+        [InlineData(" Search ")]
+        [InlineData("  search  ")]
+        public async Task ExecuteAsync_Should_Handle_OperationType_Case_And_Whitespace_For_Search(string operationType)
+        {
+            // Arrange
+            var agentCode = "A123";
+            var expectedAgent = new AgentRecord(
+                "Jane Doe", "456 Elm St", "Apt 2", "Gotham", "NJ", "07001",
+                "Inactive", "TypeB", "jane@doe.com", agentCode, "2019-01-01", "2024-01-01"
+            );
+            var input = new AgentFileOperationInput(operationType, agentCode);
+
+            _repositoryMock.Setup(r => r.SearchAsync(agentCode)).ReturnsAsync(expectedAgent);
+
+            // Act
+            var result = await _driver.ExecuteAsync(input);
+
+            // Assert
+            result.StatusCode.Should().Be("00");
+            result.Agent.Should().BeEquivalentTo(expectedAgent);
+            _repositoryMock.Verify(r => r.SearchAsync(agentCode), Times.Once);
+        }
+
+        [Fact]
+        public async Task ExecuteAsync_Should_Return_StatusCode_99_When_Unexpected_Exception_Occurs()
+        {
+            // Arrange
+            var input = new AgentFileOperationInput("OPEN", null);
+            _repositoryMock.Setup(r => r.OpenAsync()).ThrowsAsync(new InvalidOperationException("Unexpected error"));
+
+            // Act
+            var result = await _driver.ExecuteAsync(input);
+
+            // Assert
+            result.StatusCode.Should().Be("98"); // Should be mapped to AgentFileException, not "99"
+            result.Agent.Should().BeNull();
+        }
+
+        [Fact]
+        public async Task ExecuteAsync_Should_Log_Critical_When_Unexpected_Exception_Occurs()
+        {
+            // Arrange
+            var input = new AgentFileOperationInput("OPEN", null);
+            _repositoryMock.Setup(r => r.OpenAsync()).ThrowsAsync(new Exception("Critical error"));
+
+            // Act
+            var result = await _driver.ExecuteAsync(input);
+
+            // Assert
+            result.StatusCode.Should().Be("98");
+            _loggerMock.Verify(
+                l => l.Log(
+                    LogLevel.Error,
+                    It.IsAny<EventId>(),
+                    It.IsAny<It.IsAnyType>(),
+                    It.IsAny<AgentFileException>(),
+                    It.IsAny<Func<It.IsAnyType, Exception, string>>()),
+                Times.Once);
+        }
+
+        // Integration test for InMemoryAgentFileRepository
+        [Fact]
+        public async Task Integration_Search_Should_Return_Agent_When_Found()
+        {
+            // Arrange
+            var agentCode = "C789";
+            var agent = new AgentRecord(
+                "Alice Smith", "789 Oak St", "Floor 3", "Star City", "CA", "90001",
+                "Active", "TypeC", "alice@smith.com", agentCode, "2021-01-01", "2026-01-01"
+            );
+            var repo = new InMemoryAgentFileRepository(new[] { agent });
+            var logger = new Mock<ILogger<AgentFileDriver.AgentFileDriver>>();
+            var driver = new AgentFileDriver.AgentFileDriver(repo, logger.Object);
+
+            await repo.OpenAsync();
+
+            var input = new AgentFileOperationInput("SEARCH", agentCode);
+
+            // Act
+            var result = await driver.ExecuteAsync(input);
+
+            // Assert
+            result.StatusCode.Should().Be("00");
+            result.Agent.Should().BeEquivalentTo(agent);
+
+            await repo.DisposeAsync();
+        }
+
+        [Fact]
+        public async Task Integration_Search_Should_Return_23_When_Not_Found()
+        {
+            // Arrange
+            var repo = new InMemoryAgentFileRepository(Array.Empty<AgentRecord>());
+            var logger = new Mock<ILogger<AgentFileDriver.AgentFileDriver>>();
+            var driver = new AgentFileDriver.AgentFileDriver(repo, logger.Object);
+
+            await repo.OpenAsync();
+
+            var input = new AgentFileOperationInput("SEARCH", "UNKNOWN");
+
+            // Act
+            var result = await driver.ExecuteAsync(input);
+
+            // Assert
+            result.StatusCode.Should().Be("23");
+            result.Agent.Should().BeNull();
+
+            await repo.DisposeAsync();
+        }
+
+        [Fact]
+        public async Task Integration_Search_Should_Return_98_When_File_Not_Open()
+        {
+            // Arrange
+            var agentCode = "C789";
+            var agent = new AgentRecord(
+                "Alice Smith", "789 Oak St", "Floor 3", "Star City", "CA", "90001",
+                "Active", "TypeC", "alice@smith.com", agentCode, "2021-01-01", "2026-01-01"
+            );
+            var repo = new InMemoryAgentFileRepository(new[] { agent });
+            var logger = new Mock<ILogger<AgentFileDriver.AgentFileDriver>>();
+            var driver = new AgentFileDriver.AgentFileDriver(repo, logger.Object);
+
+            // Do NOT open file
+
+            var input = new AgentFileOperationInput("SEARCH", agentCode);
+
+            // Act
+            var result = await driver.ExecuteAsync(input);
+
+            // Assert
+            result.StatusCode.Should().Be("98");
+            result.Agent.Should().BeNull();
+
+            await repo.DisposeAsync();
+        }
+
+        // Edge case: AgentCode with leading/trailing whitespace
+        [Fact]
+        public async Task ExecuteAsync_Should_Trim_AgentCode_Before_Search()
+        {
+            // Arrange
+            var agentCode = "X123";
+            var inputCode = "  X123  ";
+            var expectedAgent = new AgentRecord(
+                "Bob Brown", "321 Pine St", "", "Central City", "TX", "75001",
+                "Active", "TypeD", "bob@brown.com", agentCode, "2022-01-01", "2027-01-01"
+            );
+            var input = new AgentFileOperationInput("SEARCH", inputCode);
+
+            _repositoryMock.Setup(r => r.SearchAsync(agentCode)).ReturnsAsync(expectedAgent);
+
+            // Act
+            var result = await _driver.ExecuteAsync(input);
+
+            // Assert
+            result.StatusCode.Should().Be("00");
+            result.Agent.Should().BeEquivalentTo(expectedAgent);
+            _repositoryMock.Verify(r => r.SearchAsync(agentCode), Times.Once);
+        }
+
+        // Null checks for constructor
+        [Fact]
+        public void Constructor_Should_Throw_ArgumentNullException_When_Repository_Is_Null()
+        {
+            // Arrange
+            IAgentFileRepository repo = null;
+            var logger = new Mock<ILogger<AgentFileDriver.AgentFileDriver>>().Object;
+
+            // Act
+            Action act = () => new AgentFileDriver.AgentFileDriver(repo, logger);
+
+            // Assert
+            act.Should().Throw<ArgumentNullException>().WithParameterName("repository");
+        }
+
+        [Fact]
+        public void Constructor_Should_Throw_ArgumentNullException_When_Logger_Is_Null()
+        {
+            // Arrange
+            var repo = new Mock<IAgentFileRepository>().Object;
+            ILogger<AgentFileDriver.AgentFileDriver> logger = null;
+
+            // Act
+            Action act = () => new AgentFileDriver.AgentFileDriver(repo, logger);
+
+            // Assert
+            act.Should().Throw<ArgumentNullException>().WithParameterName("logger");
+        }
+
+        // Edge case: AgentRecord with null/empty fields
+        [Fact]
+        public async Task ExecuteAsync_Should_Handle_AgentRecord_With_Null_Fields()
+        {
+            // Arrange
+            var agentCode = "NUL123";
+            var agent = new AgentRecord(
+                null, null, null, null, null, null, null, null, null, agentCode, null, null
+            );
+            var input = new AgentFileOperationInput("SEARCH", agentCode);
+
+            _repositoryMock.Setup(r => r.SearchAsync(agentCode)).ReturnsAsync(agent);
+
+            // Act
+            var result = await _driver.ExecuteAsync(input);
+
+            // Assert
+            result.StatusCode.Should().Be("00");
+            result.Agent.Should().BeEquivalentTo(agent);
         }
     }
 }

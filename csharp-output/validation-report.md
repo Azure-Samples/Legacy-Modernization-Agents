@@ -1,10 +1,10 @@
 # CSharp Conversion Validation Report
 
-**Generated:** 2025-11-11 06:33:42 UTC
+**Generated:** 2025-11-11 07:34:21 UTC
 
 ## Validation Summary
 
-- **Accuracy Score:** 91.0%
+- **Accuracy Score:** 89.0%
 - **Status:** MostlyEquivalent
 - **COBOL Files Analyzed:** 12
 - **CSharp Files Analyzed:** 12
@@ -14,9 +14,10 @@
 ## Detailed Analysis
 
 ---
+
 ## 1. ACCURACY SCORE
 
-**Accuracy Score: 91%**
+**Accuracy Score: 89%**
 
 ---
 
@@ -30,54 +31,33 @@
 
 ### Data Structures and Types
 
-- **COBOL:** Uses fixed-length fields (PIC X(n), COMP, COMP-3), group records, and copybooks for data structure definitions. Data is often packed or zoned decimal for numeric fields.
-- **C#:** Uses `record` and class types with string properties, nullable types, and `DateTime` for dates/timestamps. Most string fields map well, but some numeric and date fields have type mismatches or lack explicit length enforcement.
-
-**Observations:**
-- Most COBOL group records (e.g., POLICY-RECORD, AGENT-RECORD, CUSTOMER-NOTIFY-RECORD) are mapped to C# records/classes with similar field names and types.
-- Some COBOL fields (e.g., COMP-3 packed decimals, PIC X(1) flags) are mapped to C# `decimal?` or `string`, but without explicit length or format enforcement.
-- Date fields are sometimes mapped to `DateTime`, sometimes to `string` (with parsing logic).
+- **COBOL:** Uses fixed-length fields (PIC X(n)), COMP-3 for packed decimals, and explicit record layouts via copybooks. Data is often passed in flat structures, with linkage sections for parameter passing.
+- **C#:** Uses record types and classes with string properties, sometimes with explicit length annotations (`[StringLength(n)]`). Numeric fields (e.g., premium amounts) are mapped to `decimal` or `double`. Date/time fields are mapped to `DateTime` (sometimes as string).
+- **Analysis:** Most COBOL fields are mapped to C# strings, preserving the flat structure. Numeric and date fields are generally mapped correctly, but some ambiguity exists in handling packed decimals and date formats.
 
 ### Business Logic Implementation
 
-- **COBOL:** Relies on procedural logic with PERFORM, EVALUATE, and explicit SQL statements (EXEC SQL). Business rules are enforced via control flow and SQL WHERE clauses.
-- **C#:** Uses async methods, dependency injection, and repository/service patterns. SQL logic is implemented via parameterized queries or ORM, with business rules enforced in LINQ or SQL.
-
-**Observations:**
-- Main business logic (policy expiry selection, notification generation, agent/customer file updates) is present and mapped.
-- Control flow (EVALUATE, PERFORM) is translated to switch/case or method calls.
-- Some COBOL-specific logic (e.g., 88-level condition names, file status flags) is replaced with C# enums or status codes.
-- Some edge-case logic (e.g., handling of file status '23' for not found, or SQLCODE error handling) is simplified or handled differently.
+- **COBOL:** Business logic is procedural, with explicit control flow (`PERFORM`, `EVALUATE`, etc.), and uses SQL via EXEC SQL for DB2 operations. File operations are handled via OPEN, CLOSE, READ, WRITE, and status codes.
+- **C#:** Logic is refactored into service/repository classes, using async methods and dependency injection. SQL operations are mapped to repository methods, and file I/O is abstracted via interfaces. Control flow is handled via method calls and enums.
+- **Analysis:** The main business logic (search, insert/update, file open/close, notification writing) is preserved. However, some procedural nuances (e.g., COBOL's use of 88-levels for switches, EVALUATE for control flow) are replaced with C# idioms, which may affect subtle behaviors (see differences).
 
 ### File I/O and Database Operations
 
-- **COBOL:** Uses VSAM indexed files, sequential files, and DB2 SQL via EXEC SQL. File operations are OPEN, CLOSE, READ, WRITE, and file status checks.
-- **C#:** Uses repository interfaces for file access, async methods for open/close/search, and ADO.NET/ORM for database access.
-
-**Observations:**
-- Indexed file access is simulated with in-memory collections or stub repositories.
-- Sequential file operations are mapped to stream/file APIs.
-- SQL operations are parameterized and use async/await.
-- Some file status codes (e.g., '00', '23') are mapped to status strings or exceptions, but not always with full fidelity.
+- **COBOL:** Indexed and sequential file operations, explicit status code checking, and error handling via 88-levels and DISPLAY/CALL 'ABEND'. DB2 operations use cursors, SELECT, INSERT, UPDATE, and status code checks.
+- **C#:** File operations are abstracted via interfaces (e.g., `INotificationFileService`), using async file streams and locking. DB2 operations are mapped to repository/service methods using ADO.NET or ORM, with SQLCODE mapped to return values.
+- **Analysis:** The core file/database operations are present, but some error/status handling is less granular than COBOL (see differences). File locking and async operations are modernized, but may not fully replicate COBOL's record locking and error codes.
 
 ### Error Handling
 
-- **COBOL:** Uses file status codes, SQLCODE checks, DISPLAY statements, and ABEND calls for error handling.
-- **C#:** Uses exceptions, status codes, and logging. Some error conditions are mapped to custom exceptions.
-
-**Observations:**
-- Most error handling is present, but some COBOL-specific error flows (e.g., ABEND, DISPLAY) are replaced with logging or thrown exceptions.
-- Some error codes are mapped to C# enums or strings, but not always with the same granularity.
+- **COBOL:** Uses status codes, 88-levels, and explicit error branches (DISPLAY, MOVE, CALL 'ABEND'). SQLCODE is checked after each DB2 operation.
+- **C#:** Uses exceptions, status codes in return values, and logging. Some error codes are mapped, but not all COBOL status codes are preserved.
+- **Analysis:** Error handling is generally present, but some COBOL-specific codes (e.g., file status '23', SQLCODE handling) are not always mapped 1:1, and exception handling may mask certain error flows.
 
 ### Control Flow and Program Structure
 
-- **COBOL:** Entry points via PROGRAM-ID, PROCEDURE DIVISION, LINKAGE SECTION for parameters, and GOBACK for exit.
-- **C#:** Uses classes, async methods, dependency injection, and explicit input/output records.
-
-**Observations:**
-- Main entry points and control flow are preserved.
-- LINKAGE SECTION parameters are mapped to input/output records or method parameters.
-- Batch processing logic is present and matches the COBOL structure.
+- **COBOL:** Procedural, with explicit paragraphs and PERFORM/EVALUATE for branching. Uses linkage sections for parameter passing.
+- **C#:** Object-oriented, with service/repository patterns, async/await, and dependency injection. Control flow is via method calls and enums.
+- **Analysis:** Control flow is modernized and generally equivalent, but some procedural nuances (e.g., fall-throughs, default branches) may be lost or changed.
 
 ---
 
@@ -85,133 +65,147 @@
 
 ### 1. **Severity:** Major  
    **Category:** Data Handling  
-   **Description:** Numeric fields (COMP-3, S9(5)V9(2)) mapped to `decimal?` without explicit scale/precision enforcement.  
-   **Expected:** COBOL enforces packed decimal with fixed scale/precision.  
-   **Actual:** C# uses `decimal?`, but does not enforce scale/precision.  
-   **Impact:** Possible loss of precision or acceptance of invalid values.  
-   **Fix:** Use `[Column(TypeName = "decimal(7,2)")]` or custom validation logic to enforce scale/precision.
+   **Description:** Packed decimal fields (COMP-3) in COBOL (e.g., `POLICY-PREMIUM-AMOUNT`) are mapped to `decimal` in C#, but there is no explicit handling for COBOL's packed decimal format during file/database I/O.  
+   **Expected:** COBOL reads/writes packed decimals as binary, with exact byte layout.  
+   **Actual:** C# uses decimal type, but may not handle packed decimal encoding/decoding for legacy files or DB2 columns.  
+   **Impact:** Possible data corruption or incorrect values when reading/writing legacy files or DB2 columns.  
+   **Fix:** Implement explicit packed decimal conversion utilities for file/database I/O.
 
 ### 2. **Severity:** Major  
-   **Category:** Data Handling  
-   **Description:** COBOL PIC X(n) fields mapped to C# `string` without length enforcement.  
-   **Expected:** COBOL truncates or pads strings to fixed length.  
-   **Actual:** C# accepts any string length.  
-   **Impact:** Data may overflow DB columns or files, or fail to match legacy expectations.  
-   **Fix:** Add validation attributes or manual checks to enforce max length on string properties.
+   **Category:** Error Handling  
+   **Description:** COBOL uses 88-levels for file status switches (e.g., `FILE-STATUS-OK`, `FILE-STATUS-NOT-FOUND`) and explicit status code checks after file operations. C# maps status codes but does not always check or propagate all possible file status codes.  
+   **Expected:** All file operations return and check status codes, with specific handling for '00', '23', etc.  
+   **Actual:** C# sometimes throws exceptions or returns generic error codes, potentially missing nuanced status handling.  
+   **Impact:** Loss of specific error handling, possible silent failures or incorrect error reporting.  
+   **Fix:** Map all COBOL file status codes to C# error/status codes, and ensure all file operations check and propagate these codes.
 
 ### 3. **Severity:** Moderate  
-   **Category:** Date Handling  
-   **Description:** Some date fields mapped to `DateTime`, others to `string` with parsing logic.  
-   **Expected:** COBOL uses fixed-length strings for dates (e.g., 'YYYY-MM-DD').  
-   **Actual:** C# sometimes uses `DateTime`, sometimes `string`, with inconsistent parsing.  
-   **Impact:** Possible parsing errors or format mismatches.  
-   **Fix:** Standardize date handling; use `string` for raw input/output, with conversion helpers.
+   **Category:** Business Logic  
+   **Description:** COBOL's EVALUATE (switch/case) for operation types (e.g., 'OPEN', 'CLOSE', 'SEARCH') is mapped to enums and method calls in C#, but default/other branches may not be handled identically (e.g., COBOL moves '99' to status code for invalid operations).  
+   **Expected:** Invalid operation types result in status code '99'.  
+   **Actual:** C# may throw exceptions or return null/error, but not always set status code '99'.  
+   **Impact:** Possible differences in error reporting for invalid operations.  
+   **Fix:** Ensure all invalid operations set status code '99' as in COBOL.
 
 ### 4. **Severity:** Moderate  
-   **Category:** Error Handling  
-   **Description:** COBOL file status codes (e.g., '23' for not found) mapped to exceptions or status strings, but not always handled identically.  
-   **Expected:** COBOL uses 88-level condition names and status codes for control flow.  
-   **Actual:** C# uses exceptions or status strings, but may not distinguish all cases.  
-   **Impact:** Some error paths may behave differently (e.g., not found vs. other errors).  
-   **Fix:** Map all COBOL file status codes to explicit C# enums or constants, and handle accordingly.
+   **Category:** Data Handling  
+   **Description:** COBOL uses fixed-length strings (PIC X(n)), but C# uses variable-length strings, sometimes with `[StringLength(n)]` annotations. Padding/truncation is not always enforced.  
+   **Expected:** All fields are fixed-length, padded/truncated as needed.  
+   **Actual:** C# fields may exceed or fall short of expected lengths, especially when writing to files or DB2.  
+   **Impact:** Possible data format issues, especially when interoperating with legacy systems.  
+   **Fix:** Implement padding/truncation logic for all fields when reading/writing files or DB2.
 
 ### 5. **Severity:** Moderate  
-   **Category:** Business Logic  
-   **Description:** Some COBOL logic for NOT IN subqueries and cursor control is simplified in C#.  
-   **Expected:** COBOL uses explicit SQL and cursor control for business rules.  
-   **Actual:** C# uses LINQ or ORM, which may optimize or change query semantics.  
-   **Impact:** Possible differences in query results, especially for edge cases.  
-   **Fix:** Review SQL translation for equivalence, especially for NOT IN and JOIN logic.
+   **Category:** File I/O  
+   **Description:** COBOL uses indexed file access for agent files (`ACCESS MODE IS DYNAMIC`), but C# abstracts file access via repository interfaces, which may not replicate indexed access or record locking.  
+   **Expected:** Indexed file access with record locking and status codes.  
+   **Actual:** C# uses async file streams, possibly without indexed access or locking.  
+   **Impact:** Possible concurrency issues or inability to replicate legacy file access semantics.  
+   **Fix:** Use indexed file libraries or simulate indexed access/locking in C#.
 
 ### 6. **Severity:** Minor  
-   **Category:** Control Flow  
-   **Description:** COBOL EVALUATE/WHEN logic mapped to switch/case, but may not handle all 'WHEN OTHER' cases identically.  
-   **Expected:** COBOL uses EVALUATE for multi-way branching.  
-   **Actual:** C# uses switch/case, but may not cover all cases.  
-   **Impact:** Minor differences in error reporting or fallback logic.  
-   **Fix:** Ensure all possible values are handled, including default/fallback cases.
+   **Category:** Date Handling  
+   **Description:** COBOL uses string dates (PIC X(10)), but C# sometimes uses `DateTime`. Date format conversion is not always explicit.  
+   **Expected:** Dates are always in 'yyyy-MM-dd' or COBOL format.  
+   **Actual:** C# may use `DateTime` objects, risking format mismatches.  
+   **Impact:** Possible date format issues when interoperating with legacy systems.  
+   **Fix:** Implement explicit date format conversion for all date fields.
 
 ### 7. **Severity:** Minor  
-   **Category:** File I/O  
-   **Description:** VSAM indexed file operations are stubbed or simulated in C#.  
-   **Expected:** COBOL uses real VSAM files with indexed access.  
-   **Actual:** C# uses in-memory collections or stub repositories.  
-   **Impact:** Not production-ready; suitable for testing only.  
-   **Fix:** Implement real indexed file access or use a database for production.
+   **Category:** Control Flow  
+   **Description:** COBOL's procedural flow (PERFORM, GOBACK) is replaced with method returns and async/await in C#.  
+   **Expected:** Explicit procedural flow.  
+   **Actual:** Modernized control flow, generally equivalent.  
+   **Impact:** Minimal, unless specific procedural nuances are required.  
+   **Fix:** None needed unless specific issues arise.
 
 ### 8. **Severity:** Info  
-   **Category:** Naming Conventions  
-   **Description:** Some field and class names changed for C# idioms.  
-   **Expected:** COBOL uses uppercase, underscores, and group names.  
-   **Actual:** C# uses PascalCase and record/class names.  
-   **Impact:** No functional impact; improves readability.  
+   **Category:** Logging  
+   **Description:** C# adds logging via `ILogger`, which is not present in COBOL.  
+   **Expected:** No logging.  
+   **Actual:** Logging added.  
+   **Impact:** Positive; improves maintainability.  
    **Fix:** None needed.
 
 ---
 
 ## 5. CORRECT CONVERSIONS
 
-- **Group records:** Most COBOL group records (POLICY-RECORD, AGENT-RECORD, CUSTOMER-NOTIFY-RECORD) are mapped to C# records/classes with matching fields.
-- **SQL logic:** Main SQL queries and business rules (policy expiry selection, agent/customer notification) are present and correctly mapped.
-- **File operations:** OPEN, CLOSE, SEARCH logic for agent files is present and matches the COBOL structure.
-- **Batch control flow:** Main batch processing logic (initialization, processing, finalization) is preserved.
-- **Error handling:** Most error paths are handled via exceptions or status codes.
-- **Parameter passing:** LINKAGE SECTION parameters are mapped to input/output records or method parameters.
-- **Notification logic:** Agent and customer notification records are correctly constructed and written.
+- **Record Structures:** COBOL copybooks (CAGENT, CPOLICY, AGNTNTFY, CUSTNTFY) are mapped to C# record types/classes with matching fields.
+- **Business Logic:** Main operations (search, insert/update, open/close, notification writing) are preserved and refactored into service/repository patterns.
+- **Database Operations:** COBOL SQL operations (SELECT, INSERT, UPDATE) are mapped to repository/service methods using ADO.NET/ORM.
+- **File I/O:** File operations (open, close, write) are abstracted via interfaces and implemented with async file streams.
+- **Error Handling:** Most error/status codes are mapped, and exceptions/logging are added for robustness.
+- **Control Flow:** COBOL's EVALUATE/PERFORM logic is mapped to enums and method calls, preserving main flow.
+- **Parameter Passing:** COBOL linkage section is mapped to method parameters and record types in C#.
 
 ---
 
 ## 6. RECOMMENDATIONS
 
-### 1. **Enforce Field Lengths**
-   - Add validation attributes (e.g., `[MaxLength(10)]`) or manual checks to all string properties mapped from COBOL PIC X(n).
-   - Example:
+### 1. **Packed Decimal Handling**
+   - **Action:** Implement utilities to convert between COBOL packed decimal (COMP-3) and C# decimal for file/database I/O.
+   - **Example:**  
      ```csharp
-     public string PolicyNumber { get; init; }
-     // Add validation
-     if (PolicyNumber.Length > 10) throw new ArgumentException("PolicyNumber max length is 10");
+     public static decimal FromCobolPacked(byte[] packed)
+     {
+         // Implement unpacking logic here
+     }
+     public static byte[] ToCobolPacked(decimal value)
+     {
+         // Implement packing logic here
+     }
      ```
+   - **Where:** All places handling `POLICY-PREMIUM-AMOUNT` and similar fields.
 
-### 2. **Numeric Precision Enforcement**
-   - For fields mapped from COMP-3 or S9(5)V9(2), enforce scale and precision using data annotations or manual validation.
-   - Example:
+### 2. **File Status Code Mapping**
+   - **Action:** Map all COBOL file status codes ('00', '23', etc.) to C# status codes, and ensure all file operations check and propagate these codes.
+   - **Example:**  
      ```csharp
-     [Column(TypeName = "decimal(7,2)")]
-     public decimal PolicyPremiumAmount { get; set; }
+     if (statusCode == "00") { /* OK */ }
+     else if (statusCode == "23") { /* Not Found */ }
+     else { /* Other error handling */ }
      ```
+   - **Where:** All file operation methods in `AgentFileDriver`, `NotificationFileService`, etc.
 
-### 3. **Standardize Date Handling**
-   - Use `string` for raw date fields, with conversion helpers to/from `DateTime`.
-   - Ensure all date parsing uses a consistent format (e.g., "yyyy-MM-dd").
-   - Example:
+### 3. **Invalid Operation Handling**
+   - **Action:** Ensure all invalid operations set status code '99', matching COBOL's behavior.
+   - **Example:**  
      ```csharp
-     public string PolicyHolderDateOfBirthRaw { get; init; }
-     public DateTime? PolicyHolderDateOfBirth =>
-         DateTime.TryParseExact(PolicyHolderDateOfBirthRaw, "yyyy-MM-dd", ...);
+     if (!Enum.TryParse<FileOperationType>(operationType, out var opType))
+         return new FileOperationResult("99", "Invalid operation type");
      ```
+   - **Where:** All operation dispatch methods.
 
-### 4. **Map File Status Codes Explicitly**
-   - Create enums/constants for all COBOL file status codes and handle them in C# logic.
-   - Example:
+### 4. **Field Padding/Truncation**
+   - **Action:** Implement logic to pad/truncate all fields to match COBOL's fixed-length definitions when reading/writing files or DB2.
+   - **Example:**  
      ```csharp
-     public enum FileStatusCode { Ok = 0, NotFound = 23, Error = 99 }
+     public static string PadRight(string value, int length)
+         => value.Length > length ? value.Substring(0, length) : value.PadRight(length, ' ');
      ```
+   - **Where:** All file/database read/write operations.
 
-### 5. **Review SQL Query Equivalence**
-   - Ensure all SQL queries (especially those with NOT IN, JOINs, and WHERE clauses) are translated with equivalent logic.
-   - Test edge cases for policy selection and tracking updates.
+### 5. **Indexed File Access Simulation**
+   - **Action:** Use libraries or implement logic to simulate indexed file access and record locking if required for legacy compatibility.
+   - **Example:**  
+     - Use [CSharp Indexed File Libraries](https://github.com/IndexedFile/IndexedFile) or custom implementation.
+   - **Where:** Agent file operations.
 
-### 6. **Handle All Control Flow Cases**
-   - Ensure all switch/case statements in C# cover all possible input values, including default/fallback cases.
+### 6. **Date Format Conversion**
+   - **Action:** Ensure all date fields are converted to/from 'yyyy-MM-dd' or COBOL format as needed.
+   - **Example:**  
+     ```csharp
+     public static string ToCobolDate(DateTime dt) => dt.ToString("yyyy-MM-dd");
+     public static DateTime FromCobolDate(string s) => DateTime.ParseExact(s, "yyyy-MM-dd", CultureInfo.InvariantCulture);
+     ```
+   - **Where:** All date field handling.
 
-### 7. **Implement Real Indexed File Access (if needed)**
-   - For production, replace stubbed file repositories with real indexed file access or database-backed storage.
-
-### 8. **Add Unit and Integration Tests**
-   - Create tests for all input/output scenarios, including error cases, to verify equivalence.
+### 7. **Test Coverage**
+   - **Action:** Add unit/integration tests for all business logic, especially edge cases for file/database operations and error handling.
 
 ---
 
 **Summary:**  
-The conversion is **mostly equivalent** with some moderate-to-major differences in data handling, error handling, and SQL logic. Most business logic and control flow are preserved. Addressing the above recommendations will bring the conversion to full equivalence and production readiness.
+The conversion is mostly equivalent, with core business logic and data structures preserved. The main differences are in packed decimal handling, file status/error mapping, field length enforcement, and some procedural nuances. Addressing these will ensure full functional equivalence and robust modernization.
 

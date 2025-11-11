@@ -289,6 +289,115 @@ With coverage:
 dotnet test /p:CollectCoverage=true /p:CoverageReportsFormat=lcov
 ```
 
+## Unit Test Report
+
+After test generation, a comprehensive **Unit Test Report** is automatically created to help you understand the test coverage and identify areas for improvement.
+
+### Report Location
+- **Java:** `java-output/unit-test-report.md`
+- **C#:** `csharp-output/unit-test-report.md`
+
+### Report Contents
+
+The test report includes:
+
+1. **Summary Statistics**
+   - Total test files generated
+   - Total test methods created
+   - Source files covered
+   - Estimated code coverage percentage
+
+2. **Test Coverage Analysis**
+   - Business Logic Tests
+   - Edge Case Tests
+   - Error Handling Tests
+   - Data Validation Tests
+   - Integration Tests
+   - Performance Tests
+
+3. **Test File Details**
+   - Test file name
+   - Corresponding source file
+   - Test class name
+   - Number of tests
+   - Test types covered
+   - Original COBOL file reference
+
+4. **Recommendations**
+   - Coverage improvement suggestions
+   - Missing test types identified
+   - Test quality recommendations
+
+5. **Run Commands**
+   - Platform-specific commands to execute tests
+   - Coverage collection commands
+   - Filtered test execution examples
+
+### Example Report Output
+
+```markdown
+# Unit Test Report
+
+**Generated:** 2025-01-06 14:30:45 UTC
+**Target Language:** Java
+**Test Framework:** JUnit 5 + Mockito
+
+## Summary
+
+Generated 42 unit tests across 7 test files 
+for 7 Java source files using JUnit 5 + Mockito.
+
+Estimated code coverage: 75.0%
+
+Test Distribution:
+  • Business Logic Tests: 28
+  • Edge Case Tests: 8
+  • Error Handling Tests: 4
+  • Data Validation Tests: 2
+  • Integration Tests: 0
+  • Performance Tests: 0
+
+## Test Coverage Analysis
+
+| Metric | Value |
+|--------|-------|
+| Total Test Files | 7 |
+| Total Test Methods | 42 |
+| Source Files Covered | 7 |
+| Estimated Coverage | 75.0% |
+| Avg Tests/File | 6.0 |
+
+## Recommendations
+
+- ✓ Test coverage is acceptable but could be improved with additional edge cases.
+- Add integration tests to verify interactions between components.
+- Review generated tests and enhance with domain-specific scenarios.
+```
+
+### Understanding Coverage Estimates
+
+The estimated coverage is calculated based on:
+- **Test-to-Source File Ratio**: More tests per source file indicates better coverage
+- **Test Type Distribution**: Balanced coverage across different test types
+- **Heuristic Analysis**: Based on industry best practices (5-10 tests per file)
+
+**Coverage Levels:**
+- **85%+**: Excellent (10+ tests per file)
+- **75%**: Good (7-9 tests per file)
+- **65%**: Acceptable (5-6 tests per file)
+- **50%**: Moderate (3-4 tests per file)
+- **35%**: Needs Improvement (<3 tests per file)
+
+**Note:** This is an *estimated* coverage based on test count heuristics. For actual code coverage, run tests with coverage tools (JaCoCo for Java, Coverlet for C#).
+
+### Using the Report
+
+1. **Review Coverage Gaps**: Check which test types are missing or underrepresented
+2. **Follow Recommendations**: Implement suggested improvements
+3. **Validate Quality**: Ensure tests match COBOL business logic
+4. **Run Tests**: Use provided commands to execute tests
+5. **Track Progress**: Compare reports over time to measure improvement
+
 ## Configuration
 
 ### Test Generation Settings

@@ -1,4 +1,5 @@
 using System;
+using System.ComponentModel.DataAnnotations;
 using System.Collections.Generic;
 using System.Linq;
 using Xunit;
@@ -12,56 +13,63 @@ namespace Insurance.Data.Models.Tests
         // Setup resources if needed
         public mapsTests()
         {
-            // Initialize resources, mocks, etc.
+            // Setup code here if needed
         }
 
-        // Teardown resources if needed
+        // Teardown resources
         public void Dispose()
         {
-            // Cleanup resources, mocks, etc.
+            // Cleanup code here if needed
         }
 
         [Fact]
-        public void Coverage_Should_Create_With_Valid_Properties()
+        public void CoverageRecord_ShouldInitializeWithDefaultValues()
+        {
+            // Arrange & Act
+            var record = new CoverageRecord();
+
+            // Assert
+            record.CoveragePolicyNumber.Should().BeEmpty();
+            record.CoverageStatus.Should().BeEmpty();
+            record.CoverageStartDate.Should().BeEmpty();
+            record.CoverageEndDate.Should().BeEmpty();
+            record.CoverageAddedTimestamp.Should().Be(default(DateTime));
+            record.CoverageUpdatedTimestamp.Should().Be(default(DateTime));
+        }
+
+        [Fact]
+        public void CoverageRecord_ShouldSetAllPropertiesCorrectly()
         {
             // Arrange
-            var policyNumber = "POL1234567";
-            var status = "ACTIVE";
-            var startDate = "2024-01-01";
-            var endDate = "2024-12-31";
-            var addedTs = new DateTime(2024, 1, 1, 8, 0, 0);
-            var updatedTs = new DateTime(2024, 6, 1, 10, 0, 0);
-
-            // Act
-            var coverage = new Coverage
+            var now = DateTime.UtcNow;
+            var record = new CoverageRecord
             {
-                CoveragePolicyNumber = policyNumber,
-                CoverageStatus = status,
-                CoverageStartDate = startDate,
-                CoverageEndDate = endDate,
-                CoverageAddedTimestamp = addedTs,
-                CoverageUpdatedTimestamp = updatedTs
+                CoveragePolicyNumber = "POL1234567",
+                CoverageStatus = "ACTIVE",
+                CoverageStartDate = "2024-01-01",
+                CoverageEndDate = "2024-12-31",
+                CoverageAddedTimestamp = now,
+                CoverageUpdatedTimestamp = now.AddMinutes(5)
             };
 
             // Assert
-            coverage.CoveragePolicyNumber.Should().Be(policyNumber);
-            coverage.CoverageStatus.Should().Be(status);
-            coverage.CoverageStartDate.Should().Be(startDate);
-            coverage.CoverageEndDate.Should().Be(endDate);
-            coverage.CoverageAddedTimestamp.Should().Be(addedTs);
-            coverage.CoverageUpdatedTimestamp.Should().Be(updatedTs);
+            record.CoveragePolicyNumber.Should().Be("POL1234567");
+            record.CoverageStatus.Should().Be("ACTIVE");
+            record.CoverageStartDate.Should().Be("2024-01-01");
+            record.CoverageEndDate.Should().Be("2024-12-31");
+            record.CoverageAddedTimestamp.Should().Be(now);
+            record.CoverageUpdatedTimestamp.Should().Be(now.AddMinutes(5));
         }
 
         [Theory]
         [InlineData(null)]
         [InlineData("")]
-        [InlineData("          ")] // 10 spaces
-        public void CoveragePolicyNumber_Should_Allow_Null_Or_Empty_Or_Spaces(string policyNumber)
+        public void CoverageRecord_ShouldNotAllowNullOrEmptyPolicyNumber(string value)
         {
             // Arrange
-            var coverage = new Coverage
+            var record = new CoverageRecord
             {
-                CoveragePolicyNumber = policyNumber,
+                CoveragePolicyNumber = value,
                 CoverageStatus = "ACTIVE",
                 CoverageStartDate = "2024-01-01",
                 CoverageEndDate = "2024-12-31",
@@ -69,303 +77,91 @@ namespace Insurance.Data.Models.Tests
                 CoverageUpdatedTimestamp = DateTime.UtcNow
             };
 
+            // Act
+            var validationResults = ValidateModel(record);
+
             // Assert
-            coverage.CoveragePolicyNumber.Should().Be(policyNumber);
+            validationResults.Should().Contain(x => x.MemberNames.Contains(nameof(CoverageRecord.CoveragePolicyNumber)));
         }
 
         [Theory]
         [InlineData(null)]
         [InlineData("")]
-        [InlineData("INACTIVE")]
-        [InlineData("CANCELLED")]
-        public void CoverageStatus_Should_Allow_Various_Values(string status)
+        public void CoverageRecord_ShouldNotAllowNullOrEmptyStatus(string value)
         {
             // Arrange
-            var coverage = new Coverage
+            var record = new CoverageRecord
             {
                 CoveragePolicyNumber = "POL1234567",
-                CoverageStatus = status,
+                CoverageStatus = value,
                 CoverageStartDate = "2024-01-01",
                 CoverageEndDate = "2024-12-31",
                 CoverageAddedTimestamp = DateTime.UtcNow,
                 CoverageUpdatedTimestamp = DateTime.UtcNow
             };
 
+            // Act
+            var validationResults = ValidateModel(record);
+
             // Assert
-            coverage.CoverageStatus.Should().Be(status);
+            validationResults.Should().Contain(x => x.MemberNames.Contains(nameof(CoverageRecord.CoverageStatus)));
         }
 
         [Theory]
-        [InlineData("2024-01-01")]
-        [InlineData("9999-12-31")]
-        [InlineData("0001-01-01")]
-        [InlineData("")]
         [InlineData(null)]
-        public void CoverageStartDate_Should_Allow_Boundary_And_Null_Values(string startDate)
-        {
-            // Arrange
-            var coverage = new Coverage
-            {
-                CoveragePolicyNumber = "POL1234567",
-                CoverageStatus = "ACTIVE",
-                CoverageStartDate = startDate,
-                CoverageEndDate = "2024-12-31",
-                CoverageAddedTimestamp = DateTime.UtcNow,
-                CoverageUpdatedTimestamp = DateTime.UtcNow
-            };
-
-            // Assert
-            coverage.CoverageStartDate.Should().Be(startDate);
-        }
-
-        [Theory]
-        [InlineData("2024-12-31")]
-        [InlineData("9999-12-31")]
-        [InlineData("0001-01-01")]
         [InlineData("")]
-        [InlineData(null)]
-        public void CoverageEndDate_Should_Allow_Boundary_And_Null_Values(string endDate)
+        public void CoverageRecord_ShouldNotAllowNullOrEmptyStartDate(string value)
         {
             // Arrange
-            var coverage = new Coverage
+            var record = new CoverageRecord
             {
                 CoveragePolicyNumber = "POL1234567",
                 CoverageStatus = "ACTIVE",
-                CoverageStartDate = "2024-01-01",
-                CoverageEndDate = endDate,
-                CoverageAddedTimestamp = DateTime.UtcNow,
-                CoverageUpdatedTimestamp = DateTime.UtcNow
-            };
-
-            // Assert
-            coverage.CoverageEndDate.Should().Be(endDate);
-        }
-
-        [Fact]
-        public void CoverageAddedTimestamp_Should_Store_Exact_Value()
-        {
-            // Arrange
-            var ts = new DateTime(2023, 12, 31, 23, 59, 59, DateTimeKind.Utc);
-
-            // Act
-            var coverage = new Coverage
-            {
-                CoveragePolicyNumber = "POL1234567",
-                CoverageStatus = "ACTIVE",
-                CoverageStartDate = "2024-01-01",
-                CoverageEndDate = "2024-12-31",
-                CoverageAddedTimestamp = ts,
-                CoverageUpdatedTimestamp = DateTime.UtcNow
-            };
-
-            // Assert
-            coverage.CoverageAddedTimestamp.Should().Be(ts);
-        }
-
-        [Fact]
-        public void CoverageUpdatedTimestamp_Should_Store_Exact_Value()
-        {
-            // Arrange
-            var ts = new DateTime(2024, 6, 1, 10, 0, 0, DateTimeKind.Utc);
-
-            // Act
-            var coverage = new Coverage
-            {
-                CoveragePolicyNumber = "POL1234567",
-                CoverageStatus = "ACTIVE",
-                CoverageStartDate = "2024-01-01",
-                CoverageEndDate = "2024-12-31",
-                CoverageAddedTimestamp = DateTime.UtcNow,
-                CoverageUpdatedTimestamp = ts
-            };
-
-            // Assert
-            coverage.CoverageUpdatedTimestamp.Should().Be(ts);
-        }
-
-        [Fact]
-        public void Coverage_Record_Should_Be_Immutable()
-        {
-            // Arrange
-            var coverage = new Coverage
-            {
-                CoveragePolicyNumber = "POL1234567",
-                CoverageStatus = "ACTIVE",
-                CoverageStartDate = "2024-01-01",
+                CoverageStartDate = value,
                 CoverageEndDate = "2024-12-31",
                 CoverageAddedTimestamp = DateTime.UtcNow,
                 CoverageUpdatedTimestamp = DateTime.UtcNow
             };
 
             // Act
-            var newCoverage = coverage with { CoverageStatus = "INACTIVE" };
+            var validationResults = ValidateModel(record);
 
             // Assert
-            newCoverage.CoverageStatus.Should().Be("INACTIVE");
-            coverage.CoverageStatus.Should().Be("ACTIVE");
-        }
-
-        [Fact]
-        public void Coverage_Record_Equality_Should_Work_Correctly()
-        {
-            // Arrange
-            var coverage1 = new Coverage
-            {
-                CoveragePolicyNumber = "POL1234567",
-                CoverageStatus = "ACTIVE",
-                CoverageStartDate = "2024-01-01",
-                CoverageEndDate = "2024-12-31",
-                CoverageAddedTimestamp = new DateTime(2024, 1, 1, 8, 0, 0),
-                CoverageUpdatedTimestamp = new DateTime(2024, 6, 1, 10, 0, 0)
-            };
-
-            var coverage2 = new Coverage
-            {
-                CoveragePolicyNumber = "POL1234567",
-                CoverageStatus = "ACTIVE",
-                CoverageStartDate = "2024-01-01",
-                CoverageEndDate = "2024-12-31",
-                CoverageAddedTimestamp = new DateTime(2024, 1, 1, 8, 0, 0),
-                CoverageUpdatedTimestamp = new DateTime(2024, 6, 1, 10, 0, 0)
-            };
-
-            // Assert
-            coverage1.Should().Be(coverage2);
-        }
-
-        [Fact]
-        public void Coverage_Record_Inequality_Should_Work_Correctly()
-        {
-            // Arrange
-            var coverage1 = new Coverage
-            {
-                CoveragePolicyNumber = "POL1234567",
-                CoverageStatus = "ACTIVE",
-                CoverageStartDate = "2024-01-01",
-                CoverageEndDate = "2024-12-31",
-                CoverageAddedTimestamp = new DateTime(2024, 1, 1, 8, 0, 0),
-                CoverageUpdatedTimestamp = new DateTime(2024, 6, 1, 10, 0, 0)
-            };
-
-            var coverage2 = new Coverage
-            {
-                CoveragePolicyNumber = "POL7654321",
-                CoverageStatus = "INACTIVE",
-                CoverageStartDate = "2023-01-01",
-                CoverageEndDate = "2023-12-31",
-                CoverageAddedTimestamp = new DateTime(2023, 1, 1, 8, 0, 0),
-                CoverageUpdatedTimestamp = new DateTime(2023, 6, 1, 10, 0, 0)
-            };
-
-            // Assert
-            coverage1.Should().NotBe(coverage2);
+            validationResults.Should().Contain(x => x.MemberNames.Contains(nameof(CoverageRecord.CoverageStartDate)));
         }
 
         [Theory]
-        [InlineData("2024-01-01", "2024-12-31", true)]
-        [InlineData("2024-12-31", "2024-01-01", false)]
-        [InlineData("2024-01-01", "2024-01-01", true)]
-        [InlineData("", "", true)]
-        [InlineData(null, null, true)]
-        public void Coverage_StartDate_Should_Be_Less_Than_Or_Equal_To_EndDate(string start, string end, bool expected)
+        [InlineData(null)]
+        [InlineData("")]
+        public void CoverageRecord_ShouldNotAllowNullOrEmptyEndDate(string value)
         {
             // Arrange
-            var coverage = new Coverage
+            var record = new CoverageRecord
             {
                 CoveragePolicyNumber = "POL1234567",
                 CoverageStatus = "ACTIVE",
-                CoverageStartDate = start,
-                CoverageEndDate = end,
+                CoverageStartDate = "2024-01-01",
+                CoverageEndDate = value,
                 CoverageAddedTimestamp = DateTime.UtcNow,
                 CoverageUpdatedTimestamp = DateTime.UtcNow
             };
 
             // Act
-            bool isValid = true;
-            DateTime startDt, endDt;
-            if (!string.IsNullOrWhiteSpace(start) && !string.IsNullOrWhiteSpace(end)
-                && DateTime.TryParse(start, out startDt) && DateTime.TryParse(end, out endDt))
-            {
-                isValid = startDt <= endDt;
-            }
+            var validationResults = ValidateModel(record);
 
             // Assert
-            isValid.Should().Be(expected);
+            validationResults.Should().Contain(x => x.MemberNames.Contains(nameof(CoverageRecord.CoverageEndDate)));
         }
 
-        [Fact]
-        public void Coverage_Should_Handle_Max_Length_Fields()
+        [Theory]
+        [InlineData("12345678901")] // 11 chars
+        [InlineData("ABCDEFGHIJK")] // 11 chars
+        public void CoverageRecord_ShouldNotAllowPolicyNumberExceedingMaxLength(string value)
         {
             // Arrange
-            var maxLengthString = new string('A', 10);
-            var coverage = new Coverage
+            var record = new CoverageRecord
             {
-                CoveragePolicyNumber = maxLengthString,
-                CoverageStatus = maxLengthString,
-                CoverageStartDate = maxLengthString,
-                CoverageEndDate = maxLengthString,
-                CoverageAddedTimestamp = DateTime.UtcNow,
-                CoverageUpdatedTimestamp = DateTime.UtcNow
-            };
-
-            // Assert
-            coverage.CoveragePolicyNumber.Length.Should().Be(10);
-            coverage.CoverageStatus.Length.Should().Be(10);
-            coverage.CoverageStartDate.Length.Should().Be(10);
-            coverage.CoverageEndDate.Length.Should().Be(10);
-        }
-
-        [Fact]
-        public void Coverage_Should_Handle_Min_Length_Fields()
-        {
-            // Arrange
-            var minLengthString = "";
-            var coverage = new Coverage
-            {
-                CoveragePolicyNumber = minLengthString,
-                CoverageStatus = minLengthString,
-                CoverageStartDate = minLengthString,
-                CoverageEndDate = minLengthString,
-                CoverageAddedTimestamp = DateTime.UtcNow,
-                CoverageUpdatedTimestamp = DateTime.UtcNow
-            };
-
-            // Assert
-            coverage.CoveragePolicyNumber.Should().BeEmpty();
-            coverage.CoverageStatus.Should().BeEmpty();
-            coverage.CoverageStartDate.Should().BeEmpty();
-            coverage.CoverageEndDate.Should().BeEmpty();
-        }
-
-        [Fact]
-        public void Coverage_Should_Handle_Null_Fields()
-        {
-            // Arrange
-            var coverage = new Coverage
-            {
-                CoveragePolicyNumber = null,
-                CoverageStatus = null,
-                CoverageStartDate = null,
-                CoverageEndDate = null,
-                CoverageAddedTimestamp = DateTime.UtcNow,
-                CoverageUpdatedTimestamp = DateTime.UtcNow
-            };
-
-            // Assert
-            coverage.CoveragePolicyNumber.Should().BeNull();
-            coverage.CoverageStatus.Should().BeNull();
-            coverage.CoverageStartDate.Should().BeNull();
-            coverage.CoverageEndDate.Should().BeNull();
-        }
-
-        // Integration test example for database operations (mocked repository)
-        [Fact]
-        public void Coverage_Should_Be_Saved_And_Retrieved_From_Repository()
-        {
-            // Arrange
-            var coverage = new Coverage
-            {
-                CoveragePolicyNumber = "POL1234567",
+                CoveragePolicyNumber = value,
                 CoverageStatus = "ACTIVE",
                 CoverageStartDate = "2024-01-01",
                 CoverageEndDate = "2024-12-31",
@@ -373,102 +169,362 @@ namespace Insurance.Data.Models.Tests
                 CoverageUpdatedTimestamp = DateTime.UtcNow
             };
 
-            var mockRepo = new Mock<ICoverageRepository>();
-            mockRepo.Setup(r => r.Save(It.IsAny<Coverage>())).Returns(true);
-            mockRepo.Setup(r => r.GetByPolicyNumber("POL1234567")).Returns(coverage);
-
             // Act
-            var saveResult = mockRepo.Object.Save(coverage);
-            var retrieved = mockRepo.Object.GetByPolicyNumber("POL1234567");
+            var validationResults = ValidateModel(record);
 
             // Assert
-            saveResult.Should().BeTrue();
-            retrieved.Should().BeEquivalentTo(coverage);
+            validationResults.Should().Contain(x => x.MemberNames.Contains(nameof(CoverageRecord.CoveragePolicyNumber)));
         }
 
-        // Edge case: repository returns null
-        [Fact]
-        public void Coverage_Repository_Should_Return_Null_When_Not_Found()
+        [Theory]
+        [InlineData("12345678901")] // 11 chars
+        [InlineData("ABCDEFGHIJK")] // 11 chars
+        public void CoverageRecord_ShouldNotAllowStatusExceedingMaxLength(string value)
         {
             // Arrange
-            var mockRepo = new Mock<ICoverageRepository>();
-            mockRepo.Setup(r => r.GetByPolicyNumber("NONEXISTENT")).Returns((Coverage)null);
-
-            // Act
-            var retrieved = mockRepo.Object.GetByPolicyNumber("NONEXISTENT");
-
-            // Assert
-            retrieved.Should().BeNull();
-        }
-
-        // Edge case: repository throws exception
-        [Fact]
-        public void Coverage_Repository_Should_Throw_Exception_On_Error()
-        {
-            // Arrange
-            var mockRepo = new Mock<ICoverageRepository>();
-            mockRepo.Setup(r => r.Save(It.IsAny<Coverage>())).Throws(new InvalidOperationException("DB error"));
-
-            // Act
-            Action act = () => mockRepo.Object.Save(new Coverage
+            var record = new CoverageRecord
             {
                 CoveragePolicyNumber = "POL1234567",
-                CoverageStatus = "ACTIVE",
+                CoverageStatus = value,
                 CoverageStartDate = "2024-01-01",
                 CoverageEndDate = "2024-12-31",
                 CoverageAddedTimestamp = DateTime.UtcNow,
                 CoverageUpdatedTimestamp = DateTime.UtcNow
-            });
+            };
+
+            // Act
+            var validationResults = ValidateModel(record);
 
             // Assert
-            act.Should().Throw<InvalidOperationException>().WithMessage("DB error");
+            validationResults.Should().Contain(x => x.MemberNames.Contains(nameof(CoverageRecord.CoverageStatus)));
         }
 
-        // Edge case: test for default DateTime values
-        [Fact]
-        public void Coverage_Should_Handle_Default_DateTime_Values()
+        [Theory]
+        [InlineData("2024-01-011")] // 11 chars
+        [InlineData("12345678901")] // 11 chars
+        public void CoverageRecord_ShouldNotAllowStartDateExceedingMaxLength(string value)
         {
             // Arrange
-            var coverage = new Coverage
+            var record = new CoverageRecord
+            {
+                CoveragePolicyNumber = "POL1234567",
+                CoverageStatus = "ACTIVE",
+                CoverageStartDate = value,
+                CoverageEndDate = "2024-12-31",
+                CoverageAddedTimestamp = DateTime.UtcNow,
+                CoverageUpdatedTimestamp = DateTime.UtcNow
+            };
+
+            // Act
+            var validationResults = ValidateModel(record);
+
+            // Assert
+            validationResults.Should().Contain(x => x.MemberNames.Contains(nameof(CoverageRecord.CoverageStartDate)));
+        }
+
+        [Theory]
+        [InlineData("2024-12-311")] // 11 chars
+        [InlineData("12345678901")] // 11 chars
+        public void CoverageRecord_ShouldNotAllowEndDateExceedingMaxLength(string value)
+        {
+            // Arrange
+            var record = new CoverageRecord
+            {
+                CoveragePolicyNumber = "POL1234567",
+                CoverageStatus = "ACTIVE",
+                CoverageStartDate = "2024-01-01",
+                CoverageEndDate = value,
+                CoverageAddedTimestamp = DateTime.UtcNow,
+                CoverageUpdatedTimestamp = DateTime.UtcNow
+            };
+
+            // Act
+            var validationResults = ValidateModel(record);
+
+            // Assert
+            validationResults.Should().Contain(x => x.MemberNames.Contains(nameof(CoverageRecord.CoverageEndDate)));
+        }
+
+        [Fact]
+        public void CoverageRecord_ShouldNotAllowDefaultAddedTimestamp()
+        {
+            // Arrange
+            var record = new CoverageRecord
             {
                 CoveragePolicyNumber = "POL1234567",
                 CoverageStatus = "ACTIVE",
                 CoverageStartDate = "2024-01-01",
                 CoverageEndDate = "2024-12-31",
                 CoverageAddedTimestamp = default,
-                CoverageUpdatedTimestamp = default
+                CoverageUpdatedTimestamp = DateTime.UtcNow
             };
 
+            // Act
+            var validationResults = ValidateModel(record);
+
             // Assert
-            coverage.CoverageAddedTimestamp.Should().Be(default(DateTime));
-            coverage.CoverageUpdatedTimestamp.Should().Be(default(DateTime));
+            validationResults.Should().Contain(x => x.MemberNames.Contains(nameof(CoverageRecord.CoverageAddedTimestamp)));
         }
 
-        // Edge case: test for DateTime.MinValue and DateTime.MaxValue
         [Fact]
-        public void Coverage_Should_Handle_DateTime_Min_Max_Values()
+        public void CoverageRecord_ShouldNotAllowDefaultUpdatedTimestamp()
         {
             // Arrange
-            var coverage = new Coverage
+            var record = new CoverageRecord
             {
                 CoveragePolicyNumber = "POL1234567",
                 CoverageStatus = "ACTIVE",
                 CoverageStartDate = "2024-01-01",
                 CoverageEndDate = "2024-12-31",
-                CoverageAddedTimestamp = DateTime.MinValue,
-                CoverageUpdatedTimestamp = DateTime.MaxValue
+                CoverageAddedTimestamp = DateTime.UtcNow,
+                CoverageUpdatedTimestamp = default
             };
 
+            // Act
+            var validationResults = ValidateModel(record);
+
             // Assert
-            coverage.CoverageAddedTimestamp.Should().Be(DateTime.MinValue);
-            coverage.CoverageUpdatedTimestamp.Should().Be(DateTime.MaxValue);
+            validationResults.Should().Contain(x => x.MemberNames.Contains(nameof(CoverageRecord.CoverageUpdatedTimestamp)));
+        }
+
+        [Theory]
+        [InlineData("2024-01-01", "2024-12-31", true)]
+        [InlineData("2024-12-31", "2024-01-01", false)]
+        [InlineData("2024-01-01", "2024-01-01", true)]
+        public void CoverageRecord_StartDateShouldNotBeAfterEndDate(string startDate, string endDate, bool isValid)
+        {
+            // Arrange
+            var record = new CoverageRecord
+            {
+                CoveragePolicyNumber = "POL1234567",
+                CoverageStatus = "ACTIVE",
+                CoverageStartDate = startDate,
+                CoverageEndDate = endDate,
+                CoverageAddedTimestamp = DateTime.UtcNow,
+                CoverageUpdatedTimestamp = DateTime.UtcNow
+            };
+
+            // Act
+            var validationResults = ValidateModel(record);
+
+            // COBOL logic: Start date must be <= End date
+            if (!isValid)
+            {
+                validationResults.Should().Contain(x => x.ErrorMessage.Contains("Start date must be before or equal to End date"));
+            }
+            else
+            {
+                validationResults.Should().NotContain(x => x.ErrorMessage.Contains("Start date must be before or equal to End date"));
+            }
+        }
+
+        [Theory]
+        [InlineData("2024-01-01")]
+        [InlineData("2024-12-31")]
+        [InlineData("2024-02-29")]
+        public void CoverageRecord_ShouldAcceptValidDateFormats(string date)
+        {
+            // Arrange
+            var record = new CoverageRecord
+            {
+                CoveragePolicyNumber = "POL1234567",
+                CoverageStatus = "ACTIVE",
+                CoverageStartDate = date,
+                CoverageEndDate = date,
+                CoverageAddedTimestamp = DateTime.UtcNow,
+                CoverageUpdatedTimestamp = DateTime.UtcNow
+            };
+
+            // Act
+            var validationResults = ValidateModel(record);
+
+            // Assert
+            validationResults.Should().NotContain(x => x.MemberNames.Contains(nameof(CoverageRecord.CoverageStartDate)));
+            validationResults.Should().NotContain(x => x.MemberNames.Contains(nameof(CoverageRecord.CoverageEndDate)));
+        }
+
+        [Theory]
+        [InlineData("20240101")]
+        [InlineData("01-01-2024")]
+        [InlineData("2024/01/01")]
+        public void CoverageRecord_ShouldRejectInvalidDateFormats(string date)
+        {
+            // Arrange
+            var record = new CoverageRecord
+            {
+                CoveragePolicyNumber = "POL1234567",
+                CoverageStatus = "ACTIVE",
+                CoverageStartDate = date,
+                CoverageEndDate = date,
+                CoverageAddedTimestamp = DateTime.UtcNow,
+                CoverageUpdatedTimestamp = DateTime.UtcNow
+            };
+
+            // Act
+            var validationResults = ValidateModel(record);
+
+            // Assert
+            validationResults.Should().Contain(x => x.ErrorMessage.Contains("Date format must be yyyy-MM-dd"));
+        }
+
+        [Fact]
+        public void CoverageRecord_Equality_ShouldWorkForSameValues()
+        {
+            // Arrange
+            var now = DateTime.UtcNow;
+            var record1 = new CoverageRecord
+            {
+                CoveragePolicyNumber = "POL1234567",
+                CoverageStatus = "ACTIVE",
+                CoverageStartDate = "2024-01-01",
+                CoverageEndDate = "2024-12-31",
+                CoverageAddedTimestamp = now,
+                CoverageUpdatedTimestamp = now
+            };
+            var record2 = new CoverageRecord
+            {
+                CoveragePolicyNumber = "POL1234567",
+                CoverageStatus = "ACTIVE",
+                CoverageStartDate = "2024-01-01",
+                CoverageEndDate = "2024-12-31",
+                CoverageAddedTimestamp = now,
+                CoverageUpdatedTimestamp = now
+            };
+
+            // Act & Assert
+            record1.Should().Be(record2);
+            record1.GetHashCode().Should().Be(record2.GetHashCode());
+        }
+
+        [Fact]
+        public void CoverageRecord_Equality_ShouldFailForDifferentValues()
+        {
+            // Arrange
+            var now = DateTime.UtcNow;
+            var record1 = new CoverageRecord
+            {
+                CoveragePolicyNumber = "POL1234567",
+                CoverageStatus = "ACTIVE",
+                CoverageStartDate = "2024-01-01",
+                CoverageEndDate = "2024-12-31",
+                CoverageAddedTimestamp = now,
+                CoverageUpdatedTimestamp = now
+            };
+            var record2 = new CoverageRecord
+            {
+                CoveragePolicyNumber = "POL7654321",
+                CoverageStatus = "INACTIVE",
+                CoverageStartDate = "2023-01-01",
+                CoverageEndDate = "2023-12-31",
+                CoverageAddedTimestamp = now.AddDays(-1),
+                CoverageUpdatedTimestamp = now.AddDays(-1)
+            };
+
+            // Act & Assert
+            record1.Should().NotBe(record2);
+        }
+
+        [Fact]
+        public void CoverageRecord_ShouldBeImmutable()
+        {
+            // Arrange
+            var now = DateTime.UtcNow;
+            var record = new CoverageRecord
+            {
+                CoveragePolicyNumber = "POL1234567",
+                CoverageStatus = "ACTIVE",
+                CoverageStartDate = "2024-01-01",
+                CoverageEndDate = "2024-12-31",
+                CoverageAddedTimestamp = now,
+                CoverageUpdatedTimestamp = now
+            };
+
+            // Act
+            Action act = () => record = record with { CoverageStatus = "INACTIVE" };
+
+            // Assert
+            act.Should().NotThrow();
+            var updated = record with { CoverageStatus = "INACTIVE" };
+            updated.CoverageStatus.Should().Be("INACTIVE");
+            record.CoverageStatus.Should().Be("ACTIVE");
+        }
+
+        // Integration Test Example: Simulate DB Save/Load (using Moq for repository)
+        [Fact]
+        public void CoverageRecord_Repository_SaveAndRetrieve_ShouldPreserveValues()
+        {
+            // Arrange
+            var now = DateTime.UtcNow;
+            var expected = new CoverageRecord
+            {
+                CoveragePolicyNumber = "POL1234567",
+                CoverageStatus = "ACTIVE",
+                CoverageStartDate = "2024-01-01",
+                CoverageEndDate = "2024-12-31",
+                CoverageAddedTimestamp = now,
+                CoverageUpdatedTimestamp = now
+            };
+
+            var mockRepo = new Mock<ICoverageRecordRepository>();
+            mockRepo.Setup(r => r.Save(It.IsAny<CoverageRecord>())).Returns(true);
+            mockRepo.Setup(r => r.GetByPolicyNumber("POL1234567")).Returns(expected);
+
+            // Act
+            var saveResult = mockRepo.Object.Save(expected);
+            var retrieved = mockRepo.Object.GetByPolicyNumber("POL1234567");
+
+            // Assert
+            saveResult.Should().BeTrue();
+            retrieved.Should().BeEquivalentTo(expected);
+        }
+
+        // Helper method to validate CoverageRecord using DataAnnotations and custom COBOL logic
+        private IList<ValidationResult> ValidateModel(CoverageRecord record)
+        {
+            var results = new List<ValidationResult>();
+            var context = new ValidationContext(record, serviceProvider: null, items: null);
+            Validator.TryValidateObject(record, context, results, true);
+
+            // COBOL business logic: Start date must be <= End date
+            if (!string.IsNullOrWhiteSpace(record.CoverageStartDate) && !string.IsNullOrWhiteSpace(record.CoverageEndDate))
+            {
+                if (DateTime.TryParse(record.CoverageStartDate, out var start) &&
+                    DateTime.TryParse(record.CoverageEndDate, out var end))
+                {
+                    if (start > end)
+                    {
+                        results.Add(new ValidationResult("Start date must be before or equal to End date", new[] { nameof(CoverageRecord.CoverageStartDate), nameof(CoverageRecord.CoverageEndDate) }));
+                    }
+                }
+                else
+                {
+                    // Date format must be yyyy-MM-dd
+                    if (!IsValidDateFormat(record.CoverageStartDate))
+                        results.Add(new ValidationResult("Date format must be yyyy-MM-dd", new[] { nameof(CoverageRecord.CoverageStartDate) }));
+                    if (!IsValidDateFormat(record.CoverageEndDate))
+                        results.Add(new ValidationResult("Date format must be yyyy-MM-dd", new[] { nameof(CoverageRecord.CoverageEndDate) }));
+                }
+            }
+
+            // Required DateTime fields must not be default
+            if (record.CoverageAddedTimestamp == default)
+                results.Add(new ValidationResult("CoverageAddedTimestamp is required", new[] { nameof(CoverageRecord.CoverageAddedTimestamp) }));
+            if (record.CoverageUpdatedTimestamp == default)
+                results.Add(new ValidationResult("CoverageUpdatedTimestamp is required", new[] { nameof(CoverageRecord.CoverageUpdatedTimestamp) }));
+
+            return results;
+        }
+
+        private bool IsValidDateFormat(string date)
+        {
+            return DateTime.TryParseExact(date, "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out _);
         }
     }
 
-    // Mock repository interface for integration tests
-    public interface ICoverageRepository
+    // Mock repository interface for integration test
+    public interface ICoverageRecordRepository
     {
-        bool Save(Coverage coverage);
-        Coverage GetByPolicyNumber(string policyNumber);
+        bool Save(CoverageRecord record);
+        CoverageRecord GetByPolicyNumber(string policyNumber);
     }
 }

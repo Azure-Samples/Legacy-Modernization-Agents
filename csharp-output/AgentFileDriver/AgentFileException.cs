@@ -1,30 +1,28 @@
 using System;
-using System.IO;
 using System.Threading.Tasks;
 using System.Linq;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.DependencyInjection;
 
 namespace AgentFileDriver
 {
     /// <summary>
     /// Represents the input parameters for agent file operations.
     /// </summary>
-    public record AgentFileInput(
-        string OperationType,
-        string AgentCode
+    public record AgentFileOperationInput(
+        string OperationType, // "OPEN", "CLOSE", "SEARCH"
+        string AgentCode      // Agent identifier for SEARCH
     );
 
     /// <summary>
-    /// Represents the output result of agent file operations.
+    /// Represents the output/result of agent file operations.
     /// </summary>
-    public record AgentFileOutput(
-        string StatusCode,
-        AgentRecord? AgentRecord
+    public record AgentFileOperationOutput(
+        string StatusCode, // "00" = OK, "23" = Not Found, "99" = Invalid Operation, etc.
+        AgentRecord? Agent // Populated for SEARCH if found
     );
 
     /// <summary>
-    /// Represents an agent record as stored in the agent file.
+    /// Represents an agent record as defined in the CAGENT copybook.
     /// </summary>
     public record AgentRecord(
         string AgentName,
@@ -47,7 +45,7 @@ namespace AgentFileDriver
     public interface IAgentFileRepository : IAsyncDisposable
     {
         /// <summary>
-        /// Opens the agent file for reading.
+        /// Opens the agent file for input operations.
         /// </summary>
         Task OpenAsync();
 
@@ -65,13 +63,10 @@ namespace AgentFileDriver
     }
 
     /// <summary>
-    /// Exception thrown when an agent file operation fails.
+    /// Exception thrown when agent file operations fail.
     /// </summary>
     public class AgentFileException : Exception
     {
-        /// <summary>
-        /// Gets the status code returned by the file operation.
-        /// </summary>
         public string StatusCode { get; }
 
         public AgentFileException(string message, string statusCode)
@@ -82,72 +77,7 @@ namespace AgentFileDriver
     }
 
     /// <summary>
-    /// Implements the agent file repository using a VSAM-like indexed file.
-    /// This is a stub implementation for demonstration purposes.
-    /// </summary>
-    public class AgentFileRepository : IAgentFileRepository
-    {
-        private bool _isOpen;
-        private readonly ILogger<AgentFileRepository> _logger;
-
-        // Simulated agent records for demonstration.
-        private static readonly AgentRecord[] _agentRecords = new[]
-        {
-            new AgentRecord(
-                "John Doe", "123 Main St", "Suite 100", "Copenhagen", "DK", "1000", "A", "Broker",
-                "john.doe@email.com", "1234567890", "2020-01-01", "2025-12-31"
-            ),
-            new AgentRecord(
-                "Jane Smith", "456 Elm St", "Apt 2B", "Aarhus", "DK", "8000", "A", "Agent",
-                "jane.smith@email.com", "0987654321", "2019-05-15", "2024-05-15"
-            )
-        };
-
-        public AgentFileRepository(ILogger<AgentFileRepository> logger)
-        {
-            _logger = logger;
-        }
-
-        /// <inheritdoc />
-        public async Task OpenAsync()
-        {
-            // Simulate file open delay.
-            await Task.Delay(50);
-            _isOpen = true;
-            _logger.LogInformation("Agent file opened.");
-        }
-
-        /// <inheritdoc />
-        public async Task CloseAsync()
-        {
-            await Task.Delay(50);
-            _isOpen = false;
-            _logger.LogInformation("Agent file closed.");
-        }
-
-        /// <inheritdoc />
-        public async Task<AgentRecord?> SearchAsync(string agentCode)
-        {
-            if (!_isOpen)
-                throw new AgentFileException("Agent file is not open.", "10");
-
-            await Task.Delay(50); // Simulate IO delay.
-
-            // For demonstration, use agentCode as a substring match on AgentName.
-            var record = _agentRecords.FirstOrDefault(r => r.AgentName.Replace(" ", "").StartsWith(agentCode, StringComparison.OrdinalIgnoreCase));
-            return record;
-        }
-
-        /// <inheritdoc />
-        public ValueTask DisposeAsync()
-        {
-            // Dispose resources if needed.
-            return ValueTask.CompletedTask;
-        }
-    }
-
-    /// <summary>
-    /// Main driver class for agent file operations, converted from COBOL FLDRIVR1.
+    /// Implements the driver logic for agent file operations, converted from COBOL FLDRIVR1.
     /// </summary>
     public class AgentFileDriver
     {
@@ -155,142 +85,168 @@ namespace AgentFileDriver
         private readonly ILogger<AgentFileDriver> _logger;
 
         /// <summary>
-        /// Initializes a new instance of <see cref="AgentFileDriver"/>.
+        /// Initializes a new instance of the <see cref="AgentFileDriver"/> class.
         /// </summary>
         /// <param name="repository">The agent file repository.</param>
         /// <param name="logger">The logger instance.</param>
         public AgentFileDriver(IAgentFileRepository repository, ILogger<AgentFileDriver> logger)
         {
-            _repository = repository;
-            _logger = logger;
+            _repository = repository ?? throw new ArgumentNullException(nameof(repository));
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
         /// <summary>
         /// Executes the requested agent file operation asynchronously.
         /// </summary>
-        /// <param name="input">The input parameters for the operation.</param>
-        /// <returns>The output result containing status code and agent record (if applicable).</returns>
-        /// <exception cref="AgentFileException">Thrown when a file operation fails.</exception>
-        public async Task<AgentFileOutput> ExecuteAsync(AgentFileInput input)
+        /// <param name="input">The operation input parameters.</param>
+        /// <returns>The operation output/result.</returns>
+        /// <exception cref="AgentFileException">Thrown on file errors.</exception>
+        public async Task<AgentFileOperationOutput> ExecuteAsync(AgentFileOperationInput input)
         {
-            string statusCode = "99";
-            AgentRecord? agentRecord = null;
+            if (input is null)
+                throw new ArgumentNullException(nameof(input));
+
+            string statusCode = "99"; // Default to invalid operation
+            AgentRecord? agent = null;
 
             try
             {
                 switch (input.OperationType?.Trim().ToUpperInvariant())
                 {
                     case "OPEN":
-                        await _repository.OpenAsync();
+                        await OpenAgentFileAsync();
                         statusCode = "00";
                         break;
 
                     case "CLOSE":
-                        await _repository.CloseAsync();
+                        await CloseAgentFileAsync();
                         statusCode = "00";
                         break;
 
                     case "SEARCH":
-                        agentRecord = await SearchAgentAsync(input.AgentCode);
-                        statusCode = agentRecord is not null ? "00" : "23";
+                        (statusCode, agent) = await SearchAgentFileAsync(input.AgentCode);
                         break;
 
                     default:
                         statusCode = "99";
-                        _logger.LogWarning("Unknown operation type: {OperationType}", input.OperationType);
+                        _logger.LogWarning("Invalid operation type: {OperationType}", input.OperationType);
                         break;
                 }
             }
             catch (AgentFileException ex)
             {
                 statusCode = ex.StatusCode;
-                HandleError(input.OperationType, ex.Message, ex.StatusCode);
+                _logger.LogError(ex, "Agent file operation failed: {OperationType} (Status: {StatusCode})", input.OperationType, ex.StatusCode);
             }
             catch (Exception ex)
             {
                 statusCode = "99";
-                HandleError(input.OperationType, ex.Message, statusCode);
+                _logger.LogCritical(ex, "Unexpected error in AgentFileDriver: {OperationType}", input.OperationType);
             }
 
-            return new AgentFileOutput(statusCode, agentRecord);
+            return new AgentFileOperationOutput(statusCode, agent);
+        }
+
+        /// <summary>
+        /// Opens the agent file for input operations.
+        /// </summary>
+        private async Task OpenAgentFileAsync()
+        {
+            try
+            {
+                await _repository.OpenAsync();
+            }
+            catch (Exception ex)
+            {
+                throw new AgentFileException("Failed to open agent file.", "98");
+            }
+        }
+
+        /// <summary>
+        /// Closes the agent file.
+        /// </summary>
+        private async Task CloseAgentFileAsync()
+        {
+            try
+            {
+                await _repository.CloseAsync();
+            }
+            catch (Exception ex)
+            {
+                throw new AgentFileException("Failed to close agent file.", "98");
+            }
         }
 
         /// <summary>
         /// Searches for an agent record by agent code.
         /// </summary>
         /// <param name="agentCode">The agent code to search for.</param>
-        /// <returns>The agent record if found; otherwise, null.</returns>
-        private async Task<AgentRecord?> SearchAgentAsync(string agentCode)
+        /// <returns>
+        /// Tuple of status code and agent record (if found).
+        /// Status code: "00" = found, "23" = not found, "98" = file error.
+        /// </returns>
+        private async Task<(string statusCode, AgentRecord? agent)> SearchAgentFileAsync(string agentCode)
         {
+            if (string.IsNullOrWhiteSpace(agentCode))
+                return ("99", null);
+
             try
             {
-                var record = await _repository.SearchAsync(agentCode);
-                if (record is null)
+                var agent = await _repository.SearchAsync(agentCode.Trim());
+                if (agent is not null)
                 {
-                    throw new AgentFileException($"Agent record not found for code: {agentCode}", "23");
+                    return ("00", agent);
                 }
-                return record;
-            }
-            catch (AgentFileException)
-            {
-                throw;
+                else
+                {
+                    return ("23", null); // Not found
+                }
             }
             catch (Exception ex)
             {
-                throw new AgentFileException($"Unexpected error during agent search: {ex.Message}", "99");
+                throw new AgentFileException("Failed to search agent file.", "98");
             }
-        }
-
-        /// <summary>
-        /// Handles errors by logging and optionally performing additional actions.
-        /// </summary>
-        /// <param name="operationType">The operation type during which the error occurred.</param>
-        /// <param name="errorMessage">The error message.</param>
-        /// <param name="statusCode">The status code associated with the error.</param>
-        private void HandleError(string? operationType, string errorMessage, string statusCode)
-        {
-            _logger.LogError("IN FLDRIVR1");
-            _logger.LogError("ERROR: {OperationType} ON AGENTVSAM FILE STATUS CODE: {StatusCode}. Message: {ErrorMessage}",
-                operationType, statusCode, errorMessage);
-            // In COBOL, ABEND would terminate the program. In C#, we log and propagate the error.
         }
     }
 
-    /// <summary>
-    /// Example of setting up dependency injection and running the driver.
-    /// </summary>
-    public static class Program
+    // Example stub implementation for IAgentFileRepository.
+    // In production, this would access a database, VSAM file, or other persistent store.
+    public class InMemoryAgentFileRepository : IAgentFileRepository
     {
-        /// <summary>
-        /// Entry point for demonstration.
-        /// </summary>
-        public static async Task Main(string[] args)
+        private bool _isOpen = false;
+        private readonly AgentRecord[] _agents;
+
+        public InMemoryAgentFileRepository(AgentRecord[] agents)
         {
-            // Setup DI and logging.
-            var serviceCollection = new ServiceCollection();
-            serviceCollection.AddLogging(configure => configure.AddConsole());
-            serviceCollection.AddScoped<IAgentFileRepository, AgentFileRepository>();
-            serviceCollection.AddScoped<AgentFileDriver>();
+            _agents = agents ?? Array.Empty<AgentRecord>();
+        }
 
-            var serviceProvider = serviceCollection.BuildServiceProvider();
+        public Task OpenAsync()
+        {
+            _isOpen = true;
+            return Task.CompletedTask;
+        }
 
-            var driver = serviceProvider.GetRequiredService<AgentFileDriver>();
+        public Task CloseAsync()
+        {
+            _isOpen = false;
+            return Task.CompletedTask;
+        }
 
-            // Example: Open file
-            var openResult = await driver.ExecuteAsync(new AgentFileInput("OPEN", ""));
-            Console.WriteLine($"OPEN Status: {openResult.StatusCode}");
+        public Task<AgentRecord?> SearchAsync(string agentCode)
+        {
+            if (!_isOpen)
+                throw new InvalidOperationException("File not open.");
 
-            // Example: Search for agent
-            var searchResult = await driver.ExecuteAsync(new AgentFileInput("SEARCH", "JohnDoe"));
-            Console.WriteLine($"SEARCH Status: {searchResult.StatusCode}");
-            if (searchResult.AgentRecord is not null)
-            {
-                Console.WriteLine($"Agent Name: {searchResult.AgentRecord.AgentName}");
-            }
+            // Simulate search by agent code (assume AgentContactNo is the code for demo)
+            var agent = _agents.FirstOrDefault(a => a.AgentContactNo == agentCode);
+            return Task.FromResult(agent);
+        }
 
-            // Example: Close file
-            var closeResult = await driver.ExecuteAsync(new AgentFileInput("CLOSE", ""));
-            Console.WriteLine($"CLOSE Status: {closeResult.StatusCode}");
+        public ValueTask DisposeAsync()
+        {
+            _isOpen = false;
+            return ValueTask.CompletedTask;
         }
     }
 }

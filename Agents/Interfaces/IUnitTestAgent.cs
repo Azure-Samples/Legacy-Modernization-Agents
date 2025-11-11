@@ -41,4 +41,22 @@ public interface IUnitTestAgent
     /// <param name="progressCallback">Optional callback for progress reporting.</param>
     /// <returns>The generated test files.</returns>
     Task<List<CSharpFile>> GenerateUnitTestsAsync(List<CSharpFile> csharpFiles, List<CobolAnalysis> cobolAnalyses, Action<int, int>? progressCallback = null);
+
+    /// <summary>
+    /// Generates a unit test report for Java test files.
+    /// </summary>
+    /// <param name="testFiles">The generated Java test files.</param>
+    /// <param name="sourceFiles">The original Java source files.</param>
+    /// <param name="outputDirectory">The directory where the report should be saved.</param>
+    /// <returns>The generated test report.</returns>
+    Task<UnitTestReport> GenerateTestReportAsync(List<JavaFile> testFiles, List<JavaFile> sourceFiles, string outputDirectory);
+
+    /// <summary>
+    /// Generates a unit test report for C# test files.
+    /// </summary>
+    /// <param name="testFiles">The generated C# test files.</param>
+    /// <param name="sourceFiles">The original C# source files.</param>
+    /// <param name="outputDirectory">The directory where the report should be saved.</param>
+    /// <returns>The generated test report.</returns>
+    Task<UnitTestReport> GenerateTestReportAsync(List<CSharpFile> testFiles, List<CSharpFile> sourceFiles, string outputDirectory);
 }

@@ -90,6 +90,53 @@ The COBOL Migration Tool now includes comprehensive **AI-powered unit test gener
 - Real-world examples
 - CI/CD integration examples
 
+### 6. **UnitTestReport Model**
+**Location:** `/Models/UnitTestReport.cs` (~140 lines)
+
+**Features:**
+- ✅ Comprehensive test metrics tracking
+- ✅ Coverage analysis by test type
+- ✅ Recommendations generation
+- ✅ Test file details and mapping
+- ✅ Run command suggestions
+
+**Classes:**
+- `UnitTestReport` - Main report structure
+- `TestFileInfo` - Per-test-file details
+- `TestCoverageAreas` - Coverage breakdown by type
+
+**Report Includes:**
+- Total test files and methods
+- Estimated code coverage percentage
+- Coverage by test type (business logic, edge cases, error handling, etc.)
+- Test-to-source file mapping
+- Automated recommendations
+- Platform-specific run commands
+
+### 7. **Test Report Generation**
+**Location:** `/Agents/UnitTestAgent.cs`
+
+**Added Methods:**
+- `GenerateTestReportAsync(List<JavaFile>, List<JavaFile>, string)` - Java report
+- `GenerateTestReportAsync(List<CSharpFile>, List<CSharpFile>, string)` - C# report
+- `AnalyzeJavaTestFile()` - Extract test metrics from Java tests
+- `AnalyzeCSharpTestFile()` - Extract test metrics from C# tests
+- `FormatReportAsMarkdown()` - Generate markdown report
+- `CalculateEstimatedCoverage()` - Heuristic coverage calculation
+- `GenerateRecommendations()` - Smart improvement suggestions
+
+**Report Output:**
+- Java: `java-output/unit-test-report.md`
+- C#: `csharp-output/unit-test-report.md`
+
+**Report Sections:**
+- Summary with key statistics
+- Test coverage analysis table
+- Test file details with source mapping
+- Coverage by test type (visual breakdown)
+- Personalized recommendations
+- Run commands for the platform
+
 ## 🚀 How to Use
 
 ### Automatic Test Generation (Recommended)
@@ -236,6 +283,8 @@ public void ProcessClaim_WithValidData_ShouldReturnSuccess()
 6. **Edge Cases** - Includes boundary conditions and error scenarios
 7. **Cost Tracked** - API usage monitored and reported
 8. **Dual Language** - Supports both Java and C# equally
+9. **Comprehensive Reports** - Detailed test metrics and recommendations
+10. **Coverage Analysis** - Breakdown by test type with improvement suggestions
 
 ## 🎓 Best Practices
 
@@ -276,6 +325,9 @@ To verify the implementation works:
 - [x] Progress shown during generation
 - [x] doctor.sh command added
 - [x] Documentation complete
+- [x] Test reports generated automatically
+- [x] Coverage analysis included
+- [x] Recommendations provided
 
 ## 🎉 Summary
 
@@ -290,6 +342,7 @@ And you'll get:
 - Converted Java code + JUnit tests
 - Converted C# code + xUnit tests
 - Validation reports
+- **Unit test reports with coverage analysis** ← NEW!
 - Comprehensive test coverage
 - API statistics
 

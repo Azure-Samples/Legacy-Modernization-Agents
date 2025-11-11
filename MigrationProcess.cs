@@ -370,6 +370,17 @@ public class MigrationProcess
                     _enhancedLogger.ShowSuccess($"Generated {javaTestFiles.Count} Java test files");
                     _enhancedLogger.LogBehindTheScenes("MIGRATION", "JAVA_TEST_GENERATION_COMPLETE",
                         $"Successfully generated {javaTestFiles.Count} JUnit test files");
+
+                    // Generate test report
+                    _enhancedLogger.LogBehindTheScenes("REPORTING", "JAVA_TEST_REPORT_START",
+                        "Generating Java unit test report");
+                    var javaTestReport = await _unitTestAgent.GenerateTestReportAsync(
+                        javaTestFiles,
+                        javaFiles,
+                        javaOutputFolder);
+                    _enhancedLogger.ShowSuccess($"Test report saved: {Path.GetFileName(javaTestReport.ReportPath)}");
+                    _enhancedLogger.LogBehindTheScenes("REPORTING", "JAVA_TEST_REPORT_COMPLETE",
+                        $"Test report: {javaTestReport.TotalTestMethods} tests, {javaTestReport.EstimatedCoverage:F1}% coverage");
                 }
             }
 
@@ -467,6 +478,17 @@ public class MigrationProcess
                     _enhancedLogger.ShowSuccess($"Generated {csharpTestFiles.Count} C# test files");
                     _enhancedLogger.LogBehindTheScenes("MIGRATION", "CSHARP_TEST_GENERATION_COMPLETE",
                         $"Successfully generated {csharpTestFiles.Count} xUnit test files");
+
+                    // Generate test report
+                    _enhancedLogger.LogBehindTheScenes("REPORTING", "CSHARP_TEST_REPORT_START",
+                        "Generating C# unit test report");
+                    var csharpTestReport = await _unitTestAgent.GenerateTestReportAsync(
+                        csharpTestFiles,
+                        csharpFiles,
+                        csharpOutputFolder);
+                    _enhancedLogger.ShowSuccess($"Test report saved: {Path.GetFileName(csharpTestReport.ReportPath)}");
+                    _enhancedLogger.LogBehindTheScenes("REPORTING", "CSHARP_TEST_REPORT_COMPLETE",
+                        $"Test report: {csharpTestReport.TotalTestMethods} tests, {csharpTestReport.EstimatedCoverage:F1}% coverage");
                 }
             }
 
