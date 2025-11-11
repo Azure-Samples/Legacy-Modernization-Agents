@@ -24,6 +24,7 @@ public class MigrationProcess
     private IJavaConverterAgent? _javaConverterAgent;
     private ICSharpConverterAgent? _csharpConverterAgent;
     private IDependencyMapperAgent? _dependencyMapperAgent;
+    private IValidationAgent? _validationAgent;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="MigrationProcess"/> class.
@@ -89,6 +90,14 @@ public class MigrationProcess
             _settings.AISettings.DependencyMapperModelId ?? _settings.AISettings.CobolAnalyzerModelId,
             _enhancedLogger,
             _chatLogger);
+
+        // Initialize ValidationAgent with a new kernel for validation
+        var validationKernel = _kernelBuilder.Build();
+        _validationAgent = new ValidationAgent(
+            validationKernel,
+            loggerFactory.CreateLogger<ValidationAgent>(),
+            _chatLogger,
+            _enhancedLogger);
 
         _enhancedLogger.ShowSuccess("All agents initialized successfully with API call tracking");
     }
@@ -299,6 +308,24 @@ public class MigrationProcess
                     progressCallback?.Invoke($"Saving Java files ({i + 1}/{javaFiles.Count})", currentStep, totalSteps);
                 }
                 _enhancedLogger.ShowSuccess($"Saved {javaFiles.Count} Java files");
+
+                // Validate Java conversion
+                if (_validationAgent != null)
+                {
+                    _enhancedLogger.ShowStep(currentStep + 1, totalSteps, "Java Validation", "Validating Java conversion accuracy");
+                    _enhancedLogger.LogBehindTheScenes("MIGRATION", "JAVA_VALIDATION_START",
+                        "Running AI-powered validation of Java conversion");
+
+                    var javaValidationReport = await _validationAgent.ValidateConversionAsync(
+                        cobolSourceFolder,
+                        javaOutputFolder,
+                        "Java",
+                        Path.Combine(javaOutputFolder, "validation-report.md"));
+
+                    _enhancedLogger.ShowSuccess($"Java validation complete - Accuracy: {javaValidationReport.AccuracyScore:F1}%, Status: {javaValidationReport.Status}");
+                    _enhancedLogger.LogBehindTheScenes("MIGRATION", "JAVA_VALIDATION_COMPLETE",
+                        $"Validation score: {javaValidationReport.AccuracyScore}%, {javaValidationReport.Differences.Count} differences found");
+                }
             }
 
             // Convert to C# if requested
@@ -342,6 +369,24 @@ public class MigrationProcess
                     progressCallback?.Invoke($"Saving C# files ({i + 1}/{csharpFiles.Count})", currentStep, totalSteps);
                 }
                 _enhancedLogger.ShowSuccess($"Saved {csharpFiles.Count} C# files");
+
+                // Validate C# conversion
+                if (_validationAgent != null)
+                {
+                    _enhancedLogger.ShowStep(currentStep + 1, totalSteps, "C# Validation", "Validating C# conversion accuracy");
+                    _enhancedLogger.LogBehindTheScenes("MIGRATION", "CSHARP_VALIDATION_START",
+                        "Running AI-powered validation of C# conversion");
+
+                    var csharpValidationReport = await _validationAgent.ValidateConversionAsync(
+                        cobolSourceFolder,
+                        csharpOutputFolder,
+                        "CSharp",
+                        Path.Combine(csharpOutputFolder, "validation-report.md"));
+
+                    _enhancedLogger.ShowSuccess($"C# validation complete - Accuracy: {csharpValidationReport.AccuracyScore:F1}%, Status: {csharpValidationReport.Status}");
+                    _enhancedLogger.LogBehindTheScenes("MIGRATION", "CSHARP_VALIDATION_COMPLETE",
+                        $"Validation score: {csharpValidationReport.AccuracyScore}%, {csharpValidationReport.Differences.Count} differences found");
+                }
             }
 
             // Generate migration report

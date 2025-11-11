@@ -57,6 +57,13 @@ var configOption = new Option<string>(
 configOption.AddAlias("-c");
 rootCommand.AddOption(configOption);
 
+var validateOption = new Option<bool>(
+    "--validate",
+    () => false,
+    "Run validation on converted code instead of migration");
+validateOption.AddAlias("-v");
+rootCommand.AddOption(validateOption);
+
 // Add conversation log generation command
 var conversationCommand = new Command("conversation", "Generate a readable conversation log from migration logs");
 
@@ -136,7 +143,7 @@ conversationCommand.SetHandler(async (string sessionId, string logDir, bool live
 rootCommand.AddCommand(conversationCommand);
 
 // Set up the command handler
-rootCommand.SetHandler(async (string cobolSource, string javaOutput, string csharpOutput, string targetLang, string configPath) =>
+rootCommand.SetHandler(async (string cobolSource, string javaOutput, string csharpOutput, string targetLang, string configPath, bool validate) =>
 {
     try
     {
@@ -244,6 +251,44 @@ rootCommand.SetHandler(async (string cobolSource, string javaOutput, string csha
 
         migrationProcess.InitializeAgents();
 
+        // Check if this is a validation run
+        if (validate)
+        {
+            Console.WriteLine($"Starting validation of {targetLanguage} conversion...");
+
+            // Run validation instead of migration
+            // The validation agent is already initialized in migrationProcess.InitializeAgents()
+            // We'll call it directly through a new RunValidationAsync method
+            // For now, show info that validation needs to be called via validation agent
+
+            Console.WriteLine("⚠️  Validation mode requires converted code to exist.");
+            Console.WriteLine("    Please ensure you have run migration first.");
+            Console.WriteLine();
+            Console.WriteLine($"Validating conversions against COBOL source: {settings.ApplicationSettings.CobolSourceFolder}");
+
+            if (convertToJava && Directory.Exists(settings.ApplicationSettings.JavaOutputFolder))
+            {
+                Console.WriteLine($"📁 Java conversion path: {settings.ApplicationSettings.JavaOutputFolder}");
+                // Validation will be implemented in a future update
+                Console.WriteLine("⚠️  Java validation not yet implemented in standalone mode.");
+                Console.WriteLine("    Validation runs automatically after migration.");
+            }
+
+            if (convertToCSharp && Directory.Exists(settings.ApplicationSettings.CSharpOutputFolder))
+            {
+                Console.WriteLine($"📁 C# conversion path: {settings.ApplicationSettings.CSharpOutputFolder}");
+                // Validation will be implemented in a future update
+                Console.WriteLine("⚠️  C# validation not yet implemented in standalone mode.");
+                Console.WriteLine("    Validation runs automatically after migration.");
+            }
+
+            Console.WriteLine();
+            Console.WriteLine("ℹ️  Validation currently runs automatically after migration.");
+            Console.WriteLine("   To validate, simply run the migration again - it will include validation.");
+
+            return;
+        }
+
         // Run migration process
         Console.WriteLine($"Starting COBOL to {targetLanguage} migration process...");
 
@@ -258,13 +303,27 @@ rootCommand.SetHandler(async (string cobolSource, string javaOutput, string csha
             });
 
         Console.WriteLine("Migration process completed successfully.");
+        Console.WriteLine();
+        Console.WriteLine("📊 Validation reports generated:");
+        if (convertToJava && settings.ApplicationSettings.JavaOutputFolder != null)
+        {
+            var javaReport = Path.Combine(settings.ApplicationSettings.JavaOutputFolder, "validation-report.md");
+            if (File.Exists(javaReport))
+                Console.WriteLine($"   ✅ Java: {javaReport}");
+        }
+        if (convertToCSharp && settings.ApplicationSettings.CSharpOutputFolder != null)
+        {
+            var csharpReport = Path.Combine(settings.ApplicationSettings.CSharpOutputFolder, "validation-report.md");
+            if (File.Exists(csharpReport))
+                Console.WriteLine($"   ✅ C#: {csharpReport}");
+        }
     }
     catch (Exception ex)
     {
         logger.LogError(ex, "Error in migration process");
         Environment.Exit(1);
     }
-}, cobolSourceOption, javaOutputOption, csharpOutputOption, targetLanguageOption, configOption);
+}, cobolSourceOption, javaOutputOption, csharpOutputOption, targetLanguageOption, configOption, validateOption);
 
 // Execute the command
 return await rootCommand.InvokeAsync(args);

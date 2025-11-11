@@ -1,13 +1,12 @@
-#nullable enable
-
 using System;
 
 namespace InsuranceAgentNotifications.Models
 {
     /// <summary>
-    /// Represents a notification record for an insurance agent and associated policy.
+    /// Represents a notification record for an insurance agent, including agent details,
+    /// policy information, and notification messages.
     /// </summary>
-    public record AgentNotifyRecord
+    public record AgentNotificationRecord
     {
         /// <summary>
         /// Gets or sets the unique code identifying the agent.
@@ -35,7 +34,7 @@ namespace InsuranceAgentNotifications.Models
         public string AgentCity { get; init; } = string.Empty;
 
         /// <summary>
-        /// Gets or sets the state code for the agent's location.
+        /// Gets or sets the state abbreviation for the agent's location.
         /// </summary>
         public string AgentState { get; init; } = string.Empty;
 
@@ -60,56 +59,23 @@ namespace InsuranceAgentNotifications.Models
         public string PolicyHolderLastName { get; init; } = string.Empty;
 
         /// <summary>
-        /// Gets or sets the start date of the policy (as a string, format: yyyy-MM-dd).
+        /// Gets or sets the start date of the policy (format: yyyy-MM-dd).
         /// </summary>
         public string PolicyStartDate { get; init; } = string.Empty;
 
         /// <summary>
-        /// Gets or sets the expiry date of the policy (as a string, format: yyyy-MM-dd).
+        /// Gets or sets the expiry date of the policy (format: yyyy-MM-dd).
         /// </summary>
         public string PolicyExpiryDate { get; init; } = string.Empty;
 
         /// <summary>
-        /// Gets or sets the date of notification (as a string, format: yyyy-MM-dd).
+        /// Gets or sets the date the notification was sent (format: yyyy-MM-dd).
         /// </summary>
         public string NotifyDate { get; init; } = string.Empty;
 
         /// <summary>
-        /// Gets or sets the notification messages related to the agent and policy.
+        /// Gets or sets the notification message(s) for the agent.
         /// </summary>
         public string NotifyMessages { get; init; } = string.Empty;
-
-        /// <summary>
-        /// Attempts to parse the policy start date as a <see cref="DateTime"/>.
-        /// </summary>
-        /// <returns>The parsed <see cref="DateTime"/> if successful; otherwise, <c>null</c>.</returns>
-        public DateTime? GetPolicyStartDate()
-        {
-            if (DateTime.TryParse(PolicyStartDate, out var date))
-                return date;
-            return null;
-        }
-
-        /// <summary>
-        /// Attempts to parse the policy expiry date as a <see cref="DateTime"/>.
-        /// </summary>
-        /// <returns>The parsed <see cref="DateTime"/> if successful; otherwise, <c>null</c>.</returns>
-        public DateTime? GetPolicyExpiryDate()
-        {
-            if (DateTime.TryParse(PolicyExpiryDate, out var date))
-                return date;
-            return null;
-        }
-
-        /// <summary>
-        /// Attempts to parse the notification date as a <see cref="DateTime"/>.
-        /// </summary>
-        /// <returns>The parsed <see cref="DateTime"/> if successful; otherwise, <c>null</c>.</returns>
-        public DateTime? GetNotifyDate()
-        {
-            if (DateTime.TryParse(NotifyDate, out var date))
-                return date;
-            return null;
-        }
     }
 }

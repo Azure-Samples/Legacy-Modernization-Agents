@@ -33,12 +33,18 @@ show_usage() {
     echo -e "  ${GREEN}monitor${NC}         Monitor migration progress"
     echo -e "  ${GREEN}chat-test${NC}       Test chat logging functionality"
     echo -e "  ${GREEN}validate${NC}        Validate system requirements"
+    echo -e "  ${GREEN}validate-code${NC}   Validate converted code against COBOL source"
     echo -e "  ${GREEN}conversation${NC}    Start interactive conversation mode"
     echo
     echo -e "${BOLD}Run Command Options:${NC}"
     echo -e "  --target java     Convert to Java Quarkus"
     echo -e "  --target csharp   Convert to C# .NET"
     echo -e "  --target both     Convert to both languages"
+    echo
+    echo -e "${BOLD}Validate-Code Command Options:${NC}"
+    echo -e "  --target java     Validate Java conversion only"
+    echo -e "  --target csharp   Validate C# conversion only"
+    echo -e "  --target both     Validate both conversions (default)"
     echo
     echo -e "${BOLD}Examples:${NC}"
     echo -e "  $0              ${CYAN}# Run configuration doctor${NC}"
@@ -48,6 +54,8 @@ show_usage() {
     echo -e "  $0 run --target java     ${CYAN}# Convert to Java only${NC}"
     echo -e "  $0 run --target csharp   ${CYAN}# Convert to C# only${NC}"
     echo -e "  $0 run --target both     ${CYAN}# Convert to both languages${NC}"
+    echo -e "  $0 validate-code         ${CYAN}# Validate both conversions${NC}"
+    echo -e "  $0 validate-code --target java   ${CYAN}# Validate Java conversion${NC}"
     echo
 }
 
@@ -680,6 +688,159 @@ run_validate() {
     fi
 }
 
+# Function to validate converted code
+run_code_validation() {
+    echo -e "${BLUE}🔍 Code Validation - Comparing Converted Code with COBOL Source${NC}"
+    echo "================================================================="
+    echo
+
+    # Load configuration
+    echo "🔧 Loading AI configuration..."
+    if ! load_configuration; then
+        echo -e "${RED}❌ Configuration loading failed. Please run: ./doctor.sh setup${NC}"
+        return 1
+    fi
+
+    # Load and validate configuration
+    if ! load_ai_config; then
+        echo -e "${RED}❌ Configuration loading failed. Please check your ai-config.local.env file.${NC}"
+        return 1
+    fi
+
+    # Parse command line arguments for --target option
+    TARGET_LANG=""
+    # Don't shift here - arguments are already shifted by main()
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --target)
+                TARGET_LANG="$2"
+                shift 2
+                ;;
+            *)
+                echo -e "${RED}❌ Unknown option: $1${NC}"
+                return 1
+                ;;
+        esac
+    done
+
+    # If no target specified, default to both
+    if [ -z "$TARGET_LANG" ]; then
+        echo -e "${CYAN}${BOLD}Select Target Language for Validation:${NC}"
+        echo "======================================"
+        echo
+        echo "1) Java Quarkus    - Validate Java conversion"
+        echo "2) C# .NET         - Validate C# conversion"
+        echo "3) Both            - Validate both conversions (default)"
+        echo
+        read -p "Enter your choice (1-3) [3]: " choice
+        choice=${choice:-3}
+
+        case $choice in
+            1)
+                TARGET_LANG="java"
+                echo -e "${GREEN}✅ Selected: Java Validation${NC}"
+                ;;
+            2)
+                TARGET_LANG="csharp"
+                echo -e "${GREEN}✅ Selected: C# Validation${NC}"
+                ;;
+            3)
+                TARGET_LANG="both"
+                echo -e "${GREEN}✅ Selected: Both Languages${NC}"
+                ;;
+            *)
+                echo -e "${YELLOW}⚠️  Invalid choice. Defaulting to both.${NC}"
+                TARGET_LANG="both"
+                ;;
+        esac
+        echo
+    fi
+
+    # Normalize target language
+    TARGET_LANG=$(echo "$TARGET_LANG" | tr '[:upper:]' '[:lower:]')
+
+    # Validate based on target language
+    case $TARGET_LANG in
+        "java")
+            if [ ! -d "$SCRIPT_DIR/java-output" ] || [ -z "$(ls -A $SCRIPT_DIR/java-output 2>/dev/null)" ]; then
+                echo -e "${RED}❌ No Java output found. Please run migration first.${NC}"
+                return 1
+            fi
+            echo -e "${BLUE}🔍 Validating Java Conversion...${NC}"
+            echo "================================="
+            echo
+            dotnet run --project "$PROJECT_DIR/CobolModernization.csproj" -- \
+                --validate \
+                --cobol-source ./cobol-source \
+                --java-output ./java-output \
+                --target Java
+            echo
+            echo -e "${GREEN}✅ Java validation completed!${NC}"
+            echo "📄 Validation report: ./java-output/validation-report.md"
+            ;;
+        "csharp"|"cs")
+            if [ ! -d "$SCRIPT_DIR/csharp-output" ] || [ -z "$(ls -A $SCRIPT_DIR/csharp-output 2>/dev/null)" ]; then
+                echo -e "${RED}❌ No C# output found. Please run migration first.${NC}"
+                return 1
+            fi
+            echo -e "${BLUE}🔍 Validating C# Conversion...${NC}"
+            echo "==============================="
+            echo
+            dotnet run --project "$PROJECT_DIR/CobolModernization.csproj" -- \
+                --validate \
+                --cobol-source ./cobol-source \
+                --csharp-output ./csharp-output \
+                --target CSharp
+            echo
+            echo -e "${GREEN}✅ C# validation completed!${NC}"
+            echo "📄 Validation report: ./csharp-output/validation-report.md"
+            ;;
+        "both")
+            echo -e "${BLUE}🔍 Validating Both Conversions...${NC}"
+            echo "=================================="
+            echo
+            
+            # Validate Java if output exists
+            if [ -d "$SCRIPT_DIR/java-output" ] && [ -n "$(ls -A $SCRIPT_DIR/java-output 2>/dev/null)" ]; then
+                echo -e "${CYAN}Validating Java Conversion...${NC}"
+                dotnet run --project "$PROJECT_DIR/CobolModernization.csproj" -- \
+                    --validate \
+                    --cobol-source ./cobol-source \
+                    --java-output ./java-output \
+                    --target Java
+                echo
+            else
+                echo -e "${YELLOW}⚠️  No Java output found, skipping Java validation${NC}"
+            fi
+
+            # Validate C# if output exists
+            if [ -d "$SCRIPT_DIR/csharp-output" ] && [ -n "$(ls -A $SCRIPT_DIR/csharp-output 2>/dev/null)" ]; then
+                echo -e "${CYAN}Validating C# Conversion...${NC}"
+                dotnet run --project "$PROJECT_DIR/CobolModernization.csproj" -- \
+                    --validate \
+                    --cobol-source ./cobol-source \
+                    --csharp-output ./csharp-output \
+                    --target CSharp
+                echo
+            else
+                echo -e "${YELLOW}⚠️  No C# output found, skipping C# validation${NC}"
+            fi
+
+            echo -e "${GREEN}✅ Validation completed!${NC}"
+            echo
+            echo "📄 Validation reports:"
+            [ -f "$SCRIPT_DIR/java-output/validation-report.md" ] && echo "   - Java: ./java-output/validation-report.md"
+            [ -f "$SCRIPT_DIR/csharp-output/validation-report.md" ] && echo "   - C#: ./csharp-output/validation-report.md"
+            ;;
+        *)
+            echo -e "${RED}❌ Invalid target language: $TARGET_LANG${NC}"
+            echo "Valid options: java, csharp, both"
+            return 1
+            ;;
+    esac
+    echo
+}
+
 # Function for conversation mode
 run_conversation() {
     echo -e "${BLUE}💭 Interactive Conversation Mode${NC}"
@@ -728,6 +889,10 @@ main() {
             ;;
         "validate")
             run_validate
+            ;;
+        "validate-code")
+            shift # Remove 'validate-code' from arguments
+            run_code_validation "$@"
             ;;
         "conversation")
             run_conversation

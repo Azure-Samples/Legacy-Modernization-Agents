@@ -2,25 +2,24 @@
 
 ```mermaid
 graph TB
+  %% Styles
+  classDef program fill:#e3f2fd,stroke:#1976d2,stroke-width:2px,color:#0d47a1,rx:8,ry:8;
+  classDef copybook fill:#fff3e0,stroke:#f57c00,stroke-width:2px,color:#e65100,rx:8,ry:8;
+  classDef header fill:#c8e6c9,stroke:#388e3c,stroke-width:2px,color:#1b5e20,rx:8,ry:8;
+
   %% Subgraph: COBOL Programs
   subgraph COBOL Programs
-    style COBOL Programs fill:#e3f2fd,stroke:#1976d2,stroke-width:2px
+    direction TB
     DBDRIVR1["DBDRIVR1.cbl"]
     DBDRIVR2["DBDRIVR2.cbl"]
     FLDRIVR1["FLDRIVR1.cbl"]
     FLDRIVR2["FLDRIVR2.cbl"]
     MAINPGM["MAINPGM.cbl"]
-    %% Program node styles
-    style DBDRIVR1 fill:#bbdefb,stroke:#1976d2,stroke-width:2px
-    style DBDRIVR2 fill:#bbdefb,stroke:#1976d2,stroke-width:2px
-    style FLDRIVR1 fill:#bbdefb,stroke:#1976d2,stroke-width:2px
-    style FLDRIVR2 fill:#bbdefb,stroke:#1976d2,stroke-width:2px
-    style MAINPGM fill:#bbdefb,stroke:#1976d2,stroke-width:2px
   end
 
   %% Subgraph: Copybooks
   subgraph Copybooks
-    style Copybooks fill:#fff3e0,stroke:#f57c00,stroke-width:2px
+    direction TB
     SQLCA["SQLCA.cpy"]
     DPOLICY["DPOLICY.cpy"]
     DCOVERAG["DCOVERAG.cpy"]
@@ -29,15 +28,6 @@ graph TB
     CPOLICY["CPOLICY.cpy"]
     CUSTNTFY["CUSTNTFY.cpy"]
     AGNTNTFY["AGNTNTFY.cpy"]
-    %% Copybook node styles
-    style SQLCA fill:#ffe0b2,stroke:#f57c00,stroke-width:2px
-    style DPOLICY fill:#ffe0b2,stroke:#f57c00,stroke-width:2px
-    style DCOVERAG fill:#ffe0b2,stroke:#f57c00,stroke-width:2px
-    style DTRAKING fill:#ffe0b2,stroke:#f57c00,stroke-width:2px
-    style CAGENT fill:#ffe0b2,stroke:#f57c00,stroke-width:2px
-    style CPOLICY fill:#ffe0b2,stroke:#f57c00,stroke-width:2px
-    style CUSTNTFY fill:#ffe0b2,stroke:#f57c00,stroke-width:2px
-    style AGNTNTFY fill:#ffe0b2,stroke:#f57c00,stroke-width:2px
   end
 
   %% Dependencies
@@ -55,4 +45,8 @@ graph TB
   MAINPGM -->|COPY| CAGENT
   MAINPGM -->|COPY| CUSTNTFY
   MAINPGM -->|COPY| AGNTNTFY
+
+  %% Styling
+  class DBDRIVR1,DBDRIVR2,FLDRIVR1,FLDRIVR2,MAINPGM program;
+  class SQLCA,DPOLICY,DCOVERAG,DTRAKING,CAGENT,CPOLICY,CUSTNTFY,AGNTNTFY copybook;
 ```
