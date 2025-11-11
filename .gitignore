@@ -75,18 +75,18 @@ Config/appsettings.secrets.json
 # =============================================================================
 
 # COBOL Source Files (Contains proprietary business logic)
-cobol-source/
-COBOL-Source/
-cobol-files/
-*.cbl
-*.cpy
-*.cob
+#cobol-source/
+#COBOL-Source/
+#cobol-files/
+#*.cbl
+#*.cpy
+#*.cob
 
 # Generated Java Output (Contains converted business logic)
-java-output/
-Java-Output/
-JavaOutput/
-generated-java/
+#java-output/
+#Java-Output/
+#JavaOutput/
+#generated-java/
 
 # =============================================================================
 # LOGS AND TEMPORARY FILES

@@ -1,0 +1,31 @@
+       01 POLICY-RECORD.  
+           05 POLICY-NUMBER            PIC X(10).  
+           05 POLICY-HOLDER-FNAME      PIC X(35).  
+           05 POLICY-HOLDER-MNAME      PIC X(01).
+           05 POLICY-HOLDER-LNAME      PIC X(35).
+           05 POLICY-BENEF-NAME        PIC X(60).
+           05 POLICY-BENEF-RELATION    PIC X(15).
+           05 POLICY-HOLDER-ADDR-1     PIC X(100). 
+           05 POLICY-HOLDER-ADDR-2     PIC X(100). 
+           05 POLICY-HOLDER-CITY       PIC X(30).           
+           05 POLICY-HOLDER-STATE      PIC X(2).   
+           05 POLICY-HOLDER-ZIP-CD     PIC X(10).  
+           05 POLICY-HOLDER-DOB        PIC X(10). 
+           05 POLICY-HOLDER-GENDER     PIC X(8).   
+           05 POLICY-HOLDER-PHONE      PIC X(10). 
+           05 POLICY-HOLDER-EMAIL      PIC X(30). 
+           05 POLICY-PAYMENT-FREQ      PIC X(10). 
+           05 POLICY-PAYMENT-METHOD    PIC X(8). 
+           05 POLICY-UNDERWRITER       PIC X(50). 
+           05 POLICY-TERMS-COND        PIC X(200). 
+           05 POLICY-CLAIMED           PIC X(1). 
+           05 POLICY-DISCOUNT-CODE     PIC X(10). 
+           05 POLICY-PREMIUM-AMOUNT    PIC S9(5)V9(2) COMP-3.                   
+           05 POLICY-TYPE              PIC X(50).  
+           05 POLICY-START-DATE        PIC X(10).  
+           05 POLICY-EXPIRY-DATE       PIC X(10). 
+           05 POLICY-STATUS            PIC X.  
+           05 POLICY-AGENT-CODE        PIC X(10).
+           05 POLICY-NOTIFY-FLAG       PIC X(1).
+           05 POLICY-ADD-TIMESTAMP     PIC X(26).  
+           05 POLICY-UPDATE-TIMESTAMP  PIC X(26). 
