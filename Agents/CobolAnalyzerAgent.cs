@@ -48,16 +48,16 @@ public class CobolAnalyzerAgent : ICobolAnalyzerAgent
     public async Task<CobolAnalysis> AnalyzeCobolFileAsync(CobolFile cobolFile)
     {
         var stopwatch = Stopwatch.StartNew();
-        
+
         _logger.LogInformation("Analyzing COBOL file: {FileName}", cobolFile.FileName);
-        _enhancedLogger?.LogBehindTheScenes("AI_PROCESSING", "COBOL_ANALYSIS_START", 
+        _enhancedLogger?.LogBehindTheScenes("AI_PROCESSING", "COBOL_ANALYSIS_START",
             $"Starting analysis of {cobolFile.FileName}", cobolFile.FileName);
-        
+
         var kernel = _kernelBuilder.Build();
-        
+
         // Declare apiCallId outside try block for proper scope
         var apiCallId = 0;
-        
+
         try
         {
             // Create system prompt for COBOL analysis
@@ -91,10 +91,10 @@ Provide a detailed, structured analysis as described in your instructions.
 
             // Log API call start
             apiCallId = _enhancedLogger?.LogApiCallStart(
-                "CobolAnalyzerAgent", 
-                "POST", 
-                "Azure OpenAI Chat Completion", 
-                _modelId, 
+                "CobolAnalyzerAgent",
+                "POST",
+                "Azure OpenAI Chat Completion",
+                _modelId,
                 $"Analyzing {cobolFile.FileName} ({cobolFile.Content.Length} chars)"
             ) ?? 0;
 
@@ -111,31 +111,31 @@ Provide a detailed, structured analysis as described in your instructions.
                     ["max_completion_tokens"] = 32768  // gpt-5-mini uses max_completion_tokens
                 }
             };
-            
+
             // Create the full prompt including system and user message
             var fullPrompt = $"{systemPrompt}\n\n{prompt}";
-            
-            _enhancedLogger?.LogBehindTheScenes("AI_PROCESSING", "PROMPT_GENERATION", 
+
+            _enhancedLogger?.LogBehindTheScenes("AI_PROCESSING", "PROMPT_GENERATION",
                 "Generated analysis prompt", $"System prompt: {systemPrompt.Length} chars, User prompt: {prompt.Length} chars");
-            
+
             // Convert OpenAI settings to kernel arguments
             var kernelArguments = new KernelArguments(executionSettings);
-            
+
             var functionResult = await kernel.InvokePromptAsync(
                 fullPrompt,
                 kernelArguments);
-            
+
             var analysisText = functionResult.GetValue<string>() ?? string.Empty;
-            
+
             // Log AI response to chat logger
             _chatLogger?.LogAIResponse("CobolAnalyzerAgent", cobolFile.FileName, analysisText);
-            
+
             stopwatch.Stop();
-            
+
             // Log API call completion
             _enhancedLogger?.LogApiCallEnd(apiCallId, analysisText, analysisText.Length / 4, 0.001m); // Rough token estimate
             _enhancedLogger?.LogPerformanceMetrics($"COBOL Analysis - {cobolFile.FileName}", stopwatch.Elapsed, 1);
-            
+
             // Parse the analysis into a structured object
             var analysis = new CobolAnalysis
             {
@@ -144,13 +144,13 @@ Provide a detailed, structured analysis as described in your instructions.
                 IsCopybook = cobolFile.IsCopybook,
                 RawAnalysisData = analysisText
             };
-            
+
             // In a real implementation, we would parse the analysis text to extract structured data
             // For this example, we'll just set some basic information
             analysis.ProgramDescription = "Extracted from AI analysis";
-            
+
             _logger.LogInformation("Completed analysis of COBOL file: {FileName}", cobolFile.FileName);
-            
+
             return analysis;
         }
         catch (Exception ex) when (ShouldFallback(ex))
@@ -173,16 +173,16 @@ Provide a detailed, structured analysis as described in your instructions.
         catch (Exception ex)
         {
             stopwatch.Stop();
-            
+
             // Log API call error if we have a call ID
             if (apiCallId > 0)
             {
                 _enhancedLogger?.LogApiCallError(apiCallId, ex.Message);
             }
-            
-            _enhancedLogger?.LogBehindTheScenes("ERROR", "COBOL_ANALYSIS_FAILED", 
+
+            _enhancedLogger?.LogBehindTheScenes("ERROR", "COBOL_ANALYSIS_FAILED",
                 $"Failed to analyze {cobolFile.FileName}: {ex.Message}", ex.GetType().Name);
-            
+
             _logger.LogError(ex, "Error analyzing COBOL file: {FileName}", cobolFile.FileName);
             throw;
         }
@@ -192,21 +192,21 @@ Provide a detailed, structured analysis as described in your instructions.
     public async Task<List<CobolAnalysis>> AnalyzeCobolFilesAsync(List<CobolFile> cobolFiles, Action<int, int>? progressCallback = null)
     {
         _logger.LogInformation("Analyzing {Count} COBOL files", cobolFiles.Count);
-        
+
         var analyses = new List<CobolAnalysis>();
         int processedCount = 0;
-        
+
         foreach (var cobolFile in cobolFiles)
         {
             var analysis = await AnalyzeCobolFileAsync(cobolFile);
             analyses.Add(analysis);
-            
+
             processedCount++;
             progressCallback?.Invoke(processedCount, cobolFiles.Count);
         }
-        
+
         _logger.LogInformation("Completed analysis of {Count} COBOL files", cobolFiles.Count);
-        
+
         return analyses;
     }
 

@@ -11,6 +11,13 @@
   <header>
     <h1>COBOL Migration Insights</h1>
     <p>Ask questions about your COBOL to Java Quarkus migration</p>
+    <div class="run-selector-container">
+      <label for="run-selector">Migration Run:</label>
+      <select id="run-selector" class="run-selector">
+        <option value="">Loading runs...</option>
+      </select>
+      <button id="refresh-runs-btn" class="refresh-runs-btn" title="Refresh runs list">⟳</button>
+    </div>
   </header>
 
     <main>
@@ -63,7 +70,7 @@
             </div>
             <div class="stage-info">
               <div class="stage-title">Azure OpenAI</div>
-              <div class="stage-status">Processing with gpt-5-mini...</div>
+              <div class="stage-status">Processing with AI model...</div>
             </div>
           </div>
           
@@ -88,7 +95,7 @@
     </section>
 
     <section class="panel graph-panel">
-      <h2>Dependency Graph <span class="run-id-badge">| Run <span id="current-run-id">...</span></span></h2>
+      <h2>Dependency Graph <span class="run-id-badge" id="graph-run-badge" style="display: none;">| Run <span id="current-run-id">...</span></span></h2>
       <div class="graph-toolbar">
         <div class="graph-controls">
           <label for="query-select">Query:</label>
@@ -203,7 +210,7 @@ WHERE migration_run_id = 43;</code></pre>
           <div class="info-box">
             <p><strong>Location:</strong> <code>bolt://localhost:7687</code></p>
             <p><strong>Browser:</strong> <a href="http://localhost:7474" target="_blank">http://localhost:7474</a></p>
-            <p><strong>Credentials:</strong> neo4j / YOUR_NEO4J_PASSWORD</p>
+            <p><strong>Credentials:</strong> neo4j / cobol-migration-2025</p>
             <p><strong>Purpose:</strong> Stores dependency graphs and file relationships</p>
           </div>
           
@@ -240,7 +247,7 @@ ORDER BY dependents DESC;</code></pre>
           <h4>Access Tools</h4>
           <ul>
             <li><strong>Neo4j Browser:</strong> <a href="http://localhost:7474" target="_blank">Open in Browser</a></li>
-            <li><strong>Cypher Shell:</strong> <code>cypher-shell -a bolt://localhost:7687 -u neo4j -p YOUR_NEO4J_PASSWORD</code></li>
+            <li><strong>Cypher Shell:</strong> <code>cypher-shell -a bolt://localhost:7687 -u neo4j -p cobol-migration-2025</code></li>
             <li><strong>Neo4j Desktop:</strong> <a href="https://neo4j.com/download/" target="_blank">Download</a></li>
           </ul>
         </div>
@@ -248,31 +255,31 @@ ORDER BY dependents DESC;</code></pre>
         <div id="apiTab" class="tab-content">
           <h3>🌐 MCP API Access</h3>
           <div class="info-box">
-            <p><strong>Base URL:</strong> <code>http://localhost:5250</code></p>
+            <p><strong>Base URL:</strong> <code>http://localhost:5028</code></p>
             <p><strong>Purpose:</strong> REST API for accessing migration data via MCP</p>
           </div>
           
           <h4>Available Endpoints</h4>
           <div class="query-box">
             <pre><code># Get all run IDs
-curl http://localhost:5250/api/runs/all
+curl http://localhost:5028/api/runs/all
 
 # Get dependencies for specific run
-curl http://localhost:5250/api/runs/43/dependencies | jq '.'
+curl http://localhost:5028/api/runs/43/dependencies | jq '.'
 
 # List all MCP resources
-curl http://localhost:5250/api/resources
+curl http://localhost:5028/api/resources
 
 # Ask questions via chat
-curl -X POST http://localhost:5250/api/chat \
+curl -X POST http://localhost:5028/api/chat \
   -H 'Content-Type: application/json' \
   -d '{"prompt":"Show me all dependencies for run 43"}'
 
 # Get current run info
-curl http://localhost:5250/api/runinfo
+curl http://localhost:5028/api/runinfo
 
 # Get data retrieval guide (this info as JSON)
-curl http://localhost:5250/api/data-retrieval-guide</code></pre>
+curl http://localhost:5028/api/data-retrieval-guide</code></pre>
           </div>
           
           <h4>MCP Resource URIs</h4>
@@ -288,6 +295,7 @@ curl http://localhost:5250/api/data-retrieval-guide</code></pre>
     </div>
   </div>
 
+  <script src="run-selector.js"></script>
   <script src="graph.js"></script>
   <script src="main.js"></script>
   <script src="runs-viewer.js"></script>

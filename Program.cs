@@ -3,6 +3,7 @@ using CobolToQuarkusMigration.Models;
 using CobolToQuarkusMigration.Persistence;
 using CobolToQuarkusMigration.Processes;
 using CobolToQuarkusMigration.Agents;
+using CobolToQuarkusMigration.Mcp;
 using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
 using System.CommandLine;

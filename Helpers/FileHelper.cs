@@ -4,7 +4,16 @@ using CobolToQuarkusMigration.Models;
 namespace CobolToQuarkusMigration.Helpers;
 
 /// <summary>
-/// Helper class for file operations.
+/// Helper class for cross-platform file operations.
+/// 
+/// Handles OS-specific concerns:
+/// - Windows MAX_PATH (260 character limit) with automatic path shortening
+/// - Windows reserved filenames (CON, PRN, AUX, NUL, COM1-9, LPT1-9)
+/// - Invalid characters for filenames on all platforms
+/// - Windows file locking with retry logic
+/// - UTF-8 encoding without BOM for maximum compatibility
+/// - Platform-specific line endings (CRLF on Windows, LF on Unix/Mac)
+/// - Directory creation with proper error handling
 /// </summary>
 public class FileHelper
 {
@@ -20,13 +29,13 @@ public class FileHelper
     }
 
     /// <summary>
-    /// Scans a directory for COBOL files including both programs (.cbl) and copybooks (.cpy).
+    /// Scans a directory for COBOL files.
     /// </summary>
     /// <param name="directory">The directory to scan.</param>
-    /// <returns>A list of COBOL files including both programs and copybooks.</returns>
+    /// <returns>A list of COBOL files.</returns>
     public async Task<List<CobolFile>> ScanDirectoryForCobolFilesAsync(string directory)
     {
-        _logger.LogInformation("Scanning directory for COBOL files and copybooks: {Directory}", directory);
+        _logger.LogInformation("Scanning directory for COBOL files: {Directory}", directory);
         
         if (!Directory.Exists(directory))
         {
@@ -71,76 +80,188 @@ public class FileHelper
     }
 
     /// <summary>
-    /// Saves a Java file to disk.
+    /// Saves a Java file to disk with cross-platform compatibility.
+    /// Handles Windows path length limits, invalid characters, and encoding issues.
     /// </summary>
     /// <param name="javaFile">The Java file to save.</param>
     /// <param name="outputDirectory">The output directory.</param>
     /// <returns>The full path to the saved file.</returns>
     public async Task<string> SaveJavaFileAsync(JavaFile javaFile, string outputDirectory)
     {
-        // Validate and sanitize the filename
-        var sanitizedFileName = SanitizeFileName(javaFile.FileName);
-        if (string.IsNullOrEmpty(sanitizedFileName))
+        try
         {
-            // Extract class name from content if filename is invalid
-            sanitizedFileName = ExtractClassNameFromContent(javaFile.Content) + ".java";
-            _logger.LogWarning("Invalid filename '{OriginalFileName}' replaced with '{SanitizedFileName}'", 
-                javaFile.FileName, sanitizedFileName);
+            // Validate and sanitize the filename
+            var sanitizedFileName = SanitizeFileName(javaFile.FileName);
+            if (string.IsNullOrEmpty(sanitizedFileName))
+            {
+                // Extract class name from content if filename is invalid
+                sanitizedFileName = ExtractClassNameFromContent(javaFile.Content) + ".java";
+                _logger.LogWarning("Invalid filename '{OriginalFileName}' replaced with '{SanitizedFileName}'", 
+                    javaFile.FileName, sanitizedFileName);
+            }
+            
+            _logger.LogInformation("Saving Java file: {FileName}", sanitizedFileName);
+            
+            // Normalize output directory path for current OS
+            outputDirectory = Path.GetFullPath(outputDirectory);
+            
+            // Create output directory with retry logic for Windows
+            EnsureDirectoryExists(outputDirectory);
+            
+            // Sanitize and validate package name
+            var sanitizedPackageName = SanitizePackageName(javaFile.PackageName);
+            if (string.IsNullOrEmpty(sanitizedPackageName))
+            {
+                // Extract package from content if package name is invalid
+                sanitizedPackageName = ExtractPackageNameFromContent(javaFile.Content);
+                _logger.LogWarning("Invalid package name '{OriginalPackage}' replaced with '{SanitizedPackage}'", 
+                    javaFile.PackageName, sanitizedPackageName);
+            }
+            
+            // Create package directory structure using OS-specific separator
+            var packagePath = sanitizedPackageName.Replace('.', Path.DirectorySeparatorChar);
+            var packageDirectory = Path.Combine(outputDirectory, packagePath);
+            
+            // Windows MAX_PATH is 260 characters, but we need to handle long paths
+            // Check if we're on Windows and path is too long
+            var potentialFilePath = Path.Combine(packageDirectory, sanitizedFileName);
+            var isWindows = Environment.OSVersion.Platform == PlatformID.Win32NT || 
+                           Environment.OSVersion.Platform == PlatformID.Win32Windows ||
+                           Environment.OSVersion.Platform == PlatformID.Win32S;
+            
+            if (isWindows && potentialFilePath.Length > 240) // Leave margin for Windows MAX_PATH (260)
+            {
+                _logger.LogWarning("Path too long for Windows ({Length} chars), using shortened package name", potentialFilePath.Length);
+                // Use just the last part of the package name
+                var parts = sanitizedPackageName.Split('.');
+                sanitizedPackageName = parts.Length > 2 
+                    ? string.Join('.', parts.TakeLast(2))
+                    : sanitizedPackageName;
+                packagePath = sanitizedPackageName.Replace('.', Path.DirectorySeparatorChar);
+                packageDirectory = Path.Combine(outputDirectory, packagePath);
+                potentialFilePath = Path.Combine(packageDirectory, sanitizedFileName);
+                
+                // If still too long, use flat structure
+                if (potentialFilePath.Length > 240)
+                {
+                    _logger.LogWarning("Path still too long, using flat structure in output directory");
+                    packageDirectory = outputDirectory;
+                    potentialFilePath = Path.Combine(packageDirectory, sanitizedFileName);
+                }
+            }
+            
+            // Create package directory with retry logic
+            EnsureDirectoryExists(packageDirectory);
+            
+            var filePath = Path.Combine(packageDirectory, sanitizedFileName);
+            
+            // Write file with explicit UTF-8 encoding (no BOM) and proper line endings
+            // Use cross-platform line endings (Environment.NewLine)
+            var normalizedContent = NormalizeLineEndings(javaFile.Content);
+            
+            // Write with retry logic for Windows file locking issues
+            await WriteFileWithRetryAsync(filePath, normalizedContent);
+            
+            _logger.LogInformation("Saved Java file: {FilePath}", filePath);
+            
+            return filePath;
         }
-        
-        _logger.LogInformation("Saving Java file: {FileName}", sanitizedFileName);
-        
-        if (!Directory.Exists(outputDirectory))
+        catch (PathTooLongException ex)
         {
-            _logger.LogInformation("Creating output directory: {Directory}", outputDirectory);
-            Directory.CreateDirectory(outputDirectory);
+            _logger.LogError(ex, "Path too long for file system. File: {FileName}, Package: {Package}", 
+                javaFile.FileName, javaFile.PackageName);
+            throw new InvalidOperationException(
+                $"Cannot save file '{javaFile.FileName}' - path exceeds OS limit. Try using a shorter output directory or package name.", ex);
         }
-        
-        // Sanitize and validate package name
-        var sanitizedPackageName = SanitizePackageName(javaFile.PackageName);
-        if (string.IsNullOrEmpty(sanitizedPackageName))
+        catch (UnauthorizedAccessException ex)
         {
-            // Extract package from content if package name is invalid
-            sanitizedPackageName = ExtractPackageNameFromContent(javaFile.Content);
-            _logger.LogWarning("Invalid package name '{OriginalPackage}' replaced with '{SanitizedPackage}'", 
-                javaFile.PackageName, sanitizedPackageName);
+            _logger.LogError(ex, "Access denied writing file: {FileName}. Check directory permissions.", javaFile.FileName);
+            throw new InvalidOperationException(
+                $"Access denied writing file '{javaFile.FileName}'. Ensure the output directory has write permissions.", ex);
         }
-        
-        // Create package directory structure
-        var packagePath = sanitizedPackageName.Replace('.', Path.DirectorySeparatorChar);
-        var packageDirectory = Path.Combine(outputDirectory, packagePath);
-        
-        // Validate the full path length before creating
-        var potentialFilePath = Path.Combine(packageDirectory, sanitizedFileName);
-        if (potentialFilePath.Length > 240) // Leave some margin before the 260 limit
+        catch (IOException ex)
         {
-            _logger.LogWarning("Path too long ({Length} chars), using shortened package name", potentialFilePath.Length);
-            // Use just the last part of the package name
-            var parts = sanitizedPackageName.Split('.');
-            sanitizedPackageName = parts.Length > 2 
-                ? string.Join('.', parts.TakeLast(2))
-                : sanitizedPackageName;
-            packagePath = sanitizedPackageName.Replace('.', Path.DirectorySeparatorChar);
-            packageDirectory = Path.Combine(outputDirectory, packagePath);
-            potentialFilePath = Path.Combine(packageDirectory, sanitizedFileName);
+            _logger.LogError(ex, "I/O error writing file: {FileName}. File may be locked by another process.", javaFile.FileName);
+            throw new InvalidOperationException(
+                $"Cannot write file '{javaFile.FileName}'. The file may be open in another program or the disk may be full.", ex);
         }
-        
-        if (!Directory.Exists(packageDirectory))
-        {
-            _logger.LogInformation("Creating package directory: {Directory}", packageDirectory);
-            Directory.CreateDirectory(packageDirectory);
-        }
-        
-        var filePath = Path.Combine(packageDirectory, sanitizedFileName);
-        await File.WriteAllTextAsync(filePath, javaFile.Content);
-        
-        _logger.LogInformation("Saved Java file: {FilePath}", filePath);
-        
-        return filePath;
     }
 
     /// <summary>
-    /// Sanitizes a filename by removing invalid characters and content
+    /// Ensures a directory exists, creating it with retry logic for Windows.
+    /// </summary>
+    private void EnsureDirectoryExists(string directoryPath)
+    {
+        if (Directory.Exists(directoryPath))
+            return;
+            
+        const int maxRetries = 3;
+        const int retryDelayMs = 100;
+        
+        for (int attempt = 1; attempt <= maxRetries; attempt++)
+        {
+            try
+            {
+                _logger.LogDebug("Creating directory: {Directory} (attempt {Attempt}/{MaxRetries})", 
+                    directoryPath, attempt, maxRetries);
+                Directory.CreateDirectory(directoryPath);
+                return;
+            }
+            catch (IOException ex) when (attempt < maxRetries)
+            {
+                _logger.LogWarning(ex, "Failed to create directory on attempt {Attempt}, retrying...", attempt);
+                Thread.Sleep(retryDelayMs);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                _logger.LogError(ex, "Access denied creating directory: {Directory}", directoryPath);
+                throw new InvalidOperationException(
+                    $"Cannot create directory '{directoryPath}'. Check that you have write permissions to the parent directory.", ex);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Writes a file with retry logic to handle Windows file locking issues.
+    /// </summary>
+    private async Task WriteFileWithRetryAsync(string filePath, string content)
+    {
+        const int maxRetries = 3;
+        const int retryDelayMs = 100;
+        
+        for (int attempt = 1; attempt <= maxRetries; attempt++)
+        {
+            try
+            {
+                // Use UTF-8 encoding without BOM for maximum compatibility
+                var encoding = new System.Text.UTF8Encoding(false);
+                await File.WriteAllTextAsync(filePath, content, encoding);
+                return;
+            }
+            catch (IOException ex) when (attempt < maxRetries && 
+                (ex.Message.Contains("being used by another process") || 
+                 ex.Message.Contains("locked")))
+            {
+                _logger.LogWarning("File locked on attempt {Attempt}, retrying in {Delay}ms...", attempt, retryDelayMs);
+                await Task.Delay(retryDelayMs);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Normalizes line endings to the current platform's standard.
+    /// </summary>
+    private string NormalizeLineEndings(string content)
+    {
+        if (string.IsNullOrEmpty(content))
+            return content;
+            
+        // Replace all line ending variations with the platform-specific one
+        return content.Replace("\r\n", "\n").Replace("\r", "\n").Replace("\n", Environment.NewLine);
+    }
+
+    /// <summary>
+    /// Sanitizes a filename by removing invalid characters and handling Windows reserved names.
     /// </summary>
     private string SanitizeFileName(string fileName)
     {
@@ -162,6 +283,26 @@ public class FileHelper
         var invalidChars = Path.GetInvalidFileNameChars();
         var sanitized = new string(firstLine.Where(c => !invalidChars.Contains(c)).ToArray());
         
+        // Remove any leading/trailing spaces or dots (Windows doesn't allow these)
+        sanitized = sanitized.Trim(' ', '.');
+        
+        // Check for Windows reserved names (CON, PRN, AUX, NUL, COM1-9, LPT1-9)
+        var reservedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "CON", "PRN", "AUX", "NUL",
+            "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+            "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
+        };
+        
+        var nameWithoutExtension = Path.GetFileNameWithoutExtension(sanitized);
+        if (reservedNames.Contains(nameWithoutExtension))
+        {
+            // Prefix with underscore to make it safe
+            sanitized = "_" + sanitized;
+            _logger.LogWarning("Filename '{Original}' is reserved on Windows, renamed to '{Sanitized}'", 
+                nameWithoutExtension, sanitized);
+        }
+        
         // Ensure it ends with .java
         if (!sanitized.EndsWith(".java", StringComparison.OrdinalIgnoreCase))
         {
@@ -169,6 +310,12 @@ public class FileHelper
                 sanitized = sanitized.TrimEnd('.') + ".java";
             else if (!string.IsNullOrEmpty(sanitized))
                 sanitized += ".java";
+        }
+        
+        // Final validation - ensure filename isn't empty after sanitization
+        if (string.IsNullOrWhiteSpace(sanitized) || sanitized == ".java")
+        {
+            return string.Empty;
         }
         
         return sanitized;
