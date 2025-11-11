@@ -76,6 +76,9 @@ public sealed class WebAppFactory : WebApplicationFactory<Program>
         public Task<IReadOnlyList<ResourceDto>> ListResourcesAsync(CancellationToken cancellationToken = default)
             => Task.FromResult<IReadOnlyList<ResourceDto>>(Resources);
 
+        public Task<string> ReadResourceAsync(string uri, CancellationToken cancellationToken = default)
+            => Task.FromResult($"Resource content for: {uri}");
+
         public Task<string> SendChatAsync(string prompt, CancellationToken cancellationToken = default)
             => Task.FromResult($"Echo: {prompt}");
 

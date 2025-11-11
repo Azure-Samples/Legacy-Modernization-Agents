@@ -35,7 +35,8 @@
 				"github.copilot-chat",
 				"ms-azuretools.vscode-docker",
 				"neo4j.neo4j-vscode",
-				"alexcvzz.vscode-sqlite"
+				"alexcvzz.vscode-sqlite",
+				"bierner.markdown-mermaid"
 			],
 			"settings": {
 				"editor.formatOnSave": true,

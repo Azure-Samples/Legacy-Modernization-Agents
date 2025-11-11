@@ -60,6 +60,13 @@ internal static class Program
         reverseEngineerOnlyOption.AddAlias("-reo-only");
         rootCommand.AddOption(reverseEngineerOnlyOption);
 
+        var skipReverseEngineeringOption = new Option<bool>("--skip-reverse-engineering", () => false, "Skip reverse engineering and run only Java conversion")
+        {
+            Arity = ArgumentArity.ZeroOrOne
+        };
+        skipReverseEngineeringOption.AddAlias("-skip-re");
+        rootCommand.AddOption(skipReverseEngineeringOption);
+
         var configOption = new Option<string>("--config", () => "Config/appsettings.json", "Path to the configuration file")
         {
             Arity = ArgumentArity.ZeroOrOne
@@ -76,10 +83,10 @@ internal static class Program
         var reverseEngineerCommand = BuildReverseEngineerCommand(loggerFactory, fileHelper, settingsHelper);
         rootCommand.AddCommand(reverseEngineerCommand);
 
-        rootCommand.SetHandler(async (string cobolSource, string javaOutput, string reverseEngineerOutput, bool reverseEngineerOnly, string configPath) =>
+        rootCommand.SetHandler(async (string cobolSource, string javaOutput, string reverseEngineerOutput, bool reverseEngineerOnly, bool skipReverseEngineering, string configPath) =>
         {
-            await RunMigrationAsync(loggerFactory, logger, fileHelper, settingsHelper, cobolSource, javaOutput, reverseEngineerOutput, reverseEngineerOnly, configPath);
-        }, cobolSourceOption, javaOutputOption, reverseEngineerOutputOption, reverseEngineerOnlyOption, configOption);
+            await RunMigrationAsync(loggerFactory, logger, fileHelper, settingsHelper, cobolSource, javaOutput, reverseEngineerOutput, reverseEngineerOnly, skipReverseEngineering, configPath);
+        }, cobolSourceOption, javaOutputOption, reverseEngineerOutputOption, reverseEngineerOnlyOption, skipReverseEngineeringOption, configOption);
 
         return rootCommand;
     }
@@ -305,7 +312,7 @@ internal static class Program
         }
     }
 
-    private static async Task RunMigrationAsync(ILoggerFactory loggerFactory, ILogger logger, FileHelper fileHelper, SettingsHelper settingsHelper, string cobolSource, string javaOutput, string reverseEngineerOutput, bool reverseEngineerOnly, string configPath)
+    private static async Task RunMigrationAsync(ILoggerFactory loggerFactory, ILogger logger, FileHelper fileHelper, SettingsHelper settingsHelper, string cobolSource, string javaOutput, string reverseEngineerOutput, bool reverseEngineerOnly, bool skipReverseEngineering, string configPath)
     {
         try
         {
@@ -405,26 +412,74 @@ internal static class Program
             var migrationRepository = new HybridMigrationRepository(sqliteMigrationRepository, neo4jMigrationRepository, hybridLogger);
             await migrationRepository.InitializeAsync();
 
-            var migrationProcess = new MigrationProcess(
-                kernelBuilder,
-                loggerFactory.CreateLogger<MigrationProcess>(),
-                fileHelper,
-                settings,
-                migrationRepository);
+            // Step 1: Run reverse engineering if requested (and not skipped)
+            if (!skipReverseEngineering || reverseEngineerOnly)
+            {
+                var enhancedLogger = new EnhancedLogger(loggerFactory.CreateLogger<EnhancedLogger>());
+                var cobolAnalyzerAgent = new CobolAnalyzerAgent(
+                    kernelBuilder,
+                    loggerFactory.CreateLogger<CobolAnalyzerAgent>(),
+                    settings.AISettings.CobolAnalyzerModelId ?? settings.AISettings.ModelId,
+                    enhancedLogger);
+                var businessLogicExtractorAgent = new BusinessLogicExtractorAgent(
+                    kernelBuilder,
+                    loggerFactory.CreateLogger<BusinessLogicExtractorAgent>(),
+                    settings.AISettings.ModelId,
+                    enhancedLogger);
 
-            migrationProcess.InitializeAgents();
+                var reverseEngineeringProcess = new ReverseEngineeringProcess(
+                    cobolAnalyzerAgent,
+                    businessLogicExtractorAgent,
+                    fileHelper,
+                    loggerFactory.CreateLogger<ReverseEngineeringProcess>(),
+                    enhancedLogger);
 
-            Console.WriteLine("Starting COBOL to Java Quarkus migration process...");
+                var reverseEngResult = await reverseEngineeringProcess.RunAsync(
+                    settings.ApplicationSettings.CobolSourceFolder,
+                    reverseEngineerOutput,
+                    (status, current, total) =>
+                    {
+                        Console.WriteLine($"{status} - {current}/{total}");
+                    });
 
-            await migrationProcess.RunAsync(
-                settings.ApplicationSettings.CobolSourceFolder,
-                settings.ApplicationSettings.JavaOutputFolder,
-                (status, current, total) =>
+                if (!reverseEngResult.Success)
                 {
-                    Console.WriteLine($"{status} - {current}/{total}");
-                });
+                    logger.LogError("Reverse engineering failed: {Error}", reverseEngResult.ErrorMessage);
+                    Environment.Exit(1);
+                }
 
-            Console.WriteLine("Migration process completed successfully.");
+                // If reverse-engineer-only mode, exit here
+                if (reverseEngineerOnly)
+                {
+                    Console.WriteLine("Reverse engineering completed successfully. Skipping Java conversion as requested.");
+                    return;
+                }
+            }
+
+            // Step 2: Run Java conversion (unless reverse-engineer-only mode)
+            if (!reverseEngineerOnly)
+            {
+                var migrationProcess = new MigrationProcess(
+                    kernelBuilder,
+                    loggerFactory.CreateLogger<MigrationProcess>(),
+                    fileHelper,
+                    settings,
+                    migrationRepository);
+
+                migrationProcess.InitializeAgents();
+
+                Console.WriteLine("Starting COBOL to Java Quarkus migration process...");
+
+                await migrationProcess.RunAsync(
+                    settings.ApplicationSettings.CobolSourceFolder,
+                    settings.ApplicationSettings.JavaOutputFolder,
+                    (status, current, total) =>
+                    {
+                        Console.WriteLine($"{status} - {current}/{total}");
+                    });
+
+                Console.WriteLine("Migration process completed successfully.");
+            }
         }
         catch (Exception ex)
         {
