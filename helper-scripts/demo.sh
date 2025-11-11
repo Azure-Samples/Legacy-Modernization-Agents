@@ -19,12 +19,17 @@ command_exists() {
 
 # Function to check if Neo4j is running
 neo4j_running() {
-    docker ps | grep -q "cobol-migration-neo4j"
+    docker ps | grep -q neo4j
+}
+
+# Function to check if Neo4j ports are in use
+neo4j_port_conflict() {
+    lsof -ti:7474 >/dev/null 2>&1 || lsof -ti:7687 >/dev/null 2>&1
 }
 
 # Function to check if portal is running
 portal_running() {
-    lsof -ti:5250 >/dev/null 2>&1
+    lsof -ti:5028 >/dev/null 2>&1
 }
 
 # Check for required tools
@@ -47,6 +52,16 @@ echo ""
 echo "📊 Step 1: Starting Neo4j graph database..."
 if neo4j_running; then
     echo "✅ Neo4j is already running"
+elif neo4j_port_conflict; then
+    echo "⚠️  Warning: Neo4j ports (7474/7687) are in use by another process"
+    echo "   Checking if it's accessible..."
+    if curl -s http://localhost:7474 > /dev/null 2>&1; then
+        echo "✅ Neo4j is accessible and ready to use"
+    else
+        echo "❌ Ports are blocked but Neo4j is not accessible"
+        echo "   Please stop the conflicting process or container"
+        exit 1
+    fi
 else
     echo "   Starting Neo4j container..."
     docker-compose up -d neo4j
@@ -98,18 +113,18 @@ echo ""
 
 # Step 4: Start the portal
 echo "🚀 Step 4: Starting web portal..."
-echo "   Portal will be available at: http://localhost:5250"
+echo "   Portal will be available at: http://localhost:5028"
 echo "   Neo4j Browser available at: http://localhost:7474"
 echo ""
 echo "📝 Quick Demo Guide:"
-echo "   1. Open http://localhost:5250 in your browser"
+echo "   1. Open http://localhost:5028 in your browser"
 echo "   2. Try the suggestion chips for quick queries"
 echo "   3. View the dependency graph on the right panel"
 echo "   4. Ask questions about COBOL files and dependencies"
 echo ""
 echo "🔑 Neo4j Credentials (if needed):"
 echo "   Username: neo4j"
-echo "   Password: YOUR_NEO4J_PASSWORD"
+echo "   Password: cobol-migration-2025"
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "Starting portal in background..."
@@ -119,13 +134,13 @@ echo ""
 cd McpChatWeb
 
 # Start portal in background
-nohup dotnet run --urls "http://localhost:5250" > /tmp/cobol-portal.log 2>&1 &
+nohup dotnet run --urls "http://localhost:5028" > /tmp/cobol-portal.log 2>&1 &
 PORTAL_PID=$!
 
 # Wait for portal to be ready (max 30 seconds)
 echo -n "⏳ Waiting for portal to start"
 for i in {1..30}; do
-  HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5250/ 2>/dev/null || echo "000")
+  HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5028/ 2>/dev/null || echo "000")
   if [ "$HTTP_CODE" = "200" ]; then
     echo " ✅"
     echo ""
@@ -134,7 +149,7 @@ for i in {1..30}; do
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
     echo "🌐 Access your demo:"
-    echo "   Portal:        http://localhost:5250"
+    echo "   Portal:        http://localhost:5028"
     echo "   Neo4j Browser: http://localhost:7474"
     echo ""
     echo "📊 Viewing Migration Run: $MCP_RUN_ID"
@@ -160,8 +175,8 @@ echo "📝 Check logs:"
 echo "   tail -50 /tmp/cobol-portal.log"
 echo ""
 echo "🔧 Troubleshooting:"
-echo "   1. Check if port 5250 is in use: lsof -i :5250"
-echo "   2. Try manually: cd McpChatWeb && MCP_RUN_ID=$MCP_RUN_ID dotnet run --urls \"http://localhost:5250\""
+echo "   1. Check if port 5028 is in use: lsof -i :5028"
+echo "   2. Try manually: cd McpChatWeb && MCP_RUN_ID=$MCP_RUN_ID dotnet run --urls \"http://localhost:5028\""
 echo "   3. Check .NET version: dotnet --version (should be 9.x)"
 echo ""
 echo "🧹 Cleaning up failed process..."
