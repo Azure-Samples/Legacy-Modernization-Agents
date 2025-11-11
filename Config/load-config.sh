@@ -145,12 +145,11 @@ load_ai_config() {
         return 1
     fi
     
-    # Load configuration files in priority order
-    # 1. Load template first (provides defaults)
-    load_env_file "$TEMPLATE_CONFIG" "template configuration"
-    
-    # 2. Load local overrides (if exists)
+    # Load configuration files in priority order (local overrides first)
     load_env_file "$LOCAL_CONFIG" "local configuration"
+    
+    # Then load template defaults for any remaining unset values
+    load_env_file "$TEMPLATE_CONFIG" "template configuration"
     
     # 3. Validate configuration
     if ! validate_config; then

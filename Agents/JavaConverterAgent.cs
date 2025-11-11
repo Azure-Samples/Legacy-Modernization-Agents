@@ -2,10 +2,18 @@ using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using Microsoft.SemanticKernel.Connectors.OpenAI;
+using Microsoft.SemanticKernel.Http;
 using CobolToQuarkusMigration.Agents.Interfaces;
 using CobolToQuarkusMigration.Models;
 using CobolToQuarkusMigration.Helpers;
+using System.ClientModel;
 using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Net.Sockets;
+using System.Reflection;
 
 namespace CobolToQuarkusMigration.Agents;
 
@@ -63,11 +71,16 @@ Follow these guidelines:
 5. Implement proper error handling
 6. Include comprehensive comments explaining the conversion decisions
 7. Make the code compatible with Quarkus framework
-8. Apply modern Java best practices, preferablely using Java Quarkus features
+8. Apply modern Java best practices, preferably using Java Quarkus features
+9. Use ONLY simple lowercase package names (e.g., com.example.cobol, com.example.bdcommit) - NO explanations in package declarations
+10. Return ONLY the Java code without markdown code blocks or additional text
+11. Package declarations must be single line: 'package com.example.something;'
 
 IMPORTANT: The COBOL code may contain placeholder terms that replaced Danish or other languages for error handling terminology for content filtering compatibility. 
 When you see terms like 'ERROR_CODE', 'ERROR_MSG', or 'ERROR_CALLING', understand these represent standard COBOL error handling patterns.
 Convert these to appropriate Java exception handling and logging mechanisms.
+
+CRITICAL: Your response MUST start with 'package' and contain ONLY valid Java code. Do NOT include explanations, notes, or markdown code blocks.
 ";
 
             // Sanitize COBOL content for content filtering
@@ -85,8 +98,13 @@ Here is the analysis of the COBOL program to help you understand its structure:
 
 {cobolAnalysis.RawAnalysisData}
 
-Please provide the complete Java Quarkus implementation.
-Note: The original code contains Danish error handling terms that have been temporarily replaced with placeholders for processing.
+IMPORTANT REQUIREMENTS:
+1. Return ONLY the Java code - NO explanations, NO markdown blocks, NO additional text
+2. Start with: package com.example.something; (single line, lowercase, no comments)
+3. Do NOT include newlines or explanatory text in the package declaration
+4. Your response must be valid, compilable Java code starting with 'package' and ending with the class closing brace
+
+Note: The original code contains Danish error handling terms replaced with placeholders.
 ";
 
             // Log API call start
@@ -107,10 +125,12 @@ Note: The original code contains Danish error handling terms that have been temp
             // Create execution settings
             var executionSettings = new OpenAIPromptExecutionSettings
             {
-                MaxTokens = 32768, // Set within model limits from 8000
-                Temperature = 0.1,
-                TopP = 0.5
+                // gpt-5-mini only supports default temperature (1) and topP (1)
                 // Model ID/deployment name is handled at the kernel level
+                ExtensionData = new Dictionary<string, object>
+                {
+                    ["max_completion_tokens"] = 32768  // gpt-5-mini uses max_completion_tokens
+                }
             };
             
             // Create the full prompt including system and user message
@@ -123,6 +143,8 @@ Note: The original code contains Danish error handling terms that have been temp
             int maxRetries = 3;
             int retryDelay = 5000; // 5 seconds
             
+            Exception? lastException = null;
+
             for (int attempt = 1; attempt <= maxRetries; attempt++)
             {
                 try
@@ -138,6 +160,16 @@ Note: The original code contains Danish error handling terms that have been temp
                     
                     // If we get here, the call was successful
                     break;
+                }
+                catch (Exception ex) when (ShouldFallback(ex))
+                {
+                    lastException = ex;
+                    var reason = GetFallbackReason(ex);
+                    _enhancedLogger?.LogApiCallError(apiCallId, reason);
+                    _enhancedLogger?.LogBehindTheScenes("WARNING", "JAVA_CONVERSION_FALLBACK",
+                        $"Skipping AI conversion for {cobolFile.FileName}: {reason}", ex.GetType().Name);
+                    _logger.LogWarning(ex, "Skipping AI conversion for {FileName}. Using fallback conversion. Reason: {Reason}", cobolFile.FileName, reason);
+                    return CreateFallbackJavaFile(cobolFile, cobolAnalysis, reason);
                 }
                 catch (Exception ex) when (attempt < maxRetries && (
                     ex.Message.Contains("canceled") || 
@@ -155,9 +187,11 @@ Note: The original code contains Danish error handling terms that have been temp
                     
                     await Task.Delay(retryDelay);
                     retryDelay *= 2; // Exponential backoff
+                    lastException = ex;
                 }
                 catch (Exception ex)
                 {
+                    lastException = ex;
                     // Log API call failure
                     _enhancedLogger?.LogApiCallEnd(apiCallId, string.Empty, 0, 0);
                     _enhancedLogger?.LogBehindTheScenes("ERROR", "API_CALL_FAILED", 
@@ -170,7 +204,13 @@ Note: The original code contains Danish error handling terms that have been temp
             
             if (string.IsNullOrEmpty(javaCode))
             {
-                throw new InvalidOperationException($"Failed to convert {cobolFile.FileName} after {maxRetries} attempts");
+                if (lastException != null && ShouldFallback(lastException))
+                {
+                    var reason = GetFallbackReason(lastException);
+                    return CreateFallbackJavaFile(cobolFile, cobolAnalysis, reason);
+                }
+
+                throw new InvalidOperationException($"Failed to convert {cobolFile.FileName} after {maxRetries} attempts", lastException);
             }
             
             // Log AI response to chat logger
@@ -205,6 +245,20 @@ Note: The original code contains Danish error handling terms that have been temp
             
             return javaFile;
         }
+        catch (Exception ex) when (ShouldFallback(ex))
+        {
+            stopwatch.Stop();
+            if (apiCallId > 0)
+            {
+                _enhancedLogger?.LogApiCallError(apiCallId, GetFallbackReason(ex));
+            }
+
+            _enhancedLogger?.LogBehindTheScenes("WARNING", "JAVA_CONVERSION_FALLBACK",
+                $"Skipping AI conversion for {cobolFile.FileName}: {GetFallbackReason(ex)}", ex.GetType().Name);
+            _logger.LogWarning(ex, "Skipping AI conversion for {FileName}. Using fallback conversion. Reason: {Reason}", cobolFile.FileName, GetFallbackReason(ex));
+
+            return CreateFallbackJavaFile(cobolFile, cobolAnalysis, GetFallbackReason(ex));
+        }
         catch (Exception ex)
         {
             stopwatch.Stop();
@@ -221,6 +275,142 @@ Note: The original code contains Danish error handling terms that have been temp
             _logger.LogError(ex, "Error converting COBOL file to Java: {FileName}", cobolFile.FileName);
             throw;
         }
+    }
+
+    private JavaFile CreateFallbackJavaFile(CobolFile cobolFile, CobolAnalysis cobolAnalysis, string reason)
+    {
+        var className = GetFallbackClassName(cobolFile.FileName);
+        var packageName = "com.example.cobol";
+        var sanitizedReason = reason.Replace("\"", "'");
+
+        var javaCode = $$"""
+package {{packageName}};
+
+public class {{className}} {
+    /**
+     * Placeholder implementation generated because the AI conversion service was unavailable.
+     * Original COBOL file: {{cobolFile.FileName}}
+     * Reason: {{sanitizedReason}}
+     */
+    public void run() {
+        throw new UnsupportedOperationException("AI conversion unavailable. Please supply valid Azure OpenAI credentials and rerun the migration. Details: {{sanitizedReason}}");
+    }
+}
+""";
+
+        return new JavaFile
+        {
+            FileName = $"{className}.java",
+            PackageName = packageName,
+            ClassName = className,
+            Content = javaCode,
+            OriginalCobolFileName = cobolFile.FileName
+        };
+    }
+
+    private static string GetFallbackClassName(string cobolFileName)
+    {
+        var baseName = Path.GetFileNameWithoutExtension(cobolFileName);
+        if (string.IsNullOrWhiteSpace(baseName))
+        {
+            baseName = "ConvertedCobolProgram";
+        }
+
+        baseName = new string(baseName.Where(char.IsLetterOrDigit).ToArray());
+        if (string.IsNullOrWhiteSpace(baseName))
+        {
+            baseName = "ConvertedCobolProgram";
+        }
+
+        if (!char.IsLetter(baseName[0]))
+        {
+            baseName = "Converted" + baseName;
+        }
+
+        return baseName + "Fallback";
+    }
+
+    private static bool ShouldFallback(Exception exception)
+    {
+        return IsUnauthorizedException(exception) || IsNetworkException(exception);
+    }
+
+    private static bool IsNetworkException(Exception exception)
+    {
+        switch (exception)
+        {
+            case HttpRequestException:
+            case SocketException:
+                return true;
+            case ClientResultException client when client.InnerException != null:
+                return IsNetworkException(client.InnerException);
+            case HttpOperationException http when http.InnerException != null:
+                return IsNetworkException(http.InnerException);
+            case AggregateException aggregate:
+                return aggregate.InnerExceptions.Any(IsNetworkException);
+            default:
+                return exception.InnerException != null && IsNetworkException(exception.InnerException);
+        }
+    }
+
+    private static string GetFallbackReason(Exception exception)
+    {
+        var innermost = exception;
+        while (innermost.InnerException != null)
+        {
+            innermost = innermost.InnerException;
+        }
+
+        var message = innermost.Message;
+        return string.IsNullOrWhiteSpace(message)
+            ? exception.Message
+            : message.Replace('\r', ' ').Replace('\n', ' ').Trim();
+    }
+
+    private static bool IsUnauthorizedException(Exception exception)
+    {
+        var statusCode = ExtractStatusCode(exception);
+        return statusCode is 401 or 403;
+    }
+
+    private static int? ExtractStatusCode(Exception exception)
+    {
+        switch (exception)
+        {
+            case HttpOperationException httpException when httpException.StatusCode.HasValue:
+                return (int)httpException.StatusCode.Value;
+            case ClientResultException clientException:
+                return clientException.Status;
+            case AggregateException aggregateException:
+                foreach (var inner in aggregateException.InnerExceptions)
+                {
+                    var aggregateStatus = ExtractStatusCode(inner);
+                    if (aggregateStatus.HasValue)
+                    {
+                        return aggregateStatus;
+                    }
+                }
+                break;
+        }
+
+        var statusCodeProperty = exception.GetType().GetRuntimeProperty("StatusCode");
+        if (statusCodeProperty?.GetValue(exception) is HttpStatusCode httpStatus)
+        {
+            return (int)httpStatus;
+        }
+
+        if (statusCodeProperty?.GetValue(exception) is int statusInt)
+        {
+            return statusInt;
+        }
+
+        var statusProperty = exception.GetType().GetRuntimeProperty("Status");
+        if (statusProperty?.GetValue(exception) is int status)
+        {
+            return status;
+        }
+
+        return exception.InnerException != null ? ExtractStatusCode(exception.InnerException) : null;
     }
 
     /// <inheritdoc/>

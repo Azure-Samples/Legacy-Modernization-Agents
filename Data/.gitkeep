@@ -1,0 +1,2 @@
+# This directory stores the SQLite migration database
+# The database file (migration.db) is auto-created on first run
