@@ -15,7 +15,7 @@ public interface IUnitTestAgent
     /// <param name="cobolAnalysis">The analysis of the original COBOL file.</param>
     /// <returns>The generated test file.</returns>
     Task<JavaFile> GenerateUnitTestsAsync(JavaFile javaFile, CobolAnalysis cobolAnalysis);
-    
+
     /// <summary>
     /// Generates unit tests for a collection of Java files.
     /// </summary>
@@ -32,7 +32,7 @@ public interface IUnitTestAgent
     /// <param name="cobolAnalysis">The analysis of the original COBOL file.</param>
     /// <returns>The generated test file.</returns>
     Task<CSharpFile> GenerateUnitTestsAsync(CSharpFile csharpFile, CobolAnalysis cobolAnalysis);
-    
+
     /// <summary>
     /// Generates unit tests for a collection of C# files.
     /// </summary>

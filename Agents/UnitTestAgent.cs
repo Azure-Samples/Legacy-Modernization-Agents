@@ -41,9 +41,9 @@ public class UnitTestAgent : IUnitTestAgent
     public async Task<JavaFile> GenerateUnitTestsAsync(JavaFile javaFile, CobolAnalysis cobolAnalysis)
     {
         var stopwatch = Stopwatch.StartNew();
-        
+
         _logger.LogInformation("Generating unit tests for Java file: {FileName}", javaFile.FileName);
-        _enhancedLogger?.LogBehindTheScenes("AI_PROCESSING", "UNIT_TEST_GENERATION_START", 
+        _enhancedLogger?.LogBehindTheScenes("AI_PROCESSING", "UNIT_TEST_GENERATION_START",
             $"Starting unit test generation for {javaFile.FileName}");
 
         var kernel = _kernelBuilder.Build();
@@ -108,14 +108,14 @@ Package: {javaFile.PackageName}
 
             // Log API call start
             apiCallId = _enhancedLogger?.LogApiCallStart(
-                "UnitTestAgent", 
-                "ChatCompletion", 
+                "UnitTestAgent",
+                "ChatCompletion",
                 "OpenAI/GenerateTests",
                 _modelId,
                 $"Generating tests for {javaFile.FileName}"
             ) ?? 0;
 
-            _enhancedLogger?.LogBehindTheScenes("API_CALL", "TEST_GENERATION_REQUEST", 
+            _enhancedLogger?.LogBehindTheScenes("API_CALL", "TEST_GENERATION_REQUEST",
                 $"Requesting AI to generate unit tests for {javaFile.ClassName}");
 
             var executionSettings = new OpenAIPromptExecutionSettings
@@ -140,7 +140,7 @@ Package: {javaFile.PackageName}
             // Log API call completion with token estimation
             var tokensUsed = testCode.Length / 4; // Rough estimation
             _enhancedLogger?.LogApiCallEnd(apiCallId, testCode, tokensUsed, 0.001m);
-            _enhancedLogger?.LogBehindTheScenes("API_CALL", "TEST_GENERATION_RESPONSE", 
+            _enhancedLogger?.LogBehindTheScenes("API_CALL", "TEST_GENERATION_RESPONSE",
                 $"Received unit test code ({testCode.Length} chars)");
 
             // Clean up the test code
@@ -156,7 +156,7 @@ Package: {javaFile.PackageName}
             };
 
             stopwatch.Stop();
-            _enhancedLogger?.LogBehindTheScenes("AI_PROCESSING", "UNIT_TEST_GENERATION_COMPLETE", 
+            _enhancedLogger?.LogBehindTheScenes("AI_PROCESSING", "UNIT_TEST_GENERATION_COMPLETE",
                 $"Completed unit test generation for {javaFile.FileName} in {stopwatch.ElapsedMilliseconds}ms");
 
             _logger.LogInformation("Successfully generated unit tests for {FileName}", javaFile.FileName);
@@ -166,15 +166,15 @@ Package: {javaFile.PackageName}
         catch (Exception ex)
         {
             stopwatch.Stop();
-            
+
             if (apiCallId > 0)
             {
                 _enhancedLogger?.LogApiCallError(apiCallId, ex.Message);
             }
-            
-            _enhancedLogger?.LogBehindTheScenes("ERROR", "UNIT_TEST_GENERATION_ERROR", 
+
+            _enhancedLogger?.LogBehindTheScenes("ERROR", "UNIT_TEST_GENERATION_ERROR",
                 $"Failed to generate unit tests for {javaFile.FileName} after {stopwatch.ElapsedMilliseconds}ms: {ex.Message}", ex);
-            
+
             _logger.LogError(ex, "Error generating unit tests for {FileName}", javaFile.FileName);
             throw;
         }
@@ -184,7 +184,7 @@ Package: {javaFile.PackageName}
     public async Task<List<JavaFile>> GenerateUnitTestsAsync(List<JavaFile> javaFiles, List<CobolAnalysis> cobolAnalyses, Action<int, int>? progressCallback = null)
     {
         _logger.LogInformation("Generating unit tests for {Count} Java files", javaFiles.Count);
-        _enhancedLogger?.LogBehindTheScenes("AI_PROCESSING", "BATCH_TEST_GENERATION_START", 
+        _enhancedLogger?.LogBehindTheScenes("AI_PROCESSING", "BATCH_TEST_GENERATION_START",
             $"Starting batch unit test generation for {javaFiles.Count} files");
 
         var testFiles = new List<JavaFile>();
@@ -193,7 +193,7 @@ Package: {javaFile.PackageName}
         foreach (var javaFile in javaFiles)
         {
             // Find corresponding COBOL analysis
-            var cobolAnalysis = cobolAnalyses.FirstOrDefault(a => 
+            var cobolAnalysis = cobolAnalyses.FirstOrDefault(a =>
                 a.FileName.Replace(".cbl", "").Equals(javaFile.OriginalCobolFileName.Replace(".cbl", ""), StringComparison.OrdinalIgnoreCase))
                 ?? cobolAnalyses.FirstOrDefault();
 
@@ -207,7 +207,7 @@ Package: {javaFile.PackageName}
             {
                 var testFile = await GenerateUnitTestsAsync(javaFile, cobolAnalysis);
                 testFiles.Add(testFile);
-                
+
                 completed++;
                 progressCallback?.Invoke(completed, javaFiles.Count);
             }
@@ -217,7 +217,7 @@ Package: {javaFile.PackageName}
             }
         }
 
-        _enhancedLogger?.LogBehindTheScenes("AI_PROCESSING", "BATCH_TEST_GENERATION_COMPLETE", 
+        _enhancedLogger?.LogBehindTheScenes("AI_PROCESSING", "BATCH_TEST_GENERATION_COMPLETE",
             $"Completed batch test generation: {testFiles.Count}/{javaFiles.Count} successful");
 
         _logger.LogInformation("Generated {Generated} test files out of {Total} Java files", testFiles.Count, javaFiles.Count);
@@ -231,9 +231,9 @@ Package: {javaFile.PackageName}
     public async Task<CSharpFile> GenerateUnitTestsAsync(CSharpFile csharpFile, CobolAnalysis cobolAnalysis)
     {
         var stopwatch = Stopwatch.StartNew();
-        
+
         _logger.LogInformation("Generating unit tests for C# file: {FileName}", csharpFile.FileName);
-        _enhancedLogger?.LogBehindTheScenes("AI_PROCESSING", "UNIT_TEST_GENERATION_START", 
+        _enhancedLogger?.LogBehindTheScenes("AI_PROCESSING", "UNIT_TEST_GENERATION_START",
             $"Starting unit test generation for {csharpFile.FileName}");
 
         var kernel = _kernelBuilder.Build();
@@ -298,14 +298,14 @@ Namespace: {csharpFile.Namespace}.Tests
 
             // Log API call start
             apiCallId = _enhancedLogger?.LogApiCallStart(
-                "UnitTestAgent", 
-                "ChatCompletion", 
+                "UnitTestAgent",
+                "ChatCompletion",
                 "OpenAI/GenerateTests",
                 _modelId,
                 $"Generating tests for {csharpFile.FileName}"
             ) ?? 0;
 
-            _enhancedLogger?.LogBehindTheScenes("API_CALL", "TEST_GENERATION_REQUEST", 
+            _enhancedLogger?.LogBehindTheScenes("API_CALL", "TEST_GENERATION_REQUEST",
                 $"Requesting AI to generate unit tests for {csharpFile.ClassName}");
 
             var executionSettings = new OpenAIPromptExecutionSettings
@@ -330,7 +330,7 @@ Namespace: {csharpFile.Namespace}.Tests
             // Log API call completion with token estimation
             var tokensUsed = testCode.Length / 4; // Rough estimation
             _enhancedLogger?.LogApiCallEnd(apiCallId, testCode, tokensUsed, 0.001m);
-            _enhancedLogger?.LogBehindTheScenes("API_CALL", "TEST_GENERATION_RESPONSE", 
+            _enhancedLogger?.LogBehindTheScenes("API_CALL", "TEST_GENERATION_RESPONSE",
                 $"Received unit test code ({testCode.Length} chars)");
 
             // Clean up the test code
@@ -346,7 +346,7 @@ Namespace: {csharpFile.Namespace}.Tests
             };
 
             stopwatch.Stop();
-            _enhancedLogger?.LogBehindTheScenes("AI_PROCESSING", "UNIT_TEST_GENERATION_COMPLETE", 
+            _enhancedLogger?.LogBehindTheScenes("AI_PROCESSING", "UNIT_TEST_GENERATION_COMPLETE",
                 $"Completed unit test generation for {csharpFile.FileName} in {stopwatch.ElapsedMilliseconds}ms");
 
             _logger.LogInformation("Successfully generated unit tests for {FileName}", csharpFile.FileName);
@@ -356,15 +356,15 @@ Namespace: {csharpFile.Namespace}.Tests
         catch (Exception ex)
         {
             stopwatch.Stop();
-            
+
             if (apiCallId > 0)
             {
                 _enhancedLogger?.LogApiCallError(apiCallId, ex.Message);
             }
-            
-            _enhancedLogger?.LogBehindTheScenes("ERROR", "UNIT_TEST_GENERATION_ERROR", 
+
+            _enhancedLogger?.LogBehindTheScenes("ERROR", "UNIT_TEST_GENERATION_ERROR",
                 $"Failed to generate unit tests for {csharpFile.FileName} after {stopwatch.ElapsedMilliseconds}ms: {ex.Message}", ex);
-            
+
             _logger.LogError(ex, "Error generating unit tests for {FileName}", csharpFile.FileName);
             throw;
         }
@@ -376,7 +376,7 @@ Namespace: {csharpFile.Namespace}.Tests
     public async Task<List<CSharpFile>> GenerateUnitTestsAsync(List<CSharpFile> csharpFiles, List<CobolAnalysis> cobolAnalyses, Action<int, int>? progressCallback = null)
     {
         _logger.LogInformation("Generating unit tests for {Count} C# files", csharpFiles.Count);
-        _enhancedLogger?.LogBehindTheScenes("AI_PROCESSING", "BATCH_TEST_GENERATION_START", 
+        _enhancedLogger?.LogBehindTheScenes("AI_PROCESSING", "BATCH_TEST_GENERATION_START",
             $"Starting batch unit test generation for {csharpFiles.Count} files");
 
         var testFiles = new List<CSharpFile>();
@@ -385,7 +385,7 @@ Namespace: {csharpFile.Namespace}.Tests
         foreach (var csharpFile in csharpFiles)
         {
             // Find corresponding COBOL analysis
-            var cobolAnalysis = cobolAnalyses.FirstOrDefault(a => 
+            var cobolAnalysis = cobolAnalyses.FirstOrDefault(a =>
                 a.FileName.Replace(".cbl", "").Equals(csharpFile.OriginalCobolFileName.Replace(".cbl", ""), StringComparison.OrdinalIgnoreCase))
                 ?? cobolAnalyses.FirstOrDefault();
 
@@ -399,7 +399,7 @@ Namespace: {csharpFile.Namespace}.Tests
             {
                 var testFile = await GenerateUnitTestsAsync(csharpFile, cobolAnalysis);
                 testFiles.Add(testFile);
-                
+
                 completed++;
                 progressCallback?.Invoke(completed, csharpFiles.Count);
             }
@@ -409,7 +409,7 @@ Namespace: {csharpFile.Namespace}.Tests
             }
         }
 
-        _enhancedLogger?.LogBehindTheScenes("AI_PROCESSING", "BATCH_TEST_GENERATION_COMPLETE", 
+        _enhancedLogger?.LogBehindTheScenes("AI_PROCESSING", "BATCH_TEST_GENERATION_COMPLETE",
             $"Completed batch test generation: {testFiles.Count}/{csharpFiles.Count} successful");
 
         _logger.LogInformation("Generated {Generated} test files out of {Total} C# files", testFiles.Count, csharpFiles.Count);
