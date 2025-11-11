@@ -98,19 +98,19 @@ echo "📁 Checking workspace structure..."
 echo ""
 
 # Check directories
-[ -d "/workspace/Data" ]
+[ -d "/workspaces/Legacy-Modernization-Agents/Data" ]
 check_status "Data directory exists"
 
-[ -d "/workspace/Logs" ]
+[ -d "/workspaces/Legacy-Modernization-Agents/Logs" ]
 check_status "Logs directory exists"
 
-[ -d "/workspace/cobol-source" ]
-check_status "cobol-source directory exists"
+[ -d "/workspaces/Legacy-Modernization-Agents/source" ]
+check_status "source directory exists"
 
-[ -d "/workspace/java-output" ]
-check_status "java-output directory exists"
+[ -d "/workspaces/Legacy-Modernization-Agents/output" ]
+check_status "output directory exists"
 
-[ -d "/workspace/McpChatWeb" ]
+[ -d "/workspaces/Legacy-Modernization-Agents/McpChatWeb" ]
 check_status "McpChatWeb directory exists"
 
 echo ""
@@ -118,19 +118,19 @@ echo "💾 Checking project files..."
 echo ""
 
 # Check project files
-[ -f "/workspace/CobolToQuarkusMigration.csproj" ]
+[ -f "/workspaces/Legacy-Modernization-Agents/CobolToQuarkusMigration.csproj" ]
 check_status "Main project file exists"
 
-[ -f "/workspace/McpChatWeb/McpChatWeb.csproj" ]
+[ -f "/workspaces/Legacy-Modernization-Agents/McpChatWeb/McpChatWeb.csproj" ]
 check_status "McpChatWeb project file exists"
 
-[ -f "/workspace/docker-compose.yml" ]
+[ -f "/workspaces/Legacy-Modernization-Agents/docker-compose.yml" ]
 check_status "docker-compose.yml exists"
 
-[ -f "/workspace/demo.sh" ] && [ -x "/workspace/demo.sh" ]
+[ -f "/workspaces/Legacy-Modernization-Agents/helper-scripts/demo.sh" ] && [ -x "/workspaces/Legacy-Modernization-Agents/helper-scripts/demo.sh" ]
 check_status "demo.sh script exists and is executable"
 
-[ -f "/workspace/doctor.sh" ] && [ -x "/workspace/doctor.sh" ]
+[ -f "/workspaces/Legacy-Modernization-Agents/doctor.sh" ] && [ -x "/workspaces/Legacy-Modernization-Agents/doctor.sh" ]
 check_status "doctor.sh script exists and is executable"
 
 echo ""
@@ -138,16 +138,16 @@ echo "📊 Checking database..."
 echo ""
 
 # Check if database exists
-if [ -f "/workspace/Data/migration.db" ]; then
-    DB_SIZE=$(du -h /workspace/Data/migration.db | awk '{print $1}')
+if [ -f "/workspaces/Legacy-Modernization-Agents/Data/migration.db" ]; then
+    DB_SIZE=$(du -h /workspaces/Legacy-Modernization-Agents/Data/migration.db | awk '{print $1}')
     echo "✅ SQLite database exists (size: $DB_SIZE)"
     
     # Count runs in database
     if command -v sqlite3 > /dev/null 2>&1; then
-        RUN_COUNT=$(sqlite3 /workspace/Data/migration.db "SELECT COUNT(*) FROM runs;" 2>/dev/null || echo "0")
+        RUN_COUNT=$(sqlite3 /workspaces/Legacy-Modernization-Agents/Data/migration.db "SELECT COUNT(*) FROM runs;" 2>/dev/null || echo "0")
         if [ "$RUN_COUNT" -gt 0 ]; then
             echo "✅ Database contains $RUN_COUNT migration run(s)"
-            LATEST_RUN=$(sqlite3 /workspace/Data/migration.db "SELECT id FROM runs ORDER BY id DESC LIMIT 1;" 2>/dev/null)
+            LATEST_RUN=$(sqlite3 /workspaces/Legacy-Modernization-Agents/Data/migration.db "SELECT id FROM runs ORDER BY id DESC LIMIT 1;" 2>/dev/null)
             echo "   Latest run ID: $LATEST_RUN"
         else
             echo "⚠️  Database exists but has no migration runs yet"
@@ -156,7 +156,7 @@ if [ -f "/workspace/Data/migration.db" ]; then
     fi
 else
     echo "⚠️  SQLite database not found (no migrations run yet)"
-    echo "   💡 Run: ./demo.sh or ./doctor.sh run"
+    echo "   💡 Run: ./helper-scripts/demo.sh or ./doctor.sh run"
     WARNINGS=$((WARNINGS + 1))
 fi
 
@@ -165,11 +165,11 @@ echo "⚙️  Checking configuration..."
 echo ""
 
 # Check AI config
-if [ -f "/workspace/Config/ai-config.local.env" ]; then
+if [ -f "/workspaces/Legacy-Modernization-Agents/Config/ai-config.local.env" ]; then
     echo "✅ AI configuration file exists"
     
     # Check if it contains real values (not template)
-    if grep -q "test-api-key" /workspace/Config/ai-config.local.env; then
+    if grep -q "test-api-key" /workspaces/Legacy-Modernization-Agents/Config/ai-config.local.env; then
         echo "⚠️  AI configuration contains template values"
         echo "   💡 Update Config/ai-config.local.env with your Azure OpenAI credentials"
         WARNINGS=$((WARNINGS + 1))
@@ -193,7 +193,7 @@ if [ $ERRORS -eq 0 ] && [ $WARNINGS -eq 0 ]; then
     echo ""
     echo "🚀 Next steps:"
     echo "   1. Configure Azure OpenAI credentials (if not done)"
-    echo "   2. Run: ./demo.sh"
+    echo "   2. Run: ./helper-scripts/demo.sh"
     echo "   3. Open: http://localhost:5028"
     echo ""
     exit 0

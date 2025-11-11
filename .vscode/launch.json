@@ -19,9 +19,9 @@
             "preLaunchTask": "build",
             "program": "${workspaceFolder}/bin/Debug/net8.0/CobolToQuarkusMigration.dll",
             "args": [
-                "--cobol-source",
+                "--source",
                 "${workspaceFolder}/SampleCobol",
-                "--java-output",
+                "--output",
                 "${workspaceFolder}/JavaOutput"
             ],
             "cwd": "${workspaceFolder}",
