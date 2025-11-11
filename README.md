@@ -553,27 +553,65 @@ if (_aiSettings != null) {
 
 ## 🎯 CLI Commands Reference
 
-### Doctor.sh (Recommended)
+### Doctor.sh - Three Migration Modes
+
+The `doctor.sh` script provides three distinct migration workflows:
+
+#### 1️⃣ **Reverse Engineering Only** (No UI)
+```bash
+./doctor.sh reverse-eng
+```
+**What it does:**
+- Extracts business logic, feature descriptions, and use cases from COBOL
+- Generates `output/reverse-engineering-details.md` documentation
+- **Does NOT** convert code to Java
+- **Does NOT** launch web UI
+- Use when: You only need business documentation
+
+#### 2️⃣ **Full Migration** (Reverse Eng + Conversion + UI)
+```bash
+./doctor.sh run
+```
+**What it does:**
+- First runs reverse engineering (or uses existing results)
+- Then converts COBOL to Java Quarkus
+- Generates all reports and documentation
+- **Launches web UI** at http://localhost:5250
+- Use when: You want complete migration with business documentation
+
+#### 3️⃣ **Conversion Only** (Skip Reverse Eng, Launch UI)
+```bash
+./doctor.sh convert-only
+```
+**What it does:**
+- Skips reverse engineering entirely
+- Only performs COBOL to Java Quarkus conversion
+- Generates Java code and migration reports
+- **✅ Launches web UI** at http://localhost:5250
+- Use when: You already have documentation or just need code conversion
+
+### Other Doctor.sh Commands
 ```bash
 ./doctor.sh                    # Diagnose configuration
-./doctor.sh setup              # Interactive setup
-./doctor.sh test               # System validation
-./doctor.sh run                # Full migration + launch portal
-./doctor.sh reverse-eng        # Extract business logic
+./doctor.sh setup              # Interactive setup wizard
+./doctor.sh test               # System validation and health check
 ```
 
 ### Direct .NET Commands
 ```bash
-# Full migration
-dotnet run -- --cobol-source ./source --java-output ./output
+# Full migration with reverse engineering
+dotnet run -- --source ./source
 
-# Reverse engineering
-dotnet run reverse-engineer --cobol-source ./source
+# Skip reverse engineering
+dotnet run -- --source ./source --skip-reverse-engineering
 
-# MCP server
+# Reverse engineering only
+dotnet run reverse-engineer --source ./source
+
+# MCP server standalone
 dotnet run mcp [--run-id 42]
 
-# Conversation log
+# Conversation log viewer
 dotnet run conversation
 ```
 

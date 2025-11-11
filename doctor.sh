@@ -71,9 +71,10 @@ show_usage() {
     echo -e "${BOLD}Available Commands:${NC}"
     echo -e "  ${GREEN}setup${NC}           Interactive configuration setup"
     echo -e "  ${GREEN}test${NC}            Full system validation and testing"
-    echo -e "  ${GREEN}run${NC}             Start the migration process"
+    echo -e "  ${GREEN}run${NC}             Start full migration (reverse eng + Java conversion + UI)"
+    echo -e "  ${GREEN}convert-only${NC}    Convert COBOL to Java only (skip reverse eng + UI)"
     echo -e "  ${GREEN}doctor${NC}          Diagnose configuration issues (default)"
-    echo -e "  ${GREEN}reverse-eng${NC}     Run reverse engineering analysis only"
+    echo -e "  ${GREEN}reverse-eng${NC}     Run reverse engineering analysis only (no UI)"
     echo -e "  ${GREEN}resume${NC}          Resume interrupted migration"
     echo -e "  ${GREEN}monitor${NC}         Monitor migration progress"
     echo -e "  ${GREEN}chat-test${NC}       Test chat logging functionality"
@@ -84,8 +85,9 @@ show_usage() {
     echo -e "  $0                   ${CYAN}# Run configuration doctor${NC}"
     echo -e "  $0 setup             ${CYAN}# Interactive setup${NC}"
     echo -e "  $0 test              ${CYAN}# Test configuration and dependencies${NC}"
-    echo -e "  $0 reverse-eng       ${CYAN}# Extract business logic from COBOL${NC}"
-    echo -e "  $0 run               ${CYAN}# Start full migration${NC}"
+    echo -e "  $0 reverse-eng       ${CYAN}# Extract business logic only (no conversion, no UI)${NC}"
+    echo -e "  $0 run               ${CYAN}# Full migration: reverse eng + Java conversion + UI${NC}"
+    echo -e "  $0 convert-only      ${CYAN}# Java conversion only (skip reverse eng) + UI${NC}"
     echo
 }
 
@@ -729,13 +731,13 @@ run_migration() {
     if [ -f "$re_output_file" ]; then
         echo ""
         echo -e "${GREEN}✅ Found existing reverse engineering results:${NC} $(basename "$re_output_file")"
-        echo -e "${BLUE}ℹ️  Skipping reverse engineering step to save time and API costs${NC}"
+        echo -e "${BLUE}ℹ️  You can skip reverse engineering to save time and API costs${NC}"
         echo ""
-        read -p "Do you want to re-run reverse engineering anyway? (y/N): " -n 1 -r
+        read -p "Do you want to skip reverse engineering? (Y/n): " -n 1 -r
         echo ""
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
             skip_reverse_eng="--skip-reverse-engineering"
-            echo -e "${BLUE}ℹ️  Proceeding with existing reverse engineering results${NC}"
+            echo -e "${BLUE}ℹ️  Skipping reverse engineering, using existing results${NC}"
         else
             echo -e "${BLUE}ℹ️  Will re-run reverse engineering as requested${NC}"
         fi
@@ -743,7 +745,7 @@ run_migration() {
     else
         echo ""
         echo -e "${BLUE}ℹ️  No previous reverse engineering results found${NC}"
-        echo -e "${BLUE}ℹ️  Full analysis will be performed (including reverse engineering)${NC}"
+        echo -e "${BLUE}ℹ️  Full migration will include reverse engineering + Java conversion${NC}"
         echo ""
     fi
 
@@ -1000,12 +1002,68 @@ run_reverse_engineering() {
         echo "Next steps:"
         echo "  • Review the generated documentation"
         echo "  • Run full migration: ./doctor.sh run"
+        echo "  • Or run conversion only: ./doctor.sh convert-only"
     else
         echo ""
         echo -e "${RED}❌ Reverse engineering failed (exit code $exit_code)${NC}"
     fi
 
     return $exit_code
+}
+
+# Function to run conversion-only (skip reverse engineering)
+run_conversion_only() {
+    echo -e "${BLUE}🔄 Starting COBOL to Java Conversion (Skip Reverse Engineering)${NC}"
+    echo "================================================================"
+
+    echo -e "${BLUE}Using dotnet CLI:${NC} $DOTNET_CMD"
+
+    # Load configuration
+    echo "🔧 Loading AI configuration..."
+    if ! load_configuration; then
+        echo -e "${RED}❌ Configuration loading failed. Please run: ./doctor.sh setup${NC}"
+        return 1
+    fi
+
+    # Load and validate configuration
+    if ! load_ai_config; then
+        echo -e "${RED}❌ Configuration loading failed. Please check your ai-config.local.env file.${NC}"
+        return 1
+    fi
+
+    echo ""
+    echo "🔄 Starting Java Conversion Only..."
+    echo "==================================="
+    echo ""
+    echo -e "${BLUE}ℹ️  Reverse engineering will be skipped${NC}"
+    echo -e "${BLUE}ℹ️  Only COBOL to Java Quarkus conversion will be performed${NC}"
+    echo ""
+
+    # Run the application with skip-reverse-engineering flag
+    "$DOTNET_CMD" run -- --source ./source --skip-reverse-engineering
+    local migration_exit=$?
+
+    if [[ $migration_exit -ne 0 ]]; then
+        echo ""
+        echo -e "${RED}❌ Conversion process failed (exit code $migration_exit). Skipping MCP web UI launch.${NC}"
+        return $migration_exit
+    fi
+
+    local db_path
+    if ! db_path="$(get_migration_db_path)" || [[ -z "$db_path" ]]; then
+        echo ""
+        echo -e "${YELLOW}⚠️  Could not resolve migration database path. MCP web UI will not be started automatically.${NC}"
+        return 0
+    fi
+
+    if [[ "${MCP_AUTO_LAUNCH:-1}" != "1" ]]; then
+        echo ""
+        echo -e "${BLUE}ℹ️  MCP web UI launch skipped (MCP_AUTO_LAUNCH set to ${MCP_AUTO_LAUNCH}).${NC}"
+        echo -e "Use ${BOLD}MIGRATION_DB_PATH=$db_path ASPNETCORE_URLS=http://$DEFAULT_MCP_HOST:$DEFAULT_MCP_PORT $DOTNET_CMD run --project \"$REPO_ROOT/McpChatWeb\"${NC} to start manually."
+        return 0
+    fi
+
+    launch_mcp_web_ui "$db_path"
 }
 
 # Main command routing
@@ -1022,6 +1080,9 @@ main() {
             ;;
         "run")
             run_migration
+            ;;
+        "convert-only"|"conversion-only"|"convert")
+            run_conversion_only
             ;;
         "doctor"|"")
             run_doctor
