@@ -622,7 +622,7 @@ dotnet run conversation
 ## Step-by-Step Guide
 
 1. **Configure:** `cp Config/ai-config.local.env.example Config/ai-config.local.env` → Add Azure OpenAI endpoint, API key, deployment name
-2. **Add COBOL files:** `cp your-files/* ./source/`
+2. **Add COBOL files:** `cp your-files/* ./cobol-source/`
 3. **Run:** `./doctor.sh run` - Analyzes, converts, launches portal at http://localhost:5250
 4. **Explore:** Use portal UI (chat, graph) or connect MCP clients (Claude, Cursor)
 5. **Query data:** SQLite (`Data/migration.db`), Neo4j (http://localhost:7474), or MCP API

@@ -152,8 +152,10 @@ Once running, access these URLs:
 ├── Data/                    # SQLite database
 │   └── migration.db         # Migration metadata
 ├── Logs/                    # Migration logs
-├── cobol-source/            # Input COBOL files
-├── java-output/             # Generated Java code
+├── cobol-source/            # Input COBOL files (YOUR COBOL FILES GO HERE)
+├── output/
+│   ├── java-output/         # Generated Java code
+│   └── dotnet-output/       # Generated .NET code
 ├── McpChatWeb/              # Web portal project
 │   └── wwwroot/             # Frontend files
 ├── Config/                  # Configuration files
