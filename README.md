@@ -622,10 +622,10 @@ dotnet run conversation
 ## Step-by-Step Guide
 
 1. **Configure:** `cp Config/ai-config.local.env.example Config/ai-config.local.env` → Add Azure OpenAI endpoint, API key, deployment name
-2. **Add COBOL files:** `cp your-files/* ./cobol-source/`
-3. **Run:** `./doctor.sh run` - Analyzes, converts, launches portal at http://localhost:5250
+2. **Add COBOL files:** Place your COBOL files in `./cobol-source/`
+3. **Run:** `./doctor.sh run` - Analyzes, converts, launches portal at http://localhost:5028
 4. **Explore:** Use portal UI (chat, graph) or connect MCP clients (Claude, Cursor)
-5. **Query data:** SQLite (`Data/migration.db`), Neo4j (http://localhost:7474), or MCP API
+5. **Results:** Generated Java code in `output/java-output/`, documentation in `output/`, logs in `Logs/`
 
 **Portal features:** Three-panel UI, AI chat, multi-run queries, interactive graph, file content analysis
 
@@ -698,11 +698,11 @@ Each agent uses `kernel.InvokePromptAsync(prompt, args)` with MaxTokens: 32000, 
 ### Real Migration Stats
 - 102 COBOL files processed → 99 Java Quarkus files generated (97% success rate)
 - 205 Azure OpenAI API calls, ~1.2 hours total, $0.31 cost
-- Outputs: `output/`, `Logs/`, `Data/migration.db`, Neo4j @ bolt://localhost:7687
+- Outputs: Java in `output/java-output/`, docs in `output/`, logs in `Logs/`, metadata in `Data/migration.db`, graph in Neo4j
 
 ## Work in progress and good to know
 
-- Output: `output/` folder with Java files, `Logs/` with reports and conversation logs
+- **Folder structure:** Input: `cobol-source/`, Output: `output/java-output/` and `output/dotnet-output/`
 - Token limits: GPT-4.1 max ~32K tokens - adjust per agent in `appsettings.json`  
 - Customizable: Change agent personas/prompts for different outcomes (DB2→PostgreSQL, Java→.NET, etc.)
 - Other languages: Framework adaptable to APL, PL/I - update agent prompts accordingly
