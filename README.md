@@ -74,7 +74,7 @@ Have a look at the talk Julia did at the WeAreDevelopers World Congress 2025: ht
    # SQLite: Data/migration.db (created on first run)
    ```
 
-5. **Configure credentials** (see below) and run: `./demo.sh`
+5. **Configure credentials** (see below) and run: `./helper-scripts/demo.sh`
 
 ### 📊 Neo4j Database Setup
 
@@ -124,10 +124,12 @@ curl http://localhost:7474
 View existing migration data without running a new analysis:
 
 ```bash
-./demo.sh
+./helper-scripts/demo.sh
+# OR if in devcontainer:
+demo
 ```
 
-**What it does:** Checks prerequisites, starts Neo4j, finds latest migration, launches portal at http://localhost:5250
+**What it does:** Checks prerequisites, starts Neo4j, finds latest migration, launches portal at http://localhost:5028
 
 **Portal features:** Three-panel UI, AI chat, interactive graph, multi-run queries, file content analysis
 

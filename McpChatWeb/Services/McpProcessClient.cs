@@ -82,7 +82,7 @@ public sealed class McpProcessClient : IMcpClient
         };
 
         var response = await SendRequestAsync("resources/read", parameters, cancellationToken).ConfigureAwait(false);
-        
+
         if (response.TryGetPropertyValue("contents", out var contentsNode) && contentsNode is JsonArray contentsArray && contentsArray.Count > 0)
         {
             if (contentsArray[0] is JsonObject contentObj && contentObj.TryGetPropertyValue("text", out var textNode))
@@ -90,7 +90,7 @@ public sealed class McpProcessClient : IMcpClient
                 return textNode?.GetValue<string>() ?? string.Empty;
             }
         }
-        
+
         return string.Empty;
     }
 
@@ -190,7 +190,7 @@ public sealed class McpProcessClient : IMcpClient
         _mutex.Release();
     }
 
-    private async Task StartProcessAsync(CancellationToken cancellationToken)
+    private Task StartProcessAsync(CancellationToken cancellationToken)
     {
         var arguments = new StringBuilder();
 
@@ -254,6 +254,7 @@ public sealed class McpProcessClient : IMcpClient
         }, cancellationToken);
 
         _initialized = false;
+        return Task.CompletedTask;
     }
 
     private async Task InitializeAsync(CancellationToken cancellationToken)

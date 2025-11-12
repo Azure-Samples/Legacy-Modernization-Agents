@@ -109,17 +109,17 @@ app.MapPost("/api/chat", async (ChatRequest request, IMcpClient client, Cancella
 		System.Text.RegularExpressions.RegexOptions.IgnoreCase
 	);
 	var fileMatch = fileAnalysisPattern.Match(request.Prompt);
-	
+
 	if (fileMatch.Success)
 	{
 		// Extract filename from either capture group
 		var fileName = fileMatch.Groups[1].Success ? fileMatch.Groups[1].Value : fileMatch.Groups[2].Value;
-		
+
 		// Try to determine run ID from context, default to 43
 		var fileRunIdPattern = new System.Text.RegularExpressions.Regex(@"\brun\s*(?:id\s*)?(\d+)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 		var runMatch = fileRunIdPattern.Match(request.Prompt);
 		var targetRunId = runMatch.Success && int.TryParse(runMatch.Groups[1].Value, out int rid) ? rid : 43;
-		
+
 		// Try to get analysis from MCP
 		var analysisUri = $"insights://runs/{targetRunId}/analyses/{fileName}";
 		try
@@ -133,7 +133,7 @@ app.MapPost("/api/chat", async (ChatRequest request, IMcpClient client, Cancella
 				{
 					// Build a comprehensive response about the file
 					var responseText = $"**Analysis of {fileName} (Run {targetRunId})**\n\n";
-					
+
 					// Try to get rawAnalysisData and parse it
 					JsonObject? detailedAnalysis = null;
 					if (analysisData.TryGetPropertyValue("rawAnalysisData", out var rawData) && rawData != null)
@@ -144,7 +144,7 @@ app.MapPost("/api/chat", async (ChatRequest request, IMcpClient client, Cancella
 						}
 						catch { }
 					}
-					
+
 					// Get program description from either top level or detailed analysis
 					if (analysisData.TryGetPropertyValue("programDescription", out var desc) && desc != null && desc.ToString() != "Extracted from AI analysis")
 					{
@@ -157,18 +157,18 @@ app.MapPost("/api/chat", async (ChatRequest request, IMcpClient client, Cancella
 						{
 							if (rawDesc is JsonObject descObj && descObj.TryGetPropertyValue("purpose", out var purpose))
 							{
-								responseText += $"**Purpose:**\n{purpose.ToString()}\n\n";
+								responseText += $"**Purpose:**\n{purpose!.ToString()}\n\n";
 							}
 						}
 						else if (detailedAnalysis.TryGetPropertyValue("program", out var prog) && prog is JsonObject progObj)
 						{
 							if (progObj.TryGetPropertyValue("purpose", out var progPurpose))
 							{
-								responseText += $"**Purpose:**\n{progPurpose.ToString()}\n\n";
+								responseText += $"**Purpose:**\n{progPurpose!.ToString()}\n\n";
 							}
 						}
 					}
-					
+
 					// Get paragraphs/sections from detailed analysis
 					if (detailedAnalysis != null && detailedAnalysis.TryGetPropertyValue("paragraphs-and-sections-summary", out var paraSummary) && paraSummary is JsonArray paragraphsSummary && paragraphsSummary.Count > 0)
 					{
@@ -198,7 +198,7 @@ app.MapPost("/api/chat", async (ChatRequest request, IMcpClient client, Cancella
 								responseText += $"- `{name}`";
 								if (!string.IsNullOrEmpty(paraDesc)) responseText += $": {paraDesc}";
 								responseText += "\n";
-								
+
 								// Show calls if available
 								if (p.TryGetPropertyValue("calls", out var calls) && calls is JsonArray callsArray && callsArray.Count > 0)
 								{
@@ -208,7 +208,7 @@ app.MapPost("/api/chat", async (ChatRequest request, IMcpClient client, Cancella
 						}
 						responseText += "\n";
 					}
-					
+
 					// Get variables from detailed analysis if available
 					if (detailedAnalysis != null && detailedAnalysis.TryGetPropertyValue("variables", out var detailedVars) && detailedVars is JsonArray detailedVariables && detailedVariables.Count > 0)
 					{
@@ -248,7 +248,7 @@ app.MapPost("/api/chat", async (ChatRequest request, IMcpClient client, Cancella
 						if (variables.Count > 10) responseText += $"... and {variables.Count - 10} more\n";
 						responseText += "\n";
 					}
-					
+
 					// Get copybooks from detailed analysis
 					if (detailedAnalysis != null && detailedAnalysis.TryGetPropertyValue("copybooksReferenced", out var detailedCbs) && detailedCbs is JsonArray detailedCopybooks && detailedCopybooks.Count > 0)
 					{
@@ -277,10 +277,10 @@ app.MapPost("/api/chat", async (ChatRequest request, IMcpClient client, Cancella
 						}
 						responseText += "\n";
 					}
-					
+
 					responseText += $"\n**Data Source:** MCP Resource URI: `{analysisUri}`\n";
 					responseText += $"**API:** `GET /api/file-analysis/{fileName}?runId={targetRunId}`";
-					
+
 					return Results.Ok(new ChatResponse(responseText, targetRunId));
 				}
 			}
@@ -289,120 +289,120 @@ app.MapPost("/api/chat", async (ChatRequest request, IMcpClient client, Cancella
 		{
 			Console.WriteLine($"Error fetching analysis for {fileName}: {ex.Message}");
 		}
-		
+
 		// If MCP fails, try direct database query
 		var dbPath = Path.Combine(Directory.GetCurrentDirectory(), "..", "Data", "migration.db");
 		if (File.Exists(dbPath))
 		{
 			try
 			{
-			// Use subprocess to query SQLite since we don't have Microsoft.Data.Sqlite package
-			var queryCmd = $"sqlite3 \"{dbPath}\" \"SELECT cf.file_name, cf.is_copybook, a.program_description, a.paragraphs_json, a.variables_json, a.copybooks_json FROM cobol_files cf LEFT JOIN analyses a ON a.cobol_file_id = cf.id WHERE cf.file_name = '{fileName}' AND cf.run_id = {targetRunId};\"";
-			
-			var psi = new System.Diagnostics.ProcessStartInfo
-			{
-				FileName = "/bin/bash",
-				Arguments = $"-c \"{queryCmd}\"",
-				RedirectStandardOutput = true,
-				RedirectStandardError = true,
-				UseShellExecute = false,
-				CreateNoWindow = true
-			};
+				// Use subprocess to query SQLite since we don't have Microsoft.Data.Sqlite package
+				var queryCmd = $"sqlite3 \"{dbPath}\" \"SELECT cf.file_name, cf.is_copybook, a.program_description, a.paragraphs_json, a.variables_json, a.copybooks_json FROM cobol_files cf LEFT JOIN analyses a ON a.cobol_file_id = cf.id WHERE cf.file_name = '{fileName}' AND cf.run_id = {targetRunId};\"";
 
-			using var process = System.Diagnostics.Process.Start(psi);
-			if (process == null) throw new Exception("Failed to start sqlite3 process");
-			
-			var output = await process.StandardOutput.ReadToEndAsync(cancellationToken);
-			await process.WaitForExitAsync(cancellationToken);
-			
-			if (!string.IsNullOrWhiteSpace(output))
-			{
-				// Parse the SQLite output (pipe-separated values)
-				var parts = output.Split('|');
-				if (parts.Length >= 6)
+				var psi = new System.Diagnostics.ProcessStartInfo
 				{
-					var isCopybook = parts[1].Trim() == "1";
-					var programDesc = parts.Length > 2 && !string.IsNullOrWhiteSpace(parts[2]) ? parts[2].Trim() : null;
-					var paragraphsJson = parts.Length > 3 && !string.IsNullOrWhiteSpace(parts[3]) ? parts[3].Trim() : null;
-					var variablesJson = parts.Length > 4 && !string.IsNullOrWhiteSpace(parts[4]) ? parts[4].Trim() : null;
-					var copybooksJson = parts.Length > 5 && !string.IsNullOrWhiteSpace(parts[5]) ? parts[5].Trim() : null;					var responseText = $"**Analysis of {fileName} (Run {targetRunId})**\n\n";
-					responseText += $"**Type:** {(isCopybook ? "Copybook" : "Program")}\n\n";
-					
-					if (!string.IsNullOrEmpty(programDesc))
+					FileName = "/bin/bash",
+					Arguments = $"-c \"{queryCmd}\"",
+					RedirectStandardOutput = true,
+					RedirectStandardError = true,
+					UseShellExecute = false,
+					CreateNoWindow = true
+				};
+
+				using var process = System.Diagnostics.Process.Start(psi);
+				if (process == null) throw new Exception("Failed to start sqlite3 process");
+
+				var output = await process.StandardOutput.ReadToEndAsync(cancellationToken);
+				await process.WaitForExitAsync(cancellationToken);
+
+				if (!string.IsNullOrWhiteSpace(output))
+				{
+					// Parse the SQLite output (pipe-separated values)
+					var parts = output.Split('|');
+					if (parts.Length >= 6)
 					{
-						responseText += $"**Description:**\n{programDesc}\n\n";
-					}
-					
-					if (!string.IsNullOrEmpty(paragraphsJson) && paragraphsJson != "[]")
-					{
-						try
+						var isCopybook = parts[1].Trim() == "1";
+						var programDesc = parts.Length > 2 && !string.IsNullOrWhiteSpace(parts[2]) ? parts[2].Trim() : null;
+						var paragraphsJson = parts.Length > 3 && !string.IsNullOrWhiteSpace(parts[3]) ? parts[3].Trim() : null;
+						var variablesJson = parts.Length > 4 && !string.IsNullOrWhiteSpace(parts[4]) ? parts[4].Trim() : null;
+						var copybooksJson = parts.Length > 5 && !string.IsNullOrWhiteSpace(parts[5]) ? parts[5].Trim() : null; var responseText = $"**Analysis of {fileName} (Run {targetRunId})**\n\n";
+						responseText += $"**Type:** {(isCopybook ? "Copybook" : "Program")}\n\n";
+
+						if (!string.IsNullOrEmpty(programDesc))
 						{
-							var paras = JsonSerializer.Deserialize<JsonArray>(paragraphsJson);
-							if (paras != null && paras.Count > 0)
+							responseText += $"**Description:**\n{programDesc}\n\n";
+						}
+
+						if (!string.IsNullOrEmpty(paragraphsJson) && paragraphsJson != "[]")
+						{
+							try
 							{
-								responseText += $"**Functions/Paragraphs ({paras.Count}):**\n";
-								foreach (var para in paras)
+								var paras = JsonSerializer.Deserialize<JsonArray>(paragraphsJson);
+								if (paras != null && paras.Count > 0)
 								{
-									if (para is JsonObject p)
+									responseText += $"**Functions/Paragraphs ({paras.Count}):**\n";
+									foreach (var para in paras)
 									{
-										var name = p.TryGetPropertyValue("name", out var n) ? n?.ToString() : "Unknown";
-										var desc = p.TryGetPropertyValue("description", out var d) ? d?.ToString() : "";
-										responseText += $"- `{name}`";
-										if (!string.IsNullOrEmpty(desc)) responseText += $": {desc}";
-										responseText += "\n";
+										if (para is JsonObject p)
+										{
+											var name = p.TryGetPropertyValue("name", out var n) ? n?.ToString() : "Unknown";
+											var desc = p.TryGetPropertyValue("description", out var d) ? d?.ToString() : "";
+											responseText += $"- `{name}`";
+											if (!string.IsNullOrEmpty(desc)) responseText += $": {desc}";
+											responseText += "\n";
+										}
 									}
+									responseText += "\n";
 								}
-								responseText += "\n";
 							}
+							catch { }
 						}
-						catch { }
-					}
-					
-					if (!string.IsNullOrEmpty(variablesJson) && variablesJson != "[]")
-					{
-						try
+
+						if (!string.IsNullOrEmpty(variablesJson) && variablesJson != "[]")
 						{
-							var vars = JsonSerializer.Deserialize<JsonArray>(variablesJson);
-							if (vars != null && vars.Count > 0)
+							try
 							{
-								responseText += $"**Variables ({vars.Count}):**\n";
-								var topVars = vars.Take(10);
-								foreach (var v in topVars)
+								var vars = JsonSerializer.Deserialize<JsonArray>(variablesJson);
+								if (vars != null && vars.Count > 0)
 								{
-									if (v is JsonObject varObj)
+									responseText += $"**Variables ({vars.Count}):**\n";
+									var topVars = vars.Take(10);
+									foreach (var v in topVars)
 									{
-										var varName = varObj.TryGetPropertyValue("name", out var vn) ? vn?.ToString() : "Unknown";
-										responseText += $"- `{varName}`\n";
+										if (v is JsonObject varObj)
+										{
+											var varName = varObj.TryGetPropertyValue("name", out var vn) ? vn?.ToString() : "Unknown";
+											responseText += $"- `{varName}`\n";
+										}
 									}
+									if (vars.Count > 10) responseText += $"... and {vars.Count - 10} more\n";
+									responseText += "\n";
 								}
-								if (vars.Count > 10) responseText += $"... and {vars.Count - 10} more\n";
-								responseText += "\n";
 							}
+							catch { }
 						}
-						catch { }
-					}
-					
-					if (!string.IsNullOrEmpty(copybooksJson) && copybooksJson != "[]")
-					{
-						try
+
+						if (!string.IsNullOrEmpty(copybooksJson) && copybooksJson != "[]")
 						{
-							var cbs = JsonSerializer.Deserialize<JsonArray>(copybooksJson);
-							if (cbs != null && cbs.Count > 0)
+							try
 							{
-								responseText += $"**Copybooks Used ({cbs.Count}):**\n";
-								foreach (var cb in cbs)
+								var cbs = JsonSerializer.Deserialize<JsonArray>(copybooksJson);
+								if (cbs != null && cbs.Count > 0)
 								{
-									responseText += $"- {cb?.ToString()}\n";
+									responseText += $"**Copybooks Used ({cbs.Count}):**\n";
+									foreach (var cb in cbs)
+									{
+										responseText += $"- {cb?.ToString()}\n";
+									}
+									responseText += "\n";
 								}
-								responseText += "\n";
 							}
+							catch { }
 						}
-						catch { }
-					}
-					
-					responseText += $"\n**Data Source:** SQLite Database at `{dbPath}`";
-					
-					return Results.Ok(new ChatResponse(responseText, targetRunId));
+
+						responseText += $"\n**Data Source:** SQLite Database at `{dbPath}`";
+
+						return Results.Ok(new ChatResponse(responseText, targetRunId));
 					}
 				}
 				else
@@ -413,7 +413,7 @@ app.MapPost("/api/chat", async (ChatRequest request, IMcpClient client, Cancella
 					notFoundMsg += $"- Check the filename spelling (case-sensitive)\n";
 					notFoundMsg += $"- Try a different run ID\n";
 					notFoundMsg += $"- Ask: \"What files are in run {targetRunId}?\"";
-					
+
 					return Results.Ok(new ChatResponse(notFoundMsg, targetRunId));
 				}
 			}
@@ -427,7 +427,7 @@ app.MapPost("/api/chat", async (ChatRequest request, IMcpClient client, Cancella
 	// Check if user is asking about a specific run ID
 	var runIdPattern = new System.Text.RegularExpressions.Regex(@"\brun\s*(?:id\s*)?(\d+)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 	var match = runIdPattern.Match(request.Prompt);
-	
+
 	if (match.Success && int.TryParse(match.Groups[1].Value, out int requestedRunId))
 	{
 		// User is asking about a specific run - directly provide the data instead of using MCP
@@ -436,13 +436,13 @@ app.MapPost("/api/chat", async (ChatRequest request, IMcpClient client, Cancella
 			// Build the response directly by calling the search endpoint logic
 			var dbPath = Path.Combine(Directory.GetCurrentDirectory(), "..", "Data", "migration.db");
 			var dbExists = File.Exists(dbPath);
-			
+
 			// Get Neo4j data
 			var graphUri = $"insights://runs/{requestedRunId}/graph";
 			var nodeCount = 0;
 			var edgeCount = 0;
 			var graphAvailable = false;
-			
+
 			try
 			{
 				var graphJson = await client.ReadResourceAsync(graphUri, cancellationToken);
@@ -458,7 +458,7 @@ app.MapPost("/api/chat", async (ChatRequest request, IMcpClient client, Cancella
 				}
 			}
 			catch { }
-			
+
 			// Build a comprehensive response
 			var directResponse = $@"**Run {requestedRunId} Data Summary**
 
@@ -516,24 +516,24 @@ You can still access the data directly:
 • API: GET /api/search/run/{requestedRunId}
 • SQLite: sqlite3 ""Data/migration.db"" ""SELECT * FROM runs WHERE id = {requestedRunId};""
 • Neo4j: cypher-shell -u neo4j -p cobol-migration-2025";
-			
+
 			return Results.Ok(new ChatResponse(errorResponse, requestedRunId));
 		}
 	}
-	
+
 	// Normal chat flow - augment with SQLite context for better answers
 	try
 	{
 		// Get context from SQLite database
 		var dbPath = Path.Combine(Directory.GetCurrentDirectory(), "..", "Data", "migration.db");
 		var contextData = "";
-		
+
 		if (File.Exists(dbPath))
 		{
 			using (var connection = new SqliteConnection($"Data Source={dbPath}"))
 			{
 				await connection.OpenAsync(cancellationToken);
-				
+
 				// Get run summary
 				using var runCmd = connection.CreateCommand();
 				runCmd.CommandText = "SELECT id, status, started_at FROM runs ORDER BY id DESC LIMIT 5";
@@ -549,7 +549,7 @@ You can still access the data directly:
 				{
 					contextData += $"Available runs: {string.Join(", ", runs)}\n";
 				}
-				
+
 				// Get file count and complexity stats
 				using var fileCmd = connection.CreateCommand();
 				fileCmd.CommandText = @"
@@ -565,7 +565,7 @@ You can still access the data directly:
 						contextData += $"Total COBOL files: {reader.GetInt32(0)} ({reader.GetInt32(2)} programs, {reader.GetInt32(1)} copybooks)\n";
 					}
 				}
-				
+
 				// Get copybook list if asking about copybooks
 				if (request.Prompt.Contains("copybook", StringComparison.OrdinalIgnoreCase))
 				{
@@ -590,7 +590,7 @@ You can still access the data directly:
 				}
 			}
 		}
-		
+
 		// Augment the prompt with SQLite context
 		var augmentedPrompt = request.Prompt;
 		if (!string.IsNullOrEmpty(contextData))
@@ -598,7 +598,7 @@ You can still access the data directly:
 			augmentedPrompt = $"CONTEXT FROM DATABASE:\n{contextData}\n\nUSER QUESTION: {request.Prompt}";
 			Console.WriteLine($"💡 Augmented prompt with SQLite context ({contextData.Length} chars)");
 		}
-		
+
 		var normalResponse = await client.SendChatAsync(augmentedPrompt, cancellationToken);
 		return Results.Ok(new ChatResponse(normalResponse, null));
 	}
@@ -618,7 +618,7 @@ app.MapGet("/api/graph", async (IMcpClient client, int? runId, CancellationToken
 	{
 		string graphUri;
 		int actualRunId;
-		
+
 		if (runId.HasValue)
 		{
 			// Use specific run ID
@@ -632,25 +632,25 @@ app.MapGet("/api/graph", async (IMcpClient client, int? runId, CancellationToken
 			var resources = await client.ListResourcesAsync(cancellationToken);
 			var graphResource = resources.FirstOrDefault(r => r.Uri.Contains("/graph"));
 			graphUri = graphResource?.Uri ?? "insights://runs/43/graph"; // Fallback to 43
-			
+
 			// Extract run ID from URI
 			var match = System.Text.RegularExpressions.Regex.Match(graphUri, @"runs/(\d+)/");
 			actualRunId = match.Success ? int.Parse(match.Groups[1].Value) : 43;
 			Console.WriteLine($"📊 Fetching graph for current run: {actualRunId}");
 		}
-		
+
 		Console.WriteLine($"📊 Graph URI: {graphUri}");
-		
+
 		// Fetch the actual graph data from MCP
 		var graphJson = await client.ReadResourceAsync(graphUri, cancellationToken);
 		Console.WriteLine($"📦 MCP returned {graphJson?.Length ?? 0} chars for {graphUri}");
-		
+
 		if (!string.IsNullOrEmpty(graphJson))
 		{
 			// Parse the graph data
 			var graphData = JsonSerializer.Deserialize<JsonObject>(graphJson);
 			Console.WriteLine($"📦 Parsed graph data: {graphData?.ToJsonString()?.Substring(0, Math.Min(200, graphData?.ToJsonString()?.Length ?? 0))}...");
-			
+
 			// Deduplicate nodes by ID
 			if (graphData != null && graphData.TryGetPropertyValue("nodes", out var nodesValue) && nodesValue is JsonArray nodesArray)
 			{
@@ -671,7 +671,7 @@ app.MapGet("/api/graph", async (IMcpClient client, int? runId, CancellationToken
 						}
 					}
 				}
-				
+
 				// Replace nodes array with deduplicated version
 				var deduplicatedArray = new JsonArray();
 				foreach (var node in uniqueNodes.Values)
@@ -679,21 +679,21 @@ app.MapGet("/api/graph", async (IMcpClient client, int? runId, CancellationToken
 					deduplicatedArray.Add(node);
 				}
 				graphData["nodes"] = deduplicatedArray;
-				
+
 				Console.WriteLine($"✅ Graph loaded: {deduplicatedArray.Count} nodes for run {actualRunId}");
 			}
-			
+
 			// Add metadata about which run this is
 			if (graphData != null)
 			{
 				graphData["runId"] = actualRunId;
-				
+
 				var nodeCount = graphData.TryGetPropertyValue("nodes", out var n) && n is JsonArray na ? na.Count : 0;
 				var edgeCount = graphData.TryGetPropertyValue("edges", out var e) && e is JsonArray ea ? ea.Count : 0;
-				
+
 				Console.WriteLine($"📊 Returning graph for run {actualRunId}: {nodeCount} nodes, {edgeCount} edges");
 			}
-			
+
 			return Results.Ok(graphData);
 		}
 	}
@@ -710,7 +710,7 @@ app.MapGet("/api/graph", async (IMcpClient client, int? runId, CancellationToken
 		edges = Array.Empty<object>(),
 		error = $"Unable to fetch graph data from MCP server for run {runId}"
 	};
-	
+
 	return Results.Ok(emptyGraphData);
 });
 
@@ -743,15 +743,15 @@ app.MapGet("/api/runs/all", async () =>
 	{
 		// Query Neo4j to get runs that have graph data
 		var runIds = new List<int>();
-		
+
 		// Use Neo4j.Driver to query directly
 		var neo4jUri = Environment.GetEnvironmentVariable("NEO4J_URI") ?? "bolt://localhost:7687";
 		var neo4jUser = Environment.GetEnvironmentVariable("NEO4J_USER") ?? "neo4j";
 		var neo4jPassword = Environment.GetEnvironmentVariable("NEO4J_PASSWORD") ?? "cobol-migration-2025";
-		
+
 		using var driver = Neo4j.Driver.GraphDatabase.Driver(neo4jUri, Neo4j.Driver.AuthTokens.Basic(neo4jUser, neo4jPassword));
 		await using var session = driver.AsyncSession();
-		
+
 		var result = await session.ExecuteReadAsync(async tx =>
 		{
 			var cursor = await tx.RunAsync(@"
@@ -759,7 +759,7 @@ app.MapGet("/api/runs/all", async () =>
 				WHERE f.runId IS NOT NULL
 				RETURN DISTINCT f.runId as runId
 				ORDER BY runId DESC");
-			
+
 			var ids = new List<int>();
 			await foreach (var record in cursor)
 			{
@@ -767,10 +767,10 @@ app.MapGet("/api/runs/all", async () =>
 			}
 			return ids;
 		});
-		
+
 		runIds = result;
 		Console.WriteLine($"📊 Found {runIds.Count} runs with graph data: {string.Join(", ", runIds)}");
-		
+
 		return Results.Ok(new { runs = runIds });
 	}
 	catch (Exception ex)
@@ -788,11 +788,11 @@ app.MapGet("/api/runs/{runId}/dependencies", async (int runId, IMcpClient client
 		// Fetch the graph resource for this specific run
 		var graphUri = $"insights://runs/{runId}/graph";
 		var graphJson = await client.ReadResourceAsync(graphUri, cancellationToken);
-		
+
 		if (!string.IsNullOrEmpty(graphJson))
 		{
 			var graphData = JsonSerializer.Deserialize<JsonObject>(graphJson);
-			
+
 			// Deduplicate nodes
 			if (graphData != null && graphData.TryGetPropertyValue("nodes", out var nodesValue) && nodesValue is JsonArray nodesArray)
 			{
@@ -812,7 +812,7 @@ app.MapGet("/api/runs/{runId}/dependencies", async (int runId, IMcpClient client
 						}
 					}
 				}
-				
+
 				var deduplicatedArray = new JsonArray();
 				foreach (var node in uniqueNodes.Values)
 				{
@@ -820,13 +820,14 @@ app.MapGet("/api/runs/{runId}/dependencies", async (int runId, IMcpClient client
 				}
 				graphData["nodes"] = deduplicatedArray;
 			}
-			
+
 			if (graphData != null)
 			{
 				var nodeCount = graphData.TryGetPropertyValue("nodes", out var n) && n is JsonArray na ? na.Count : 0;
 				var edgeCount = graphData.TryGetPropertyValue("edges", out var e) && e is JsonArray ea ? ea.Count : 0;
-				
-				return Results.Ok(new { 
+
+				return Results.Ok(new
+				{
 					runId = runId,
 					nodeCount = nodeCount,
 					edgeCount = edgeCount,
@@ -839,7 +840,7 @@ app.MapGet("/api/runs/{runId}/dependencies", async (int runId, IMcpClient client
 	{
 		Console.WriteLine($"Error getting dependencies for run {runId}: {ex.Message}");
 	}
-	
+
 	return Results.Ok(new { runId = runId, nodeCount = 0, edgeCount = 0, error = "Unable to fetch dependencies" });
 });
 
@@ -875,26 +876,26 @@ app.MapGet("/api/search/run/{runId}", async (int runId, IMcpClient client, Cance
 			},
 			available_tables = new[] { "runs", "cobol_files", "analyses", "dependencies", "copybook_usage", "metrics" }
 		};
-		
+
 		// Get Neo4j data (via MCP) - try to get graph
 		object neo4jData;
 		try
 		{
 			var graphUri = $"insights://runs/{runId}/graph";
 			var graphJson = await client.ReadResourceAsync(graphUri, cancellationToken);
-			
+
 			if (!string.IsNullOrEmpty(graphJson))
 			{
 				var graphData = JsonSerializer.Deserialize<JsonObject>(graphJson);
 				var nodeCount = 0;
 				var edgeCount = 0;
-				
+
 				if (graphData != null)
 				{
 					if (graphData.TryGetPropertyValue("nodes", out var n) && n is JsonArray na) nodeCount = na.Count;
 					if (graphData.TryGetPropertyValue("edges", out var e) && e is JsonArray ea) edgeCount = ea.Count;
 				}
-				
+
 				neo4jData = new { node_count = nodeCount, edge_count = edgeCount, graph_available = true };
 			}
 			else
@@ -906,7 +907,7 @@ app.MapGet("/api/search/run/{runId}", async (int runId, IMcpClient client, Cance
 		{
 			neo4jData = new { message = "Unable to fetch Neo4j data via MCP", graph_available = false };
 		}
-		
+
 		return Results.Ok(new
 		{
 			runId,
@@ -973,7 +974,7 @@ app.MapGet("/api/search/run/{runId}", async (int runId, IMcpClient client, Cance
 	}
 });
 
-app.MapGet("/api/data-retrieval-guide", async () =>
+app.MapGet("/api/data-retrieval-guide", () =>
 {
 	var guide = new
 	{
@@ -1043,8 +1044,8 @@ app.MapGet("/api/data-retrieval-guide", async () =>
 		},
 		examples = new[]
 		{
-			new 
-			{ 
+			new
+			{
 				title = "Retrieve Run 43 Data from SQLite",
 				steps = new[]
 				{
@@ -1055,8 +1056,8 @@ app.MapGet("/api/data-retrieval-guide", async () =>
 					"SELECT COUNT(*) FROM cobol_files WHERE migration_run_id = 43;"
 				}
 			},
-			new 
-			{ 
+			new
+			{
 				title = "Retrieve Run 43 Graph from Neo4j",
 				steps = new[]
 				{
@@ -1066,8 +1067,8 @@ app.MapGet("/api/data-retrieval-guide", async () =>
 					"Visualize dependencies: MATCH path = (r:Run {runId: 43})-[:CONTAINS]->()-[d:DEPENDS_ON]->() RETURN path;"
 				}
 			},
-			new 
-			{ 
+			new
+			{
 				title = "Retrieve via MCP API",
 				steps = new[]
 				{
@@ -1078,12 +1079,11 @@ app.MapGet("/api/data-retrieval-guide", async () =>
 			}
 		}
 	};
-	
-	await Task.CompletedTask;
+
 	return Results.Ok(guide);
 });
 
-app.MapPost("/api/switch-run", async (SwitchRunRequest request, IMcpClient client) =>
+app.MapPost("/api/switch-run", (SwitchRunRequest request, IMcpClient client) =>
 {
 	if (request.RunId <= 0)
 	{
@@ -1099,14 +1099,14 @@ app.MapPost("/api/switch-run", async (SwitchRunRequest request, IMcpClient clien
 			// The MCP server uses MCP_RUN_ID environment variable
 			// We need to restart the MCP connection with the new run ID
 			Environment.SetEnvironmentVariable("MCP_RUN_ID", request.RunId.ToString());
-			
+
 			// Note: In a production system, you'd want to properly handle reconnection
 			// For now, the client will pick up the new run ID on next operation
 		}
 
-		return Results.Ok(new 
-		{ 
-			success = true, 
+		return Results.Ok(new
+		{
+			success = true,
 			runId = request.RunId,
 			message = $"Switched to run {request.RunId}. Note: You may need to refresh resources to see updated data."
 		});
