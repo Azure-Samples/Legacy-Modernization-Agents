@@ -51,9 +51,14 @@ local.settings.json
 # SECURITY - Sensitive Information Protection
 # =============================================================================
 
+# Ignore all Config folder files to prevent credential leaks
+Config/
+!Config/.gitkeep
+
 # Azure OpenAI Credentials and API Keys
 Config/ai-config.local.env
 Config/*.local.env
+Config/ai-config.env
 Config/appsettings.json
 Config/appsettings.local.json
 Config/appsettings.secrets.json
@@ -86,6 +91,12 @@ cobol-files/
 # Generated Output (Contains converted business logic and reverse engineering results)
 output/*
 !output/.gitkeep
+!output/java-output/
+!output/dotnet-output/
+output/java-output/*
+!output/java-output/.gitkeep
+output/dotnet-output/*
+!output/dotnet-output/.gitkeep
 Output/
 generated-java/
 reverse-engineering-output/
