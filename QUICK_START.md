@@ -308,7 +308,7 @@ Now that you're set up, explore these areas:
 
 1. **Run a Full Migration:**
    ```bash
-   # Place COBOL files in source/
+   # Place COBOL files in cobol-source/
    ./doctor.sh run
    ```
 

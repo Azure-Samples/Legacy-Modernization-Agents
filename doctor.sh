@@ -610,8 +610,8 @@ run_test() {
     # Check source folders
     echo ""
     echo "Checking source folders..."
-    cobol_files=$(find "$REPO_ROOT/source" -name "*.cbl" 2>/dev/null | wc -l)
-    copybook_files=$(find "$REPO_ROOT/source" -name "*.cpy" 2>/dev/null | wc -l)
+    cobol_files=$(find "$REPO_ROOT/cobol-source" -name "*.cbl" 2>/dev/null | wc -l)
+    copybook_files=$(find "$REPO_ROOT/cobol-source" -name "*.cpy" 2>/dev/null | wc -l)
     total_files=$((cobol_files + copybook_files))
     
     if [ "$total_files" -gt 0 ]; then
@@ -623,7 +623,7 @@ run_test() {
         fi
     else
         echo -e "${YELLOW}⚠️  No COBOL files or copybooks found in source directory${NC}"
-        echo "   Add your COBOL files to ./source/ to test migration"
+        echo "   Add your COBOL files to ./cobol-source/ to test migration"
     fi
 
     # Check output directories
@@ -681,14 +681,14 @@ run_test() {
     echo ""
     echo "Migration Options:"
     echo "  Standard:         ./doctor.sh run"
-    echo "  Reverse Engineer: dotnet run reverse-engineer --source ./source"
-    echo "  Full Migration:   dotnet run -- --source ./source"
+    echo "  Reverse Engineer: dotnet run reverse-engineer --source ./cobol-source"
+    echo "  Full Migration:   dotnet run -- --source ./cobol-source"
     echo ""
     if [ $re_components -eq $re_components_total ]; then
         echo "Reverse Engineering Available:"
         echo "  Extract business logic from COBOL before migration"
         echo "  Generate documentation in markdown format"
-        echo "  Run: dotnet run reverse-engineer --source ./source"
+        echo "  Run: dotnet run reverse-engineer --source ./cobol-source"
         echo ""
     fi
     if [ "$total_files" -gt 0 ]; then
@@ -750,7 +750,7 @@ run_migration() {
     fi
 
     # Run the application with updated folder structure
-    "$DOTNET_CMD" run -- --source ./source $skip_reverse_eng
+    "$DOTNET_CMD" run -- --source ./cobol-source $skip_reverse_eng
     local migration_exit=$?
 
     if [[ $migration_exit -ne 0 ]]; then
@@ -802,7 +802,7 @@ run_resume() {
     fi
 
     # Run with resume logic
-    "$DOTNET_CMD" run -- --source ./source --resume
+    "$DOTNET_CMD" run -- --source ./cobol-source --resume
 }
 
 # Function to monitor migration
@@ -969,12 +969,12 @@ run_reverse_engineering() {
     echo ""
 
     # Check for COBOL files
-    cobol_count=$(find "$REPO_ROOT/source" -name "*.cbl" 2>/dev/null | wc -l)
-    copybook_count=$(find "$REPO_ROOT/source" -name "*.cpy" 2>/dev/null | wc -l)
+    cobol_count=$(find "$REPO_ROOT/cobol-source" -name "*.cbl" 2>/dev/null | wc -l)
+    copybook_count=$(find "$REPO_ROOT/cobol-source" -name "*.cpy" 2>/dev/null | wc -l)
     total_count=$((cobol_count + copybook_count))
     
     if [ "$total_count" -eq 0 ]; then
-        echo -e "${YELLOW}⚠️  No COBOL files or copybooks found in ./source/${NC}"
+        echo -e "${YELLOW}⚠️  No COBOL files or copybooks found in ./cobol-source/${NC}"
         echo "Add COBOL files to analyze and try again."
         return 1
     fi
@@ -988,7 +988,7 @@ run_reverse_engineering() {
     echo ""
 
     # Run the reverse engineering command
-    "$DOTNET_CMD" run reverse-engineer --source ./source
+    "$DOTNET_CMD" run reverse-engineer --source ./cobol-source
 
     local exit_code=$?
 
@@ -1040,7 +1040,7 @@ run_conversion_only() {
     echo ""
 
     # Run the application with skip-reverse-engineering flag
-    "$DOTNET_CMD" run -- --source ./source --skip-reverse-engineering
+    "$DOTNET_CMD" run -- --source ./cobol-source --skip-reverse-engineering
     local migration_exit=$?
 
     if [[ $migration_exit -ne 0 ]]; then
@@ -1069,7 +1069,7 @@ run_conversion_only() {
 # Main command routing
 main() {
     # Create required directories if they don't exist
-    mkdir -p "$REPO_ROOT/source" "$REPO_ROOT/output" "$REPO_ROOT/Logs"
+    mkdir -p "$REPO_ROOT/cobol-source" "$REPO_ROOT/source" "$REPO_ROOT/output" "$REPO_ROOT/Logs"
 
     case "${1:-doctor}" in
         "setup")
