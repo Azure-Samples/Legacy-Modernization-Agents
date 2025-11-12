@@ -107,6 +107,20 @@ if portal_running; then
     echo "   Stopping existing portal..."
     pkill -f "dotnet.*McpChatWeb" 2>/dev/null || true
     sleep 2
+    
+    # Force kill if still running
+    if portal_running; then
+        echo "   Force stopping portal..."
+        pkill -9 -f "dotnet.*McpChatWeb" 2>/dev/null || true
+        sleep 1
+    fi
+    
+    # Final check
+    if portal_running; then
+        echo "❌ Failed to stop existing portal on port 5028"
+        echo "   Run: lsof -ti:5028 | xargs kill -9"
+        exit 1
+    fi
 fi
 echo "✅ Ready to start fresh"
 echo ""
@@ -131,7 +145,7 @@ echo "Starting portal in background..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
-cd McpChatWeb
+cd /workspaces/Legacy-Modernization-Agents/McpChatWeb
 
 # Start portal in background
 nohup dotnet run --urls "http://localhost:5028" > /tmp/cobol-portal.log 2>&1 &

@@ -72,8 +72,8 @@
 			"version": "lts"
 		}
 	},
-	"postCreateCommand": "dotnet restore && dotnet build",
-	"postStartCommand": "echo 'Dev container ready'",
+	"postCreateCommand": "dotnet restore Legacy-Modernization-Agents.sln && dotnet build Legacy-Modernization-Agents.sln",
+	"postStartCommand": "sudo chmod 666 /var/run/docker.sock && echo 'Dev container ready'",
 	"mounts": [
 		"source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
 	],

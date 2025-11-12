@@ -44,7 +44,9 @@ nano Config/ai-config.local.env
 # Edit: AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY
 
 # 5. Run demo
-./demo.sh
+./helper-scripts/demo.sh
+# OR if in devcontainer, simply use:
+demo
 ```
 
 ✅ **Done!** Portal opens at http://localhost:5028
@@ -126,7 +128,9 @@ dotnet build
 
 ```bash
 # One command to start everything
-./demo.sh
+./helper-scripts/demo.sh
+# OR if in devcontainer:
+demo
 
 # Or manual steps:
 # 1. Ensure Neo4j is running
@@ -139,7 +143,7 @@ dotnet build
 
 ## 🎬 First Run Experience
 
-After running `./demo.sh`, you'll see:
+After running `./helper-scripts/demo.sh`, you'll see:
 
 ```
 ╔══════════════════════════════════════════════════════════════╗
@@ -385,7 +389,9 @@ ls -lh Data/migration.db
 ./doctor.sh run
 
 # Or use demo mode (uses existing data)
-./demo.sh
+./helper-scripts/demo.sh
+# OR if in devcontainer:
+demo
 ```
 
 ### Issue: "Graph not displaying"

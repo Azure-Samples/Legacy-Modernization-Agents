@@ -158,7 +158,8 @@ Once running, access these URLs:
 │   └── wwwroot/             # Frontend files
 ├── Config/                  # Configuration files
 │   └── ai-config.local.env  # Azure OpenAI credentials
-├── demo.sh                  # Quick start script
+├── helper-scripts/
+│   ├── demo.sh              # Quick start demo script
 └── doctor.sh                # Full migration script
 ```
 
@@ -310,7 +311,7 @@ Your dev container is ready when:
 
 ✅ Verification script passes all checks  
 ✅ Neo4j browser loads at http://localhost:7474  
-✅ `./demo.sh` completes without errors  
+✅ `./helper-scripts/demo.sh` completes without errors  
 ✅ Portal opens at http://localhost:5028  
 ✅ Graph visualization displays nodes and edges  
 
