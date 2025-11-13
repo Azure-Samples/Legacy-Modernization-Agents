@@ -81,14 +81,21 @@ Config/appsettings.secrets.json
 # =============================================================================
 
 # COBOL Source Files (Contains proprietary business logic)
+# Note: Sample files in cobol-source/ are kept for demo purposes
 cobol-source/*
 !cobol-source/.gitkeep
+!cobol-source/*.cbl
+!cobol-source/*.cpy
 source/*
 !source/.gitkeep
-cobol-files/
+
+# Ignore COBOL files everywhere else (but not in cobol-source/)
 *.cbl
 *.cpy
 *.cob
+# Re-allow sample files in cobol-source
+!cobol-source/*.cbl
+!cobol-source/*.cpy
 
 # Generated Output (Contains converted business logic and reverse engineering results)
 output/*

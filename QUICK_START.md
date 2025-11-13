@@ -103,13 +103,13 @@ nano Config/ai-config.local.env
 ```bash
 AZURE_OPENAI_ENDPOINT="https://YOUR-RESOURCE.openai.azure.com/"
 AZURE_OPENAI_API_KEY="your-32-character-key-here"
-AZURE_OPENAI_DEPLOYMENT_NAME="gpt-4.1"
+AZURE_OPENAI_DEPLOYMENT_NAME="gpt-5-mini-2"
 ```
 
 **Find your values:**
 - Endpoint: Azure Portal → OpenAI Resource → Keys and Endpoint → Endpoint
 - API Key: Azure Portal → OpenAI Resource → Keys and Endpoint → Key 1
-- Deployment: Must be named "gpt-4.1" in your Azure OpenAI instance
+- Deployment: Your deployment name (e.g., "gpt-5-mini-2" or "gpt-4o")
 
 ### Step 4: Build Project
 
@@ -167,16 +167,26 @@ After running `./helper-scripts/demo.sh`, you'll see:
 🌐 Access your demo:
    Portal:        http://localhost:5028
    Neo4j Browser: http://localhost:7474
-
-📊 Portal Features:
-   • Three-panel dashboard
-   • AI-powered chat
-   • Interactive graph
-   • Multi-run support
-   • File analysis
 ```
 
-**Browser automatically opens** to http://localhost:5028
+### 🌐 Accessing the Portal
+
+**In VS Code Dev Container:**
+1. Look for the "PORTS" tab in the bottom panel (next to Terminal)
+2. Find port `5028` in the list
+3. Click the **globe icon (🌐)** to open in browser
+4. Or run: `./helper-scripts/open-portal.sh`
+
+**In Local Environment:**
+- Browser will auto-open to http://localhost:5028
+- Or manually visit: http://localhost:5028
+
+### 📊 Portal Features
+- Three-panel dashboard
+- AI-powered chat with Azure OpenAI
+- Interactive dependency graph
+- Multi-run support
+- Real-time file analysis
 
 ---
 
@@ -372,7 +382,7 @@ curl http://localhost:7474
 
 # Verify endpoint ends with /
 # Verify API key is 32 characters
-# Verify deployment name is "gpt-4.1"
+# Verify deployment name matches your Azure OpenAI deployment (e.g., "gpt-5-mini-2")
 
 # Test connection
 ./doctor.sh test

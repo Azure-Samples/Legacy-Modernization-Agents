@@ -156,7 +156,6 @@ echo -n "⏳ Waiting for portal to start"
 for i in {1..30}; do
   HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5028/ 2>/dev/null || echo "000")
   if [ "$HTTP_CODE" = "200" ]; then
-    echo " ✅"
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "🎉 Portal is ready!"
@@ -168,12 +167,34 @@ for i in {1..30}; do
     echo ""
     echo "📊 Viewing Migration Run: $MCP_RUN_ID"
     echo ""
+    echo "💡 In VS Code Dev Container:"
+    echo "   1. Check the 'PORTS' tab (next to Terminal)"
+    echo "   2. Click the globe icon next to port 5028 to open in browser"
+    echo "   3. Or Ctrl+Click the URL above"
+    echo ""
     echo "🛑 To stop the demo:"
     echo "   Portal: kill $PORTAL_PID  (or: pkill -f 'dotnet.*McpChatWeb')"
     echo "   Neo4j:  docker-compose down"
     echo ""
     echo "📝 View portal logs: tail -f /tmp/cobol-portal.log"
     echo ""
+    
+    # Try to open in VS Code Simple Browser if available
+    if [ -n "$VSCODE_GIT_IPC_HANDLE" ] || [ -n "$VSCODE_IPC_HOOK" ]; then
+        echo "🚀 Attempting to open portal in VS Code..."
+        echo "   If it doesn't auto-open, check the PORTS tab and click the globe icon next to port 5028"
+        code --open-url http://localhost:5028 2>/dev/null || true
+    fi
+    
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "✨ Quick Commands:"
+    echo "   Status:      ./helper-scripts/status.sh"
+    echo "   Open Portal: ./helper-scripts/open-portal.sh"
+    echo "   Stop All:    docker-compose down && pkill -f McpChatWeb"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    
     exit 0
   fi
   echo -n "."

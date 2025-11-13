@@ -21,6 +21,12 @@ builder.WebHost.ConfigureKestrel(serverOptions =>
 	{
 		listenOptions.UseConnectionLogging();
 	});
+
+	// Enable SO_REUSEADDR at the socket level
+	serverOptions.ListenAnyIP(5028, listenOptions =>
+	{
+		listenOptions.Protocols = HttpProtocols.Http1AndHttp2;
+	});
 });
 
 builder.Services.Configure<McpOptions>(builder.Configuration.GetSection("Mcp"));
@@ -741,42 +747,38 @@ app.MapGet("/api/runs/all", async () =>
 {
 	try
 	{
-		// Query Neo4j to get runs that have graph data
-		var runIds = new List<int>();
-
-		// Use Neo4j.Driver to query directly
-		var neo4jUri = Environment.GetEnvironmentVariable("NEO4J_URI") ?? "bolt://localhost:7687";
-		var neo4jUser = Environment.GetEnvironmentVariable("NEO4J_USER") ?? "neo4j";
-		var neo4jPassword = Environment.GetEnvironmentVariable("NEO4J_PASSWORD") ?? "cobol-migration-2025";
-
-		using var driver = Neo4j.Driver.GraphDatabase.Driver(neo4jUri, Neo4j.Driver.AuthTokens.Basic(neo4jUser, neo4jPassword));
-		await using var session = driver.AsyncSession();
-
-		var result = await session.ExecuteReadAsync(async tx =>
+		// Query SQLite directly - it's faster and more reliable
+		var dbPath = Environment.GetEnvironmentVariable("MIGRATION_DB_PATH") ?? "Data/migration.db";
+		if (!Path.IsPathRooted(dbPath))
 		{
-			var cursor = await tx.RunAsync(@"
-				MATCH (f:CobolFile)
-				WHERE f.runId IS NOT NULL
-				RETURN DISTINCT f.runId as runId
-				ORDER BY runId DESC");
+			dbPath = Path.GetFullPath(dbPath);
+		}
 
-			var ids = new List<int>();
-			await foreach (var record in cursor)
+		if (File.Exists(dbPath))
+		{
+			await using var connection = new SqliteConnection($"Data Source={dbPath}");
+			await connection.OpenAsync();
+
+			await using var command = connection.CreateCommand();
+			command.CommandText = "SELECT id FROM runs ORDER BY id DESC";
+
+			var sqliteRunIds = new List<int>();
+			await using var reader = await command.ExecuteReaderAsync();
+			while (await reader.ReadAsync())
 			{
-				ids.Add(record["runId"].As<int>());
+				sqliteRunIds.Add(reader.GetInt32(0));
 			}
-			return ids;
-		});
 
-		runIds = result;
-		Console.WriteLine($"📊 Found {runIds.Count} runs with graph data: {string.Join(", ", runIds)}");
+			Console.WriteLine($"📊 Found {sqliteRunIds.Count} runs: {string.Join(", ", sqliteRunIds)}");
+			return Results.Ok(new { runs = sqliteRunIds });
+		}
 
-		return Results.Ok(new { runs = runIds });
+		Console.WriteLine("📊 No runs found");
+		return Results.Ok(new { runs = new List<int>() });
 	}
 	catch (Exception ex)
 	{
 		Console.WriteLine($"❌ Error getting available runs: {ex.Message}");
-		// Fallback to empty list if Neo4j is not available
 		return Results.Ok(new { runs = new List<int>() });
 	}
 });
@@ -842,6 +844,206 @@ app.MapGet("/api/runs/{runId}/dependencies", async (int runId, IMcpClient client
 	}
 
 	return Results.Ok(new { runId = runId, nodeCount = 0, edgeCount = 0, error = "Unable to fetch dependencies" });
+});
+
+// Generate migration report for a specific run
+app.MapGet("/api/runs/{runId}/report", async (int runId) =>
+{
+	try
+	{
+		var outputDir = Path.Combine(Directory.GetCurrentDirectory(), "..", "output");
+		var reportPath = Path.Combine(outputDir, $"migration_report_run_{runId}.md");
+
+		// Check if report already exists
+		if (File.Exists(reportPath))
+		{
+			var content = await File.ReadAllTextAsync(reportPath);
+			var lastModified = File.GetLastWriteTime(reportPath);
+
+			return Results.Ok(new
+			{
+				runId = runId,
+				content = content,
+				lastModified = lastModified,
+				path = reportPath
+			});
+		}
+
+		// If report doesn't exist, generate it
+		Console.WriteLine($"📝 Generating migration report for run {runId}...");
+
+		// Get all data for the run from SQLite
+		var dbPath = Path.Combine(Directory.GetCurrentDirectory(), "..", "Data", "migration.db");
+
+		if (!File.Exists(dbPath))
+		{
+			return Results.Ok(new { error = "Database not found" });
+		}
+
+		using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={dbPath}");
+		await connection.OpenAsync();
+
+		// Generate comprehensive report
+		var report = new System.Text.StringBuilder();
+		report.AppendLine($"# COBOL Migration Report - Run {runId}");
+		report.AppendLine();
+		report.AppendLine($"**Generated:** {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+		report.AppendLine();
+		report.AppendLine("---");
+		report.AppendLine();
+
+		// Summary section
+		report.AppendLine("## 📊 Migration Summary");
+		report.AppendLine();
+
+		var summaryCmd = connection.CreateCommand();
+		summaryCmd.CommandText = @"
+			SELECT 
+				COUNT(DISTINCT source_file) as total_files,
+				COUNT(DISTINCT CASE WHEN source_file LIKE '%.cbl' THEN source_file END) as cobol_programs,
+				COUNT(DISTINCT CASE WHEN source_file LIKE '%.cpy' THEN source_file END) as copybooks
+			FROM cobol_files 
+			WHERE run_id = @runId";
+		summaryCmd.Parameters.AddWithValue("@runId", runId);
+
+		using (var reader = await summaryCmd.ExecuteReaderAsync())
+		{
+			if (await reader.ReadAsync())
+			{
+				var totalFiles = reader.GetInt32(0);
+				var programs = reader.GetInt32(1);
+				var copybooks = reader.GetInt32(2);
+
+				report.AppendLine($"- **Total COBOL Files:** {totalFiles}");
+				report.AppendLine($"- **Programs (.cbl):** {programs}");
+				report.AppendLine($"- **Copybooks (.cpy):** {copybooks}");
+			}
+		}
+
+		// Dependencies section
+		var depsCmd = connection.CreateCommand();
+		depsCmd.CommandText = @"
+			SELECT 
+				COUNT(*) as total_deps,
+				COUNT(CASE WHEN dependency_type = 'CALL' THEN 1 END) as call_deps,
+				COUNT(CASE WHEN dependency_type = 'COPY' THEN 1 END) as copy_deps,
+				COUNT(CASE WHEN dependency_type = 'PERFORM' THEN 1 END) as perform_deps,
+				COUNT(CASE WHEN dependency_type = 'EXEC' THEN 1 END) as exec_deps,
+				COUNT(CASE WHEN dependency_type = 'READ' THEN 1 END) as read_deps,
+				COUNT(CASE WHEN dependency_type = 'WRITE' THEN 1 END) as write_deps,
+				COUNT(CASE WHEN dependency_type = 'OPEN' THEN 1 END) as open_deps,
+				COUNT(CASE WHEN dependency_type = 'CLOSE' THEN 1 END) as close_deps
+			FROM dependencies 
+			WHERE run_id = @runId";
+		depsCmd.Parameters.AddWithValue("@runId", runId);
+
+		report.AppendLine();
+		using (var reader = await depsCmd.ExecuteReaderAsync())
+		{
+			if (await reader.ReadAsync())
+			{
+				var total = reader.GetInt32(0);
+				report.AppendLine($"- **Total Dependencies:** {total}");
+
+				if (reader.GetInt32(1) > 0) report.AppendLine($"  - CALL: {reader.GetInt32(1)}");
+				if (reader.GetInt32(2) > 0) report.AppendLine($"  - COPY: {reader.GetInt32(2)}");
+				if (reader.GetInt32(3) > 0) report.AppendLine($"  - PERFORM: {reader.GetInt32(3)}");
+				if (reader.GetInt32(4) > 0) report.AppendLine($"  - EXEC: {reader.GetInt32(4)}");
+				if (reader.GetInt32(5) > 0) report.AppendLine($"  - READ: {reader.GetInt32(5)}");
+				if (reader.GetInt32(6) > 0) report.AppendLine($"  - WRITE: {reader.GetInt32(6)}");
+				if (reader.GetInt32(7) > 0) report.AppendLine($"  - OPEN: {reader.GetInt32(7)}");
+				if (reader.GetInt32(8) > 0) report.AppendLine($"  - CLOSE: {reader.GetInt32(8)}");
+			}
+		}
+
+		report.AppendLine();
+		report.AppendLine("---");
+		report.AppendLine();
+
+		// File Details section
+		report.AppendLine("## 📁 File Inventory");
+		report.AppendLine();
+
+		var filesCmd = connection.CreateCommand();
+		filesCmd.CommandText = @"
+			SELECT file_name, file_path, line_count
+			FROM cobol_files 
+			WHERE run_id = @runId
+			ORDER BY file_name";
+		filesCmd.Parameters.AddWithValue("@runId", runId);
+
+		report.AppendLine("| File Name | Path | Lines |");
+		report.AppendLine("|-----------|------|-------|");
+
+		using (var reader = await filesCmd.ExecuteReaderAsync())
+		{
+			while (await reader.ReadAsync())
+			{
+				var fileName = reader.GetString(0);
+				var filePath = reader.IsDBNull(1) ? "" : reader.GetString(1);
+				var lineCount = reader.IsDBNull(2) ? 0 : reader.GetInt32(2);
+
+				report.AppendLine($"| {fileName} | {filePath} | {lineCount} |");
+			}
+		}
+
+		report.AppendLine();
+		report.AppendLine("---");
+		report.AppendLine();
+
+		// Dependency Graph section
+		report.AppendLine("## 🔗 Dependency Relationships");
+		report.AppendLine();
+
+		var depDetailsCmd = connection.CreateCommand();
+		depDetailsCmd.CommandText = @"
+			SELECT source_file, target_file, dependency_type, line_number, context
+			FROM dependencies 
+			WHERE run_id = @runId
+			ORDER BY source_file, dependency_type, target_file";
+		depDetailsCmd.Parameters.AddWithValue("@runId", runId);
+
+		report.AppendLine("| Source | Target | Type | Line | Context |");
+		report.AppendLine("|--------|--------|------|------|---------|");
+
+		using (var reader = await depDetailsCmd.ExecuteReaderAsync())
+		{
+			while (await reader.ReadAsync())
+			{
+				var source = reader.GetString(0);
+				var target = reader.GetString(1);
+				var type = reader.GetString(2);
+				var line = reader.IsDBNull(3) ? "" : reader.GetInt32(3).ToString();
+				var context = reader.IsDBNull(4) ? "" : reader.GetString(4).Replace("|", "\\|");
+
+				report.AppendLine($"| {source} | {target} | {type} | {line} | {context} |");
+			}
+		}
+
+		report.AppendLine();
+		report.AppendLine("---");
+		report.AppendLine();
+		report.AppendLine("*Report generated by COBOL Migration Portal*");
+
+		// Save report to file
+		Directory.CreateDirectory(outputDir);
+		await File.WriteAllTextAsync(reportPath, report.ToString());
+
+		Console.WriteLine($"✅ Report generated: {reportPath}");
+
+		return Results.Ok(new
+		{
+			runId = runId,
+			content = report.ToString(),
+			lastModified = DateTime.Now,
+			path = reportPath
+		});
+	}
+	catch (Exception ex)
+	{
+		Console.WriteLine($"❌ Error generating report for run {runId}: {ex.Message}");
+		return Results.Ok(new { error = $"Failed to generate report: {ex.Message}" });
+	}
 });
 
 // This endpoint redirects to the search endpoint
@@ -1115,6 +1317,150 @@ app.MapPost("/api/switch-run", (SwitchRunRequest request, IMcpClient client) =>
 	{
 		return Results.Problem($"Failed to switch run: {ex.Message}");
 	}
+});
+
+// Architecture documentation endpoints
+app.MapGet("/api/documentation/architecture", async () =>
+{
+	try
+	{
+		var docPath = Path.Combine("..", "REVERSE_ENGINEERING_ARCHITECTURE.md");
+		var fullPath = Path.GetFullPath(docPath, app.Environment.ContentRootPath);
+
+		if (!File.Exists(fullPath))
+		{
+			return Results.NotFound(new { error = "Architecture documentation not found", path = fullPath });
+		}
+
+		var content = await File.ReadAllTextAsync(fullPath);
+		return Results.Ok(new
+		{
+			content,
+			filename = "REVERSE_ENGINEERING_ARCHITECTURE.md",
+			lastModified = File.GetLastWriteTimeUtc(fullPath)
+		});
+	}
+	catch (Exception ex)
+	{
+		return Results.Problem($"Failed to read architecture documentation: {ex.Message}");
+	}
+});
+
+// Database health check endpoint
+app.MapGet("/api/health/databases", async () =>
+{
+	var result = new
+	{
+		sqlite = new { connected = false, status = "Unknown", path = "" },
+		neo4j = new { connected = false, status = "Unknown", uri = "" }
+	};
+
+	// Check SQLite connection
+	try
+	{
+		var config = app.Configuration;
+		var dbPath = config.GetValue<string>("ApplicationSettings:MigrationDatabasePath") ?? "../Data/migration.db";
+		var fullPath = Path.GetFullPath(dbPath, app.Environment.ContentRootPath);
+
+		if (File.Exists(fullPath))
+		{
+			await using var connection = new SqliteConnection($"Data Source={fullPath};Mode=ReadOnly");
+			await connection.OpenAsync();
+			await using var command = connection.CreateCommand();
+			command.CommandText = "SELECT COUNT(*) FROM runs";
+			var count = Convert.ToInt32(await command.ExecuteScalarAsync());
+
+			result = new
+			{
+				sqlite = new { connected = true, status = $"Connected ({count} runs)", path = fullPath },
+				neo4j = result.neo4j
+			};
+		}
+		else
+		{
+			result = new
+			{
+				sqlite = new { connected = false, status = "Database file not found", path = fullPath },
+				neo4j = result.neo4j
+			};
+		}
+	}
+	catch (Exception ex)
+	{
+		result = new
+		{
+			sqlite = new { connected = false, status = $"Error: {ex.Message}", path = "" },
+			neo4j = result.neo4j
+		};
+	}
+
+	// Check Neo4j connection (disabled due to stability issues - will show as disconnected)
+	var config2 = app.Configuration;
+	var neo4jUri = config2.GetValue<string>("ApplicationSettings:Neo4j:Uri") ?? "bolt://localhost:7687";
+
+	result = new
+	{
+		sqlite = result.sqlite,
+		neo4j = new { connected = false, status = "Health check disabled (Neo4j may be running)", uri = neo4jUri }
+	};
+
+	// TODO: Re-enable when Neo4j connection is stable
+	/*
+	try
+	{
+		var neo4jUsername = config2.GetValue<string>("ApplicationSettings:Neo4j:Username") ?? "neo4j";
+		var neo4jPassword = config2.GetValue<string>("ApplicationSettings:Neo4j:Password") ?? "cobol-migration-2025";
+		var neo4jDatabase = config2.GetValue<string>("ApplicationSettings:Neo4j:Database") ?? "neo4j";
+
+		// Use Task.Run with timeout to prevent hanging
+		var healthTask = Task.Run(async () =>
+		{
+			await using var driver = GraphDatabase.Driver(neo4jUri, AuthTokens.Basic(neo4jUsername, neo4jPassword), o => o
+				.WithConnectionTimeout(TimeSpan.FromSeconds(2))
+				.WithMaxConnectionPoolSize(5)
+				.WithEncryptionLevel(EncryptionLevel.None));
+			
+			await using var session = driver.AsyncSession(o => o.WithDatabase(neo4jDatabase));
+			
+			var runCount = await session.ExecuteReadAsync(async tx =>
+			{
+				var cursor = await tx.RunAsync("MATCH (r:Run) RETURN count(r) as count");
+				var record = await cursor.SingleAsync();
+				return record["count"].As<int>();
+			});
+			
+			return runCount;
+		});
+
+		if (await Task.WhenAny(healthTask, Task.Delay(3000)) == healthTask && !healthTask.IsFaulted)
+		{
+			var runCount = await healthTask;
+			result = new
+			{
+				sqlite = result.sqlite,
+				neo4j = new { connected = true, status = $"Connected ({runCount} runs)", uri = neo4jUri }
+			};
+		}
+		else
+		{
+			result = new
+			{
+				sqlite = result.sqlite,
+				neo4j = new { connected = false, status = "Connection timeout (3s)", uri = neo4jUri }
+			};
+		}
+	}
+	catch (Exception ex)
+	{
+		result = new
+		{
+			sqlite = result.sqlite,
+			neo4j = new { connected = false, status = $"Error: {ex.GetType().Name}", uri = neo4jUri }
+		};
+	}
+	*/
+
+	return Results.Ok(result);
 });
 
 app.MapFallbackToFile("index.html");

@@ -171,7 +171,7 @@ VALUES ($runId, $fileName, $filePath, $isCopybook, $content);";
             await insertCommand.ExecuteNonQueryAsync(cancellationToken);
         }
 
-    await transaction.CommitAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         _logger.LogInformation("Persisted {Count} COBOL files for run {RunId}", files.Count, runId);
     }
 
@@ -234,7 +234,7 @@ VALUES (
             await insertCommand.ExecuteNonQueryAsync(cancellationToken);
         }
 
-    await transaction.CommitAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         _logger.LogInformation("Persisted {Count} COBOL analyses for run {RunId}", analysisList.Count, runId);
     }
 
@@ -340,7 +340,7 @@ VALUES (
             await insertMetrics.ExecuteNonQueryAsync(cancellationToken);
         }
 
-    await transaction.CommitAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         _logger.LogInformation("Persisted dependency map for run {RunId} ({DependencyCount} dependencies)", runId, dependencyMap.Dependencies.Count);
     }
 
@@ -578,7 +578,7 @@ WHERE run_id = $runId AND (file_name LIKE $term OR content LIKE $term)";
         return result;
     }
 
-    private SqliteConnection CreateConnection() => new(_connectionString);
+    public SqliteConnection CreateConnection() => new(_connectionString);
 
     private static string? SerializeOrNull<T>(IEnumerable<T>? value)
     {
@@ -707,5 +707,64 @@ SELECT last_insert_rowid();";
         }
 
         return summary;
+    }
+
+    public async Task<GraphVisualizationData?> GetDependencyGraphDataAsync(int runId)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+
+        // Get all dependencies for this run
+        var query = @"
+            SELECT DISTINCT source_file, target_file, dependency_type 
+            FROM dependencies 
+            WHERE run_id = $runId";
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = query;
+        command.Parameters.AddWithValue("$runId", runId);
+
+        var nodes = new HashSet<string>();
+        var edges = new List<GraphEdge>();
+
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            var source = reader.GetString(0);
+            var target = reader.GetString(1);
+            var depType = reader.IsDBNull(2) ? "DEPENDS_ON" : reader.GetString(2);
+
+            nodes.Add(source);
+            nodes.Add(target);
+
+            edges.Add(new GraphEdge
+            {
+                Source = source,
+                Target = target,
+                Type = depType
+            });
+        }
+
+        if (nodes.Count == 0 && edges.Count == 0)
+        {
+            _logger.LogWarning("No dependencies found in SQLite for run {RunId}", runId);
+            return null;
+        }
+
+        var graphNodes = nodes.Select(n => new GraphNode
+        {
+            Id = n,
+            Label = n,
+            IsCopybook = n.EndsWith(".cpy", StringComparison.OrdinalIgnoreCase)
+        }).ToList();
+
+        _logger.LogInformation("Built graph from SQLite for run {RunId}: {NodeCount} nodes, {EdgeCount} edges",
+            runId, graphNodes.Count, edges.Count);
+
+        return new GraphVisualizationData
+        {
+            Nodes = graphNodes,
+            Edges = edges
+        };
     }
 }

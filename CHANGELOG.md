@@ -5,6 +5,134 @@ All notable changes to this repository are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2025-11-13
+
+### Added - Major Features
+
+- **☕/C# Dual Language Support** - Choose between Java Quarkus or C# .NET output
+  - Interactive target language selection during `./doctor.sh run`
+  - New `CSharpConverterAgent` alongside existing `JavaConverterAgent`
+  - Separate output folders: `output/java-output/` and `output/dotnet-output/`
+  - Agent personas customized for Java/Quarkus or C#/.NET expertise
+  - All documentation updated to reflect dual-language capability
+  - Migration process tracks target language in run metadata
+
+- **📊 Enhanced Dependency Tracking** - Comprehensive COBOL statement detection
+  - **CALL** - Program invocations with line numbers
+  - **COPY** - Copybook inclusions
+  - **PERFORM** - Procedure calls and loops
+  - **EXEC SQL** - Embedded SQL statements
+  - **READ/WRITE** - File I/O operations
+  - **OPEN/CLOSE** - File handling
+  - Color-coded edges in dependency graph (CALL=green, COPY=blue, etc.)
+  - Edge labels show type and line numbers (e.g., "CALL (L42)")
+  - Tooltips display full context from source code
+  - Filterable by edge type with checkboxes
+  - All relationship types stored in Neo4j with metadata
+
+- **📄 Migration Report Generation** - Comprehensive documentation per run
+  - **Via Portal**: Click "📄 Generate Report" on any migration run
+  - **Via CLI**: Prompted after each `./doctor.sh run` completion
+  - **Via API**: `GET /api/runs/{runId}/report`
+  - **Report Contents**:
+    - Migration summary (file counts, target language)
+    - Dependency breakdown by type (CALL, COPY, PERFORM, etc.)
+    - Complete file inventory with line counts
+    - Detailed dependency relationships table
+    - Line numbers and context for each dependency
+  - **Report Formats**:
+    - View rendered in portal with Markdown formatting
+    - Download as `.md` file for documentation
+    - Auto-saved to `output/migration_report_run_{runId}.md`
+
+- **🎨 Mermaid Diagram Support** - Interactive architecture documentation
+  - All Mermaid flowcharts, sequence diagrams, and visualizations render automatically
+  - Dark theme matching portal design
+  - Zoomable and pan-able diagrams
+  - Syntax highlighting for code blocks
+  - **Supported Diagram Types**:
+    - Flowcharts (system architecture)
+    - Sequence diagrams (process flows)
+    - Class diagrams (data models)
+    - ER diagrams (database schemas)
+  - **Technologies**: Mermaid.js 10.x, Marked.js 11.x
+  - Integrated into "📄 Architecture Documentation" portal view
+
+- **🎯 Collapsible UI Components** - Clean, organized dashboard
+  - Filter sections collapse/expand with toggle controls
+  - Organized dependency type filters (CALL, COPY, PERFORM, etc.)
+  - Cleaner visual hierarchy in portal interface
+  - Improved user experience for complex visualizations
+  - Edge type filtering with color-coded visualization
+  - Line number context for all dependencies
+
+- **🔄 GPT-5 Mini Default Configuration** - Updated AI model recommendations
+  - All documentation now defaults to GPT-5 Mini (gpt-5-mini-2 deployment)
+  - Updated prerequisites in README.md, QUICK_START.md, .devcontainer/README.md
+  - Example configurations show gpt-5-mini-2 deployment names
+  - Token limit documentation updated to 32K for GPT-5 Mini
+  - Cost-optimized recommendations for testing and production
+
+### Added - Portal & API Enhancements
+
+- **📄 Report API Endpoints**:
+  - `GET /api/runs/{runId}/report` - Generate/retrieve migration report
+  - Returns JSON with content, lastModified, and file path
+  - Markdown content rendered in portal with full formatting
+
+- **📚 Documentation API Endpoints**:
+  - `GET /api/documentation/architecture` - Architecture docs with Mermaid diagrams
+  - Returns content with automatic diagram rendering
+  - Dark theme with syntax highlighting
+
+- **🔗 Enhanced Graph API**:
+  - Edge objects now include `type`, `lineNumber`, and `context` fields
+  - Support for multiple dependency relationship types
+  - Filterable graph data by edge type
+  - Color-coded visualization by relationship type
+
+### Changed
+
+- **Architecture Diagrams** - Updated all flow diagrams to show dual-language support
+  - Migration process diagram shows target language selection step
+  - Storage layer updated to reflect "Java/C# code" instead of "Java code"
+  - Output section shows "Java Quarkus Code OR C# .NET Code"
+  - Converter agent renamed to "CodeConverterAgent" with language choice
+
+- **Documentation Updates** - Comprehensive updates across all docs
+  - Main title: "COBOL to Java or C#" instead of "COBOL to Java"
+  - Step-by-step guide includes target language selection
+  - Sequence diagrams show user prompt for language choice
+  - Semantic Kernel section mentions both converter agents
+
+- **FileHelper.cs** - Fixed file extension handling
+  - Removed hardcoded `.java` extension enforcement
+  - Fixed extension replacement to replace instead of append
+  - C# files now correctly saved as `.cs` instead of `.cs.java`
+
+- **DevContainer Configuration** - Portal auto-start improvements
+  - Updated `postStartCommand` to auto-start portal on container launch
+  - Portal reliably starts at http://localhost:5028 after rebuild
+  - Neo4j health checks before portal launch
+  - Improved reliability for development workflow
+
+### Fixed
+
+- **✅ C# File Extension Bug** - Files now generate with correct `.cs` extension
+  - Previously: `CustomerDisplayException.cs.java`
+  - Now: `CustomerDisplayException.cs`
+  - Fixed `SanitizeFileName` method in `Helpers/FileHelper.cs`
+
+- **✅ Portal Auto-Start** - Portal now starts automatically in dev container
+  - Fixed issue where portal didn't load after `./helper-scripts/demo.sh`
+  - Services now reliably start after devcontainer rebuild
+  - Added helper scripts: `open-portal.sh` and `status.sh`
+
+- **✅ Local GIF for Demo** - README now uses local GIF instead of GitHub URL
+  - Changed image src from GitHub assets to local workspace path
+  - Path: `/workspaces/Legacy-Modernization-Agents/gifdemowithgraphandreportign.gif`
+  - Better demonstration with animated portal features
+
 ## [2.0.0] - 2025-11-11
 
 ### Added

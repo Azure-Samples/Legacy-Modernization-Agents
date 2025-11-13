@@ -2,6 +2,7 @@ services:
   neo4j:
     image: neo4j:5.15.0
     container_name: cobol-migration-neo4j
+    restart: unless-stopped
     ports:
       - "7474:7474"  # HTTP
       - "7687:7687"  # Bolt
@@ -9,15 +10,19 @@ services:
       - NEO4J_AUTH=neo4j/cobol-migration-2025
       - NEO4J_PLUGINS=["apoc"]
       - NEO4J_dbms_security_procedures_unrestricted=apoc.*
+      - NEO4J_dbms_memory_heap_initial__size=512m
+      - NEO4J_dbms_memory_heap_max__size=2G
+      - NEO4J_dbms_memory_pagecache_size=512m
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
       - neo4j_import:/var/lib/neo4j/import
     healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider localhost:7474 || exit 1"]
-      interval: 5s
-      timeout: 3s
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p cobol-migration-2025 'RETURN 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
       retries: 5
+      start_period: 30s
 
 volumes:
   neo4j_data:

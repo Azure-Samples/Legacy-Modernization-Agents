@@ -1,6 +1,7 @@
 // Neo4j-style Dependency Graph Visualization using vis-network
 class DependencyGraph {
   constructor(elementId) {
+    console.log(`🏗️ DependencyGraph constructor called with elementId: ${elementId}`);
     this.elementId = elementId;
     this.network = null;
     this.currentQuery = 'full';
@@ -9,7 +10,9 @@ class DependencyGraph {
     this.isRendering = false;
     this.controlsSetup = false;
     
+    console.log('📝 Setting up controls...');
     this.setupControls();
+    console.log('📡 Calling initializeAndLoad...');
     this.initializeAndLoad();
   }
 
@@ -67,6 +70,53 @@ class DependencyGraph {
       closeDetailsBtn.addEventListener('click', () => {
         document.getElementById('node-details').hidden = true;
       });
+    }
+
+    // Add filter checkbox listeners
+    const showPrograms = document.getElementById('show-programs');
+    const showCopybooks = document.getElementById('show-copybooks');
+    const showCalledPrograms = document.getElementById('show-called-programs');
+    const showCallEdges = document.getElementById('show-call-edges');
+    const showCopyEdges = document.getElementById('show-copy-edges');
+    const showPerformEdges = document.getElementById('show-perform-edges');
+    const showExecEdges = document.getElementById('show-exec-edges');
+    const showReadEdges = document.getElementById('show-read-edges');
+    const showWriteEdges = document.getElementById('show-write-edges');
+    const showOpenEdges = document.getElementById('show-open-edges');
+    const showCloseEdges = document.getElementById('show-close-edges');
+
+    if (showPrograms) {
+      showPrograms.addEventListener('change', () => this.applyFilters());
+    }
+    if (showCopybooks) {
+      showCopybooks.addEventListener('change', () => this.applyFilters());
+    }
+    if (showCalledPrograms) {
+      showCalledPrograms.addEventListener('change', () => this.applyFilters());
+    }
+    if (showCallEdges) {
+      showCallEdges.addEventListener('change', () => this.applyFilters());
+    }
+    if (showCopyEdges) {
+      showCopyEdges.addEventListener('change', () => this.applyFilters());
+    }
+    if (showPerformEdges) {
+      showPerformEdges.addEventListener('change', () => this.applyFilters());
+    }
+    if (showExecEdges) {
+      showExecEdges.addEventListener('change', () => this.applyFilters());
+    }
+    if (showReadEdges) {
+      showReadEdges.addEventListener('change', () => this.applyFilters());
+    }
+    if (showWriteEdges) {
+      showWriteEdges.addEventListener('change', () => this.applyFilters());
+    }
+    if (showOpenEdges) {
+      showOpenEdges.addEventListener('change', () => this.applyFilters());
+    }
+    if (showCloseEdges) {
+      showCloseEdges.addEventListener('change', () => this.applyFilters());
     }
   }
 
@@ -247,18 +297,25 @@ class DependencyGraph {
   }
 
   render(graphData) {
+    console.log('🎨 render() method called');
+    console.log('📦 graphData:', graphData);
+    
     const container = document.getElementById(this.elementId);
     if (!container) {
-      console.error('Graph container not found');
+      console.error(`❌ Graph container '${this.elementId}' not found`);
       return;
     }
     
+    console.log(`✅ Container found:`, container);
+    
     // Check if we have valid data
     if (!graphData || !graphData.nodes || !graphData.edges) {
-      console.error('Invalid graph data:', graphData);
+      console.error('❌ Invalid graph data:', graphData);
       this.updateInfo('No graph data available');
       return;
     }
+    
+    console.log(`✅ Graph data valid: ${graphData.nodes?.length} nodes, ${graphData.edges?.length} edges`);
 
     // Deduplicate nodes on client side as safety net
     const uniqueNodesMap = new Map();
@@ -278,6 +335,14 @@ class DependencyGraph {
       nodeConnections.set(e.target, (nodeConnections.get(e.target) || 0) + 1);
     });
 
+    // Identify called programs (targets of CALL edges)
+    const calledProgramIds = new Set();
+    graphData.edges.forEach(e => {
+      if (e.type === 'CALL') {
+        calledProgramIds.add(e.target);
+      }
+    });
+
     // Transform data for vis-network with enhanced details
     const nodes = new vis.DataSet(
       deduplicatedNodes.map(n => {
@@ -285,16 +350,42 @@ class DependencyGraph {
         const nodeSize = 20 + (connections * 3); // Size based on connections
         const importance = connections > 5 ? 'Critical' : connections > 2 ? 'Important' : 'Standard';
         
+        // Determine node type: Copybook, CalledProgram, or Program
+        const isCalledProgram = !n.isCopybook && calledProgramIds.has(n.id);
+        const nodeType = n.isCopybook ? 'Copybook (.cpy)' : (isCalledProgram ? 'Called Program (.cbl)' : 'Program (.cbl)');
+        
+        // Color scheme: Copybook=red, CalledProgram=green, Program=blue
+        let backgroundColor, borderColor, highlightBg, highlightBorder, shadowColor;
+        if (n.isCopybook) {
+          backgroundColor = '#f16667';
+          borderColor = '#dc2626';
+          highlightBg = '#fca5a5';
+          highlightBorder = '#991b1b';
+          shadowColor = 'rgba(241, 102, 103, 0.5)';
+        } else if (isCalledProgram) {
+          backgroundColor = '#10b981';
+          borderColor = '#059669';
+          highlightBg = '#6ee7b7';
+          highlightBorder = '#047857';
+          shadowColor = 'rgba(16, 185, 129, 0.5)';
+        } else {
+          backgroundColor = '#68bdf6';
+          borderColor = '#1d4ed8';
+          highlightBg = '#93c5fd';
+          highlightBorder = '#1e3a8a';
+          shadowColor = 'rgba(104, 189, 246, 0.5)';
+        }
+        
         return {
           id: n.id,
           label: n.label,
-          title: `${n.label}\nType: ${n.isCopybook ? 'Copybook (.cpy)' : 'Program (.cbl)'}\nDependencies: ${connections}\nPriority: ${importance}`,
+          title: `${n.label}\nType: ${nodeType}\nDependencies: ${connections}\nPriority: ${importance}`,
           color: {
-            background: n.isCopybook ? '#f16667' : '#68bdf6',
-            border: n.isCopybook ? '#dc2626' : '#1d4ed8',
+            background: backgroundColor,
+            border: borderColor,
             highlight: {
-              background: n.isCopybook ? '#fca5a5' : '#93c5fd',
-              border: n.isCopybook ? '#991b1b' : '#1e3a8a'
+              background: highlightBg,
+              border: highlightBorder
             }
           },
           font: { 
@@ -309,58 +400,101 @@ class DependencyGraph {
           borderWidth: 2 + Math.min(connections, 4),
           shadow: {
             enabled: true,
-            color: n.isCopybook ? 'rgba(241, 102, 103, 0.5)' : 'rgba(104, 189, 246, 0.5)',
+            color: shadowColor,
             size: 10,
             x: 2,
             y: 2
           },
           isCopybook: n.isCopybook,
-          connections: connections
+          isCalledProgram: isCalledProgram,
+          connections: connections,
+          lineCount: n.lineCount || 0
         };
       })
     );
 
     const edges = new vis.DataSet(
-      graphData.edges.map((e, idx) => ({
-        id: idx,
-        from: e.source,
-        to: e.target,
-        label: e.type || 'DEPENDS_ON',
-        title: `${e.type || 'DEPENDS_ON'}\nFrom: ${graphData.nodes.find(n => n.id === e.source)?.label || e.source}\nTo: ${graphData.nodes.find(n => n.id === e.target)?.label || e.target}`,
-        arrows: {
-          to: {
-            enabled: true,
-            scaleFactor: 0.8,
-            type: 'arrow'
-          }
-        },
-        color: { 
-          color: '#94d486',
-          highlight: '#fbbf24',
-          hover: '#10b981',
-          opacity: 0.8
-        },
-        width: 2.5,
-        font: { 
-          size: 11,
-          color: '#a8dadc',
-          align: 'horizontal',
-          background: 'rgba(15, 23, 42, 0.8)',
-          strokeWidth: 0
-        },
-        smooth: { 
-          enabled: true,
-          type: 'dynamic',
-          roundness: 0.5
-        },
-        shadow: {
-          enabled: true,
-          color: 'rgba(148, 212, 134, 0.3)',
-          size: 5,
-          x: 1,
-          y: 1
+      graphData.edges.map((e, idx) => {
+        const isCall = e.type === 'CALL';
+        const isCopy = e.type === 'COPY';
+        
+        // Build edge label with line number if available
+        let edgeLabel = e.type || 'DEPENDS_ON';
+        if (e.lineNumber) {
+          edgeLabel = `${e.type} (L${e.lineNumber})`;
         }
-      }))
+        
+        // Build tooltip
+        let tooltip = `${e.type || 'DEPENDS_ON'}\nFrom: ${graphData.nodes.find(n => n.id === e.source)?.label || e.source}\nTo: ${graphData.nodes.find(n => n.id === e.target)?.label || e.target}`;
+        if (e.lineNumber) {
+          tooltip += `\nLine: ${e.lineNumber}`;
+        }
+        if (e.context) {
+          tooltip += `\n${e.context}`;
+        }
+        
+        // Color scheme and styling for each dependency type
+        const edgeType = (e.type || 'DEPENDS_ON').toUpperCase();
+        let edgeColor, edgeWidth, fontSize;
+        
+        const edgeStyles = {
+          'CALL': { color: '#10b981', width: 3, fontSize: 12 },      // Green
+          'COPY': { color: '#3b82f6', width: 2.5, fontSize: 11 },    // Blue
+          'PERFORM': { color: '#f59e0b', width: 2.5, fontSize: 11 }, // Amber
+          'EXEC': { color: '#8b5cf6', width: 2.5, fontSize: 11 },    // Purple
+          'READ': { color: '#06b6d4', width: 2, fontSize: 10 },      // Cyan
+          'WRITE': { color: '#ec4899', width: 2, fontSize: 10 },     // Pink
+          'OPEN': { color: '#84cc16', width: 2, fontSize: 10 },      // Lime
+          'CLOSE': { color: '#ef4444', width: 2, fontSize: 10 }      // Red
+        };
+        
+        const style = edgeStyles[edgeType] || { color: '#94d486', width: 2, fontSize: 10 };
+        edgeColor = style.color;
+        edgeWidth = style.width;
+        fontSize = style.fontSize;
+        
+        return {
+          id: idx,
+          from: e.source,
+          to: e.target,
+          label: edgeLabel,
+          title: tooltip,
+          arrows: {
+            to: {
+              enabled: true,
+              scaleFactor: 0.8,
+              type: 'arrow'
+            }
+          },
+          color: { 
+            color: edgeColor,
+            highlight: '#fbbf24',
+            hover: '#fcd34d',
+            opacity: 0.85
+          },
+          width: edgeWidth,
+          font: { 
+            size: fontSize,
+            color: edgeColor,
+            align: 'horizontal',
+            background: 'rgba(15, 23, 42, 0.9)',
+            strokeWidth: 0
+          },
+          edgeType: e.type,
+          smooth: { 
+            enabled: true,
+            type: 'dynamic',
+            roundness: 0.5
+          },
+          shadow: {
+            enabled: true,
+            color: `${edgeColor}40`,
+            size: 5,
+            x: 1,
+            y: 1
+          }
+        };
+      })
     );
 
     const data = { nodes, edges };
@@ -425,11 +559,26 @@ class DependencyGraph {
     };
 
     // Create network
+    console.log('🔨 Creating vis.Network...');
     if (this.network) {
+      console.log('⚠️ Destroying existing network');
       this.network.destroy();
     }
     
-    this.network = new vis.Network(container, data, options);
+    console.log('📊 Creating new vis.Network with:', { 
+      containerExists: !!container, 
+      nodesCount: nodes.length, 
+      edgesCount: edges.length 
+    });
+    
+    try {
+      this.network = new vis.Network(container, data, options);
+      console.log('✅ vis.Network created successfully');
+    } catch (error) {
+      console.error('❌ Error creating vis.Network:', error);
+      this.updateInfo(`Error creating graph: ${error.message}`);
+      return;
+    }
 
     // Event handlers
     this.network.on('stabilizationIterationsDone', () => {
@@ -473,6 +622,11 @@ class DependencyGraph {
     let html = '<table class="details-table">';
     html += `<tr><th colspan="2" style="background: ${typeColor}; color: white;">${typeIcon} ${node.label || 'Unknown'}</th></tr>`;
     html += `<tr><td>File Type</td><td style="color: ${typeColor}; font-weight: 600;">${node.isCopybook ? 'COBOL Copybook (.cpy)' : 'COBOL Program (.cbl)'}</td></tr>`;
+    
+    // Add Lines of Code (LoC)
+    if (node.lineCount && node.lineCount > 0) {
+      html += `<tr><td>Lines of Code</td><td style="color: #a78bfa; font-weight: 600;">${node.lineCount.toLocaleString()} LoC</td></tr>`;
+    }
     
     // Get dependency information
     if (this.network) {
@@ -521,14 +675,108 @@ class DependencyGraph {
       infoDiv.textContent = text;
     }
   }
+
+  applyFilters() {
+    if (!this.network) {
+      console.warn('Network not initialized, cannot apply filters');
+      return;
+    }
+
+    // Get filter checkbox states
+    const showPrograms = document.getElementById('show-programs')?.checked ?? true;
+    const showCopybooks = document.getElementById('show-copybooks')?.checked ?? true;
+    const showCalledPrograms = document.getElementById('show-called-programs')?.checked ?? true;
+    const showCallEdges = document.getElementById('show-call-edges')?.checked ?? true;
+    const showCopyEdges = document.getElementById('show-copy-edges')?.checked ?? true;
+    const showPerformEdges = document.getElementById('show-perform-edges')?.checked ?? true;
+    const showExecEdges = document.getElementById('show-exec-edges')?.checked ?? true;
+    const showReadEdges = document.getElementById('show-read-edges')?.checked ?? true;
+    const showWriteEdges = document.getElementById('show-write-edges')?.checked ?? true;
+    const showOpenEdges = document.getElementById('show-open-edges')?.checked ?? true;
+    const showCloseEdges = document.getElementById('show-close-edges')?.checked ?? true;
+
+    // Get all nodes and edges
+    const allNodes = this.network.body.data.nodes;
+    const allEdges = this.network.body.data.edges;
+
+    // Filter nodes based on type
+    const visibleNodeIds = new Set();
+    allNodes.forEach(node => {
+      let isVisible = false;
+      if (node.isCopybook && showCopybooks) {
+        isVisible = true;
+      } else if (node.isCalledProgram && showCalledPrograms) {
+        isVisible = true;
+      } else if (!node.isCopybook && !node.isCalledProgram && showPrograms) {
+        isVisible = true;
+      }
+
+      if (isVisible) {
+        visibleNodeIds.add(node.id);
+      }
+    });
+
+    // Update node visibility
+    const nodeUpdates = [];
+    allNodes.forEach(node => {
+      const shouldShow = visibleNodeIds.has(node.id);
+      nodeUpdates.push({
+        id: node.id,
+        hidden: !shouldShow
+      });
+    });
+
+    // Update edge visibility (hide edges connected to hidden nodes OR filtered edge types)
+    const edgeUpdates = [];
+    allEdges.forEach(edge => {
+      const nodesVisible = visibleNodeIds.has(edge.from) && visibleNodeIds.has(edge.to);
+      let edgeTypeVisible = true;
+      
+      const edgeType = (edge.edgeType || '').toUpperCase();
+      if (edgeType === 'CALL' && !showCallEdges) {
+        edgeTypeVisible = false;
+      } else if (edgeType === 'COPY' && !showCopyEdges) {
+        edgeTypeVisible = false;
+      } else if (edgeType === 'PERFORM' && !showPerformEdges) {
+        edgeTypeVisible = false;
+      } else if (edgeType === 'EXEC' && !showExecEdges) {
+        edgeTypeVisible = false;
+      } else if (edgeType === 'READ' && !showReadEdges) {
+        edgeTypeVisible = false;
+      } else if (edgeType === 'WRITE' && !showWriteEdges) {
+        edgeTypeVisible = false;
+      } else if (edgeType === 'OPEN' && !showOpenEdges) {
+        edgeTypeVisible = false;
+      } else if (edgeType === 'CLOSE' && !showCloseEdges) {
+        edgeTypeVisible = false;
+      }
+      
+      const shouldShow = nodesVisible && edgeTypeVisible;
+      edgeUpdates.push({
+        id: edge.id,
+        hidden: !shouldShow
+      });
+    });
+
+    // Apply updates
+    allNodes.update(nodeUpdates);
+    allEdges.update(edgeUpdates);
+
+    // Update info text
+    const visibleCount = visibleNodeIds.size;
+    const totalCount = allNodes.length;
+    this.updateInfo(`Showing ${visibleCount} of ${totalCount} nodes`);
+  }
 }
 
 // Initialize graph when DOM is ready
 let dependencyGraph;
 document.addEventListener('DOMContentLoaded', () => {
+  console.log('🚀 DOMContentLoaded fired');
+  
   // Check if vis-network is loaded
   if (typeof vis === 'undefined') {
-    console.error('vis-network library not loaded');
+    console.error('❌ vis-network library not loaded');
     const infoDiv = document.getElementById('graph-info');
     if (infoDiv) {
       infoDiv.textContent = 'Error: vis-network library failed to load. Check console for details.';
@@ -536,7 +784,19 @@ document.addEventListener('DOMContentLoaded', () => {
     return;
   }
   
+  console.log('✅ vis-network library loaded successfully');
+  
+  const graphContainer = document.getElementById('dependency-graph');
+  if (!graphContainer) {
+    console.error('❌ Graph container element not found');
+    return;
+  }
+  console.log('✅ Graph container element found');
+  
+  console.log('🔨 Creating DependencyGraph instance...');
   dependencyGraph = new DependencyGraph('dependency-graph');
+  console.log('✅ DependencyGraph instance created');
+  
   // Make graph accessible globally for chat integration
   window.dependencyGraph = dependencyGraph;
 });

@@ -39,7 +39,7 @@ public sealed class McpServer
         _runId = runId;
         _logger = logger;
         _aiSettings = aiSettings;
-        
+
         if (_aiSettings != null && !string.IsNullOrEmpty(_aiSettings.Endpoint) && !string.IsNullOrEmpty(_aiSettings.ApiKey))
         {
             try
@@ -50,12 +50,12 @@ public sealed class McpServer
                 {
                     deploymentName = _aiSettings.ModelId;
                 }
-                
+
                 kernelBuilder.AddAzureOpenAIChatCompletion(
                     deploymentName: deploymentName!,
                     endpoint: _aiSettings.Endpoint,
                     apiKey: _aiSettings.ApiKey);
-                
+
                 _kernel = kernelBuilder.Build();
                 _modelId = deploymentName;
                 _logger.LogInformation("Semantic Kernel initialized for custom Q&A with model {ModelId}", _modelId);
@@ -65,7 +65,7 @@ public sealed class McpServer
                 _logger.LogWarning(ex, "Failed to initialize Semantic Kernel for custom Q&A");
             }
         }
-        
+
         var inputStream = Console.OpenStandardInput();
         _outputStream = Console.OpenStandardOutput();
         _reader = new StreamReader(inputStream, new UTF8Encoding(false));
@@ -625,7 +625,7 @@ public sealed class McpServer
             builder.AppendLine();
             builder.AppendLine($"Your question: {prompt}");
             builder.AppendLine();
-            
+
             try
             {
                 var aiResponse = await GetAIResponseAsync(prompt, summary, dependencyMap, analyses);
@@ -695,18 +695,18 @@ public sealed class McpServer
         var contextBuilder = new StringBuilder();
         contextBuilder.AppendLine($"Migration Run {summary.RunId} Context:");
         contextBuilder.AppendLine($"Status: {summary.Status}");
-        
+
         if (summary.Metrics != null)
         {
             contextBuilder.AppendLine($"Programs: {summary.Metrics.TotalPrograms}, Copybooks: {summary.Metrics.TotalCopybooks}, Dependencies: {summary.Metrics.TotalDependencies}");
         }
-        
+
         if (!string.IsNullOrEmpty(summary.AnalysisInsights))
         {
             contextBuilder.AppendLine("Dependency Insights:");
             contextBuilder.AppendLine(summary.AnalysisInsights.Length > 2000 ? summary.AnalysisInsights[..2000] + "..." : summary.AnalysisInsights);
         }
-        
+
         if (dependencyMap != null && dependencyMap.Dependencies.Count > 0)
         {
             contextBuilder.AppendLine($"\nTop Dependencies ({dependencyMap.Dependencies.Count} total):");
@@ -715,7 +715,7 @@ public sealed class McpServer
                 contextBuilder.AppendLine($"- {dep.SourceFile} -> {dep.TargetFile} ({dep.DependencyType})");
             }
         }
-        
+
         if (analyses.Count > 0)
         {
             contextBuilder.AppendLine($"\nCOBOL Files ({analyses.Count} total):");
@@ -778,13 +778,13 @@ public sealed class McpServer
     private async Task<JsonObject?> BuildGraphPayloadAsync(int? requestedRunId = null)
     {
         Console.WriteLine($"🚀 BuildGraphPayloadAsync called with requestedRunId={requestedRunId}");
-        
+
         // Use requested runId from URI, or fall back to server's default _runId
         var runId = requestedRunId ?? _runId;
         Console.WriteLine($"🔍 Using runId={runId}, default _runId={_runId}");
-        _logger.LogInformation("🔍 BuildGraphPayloadAsync: requestedRunId={RequestedRunId}, using runId={RunId}, default _runId={DefaultRunId}", 
+        _logger.LogInformation("🔍 BuildGraphPayloadAsync: requestedRunId={RequestedRunId}, using runId={RunId}, default _runId={DefaultRunId}",
             requestedRunId, runId, _runId);
-        
+
         if (_repository is not HybridMigrationRepository hybridRepo)
         {
             return new JsonObject
@@ -807,7 +807,7 @@ public sealed class McpServer
             };
         }
 
-        _logger.LogInformation("Returning graph data for run {RunId}: {NodeCount} nodes, {EdgeCount} edges", 
+        _logger.LogInformation("Returning graph data for run {RunId}: {NodeCount} nodes, {EdgeCount} edges",
             runId, graphData.Nodes.Count, graphData.Edges.Count);
 
         var nodesArray = new JsonArray();
@@ -817,19 +817,32 @@ public sealed class McpServer
             {
                 ["id"] = node.Id,
                 ["label"] = node.Label,
-                ["isCopybook"] = node.IsCopybook
+                ["isCopybook"] = node.IsCopybook,
+                ["lineCount"] = node.LineCount
             });
         }
 
         var edgesArray = new JsonArray();
         foreach (var edge in graphData.Edges)
         {
-            edgesArray.Add(new JsonObject
+            var edgeObj = new JsonObject
             {
                 ["source"] = edge.Source,
                 ["target"] = edge.Target,
                 ["type"] = edge.Type
-            });
+            };
+
+            if (edge.LineNumber.HasValue)
+            {
+                edgeObj["lineNumber"] = edge.LineNumber.Value;
+            }
+
+            if (!string.IsNullOrEmpty(edge.Context))
+            {
+                edgeObj["context"] = edge.Context;
+            }
+
+            edgesArray.Add(edgeObj);
         }
 
         return new JsonObject
@@ -852,7 +865,7 @@ public sealed class McpServer
 
         var cycles = await hybridRepo.GetCircularDependenciesAsync(_runId);
         var cyclesArray = new JsonArray();
-        
+
         foreach (var cycle in cycles)
         {
             var pathArray = new JsonArray();
@@ -888,7 +901,7 @@ public sealed class McpServer
 
         var criticalFiles = await hybridRepo.GetCriticalFilesAsync(_runId);
         var filesArray = new JsonArray();
-        
+
         foreach (var file in criticalFiles)
         {
             filesArray.Add(new JsonObject
@@ -966,7 +979,7 @@ public sealed class McpServer
             _logger.LogDebug("Extracted runId {RunId} from URI: {Uri}", runId, uri);
             return runId;
         }
-        
+
         _logger.LogWarning("Could not extract runId from URI: {Uri}, using default {DefaultRunId}", uri, _runId);
         return null; // Will use default _runId
     }

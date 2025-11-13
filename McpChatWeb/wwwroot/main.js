@@ -247,6 +247,37 @@ function initializeSuggestionChips() {
 }
 
 // Initialize everything when DOM is ready
+// Database status monitoring
+async function updateDatabaseStatus() {
+  try {
+    const response = await fetch('/api/health/databases');
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    
+    const data = await response.json();
+    
+    // Update SQLite status
+    const sqliteIndicator = document.getElementById('sqlite-status');
+    if (sqliteIndicator) {
+      sqliteIndicator.className = 'status-indicator ' + (data.sqlite.connected ? 'connected' : 'disconnected');
+      sqliteIndicator.title = `SQLite: ${data.sqlite.status}`;
+    }
+    
+    // Update Neo4j status
+    const neo4jIndicator = document.getElementById('neo4j-status');
+    if (neo4jIndicator) {
+      neo4jIndicator.className = 'status-indicator ' + (data.neo4j.connected ? 'connected' : 'disconnected');
+      neo4jIndicator.title = `Neo4j: ${data.neo4j.status}`;
+    }
+  } catch (err) {
+    console.error('Failed to update database status:', err);
+    // Set both to disconnected on error
+    const sqliteIndicator = document.getElementById('sqlite-status');
+    const neo4jIndicator = document.getElementById('neo4j-status');
+    if (sqliteIndicator) sqliteIndicator.className = 'status-indicator disconnected';
+    if (neo4jIndicator) neo4jIndicator.className = 'status-indicator disconnected';
+  }
+}
+
 function initializeApp() {
   initializeElements();
   
@@ -266,6 +297,10 @@ function initializeApp() {
   
   initializeSuggestionChips();
   fetchResources();
+  
+  // Start database status monitoring
+  updateDatabaseStatus();
+  setInterval(updateDatabaseStatus, 10000); // Update every 10 seconds
 }
 
 // Ensure DOM is ready before initializing

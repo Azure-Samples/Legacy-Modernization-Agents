@@ -36,15 +36,15 @@ public class FileHelper
     public async Task<List<CobolFile>> ScanDirectoryForCobolFilesAsync(string directory)
     {
         _logger.LogInformation("Scanning directory for COBOL files: {Directory}", directory);
-        
+
         if (!Directory.Exists(directory))
         {
             _logger.LogError("Directory not found: {Directory}", directory);
             throw new DirectoryNotFoundException($"Directory not found: {directory}");
         }
-        
+
         var cobolFiles = new List<CobolFile>();
-        
+
         // Get all .cbl files (COBOL programs)
         var cblFiles = Directory.GetFiles(directory, "*.cbl", SearchOption.AllDirectories);
         foreach (var filePath in cblFiles)
@@ -58,7 +58,7 @@ public class FileHelper
                 IsCopybook = false
             });
         }
-        
+
         // Get all .cpy files (COBOL copybooks)
         var cpyFiles = Directory.GetFiles(directory, "*.cpy", SearchOption.AllDirectories);
         foreach (var filePath in cpyFiles)
@@ -72,10 +72,10 @@ public class FileHelper
                 IsCopybook = true
             });
         }
-        
-        _logger.LogInformation("Found {Count} COBOL files ({CblCount} programs, {CpyCount} copybooks)", 
+
+        _logger.LogInformation("Found {Count} COBOL files ({CblCount} programs, {CpyCount} copybooks)",
             cobolFiles.Count, cblFiles.Length, cpyFiles.Length);
-        
+
         return cobolFiles;
     }
 
@@ -88,102 +88,138 @@ public class FileHelper
     /// <returns>The full path to the saved file.</returns>
     public async Task<string> SaveJavaFileAsync(JavaFile javaFile, string outputDirectory)
     {
+        return await SaveCodeFileAsync(javaFile, outputDirectory, ".java");
+    }
+
+    /// <summary>
+    /// Saves a code file to disk with cross-platform compatibility.
+    /// Handles Windows path length limits, invalid characters, and encoding issues.
+    /// Supports multiple languages (Java, C#, etc.).
+    /// </summary>
+    /// <param name="codeFile">The code file to save.</param>
+    /// <param name="outputDirectory">The output directory.</param>
+    /// <param name="defaultExtension">Default extension if file doesn't have one (e.g., ".java", ".cs").</param>
+    /// <returns>The full path to the saved file.</returns>
+    public async Task<string> SaveCodeFileAsync(CodeFile codeFile, string outputDirectory, string defaultExtension = ".cs")
+    {
         try
         {
+            // Ensure default extension starts with dot
+            if (!string.IsNullOrEmpty(defaultExtension) && !defaultExtension.StartsWith("."))
+            {
+                defaultExtension = "." + defaultExtension;
+            }
+
             // Validate and sanitize the filename
-            var sanitizedFileName = SanitizeFileName(javaFile.FileName);
+            var sanitizedFileName = SanitizeFileName(codeFile.FileName);
             if (string.IsNullOrEmpty(sanitizedFileName))
             {
                 // Extract class name from content if filename is invalid
-                sanitizedFileName = ExtractClassNameFromContent(javaFile.Content) + ".java";
-                _logger.LogWarning("Invalid filename '{OriginalFileName}' replaced with '{SanitizedFileName}'", 
-                    javaFile.FileName, sanitizedFileName);
+                sanitizedFileName = ExtractClassNameFromContent(codeFile.Content) + defaultExtension;
+                _logger.LogWarning("Invalid filename '{OriginalFileName}' replaced with '{SanitizedFileName}'",
+                    codeFile.FileName, sanitizedFileName);
             }
-            
-            _logger.LogInformation("Saving Java file: {FileName}", sanitizedFileName);
-            
+
+            // Ensure filename has correct extension
+            if (!string.IsNullOrEmpty(defaultExtension) && !sanitizedFileName.EndsWith(defaultExtension, StringComparison.OrdinalIgnoreCase))
+            {
+                var currentExt = Path.GetExtension(sanitizedFileName);
+                if (string.IsNullOrEmpty(currentExt))
+                {
+                    // No extension, add the default one
+                    sanitizedFileName += defaultExtension;
+                }
+                else
+                {
+                    // Has wrong extension, replace it with the correct one
+                    sanitizedFileName = Path.GetFileNameWithoutExtension(sanitizedFileName) + defaultExtension;
+                }
+            }
+
+            _logger.LogInformation("Saving code file: {FileName}", sanitizedFileName);
+
             // Normalize output directory path for current OS
             outputDirectory = Path.GetFullPath(outputDirectory);
-            
+
             // Create output directory with retry logic for Windows
             EnsureDirectoryExists(outputDirectory);
-            
-            // Sanitize and validate package name
-            var sanitizedPackageName = SanitizePackageName(javaFile.PackageName);
-            if (string.IsNullOrEmpty(sanitizedPackageName))
+
+            // Sanitize and validate namespace/package name
+            var sanitizedNamespace = SanitizePackageName(codeFile.NamespaceName);
+            if (string.IsNullOrEmpty(sanitizedNamespace))
             {
-                // Extract package from content if package name is invalid
-                sanitizedPackageName = ExtractPackageNameFromContent(javaFile.Content);
-                _logger.LogWarning("Invalid package name '{OriginalPackage}' replaced with '{SanitizedPackage}'", 
-                    javaFile.PackageName, sanitizedPackageName);
+                // Extract namespace/package from content if invalid
+                sanitizedNamespace = ExtractPackageNameFromContent(codeFile.Content);
+                _logger.LogWarning("Invalid namespace '{OriginalNamespace}' replaced with '{SanitizedNamespace}'",
+                    codeFile.NamespaceName, sanitizedNamespace);
             }
-            
-            // Create package directory structure using OS-specific separator
-            var packagePath = sanitizedPackageName.Replace('.', Path.DirectorySeparatorChar);
-            var packageDirectory = Path.Combine(outputDirectory, packagePath);
-            
+
+            // Create namespace/package directory structure using OS-specific separator
+            var namespacePath = sanitizedNamespace.Replace('.', Path.DirectorySeparatorChar);
+            var namespaceDirectory = Path.Combine(outputDirectory, namespacePath);
+
             // Windows MAX_PATH is 260 characters, but we need to handle long paths
             // Check if we're on Windows and path is too long
-            var potentialFilePath = Path.Combine(packageDirectory, sanitizedFileName);
-            var isWindows = Environment.OSVersion.Platform == PlatformID.Win32NT || 
+            var potentialFilePath = Path.Combine(namespaceDirectory, sanitizedFileName);
+            var isWindows = Environment.OSVersion.Platform == PlatformID.Win32NT ||
                            Environment.OSVersion.Platform == PlatformID.Win32Windows ||
                            Environment.OSVersion.Platform == PlatformID.Win32S;
-            
+
             if (isWindows && potentialFilePath.Length > 240) // Leave margin for Windows MAX_PATH (260)
             {
-                _logger.LogWarning("Path too long for Windows ({Length} chars), using shortened package name", potentialFilePath.Length);
-                // Use just the last part of the package name
-                var parts = sanitizedPackageName.Split('.');
-                sanitizedPackageName = parts.Length > 2 
+                _logger.LogWarning("Path too long for Windows ({Length} chars), using shortened namespace", potentialFilePath.Length);
+                // Use just the last part of the namespace
+                var parts = sanitizedNamespace.Split('.');
+                sanitizedNamespace = parts.Length > 2
                     ? string.Join('.', parts.TakeLast(2))
-                    : sanitizedPackageName;
-                packagePath = sanitizedPackageName.Replace('.', Path.DirectorySeparatorChar);
-                packageDirectory = Path.Combine(outputDirectory, packagePath);
-                potentialFilePath = Path.Combine(packageDirectory, sanitizedFileName);
-                
+                    : sanitizedNamespace;
+                namespacePath = sanitizedNamespace.Replace('.', Path.DirectorySeparatorChar);
+                namespaceDirectory = Path.Combine(outputDirectory, namespacePath);
+                potentialFilePath = Path.Combine(namespaceDirectory, sanitizedFileName);
+
                 // If still too long, use flat structure
                 if (potentialFilePath.Length > 240)
                 {
                     _logger.LogWarning("Path still too long, using flat structure in output directory");
-                    packageDirectory = outputDirectory;
-                    potentialFilePath = Path.Combine(packageDirectory, sanitizedFileName);
+                    namespaceDirectory = outputDirectory;
+                    potentialFilePath = Path.Combine(namespaceDirectory, sanitizedFileName);
                 }
             }
-            
-            // Create package directory with retry logic
-            EnsureDirectoryExists(packageDirectory);
-            
-            var filePath = Path.Combine(packageDirectory, sanitizedFileName);
-            
+
+            // Create namespace directory with retry logic
+            EnsureDirectoryExists(namespaceDirectory);
+
+            var filePath = Path.Combine(namespaceDirectory, sanitizedFileName);
+
             // Write file with explicit UTF-8 encoding (no BOM) and proper line endings
             // Use cross-platform line endings (Environment.NewLine)
-            var normalizedContent = NormalizeLineEndings(javaFile.Content);
-            
+            var normalizedContent = NormalizeLineEndings(codeFile.Content);
+
             // Write with retry logic for Windows file locking issues
             await WriteFileWithRetryAsync(filePath, normalizedContent);
-            
-            _logger.LogInformation("Saved Java file: {FilePath}", filePath);
-            
+
+            _logger.LogInformation("Saved code file: {FilePath}", filePath);
+
             return filePath;
         }
         catch (PathTooLongException ex)
         {
-            _logger.LogError(ex, "Path too long for file system. File: {FileName}, Package: {Package}", 
-                javaFile.FileName, javaFile.PackageName);
+            _logger.LogError(ex, "Path too long for file system. File: {FileName}, Namespace: {Namespace}",
+                codeFile.FileName, codeFile.NamespaceName);
             throw new InvalidOperationException(
-                $"Cannot save file '{javaFile.FileName}' - path exceeds OS limit. Try using a shorter output directory or package name.", ex);
+                $"Cannot save file '{codeFile.FileName}' - path exceeds OS limit. Try using a shorter output directory or namespace.", ex);
         }
         catch (UnauthorizedAccessException ex)
         {
-            _logger.LogError(ex, "Access denied writing file: {FileName}. Check directory permissions.", javaFile.FileName);
+            _logger.LogError(ex, "Access denied writing file: {FileName}. Check directory permissions.", codeFile.FileName);
             throw new InvalidOperationException(
-                $"Access denied writing file '{javaFile.FileName}'. Ensure the output directory has write permissions.", ex);
+                $"Access denied writing file '{codeFile.FileName}'. Ensure the output directory has write permissions.", ex);
         }
         catch (IOException ex)
         {
-            _logger.LogError(ex, "I/O error writing file: {FileName}. File may be locked by another process.", javaFile.FileName);
+            _logger.LogError(ex, "I/O error writing file: {FileName}. File may be locked by another process.", codeFile.FileName);
             throw new InvalidOperationException(
-                $"Cannot write file '{javaFile.FileName}'. The file may be open in another program or the disk may be full.", ex);
+                $"Cannot write file '{codeFile.FileName}'. The file may be open in another program or the disk may be full.", ex);
         }
     }
 
@@ -194,15 +230,15 @@ public class FileHelper
     {
         if (Directory.Exists(directoryPath))
             return;
-            
+
         const int maxRetries = 3;
         const int retryDelayMs = 100;
-        
+
         for (int attempt = 1; attempt <= maxRetries; attempt++)
         {
             try
             {
-                _logger.LogDebug("Creating directory: {Directory} (attempt {Attempt}/{MaxRetries})", 
+                _logger.LogDebug("Creating directory: {Directory} (attempt {Attempt}/{MaxRetries})",
                     directoryPath, attempt, maxRetries);
                 Directory.CreateDirectory(directoryPath);
                 return;
@@ -228,7 +264,7 @@ public class FileHelper
     {
         const int maxRetries = 3;
         const int retryDelayMs = 100;
-        
+
         for (int attempt = 1; attempt <= maxRetries; attempt++)
         {
             try
@@ -238,8 +274,8 @@ public class FileHelper
                 await File.WriteAllTextAsync(filePath, content, encoding);
                 return;
             }
-            catch (IOException ex) when (attempt < maxRetries && 
-                (ex.Message.Contains("being used by another process") || 
+            catch (IOException ex) when (attempt < maxRetries &&
+                (ex.Message.Contains("being used by another process") ||
                  ex.Message.Contains("locked")))
             {
                 _logger.LogWarning("File locked on attempt {Attempt}, retrying in {Delay}ms...", attempt, retryDelayMs);
@@ -255,7 +291,7 @@ public class FileHelper
     {
         if (string.IsNullOrEmpty(content))
             return content;
-            
+
         // Replace all line ending variations with the platform-specific one
         return content.Replace("\r\n", "\n").Replace("\r", "\n").Replace("\n", Environment.NewLine);
     }
@@ -267,25 +303,25 @@ public class FileHelper
     {
         if (string.IsNullOrWhiteSpace(fileName))
             return string.Empty;
-            
+
         // Remove any content that looks like Java code or comments
         var lines = fileName.Split('\n', StringSplitOptions.RemoveEmptyEntries);
         var firstLine = lines[0].Trim();
-        
+
         // If the first line contains Java keywords or symbols, it's not a valid filename
-        if (firstLine.Contains("public class") || firstLine.Contains("*/") || 
+        if (firstLine.Contains("public class") || firstLine.Contains("*/") ||
             firstLine.Contains("@") || firstLine.Contains("{") || firstLine.Contains("}"))
         {
             return string.Empty;
         }
-        
+
         // Remove invalid path characters
         var invalidChars = Path.GetInvalidFileNameChars();
         var sanitized = new string(firstLine.Where(c => !invalidChars.Contains(c)).ToArray());
-        
+
         // Remove any leading/trailing spaces or dots (Windows doesn't allow these)
         sanitized = sanitized.Trim(' ', '.');
-        
+
         // Check for Windows reserved names (CON, PRN, AUX, NUL, COM1-9, LPT1-9)
         var reservedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -293,31 +329,22 @@ public class FileHelper
             "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
             "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
         };
-        
+
         var nameWithoutExtension = Path.GetFileNameWithoutExtension(sanitized);
         if (reservedNames.Contains(nameWithoutExtension))
         {
             // Prefix with underscore to make it safe
             sanitized = "_" + sanitized;
-            _logger.LogWarning("Filename '{Original}' is reserved on Windows, renamed to '{Sanitized}'", 
+            _logger.LogWarning("Filename '{Original}' is reserved on Windows, renamed to '{Sanitized}'",
                 nameWithoutExtension, sanitized);
         }
-        
-        // Ensure it ends with .java
-        if (!sanitized.EndsWith(".java", StringComparison.OrdinalIgnoreCase))
-        {
-            if (sanitized.EndsWith("."))
-                sanitized = sanitized.TrimEnd('.') + ".java";
-            else if (!string.IsNullOrEmpty(sanitized))
-                sanitized += ".java";
-        }
-        
+
         // Final validation - ensure filename isn't empty after sanitization
-        if (string.IsNullOrWhiteSpace(sanitized) || sanitized == ".java")
+        if (string.IsNullOrWhiteSpace(sanitized))
         {
             return string.Empty;
         }
-        
+
         return sanitized;
     }
 
@@ -328,31 +355,31 @@ public class FileHelper
     {
         if (string.IsNullOrWhiteSpace(packageName))
             return "com.example.generated";
-            
+
         // Take only the first line and remove whitespace
         var firstLine = packageName.Split('\n', StringSplitOptions.RemoveEmptyEntries)[0].Trim();
-        
+
         // If it contains any invalid characters for a package name, reject it
         if (firstLine.Any(c => !char.IsLetterOrDigit(c) && c != '.' && c != '_'))
         {
             return "com.example.generated";
         }
-        
+
         // Remove any leading/trailing dots
         firstLine = firstLine.Trim('.');
-        
+
         // Ensure it doesn't have consecutive dots
         while (firstLine.Contains(".."))
         {
             firstLine = firstLine.Replace("..", ".");
         }
-        
+
         // Validate it looks like a package name (only lowercase letters, dots, numbers)
         if (string.IsNullOrEmpty(firstLine) || !firstLine.Contains('.'))
         {
             return "com.example.generated";
         }
-        
+
         return firstLine.ToLowerInvariant();
     }
 
@@ -371,7 +398,7 @@ public class FileHelper
                 return SanitizePackageName(packageName);
             }
         }
-        
+
         return "com.example.generated";
     }
 
@@ -397,7 +424,7 @@ public class FileHelper
                 }
             }
         }
-        
+
         // Fallback to a default name
         return "GeneratedClass";
     }
@@ -410,20 +437,20 @@ public class FileHelper
     public async Task SaveDependencyMapAsync(DependencyMap dependencyMap, string filePath)
     {
         _logger.LogInformation("Saving dependency map: {FilePath}", filePath);
-        
+
         var directory = Path.GetDirectoryName(filePath);
         if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
         {
             _logger.LogInformation("Creating directory: {Directory}", directory);
             Directory.CreateDirectory(directory);
         }
-        
+
         var json = System.Text.Json.JsonSerializer.Serialize(dependencyMap, new System.Text.Json.JsonSerializerOptions
         {
             WriteIndented = true,
             PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
         });
-        
+
         await File.WriteAllTextAsync(filePath, json);
         _logger.LogInformation("Dependency map saved: {FilePath}", filePath);
     }

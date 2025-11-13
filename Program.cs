@@ -259,12 +259,10 @@ internal static class Program
             {
                 try
                 {
-                    var neo4jDriver = Neo4j.Driver.GraphDatabase.Driver(
+                    var neo4jDriver = Neo4jMigrationRepository.CreateResilientDriver(
                         settings.ApplicationSettings.Neo4j.Uri,
-                        Neo4j.Driver.AuthTokens.Basic(
-                            settings.ApplicationSettings.Neo4j.Username,
-                            settings.ApplicationSettings.Neo4j.Password
-                        )
+                        settings.ApplicationSettings.Neo4j.Username,
+                        settings.ApplicationSettings.Neo4j.Password
                     );
                     var neo4jLogger = loggerFactory.CreateLogger<Neo4jMigrationRepository>();
                     neo4jRepository = new Neo4jMigrationRepository(neo4jDriver, neo4jLogger);
@@ -329,9 +327,16 @@ internal static class Program
                 Environment.Exit(1);
             }
 
-            if (string.IsNullOrEmpty(settings.ApplicationSettings.JavaOutputFolder))
+            // Validate output folder based on target language
+            var targetLang = settings.ApplicationSettings.TargetLanguage;
+            var outputFolder = targetLang == TargetLanguage.CSharp
+                ? settings.ApplicationSettings.CSharpOutputFolder
+                : settings.ApplicationSettings.JavaOutputFolder;
+
+            if (string.IsNullOrEmpty(outputFolder))
             {
-                logger.LogError("Java output folder not specified. Use --java-output option or set in config file.");
+                var langName = targetLang == TargetLanguage.CSharp ? "C#" : "Java";
+                logger.LogError($"{langName} output folder not specified. Set TARGET_LANGUAGE and output folder in config file.");
                 Environment.Exit(1);
             }
 
@@ -391,16 +396,14 @@ internal static class Program
             {
                 try
                 {
-                    var neo4jDriver = Neo4j.Driver.GraphDatabase.Driver(
+                    var neo4jDriver = Neo4jMigrationRepository.CreateResilientDriver(
                         settings.ApplicationSettings.Neo4j.Uri,
-                        Neo4j.Driver.AuthTokens.Basic(
-                            settings.ApplicationSettings.Neo4j.Username,
-                            settings.ApplicationSettings.Neo4j.Password
-                        )
+                        settings.ApplicationSettings.Neo4j.Username,
+                        settings.ApplicationSettings.Neo4j.Password
                     );
                     var neo4jLogger = loggerFactory.CreateLogger<Neo4jMigrationRepository>();
                     neo4jMigrationRepository = new Neo4jMigrationRepository(neo4jDriver, neo4jLogger);
-                    logger.LogInformation("✅ Neo4j graph database connected at {Uri}", settings.ApplicationSettings.Neo4j.Uri);
+                    logger.LogInformation("Neo4j graph database enabled at {Uri}", settings.ApplicationSettings.Neo4j.Uri);
                 }
                 catch (Exception ex)
                 {
@@ -468,11 +471,18 @@ internal static class Program
 
                 migrationProcess.InitializeAgents();
 
-                Console.WriteLine("Starting COBOL to Java Quarkus migration process...");
+                // Determine output folder based on target language
+                var migrationTargetLang = settings.ApplicationSettings.TargetLanguage;
+                var migrationOutputFolder = migrationTargetLang == TargetLanguage.CSharp
+                    ? settings.ApplicationSettings.CSharpOutputFolder
+                    : settings.ApplicationSettings.JavaOutputFolder;
+                var migrationLangName = migrationTargetLang == TargetLanguage.CSharp ? "C#" : "Java Quarkus";
+
+                Console.WriteLine($"Starting COBOL to {migrationLangName} migration process...");
 
                 await migrationProcess.RunAsync(
                     settings.ApplicationSettings.CobolSourceFolder,
-                    settings.ApplicationSettings.JavaOutputFolder,
+                    migrationOutputFolder,
                     (status, current, total) =>
                     {
                         Console.WriteLine($"{status} - {current}/{total}");
@@ -607,9 +617,22 @@ internal static class Program
             applicationSettings.JavaOutputFolder = javaOutput;
         }
 
+        if (Environment.GetEnvironmentVariable("CSHARP_OUTPUT_FOLDER") is { Length: > 0 } csharpOutput)
+        {
+            applicationSettings.CSharpOutputFolder = csharpOutput;
+        }
+
         if (Environment.GetEnvironmentVariable("TEST_OUTPUT_FOLDER") is { Length: > 0 } testOutput)
         {
             applicationSettings.TestOutputFolder = testOutput;
+        }
+
+        if (Environment.GetEnvironmentVariable("TARGET_LANGUAGE") is { Length: > 0 } targetLang)
+        {
+            if (Enum.TryParse<TargetLanguage>(targetLang, true, out var parsedLang))
+            {
+                applicationSettings.TargetLanguage = parsedLang;
+            }
         }
 
         if (Environment.GetEnvironmentVariable("MIGRATION_DB_PATH") is { Length: > 0 } migrationDb)
