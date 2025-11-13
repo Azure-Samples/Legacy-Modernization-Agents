@@ -127,6 +127,10 @@ Data/migration.db-*
 *.sql.backup
 migration_backup*.sql
 
+# Allow everything inside sample-code (override other ignore rules)
+!sample-code/
+!sample-code/**
+
 # =============================================================================
 # LOGS AND TEMPORARY FILES
 # =============================================================================

@@ -1,0 +1,19 @@
+{
+  "dependencies": [],
+  "copybookUsage": {
+    "hello.cbl": []
+  },
+  "reverseDependencies": {},
+  "mermaidDiagram": "graph TB\n  %% Subgraph for COBOL Programs\n  subgraph COBOL Programs\n    style COBOL Programs fill:#e0f7fa,stroke:#00796b,stroke-width:2px\n    P_hello[\u0022hello.cbl\u0022]\n    style P_hello fill:#b2dfdb,stroke:#00796b,stroke-width:2px\n  end",
+  "analysisInsights": "Certainly! Based on your input, here\u2019s an analysis of the COBOL project\u2019s dependency structure:\n\n---\n\n## Dependency Structure Analysis\n\n### 1. Data Flow Dependencies Between Copybooks\n\n**hello.cbl uses:**  \nNo copybooks are listed as being used by \u0060hello.cbl\u0060. This means:\n- There are **no data flow dependencies** between \u0060hello.cbl\u0060 and any copybooks.\n- All data definitions and logic are likely self-contained within the program file.\n\n### 2. Potential Circular Dependencies\n\n- **No copybooks referenced:**  \n  Since \u0060hello.cbl\u0060 does not use any copybooks, there is **no risk of circular dependencies** in this file.\n- **Project-wide:**  \n  If other files or copybooks exist, circular dependencies could arise if copybooks include each other recursively. However, for \u0060hello.cbl\u0060 alone, this is not an issue.\n\n### 3. Modularity Recommendations\n\n- **Current State:**  \n  The program is **not modularized** via copybooks. All code is in a single file.\n- **Recommendation:**  \n  - **Introduce copybooks** for common data structures (e.g., customer records, error messages) and shared procedures.\n  - This will improve maintainability, enable reuse, and make future changes easier.\n  - Modularization also helps with team development and testing.\n\n### 4. Legacy Patterns Affecting Dependencies\n\n- **No legacy copybook usage detected:**  \n  Legacy COBOL often relies heavily on copybooks for data definitions, sometimes leading to tightly coupled code. Since \u0060hello.cbl\u0060 does not use copybooks, it avoids these legacy coupling issues.\n- **Potential Issues:**  \n  - If the project grows, lack of copybooks may lead to duplicated code and harder maintenance.\n  - Legacy patterns to watch for in other files: copybooks with overlapping data names, global variables, or procedural code in copybooks.\n\n---\n\n## Summary \u0026 Recommendations\n\n- **hello.cbl** is self-contained, with no copybook dependencies.\n- **No circular dependencies** or legacy copybook coupling in this file.\n- **Modularity can be improved** by introducing copybooks for shared data and logic.\n- **Project-wide:** Review other files for copybook usage to ensure modularity and avoid circular dependencies.\n\n**Action:**  \nIf the project is expected to grow, start modularizing with copybooks and establish clear dependency boundaries to maintain a clean architecture.\n\n---\n\nIf you provide more files or copybook usage details, I can give a deeper analysis!",
+  "metrics": {
+    "totalPrograms": 1,
+    "totalCopybooks": 0,
+    "totalDependencies": 0,
+    "averageDependenciesPerProgram": 0,
+    "mostUsedCopybook": "",
+    "mostUsedCopybookCount": 0,
+    "circularDependencies": []
+  },
+  "createdAt": "2025-09-10T01:53:02.5441954Z"
+}
