@@ -99,7 +99,7 @@ public class HybridMigrationRepository : IMigrationRepository
     }
 
     // Graph-specific methods (delegate to Neo4j if available)
-    
+
     public async Task<IReadOnlyList<CircularDependency>> GetCircularDependenciesAsync(int runId)
     {
         if (_neo4jRepo == null)
@@ -159,20 +159,81 @@ public class HybridMigrationRepository : IMigrationRepository
 
     public async Task<GraphVisualizationData?> GetDependencyGraphDataAsync(int runId)
     {
-        if (_neo4jRepo == null)
+        GraphVisualizationData? graphData = null;
+
+        // Try Neo4j first if available
+        if (_neo4jRepo != null)
         {
-            _logger.LogWarning("Neo4j repository not available for graph visualization");
-            return null;
+            try
+            {
+                var neo4jData = await _neo4jRepo.GetDependencyGraphDataAsync(runId);
+                if (neo4jData != null && (neo4jData.Nodes.Count > 0 || neo4jData.Edges.Count > 0))
+                {
+                    _logger.LogInformation("Retrieved graph data from Neo4j for run {RunId}: {NodeCount} nodes, {EdgeCount} edges",
+                        runId, neo4jData.Nodes.Count, neo4jData.Edges.Count);
+                    graphData = neo4jData;
+                }
+                else
+                {
+                    _logger.LogInformation("Neo4j returned no data for run {RunId}, falling back to SQLite", runId);
+                    graphData = await _sqliteRepo.GetDependencyGraphDataAsync(runId);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to get dependency graph data from Neo4j for run {RunId}, falling back to SQLite", runId);
+                graphData = await _sqliteRepo.GetDependencyGraphDataAsync(runId);
+            }
+        }
+        else
+        {
+            // Fallback to SQLite
+            _logger.LogInformation("Building graph data from SQLite for run {RunId}", runId);
+            graphData = await _sqliteRepo.GetDependencyGraphDataAsync(runId);
         }
 
+        // Enrich nodes with line counts from SQLite if not already populated
+        if (graphData != null && graphData.Nodes.Any(n => n.LineCount == 0))
+        {
+            await EnrichNodesWithLineCountsAsync(runId, graphData.Nodes);
+        }
+
+        return graphData;
+    }
+
+    private async Task EnrichNodesWithLineCountsAsync(int runId, List<GraphNode> nodes)
+    {
         try
         {
-            return await _neo4jRepo.GetDependencyGraphDataAsync(runId);
+            await using var connection = _sqliteRepo.CreateConnection();
+            await connection.OpenAsync();
+
+            foreach (var node in nodes)
+            {
+                if (node.LineCount == 0)
+                {
+                    await using var command = connection.CreateCommand();
+                    command.CommandText = @"
+                        SELECT LENGTH(content) - LENGTH(REPLACE(content, char(10), '')) + 1 as line_count
+                        FROM cobol_files
+                        WHERE run_id = $runId AND file_name = $fileName
+                        LIMIT 1";
+                    command.Parameters.AddWithValue("$runId", runId);
+                    command.Parameters.AddWithValue("$fileName", node.Id);
+
+                    var result = await command.ExecuteScalarAsync();
+                    if (result != null && result != DBNull.Value)
+                    {
+                        node.LineCount = Convert.ToInt32(result);
+                    }
+                }
+            }
+
+            _logger.LogInformation("Enriched {Count} nodes with line counts from SQLite for run {RunId}", nodes.Count, runId);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to get dependency graph data from Neo4j");
-            return null;
+            _logger.LogWarning(ex, "Failed to enrich nodes with line counts for run {RunId}", runId);
         }
     }
 

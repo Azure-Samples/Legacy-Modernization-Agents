@@ -61,7 +61,10 @@ async function loadAllRuns() {
         runCard.innerHTML = `
           <div class="run-header">
             <h4>🔹 Run ${runId}</h4>
-            <button onclick="loadRunDetails(${runId})" class="load-btn">View Dependencies</button>
+            <div style="display: flex; gap: 0.5rem;">
+              <button onclick="loadRunDetails(${runId})" class="load-btn">View Dependencies</button>
+              <button onclick="generateRunReport(${runId})" class="load-btn" style="background: rgba(16, 185, 129, 0.2); border-color: rgba(16, 185, 129, 0.4); color: #10b981;">📄 Generate Report</button>
+            </div>
           </div>
           <div id="run-${runId}-details" class="run-details"></div>
         `;
@@ -170,3 +173,246 @@ async function downloadRunData(runId) {
 window.loadRunDetails = loadRunDetails;
 window.viewRunInGraph = viewRunInGraph;
 window.downloadRunData = downloadRunData;
+
+// Architecture Documentation Modal Handler
+const archModal = document.getElementById('architectureModal');
+const archBtn = document.getElementById('showArchitectureBtn');
+const archClose = document.querySelector('.arch-close');
+
+let architectureMarkdown = '';
+
+// Open architecture modal
+if (archBtn) {
+  archBtn.onclick = function() {
+    archModal.style.display = 'block';
+    loadArchitectureDoc();
+  };
+}
+
+// Close architecture modal
+if (archClose) {
+  archClose.onclick = function() {
+    archModal.style.display = 'none';
+  };
+}
+
+// Close on outside click
+window.onclick = function(event) {
+  if (event.target == modal) {
+    modal.style.display = 'none';
+  }
+  if (event.target == archModal) {
+    archModal.style.display = 'none';
+  }
+};
+
+// Load and render architecture documentation with Mermaid diagrams
+async function loadArchitectureDoc() {
+  const contentDiv = document.getElementById('architectureContent');
+  const lastModifiedSpan = document.getElementById('docLastModified');
+  
+  try {
+    contentDiv.innerHTML = '<p style="text-align: center; color: #94a3b8;"><em>Loading documentation...</em></p>';
+    
+    const response = await fetch('/api/documentation/architecture');
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    
+    const data = await response.json();
+    architectureMarkdown = data.content;
+    
+    // Render markdown using marked.js
+    if (typeof marked !== 'undefined') {
+      // Configure marked for GFM and code blocks
+      marked.setOptions({
+        breaks: true,
+        gfm: true,
+        headerIds: true,
+        mangle: false
+      });
+      
+      contentDiv.innerHTML = marked.parse(architectureMarkdown);
+      
+      // Render all Mermaid diagrams
+      if (window.mermaid) {
+        const mermaidBlocks = contentDiv.querySelectorAll('code.language-mermaid');
+        
+        for (let i = 0; i < mermaidBlocks.length; i++) {
+          const codeBlock = mermaidBlocks[i];
+          const mermaidCode = codeBlock.textContent;
+          const container = document.createElement('div');
+          container.className = 'mermaid-diagram';
+          container.style.cssText = 'background: #0f172a; padding: 1.5rem; border-radius: 8px; margin: 1rem 0; overflow-x: auto;';
+          
+          try {
+            const { svg } = await window.mermaid.render(`mermaid-diagram-${i}`, mermaidCode);
+            container.innerHTML = svg;
+            
+            // Add zoom controls
+            const svgElement = container.querySelector('svg');
+            if (svgElement) {
+              svgElement.style.maxWidth = '100%';
+              svgElement.style.height = 'auto';
+            }
+            
+            codeBlock.parentElement.replaceWith(container);
+          } catch (err) {
+            console.error('Mermaid render error:', err);
+            container.innerHTML = `<p style="color: #f87171;">⚠️ Error rendering diagram: ${err.message}</p><pre style="background: #1e293b; padding: 1rem; border-radius: 4px; overflow-x: auto;">${escapeHtml(mermaidCode)}</pre>`;
+            codeBlock.parentElement.replaceWith(container);
+          }
+        }
+      }
+    } else {
+      // Fallback to plain text if marked.js not loaded
+      contentDiv.innerHTML = `<pre>${escapeHtml(architectureMarkdown)}</pre>`;
+    }
+    
+    // Update last modified
+    if (lastModifiedSpan && data.lastModified) {
+      const date = new Date(data.lastModified);
+      lastModifiedSpan.textContent = `Last updated: ${date.toLocaleDateString()} ${date.toLocaleTimeString()}`;
+    }
+  } catch (error) {
+    console.error('Error loading architecture documentation:', error);
+    contentDiv.innerHTML = `<p style="color: #ef4444;">Failed to load documentation: ${error.message}</p>`;
+  }
+}
+
+// Generate migration report for a specific run
+async function generateRunReport(runId) {
+  const detailsDiv = document.getElementById(`run-${runId}-details`);
+  detailsDiv.innerHTML = '<p class="loading">⏳ Generating migration report...</p>';
+  
+  try {
+    const response = await fetch(`/api/runs/${runId}/report`);
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    
+    const contentType = response.headers.get('content-type');
+    
+    if (contentType && contentType.includes('application/json')) {
+      // If JSON response, display the report content
+      const data = await response.json();
+      
+      if (data.error) {
+        detailsDiv.innerHTML = `<p class="error">❌ ${data.error}</p>`;
+        return;
+      }
+      
+      // Render the markdown report
+      let reportHtml = '';
+      if (typeof marked !== 'undefined' && data.content) {
+        reportHtml = marked.parse(data.content);
+      } else {
+        reportHtml = `<pre>${escapeHtml(data.content || 'No report content available')}</pre>`;
+      }
+      
+      detailsDiv.innerHTML = `
+        <div class="report-container">
+          <div class="report-header">
+            <h4>📊 Migration Report - Run ${runId}</h4>
+            <button onclick="downloadRunReport(${runId})" class="load-btn" style="font-size: 0.85rem; padding: 0.4rem 0.8rem;">📥 Download</button>
+          </div>
+          <div class="report-content" style="background: #0f172a; padding: 1.5rem; border-radius: 8px; max-height: 600px; overflow-y: auto;">
+            ${reportHtml}
+          </div>
+        </div>
+      `;
+    } else {
+      // If markdown file response, download it
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `migration_report_run_${runId}.md`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      
+      detailsDiv.innerHTML = `<p style="color: #10b981;">✅ Report downloaded successfully!</p>`;
+    }
+  } catch (error) {
+    console.error('Error generating report:', error);
+    detailsDiv.innerHTML = `<p class="error">❌ Failed to generate report: ${error.message}</p>`;
+  }
+}
+
+// Download run report as markdown file
+async function downloadRunReport(runId) {
+  try {
+    const response = await fetch(`/api/runs/${runId}/report`);
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    
+    const data = await response.json();
+    
+    if (data.content) {
+      const blob = new Blob([data.content], { type: 'text/markdown' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `migration_report_run_${runId}.md`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+  } catch (error) {
+    console.error('Error downloading report:', error);
+    alert(`Failed to download report: ${error.message}`);
+  }
+}
+
+// Download markdown file
+document.getElementById('downloadMarkdownBtn')?.addEventListener('click', () => {
+  if (!architectureMarkdown) return;
+  
+  const blob = new Blob([architectureMarkdown], { type: 'text/markdown' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'REVERSE_ENGINEERING_ARCHITECTURE.md';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+});
+
+// Copy to clipboard
+document.getElementById('copyToClipboardBtn')?.addEventListener('click', async () => {
+  if (!architectureMarkdown) return;
+  
+  try {
+    await navigator.clipboard.writeText(architectureMarkdown);
+    
+    // Visual feedback
+    const btn = document.getElementById('copyToClipboardBtn');
+    const originalText = btn.textContent;
+    btn.textContent = '✅ Copied!';
+    btn.style.background = 'rgba(16, 185, 129, 0.2)';
+    btn.style.borderColor = 'rgba(16, 185, 129, 0.5)';
+    
+    setTimeout(() => {
+      btn.textContent = originalText;
+      btn.style.background = '';
+      btn.style.borderColor = '';
+    }, 2000);
+  } catch (error) {
+    console.error('Failed to copy:', error);
+    alert('Failed to copy to clipboard');
+  }
+});
+
+// Helper function to escape HTML
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}

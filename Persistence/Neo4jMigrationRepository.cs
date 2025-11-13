@@ -15,10 +15,25 @@ public class Neo4jMigrationRepository
         _logger = logger;
     }
 
+    /// <summary>
+    /// Creates a resilient Neo4j driver with connection pooling and retry settings
+    /// </summary>
+    public static IDriver CreateResilientDriver(string uri, string username, string password)
+    {
+        return GraphDatabase.Driver(uri, AuthTokens.Basic(username, password), o => o
+            .WithMaxConnectionPoolSize(50)
+            .WithConnectionAcquisitionTimeout(TimeSpan.FromSeconds(30))
+            .WithConnectionTimeout(TimeSpan.FromSeconds(30))
+            .WithMaxTransactionRetryTime(TimeSpan.FromSeconds(30))
+            .WithEncryptionLevel(EncryptionLevel.None)
+            .WithConnectionIdleTimeout(TimeSpan.FromMinutes(10))
+            .WithMaxConnectionLifetime(TimeSpan.FromHours(1)));
+    }
+
     public async Task SaveDependencyGraphAsync(int runId, DependencyMap dependencyMap)
     {
         await using var session = _driver.AsyncSession();
-        
+
         try
         {
             await session.ExecuteWriteAsync(async tx =>
@@ -42,11 +57,12 @@ public class Neo4jMigrationRepository
                     var isCopybook = fileName.EndsWith(".cpy", StringComparison.OrdinalIgnoreCase) ||
                                    fileName.EndsWith(".CPY", StringComparison.OrdinalIgnoreCase) ||
                                    dependencyMap.ReverseDependencies.ContainsKey(fileName);
-                    
+
                     await tx.RunAsync(@"
                         MERGE (f:CobolFile {fileName: $fileName})
                         SET f.isCopybook = $isCopybook,
-                            f.runId = $runId
+                            f.runId = $runId,
+                            f.lineCount = 0
                         WITH f
                         MATCH (r:Run {id: $runId})
                         MERGE (r)-[:ANALYZED]->(f)",
@@ -93,7 +109,7 @@ public class Neo4jMigrationRepository
     public async Task<List<CircularDependency>> GetCircularDependenciesAsync(int runId)
     {
         await using var session = _driver.AsyncSession();
-        
+
         var result = await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync(@"
@@ -124,7 +140,7 @@ public class Neo4jMigrationRepository
     public async Task<ImpactAnalysis> GetImpactAnalysisAsync(string fileName, int runId)
     {
         await using var session = _driver.AsyncSession();
-        
+
         var result = await session.ExecuteReadAsync(async tx =>
         {
             // Find all files affected by this file (downstream)
@@ -173,7 +189,7 @@ public class Neo4jMigrationRepository
     public async Task<List<CriticalFile>> GetCriticalFilesAsync(int runId)
     {
         await using var session = _driver.AsyncSession();
-        
+
         var result = await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync(@"
@@ -213,7 +229,7 @@ public class Neo4jMigrationRepository
     {
         _logger.LogInformation("🔍 Neo4j GetDependencyGraphDataAsync called with runId: {RunId}", runId);
         await using var session = _driver.AsyncSession();
-        
+
         var result = await session.ExecuteReadAsync(async tx =>
         {
             _logger.LogInformation("🔍 Executing Neo4j query WHERE source.runId = {RunId} AND target.runId = {RunId2}", runId, runId);
@@ -224,7 +240,11 @@ public class Neo4jMigrationRepository
                        target.fileName as target,
                        source.isCopybook as sourceCopybook,
                        target.isCopybook as targetCopybook,
-                       d.type as dependencyType",
+                       source.lineCount as sourceLineCount,
+                       target.lineCount as targetLineCount,
+                       d.type as dependencyType,
+                       d.lineNumber as lineNumber,
+                       d.context as context",
                 new { runId });
 
             var nodes = new HashSet<GraphNode>();
@@ -236,16 +256,22 @@ public class Neo4jMigrationRepository
                 var target = record["target"].As<string>();
                 var sourceCopybook = record["sourceCopybook"].As<bool>();
                 var targetCopybook = record["targetCopybook"].As<bool>();
+                var sourceLineCount = record["sourceLineCount"].As<int>();
+                var targetLineCount = record["targetLineCount"].As<int>();
                 var depType = record["dependencyType"].As<string>();
+                var lineNumber = record["lineNumber"].As<int?>();
+                var context = record["context"].As<string>();
 
-                nodes.Add(new GraphNode { Id = source, Label = source, IsCopybook = sourceCopybook });
-                nodes.Add(new GraphNode { Id = target, Label = target, IsCopybook = targetCopybook });
-                
+                nodes.Add(new GraphNode { Id = source, Label = source, IsCopybook = sourceCopybook, LineCount = sourceLineCount });
+                nodes.Add(new GraphNode { Id = target, Label = target, IsCopybook = targetCopybook, LineCount = targetLineCount });
+
                 edges.Add(new GraphEdge
                 {
                     Source = source,
                     Target = target,
-                    Type = depType
+                    Type = depType,
+                    LineNumber = lineNumber,
+                    Context = context
                 });
             }
 
@@ -263,7 +289,7 @@ public class Neo4jMigrationRepository
     public async Task<List<int>> GetAvailableRunsAsync()
     {
         await using var session = _driver.AsyncSession();
-        
+
         var result = await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync(@"
@@ -277,7 +303,7 @@ public class Neo4jMigrationRepository
             {
                 runIds.Add(record["runId"].As<int>());
             }
-            
+
             return runIds;
         });
 
@@ -327,6 +353,7 @@ public class GraphNode
     public string Id { get; set; } = string.Empty;
     public string Label { get; set; } = string.Empty;
     public bool IsCopybook { get; set; }
+    public int LineCount { get; set; }
 }
 
 public class GraphEdge
@@ -334,4 +361,6 @@ public class GraphEdge
     public string Source { get; set; } = string.Empty;
     public string Target { get; set; } = string.Empty;
     public string Type { get; set; } = string.Empty;
+    public int? LineNumber { get; set; }
+    public string? Context { get; set; }
 }

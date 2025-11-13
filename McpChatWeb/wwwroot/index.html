@@ -6,11 +6,51 @@
   <title>COBOL Migration MCP Chat</title>
   <link rel="stylesheet" href="styles.css">
   <script type="text/javascript" src="https://unpkg.com/vis-network@9.1.2/standalone/umd/vis-network.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@11.1.0/marked.min.js"></script>
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({ 
+      startOnLoad: false,
+      theme: 'dark',
+      themeVariables: {
+        primaryColor: '#3b82f6',
+        primaryTextColor: '#e2e8f0',
+        primaryBorderColor: '#60a5fa',
+        lineColor: '#94a3b8',
+        secondaryColor: '#10b981',
+        tertiaryColor: '#f59e0b',
+        background: '#1e293b',
+        mainBkg: '#1e293b',
+        secondBkg: '#334155',
+        textColor: '#e2e8f0',
+        border1: '#475569',
+        border2: '#64748b',
+        fontSize: '14px'
+      }
+    });
+    window.mermaid = mermaid;
+  </script>
 </head>
 <body>
   <header>
-    <h1>COBOL Migration Insights</h1>
-    <p>Ask questions about your COBOL to Java Quarkus migration</p>
+    <div class="header-content">
+      <div class="header-left">
+        <h1>COBOL Migration Insights</h1>
+        <p>Ask questions about your COBOL code migration</p>
+      </div>
+      <div class="header-right">
+        <div class="db-status-container">
+          <div id="sqlite-status" class="status-indicator" title="SQLite Database">
+            <span class="status-light"></span>
+            <span class="status-label">SQLite</span>
+          </div>
+          <div id="neo4j-status" class="status-indicator" title="Neo4j Graph Database">
+            <span class="status-light"></span>
+            <span class="status-label">Neo4j</span>
+          </div>
+        </div>
+      </div>
+    </div>
     <div class="run-selector-container">
       <label for="run-selector">Migration Run:</label>
       <select id="run-selector" class="run-selector">
@@ -24,6 +64,7 @@
     <section class="panel resources-panel">
       <h2>MCP Resources</h2>
       <button id="showAllRunsBtn" class="info-button">📊 View All Runs & Data Guide</button>
+      <button id="showArchitectureBtn" class="info-button">📄 Architecture Documentation</button>
       <div id="resources-list" class="resource-list"></div>
     </section>
 
@@ -96,42 +137,167 @@
 
     <section class="panel graph-panel">
       <h2>Dependency Graph <span class="run-id-badge" id="graph-run-badge" style="display: none;">| Run <span id="current-run-id">...</span></span></h2>
+      
       <div class="graph-toolbar">
-        <div class="graph-controls">
-          <label for="query-select">Query:</label>
-          <select id="query-select">
-            <option value="full">Full Dependency Graph</option>
-            <option value="circular">Circular Dependencies</option>
-            <option value="critical">Critical Files</option>
-            <option value="programs">Programs Only</option>
-            <option value="copybooks">Copybook Usage</option>
-          </select>
-          <label for="layout-select">Layout:</label>
-          <select id="layout-select">
-            <option value="force">Force Directed</option>
-            <option value="hierarchical">Hierarchical</option>
-          </select>
+        <!-- Controls Section -->
+        <div class="toolbar-section">
+          <div class="section-header" onclick="toggleSection('graph-controls-section')">
+            <span class="toggle-icon">▼</span>
+            <strong>Graph Controls</strong>
+          </div>
+          <div id="graph-controls-section" class="section-content">
+            <div class="control-group">
+              <label for="query-select">Query:</label>
+              <select id="query-select">
+                <option value="full">Full Graph</option>
+                <option value="circular">Circular Deps</option>
+                <option value="critical">Critical Files</option>
+                <option value="programs">Programs Only</option>
+                <option value="copybooks">Copybooks Only</option>
+              </select>
+            </div>
+            <div class="control-group">
+              <label for="layout-select">Layout:</label>
+              <select id="layout-select">
+                <option value="force">Force Directed</option>
+                <option value="hierarchical">Hierarchical</option>
+              </select>
+            </div>
+            <div class="control-group">
+              <button id="refresh-graph" type="button" class="btn-small">⟳ Refresh</button>
+              <button id="fit-graph" type="button" class="btn-small">⊡ Fit</button>
+              <button id="stabilize-graph" type="button" class="btn-small">⚡ Stabilize</button>
+            </div>
+          </div>
         </div>
-        <div class="graph-buttons">
-          <button id="refresh-graph" type="button">⟳ Refresh</button>
-          <button id="fit-graph" type="button">⊡ Fit</button>
-          <button id="stabilize-graph" type="button">⚡ Stabilize</button>
+
+        <!-- Node Filters Section -->
+        <div class="toolbar-section">
+          <div class="section-header" onclick="toggleSection('node-filters-section')">
+            <span class="toggle-icon">▼</span>
+            <strong>Node Filters</strong>
+          </div>
+          <div id="node-filters-section" class="section-content">
+            <label class="filter-checkbox">
+              <input type="checkbox" id="show-programs" checked>
+              <span>Programs</span>
+            </label>
+            <label class="filter-checkbox">
+              <input type="checkbox" id="show-copybooks" checked>
+              <span>Copybooks</span>
+            </label>
+            <label class="filter-checkbox">
+              <input type="checkbox" id="show-called-programs" checked>
+              <span>Called Programs</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Edge Filters Section -->
+        <div class="toolbar-section">
+          <div class="section-header" onclick="toggleSection('edge-filters-section')">
+            <span class="toggle-icon">▼</span>
+            <strong>Edge Filters</strong>
+          </div>
+          <div id="edge-filters-section" class="section-content">
+            <div class="edge-filter-group">
+              <label class="filter-checkbox">
+                <input type="checkbox" id="show-call-edges" checked>
+                <span>CALL</span>
+              </label>
+              <label class="filter-checkbox">
+                <input type="checkbox" id="show-copy-edges" checked>
+                <span>COPY</span>
+              </label>
+              <label class="filter-checkbox">
+                <input type="checkbox" id="show-perform-edges" checked>
+                <span>PERFORM</span>
+              </label>
+              <label class="filter-checkbox">
+                <input type="checkbox" id="show-exec-edges" checked>
+                <span>EXEC</span>
+              </label>
+            </div>
+            <div class="edge-filter-group">
+              <label class="filter-checkbox">
+                <input type="checkbox" id="show-read-edges" checked>
+                <span>READ</span>
+              </label>
+              <label class="filter-checkbox">
+                <input type="checkbox" id="show-write-edges" checked>
+                <span>WRITE</span>
+              </label>
+              <label class="filter-checkbox">
+                <input type="checkbox" id="show-open-edges" checked>
+                <span>OPEN</span>
+              </label>
+              <label class="filter-checkbox">
+                <input type="checkbox" id="show-close-edges" checked>
+                <span>CLOSE</span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <!-- Legend Section -->
+        <div class="toolbar-section">
+          <div class="section-header" onclick="toggleSection('legend-section')">
+            <span class="toggle-icon">▼</span>
+            <strong>Legend</strong>
+          </div>
+          <div id="legend-section" class="section-content">
+            <div class="legend-grid">
+              <!-- Node Types -->
+              <div class="legend-item">
+                <span class="legend-dot" style="background: #68bdf6"></span>
+                <span>Program</span>
+              </div>
+              <div class="legend-item">
+                <span class="legend-dot" style="background: #f16667"></span>
+                <span>Copybook</span>
+              </div>
+              <div class="legend-item">
+                <span class="legend-dot" style="background: #10b981"></span>
+                <span>Called Prog</span>
+              </div>
+              <!-- Edge Types -->
+              <div class="legend-item">
+                <span class="legend-line" style="background: #10b981"></span>
+                <span>CALL</span>
+              </div>
+              <div class="legend-item">
+                <span class="legend-line" style="background: #3b82f6"></span>
+                <span>COPY</span>
+              </div>
+              <div class="legend-item">
+                <span class="legend-line" style="background: #f59e0b"></span>
+                <span>PERFORM</span>
+              </div>
+              <div class="legend-item">
+                <span class="legend-line" style="background: #8b5cf6"></span>
+                <span>EXEC</span>
+              </div>
+              <div class="legend-item">
+                <span class="legend-line" style="background: #06b6d4"></span>
+                <span>READ</span>
+              </div>
+              <div class="legend-item">
+                <span class="legend-line" style="background: #ec4899"></span>
+                <span>WRITE</span>
+              </div>
+              <div class="legend-item">
+                <span class="legend-line" style="background: #84cc16"></span>
+                <span>OPEN</span>
+              </div>
+              <div class="legend-item">
+                <span class="legend-line" style="background: #ef4444"></span>
+                <span>CLOSE</span>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
-      <div id="graph-legend">
-        <div class="legend-item">
-          <span class="legend-color" style="background: #68bdf6"></span>
-          <span>Program (.cbl)</span>
-        </div>
-        <div class="legend-item">
-          <span class="legend-color" style="background: #f16667"></span>
-          <span>Copybook (.cpy)</span>
-        </div>
-        <div class="legend-item">
-          <span class="legend-color" style="background: #94d486"></span>
-          <span>Relationship</span>
-        </div>
-      </div>
+
       <div id="dependency-graph"></div>
       <div id="graph-info" class="graph-info"></div>
       <div id="node-details" class="node-details" hidden>
@@ -295,9 +461,53 @@ curl http://localhost:5028/api/data-retrieval-guide</code></pre>
     </div>
   </div>
 
+  <!-- Architecture Documentation Modal -->
+  <div id="architectureModal" class="modal">
+    <div class="modal-content modal-content-wide">
+      <div class="modal-header">
+        <h2>📄 Reverse Engineering Architecture Documentation</h2>
+        <span class="close arch-close">&times;</span>
+      </div>
+      <div class="modal-body">
+        <div class="doc-toolbar">
+          <button id="downloadMarkdownBtn" class="doc-button">⬇️ Download Markdown</button>
+          <button id="copyToClipboardBtn" class="doc-button">📋 Copy to Clipboard</button>
+          <span id="docLastModified" class="doc-meta"></span>
+        </div>
+        <div id="architectureContent" class="doc-content">
+          <p>Loading documentation...</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script src="run-selector.js"></script>
   <script src="graph.js"></script>
   <script src="main.js"></script>
   <script src="runs-viewer.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script>
+    // Toggle collapsible sections
+    function toggleSection(sectionId) {
+      const section = document.getElementById(sectionId);
+      if (!section) {
+        console.error('Section not found:', sectionId);
+        return;
+      }
+      
+      // Find the header within the same parent
+      const parent = section.parentElement;
+      const header = parent.querySelector('.section-header');
+      const icon = header ? header.querySelector('.toggle-icon') : null;
+      
+      if (section.style.display === 'none' || section.style.display === '') {
+        section.style.display = 'flex';
+        if (icon) icon.textContent = '▼';
+      } else {
+        section.style.display = 'none';
+        if (icon) icon.textContent = '▶';
+      }
+    }
+  </script>
 </body>
 </html>

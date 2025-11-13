@@ -93,7 +93,7 @@ nano Config/ai-config.local.env
 Required values:
 - `AZURE_OPENAI_ENDPOINT` - Your Azure OpenAI endpoint URL
 - `AZURE_OPENAI_API_KEY` - Your API key
-- `AZURE_OPENAI_DEPLOYMENT_NAME` - Your deployment name (must be "gpt-4.1")
+- `AZURE_OPENAI_DEPLOYMENT_NAME` - Your deployment name (e.g., "gpt-5-mini-2" or "gpt-4o")
 
 ### 5. Run Demo
 

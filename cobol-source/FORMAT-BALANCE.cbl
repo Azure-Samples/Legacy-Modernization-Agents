@@ -1,0 +1,15 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. FORMAT-BALANCE.
+       
+       DATA DIVISION.
+       LINKAGE SECTION.
+       01  BALANCE-AMOUNT      PIC S9(9)V99.
+       
+       WORKING-STORAGE SECTION.
+       01  WS-FORMATTED        PIC $$$,$$$,$$9.99.
+       
+       PROCEDURE DIVISION USING BALANCE-AMOUNT.
+       MAIN-LOGIC.
+           MOVE BALANCE-AMOUNT TO WS-FORMATTED.
+           DISPLAY 'Formatted Balance: ' WS-FORMATTED.
+           GOBACK.

@@ -3,6 +3,22 @@ using System.IO;
 namespace CobolToQuarkusMigration.Models;
 
 /// <summary>
+/// Represents the target language for code conversion.
+/// </summary>
+public enum TargetLanguage
+{
+    /// <summary>
+    /// Java with Quarkus framework.
+    /// </summary>
+    Java,
+
+    /// <summary>
+    /// C# with .NET.
+    /// </summary>
+    CSharp
+}
+
+/// <summary>
 /// Represents the application settings.
 /// </summary>
 public class AppSettings
@@ -11,7 +27,7 @@ public class AppSettings
     /// Gets or sets the AI settings.
     /// </summary>
     public AISettings AISettings { get; set; } = new AISettings();
-    
+
     /// <summary>
     /// Gets or sets the application-specific settings.
     /// </summary>
@@ -37,39 +53,39 @@ public class AISettings
     /// Gets or sets the service type (e.g., OpenAI, Azure OpenAI).
     /// </summary>
     public string ServiceType { get; set; } = "OpenAI";
-    
+
     /// <summary>
     /// Gets or sets the endpoint for the AI service.
     /// </summary>
     public string Endpoint { get; set; } = string.Empty;
-    
+
     /// <summary>
     /// Gets or sets the API key for the AI service.
     /// </summary>
     public string ApiKey { get; set; } = string.Empty;
-    
+
     /// <summary>
     /// Gets or sets the model ID for general use.
     /// </summary>
     public string ModelId { get; set; } = "gpt-4.1";
-    
+
     /// <summary>
     /// Gets or sets the model ID for the COBOL analyzer.
     /// </summary>
     public string CobolAnalyzerModelId { get; set; } = "gpt-4.1";
-    
+
     /// <summary>
     /// Gets or sets the model ID for the Java converter.
     /// <summary>
     /// Gets or sets the model ID for the Java converter.
     /// </summary>
     public string JavaConverterModelId { get; set; } = "gpt-4.1";
-    
+
     /// <summary>
     /// Gets or sets the model ID for the dependency mapper.
     /// </summary>
     public string? DependencyMapperModelId { get; set; }
-    
+
     /// <summary>
     /// Gets or sets the model ID for the unit test generator.
     /// </summary>
@@ -122,16 +138,26 @@ public class ApplicationSettings
     /// Gets or sets the folder containing COBOL source files.
     /// </summary>
     public string CobolSourceFolder { get; set; } = string.Empty;
-    
+
     /// <summary>
     /// Gets or sets the folder for Java output files.
     /// </summary>
     public string JavaOutputFolder { get; set; } = string.Empty;
-    
+
+    /// <summary>
+    /// Gets or sets the folder for C# output files.
+    /// </summary>
+    public string CSharpOutputFolder { get; set; } = string.Empty;
+
     /// <summary>
     /// Gets or sets the folder for test output files.
     /// </summary>
     public string TestOutputFolder { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Gets or sets the target language for code conversion.
+    /// </summary>
+    public TargetLanguage TargetLanguage { get; set; } = TargetLanguage.Java;
 
     /// <summary>
     /// Gets or sets the path to the migration insights database.

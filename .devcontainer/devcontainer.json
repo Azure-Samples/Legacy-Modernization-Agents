@@ -1,5 +1,5 @@
 {
-	"name": "COBOL to Quarkus Migration with Neo4j",
+	"name": "COBOL Migration with Neo4j & Enhanced Portal",
 	"dockerFile": "Dockerfile",
 	"forwardPorts": [
 		5028,
@@ -8,12 +8,12 @@
 	],
 	"portsAttributes": {
 		"5028": {
-			"label": "Migration Portal (McpChatWeb)",
+			"label": "Migration Portal (Enhanced UI with Reports & Mermaid)",
 			"onAutoForward": "openBrowser",
 			"protocol": "http"
 		},
 		"7474": {
-			"label": "Neo4j Browser",
+			"label": "Neo4j Browser (Dependency Graphs)",
 			"onAutoForward": "notify",
 			"protocol": "http"
 		},
@@ -72,8 +72,8 @@
 			"version": "lts"
 		}
 	},
-	"postCreateCommand": "dotnet restore Legacy-Modernization-Agents.sln && dotnet build Legacy-Modernization-Agents.sln",
-	"postStartCommand": "sudo chmod 666 /var/run/docker.sock && echo 'Dev container ready'",
+	"postCreateCommand": "dotnet restore Legacy-Modernization-Agents.sln && dotnet build Legacy-Modernization-Agents.sln && echo '\n✅ Dev Container Ready!\n\nKey Features:\n- Enhanced Portal UI with collapsible sections\n- Migration report generation (per run)\n- Mermaid diagram support in docs\n- Extended dependency tracking (CALL, COPY, PERFORM, EXEC, READ, WRITE, OPEN, CLOSE)\n- Interactive dependency graph with filtering\n- Line-level context for all dependencies\n\nQuick Start:\n  ./doctor.sh run          # Start migration with report generation\n  ./helper-scripts/demo.sh # Run demo with sample COBOL\n  Portal: http://localhost:5028\n  Neo4j: http://localhost:7474 (neo4j/cobol-migration-2025)\n'",
+	"postStartCommand": "bash -c 'sudo chmod 666 /var/run/docker.sock && docker-compose up -d neo4j 2>/dev/null || true && echo \"🚀 Starting services...\" && sleep 3 && cd McpChatWeb && nohup dotnet run --urls \"http://localhost:5028\" > /tmp/cobol-portal.log 2>&1 & echo \"✅ Portal starting on http://localhost:5028\" && echo \"📝 Logs: tail -f /tmp/cobol-portal.log\"'",
 	"mounts": [
 		"source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
 	],
