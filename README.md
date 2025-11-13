@@ -48,7 +48,7 @@ Have a look at the talk Julia did at the WeAreDevelopers World Congress 2025: ht
 - 📈 **Line Number Context** - See exactly where dependencies occur in your code
 
 
-<img width="1715" height="963" alt="Portal experience with metadata and graph data fronted by MCP" src="/workspaces/Legacy-Modernization-Agents/gifdemowithgraphandreportign.gif" />
+<img width="1715" height="963" alt="Portal experience with metadata and graph data fronted by MCP" src="gifdemowithgraphandreportign.gif" />
 
 #### Metadata and MCP Service Fronting Neo4j
 <img width="802" height="855" alt="MCP fronting graph db with Azure OpenAI" src="https://github.com/user-attachments/assets/2b93d018-0d54-479a-a090-2d6eb40f391e" />
