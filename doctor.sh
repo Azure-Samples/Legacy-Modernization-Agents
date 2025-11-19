@@ -486,9 +486,9 @@ generate_migration_report() {
         sqlite3 "$db_path" <<SQL
 .mode markdown
 .headers off
-SELECT '- **Total COBOL Files:** ' || COUNT(DISTINCT source_file) FROM cobol_files WHERE run_id = $run_id;
-SELECT '- **Programs (.cbl):** ' || COUNT(DISTINCT source_file) FROM cobol_files WHERE run_id = $run_id AND source_file LIKE '%.cbl';
-SELECT '- **Copybooks (.cpy):** ' || COUNT(DISTINCT source_file) FROM cobol_files WHERE run_id = $run_id AND source_file LIKE '%.cpy';
+SELECT '- **Total COBOL Files:** ' || COUNT(DISTINCT file_name) FROM cobol_files WHERE run_id = $run_id;
+SELECT '- **Programs (.cbl):** ' || COUNT(DISTINCT file_name) FROM cobol_files WHERE run_id = $run_id AND is_copybook = 0;
+SELECT '- **Copybooks (.cpy):** ' || COUNT(DISTINCT file_name) FROM cobol_files WHERE run_id = $run_id AND is_copybook = 1;
 SQL
         
         echo ""
@@ -517,7 +517,9 @@ SQL
         sqlite3 "$db_path" <<SQL
 .mode markdown
 .headers on
-SELECT file_name AS 'File Name', file_path AS 'Path', line_count AS 'Lines'
+SELECT file_name AS 'File Name', 
+       file_path AS 'Path', 
+       CASE WHEN is_copybook = 1 THEN 'Copybook' ELSE 'Program' END AS 'Type'
 FROM cobol_files 
 WHERE run_id = $run_id
 ORDER BY file_name;
@@ -868,6 +870,8 @@ run_migration() {
     echo ""
     echo "🚀 Starting COBOL to ${TARGET_LANGUAGE} Migration..."
     echo "=============================================="
+    echo -e "${BLUE}DEBUG: TARGET_LANGUAGE environment variable is set to: ${TARGET_LANGUAGE}${NC}"
+    echo ""
 
     # Check if reverse engineering results already exist
     local re_output_file="$REPO_ROOT/output/reverse-engineering-details.md"
@@ -895,7 +899,7 @@ run_migration() {
     fi
 
     # Run the application with updated folder structure
-    "$DOTNET_CMD" run -- --source ./cobol-source $skip_reverse_eng
+    TARGET_LANGUAGE="$TARGET_LANGUAGE" "$DOTNET_CMD" run -- --source ./cobol-source $skip_reverse_eng
     local migration_exit=$?
 
     if [[ $migration_exit -ne 0 ]]; then
