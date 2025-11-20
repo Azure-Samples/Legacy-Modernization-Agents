@@ -43,8 +43,8 @@ This document summarizes all source code changes made to fix critical issues wit
 ```json
 {
   "AISettings": {
-    "Endpoint": "https://aif-legacymodernize.openai.azure.com/",
-    "ApiKey": "6kcxhtSIcKYCrl6rF2ODaVtHDrXufu5BH8FsFDSfwrWEt9JtjYqDJQQJ99BKACfhMk5XJ3w3AAAAACOG52dS",
+    "Endpoint": "https://your-resource-name.openai.azure.com/",
+    "ApiKey": "YOUR_AZURE_OPENAI_API_KEY",
     "ModelId": "gpt-5.1-codex-mini",
     "CobolAnalyzerModelId": "gpt-5.1-codex-mini",
     "JavaConverterModelId": "gpt-5.1-codex-mini",
