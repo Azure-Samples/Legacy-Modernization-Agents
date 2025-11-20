@@ -45,11 +45,11 @@ This document summarizes all source code changes made to fix critical issues wit
   "AISettings": {
     "Endpoint": "https://your-resource-name.openai.azure.com/",
     "ApiKey": "YOUR_AZURE_OPENAI_API_KEY",
-    "ModelId": "gpt-5.1-codex-mini",
-    "CobolAnalyzerModelId": "gpt-5.1-codex-mini",
-    "JavaConverterModelId": "gpt-5.1-codex-mini",
-    "UnitTestModelId": "gpt-5.1-codex-mini",
-    "DependencyMapperModelId": "gpt-5.1-codex-mini"
+    "ModelId": "your-model-id",
+    "CobolAnalyzerModelId": "your-model-id",
+    "JavaConverterModelId": "your-model-id",
+    "UnitTestModelId": "your-model-id",
+    "DependencyMapperModelId": "your-model-id"
   },
   "ApplicationSettings": {
     "CobolSourceFolder": "cobol-source",
@@ -71,12 +71,12 @@ This document summarizes all source code changes made to fix critical issues wit
 **Reason:**
 - Original config pointed to wrong `source` folder (should be `cobol-source`)
 - Standardized output structure under `output/` directory
-- Updated AI endpoint and model IDs to match actual Azure OpenAI deployment
+- Placeholder values replaced with proper configuration structure
 
 **Impact:**
 - Migration finds COBOL files in correct location
 - Generated code organized in proper output structure
-- AI service connects successfully
+- Configuration properly structured for user customization
 
 ---
 
