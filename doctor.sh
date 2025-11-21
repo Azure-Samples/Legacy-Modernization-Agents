@@ -557,11 +557,17 @@ SQL
     read -p "View the report now? (Y/n): " -n 1 -r
     echo ""
     if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
+        echo -e "${BLUE}📖 Opening report... (Press 'q' to quit viewer and continue)${NC}"
+        echo ""
         if command -v less >/dev/null 2>&1; then
-            less "$report_file"
+            less -X "$report_file"
         else
             cat "$report_file"
+            echo ""
+            read -p "Press Enter to continue..." -r
         fi
+        echo ""
+        echo -e "${GREEN}✅ Report viewing complete${NC}"
     fi
 }
 
