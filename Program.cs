@@ -1,4 +1,4 @@
-﻿using CobolToQuarkusMigration.Helpers;
+using CobolToQuarkusMigration.Helpers;
 using CobolToQuarkusMigration.Models;
 using CobolToQuarkusMigration.Persistence;
 using CobolToQuarkusMigration.Processes;
@@ -321,6 +321,11 @@ internal static class Program
             LoadEnvironmentVariables();
             OverrideSettingsFromEnvironment(settings);
 
+            // Log the target language for debugging
+            logger.LogInformation("Target Language: {TargetLanguage} (from environment: {EnvValue})",
+                settings.ApplicationSettings.TargetLanguage,
+                Environment.GetEnvironmentVariable("TARGET_LANGUAGE") ?? "not set");
+
             if (string.IsNullOrEmpty(settings.ApplicationSettings.CobolSourceFolder))
             {
                 logger.LogError("COBOL source folder not specified. Use --source option or set in config file.");
@@ -544,7 +549,12 @@ internal static class Program
             {
                 string key = parts[0].Trim();
                 string value = parts[1].Trim().Trim('"', '\'');
-                Environment.SetEnvironmentVariable(key, value);
+
+                // Only set if not already set (allows shell/command-line to override config file)
+                if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable(key)))
+                {
+                    Environment.SetEnvironmentVariable(key, value);
+                }
             }
         }
     }

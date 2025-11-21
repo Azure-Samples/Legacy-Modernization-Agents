@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -18,6 +18,10 @@
   <ItemGroup>
     <Compile Remove="McpChatWeb\**\*.cs" />
     <Compile Remove="McpChatWeb.Tests\**\*.cs" />
+    <Compile Remove="output\**" />
+    <Compile Remove="java-output\**" />
+    <Compile Remove="csharp-output\**" />
+    <Compile Remove="temp\**" />
     <EmbeddedResource Remove="McpChatWeb\**\*" />
     <EmbeddedResource Remove="McpChatWeb.Tests\**\*" />
     <None Remove="McpChatWeb\**\*" />
