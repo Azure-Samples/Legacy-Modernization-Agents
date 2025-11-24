@@ -152,10 +152,8 @@ Once running, access these URLs:
 ├── Data/                    # SQLite database
 │   └── migration.db         # Migration metadata
 ├── Logs/                    # Migration logs
-├── cobol-source/            # Input COBOL files (YOUR COBOL FILES GO HERE)
-├── output/
-│   ├── java-output/         # Generated Java code
-│   └── dotnet-output/       # Generated .NET code
+├── source/                  # Input COBOL files (YOUR COBOL FILES GO HERE)
+├── output/                  # Generated Java or C# code (unified output folder)
 ├── McpChatWeb/              # Web portal project
 │   └── wwwroot/             # Frontend files
 ├── Config/                  # Configuration files
@@ -283,9 +281,9 @@ When generating Java files on Windows:
 ```
 
 ### Best Practices for Windows
-1. Use short output paths: `--java-output "C:\migration\out"`
+1. Use short output paths: `--output "C:\migration\out"`
 2. Avoid deep package hierarchies
-3. Add `java-output` folder to antivirus exclusions
+3. Add `output` folder to antivirus exclusions
 4. Monitor logs for path length warnings
 
 **See:** `/workspace/WINDOWS_COMPATIBILITY.md` for complete documentation

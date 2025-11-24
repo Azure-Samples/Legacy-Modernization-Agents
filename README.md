@@ -14,7 +14,7 @@ Have a look at the talk Julia did at the WeAreDevelopers World Congress 2025: ht
 
 ## Table of Contents
 - [Quick Start](#-quick-start) - Prerequisites, Dev Container, Neo4j, Demo
-- [Latest Features](#-latest-features) - File analysis, multi-run queries, dynamic graphs
+- [Features](#-features) - Core capabilities and functionality
 - [Architecture](#-architecture) - Hybrid databases, system design, portal UI
 - [CLI Reference](#-cli-commands-reference) - Doctor.sh and .NET commands
 - [Step-by-Step Guide](#step-by-step-guide) - Configuration to deployment
@@ -23,140 +23,454 @@ Have a look at the talk Julia did at the WeAreDevelopers World Congress 2025: ht
 
 ## 🚀 Quick Start
 
-### Prerequisites
-- **.NET 9.0 SDK** - [Download](https://dotnet.microsoft.com/download/dotnet/9.0)
-- **Docker Desktop** - For Neo4j graph database
-- **Azure OpenAI** - GPT-5 and codex is recommended for quality of code (GPT-4.1 is also supported but you need to do a few changed as flags has changed)
-- **Modern browser** - Chrome, Edge, Firefox, or Safari
+### Prerequisites Checklist
+
+- [ ] Docker Desktop installed and running
+- [ ] .NET 9.0 SDK installed (`dotnet --version` shows 9.0.x) - [Download](https://dotnet.microsoft.com/download/dotnet/9.0)
+- [ ] Azure OpenAI credentials ready (endpoint + API key) - GPT-5 and codex recommended
+- [ ] 8GB RAM minimum, 16GB recommended
+- [ ] Modern browser (Chrome, Edge, Firefox, Safari)
 
 > **Note:** Hybrid database architecture: SQLite (metadata) + Neo4j (dependency graphs)
 
-### Dev Container Setup
+### ⚡ Fast Track Setup (Dev Container)
+
+**Best for:** Team collaboration, consistent environment
+
+```bash
+# 1. Clone repository
+git clone https://github.com/Azure-Samples/Legacy-Modernization-Agents.git
+cd Legacy-Modernization-Agents
+
+# 2. Open in VS Code
+code .
+
+# 3. When prompted, click "Reopen in Container"
+# Wait 3-5 minutes for first-time setup
+
+# 4. Configure Azure OpenAI (in container terminal)
+cp Config/ai-config.local.env.example Config/ai-config.local.env
+nano Config/ai-config.local.env
+# Edit: AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME
+
+# 5. Run demo
+./helper-scripts/demo.sh
+# OR if in devcontainer, simply use:
+demo
+```
+
+✅ **Done!** Portal opens at http://localhost:5028
 
 **Fully automated environment** with .NET 9, Java 17, Neo4j, SQLite, Azure CLI, and pre-configured VS Code extensions.
 
 **Included:** C# Dev Kit, Java Pack, Quarkus, Semantic Kernel, Neo4j, SQLite extensions  
 **Aliases:** `demo`, `migration-run`, `portal-start`, `neo4j-status`
 
-#### New Portal Experience with Enhanced Features
+---
 
-**Latest Updates:**
-- 📊 **Interactive Dependency Graph** with CALL, COPY, PERFORM, EXEC, READ, WRITE, OPEN, CLOSE tracking
-- 📄 **Migration Reports** - Generate comprehensive reports for each migration run
-- 🎨 **Mermaid Diagram Support** - View architecture documentation with rendered diagrams
-- 🎯 **Collapsible UI** - Clean, organized dashboard with toggle sections
-- 📈 **Line Number Context** - See exactly where dependencies occur in your code
+### 🔧 Manual Setup (Local Development)
 
+**Best for:** Experienced developers, custom configurations
 
-<img width="1715" height="963" alt="Portal experience with metadata and graph data fronted by MCP" src="gifdemowithgraphandreportign.gif" />
+#### Step 1: Install Prerequisites
 
-#### Metadata and MCP Service Fronting Neo4j
-<img width="802" height="855" alt="MCP fronting graph db with Azure OpenAI" src="https://github.com/user-attachments/assets/2b93d018-0d54-479a-a090-2d6eb40f391e" />
-
-
-#### 🚀 Quick Start with Dev Container
-
-**Requirements:**
-- Docker Desktop installed and running
-- Visual Studio Code with "Dev Containers" extension
-
-#### Screenshots
-<img width="1715" height="963" alt="Portal with metadata and graph visualization" src="https://github.com/user-attachments/assets/c1faca51-dc21-41cf-9a51-70da5a3c8255" />
-<img width="802" height="855" alt="MCP fronting Neo4j with Azure OpenAI" src="https://github.com/user-attachments/assets/2b93d018-0d54-479a-a090-2d6eb40f391e" />
-
-#### Setup Steps
-
-1. **Clone & open:**
-   ```bash
-   git clone https://github.com/your-org/Legacy-Modernization-Agents.git
-   code Legacy-Modernization-Agents
-   ```
-
-2. **Reopen in container** (VS Code prompt or Cmd+Shift+P → "Dev Containers: Reopen in Container")
-
-3. **Wait 3-5 min** - Auto-builds, starts Neo4j, restores packages
-
-4. **Sample COBOL files included** - Ready-to-use demo files in `cobol-source/`:
-   - `CUSTOMER-INQUIRY.cbl` - Main program with CALL and COPY statements
-   - `CUSTOMER-DISPLAY.cbl` - Display program with file I/O
-   - `FORMAT-BALANCE.cbl` - Utility program
-   - `CUSTOMER-DATA.cpy` - Data structure copybook
-   - `ERROR-CODES.cpy` - Error handling copybook
-   - `TEST-PROGRAM.cbl` - Additional test program
-
-5. **Verify databases:**
-   ```bash
-   docker ps | grep neo4j  # Should show healthy
-   # Neo4j: http://localhost:7474 (neo4j/cobol-migration-2025)
-   # SQLite: Data/migration.db (created on first run)
-   ```
-
-6. **Configure credentials** (see below) and run: `./helper-scripts/demo.sh`
-
-### 📊 Neo4j Database Setup
-
-**Quick Start:**
 ```bash
-# Option 1: Auto-starts in dev container (recommended)
-# Option 2: Docker Compose
-docker-compose up -d neo4j && docker ps | grep neo4j
-# Option 3: Manual docker run
+# Check .NET version
+dotnet --version
+# Should show: 9.0.x
+
+# If not, install from: https://dotnet.microsoft.com/download/dotnet/9.0
+
+# Check Docker
+docker --version
+docker ps
+```
+
+#### Step 2: Start Neo4j
+
+```bash
+# Option A: Docker Compose (recommended)
 docker-compose up -d neo4j
 
-# Verify it's running
-docker ps | grep neo4j
-
-# Access Neo4j Browser
-open http://localhost:7474
-```
-
-**Option 3: Manual Docker Run**
-```bash
+# Option B: Manual Docker
 docker run -d \
   --name cobol-migration-neo4j \
-  -p 7474:7474 \
-  -p 7687:7687 \
+  -p 7474:7474 -p 7687:7687 \
   -e NEO4J_AUTH=neo4j/cobol-migration-2025 \
-  -e NEO4J_PLUGINS='["apoc"]' \
   neo4j:5.15.0
+
+# Verify
+docker ps | grep neo4j
+# Wait 30 seconds for Neo4j to be ready
 ```
 
-#### Neo4j Connection Details
-- **HTTP (Browser)**: http://localhost:7474
-- **Bolt (Driver)**: bolt://localhost:7687
-- **Username**: `neo4j`
-- **Password**: `cobol-migration-2025`
+#### Step 3: Configure Azure OpenAI
 
-#### Verify Neo4j Connection
 ```bash
-# Check if Neo4j is healthy
+# Copy template
+cp Config/ai-config.local.env.example Config/ai-config.local.env
+
+# Edit with your credentials
+nano Config/ai-config.local.env
+```
+
+**Required values:**
+```bash
+AZURE_OPENAI_ENDPOINT="https://YOUR-RESOURCE.openai.azure.com/"
+AZURE_OPENAI_API_KEY="your-32-character-key-here"
+AZURE_OPENAI_DEPLOYMENT_NAME="gpt-5-mini-2"
+```
+
+**Find your values:**
+- Endpoint: Azure Portal → OpenAI Resource → Keys and Endpoint → Endpoint
+- API Key: Azure Portal → OpenAI Resource → Keys and Endpoint → Key 1
+- Deployment: Your deployment name (e.g., "gpt-5-mini-2" or "gpt-4o")
+
+#### Step 4: Build Project
+
+```bash
+# Restore dependencies
+dotnet restore
+
+# Build solution
+dotnet build
+
+# Verify zero warnings
+# Output should show: "0 Warning(s), 0 Error(s)"
+```
+
+#### Step 5: Run Demo
+
+```bash
+# One command to start everything
+./helper-scripts/demo.sh
+# OR if in devcontainer:
+demo
+
+# Or manual steps:
+# 1. Ensure Neo4j is running
+# 2. cd McpChatWeb
+# 3. dotnet run
+# 4. Open http://localhost:5028
+```
+
+---
+
+### 🎬 First Run Experience
+
+After running `./helper-scripts/demo.sh`, you'll see:
+
+```
+╔══════════════════════════════════════════════════════════════╗
+║   COBOL Migration Portal - Demo Mode                        ║
+╚══════════════════════════════════════════════════════════════╝
+
+🔍 Checking prerequisites...
+✅ Docker installed
+✅ .NET 9.0 SDK found
+✅ Neo4j accessible
+
+📊 Starting Neo4j...
+✅ Neo4j is running
+
+💾 Checking database...
+✅ Database found with Run 43
+
+🚀 Starting web portal...
+⏳ Waiting for portal to start ✅
+
+🌐 Access your demo:
+   Portal:        http://localhost:5028
+   Neo4j Browser: http://localhost:7474
+```
+
+### 🌐 Accessing the Portal
+
+**In VS Code Dev Container:**
+1. Look for the "PORTS" tab in the bottom panel (next to Terminal)
+2. Find port `5028` in the list
+3. Click the **globe icon (🌐)** to open in browser
+4. Or run: `./helper-scripts/open-portal.sh`
+
+**In Local Environment:**
+- Browser will auto-open to http://localhost:5028
+- Or manually visit: http://localhost:5028
+
+### 📊 Portal Features
+- Three-panel dashboard
+- AI-powered chat with Azure OpenAI
+- Interactive dependency graph
+- Multi-run support
+- Real-time file analysis
+
+---
+
+### 🧪 Test Your Setup
+
+#### 1. Verify Portal Loads
+
+**Expected:**
+- ✅ Three panels visible (resources | chat | graph)
+- ✅ Graph shows "Dependency Graph | Run 43"
+- ✅ Resources list shows 8 MCP resources
+- ✅ Suggestion chips visible in chat
+
+**If not working:**
+```bash
+# Check portal logs
+# Look for "Now listening on: http://localhost:5028"
+```
+
+#### 2. Test Chat
+
+**Try this query:**
+```
+"Hello, what can you help me with?"
+```
+
+**Expected response:**
+- ✅ AI responds with migration capabilities
+- ✅ Response appears within 3-5 seconds
+- ✅ No error messages
+
+**If error:**
+```bash
+# Check Azure OpenAI config
+./doctor.sh doctor
+```
+
+#### 3. Test File Analysis
+
+**Try this query:**
+```
+"What functions are in BDSDA23.cbl?"
+```
+
+**Expected response:**
+- ✅ Program purpose description
+- ✅ List of functions/paragraphs
+- ✅ Variables with PIC clauses
+- ✅ Copybooks referenced
+- ✅ Data source URI shown
+
+#### 4. Test Multi-Run
+
+**Try this query:**
+```
+"Show me run 42"
+```
+
+**Expected:**
+- ✅ Response shows Run 42 data
+- ✅ Graph updates automatically
+- ✅ Graph header shows "Run 42"
+- ✅ Response includes SQLite and Neo4j data
+
+#### 5. Test Graph
+
+**Actions:**
+- Click **"Full Graph"** filter
+- Zoom in with mouse wheel
+- Click on a blue node (program)
+- Click on a red node (copybook)
+- Hover over edges (relationships)
+
+**Expected:**
+- ✅ Graph displays 49 nodes + 64 edges
+- ✅ Smooth zooming and panning
+- ✅ Tooltips appear on hover
+- ✅ Node selection highlights
+
+---
+
+### 🎓 First Tasks to Try
+
+#### Task 1: Explore Dependencies (2 minutes)
+
+```
+1. Click "🔄 Circular Dependencies" chip
+2. Read AI response about cycles
+3. Click "Programs Only" filter
+4. Observe only blue nodes shown
+5. Click "Full Graph" to restore
+```
+
+#### Task 2: Analyze a File (3 minutes)
+
+```
+1. Type: "What does RENI033.cpy contain?"
+2. Read the analysis response
+3. Note the variables and their PIC clauses
+4. Click on the file node in graph
+5. Explore relationships visually
+```
+
+#### Task 3: Compare Runs (3 minutes)
+
+```
+1. Type: "Show me run 43"
+2. Note the statistics (102 files, etc.)
+3. Type: "Now show me run 42"
+4. Watch graph update automatically
+5. Compare the two runs
+```
+
+#### Task 4: Access Raw Data (5 minutes)
+
+```
+1. Click "📖 Data Retrieval Guide"
+2. Copy SQLite query example
+3. Open terminal
+4. Run: sqlite3 Data/migration.db
+5. Paste query and explore
+```
+
+---
+
+### ❓ Common Issues & Solutions
+
+#### Issue: "NETSDK1045: The current .NET SDK does not support targeting .NET 9.0"
+
+**Solution:**
+```bash
+# Install .NET 9.0 SDK
+https://dotnet.microsoft.com/download/dotnet/9.0
+
+# Verify
+dotnet --version
+# Should show: 9.0.x
+```
+
+#### Issue: "Neo4j connection refused"
+
+**Solution:**
+```bash
+# Check if running
+docker ps | grep neo4j
+
+# If not running, start it
+docker-compose up -d neo4j
+
+# Wait 30 seconds, then verify
 curl http://localhost:7474
-
-# Or use the demo script which includes health checks
-./demo.sh
 ```
 
-### 🎬 Demo Mode
+#### Issue: "Azure OpenAI API error"
 
-View existing migration data without running a new analysis:
-
+**Solution:**
 ```bash
+# Check configuration
+./doctor.sh doctor
+
+# Verify endpoint ends with /
+# Verify API key is 32 characters
+# Verify deployment name matches your Azure OpenAI deployment (e.g., "gpt-5-mini-2")
+
+# Test connection
+./doctor.sh test
+```
+
+#### Issue: "Portal shows no data"
+
+**Solution:**
+```bash
+# Check database exists
+ls -lh Data/migration.db
+
+# If missing, run a migration first
+./doctor.sh run
+
+# Or use demo mode (uses existing data)
 ./helper-scripts/demo.sh
 # OR if in devcontainer:
 demo
 ```
 
-**What it does:** Checks prerequisites, starts Neo4j, finds latest migration, launches portal at http://localhost:5028
+#### Issue: "Graph not displaying"
 
-**Portal features:** Three-panel UI, AI chat, interactive graph, multi-run queries, file content analysis
+**Solution:**
+1. Open browser DevTools (F12)
+2. Check Console tab for JavaScript errors
+3. Verify `/api/graph` endpoint returns data:
+   ```bash
+   curl http://localhost:5028/api/graph | jq '.nodes | length'
+   # Should show: 49
+   ```
+4. Hard refresh browser (Ctrl+Shift+R or Cmd+Shift+R)
 
-**Stop demo:** `pkill -f "dotnet.*McpChatWeb"` or `docker-compose down`
+---
 
-**Troubleshooting:** If port in use, kill process with pkill. If no data shows, run `./doctor.sh run` to populate databases.
+### 🎉 Success Criteria
 
-## 🆕 Latest Features
+You're all set when:
 
-### File Content Analysis
+- ✅ Portal loads at http://localhost:5028
+- ✅ Chat responds to queries
+- ✅ Graph displays nodes and edges
+- ✅ File analysis returns detailed data
+- ✅ Multi-run queries work
+- ✅ Zero build warnings
+- ✅ Neo4j accessible at http://localhost:7474
+
+**Time to start migrating COBOL! 🚀**
+
+---
+
+#### Screenshots
+<img width="1715" height="963" alt="Portal with metadata and graph visualization" src="https://github.com/user-attachments/assets/c1faca51-dc21-41cf-9a51-70da5a3c8255" />
+<img width="802" height="855" alt="MCP fronting Neo4j with Azure OpenAI" src="https://github.com/user-attachments/assets/2b93d018-0d54-479a-a090-2d6eb40f391e" />
+
+## ✨ Features
+
+### 1. 🔄 Dual Language Support (Java & C#)
+
+**Choose Your Target Language:**
+- Interactive selection during migration: Java Quarkus or C# .NET
+- Separate converter agents optimized for each language
+- Unified `output/` folder for generated code
+- Agent personas customized for Java/Quarkus or C#/.NET expertise
+
+### 2. 🔍 Reverse Engineering
+
+**Extract Business Logic Without Full Migration:**
+- Standalone `reverse-engineer` command
+- Generates human-readable documentation from COBOL
+- Produces business features, user stories, and domain models
+- Glossary support (`Data/glossary.json`) translates technical terms
+- Output: Comprehensive markdown with business rules and architecture
+
+### 3. 🗄️ Hybrid Database Architecture
+
+**SQLite + Neo4j for Comprehensive Data Storage:**
+- **SQLite**: Migration metadata, runs, file analysis, structured data
+- **Neo4j**: Dependency graphs, relationships, visual analytics
+- Real-time LOC calculation (excludes comments and blank lines)
+- Multi-run queries: Switch context between historical migrations
+- Full-text search capabilities
+
+### 4. 📊 Enhanced Dependency Tracking
+
+**Comprehensive COBOL Statement Detection:**
+- **CALL** - Program invocations with line numbers
+- **COPY** - Copybook inclusions
+- **PERFORM** - Procedure calls and loops
+- **EXEC SQL** - Embedded SQL statements
+- **READ/WRITE** - File I/O operations
+- **OPEN/CLOSE** - File handling
+
+**Visual Differentiation:**
+- Color-coded edges in dependency graph (CALL=green, COPY=blue, etc.)
+- Edge labels show type and line numbers (e.g., "CALL (L42)")
+- Tooltips display full context from source code
+- Filterable by edge type with checkboxes
+
+**Example:**
+```cobol
+Line 42: CALL 'FORMAT-BALANCE' USING WS-AMOUNT
+```
+Appears as: `CUSTOMER-DISPLAY.cbl → FORMAT-BALANCE.cbl [CALL (L42)]`
+
+### 5. 💬 File Content Analysis
 
 Ask natural language questions about COBOL file contents directly in the chat interface:
 
@@ -211,39 +525,15 @@ Batch data synchronization agent for daily transaction processing
 **API:** `GET /api/file-analysis/BDSDA23.cbl?runId=43`
 ```
 
-### Multi-Run Query Support
-Query any historical run: "Show me run 42". Automatically queries both SQLite and Neo4j, updates graph visualization, and labels data sources.
+### 6. 🔄 Multi-Run Query Support
 
-### Dynamic Graph Updates
-Graph auto-updates when querying different runs. Frontend detects `runId` in response and refreshes visualization without manual intervention.
+Query any historical run: "Show me run 42". Automatically queries both SQLite and Neo4j, updates graph visualization, and labels data sources. Perfect for comparing different migration attempts or analyzing specific runs.
 
----
+### 7. 📈 Dynamic Graph Updates
 
-### 5. 📊 Enhanced Dependency Tracking
+Graph auto-updates when querying different runs. Frontend detects `runId` in response and refreshes visualization without manual intervention. Interactive vis-network graph with zoom, pan, and filtering capabilities.
 
-**Comprehensive COBOL Statement Detection:**
-- **CALL** - Program invocations with line numbers
-- **COPY** - Copybook inclusions
-- **PERFORM** - Procedure calls and loops
-- **EXEC SQL** - Embedded SQL statements
-- **READ/WRITE** - File I/O operations
-- **OPEN/CLOSE** - File handling
-
-**Visual Differentiation:**
-- Color-coded edges in dependency graph (CALL=green, COPY=blue, etc.)
-- Edge labels show type and line numbers (e.g., "CALL (L42)")
-- Tooltips display full context from source code
-- Filterable by edge type with checkboxes
-
-**Example:**
-```cobol
-Line 42: CALL 'FORMAT-BALANCE' USING WS-AMOUNT
-```
-Appears as: `CUSTOMER-DISPLAY.cbl → FORMAT-BALANCE.cbl [CALL (L42)]`
-
----
-
-### 6. 📄 Migration Report Generation
+### 8. 📄 Migration Report Generation
 
 **Generate Comprehensive Reports:**
 - **Via Portal**: Click "📄 Generate Report" on any migration run
@@ -279,7 +569,7 @@ Appears as: `CUSTOMER-DISPLAY.cbl → FORMAT-BALANCE.cbl [CALL (L42)]`
 ## 📁 File Inventory
 | File Name | Path | Lines |
 |-----------|------|-------|
-| CUSTOMER-INQUIRY.cbl | cobol-source/ | 156 |
+| CUSTOMER-INQUIRY.cbl | source/ | 156 |
 ...
 
 ## 🔗 Dependency Relationships
@@ -289,16 +579,49 @@ Appears as: `CUSTOMER-DISPLAY.cbl → FORMAT-BALANCE.cbl [CALL (L42)]`
 ...
 ```
 
----
+### 9. 🎨 Mermaid Diagram Support
 
-### 7. 🎨 Mermaid Diagram Support in Documentation
-
-**View Architecture with Interactive Diagrams:**
-- Open "📄 Architecture Documentation" in portal
+**Interactive Architecture Documentation:**
 - All Mermaid flowcharts, sequence diagrams, and visualizations render automatically
 - Dark theme matching portal design
 - Zoomable and pan-able diagrams
 - Syntax highlighting for code blocks
+- Supported diagram types: Flowcharts, Sequence, Class, ER diagrams
+- Integrated into "📄 Architecture Documentation" portal view
+
+### 10. 🌐 Interactive Web Portal
+
+**Comprehensive Dashboard at http://localhost:5028:**
+- Three-panel layout: Resources | Chat | Graph Visualization
+- AI-powered chat with MCP-backed responses
+- Run selector dropdown with historical runs
+- Dark theme with rich colors and modern UI
+- Real-time updates and interactive controls
+- Example queries section for quick analysis
+- Data retrieval guide modal
+
+### 11. 🔌 MCP (Model Context Protocol) Integration
+
+**9 MCP Resources per Migration Run:**
+- Run summary, file lists, dependency graphs
+- Circular dependency analysis, critical files
+- Individual COBOL and generated code files
+- Per-file dependencies and detailed analyses
+- REST API endpoints for programmatic access
+
+### 12. 🚀 DevContainer Auto-Start
+
+**Fully Automated Development Environment:**
+- Services launch automatically on container restart
+- Portal auto-starts at http://localhost:5028
+- Neo4j with health checks and auto-recovery
+- Pre-configured VS Code extensions
+- Bash aliases for common commands
+- Locked ports prevent configuration drift
+
+---
+
+## 🏗️ Architecture
 
 **Supported Diagram Types:**
 - Flowcharts (system architecture)
@@ -313,68 +636,6 @@ Markdown with `mermaid` code blocks automatically renders as interactive SVG dia
 - **Mermaid.js 10.x** - Diagram rendering engine
 - **Marked.js 11.x** - Markdown parser
 - Dark theme with custom color scheme matching portal
-
----
-
-### 8. 🔌 Portal API Endpoints
-
-**Migration Reports:**
-```bash
-# Generate/retrieve migration report for run ID
-GET /api/runs/{runId}/report
-
-# Example response:
-{
-  "runId": 6,
-  "content": "# COBOL Migration Report - Run 6\n...",
-  "lastModified": "2025-11-12T20:30:00Z",
-  "path": "/output/migration_report_run_6.md"
-}
-```
-
-**Run Information:**
-```bash
-# Get all migration runs
-GET /api/runs/all
-
-# Get dependencies for specific run
-GET /api/runs/{runId}/dependencies
-
-# Get current run ID
-GET /api/runinfo
-```
-
-**Documentation:**
-```bash
-# Get architecture documentation with Mermaid diagrams
-GET /api/documentation/architecture
-
-# Example response:
-{
-  "content": "# Architecture\n```mermaid\n...\n```",
-  "lastModified": "2025-11-12T15:00:00Z"
-}
-```
-
-**Graph Data:**
-```bash
-# Get dependency graph for current or specific run
-GET /api/graph?runId={optional}
-
-# Returns nodes and edges with dependency types
-{
-  "nodes": [...],
-  "edges": [
-    {
-      "source": "CUSTOMER-INQUIRY.cbl",
-      "target": "CUSTOMER-DISPLAY.cbl",
-      "type": "CALL",
-      "lineNumber": 42,
-      "context": "CALL 'CUSTOMER-DISPLAY' USING WS-DATA"
-    }
-  ]
-}
-```
 
 ---
 
@@ -476,11 +737,11 @@ flowchart TB
     PROCESS --> JAVA
     PROCESS --> REPORTS
     
-    classDef inputStyle fill:#e3f2fd,stroke:#1976d2,stroke-width:3px
-    classDef processStyle fill:#f1f8e9,stroke:#689f38,stroke-width:3px
-    classDef storageStyle fill:#fff3e0,stroke:#f57c00,stroke-width:3px
-    classDef accessStyle fill:#f3e5f5,stroke:#7b1fa2,stroke-width:3px
-    classDef outputStyle fill:#e8f5e9,stroke:#388e3c,stroke-width:3px
+    classDef inputStyle fill:#e3f2fd,stroke:#1976d2,stroke-width:3px,color:#000
+    classDef processStyle fill:#f1f8e9,stroke:#689f38,stroke-width:3px,color:#000
+    classDef storageStyle fill:#fff3e0,stroke:#f57c00,stroke-width:3px,color:#000
+    classDef accessStyle fill:#f3e5f5,stroke:#7b1fa2,stroke-width:3px,color:#000
+    classDef outputStyle fill:#e8f5e9,stroke:#388e3c,stroke-width:3px,color:#000
     
     class COBOL inputStyle
     class ANALYZER,CONVERTER,MAPPER processStyle
@@ -520,65 +781,6 @@ flowchart TB
 
 **Together they provide**: Fast metadata access + Powerful relationship insights 🚀
 
-### 🌐 System Architecture Overview
-
-```mermaid
-flowchart LR
-    subgraph CLIENTS["👥 Client Applications"]
-        BROWSER["🌐 Web Browser"]
-        CLAUDE["💬 Claude Desktop"]
-        CURSOR["⌨️ Cursor IDE"]
-    end
-    
-    subgraph PORTAL["🖥️ McpChatWeb Portal<br/>:5250"]
-        UI["Three-Panel UI<br/>Resources | Chat | Graph"]
-        API["/api endpoints"]
-    end
-    
-    subgraph MCP_LAYER["🎯 MCP Server Layer"]
-        MCP_SERVER["MCP JSON-RPC Server<br/>(STDIO)"]
-        MCP_CLIENT["McpProcessClient<br/>(Bridge)"]
-    end
-    
-    subgraph DATA_LAYER["💾 Data Layer"]
-        HYBRID_REPO["HybridMigrationRepository"]
-        SQLITE_REPO["SqliteMigrationRepository"]
-        NEO4J_REPO["Neo4jMigrationRepository"]
-    end
-    
-    subgraph DATABASES["🗄️ Databases"]
-        SQLITE_DB[("📊 SQLite<br/>migration.db")]
-        NEO4J_DB[("🔗 Neo4j<br/>:7687")]
-    end
-    
-    BROWSER --> PORTAL
-    CLAUDE --> MCP_SERVER
-    CURSOR --> MCP_SERVER
-    
-    PORTAL --> API
-    API --> MCP_CLIENT
-    MCP_CLIENT --> MCP_SERVER
-    
-    MCP_SERVER --> HYBRID_REPO
-    HYBRID_REPO --> SQLITE_REPO
-    HYBRID_REPO --> NEO4J_REPO
-    
-    SQLITE_REPO --> SQLITE_DB
-    NEO4J_REPO --> NEO4J_DB
-    
-    classDef clientStyle fill:#e3f2fd,stroke:#1976d2,stroke-width:2px
-    classDef portalStyle fill:#f1f8e9,stroke:#689f38,stroke-width:2px
-    classDef mcpStyle fill:#fff3e0,stroke:#f57c00,stroke-width:2px
-    classDef dataStyle fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
-    classDef dbStyle fill:#ffebee,stroke:#c62828,stroke-width:2px
-    
-    class BROWSER,CLAUDE,CURSOR clientStyle
-    class UI,API portalStyle
-    class MCP_SERVER,MCP_CLIENT mcpStyle
-    class HYBRID_REPO,SQLITE_REPO,NEO4J_REPO dataStyle
-    class SQLITE_DB,NEO4J_DB dbStyle
-```
-
 ### 🖼️ Three-Panel Portal UI
 
 The web portal at `localhost:5250` features a modern three-panel layout:
@@ -604,9 +806,9 @@ graph TB
     LEFT -.-> CENTER
     CENTER -.-> RIGHT
     
-    classDef leftStyle fill:#e3f2fd,stroke:#1976d2,stroke-width:2px
-    classDef centerStyle fill:#f1f8e9,stroke:#689f38,stroke-width:2px
-    classDef rightStyle fill:#fff3e0,stroke:#f57c00,stroke-width:2px
+    classDef leftStyle fill:#e3f2fd,stroke:#1976d2,stroke-width:2px,color:#000
+    classDef centerStyle fill:#f1f8e9,stroke:#689f38,stroke-width:2px,color:#000
+    classDef rightStyle fill:#fff3e0,stroke:#f57c00,stroke-width:2px,color:#000
     
     class LEFT,RESOURCES leftStyle
     class CENTER,CHAT,CHIPS centerStyle
@@ -685,66 +887,26 @@ AZURE_OPENAI_MODEL_ID="gpt-5-mini"
 - API key should be 32 characters long
 - Deployment name must match your Azure OpenAI deployment (e.g., "gpt-5-mini-2", "gpt-4o")
 
-#### 🔍 Where Azure OpenAI Configuration is Used
+**Usage:** Same credentials power both migration agents and MCP chat server via `Config/appsettings.json`
 
-**1. Main Migration Process** (`Program.cs`)
-- Reads from `Config/appsettings.json` → `AISettings` section
-- Creates Semantic Kernel builder with Azure OpenAI connection
-- Distributes to all three AI agents (Analyzer, Converter, Mapper)
+### Neo4j Database
 
-```csharp
-// Program.cs - Main migration entry point
-var kernelBuilder = Kernel.CreateBuilder();
-kernelBuilder.AddAzureOpenAIChatCompletion(
-    deploymentName: settings.AISettings.DeploymentName,
-    endpoint: settings.AISettings.Endpoint,
-    apiKey: settings.AISettings.ApiKey
-);
+**Quick Start:**
+```bash
+# Auto-starts in dev container (recommended)
+# OR manual start:
+docker-compose up -d neo4j && docker ps | grep neo4j
 ```
 
-**2. MCP Server** (`Mcp/McpServer.cs`)
-- Reads from same `Config/appsettings.json` → `AISettings` section
-- Initializes Semantic Kernel for natural language chat queries
-- Powers the web portal's AI chat feature
+**Connection Details:**
+- **HTTP (Browser)**: http://localhost:7474
+- **Bolt (Driver)**: bolt://localhost:7687
+- **Username**: `neo4j`
+- **Password**: `cobol-migration-2025`
 
-```csharp
-// McpServer.cs - Chat server initialization
-if (_aiSettings != null) {
-    var kernelBuilder = Kernel.CreateBuilder();
-    kernelBuilder.AddAzureOpenAIChatCompletion(
-        deploymentName: _aiSettings.DeploymentName,
-        endpoint: _aiSettings.Endpoint,
-        apiKey: _aiSettings.ApiKey
-    );
-    _kernel = kernelBuilder.Build();
-}
-```
+---
 
-**Configuration File Structure** (`Config/appsettings.json`):
-```json
-{
-  "AISettings": {
-    "ServiceType": "AzureOpenAI",
-    "Endpoint": "https://your-resource.openai.azure.com/",
-    "ApiKey": "YOUR_API_KEY",
-    "ModelId": "gpt-5-mini",
-    "DeploymentName": "gpt-5-mini-2",
-    "CobolAnalyzerModelId": "gpt-5-mini",
-    "JavaConverterModelId": "gpt-5-mini",
-    "DependencyMapperModelId": "gpt-5-mini",
-    "MaxTokens": 32000,
-    "Temperature": 0.1
-  }
-}
-```
-
-**One Configuration, Two Uses:**
-- ✅ Same credentials used for migration and chat
-- ✅ Can use different models per agent if needed
-- ✅ Configured once in `appsettings.json`
-- ✅ No separate MCP server configuration required
-
-## 🎯 CLI Commands Reference
+## 🎯 CLI Reference
 
 ### Doctor.sh - Three Migration Modes
 
@@ -827,17 +989,19 @@ dotnet run conversation
 ## Step-by-Step Guide
 
 1. **Configure:** `cp Config/ai-config.local.env.example Config/ai-config.local.env` → Add Azure OpenAI endpoint, API key, deployment name
-2. **Add COBOL files:** Place your COBOL files in `./cobol-source/`
+2. **Add COBOL files:** Place your COBOL files in `./source/`
 3. **Run:** `./doctor.sh run` - Analyzes, converts (choose Java or C#), launches portal at http://localhost:5028
 4. **Choose target:** Select Java Quarkus or C# .NET when prompted
 5. **Explore:** Use portal UI (chat, graph) or connect MCP clients (Claude, Cursor)
-6. **Results:** Generated code in `output/java-output/` or `output/dotnet-output/`, documentation in `output/`, logs in `Logs/`
+6. **Results:** Generated code in `output/`, documentation in `output/`, logs in `Logs/`
 
 **Portal features:** Three-panel UI, AI chat, multi-run queries, interactive graph, file content analysis
 
 **Env variables:** `MCP_AUTO_LAUNCH=0` (skip portal), `MIGRATION_DB_PATH` (custom DB location)
 
-### Testing
+---
+
+## 🧪 Testing & Validation
 
 ```bash
 # Run integration tests
@@ -845,87 +1009,43 @@ dotnet test McpChatWeb.Tests/McpChatWeb.Tests.csproj
 
 # Validate configuration
 ./doctor.sh test
+
+# Verify data persistence
+./helper-scripts/verify-data-persistence.sh
+
+# Check port standardization
+./helper-scripts/verify-port-standardization.sh
 ```
 
-## How It Works - Architecture & Flow
+---
 
-### Migration Process (8 Steps)
+## 📊 Real Migration Stats
 
-```mermaid
-sequenceDiagram
-    participant User as 👤 User
-    participant CLI as 🖥️ CLI Program
-    participant Process as 🎯 MigrationProcess
-    participant Agents as 🤖 AI Agents
-    participant AI as 🧠 Azure OpenAI
-    participant Repo as 🔀 HybridRepository
-    participant SQLite as 📊 SQLite DB
-    participant Neo4j as 🔗 Neo4j DB
-    
-    User->>CLI: ./doctor.sh run
-    CLI->>User: Choose target: Java or C#?
-    User->>CLI: Select Java Quarkus or C# .NET
-    CLI->>Process: Initialize with settings + target language
-    Process->>Repo: Create migration run
-    
-    Note over Process: Step 1: File Discovery
-    Process->>Repo: Save COBOL files → SQLite
-    
-    Note over Process: Step 2: Dependency Analysis
-    Process->>Agents: DependencyMapperAgent
-    Agents->>AI: Analyze relationships
-    Repo->>Neo4j: CREATE graph nodes & edges
-    
-    Note over Process: Step 3-4: Analysis & Conversion
-    loop For each COBOL file
-        Process->>Agents: CobolAnalyzerAgent → CodeConverterAgent
-        Agents->>AI: Analyze & convert to Java/C#
-        Repo->>SQLite: Save analyses & Java/C# code
-    end
-    
-    Note over Process: Step 5-8: Generation & Finalization
-    Process->>Repo: Save metrics, generate reports
-    CLI-->>User: Success + Auto-launch portal
-```
+- **102 COBOL files** processed → **99 Java Quarkus files** generated (97% success rate)
+- **205 Azure OpenAI API calls**, ~1.2 hours total, $0.31 cost
+- **Outputs**: Java/C# code in `output/`, docs in `output/`, logs in `Logs/`, metadata in `Data/migration.db`, graph in Neo4j
 
-### Semantic Kernel Orchestration
+---
 
-**Kernel Builder** (Program.cs) configures Azure OpenAI → Distributes to 3 specialized agents:
-- **CobolAnalyzerAgent** - Structure analysis (system prompt: COBOL expert)
-- **JavaConverterAgent / CSharpConverterAgent** - Java Quarkus or C# .NET generation (system prompt: Java/Quarkus expert or C#/.NET expert)
-- **DependencyMapperAgent** - Relationship mapping (system prompt: Dependency expert)
+## 🔧 Advanced Topics
+- **Folder structure:** Input: `source/`, Output: `output/`
+- **Token limits:** GPT-5 Mini supports 32K tokens - adjust per agent in `appsettings.json`  
+- **Agent personas:** Modify prompts for different outcomes (DB2→PostgreSQL, other languages)
+- **Legacy languages:** Framework adaptable to APL, PL/I - update agent prompts accordingly
 
-Each agent uses `kernel.InvokePromptAsync(prompt, args)` with MaxTokens: 32000, Temperature: 0.1
-
-### Data Flow
-
-**SQLite**: Run metadata, COBOL source, analyses, Java/C# output, metrics  
-**Neo4j**: Dependency graph (nodes = files, edges = COPY/CALL relationships)  
-**MCP Server**: Browser UI → ASP.NET API → McpProcessClient (STDIO bridge) → MCP Server → Both databases
-
-### Real Migration Stats
-- 102 COBOL files processed → 99 Java Quarkus files generated (97% success rate)
-- 205 Azure OpenAI API calls, ~1.2 hours total, $0.31 cost
-- Outputs: Java in `output/java-output/`, docs in `output/`, logs in `Logs/`, metadata in `Data/migration.db`, graph in Neo4j
-
-## Work in progress and good to know
-
-- **Folder structure:** Input: `cobol-source/`, Output: `output/java-output/` and `output/dotnet-output/`
-- Token limits: GPT-5 Mini supports 32K tokens - adjust per agent in `appsettings.json`  
-- Customizable: Change agent personas/prompts for different outcomes (DB2→PostgreSQL, Java→.NET, etc.)
-- Other languages: Framework adaptable to APL, PL/I - update agent prompts accordingly
-
-## Known Issues
+**Known Issues:**
 - Content filtering may block Azure OpenAI calls
-- Token limits: Don't exceed agent MaxTokens settings (32K for GPT-5 Mini)
+- Token limits: Don't exceed MaxTokens settings (32K for GPT-5 Mini)
 - Model deployment names must match Azure configuration
 
-## Project Ideas
+**Extension Ideas:**
 - Enhance agent prompts for specific migration scenarios
 - Add support for additional legacy languages (PL/I, RPG, APL)
 - Integrate with CI/CD pipelines  
 - Improve test generation capabilities
 - Contributions welcome!
+
+---
 
 ## Disclaimer
 
@@ -934,3 +1054,19 @@ This software is provided for **demonstration purposes only**. It is not intende
 ## License
 
 MIT License - Copyright (c) Microsoft Corporation. See full license terms in the repository.
+
+---
+
+## 📝 Known TODOs
+
+### Project Naming Cleanup
+- [ ] **Rename project from "CobolToQuarkusMigration" to "LegacyModernizationAgents"**
+  - Update `CobolToQuarkusMigration.csproj` → `LegacyModernizationAgents.csproj`
+  - Update references in `Legacy-Modernization-Agents.sln`
+  - Update `doctor.sh` script references
+  - Update namespace declarations in C# files
+  - Update documentation references
+  - Update Docker and build configuration files
+  - Rationale: Project now supports multiple target languages (Java Quarkus and C# .NET), making the original name too specific
+
+````
