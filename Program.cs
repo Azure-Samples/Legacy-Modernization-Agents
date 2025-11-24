@@ -39,7 +39,7 @@ internal static class Program
         cobolSourceOption.AddAlias("-s");
         rootCommand.AddOption(cobolSourceOption);
 
-        var javaOutputOption = new Option<string>("--java-output", () => "output", "Path to the folder for Java output files")
+        var javaOutputOption = new Option<string>("--java-output", () => "output", "Path to the folder for output files (Java or C#)")
         {
             Arity = ArgumentArity.ZeroOrOne
         };
@@ -856,7 +856,7 @@ internal static class Program
             Console.WriteLine("🎯 Next Steps:");
             Console.WriteLine("   1. Review the generated documentation");
             Console.WriteLine("   2. Decide on your modernization strategy");
-            Console.WriteLine("   3. Run full migration if desired: dotnet run --source <path> --java-output <path>");
+            Console.WriteLine("   3. Run full migration if desired: dotnet run --source <path> --output <path>");
             Console.WriteLine();
         }
         catch (Exception ex)

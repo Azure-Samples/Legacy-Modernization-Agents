@@ -84,7 +84,7 @@ fi
 echo ""
 
 echo "5. Checking documentation files..."
-DOCS_TO_CHECK=("QUICK_START.md" "README.md" "DEMO.md" "QUERY_GUIDE.md" "McpChatWeb/wwwroot/index.html")
+DOCS_TO_CHECK=("README.md" "DEMO.md" "QUERY_GUIDE.md" "McpChatWeb/wwwroot/index.html")
 DOC_PASS=0
 DOC_FAIL=0
 
