@@ -1,10 +1,12 @@
 using System.IO;
+using System.Text.Json.Serialization;
 
 namespace CobolToQuarkusMigration.Models;
 
 /// <summary>
 /// Represents the target language for code conversion.
 /// </summary>
+[JsonConverter(typeof(JsonStringEnumConverter))]
 public enum TargetLanguage
 {
     /// <summary>

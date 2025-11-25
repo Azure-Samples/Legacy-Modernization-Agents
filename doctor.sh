@@ -486,9 +486,9 @@ generate_migration_report() {
         sqlite3 "$db_path" <<SQL
 .mode markdown
 .headers off
-SELECT '- **Total COBOL Files:** ' || COUNT(DISTINCT source_file) FROM cobol_files WHERE run_id = $run_id;
-SELECT '- **Programs (.cbl):** ' || COUNT(DISTINCT source_file) FROM cobol_files WHERE run_id = $run_id AND source_file LIKE '%.cbl';
-SELECT '- **Copybooks (.cpy):** ' || COUNT(DISTINCT source_file) FROM cobol_files WHERE run_id = $run_id AND source_file LIKE '%.cpy';
+SELECT '- **Total COBOL Files:** ' || COUNT(DISTINCT file_name) FROM cobol_files WHERE run_id = $run_id;
+SELECT '- **Programs (.cbl):** ' || COUNT(DISTINCT file_name) FROM cobol_files WHERE run_id = $run_id AND file_name LIKE '%.cbl';
+SELECT '- **Copybooks (.cpy):** ' || COUNT(DISTINCT file_name) FROM cobol_files WHERE run_id = $run_id AND file_name LIKE '%.cpy';
 SQL
         
         echo ""
@@ -517,7 +517,7 @@ SQL
         sqlite3 "$db_path" <<SQL
 .mode markdown
 .headers on
-SELECT file_name AS 'File Name', file_path AS 'Path', line_count AS 'Lines'
+SELECT file_name AS 'File Name', file_path AS 'Path', is_copybook AS 'Is Copybook'
 FROM cobol_files 
 WHERE run_id = $run_id
 ORDER BY file_name;
