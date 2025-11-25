@@ -26,4 +26,8 @@
     <Content Remove="McpChatWeb.Tests\**\*" />
   </ItemGroup>
 
+<ItemGroup>
+  <Compile Remove="output\**" />
+</ItemGroup>
+
 </Project>
