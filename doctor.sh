@@ -895,6 +895,8 @@ run_migration() {
     fi
 
     # Run the application with updated folder structure
+    # Export TARGET_LANGUAGE so it's available to the dotnet process
+    export TARGET_LANGUAGE
     "$DOTNET_CMD" run -- --source ./source $skip_reverse_eng
     local migration_exit=$?
 

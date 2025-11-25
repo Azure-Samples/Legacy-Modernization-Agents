@@ -507,11 +507,7 @@ internal static class Program
             string localConfigFile = Path.Combine(configDir, "ai-config.local.env");
             string templateConfigFile = Path.Combine(configDir, "ai-config.env");
 
-            if (File.Exists(templateConfigFile))
-            {
-                LoadEnvFile(templateConfigFile);
-            }
-
+            // Load local config first (highest priority for defaults)
             if (File.Exists(localConfigFile))
             {
                 LoadEnvFile(localConfigFile);
@@ -520,6 +516,12 @@ internal static class Program
             {
                 Console.WriteLine("💡 Consider creating Config/ai-config.local.env for your personal settings");
                 Console.WriteLine("   You can copy from Config/ai-config.local.env.template");
+            }
+
+            // Then load template config to fill in any missing values
+            if (File.Exists(templateConfigFile))
+            {
+                LoadEnvFile(templateConfigFile);
             }
         }
         catch (Exception ex)
@@ -544,7 +546,12 @@ internal static class Program
             {
                 string key = parts[0].Trim();
                 string value = parts[1].Trim().Trim('"', '\'');
-                Environment.SetEnvironmentVariable(key, value);
+
+                // Only set if not already set (allows shell script to override)
+                if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable(key)))
+                {
+                    Environment.SetEnvironmentVariable(key, value);
+                }
             }
         }
     }

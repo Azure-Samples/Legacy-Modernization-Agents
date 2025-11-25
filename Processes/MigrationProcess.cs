@@ -119,10 +119,12 @@ public class MigrationProcess
         string javaOutputFolder,
         Action<string, int, int>? progressCallback = null)
     {
-        _enhancedLogger.ShowSectionHeader("COBOL TO JAVA QUARKUS MIGRATION", "AI-Powered Legacy Code Modernization");
+        var migrationTargetLang = _settings.ApplicationSettings.TargetLanguage;
+        var targetName = migrationTargetLang == TargetLanguage.CSharp ? "C# .NET" : "JAVA QUARKUS";
+        _enhancedLogger.ShowSectionHeader($"COBOL TO {targetName} MIGRATION", "AI-Powered Legacy Code Modernization");
 
         _logger.LogInformation("COBOL source folder: {CobolSourceFolder}", cobolSourceFolder);
-        _logger.LogInformation("Java output folder: {JavaOutputFolder}", javaOutputFolder);
+        _logger.LogInformation("{TargetLanguage} output folder: {OutputFolder}", targetName, javaOutputFolder);
 
         if (_cobolAnalyzerAgent == null || _codeConverterAgent == null || _dependencyMapperAgent == null)
         {
