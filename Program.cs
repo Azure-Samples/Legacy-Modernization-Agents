@@ -507,7 +507,7 @@ internal static class Program
             string localConfigFile = Path.Combine(configDir, "ai-config.local.env");
             string templateConfigFile = Path.Combine(configDir, "ai-config.env");
 
-            // Load local config first (highest priority for defaults)
+            // Load local config first (highest priority among config files)
             if (File.Exists(localConfigFile))
             {
                 LoadEnvFile(localConfigFile);
