@@ -1069,4 +1069,10 @@ MIT License - Copyright (c) Microsoft Corporation. See full license terms in the
   - Update Docker and build configuration files
   - Rationale: Project now supports multiple target languages (Java Quarkus and C# .NET), making the original name too specific
 
+### Code Refactoring
+- [ ] **Refactor parameter names in `MigrationProcess.cs`**
+  - Rename `javaOutputFolder` → `outputFolder`
+  - Rename `cobolSourceFolder` → `sourceFolder`
+  - Rationale: Current names are language-specific but the framework supports multiple target languages (Java and C#)
+
 ````
