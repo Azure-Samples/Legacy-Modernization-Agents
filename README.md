@@ -1,6 +1,7 @@
 # Legacy Modernization Agents - COBOL to Java/C# Migration
 
-A CLI-first AI-powered framework for converting legacy COBOL code to modern Java Quarkus or C# .NET.
+This open source migration framework was developed to demonstrate AI Agents capabilities for converting legacy code like COBOL to Java or C# .NET. Each Agent has a persona that can be edited depending on the desired outcome.
+The migration is using Semantic Kernel Process Function where it does analysis of the COBOL code and it's dependencies. This information is then used to convert to either Java Quarkus or C# .NET (user's choice).
 
 ## 🎬 Portal Demo
 
@@ -70,6 +71,9 @@ To avoid throttling (429 errors), use this formula to calculate safe parallel jo
 MaxParallelJobs = ─────────────────────────────────
                   TokensPerRequest × RequestsPerMinute
 ```
+<img width="1715" height="963" alt="Portal experience with metadata and graph data fronted by MCP" src="gifdemowithgraphandreportign.gif" />
+
+**Fully automated environment** with .NET 9, Java 17, Neo4j, SQLite, Azure CLI, and pre-configured VS Code extensions.
 
 **Where:**
 - **TPM** = Your Azure quota (tokens per minute)
@@ -523,6 +527,122 @@ sequenceDiagram
 ```
 
 ### Process Flow
+**Portal Features:** 
+- ✅ Dark theme with modern UI
+- ✅ Three-panel layout (resources/chat/graph)
+- ✅ AI-powered chat interface
+- ✅ Suggestion chips for common queries
+- ✅ Interactive dependency graph (zoom/pan/filter)
+- ✅ Multi-run queries and comparisons
+- ✅ File content analysis with line counts
+- ✅ Comprehensive data retrieval guide
+- ✅ **NEW:** Enhanced dependency tracking (CALL, COPY, PERFORM, EXEC, READ, WRITE, OPEN, CLOSE)
+- ✅ **NEW:** Migration report generation per run
+- ✅ **NEW:** Mermaid diagram rendering in documentation
+- ✅ **NEW:** Collapsible filter sections for cleaner UI
+- ✅ **NEW:** Edge type filtering with color-coded visualization
+- ✅ **NEW:** Line number context for all dependencies
+
+### 🔄 Agent Flowchart
+
+```mermaid
+flowchart TD
+  CLI[["CLI / doctor.sh\n- Loads AI config, target language, concurrency\n- Orchestrates reverse engineering + conversion"]]
+  REVERSE["ReverseEngineeringProcess\nInputs: COBOL folder, glossary\nOutputs: analyses + business logic\nSteps (parallelizable):\n1. CobolAnalyzerAgent\n2. BusinessLogicExtractorAgent\n3. Persist to SQLite/Neo4j"]
+  MIGRATION["MigrationProcess\nInputs: ReverseEngineeringResult + settings\nOutputs: Java/C# code, dependency graphs, reports\nSteps:\n1. CobolAnalyzerAgent (reuse/refresh)\n2. DependencyMapperAgent\n3. CodeConverterAgent (Java or C#)\n4. Persist run data\n5. Optional report"]
+  STORAGE["Repositories & Storage\n- SqliteMigrationRepository\n- Neo4jMigrationRepository\n- HybridMigrationRepository"]
+  ACCESS["Access / Presentation\n- MCP Server + McpProcessClient\n- McpChatWeb portal\n- External MCP clients (Cursor, Claude, etc.)"]
+
+  CLI --> REVERSE --> MIGRATION --> STORAGE --> ACCESS
+```
+
+### 🔀 Agent Responsibilities & Interactions
+
+#### Advanced Sequence Flow (Mermaid)
+
+```mermaid
+sequenceDiagram
+  participant User as 🧑 User / doctor.sh
+  participant CLI as CLI Runner
+  participant RE as ReverseEngineeringProcess
+  participant Analyzer as CobolAnalyzerAgent
+  participant BizLogic as BusinessLogicExtractorAgent
+  participant Migration as MigrationProcess
+  participant DepMap as DependencyMapperAgent
+  participant Converter as CodeConverterAgent (Java/C#)
+  participant Repo as HybridMigrationRepository
+  participant Portal as MCP Server & McpChatWeb
+
+  User->>CLI: select target language, concurrency flags
+  CLI->>RE: start reverse engineering
+  RE->>Analyzer: analyze COBOL files (parallel up to max-parallel)
+  Analyzer-->>RE: CobolAnalysis[]
+  RE->>BizLogic: extract business logic summaries
+  BizLogic-->>RE: BusinessLogic[]
+  RE->>Repo: persist analyses + documentation
+  RE-->>CLI: ReverseEngineeringResult
+  CLI->>Migration: start migration run with latest analyses
+  Migration->>Analyzer: reuse or refresh CobolAnalysis
+  Migration->>DepMap: build dependency graph (CALL/COPY/...)
+  DepMap-->>Migration: DependencyMap
+  Migration->>Converter: convert to Java/C# (AI-limited concurrency)
+  Converter-->>Migration: CodeFile artifacts
+  Migration->>Repo: persist run metadata, graph edges, code files
+  Repo-->>Portal: expose MCP resources + REST APIs
+  Portal-->>User: portal UI (chat, graph, reports)
+```
+
+#### CobolAnalyzerAgent
+- **Purpose:** Deep structural analysis of COBOL files (divisions, paragraphs, copybooks, metrics).
+- **Inputs:** COBOL text from `FileHelper` or cached content.
+- **Outputs:** `CobolAnalysis` objects consumed by:
+  - `ReverseEngineeringProcess` (for documentation & glossary mapping)
+  - `DependencyMapperAgent` (seed data for relationships)
+  - `CodeConverterAgent` (guides translation prompts)
+- **Interactions:**
+  - Uses Azure OpenAI via Semantic Kernel with concurrency guard (e.g., 3 AI calls at a time).
+  - Results persisted by `SqliteMigrationRepository`.
+
+#### BusinessLogicExtractorAgent
+- **Purpose:** Convert technical analyses into business language (use cases, user stories, glossary).
+- **Inputs:** Output from `CobolAnalyzerAgent` + optional glossary.
+- **Outputs:** `BusinessLogic` records and Markdown sections used in `reverse-engineering-details.md`.
+- **Interactions:**
+  - Runs in parallel with analyzer results.
+  - Writes documentation via `FileHelper` and logs via `EnhancedLogger`.
+
+#### DependencyMapperAgent
+- **Purpose:** Identify CALL/COPY/PERFORM/IO relationships and build graph metadata.
+- **Inputs:** COBOL files + analyses (line numbers, paragraphs).
+- **Outputs:** `DependencyMap` with nodes/edges stored in both SQLite and Neo4j.
+- **Interactions:**
+  - Feeds the McpChatWeb graph panel and run-selector APIs.
+  - Enables multi-run queries (e.g., "show me CALL tree for run 42").
+
+#### CodeConverterAgent(s)
+- **Variants:** `JavaConverterAgent` or `CSharpConverterAgent` (selected via `TargetLanguage`).
+- **Purpose:** Generate target-language code from COBOL analyses and dependency context.
+- **Inputs:**
+  - `CobolAnalysis` per file
+  - Target language settings (Quarkus vs. .NET)
+  - Migration run metadata (for logging & metrics)
+- **Outputs:** `CodeFile` records saved under `output/java-output/` or `output/dotnet-output/`.
+- **Interactions:**
+  - Concurrency guards (pipeline slots vs. AI calls) ensure Azure OpenAI limits respected.
+  - Results pushed to portal via repositories for browsing/download.
+
+### ⚡ Concurrency Notes
+- **Pipeline concurrency (`--max-parallel`)** controls how many files/chunks run simultaneously (e.g., 8).
+- **AI concurrency (`--max-ai-parallel`)** caps concurrent Azure OpenAI calls (e.g., 3) to avoid throttling.
+- Both values can be surfaced via CLI flags or environment variables to let `doctor.sh` tune runtime.
+
+### 🔄 End-to-End Data Flow
+1. `doctor.sh run` → load configs → choose target language → optional reverse engineering skip.
+2. `ReverseEngineeringProcess` → discover files → analyze → extract business logic → emit markdown/glossary.
+3. `MigrationProcess` → analyze (reuse or fresh) → map dependencies → convert code → persist outputs.
+4. `HybridMigrationRepository` coordinates writes to SQLite (structured data) and Neo4j (graph edges).
+5. `McpServer` exposes data via MCP resources; `McpChatWeb` surfaces chat, graphs, reports.
+6. Portal and MCP clients display progress, allow queries, and fetch generated artifacts.
 
 1. **Source scanning** - Reads all `.cbl`/`.cpy` files from `source/`
 2. **Analysis** - CobolAnalyzerAgent extracts structure
