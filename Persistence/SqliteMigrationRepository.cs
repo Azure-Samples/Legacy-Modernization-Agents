@@ -98,7 +98,82 @@ CREATE TABLE IF NOT EXISTS metrics (
     analysis_insights TEXT,
     mermaid_diagram TEXT,
     FOREIGN KEY(run_id) REFERENCES runs(id)
-);";
+);
+
+-- Smart Chunking tables (Phase 1)
+CREATE TABLE IF NOT EXISTS signatures (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    source_file TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    legacy_name TEXT NOT NULL,
+    target_method_name TEXT NOT NULL,
+    target_signature TEXT NOT NULL,
+    return_type TEXT NOT NULL,
+    parameters TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (run_id) REFERENCES runs(id),
+    UNIQUE(run_id, source_file, legacy_name)
+);
+
+CREATE TABLE IF NOT EXISTS type_mappings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    source_file TEXT NOT NULL,
+    legacy_variable TEXT NOT NULL,
+    legacy_type TEXT NOT NULL,
+    target_type TEXT NOT NULL,
+    target_field_name TEXT NOT NULL,
+    is_nullable INTEGER DEFAULT 0,
+    default_value TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (run_id) REFERENCES runs(id),
+    UNIQUE(run_id, source_file, legacy_variable)
+);
+
+CREATE TABLE IF NOT EXISTS chunk_metadata (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    source_file TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    start_line INTEGER NOT NULL,
+    end_line INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    semantic_units TEXT,
+    tokens_used INTEGER,
+    processing_time_ms INTEGER,
+    error_message TEXT,
+    converted_code TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    completed_at TEXT,
+    FOREIGN KEY (run_id) REFERENCES runs(id),
+    UNIQUE(run_id, source_file, chunk_index)
+);
+
+CREATE TABLE IF NOT EXISTS forward_references (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    source_file TEXT NOT NULL,
+    caller_method TEXT NOT NULL,
+    caller_chunk_index INTEGER NOT NULL,
+    target_method TEXT NOT NULL,
+    predicted_signature TEXT,
+    resolved INTEGER DEFAULT 0,
+    actual_signature TEXT,
+    resolution_chunk_index INTEGER,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    resolved_at TEXT,
+    FOREIGN KEY (run_id) REFERENCES runs(id)
+);
+
+-- Indexes for chunking tables
+CREATE INDEX IF NOT EXISTS idx_signatures_run_file ON signatures(run_id, source_file);
+CREATE INDEX IF NOT EXISTS idx_signatures_legacy_name ON signatures(run_id, legacy_name);
+CREATE INDEX IF NOT EXISTS idx_type_mappings_run_file ON type_mappings(run_id, source_file);
+CREATE INDEX IF NOT EXISTS idx_type_mappings_variable ON type_mappings(run_id, legacy_variable);
+CREATE INDEX IF NOT EXISTS idx_chunk_metadata_run_file ON chunk_metadata(run_id, source_file);
+CREATE INDEX IF NOT EXISTS idx_forward_refs_run_file ON forward_references(run_id, source_file);
+CREATE INDEX IF NOT EXISTS idx_forward_refs_target ON forward_references(run_id, target_method);";
         await command.ExecuteNonQueryAsync(cancellationToken);
         _logger.LogInformation("SQLite database ready at {DatabasePath}", _databasePath);
     }
@@ -767,4 +842,333 @@ SELECT last_insert_rowid();";
             Edges = edges
         };
     }
+
+    // ============================================================
+    // CHUNKING SUPPORT METHODS
+    // ============================================================
+
+    /// <summary>
+    /// Saves chunk metadata to the database.
+    /// </summary>
+    public async Task SaveChunkMetadataAsync(int runId, string sourceFile, int chunkIndex,
+        int startLine, int endLine, string status, List<string> semanticUnits,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+            INSERT INTO chunk_metadata (run_id, source_file, chunk_index, start_line, end_line, status, semantic_units, created_at)
+            VALUES ($runId, $sourceFile, $chunkIndex, $startLine, $endLine, $status, $semanticUnits, $createdAt)
+            ON CONFLICT(run_id, source_file, chunk_index) DO UPDATE SET
+                start_line = $startLine,
+                end_line = $endLine,
+                status = $status,
+                semantic_units = $semanticUnits";
+        command.Parameters.AddWithValue("$runId", runId);
+        command.Parameters.AddWithValue("$sourceFile", sourceFile);
+        command.Parameters.AddWithValue("$chunkIndex", chunkIndex);
+        command.Parameters.AddWithValue("$startLine", startLine);
+        command.Parameters.AddWithValue("$endLine", endLine);
+        command.Parameters.AddWithValue("$status", status);
+        command.Parameters.AddWithValue("$semanticUnits", JsonSerializer.Serialize(semanticUnits, JsonOptions));
+        command.Parameters.AddWithValue("$createdAt", DateTime.UtcNow.ToString("O"));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Gets all chunk metadata for a file.
+    /// </summary>
+    public async Task<IReadOnlyList<ChunkMetadataDto>> GetChunkMetadataAsync(int runId, string sourceFile,
+        CancellationToken cancellationToken = default)
+    {
+        var result = new List<ChunkMetadataDto>();
+        await using var connection = CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+            SELECT id, source_file, chunk_index, start_line, end_line, status,
+                   semantic_units, tokens_used, processing_time_ms, error_message,
+                   converted_code, created_at, completed_at
+            FROM chunk_metadata
+            WHERE run_id = $runId AND source_file = $sourceFile
+            ORDER BY chunk_index";
+        command.Parameters.AddWithValue("$runId", runId);
+        command.Parameters.AddWithValue("$sourceFile", sourceFile);
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            result.Add(new ChunkMetadataDto
+            {
+                Id = reader.GetInt32(0),
+                SourceFile = reader.GetString(1),
+                ChunkIndex = reader.GetInt32(2),
+                StartLine = reader.GetInt32(3),
+                EndLine = reader.GetInt32(4),
+                Status = reader.GetString(5),
+                SemanticUnits = DeserializeJson<List<string>>(reader.IsDBNull(6) ? null : reader.GetString(6)) ?? new(),
+                TokensUsed = reader.IsDBNull(7) ? 0 : reader.GetInt32(7),
+                ProcessingTimeMs = reader.IsDBNull(8) ? 0 : reader.GetInt64(8),
+                ErrorMessage = reader.IsDBNull(9) ? null : reader.GetString(9),
+                ConvertedCode = reader.IsDBNull(10) ? null : reader.GetString(10),
+                CreatedAt = reader.IsDBNull(11) ? DateTime.MinValue : DateTime.Parse(reader.GetString(11)),
+                CompletedAt = reader.IsDBNull(12) ? null : DateTime.Parse(reader.GetString(12))
+            });
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Saves a method signature to the database.
+    /// </summary>
+    public async Task SaveSignatureAsync(int runId, string sourceFile, int chunkIndex,
+        string legacyName, string targetMethodName, string targetSignature,
+        string returnType, string? parameters, CancellationToken cancellationToken = default)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+            INSERT INTO signatures (run_id, source_file, chunk_index, legacy_name, target_method_name, target_signature, return_type, parameters, created_at)
+            VALUES ($runId, $sourceFile, $chunkIndex, $legacyName, $targetMethodName, $targetSignature, $returnType, $parameters, $createdAt)
+            ON CONFLICT(run_id, source_file, legacy_name) DO UPDATE SET
+                chunk_index = $chunkIndex,
+                target_method_name = $targetMethodName,
+                target_signature = $targetSignature,
+                return_type = $returnType,
+                parameters = $parameters";
+        command.Parameters.AddWithValue("$runId", runId);
+        command.Parameters.AddWithValue("$sourceFile", sourceFile);
+        command.Parameters.AddWithValue("$chunkIndex", chunkIndex);
+        command.Parameters.AddWithValue("$legacyName", legacyName);
+        command.Parameters.AddWithValue("$targetMethodName", targetMethodName);
+        command.Parameters.AddWithValue("$targetSignature", targetSignature);
+        command.Parameters.AddWithValue("$returnType", returnType);
+        command.Parameters.AddWithValue("$parameters", parameters ?? (object)DBNull.Value);
+        command.Parameters.AddWithValue("$createdAt", DateTime.UtcNow.ToString("O"));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Gets all signatures for a file.
+    /// </summary>
+    public async Task<IReadOnlyList<SignatureNode>> GetSignaturesForFileAsync(int runId, string sourceFile,
+        CancellationToken cancellationToken = default)
+    {
+        var result = new List<SignatureNode>();
+        await using var connection = CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+            SELECT source_file, legacy_name, target_method_name, target_signature, return_type, chunk_index
+            FROM signatures
+            WHERE run_id = $runId AND source_file = $sourceFile
+            ORDER BY chunk_index, legacy_name";
+        command.Parameters.AddWithValue("$runId", runId);
+        command.Parameters.AddWithValue("$sourceFile", sourceFile);
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            result.Add(new SignatureNode
+            {
+                Id = $"{runId}:{reader.GetString(0)}:{reader.GetString(1)}",
+                SourceFile = reader.GetString(0),
+                LegacyName = reader.GetString(1),
+                TargetMethodName = reader.GetString(2),
+                TargetSignature = reader.GetString(3),
+                ReturnType = reader.GetString(4),
+                DefinedInChunk = reader.GetInt32(5)
+            });
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Gets all signatures across all files for a run.
+    /// </summary>
+    public async Task<IReadOnlyList<SignatureNode>> GetAllSignaturesAsync(int runId,
+        CancellationToken cancellationToken = default)
+    {
+        var result = new List<SignatureNode>();
+        await using var connection = CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+            SELECT source_file, legacy_name, target_method_name, target_signature, return_type, chunk_index
+            FROM signatures
+            WHERE run_id = $runId
+            ORDER BY source_file, chunk_index, legacy_name";
+        command.Parameters.AddWithValue("$runId", runId);
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            result.Add(new SignatureNode
+            {
+                Id = $"{runId}:{reader.GetString(0)}:{reader.GetString(1)}",
+                SourceFile = reader.GetString(0),
+                LegacyName = reader.GetString(1),
+                TargetMethodName = reader.GetString(2),
+                TargetSignature = reader.GetString(3),
+                ReturnType = reader.GetString(4),
+                DefinedInChunk = reader.GetInt32(5)
+            });
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Gets chunk processing status for all files in a run.
+    /// </summary>
+    public async Task<IReadOnlyList<ChunkProcessingStatus>> GetChunkProcessingStatusAsync(int runId,
+        CancellationToken cancellationToken = default)
+    {
+        var result = new List<ChunkProcessingStatus>();
+        await using var connection = CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+            SELECT source_file,
+                   COUNT(*) as total_chunks,
+                   SUM(CASE WHEN status = 'Completed' THEN 1 ELSE 0 END) as completed_chunks,
+                   SUM(CASE WHEN status = 'Failed' THEN 1 ELSE 0 END) as failed_chunks,
+                   SUM(CASE WHEN status IN ('Pending', 'Processing') THEN 1 ELSE 0 END) as pending_chunks,
+                   COALESCE(SUM(processing_time_ms), 0) as total_processing_time_ms,
+                   COALESCE(SUM(tokens_used), 0) as total_tokens_used
+            FROM chunk_metadata
+            WHERE run_id = $runId
+            GROUP BY source_file
+            ORDER BY source_file";
+        command.Parameters.AddWithValue("$runId", runId);
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var totalChunks = reader.GetInt32(1);
+            var completedChunks = reader.GetInt32(2);
+            result.Add(new ChunkProcessingStatus
+            {
+                SourceFile = reader.GetString(0),
+                TotalChunks = totalChunks,
+                CompletedChunks = completedChunks,
+                FailedChunks = reader.GetInt32(3),
+                PendingChunks = reader.GetInt32(4),
+                ProgressPercentage = totalChunks > 0 ? (double)completedChunks / totalChunks * 100 : 0,
+                TotalProcessingTimeMs = reader.GetInt64(5),
+                TotalTokensUsed = reader.GetInt32(6)
+            });
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Updates chunk status in the database.
+    /// </summary>
+    public async Task UpdateChunkStatusAsync(int runId, string sourceFile, int chunkIndex,
+        string status, int? tokensUsed = null, long? processingTimeMs = null,
+        string? errorMessage = null, CancellationToken cancellationToken = default)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        
+        var setClauses = new List<string> { "status = $status" };
+        command.Parameters.AddWithValue("$status", status);
+        
+        if (status == "Completed")
+        {
+            setClauses.Add("completed_at = $completedAt");
+            command.Parameters.AddWithValue("$completedAt", DateTime.UtcNow.ToString("O"));
+        }
+        
+        if (tokensUsed.HasValue)
+        {
+            setClauses.Add("tokens_used = $tokensUsed");
+            command.Parameters.AddWithValue("$tokensUsed", tokensUsed.Value);
+        }
+        
+        if (processingTimeMs.HasValue)
+        {
+            setClauses.Add("processing_time_ms = $processingTimeMs");
+            command.Parameters.AddWithValue("$processingTimeMs", processingTimeMs.Value);
+        }
+        
+        if (errorMessage != null)
+        {
+            setClauses.Add("error_message = $errorMessage");
+            command.Parameters.AddWithValue("$errorMessage", errorMessage);
+        }
+        
+        command.CommandText = $@"
+            UPDATE chunk_metadata
+            SET {string.Join(", ", setClauses)}
+            WHERE run_id = $runId AND source_file = $sourceFile AND chunk_index = $chunkIndex";
+        command.Parameters.AddWithValue("$runId", runId);
+        command.Parameters.AddWithValue("$sourceFile", sourceFile);
+        command.Parameters.AddWithValue("$chunkIndex", chunkIndex);
+        
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Saves converted code for a chunk.
+    /// </summary>
+    public async Task SaveChunkConvertedCodeAsync(int runId, string sourceFile, int chunkIndex,
+        string convertedCode, CancellationToken cancellationToken = default)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+            UPDATE chunk_metadata
+            SET converted_code = $convertedCode
+            WHERE run_id = $runId AND source_file = $sourceFile AND chunk_index = $chunkIndex";
+        command.Parameters.AddWithValue("$runId", runId);
+        command.Parameters.AddWithValue("$sourceFile", sourceFile);
+        command.Parameters.AddWithValue("$chunkIndex", chunkIndex);
+        command.Parameters.AddWithValue("$convertedCode", convertedCode);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Gets the last completed chunk index for resumability.
+    /// </summary>
+    public async Task<int> GetLastCompletedChunkIndexAsync(int runId, string sourceFile,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+            SELECT MAX(chunk_index)
+            FROM chunk_metadata
+            WHERE run_id = $runId AND source_file = $sourceFile AND status = 'Completed'";
+        command.Parameters.AddWithValue("$runId", runId);
+        command.Parameters.AddWithValue("$sourceFile", sourceFile);
+        
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result == null || result == DBNull.Value ? -1 : Convert.ToInt32(result);
+    }
+}
+
+/// <summary>
+/// DTO for chunk metadata from SQLite.
+/// </summary>
+public class ChunkMetadataDto
+{
+    public int Id { get; set; }
+    public string SourceFile { get; set; } = string.Empty;
+    public int ChunkIndex { get; set; }
+    public int StartLine { get; set; }
+    public int EndLine { get; set; }
+    public string Status { get; set; } = string.Empty;
+    public List<string> SemanticUnits { get; set; } = new();
+    public int TokensUsed { get; set; }
+    public long ProcessingTimeMs { get; set; }
+    public string? ErrorMessage { get; set; }
+    public string? ConvertedCode { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime? CompletedAt { get; set; }
 }

@@ -164,22 +164,43 @@ echo ""
 echo "⚙️  Checking configuration..."
 echo ""
 
-# Check AI config
+# Check AI config - supports both appsettings.json and local override
+CONFIG_OK=0
+
+# First check for local override (takes precedence)
 if [ -f "/workspaces/Legacy-Modernization-Agents/Config/ai-config.local.env" ]; then
-    echo "✅ AI configuration file exists"
+    echo "✅ Local config override exists (ai-config.local.env)"
     
     # Check if it contains real values (not template)
-    if grep -q "test-api-key" /workspaces/Legacy-Modernization-Agents/Config/ai-config.local.env; then
-        echo "⚠️  AI configuration contains template values"
-        echo "   💡 Update Config/ai-config.local.env with your Azure OpenAI credentials"
+    if grep -q "YOUR-RESOURCE\|YOUR-API-KEY\|your-actual-key" /workspaces/Legacy-Modernization-Agents/Config/ai-config.local.env; then
+        echo "⚠️  Local config contains placeholder values"
         WARNINGS=$((WARNINGS + 1))
     else
-        echo "✅ AI configuration appears to be customized"
+        echo "✅ Local config appears to have real values"
+        CONFIG_OK=1
+    fi
+fi
+
+# Check appsettings.json
+if [ -f "/workspaces/Legacy-Modernization-Agents/Config/appsettings.json" ]; then
+    if grep -q "YOUR-RESOURCE\|YOUR-API-KEY-HERE" /workspaces/Legacy-Modernization-Agents/Config/appsettings.json; then
+        if [ $CONFIG_OK -eq 0 ]; then
+            echo "⚠️  appsettings.json contains placeholder values"
+            echo "   💡 Edit Config/appsettings.json and replace:"
+            echo "      - YOUR-RESOURCE → your Azure OpenAI resource name"
+            echo "      - YOUR-API-KEY-HERE → your actual API key"
+            echo "   💡 Or create Config/ai-config.local.env with your credentials"
+            WARNINGS=$((WARNINGS + 1))
+        else
+            echo "ℹ️  appsettings.json has placeholders (but local override is configured)"
+        fi
+    else
+        echo "✅ appsettings.json appears to be configured"
+        CONFIG_OK=1
     fi
 else
-    echo "⚠️  AI configuration file not found"
-    echo "   💡 Copy Config/ai-config.local.env.example to Config/ai-config.local.env"
-    WARNINGS=$((WARNINGS + 1))
+    echo "❌ appsettings.json not found"
+    ERRORS=$((ERRORS + 1))
 fi
 
 echo ""
@@ -192,14 +213,17 @@ if [ $ERRORS -eq 0 ] && [ $WARNINGS -eq 0 ]; then
     echo "✅ All checks passed! Your dev container is fully configured."
     echo ""
     echo "🚀 Next steps:"
-    echo "   1. Configure Azure OpenAI credentials (if not done)"
-    echo "   2. Run: ./helper-scripts/demo.sh"
+    echo "   1. Run: ./doctor.sh run (interactive migration)"
+    echo "   2. Or: ./doctor.sh portal (web portal only)"
     echo "   3. Open: http://localhost:5028"
     echo ""
     exit 0
 elif [ $ERRORS -eq 0 ]; then
     echo "⚠️  Setup complete with $WARNINGS warning(s)"
-    echo "   Your dev container is functional but some optional features may not be available."
+    echo "   Your dev container is functional but some configuration may be needed."
+    echo ""
+    echo "🚀 Quick fix: Edit Config/appsettings.json with your Azure OpenAI credentials"
+    echo "   💡 Recommended: 1M+ TPM quota for best performance"
     echo ""
     exit 0
 else

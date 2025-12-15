@@ -1,12 +1,15 @@
 using System.IO;
+using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
-using Microsoft.SemanticKernel;
-using Microsoft.SemanticKernel.ChatCompletion;
+using CobolToQuarkusMigration.Agents.Infrastructure;
 using CobolToQuarkusMigration.Models;
 using CobolToQuarkusMigration.Persistence;
+
+using AIChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
 namespace CobolToQuarkusMigration.Processes;
 
@@ -26,7 +29,7 @@ public sealed class RunMcpServerProcess
         WriteIndented = false
     };
     private readonly AISettings? _aiSettings;
-    private readonly Kernel? _kernel;
+    private readonly IChatClient? _chatClient;
     private readonly string? _modelId;
 
     private MigrationRunSummary? _runSummaryCache;
@@ -40,29 +43,34 @@ public sealed class RunMcpServerProcess
         _logger = logger;
         _aiSettings = aiSettings;
         
-        if (_aiSettings != null && !string.IsNullOrEmpty(_aiSettings.Endpoint) && !string.IsNullOrEmpty(_aiSettings.ApiKey))
+        // Prefer chat-specific settings for portal/Q&A; fall back to general model settings
+        var chatEndpoint = _aiSettings?.ChatEndpoint;
+        var chatApiKey = _aiSettings?.ChatApiKey;
+        var chatDeployment = _aiSettings?.ChatDeploymentName;
+
+        if (string.IsNullOrWhiteSpace(chatEndpoint)) chatEndpoint = _aiSettings?.Endpoint;
+        if (string.IsNullOrWhiteSpace(chatApiKey)) chatApiKey = _aiSettings?.ApiKey;
+        if (string.IsNullOrWhiteSpace(chatDeployment)) chatDeployment = _aiSettings?.ChatModelId;
+        if (string.IsNullOrWhiteSpace(chatDeployment)) chatDeployment = _aiSettings?.DeploymentName;
+        if (string.IsNullOrWhiteSpace(chatDeployment)) chatDeployment = _aiSettings?.ModelId;
+
+        if (!string.IsNullOrEmpty(chatEndpoint) && !string.IsNullOrEmpty(chatApiKey) && !string.IsNullOrEmpty(chatDeployment))
         {
             try
             {
-                var kernelBuilder = Kernel.CreateBuilder();
-                var deploymentName = _aiSettings.DeploymentName;
-                if (string.IsNullOrEmpty(deploymentName))
-                {
-                    deploymentName = _aiSettings.ModelId;
-                }
+                _chatClient = ChatClientFactory.CreateChatClient(
+                    chatEndpoint,
+                    chatApiKey,
+                    chatDeployment,
+                    useDefaultCredential: false,
+                    _logger);
                 
-                kernelBuilder.AddAzureOpenAIChatCompletion(
-                    deploymentName: deploymentName!,
-                    endpoint: _aiSettings.Endpoint,
-                    apiKey: _aiSettings.ApiKey);
-                
-                _kernel = kernelBuilder.Build();
-                _modelId = deploymentName;
-                _logger.LogInformation("Semantic Kernel initialized for custom Q&A with model {ModelId}", _modelId);
+                _modelId = chatDeployment;
+                _logger.LogInformation("IChatClient initialized for custom Q&A with model {ModelId}", _modelId);
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Failed to initialize Semantic Kernel for custom Q&A");
+                _logger.LogWarning(ex, "Failed to initialize IChatClient for custom Q&A");
             }
         }
         
@@ -612,10 +620,8 @@ public sealed class RunMcpServerProcess
         }
 
         // Use Azure OpenAI to answer custom questions
-        if (!string.IsNullOrWhiteSpace(prompt) && _kernel != null && !string.IsNullOrEmpty(_modelId))
+        if (!string.IsNullOrWhiteSpace(prompt) && _chatClient != null && !string.IsNullOrEmpty(_modelId))
         {
-            builder.AppendLine();
-            builder.AppendLine($"**AI Model: {_modelId}**");
             builder.AppendLine();
             builder.AppendLine($"Your question: {prompt}");
             builder.AppendLine();
@@ -623,11 +629,24 @@ public sealed class RunMcpServerProcess
             try
             {
                 var aiResponse = await GetAIResponseAsync(prompt, summary, dependencyMap, analyses);
-                builder.AppendLine("AI Answer:");
+                
+                // Big ASCII banner to make AI response easy to find
+                builder.AppendLine();
+                builder.AppendLine("╔══════════════════════════════════════════════════════════════════╗");
+                builder.AppendLine("║     _    ___      _    _   _ ______        _______ ____          ║");
+                builder.AppendLine("║    / \\  |_ _|    / \\  | \\ | / ___\\ \\      / / ____|  _ \\         ║");
+                builder.AppendLine("║   / _ \\  | |    / _ \\ |  \\| \\___ \\\\ \\ /\\ / /|  _| | |_) |        ║");
+                builder.AppendLine("║  / ___ \\ | |   / ___ \\| |\\  |___) |\\ V  V / | |___|  _ <         ║");
+                builder.AppendLine("║ /_/   \\_\\___|_/_/   \\_\\_| \\_|____/  \\_/\\_/  |_____|_| \\_\\        ║");
+                builder.AppendLine("║                                                                  ║");
+                builder.AppendLine($"║  Model: {_modelId,-54} ║");
+                builder.AppendLine("╚══════════════════════════════════════════════════════════════════╝");
+                builder.AppendLine();
                 builder.AppendLine(aiResponse);
             }
             catch (Exception ex)
             {
+                Console.Error.WriteLine($"[MCP-ERROR] AI call failed: {ex.GetType().Name}: {ex.Message}");
                 _logger.LogError(ex, "Failed to get AI response for question: {Prompt}", prompt);
                 builder.AppendLine("Unable to get AI answer. Using fallback response.");
                 AppendFallbackResponse(builder, prompt, analyses, dependencyMap);
@@ -719,21 +738,48 @@ public sealed class RunMcpServerProcess
             }
         }
 
-        var chatHistory = new ChatHistory();
-        chatHistory.AddSystemMessage("You are an expert COBOL migration assistant. Answer questions about the COBOL to Java migration project based on the provided context. Be concise and specific.");
-        chatHistory.AddUserMessage($"Context:\n{contextBuilder}\n\nUser Question: {prompt}");
+        // Build a direct chat-completions request (Semantic Kernel currently sends max_tokens which gpt-5.1-chat rejects)
+        var endpoint = !string.IsNullOrWhiteSpace(_aiSettings?.ChatEndpoint) ? _aiSettings!.ChatEndpoint : _aiSettings?.Endpoint;
+        var apiKey = !string.IsNullOrWhiteSpace(_aiSettings?.ChatApiKey) ? _aiSettings!.ChatApiKey : _aiSettings?.ApiKey;
+        var deployment = !string.IsNullOrWhiteSpace(_aiSettings?.ChatDeploymentName) ? _aiSettings!.ChatDeploymentName : _aiSettings?.ChatModelId;
+        if (string.IsNullOrWhiteSpace(deployment)) deployment = _aiSettings?.DeploymentName;
+        if (string.IsNullOrWhiteSpace(deployment)) deployment = _aiSettings?.ModelId;
 
-        var chatCompletionService = _kernel!.GetRequiredService<IChatCompletionService>();
-        var executionSettings = new PromptExecutionSettings
+        if (string.IsNullOrWhiteSpace(endpoint) || string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(deployment))
         {
-            ExtensionData = new Dictionary<string, object>
+            throw new InvalidOperationException("Chat configuration is incomplete for AI response generation.");
+        }
+
+        var uri = $"{endpoint.TrimEnd('/')}/openai/deployments/{deployment}/chat/completions?api-version=2024-10-01-preview";
+
+        // NOTE: gpt-5.1-chat does not support custom temperature, only default (1)
+        var payload = new
+        {
+            messages = new[]
             {
-                ["max_completion_tokens"] = 500  // gpt-5-mini only supports default temperature (1)
-            }
+                new { role = "system", content = "You are an expert COBOL migration assistant. Answer questions about the COBOL to Java migration project based on the provided context. Be concise and specific." },
+                new { role = "user", content = $"Context:\n{contextBuilder}\n\nUser Question: {prompt}" }
+            },
+            max_completion_tokens = 500
         };
 
-        var response = await chatCompletionService.GetChatMessageContentAsync(chatHistory, executionSettings);
-        return response.Content ?? "Unable to generate response.";
+        using var httpClient = new HttpClient();
+        httpClient.DefaultRequestHeaders.Add("api-key", apiKey);
+
+        var requestBody = JsonSerializer.Serialize(payload, _jsonOptions);
+        using var content = new StringContent(requestBody, Encoding.UTF8, "application/json");
+        using var response = await httpClient.PostAsync(uri, content);
+        var responseText = await response.Content.ReadAsStringAsync();
+
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogError("Chat completion failed ({StatusCode}): {Body}", response.StatusCode, responseText);
+            throw new InvalidOperationException($"Chat completion failed with status {response.StatusCode}");
+        }
+
+        var parsed = JsonNode.Parse(responseText);
+        var messageContent = parsed?["choices"]?[0]?["message"]?["content"]?.GetValue<string>();
+        return string.IsNullOrWhiteSpace(messageContent) ? "Unable to generate response." : messageContent;
     }
 
     private async Task<MigrationRunSummary?> EnsureRunSummaryAsync()

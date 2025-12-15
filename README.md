@@ -1,822 +1,532 @@
-# Legacy Modernization Agents to migrate COBOL to Java or C# developed with the Semantic Kernel Process Function
+# Legacy Modernization Agents - COBOL to Java/C# Migration
 
 This open source migration framework was developed to demonstrate AI Agents capabilities for converting legacy code like COBOL to Java or C# .NET. Each Agent has a persona that can be edited depending on the desired outcome.
 The migration is using Semantic Kernel Process Function where it does analysis of the COBOL code and it's dependencies. This information is then used to convert to either Java Quarkus or C# .NET (user's choice).
 
-## Acknowledgements of collaboration
-This project is a collaboration between Microsoft's Global Black Belt team and [Bankdata](https://www.bankdata.dk/). If you want to learn more about the collaboration and background of this project, have a look at [this](https://aka.ms/cobol-blog) and [this](https://www.bankdata.dk/about/news/microsoft-and-bankdata-launch-open-source-ai-framework-for-modernizing-legacy-systems) blog post.
+## 🎬 Portal Demo
 
-## Call-to-Action
-We are looking for real COBOL code to further improve this framework. If you want to actively collaborate, please reach out to us by opening an issue in this repository. - Gustav Kaleta & Julia Kordick
+![Portal Demo](gifdemowithgraphandreportign.gif)
 
-# Want to see the framework in action?
-Have a look at the talk Julia did at the WeAreDevelopers World Congress 2025: https://www.youtube.com/watch?v=62OI_y-KRlw
+*The web portal provides real-time visualization of migration progress, dependency graphs, and AI-powered Q&A.*
 
-## Table of Contents
-- [Quick Start](#-quick-start) - Prerequisites, Dev Container, Neo4j, Demo
-- [Features](#-features) - Core capabilities and functionality
-- [Architecture](#-architecture) - Hybrid databases, system design, portal UI
-- [CLI Reference](#-cli-commands-reference) - Doctor.sh and .NET commands
-- [Step-by-Step Guide](#step-by-step-guide) - Configuration to deployment
-- [How It Works](#how-it-works---architecture--flow) - Technical details
-- [Known Issues & Ideas](#known-issues) - Troubleshooting and roadmap
+---
+
+## 📋 Table of Contents
+- [Quick Start](#-quick-start)
+- [Usage: doctor.sh](#-usage-doctorsh)
+- [Reverse Engineering Reports](#-reverse-engineering-reports)
+- [Folder Structure](#-folder-structure)
+- [Customizing Agent Behavior](#-customizing-agent-behavior)
+- [File Splitting & Naming](#-file-splitting--naming)
+- [Architecture](#-architecture)
+- [Build & Run](#-build--run)
+
+---
 
 ## 🚀 Quick Start
 
-### Prerequisites Checklist
+### Prerequisites
 
-- [ ] Docker Desktop installed and running
-- [ ] .NET 9.0 SDK installed (`dotnet --version` shows 9.0.x) - [Download](https://dotnet.microsoft.com/download/dotnet/9.0)
-- [ ] Azure OpenAI credentials ready (endpoint + API key) - GPT-5 and codex recommended
-- [ ] 8GB RAM minimum, 16GB recommended
-- [ ] Modern browser (Chrome, Edge, Firefox, Safari)
+| Requirement | Version | Notes |
+|-------------|---------|-------|
+| **.NET SDK** | 9.0+ | [Download](https://dotnet.microsoft.com/download) |
+| **Docker Desktop** | Latest | Must be running for Neo4j |
+| **Azure OpenAI** | — | Endpoint + API Key |
 
-> **Note:** Hybrid database architecture: SQLite (metadata) + Neo4j (dependency graphs)
+### Supported LLMs
 
-### ⚡ Fast Track Setup (Dev Container)
+This project supports **two Azure OpenAI API types** with specific models:
 
-**Best for:** Team collaboration, consistent environment
+| API Type | Model Example | Used For | Interface |
+|----------|---------------|----------|-----------|
+| **Responses API** | `gpt-5.1-codex-mini` | Code generation (agents) | `ResponsesApiClient` |
+| **Chat Completions API** | `gpt-5.1-chat` | Reports, portal chat | `IChatClient` |
 
-```bash
-# 1. Clone repository
-git clone https://github.com/Azure-Samples/Legacy-Modernization-Agents.git
-cd Legacy-Modernization-Agents
+> ⚠️ **Want to use different models?** You can swap models, but you may need to update API calls:
+> - Codex models → Responses API (`ResponsesApiClient`)
+> - Chat models → Chat Completions API (`IChatClient`)
+> 
+> See [Agents/Infrastructure/](Agents/Infrastructure/) for API client implementations.
 
-# 2. Open in VS Code
-code .
+> [!IMPORTANT]
+> **Azure OpenAI Quota Recommendation: 1M+ TPM**
+> 
+> For optimal performance, we recommend setting your Azure OpenAI model quota to **1,000,000 tokens per minute (TPM)** or higher.
+> 
+> | Quota | Experience |
+> |-------|------------|
+> | 300K TPM | Works, but slower with throttling pauses |
+> | **1M TPM** | **Recommended** - smooth parallel processing |
+> 
+> **Higher quota = faster migration.** The tool processes multiple files and chunks in parallel, so more TPM means less waiting.
+> 
+> To increase quota: Azure Portal → Your OpenAI Resource → Model deployments → Edit → Tokens per Minute
 
-# 3. When prompted, click "Reopen in Container"
-# Wait 3-5 minutes for first-time setup
+#### Parallel Jobs Formula
 
-# 4. Configure Azure OpenAI (in container terminal)
-cp Config/ai-config.local.env.example Config/ai-config.local.env
-nano Config/ai-config.local.env
-# Edit: AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME
+To avoid throttling (429 errors), use this formula to calculate safe parallel job limits:
 
-# 5. Run demo
-./helper-scripts/demo.sh
-# OR if in devcontainer, simply use:
-demo
 ```
-
-✅ **Done!** Portal opens at http://localhost:5028
-
+                        TPM × SafetyFactor
+MaxParallelJobs = ─────────────────────────────────
+                  TokensPerRequest × RequestsPerMinute
+```
 <img width="1715" height="963" alt="Portal experience with metadata and graph data fronted by MCP" src="gifdemowithgraphandreportign.gif" />
 
 **Fully automated environment** with .NET 9, Java 17, Neo4j, SQLite, Azure CLI, and pre-configured VS Code extensions.
 
-**Included:** C# Dev Kit, Java Pack, Quarkus, Semantic Kernel, Neo4j, SQLite extensions  
-**Aliases:** `demo`, `migration-run`, `portal-start`, `neo4j-status`
+**Where:**
+- **TPM** = Your Azure quota (tokens per minute)
+- **SafetyFactor** = 0.7 (recommended, see below)
+- **TokensPerRequest** = Input + Output tokens (~30,000 for code conversion)
+- **RequestsPerMinute** = 60 / SecondsPerRequest
 
----
+**Understanding SafetyFactor (0.7 = 70%):**
 
-### 🔧 Manual Setup (Local Development)
+The SafetyFactor reserves headroom below your quota limit to handle:
 
-**Best for:** Experienced developers, custom configurations
+| Why You Need Headroom | What Happens Without It |
+|----------------------|------------------------|
+| **Token estimation variance** | AI responses vary in length - a 25K estimate might actually be 35K |
+| **Burst protection** | Multiple requests completing simultaneously can spike token usage |
+| **Retry overhead** | Failed requests that retry consume additional tokens |
+| **Shared quota** | Other applications using the same Azure deployment |
 
-#### Step 1: Install Prerequisites
+| SafetyFactor | Use Case |
+|--------------|----------|
+| 0.5 (50%) | Shared deployment, conservative, many retries expected |
+| **0.7 (70%)** | **Recommended** - good balance of speed and safety |
+| 0.85 (85%) | Dedicated deployment, stable workloads |
+| 0.95+ | ⚠️ Risky - expect frequent 429 throttling errors |
 
-```bash
-# Check .NET version
-dotnet --version
-# Should show: 9.0.x
+**Example Calculation:**
 
-# If not, install from: https://dotnet.microsoft.com/download/dotnet/9.0
+| Your Quota | Tokens/Request | Request Time | Safe Parallel Jobs |
+|------------|----------------|--------------|-------------------|
+| 300K TPM | 30K | 30 sec | `(300,000 × 0.7) / (30,000 × 2)` = **3-4 jobs** |
+| 1M TPM | 30K | 30 sec | `(1,000,000 × 0.7) / (30,000 × 2)` = **11-12 jobs** |
+| 2M TPM | 30K | 30 sec | `(2,000,000 × 0.7) / (30,000 × 2)` = **23 jobs** |
 
-# Check Docker
-docker --version
-docker ps
+**Configure in `appsettings.json`:**
+```json
+{
+  "ChunkingSettings": {
+    "MaxParallelChunks": 6,        // Parallel code conversion jobs
+    "MaxParallelAnalysis": 6,      // Parallel analysis jobs
+    "RateLimitSafetyFactor": 0.7,  // 70% of quota
+    "TokenBudgetPerMinute": 300000 // Match your Azure TPM quota
+  }
+}
 ```
 
-#### Step 2: Start Neo4j
+> 💡 **Rule of thumb:** With 1M TPM, use `MaxParallelChunks: 6` for safe operation. Scale proportionally with your quota.
+
+### Framework: Microsoft Agent Framework
+
+This project uses **Microsoft Agent Framework** (`Microsoft.Agents.AI.*`), **not** Semantic Kernel.
+
+```xml
+<!-- From CobolToQuarkusMigration.csproj -->
+<PackageReference Include="Microsoft.Agents.AI.AzureAI" Version="1.0.0-preview.*" />
+<PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.0.0-preview.*" />
+<PackageReference Include="Microsoft.Extensions.AI" Version="10.0.1" />
+```
+
+**Why Agent Framework over Semantic Kernel?**
+- Simpler `IChatClient` abstraction
+- Native support for both Responses API and Chat Completions API which is key for being future proof for LLM Api's
+- Better streaming and async patterns
+- Lighter dependency footprint
+
+### Setup (2 minutes)
 
 ```bash
-# Option A: Docker Compose (recommended)
+# 1. Clone and enter
+git clone https://github.com/Azure-Samples/Legacy-Modernization-Agents.git
+cd Legacy-Modernization-Agents
+
+# 2. Configure Azure OpenAI
+cp Config/ai-config.local.env.example Config/ai-config.local.env
+# Edit: AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME
+
+# 3. Start Neo4j (dependency graph storage)
 docker-compose up -d neo4j
 
-# Option B: Manual Docker
-docker run -d \
-  --name cobol-migration-neo4j \
-  -p 7474:7474 -p 7687:7687 \
-  -e NEO4J_AUTH=neo4j/cobol-migration-2025 \
-  neo4j:5.15.0
-
-# Verify
-docker ps | grep neo4j
-# Wait 30 seconds for Neo4j to be ready
-```
-
-#### Step 3: Configure Azure OpenAI
-
-```bash
-# Copy template
-cp Config/ai-config.local.env.example Config/ai-config.local.env
-
-# Edit with your credentials
-nano Config/ai-config.local.env
-```
-
-**Required values:**
-```bash
-AZURE_OPENAI_ENDPOINT="https://YOUR-RESOURCE.openai.azure.com/"
-AZURE_OPENAI_API_KEY="your-32-character-key-here"
-AZURE_OPENAI_DEPLOYMENT_NAME="gpt-5-mini-2"
-```
-
-**Find your values:**
-- Endpoint: Azure Portal → OpenAI Resource → Keys and Endpoint → Endpoint
-- API Key: Azure Portal → OpenAI Resource → Keys and Endpoint → Key 1
-- Deployment: Your deployment name (e.g., "gpt-5-mini-2" or "gpt-4o")
-
-#### Step 4: Build Project
-
-```bash
-# Restore dependencies
-dotnet restore
-
-# Build solution
+# 4. Build
 dotnet build
 
-# Verify zero warnings
-# Output should show: "0 Warning(s), 0 Error(s)"
-```
-
-#### Step 5: Run Demo
-
-```bash
-# One command to start everything
-./helper-scripts/demo.sh
-# OR if in devcontainer:
-demo
-
-# Or manual steps:
-# 1. Ensure Neo4j is running
-# 2. cd McpChatWeb
-# 3. dotnet run
-# 4. Open http://localhost:5028
+# 5. Run migration
+./doctor.sh run
 ```
 
 ---
 
-### 🎬 First Run Experience
+## 🎯 Usage: doctor.sh
 
-After running `./helper-scripts/demo.sh`, you'll see:
+**Always use `./doctor.sh run` to run migrations, not `dotnet run` directly.**
+
+### Main Commands
+
+```bash
+./doctor.sh run           # Full migration: analyze → convert → launch portal
+./doctor.sh portal        # Launch web portal only (http://localhost:5028)
+./doctor.sh reverse-eng   # Extract business logic docs (no code conversion)
+./doctor.sh convert-only  # Code conversion only (skip analysis)
+```
+
+### doctor.sh run - Interactive Options
+
+When you run `./doctor.sh run`, you'll be prompted:
 
 ```
 ╔══════════════════════════════════════════════════════════════╗
-║   COBOL Migration Portal - Demo Mode                        ║
+║   COBOL Migration - Target Language Selection                ║
 ╚══════════════════════════════════════════════════════════════╝
 
-🔍 Checking prerequisites...
-✅ Docker installed
-✅ .NET 9.0 SDK found
-✅ Neo4j accessible
+Select target language:
+  [1] Java Quarkus
+  [2] C# .NET
+  [3] Both (Java + C#)
 
-📊 Starting Neo4j...
-✅ Neo4j is running
-
-💾 Checking database...
-✅ Database found with Run 43
-
-🚀 Starting web portal...
-⏳ Waiting for portal to start ✅
-
-🌐 Access your demo:
-   Portal:        http://localhost:5028
-   Neo4j Browser: http://localhost:7474
+Enter choice (1-3): 
 ```
 
-### 🌐 Accessing the Portal
+After migration completes:
+```
+Migration complete! Generate report? (Y/n): Y
+Launch web portal? (Y/n): Y
+```
 
-**In VS Code Dev Container:**
-1. Look for the "PORTS" tab in the bottom panel (next to Terminal)
-2. Find port `5028` in the list
-3. Click the **globe icon (🌐)** to open in browser
-4. Or run: `./helper-scripts/open-portal.sh`
+### Other Commands
 
-**In Local Environment:**
-- Browser will auto-open to http://localhost:5028
-- Or manually visit: http://localhost:5028
-
-### 📊 Portal Features
-- Three-panel dashboard
-- AI-powered chat with Azure OpenAI
-- Interactive dependency graph
-- Multi-run support
-- Real-time file analysis
-
----
-
-### 🧪 Test Your Setup
-
-#### 1. Verify Portal Loads
-
-**Expected:**
-- ✅ Three panels visible (resources | chat | graph)
-- ✅ Graph shows "Dependency Graph | Run 43"
-- ✅ Resources list shows 8 MCP resources
-- ✅ Suggestion chips visible in chat
-
-**If not working:**
 ```bash
-# Check portal logs
-# Look for "Now listening on: http://localhost:5028"
-```
-
-#### 2. Test Chat
-
-**Try this query:**
-```
-"Hello, what can you help me with?"
-```
-
-**Expected response:**
-- ✅ AI responds with migration capabilities
-- ✅ Response appears within 3-5 seconds
-- ✅ No error messages
-
-**If error:**
-```bash
-# Check Azure OpenAI config
-./doctor.sh doctor
-```
-
-#### 3. Test File Analysis
-
-**Try this query:**
-```
-"What functions are in BDSDA23.cbl?"
-```
-
-**Expected response:**
-- ✅ Program purpose description
-- ✅ List of functions/paragraphs
-- ✅ Variables with PIC clauses
-- ✅ Copybooks referenced
-- ✅ Data source URI shown
-
-#### 4. Test Multi-Run
-
-**Try this query:**
-```
-"Show me run 42"
-```
-
-**Expected:**
-- ✅ Response shows Run 42 data
-- ✅ Graph updates automatically
-- ✅ Graph header shows "Run 42"
-- ✅ Response includes SQLite and Neo4j data
-
-#### 5. Test Graph
-
-**Actions:**
-- Click **"Full Graph"** filter
-- Zoom in with mouse wheel
-- Click on a blue node (program)
-- Click on a red node (copybook)
-- Hover over edges (relationships)
-
-**Expected:**
-- ✅ Graph displays 49 nodes + 64 edges
-- ✅ Smooth zooming and panning
-- ✅ Tooltips appear on hover
-- ✅ Node selection highlights
-
----
-
-### 🎓 First Tasks to Try
-
-#### Task 1: Explore Dependencies (2 minutes)
-
-```
-1. Click "🔄 Circular Dependencies" chip
-2. Read AI response about cycles
-3. Click "Programs Only" filter
-4. Observe only blue nodes shown
-5. Click "Full Graph" to restore
-```
-
-#### Task 2: Analyze a File (3 minutes)
-
-```
-1. Type: "What does RENI033.cpy contain?"
-2. Read the analysis response
-3. Note the variables and their PIC clauses
-4. Click on the file node in graph
-5. Explore relationships visually
-```
-
-#### Task 3: Compare Runs (3 minutes)
-
-```
-1. Type: "Show me run 43"
-2. Note the statistics (102 files, etc.)
-3. Type: "Now show me run 42"
-4. Watch graph update automatically
-5. Compare the two runs
-```
-
-#### Task 4: Access Raw Data (5 minutes)
-
-```
-1. Click "📖 Data Retrieval Guide"
-2. Copy SQLite query example
-3. Open terminal
-4. Run: sqlite3 Data/migration.db
-5. Paste query and explore
+./doctor.sh               # Health check - verify configuration
+./doctor.sh test          # Run system tests
+./doctor.sh setup         # Interactive setup wizard
+./doctor.sh chunking-health  # Check smart chunking configuration
 ```
 
 ---
 
-### ❓ Common Issues & Solutions
+## 📝 Reverse Engineering Reports
 
-#### Issue: "NETSDK1045: The current .NET SDK does not support targeting .NET 9.0"
+**Reverse Engineering (RE)** extracts business knowledge from COBOL code **before** any conversion happens. This is the "understand first" phase.
 
-**Solution:**
+### What It Does
+
+The `BusinessLogicExtractorAgent` analyzes COBOL source code and produces human-readable documentation that captures:
+
+| Output | Description | Example |
+|--------|-------------|---------|
+| **Business Purpose** | What problem does this program solve? | "Processes monthly customer billing statements" |
+| **Use Cases** | CRUD operations identified | CREATE customer, UPDATE balance, VALIDATE account |
+| **Business Rules** | Validation logic as requirements | "Account number must be 10 digits" |
+| **Data Dictionary** | Field meanings in business terms | `WS-CUST-BAL` → "Customer Current Balance" |
+| **Dependencies** | What other programs/copybooks it needs | CALLS: PAYMENT.cbl, COPIES: COMMON.cpy |
+
+### Why This Helps
+
+| Benefit | How |
+|---------|-----|
+| **Knowledge Preservation** | Documents tribal knowledge before COBOL experts retire |
+| **Migration Planning** | Understand complexity before estimating conversion effort |
+| **Validation** | Business team can verify extracted rules match expectations |
+| **Onboarding** | New developers understand legacy systems without reading COBOL |
+| **Compliance** | Audit trail of business rules for regulatory requirements |
+
+### Running Reverse Engineering Only
+
 ```bash
-# Install .NET 9.0 SDK
-https://dotnet.microsoft.com/download/dotnet/9.0
-
-# Verify
-dotnet --version
-# Should show: 9.0.x
+./doctor.sh reverse-eng    # Extract business logic (no code conversion)
 ```
 
-#### Issue: "Neo4j connection refused"
+This generates `output/reverse-engineering-details.md` containing all extracted business knowledge.
 
-**Solution:**
-```bash
-# Check if running
-docker ps | grep neo4j
+### Sample Output
 
-# If not running, start it
-docker-compose up -d neo4j
-
-# Wait 30 seconds, then verify
-curl http://localhost:7474
-```
-
-#### Issue: "Azure OpenAI API error"
-
-**Solution:**
-```bash
-# Check configuration
-./doctor.sh doctor
-
-# Verify endpoint ends with /
-# Verify API key is 32 characters
-# Verify deployment name matches your Azure OpenAI deployment (e.g., "gpt-5-mini-2")
-
-# Test connection
-./doctor.sh test
-```
-
-#### Issue: "Portal shows no data"
-
-**Solution:**
-```bash
-# Check database exists
-ls -lh Data/migration.db
-
-# If missing, run a migration first
-./doctor.sh run
-
-# Or use demo mode (uses existing data)
-./helper-scripts/demo.sh
-# OR if in devcontainer:
-demo
-```
-
-#### Issue: "Graph not displaying"
-
-**Solution:**
-1. Open browser DevTools (F12)
-2. Check Console tab for JavaScript errors
-3. Verify `/api/graph` endpoint returns data:
-   ```bash
-   curl http://localhost:5028/api/graph | jq '.nodes | length'
-   # Should show: 49
-   ```
-4. Hard refresh browser (Ctrl+Shift+R or Cmd+Shift+R)
-
----
-
-### 🎉 Success Criteria
-
-You're all set when:
-
-- ✅ Portal loads at http://localhost:5028
-- ✅ Chat responds to queries
-- ✅ Graph displays nodes and edges
-- ✅ File analysis returns detailed data
-- ✅ Multi-run queries work
-- ✅ Zero build warnings
-- ✅ Neo4j accessible at http://localhost:7474
-
-**Time to start migrating COBOL! 🚀**
-
----
-
-#### Screenshots
-<img width="1715" height="963" alt="Portal with metadata and graph visualization" src="https://github.com/user-attachments/assets/c1faca51-dc21-41cf-9a51-70da5a3c8255" />
-<img width="802" height="855" alt="MCP fronting Neo4j with Azure OpenAI" src="https://github.com/user-attachments/assets/2b93d018-0d54-479a-a090-2d6eb40f391e" />
-
-## ✨ Features
-
-### 1. 🔄 Dual Language Support (Java & C#)
-
-**Choose Your Target Language:**
-- Interactive selection during migration: Java Quarkus or C# .NET
-- Separate converter agents optimized for each language
-- Unified `output/` folder for generated code
-- Agent personas customized for Java/Quarkus or C#/.NET expertise
-
-### 2. 🔍 Reverse Engineering
-
-**Extract Business Logic Without Full Migration:**
-- Standalone `reverse-engineer` command
-- Generates human-readable documentation from COBOL
-- Produces business features, user stories, and domain models
-- Glossary support (`Data/glossary.json`) translates technical terms
-- Output: Comprehensive markdown with business rules and architecture
-
-### 3. 🗄️ Hybrid Database Architecture
-
-**SQLite + Neo4j for Comprehensive Data Storage:**
-- **SQLite**: Migration metadata, runs, file analysis, structured data
-- **Neo4j**: Dependency graphs, relationships, visual analytics
-- Real-time LOC calculation (excludes comments and blank lines)
-- Multi-run queries: Switch context between historical migrations
-- Full-text search capabilities
-
-### 4. 📊 Enhanced Dependency Tracking
-
-**Comprehensive COBOL Statement Detection:**
-- **CALL** - Program invocations with line numbers
-- **COPY** - Copybook inclusions
-- **PERFORM** - Procedure calls and loops
-- **EXEC SQL** - Embedded SQL statements
-- **READ/WRITE** - File I/O operations
-- **OPEN/CLOSE** - File handling
-
-**Visual Differentiation:**
-- Color-coded edges in dependency graph (CALL=green, COPY=blue, etc.)
-- Edge labels show type and line numbers (e.g., "CALL (L42)")
-- Tooltips display full context from source code
-- Filterable by edge type with checkboxes
-
-**Example:**
-```cobol
-Line 42: CALL 'FORMAT-BALANCE' USING WS-AMOUNT
-```
-Appears as: `CUSTOMER-DISPLAY.cbl → FORMAT-BALANCE.cbl [CALL (L42)]`
-
-### 5. 💬 File Content Analysis
-
-Ask natural language questions about COBOL file contents directly in the chat interface:
-
-**Example Queries:**
-```plaintext
-"What functions are in BDSDA23.cbl?"
-"What methods are used in RGNB649.cbl?"
-"What does the copybook RENI033.cpy contain code wise?"
-"Show me the variables in BDSIW13.cbl"
-"What paragraphs are in AGSFZ01.cbl?"
-```
-
-**What You Get:**
-- ✅ **Program Purpose**: High-level description of what the file does
-- ✅ **All Functions/Paragraphs**: Complete list with descriptions and logic summaries
-- ✅ **Variables**: Top 15 variables with PIC clauses, types, levels, usage
-- ✅ **Copybooks Referenced**: All COPY statements and dependencies
-- ✅ **Data Source**: MCP resource URI with API endpoint reference
-
-**How It Works:**
-1. Chat endpoint detects file-related queries using regex pattern
-2. Queries MCP resource: `insights://runs/{runId}/analyses/{fileName}`
-3. Parses `rawAnalysisData` JSON field for detailed structure
-4. Extracts from nested arrays: `paragraphs-and-sections-summary`, `variables`, `copybooksReferenced`
-5. Falls back to SQLite direct query if MCP unavailable
-
-**Example Response:**
 ```markdown
-📄 Analysis for BDSDA23.cbl (Run 43)
+# Reverse Engineering Report: CUSTOMER.cbl
 
-**Purpose:**
-Batch data synchronization agent for daily transaction processing
+## Business Purpose
+Manages customer account lifecycle including creation, 
+balance updates, and account closure with audit trail.
 
-**Functions/Paragraphs (23):**
-- **`MAIN-PROCESS`**: Main entry point, orchestrates batch workflow
-- **`VALIDATE-INPUT`**: Validates input file records for completeness
-- **`PROCESS-TRANSACTIONS`**: Iterates through transactions and updates database
-...
+## Use Cases
 
-**Variables (15):**
-- `WS-RECORD-COUNT` PIC 9(8) (numeric)
-- `WS-TRANSACTION-DATE` PIC X(10) (alphanumeric)
-- `WS-ERROR-FLAG` PIC X (boolean)
-... and 8 more
+### Use Case 1: Create Customer Account
+**Trigger:** New customer registration request
+**Key Steps:**
+1. Validate customer data (name, address, tax ID)
+2. Generate unique account number
+3. Initialize balance to zero
+4. Write audit record
 
-**Copybooks Referenced (5):**
-- RENI033.cpy
-- BDSCOPY1.cpy
-- COMMON.cpy
+### Use Case 2: Update Balance
+**Trigger:** Transaction posted to account
+**Business Rules:**
+- Balance cannot go negative without overdraft flag
+- Transactions > $10,000 require manager approval code
 
-**Data Source:** MCP Resource URI: `insights://runs/43/analyses/BDSDA23.cbl`
-**API:** `GET /api/file-analysis/BDSDA23.cbl?runId=43`
+## Business Rules
+| Rule ID | Description | Field |
+|---------|-------------|-------|
+| BR-001 | Account number must be exactly 10 digits | WS-ACCT-NUM |
+| BR-002 | Customer name is required (non-blank) | WS-CUST-NAME |
 ```
 
-### 6. 🔄 Multi-Run Query Support
+### Glossary Integration
 
-Query any historical run: "Show me run 42". Automatically queries both SQLite and Neo4j, updates graph visualization, and labels data sources. Perfect for comparing different migration attempts or analyzing specific runs.
+Add business terms to `Data/glossary.json` for better translations:
 
-### 7. 📈 Dynamic Graph Updates
-
-Graph auto-updates when querying different runs. Frontend detects `runId` in response and refreshes visualization without manual intervention. Interactive vis-network graph with zoom, pan, and filtering capabilities.
-
-### 8. 📄 Migration Report Generation
-
-**Generate Comprehensive Reports:**
-- **Via Portal**: Click "📄 Generate Report" on any migration run
-- **Via CLI**: Prompted after each `./doctor.sh run` completion
-- **Via API**: `GET /api/runs/{runId}/report`
-
-**Report Contents:**
-- Migration summary (file counts, target language)
-- Dependency breakdown by type (CALL, COPY, PERFORM, etc.)
-- Complete file inventory with line counts
-- Detailed dependency relationships table
-- Line numbers and context for each dependency
-
-**Report Formats:**
-- View rendered in portal with Markdown formatting
-- Download as `.md` file for documentation
-- Auto-saved to `output/migration_report_run_{runId}.md`
-
-**Example Report Structure:**
-```markdown
-# COBOL Migration Report - Run 6
-
-## 📊 Migration Summary
-- Total COBOL Files: 5
-- Programs (.cbl): 3
-- Copybooks (.cpy): 2
-- Total Dependencies: 8
-  - CALL: 2
-  - COPY: 3
-  - PERFORM: 2
-  - READ: 1
-
-## 📁 File Inventory
-| File Name | Path | Lines |
-|-----------|------|-------|
-| CUSTOMER-INQUIRY.cbl | source/ | 156 |
-...
-
-## 🔗 Dependency Relationships
-| Source | Target | Type | Line | Context |
-|--------|--------|------|------|----------|
-| CUSTOMER-INQUIRY.cbl | CUSTOMER-DISPLAY.cbl | CALL | 42 | CALL 'CUSTOMER-DISPLAY' |
-...
+```json
+{
+  "terms": [
+    { "term": "WS-CUST-BAL", "translation": "Customer Current Balance" },
+    { "term": "CALC-INT-RT", "translation": "Calculate Interest Rate" },
+    { "term": "PRCS-PMT", "translation": "Process Payment" }
+  ]
+}
 ```
 
-### 9. 🎨 Mermaid Diagram Support
+The extractor uses these translations to produce more readable reports.
 
-**Interactive Architecture Documentation:**
-- All Mermaid flowcharts, sequence diagrams, and visualizations render automatically
-- Dark theme matching portal design
-- Zoomable and pan-able diagrams
-- Syntax highlighting for code blocks
-- Supported diagram types: Flowcharts, Sequence, Class, ER diagrams
-- Integrated into "📄 Architecture Documentation" portal view
+---
 
-### 10. 🌐 Interactive Web Portal
+## 📁 Folder Structure
 
-**Comprehensive Dashboard at http://localhost:5028:**
-- Three-panel layout: Resources | Chat | Graph Visualization
-- AI-powered chat with MCP-backed responses
-- Run selector dropdown with historical runs
-- Dark theme with rich colors and modern UI
-- Real-time updates and interactive controls
-- Example queries section for quick analysis
-- Data retrieval guide modal
+```
+Legacy-Modernization-Agents/
+├── source/                    # ⬅️ DROP YOUR COBOL FILES HERE
+│   ├── CUSTOMER.cbl
+│   ├── PAYMENT.cbl
+│   └── COMMON.cpy
+│
+├── output/                    # ⬅️ GENERATED CODE APPEARS HERE
+│   ├── java/                  # Java Quarkus output
+│   │   └── com/example/generated/
+│   └── csharp/                # C# .NET output
+│       └── Generated/
+│
+├── Agents/                    # AI agent implementations
+├── Config/                    # Configuration files
+├── Data/                      # SQLite database (migration.db)
+└── Logs/                      # Execution logs
+```
 
-### 11. 🔌 MCP (Model Context Protocol) Integration
+**Workflow:**
+1. Drop COBOL files (`.cbl`, `.cpy`) into `source/`
+2. Run `./doctor.sh run`
+3. Choose target language (Java or C#)
+4. Collect generated code from `output/java/` or `output/csharp/`
 
-**9 MCP Resources per Migration Run:**
-- Run summary, file lists, dependency graphs
-- Circular dependency analysis, critical files
-- Individual COBOL and generated code files
-- Per-file dependencies and detailed analyses
-- REST API endpoints for programmatic access
+---
 
-### 12. 🚀 DevContainer Auto-Start
+## 🛠️ Customizing Agent Behavior
 
-**Fully Automated Development Environment:**
-- Services launch automatically on container restart
-- Portal auto-starts at http://localhost:5028
-- Neo4j with health checks and auto-recovery
-- Pre-configured VS Code extensions
-- Bash aliases for common commands
-- Locked ports prevent configuration drift
+Each agent has a **system prompt** that defines its behavior. To customize output (e.g., DDD patterns, specific frameworks), edit these files:
+
+### Agent Prompt Locations
+
+| Agent | File | Line | What It Does |
+|-------|------|------|--------------|
+| **CobolAnalyzerAgent** | `Agents/CobolAnalyzerAgent.cs` | ~116 | Extracts structure, variables, paragraphs, SQL |
+| **BusinessLogicExtractorAgent** | `Agents/BusinessLogicExtractorAgent.cs` | ~44 | Extracts user stories, features, business rules |
+| **JavaConverterAgent** | `Agents/JavaConverterAgent.cs` | ~66 | Converts to Java Quarkus |
+| **CSharpConverterAgent** | `Agents/CSharpConverterAgent.cs` | ~64 | Converts to C# .NET |
+| **DependencyMapperAgent** | `Agents/DependencyMapperAgent.cs` | ~129 | Maps CALL/COPY/PERFORM relationships |
+| **ChunkAwareJavaConverter** | `Agents/ChunkAwareJavaConverter.cs` | ~268 | Large file chunked conversion (Java) |
+| **ChunkAwareCSharpConverter** | `Agents/ChunkAwareCSharpConverter.cs` | ~269 | Large file chunked conversion (C#) |
+
+### Example: Adding DDD Patterns
+
+To make the Java converter generate Domain-Driven Design code, edit `Agents/JavaConverterAgent.cs` around line 66:
+
+```csharp
+var systemPrompt = @"
+You are an expert in converting COBOL programs to Java with Quarkus framework.
+
+DOMAIN-DRIVEN DESIGN REQUIREMENTS:
+- Identify bounded contexts from COBOL program sections
+- Create Aggregate Roots for main business entities
+- Use Value Objects for immutable data (PIC X fields)
+- Implement Repository pattern for data access
+- Create Domain Events for state changes
+- Separate Application Services from Domain Services
+
+OUTPUT STRUCTURE:
+- domain/        → Entities, Value Objects, Aggregates
+- application/   → Application Services, DTOs
+- infrastructure/→ Repositories, External Services
+- ports/         → Interfaces (Ports & Adapters)
+
+...existing prompt content...
+";
+```
+
+Similarly for C#, edit `Agents/CSharpConverterAgent.cs`.
+
+---
+
+## 📐 File Splitting & Naming
+
+### Configuration
+
+File splitting is controlled in `Config/appsettings.json`:
+
+```json
+{
+  "AssemblySettings": {
+    "SplitStrategy": "ClassPerFile",
+    "Java": {
+      "PackagePrefix": "com.example.generated",
+      "ServiceSuffix": "Service"
+    },
+    "CSharp": {
+      "NamespacePrefix": "Generated",
+      "ServiceSuffix": "Service"
+    }
+  }
+}
+```
+
+### Split Strategies
+
+| Strategy | Output |
+|----------|--------|
+| `SingleFile` | One large file with all classes |
+| `ClassPerFile` | **Default** - One file per class (recommended) |
+| `FilePerChunk` | One file per processing chunk |
+| `LayeredArchitecture` | Organized into Services/, Repositories/, Models/ |
+
+### Implementation Location
+
+The split logic is in `Models/AssemblySettings.cs`:
+
+```csharp
+public enum FileSplitStrategy
+{
+    SingleFile,           // All code in one file
+    ClassPerFile,         // One file per class (DEFAULT)
+    FilePerChunk,         // Preserves chunk boundaries
+    LayeredArchitecture   // Service/Repository/Model folders
+}
+```
+
+### Naming Conversion
+
+Naming strategies are configured in `ConversionSettings`:
+
+```json
+{
+  "ConversionSettings": {
+    "NamingStrategy": "Hybrid",
+    "PreserveLegacyNamesAsComments": true
+  }
+}
+```
+
+| Strategy | Input | Output |
+|----------|-------|--------|
+| `Hybrid` | `CALCULATE-TOTAL` | Business-meaningful name |
+| `PascalCase` | `CALCULATE-TOTAL` | `CalculateTotal` |
+| `camelCase` | `CALCULATE-TOTAL` | `calculateTotal` |
+| `Preserve` | `CALCULATE-TOTAL` | `CALCULATE_TOTAL` |
 
 ---
 
 ## 🏗️ Architecture
 
-**Supported Diagram Types:**
-- Flowcharts (system architecture)
-- Sequence diagrams (process flows)
-- Class diagrams (data models)
-- ER diagrams (database schemas)
+### Hybrid Database Architecture
 
-**Example:**
-Markdown with `mermaid` code blocks automatically renders as interactive SVG diagrams in the browser.
-
-**Technologies:**
-- **Mermaid.js 10.x** - Diagram rendering engine
-- **Marked.js 11.x** - Markdown parser
-- Dark theme with custom color scheme matching portal
-
----
-
-### 4. 📚 Data Retrieval Guide
-
-Access comprehensive data access documentation directly in the portal via the **"📖 Data Retrieval Guide"** button.
-
-**What's Included:**
-- 🗄️ **SQLite Instructions**: 
-  - Database location and schema
-  - 5 example queries (runs, files, analyses, Java code, dependencies)
-  - Tool recommendations (sqlite3 CLI, DB Browser, VS Code extension)
-  
-- 🔗 **Neo4j Instructions**:
-  - Connection details (bolt://localhost:7687)
-  - Credentials (neo4j / cobol-migration-2025)
-  - 5 Cypher queries (runs, files, dependencies, circular deps, critical files)
-  - Tool recommendations (Neo4j Browser, Desktop, cypher-shell)
-
-- 🎯 **MCP API Instructions**:
-  - All available MCP resource URIs
-  - REST API endpoints (/api/resources, /api/chat, /api/graph)
-  - Example API calls with curl commands
-
-- 📋 **Copy-Paste Examples**:
-  - Three complete workflows (SQLite, Neo4j, API)
-  - Step-by-step commands ready to use
-  - No configuration needed
-
-**API Endpoint:**
-```bash
-GET /api/data-retrieval-guide
-```
-
-**Modal Features:**
-- Dark theme matching portal design
-- Syntax highlighting for code blocks
-- Organized in collapsible sections
-- Close with X button or click outside
-
----
-
-## �🏗️ Complete Architecture
-
-### 🗄️ Hybrid Database Architecture
-
-This project uses a **dual-database approach** for optimal performance and functionality:
+This project uses a **dual-database approach** for optimal performance:
 
 ```mermaid
 flowchart TB
-    subgraph INPUT["📁 Input Layer"]
-        COBOL["COBOL Source Files<br/>(.cbl, .cpy)"]
+    subgraph INPUT["📁 Input"]
+        COBOL["COBOL Files<br/>source/*.cbl, *.cpy"]
     end
     
-    subgraph PROCESS["🔄 Migration Process"]
-        ANALYZER["🔍 CobolAnalyzerAgent<br/>Structure Analysis"]
-        CONVERTER["☕/C# CodeConverterAgent<br/>Java Quarkus or C# .NET Translation<br/>(User's Choice)"]
-        MAPPER["🗺️ DependencyMapperAgent<br/>Relationship Analysis"]
+    subgraph AGENTS["🤖 AI Agents"]
+        ANALYZER["CobolAnalyzerAgent"]
+        EXTRACTOR["BusinessLogicExtractor"]
+        CONVERTER["Java/C# Converter"]
+        MAPPER["DependencyMapper"]
     end
     
-    subgraph STORAGE["💾 Hybrid Storage Layer"]
-        SQLITE[("📊 SQLite Database<br/>Data/migration.db<br/><br/>• Run metadata<br/>• File content<br/>• AI analyses<br/>• Java/C# code<br/>• Metrics")]
-        NEO4J[("🔗 Neo4j Graph DB<br/>bolt://localhost:7687<br/><br/>• Dependencies<br/>• Relationships<br/>• Graph data<br/>• Visualizations")]
-    end
-    
-    subgraph REPO["🔀 Repository Layer"]
-        HYBRID["HybridMigrationRepository<br/>Coordinates both databases"]
-    end
-    
-    subgraph ACCESS["🌐 Access Layer"]
-        MCP["🎯 MCP Server<br/>JSON-RPC API"]
-        PORTAL["🖥️ Web Portal<br/>localhost:5250"]
-        BROWSER["🔍 Neo4j Browser<br/>localhost:7474"]
+    subgraph STORAGE["💾 Hybrid Storage"]
+        SQLITE[("SQLite<br/>Data/migration.db<br/><br/>• Run metadata<br/>• File content<br/>• AI analyses<br/>• Generated code")]
+        NEO4J[("Neo4j<br/>bolt://localhost:7687<br/><br/>• Dependencies<br/>• Relationships<br/>• Graph queries")]
     end
     
     subgraph OUTPUT["📦 Output"]
-        JAVA["☕ Java Quarkus Code<br/>OR<br/>C# .NET Code"]
-        REPORTS["📊 Reports & Logs"]
+        CODE["Java/C# Code<br/>output/java or output/csharp"]
+        PORTAL["Web Portal<br/>localhost:5028"]
     end
     
-    COBOL --> PROCESS
-    PROCESS --> ANALYZER
-    PROCESS --> CONVERTER
-    PROCESS --> MAPPER
-    
-    ANALYZER --> HYBRID
-    CONVERTER --> HYBRID
-    MAPPER --> HYBRID
-    
-    HYBRID --> SQLITE
-    HYBRID --> NEO4J
-    
-    SQLITE --> MCP
-    NEO4J --> MCP
-    NEO4J --> BROWSER
-    
-    MCP --> PORTAL
-    
-    PROCESS --> JAVA
-    PROCESS --> REPORTS
-    
-    classDef inputStyle fill:#e3f2fd,stroke:#1976d2,stroke-width:3px,color:#000
-    classDef processStyle fill:#f1f8e9,stroke:#689f38,stroke-width:3px,color:#000
-    classDef storageStyle fill:#fff3e0,stroke:#f57c00,stroke-width:3px,color:#000
-    classDef accessStyle fill:#f3e5f5,stroke:#7b1fa2,stroke-width:3px,color:#000
-    classDef outputStyle fill:#e8f5e9,stroke:#388e3c,stroke-width:3px,color:#000
-    
-    class COBOL inputStyle
-    class ANALYZER,CONVERTER,MAPPER processStyle
-    class SQLITE,NEO4J,HYBRID storageStyle
-    class MCP,PORTAL,BROWSER accessStyle
-    class JAVA,REPORTS outputStyle
+    COBOL --> AGENTS
+    AGENTS --> STORAGE
+    STORAGE --> OUTPUT
 ```
 
-#### 📊 SQLite Database Stores:
-- ✅ **Migration run metadata** (ID, status, timestamps, statistics)
-- ✅ **COBOL file content** (original source code)
-- ✅ **AI-generated analyses** (structured insights)
-- ✅ **Generated Java code** (converted output)
-- ✅ **Historical data** (all previous runs)
-- ✅ **Metrics and performance** (tokens, costs, timings)
-
-**Location**: `Data/migration.db` (configurable via `MIGRATION_DB_PATH`)
-
-#### 🔗 Neo4j Graph Database Stores:
-- ✅ **File-to-file dependencies** (program → copybook)
-- ✅ **Call relationships** (program → program)
-- ✅ **Transitive dependencies** (indirect relationships)
-- ✅ **Graph visualization data** (for UI rendering)
-- ✅ **Impact analysis** (what files are affected by changes)
-
-**Connection**: `bolt://localhost:7687` (configured in `appsettings.json`)
-
-#### 🔀 Why Both Databases?
+#### Why Two Databases?
 
 | Aspect | SQLite | Neo4j |
 |--------|--------|-------|
 | **Purpose** | Document storage | Relationship mapping |
 | **Strength** | Fast queries, simple setup | Graph traversal, visualization |
-| **Data Type** | Flat/relational data | Connected graph data |
 | **Use Case** | "What's in this file?" | "What depends on this file?" |
-| **Query Style** | SQL SELECT statements | Cypher graph queries |
+| **Query Style** | SQL SELECT | Cypher graph queries |
 
-**Together they provide**: Fast metadata access + Powerful relationship insights 🚀
+**Together:** Fast metadata access + Powerful dependency insights 🚀
 
-### 🖼️ Three-Panel Portal UI
+#### Why Dependency Graphs Matter
 
-The web portal at `localhost:5250` features a modern three-panel layout:
+The Neo4j dependency graph enables:
+- **Impact Analysis** - "If I change CUSTOMER.cbl, what else breaks?"
+- **Circular Dependency Detection** - Find problematic CALL/COPY cycles
+- **Critical File Identification** - Most-connected files = highest risk
+- **Migration Planning** - Convert files in dependency order
+- **Visual Understanding** - See relationships at a glance in the portal
+
+---
+
+### Agent Pipeline
 
 ```mermaid
-graph TB
-    subgraph PORTAL["🌐 Web Portal Layout (localhost:5250)"]
-        direction LR
-        subgraph LEFT["📋 Left Panel<br/>(300px)"]
-            RESOURCES["MCP Resources<br/>• Migration Runs<br/>• COBOL Files<br/>• Dependencies<br/>• Java Files<br/>• Graph Queries"]
-        end
-        
-        subgraph CENTER["💬 Center Panel<br/>(Flexible)"]
-            CHAT["Chat Interface<br/>• Ask questions<br/>• AI responses<br/>• Conversation history"]
-            CHIPS["6 Suggestion Chips<br/>• Circular Dependencies<br/>• Critical Files<br/>• Impact Analysis<br/>• File Relationships<br/>• Dependency Summary<br/>• Conversion Stats"]
-        end
-        
-        subgraph RIGHT["📊 Right Panel<br/>(500px)"]
-            GRAPH["Dependency Graph<br/>• Interactive visualization<br/>• Zoom & pan<br/>• Click for details<br/>• Query filters<br/>• Layout options"]
-        end
+sequenceDiagram
+    participant User
+    participant doctor.sh
+    participant SmartOrchestrator
+    participant Agents
+    participant SQLite
+    participant Neo4j
+    participant Portal
+
+    User->>doctor.sh: ./doctor.sh run
+    doctor.sh->>SmartOrchestrator: Start migration
+    
+    Note over SmartOrchestrator: File size check
+    
+    alt Small files (<150K chars)
+        SmartOrchestrator->>Agents: Direct processing
+    else Large files (>150K chars)
+        SmartOrchestrator->>Agents: Chunked processing
     end
     
-    LEFT -.-> CENTER
-    CENTER -.-> RIGHT
+    Agents->>Agents: 1. CobolAnalyzerAgent
+    Agents->>Agents: 2. BusinessLogicExtractor
+    Agents->>Agents: 3. JavaConverter / CSharpConverter
+    Agents->>Agents: 4. DependencyMapperAgent
     
-    classDef leftStyle fill:#e3f2fd,stroke:#1976d2,stroke-width:2px,color:#000
-    classDef centerStyle fill:#f1f8e9,stroke:#689f38,stroke-width:2px,color:#000
-    classDef rightStyle fill:#fff3e0,stroke:#f57c00,stroke-width:2px,color:#000
+    Agents->>SQLite: Store metadata, code
+    Agents->>Neo4j: Store dependency graph
     
-    class LEFT,RESOURCES leftStyle
-    class CENTER,CHAT,CHIPS centerStyle
-    class RIGHT,GRAPH rightStyle
+    SmartOrchestrator->>doctor.sh: Migration complete
+    doctor.sh->>Portal: Launch http://localhost:5028
+    Portal->>User: View results, chat, graph
 ```
 
+### Process Flow
 **Portal Features:** 
 - ✅ Dark theme with modern UI
 - ✅ Three-panel layout (resources/chat/graph)
@@ -934,248 +644,235 @@ sequenceDiagram
 5. `McpServer` exposes data via MCP resources; `McpChatWeb` surfaces chat, graphs, reports.
 6. Portal and MCP clients display progress, allow queries, and fetch generated artifacts.
 
-### 🔐 Configure Azure OpenAI Credentials
+1. **Source scanning** - Reads all `.cbl`/`.cpy` files from `source/`
+2. **Analysis** - CobolAnalyzerAgent extracts structure
+3. **Business logic** - BusinessLogicExtractorAgent generates documentation
+4. **Conversion** - JavaConverter or CSharpConverter generates target code
+5. **Dependencies** - DependencyMapperAgent maps relationships to Neo4j
+6. **Storage** - Metadata to SQLite, graphs to Neo4j
+7. **Portal** - Web UI queries both databases for full picture
 
-The project requires Azure OpenAI for **two purposes**:
+---
 
-1. **Migration Agents** (CobolAnalyzer, JavaConverter, DependencyMapper) - For code analysis and conversion
-2. **MCP Chat Server** - For natural language queries about migration data
+### Three-Panel Portal UI
 
-**Both use the same Azure OpenAI configuration** from `Config/appsettings.json`.
-
-The project uses a secure two-file configuration system:
-
-1. **`Config/ai-config.env`** - Template with default values (✅ safe to commit)
-2. **`Config/ai-config.local.env`** - Your actual credentials (❌ never commit)
-
-**Setup your credentials:**
-
-```bash
-# 1. Copy the template to create your local config
-cp Config/ai-config.local.env.example Config/ai-config.local.env
-
-# 2. Edit your local config with real values
-nano Config/ai-config.local.env
+```
+┌─────────────────┬───────────────────────────┬─────────────────────┐
+│  📋 Resources   │      💬 AI Chat           │   📊 Graph          │
+│                 │                           │                     │
+│  MCP Resources  │  Ask about your COBOL:   │  Interactive        │
+│  • Run summary  │  "What does CUSTOMER.cbl │  dependency graph   │
+│  • File lists   │   do?"                   │                     │
+│  • Dependencies │                           │  • Zoom/pan         │
+│  • Analyses     │  AI responses with        │  • Filter by type   │
+│                 │  SQLite + Neo4j data      │  • Click nodes      │
+└─────────────────┴───────────────────────────┴─────────────────────┘
 ```
 
-**In `Config/ai-config.local.env`, update these lines:**
+**Portal URL:** http://localhost:5028
+
+---
+
+## 🔨 Build & Run
+
+### Build Only
+
 ```bash
-# Replace with your actual Azure OpenAI endpoint
-AZURE_OPENAI_ENDPOINT="https://YOUR-RESOURCE-NAME.openai.azure.com/"
+dotnet build
+```
 
-# Replace with your actual API key  
-AZURE_OPENAI_API_KEY="your-32-character-api-key-here"
+### Run Migration (Recommended)
 
-# Update deployment name to match your Azure setup
-# Mini is a cheaper version and typically faster when testing
+```bash
+./doctor.sh run      # Interactive - prompts for language choice
+```
+
+**⚠️ Do NOT use `dotnet run` directly** - it bypasses the interactive menu and configuration checks.
+
+### Launch Portal Only
+
+```bash
+./doctor.sh portal   # Opens http://localhost:5028
+```
+
+### Portal Features
+- **Left panel**: MCP resources list
+- **Center panel**: AI chat (ask about your COBOL)
+- **Right panel**: Interactive dependency graph
+
+---
+
+## 🔧 Configuration Reference
+
+### Configuration Loading: .env vs appsettings.json
+
+This project uses a **layered configuration system** where `.env` files can override `appsettings.json` values.
+
+#### Config Files Explained
+
+| File | Purpose | Git Tracked? |
+|------|---------|--------------|
+| `Config/appsettings.json` | **All settings** - models, chunking, Neo4j, output paths | ✅ Yes |
+| `Config/ai-config.env` | Template defaults | ✅ Yes |
+| `Config/ai-config.local.env` | **Your secrets** - API keys, endpoints | ❌ No (gitignored) |
+
+#### What Goes Where?
+
+```
+appsettings.json          → Non-secret settings (chunking, Neo4j, file paths)
+ai-config.local.env       → Secrets (API keys, endpoints) - NEVER commit!
+```
+
+#### Loading Order (Priority)
+
+When you run `./doctor.sh run`, configuration loads in this order:
+
+```mermaid
+flowchart LR
+    A["1. appsettings.json<br/>(base config)"] --> B["2. ai-config.env<br/>(template defaults)"]
+    B --> C["3. ai-config.local.env<br/>(your overrides)"]
+    C --> D["4. Environment vars<br/>(highest priority)"]
+    
+    style C fill:#90EE90
+    style D fill:#FFD700
+```
+
+**Later values override earlier ones.** This means:
+- `ai-config.local.env` overrides `appsettings.json`
+- Environment variables override everything
+
+#### How doctor.sh Loads Config
+
+```bash
+# Inside doctor.sh:
+source "$REPO_ROOT/Config/load-config.sh"  # Loads the loader
+load_ai_config                              # Executes loading
+```
+
+The `load-config.sh` script:
+1. Reads `ai-config.local.env` first (your secrets)
+2. Falls back to `ai-config.env` for any unset values
+3. Exports all values as environment variables
+4. .NET app reads these env vars, which override `appsettings.json`
+
+#### Example: Changing Models
+
+To use different models, you have two options:
+
+**Option A: Edit appsettings.json** (for non-secret changes)
+```json
+{
+  "AISettings": {
+    "ModelId": "gpt-4o",
+    "ChatModelId": "gpt-4o-mini"
+  }
+}
+```
+
+**Option B: Override via ai-config.local.env** (takes precedence)
+```bash
+AZURE_OPENAI_MODEL_ID="gpt-4o"
+AZURE_OPENAI_DEPLOYMENT_NAME="my-gpt4o-deployment"
+```
+
+#### Quick Reference: Key Settings
+
+| Setting | appsettings.json Location | .env Override |
+|---------|---------------------------|---------------|
+| Codex model | `AISettings.ModelId` | `AZURE_OPENAI_MODEL_ID` |
+| Chat model | `AISettings.ChatModelId` | `AZURE_OPENAI_CHAT_MODEL_ID` |
+| API endpoint | `AISettings.Endpoint` | `AZURE_OPENAI_ENDPOINT` |
+| API key | `AISettings.ApiKey` | `AZURE_OPENAI_API_KEY` |
+| Neo4j enabled | `ApplicationSettings.Neo4j.Enabled` | — |
+| Chunking | `ChunkingSettings.*` | — |
+
+> 💡 **Best Practice:** Keep secrets in `ai-config.local.env`, keep everything else in `appsettings.json`.
+
+---
+
+### Required: Azure OpenAI
+
+In `Config/ai-config.local.env`:
+```bash
+AZURE_OPENAI_ENDPOINT="https://YOUR-RESOURCE.openai.azure.com/"
+AZURE_OPENAI_API_KEY="your-32-character-key"
 AZURE_OPENAI_DEPLOYMENT_NAME="gpt-5-mini-2"
 ```
 
-**🔍 How to find your Azure OpenAI values:**
-- **Endpoint**: Azure Portal → Your OpenAI Resource → "Resource Management" → "Keys and Endpoint" → Endpoint
-- **API Key**: Azure Portal → Your OpenAI Resource → "Resource Management" → "Keys and Endpoint" → Key 1
-- **Deployment Name**: Azure AI Foundry → Your deployment name (e.g., "gpt-5-mini-2" or "gpt-4o")
+### Neo4j (Dependency Graphs)
 
-**📋 Example `ai-config.local.env` with real values:**
-```bash
-# Example - replace with your actual values
-AZURE_OPENAI_ENDPOINT="https://my-company-openai.openai.azure.com/"
-AZURE_OPENAI_API_KEY="1234567890abcdef1234567890abcdef"
-AZURE_OPENAI_DEPLOYMENT_NAME="gpt-5-mini-2"
-AZURE_OPENAI_MODEL_ID="gpt-5-mini"
+In `Config/appsettings.json`:
+```json
+{
+  "ApplicationSettings": {
+    "Neo4j": {
+      "Enabled": true,
+      "Uri": "bolt://localhost:7687",
+      "Username": "neo4j",
+      "Password": "cobol-migration-2025"
+    }
+  }
+}
 ```
 
-**⚠️ IMPORTANT**: 
-- Make sure your endpoint ends with `/`
-- API key should be 32 characters long
-- Deployment name must match your Azure OpenAI deployment (e.g., "gpt-5-mini-2", "gpt-4o")
+Start with: `docker-compose up -d neo4j`
 
-**Usage:** Same credentials power both migration agents and MCP chat server via `Config/appsettings.json`
+### Smart Chunking (Large Files)
 
-### Neo4j Database
-
-**Quick Start:**
-```bash
-# Auto-starts in dev container (recommended)
-# OR manual start:
-docker-compose up -d neo4j && docker ps | grep neo4j
-```
-
-**Connection Details:**
-- **HTTP (Browser)**: http://localhost:7474
-- **Bolt (Driver)**: bolt://localhost:7687
-- **Username**: `neo4j`
-- **Password**: `cobol-migration-2025`
-
----
-
-## 🎯 CLI Reference
-
-### Doctor.sh - Three Migration Modes
-
-The `doctor.sh` script provides three distinct migration workflows:
-
-#### 1️⃣ **Reverse Engineering Only** (No UI)
-```bash
-./doctor.sh reverse-eng
-```
-**What it does:**
-- Extracts business logic, feature descriptions, and use cases from COBOL
-- Generates `output/reverse-engineering-details.md` documentation
-- **Does NOT** convert code to Java or C#
-- **Does NOT** launch web UI
-- Use when: You only need business documentation
-
-#### 2️⃣ **Full Migration** (Reverse Eng + Conversion + UI + Report)
-```bash
-./doctor.sh run
-```
-**What it does:**
-- First runs reverse engineering (or uses existing results)
-- Then converts COBOL to Java Quarkus (or C# .NET - you choose)
-- Generates all reports and documentation
-- **Prompts to generate migration report** with comprehensive details
-- **Launches web UI** at http://localhost:5028
-- Use when: You want complete migration with business documentation
-
-**New Features:**
-- ✅ Target language selection (Java Quarkus or C# .NET)
-- ✅ Optional report generation after migration
-- ✅ Enhanced dependency tracking (CALL, COPY, PERFORM, EXEC, READ, WRITE, OPEN, CLOSE)
-- ✅ Line-level context for all dependencies
-
-#### 3️⃣ **Conversion Only** (Skip Reverse Eng, Launch UI)
-```bash
-./doctor.sh convert-only
-```
-**What it does:**
-- Skips reverse engineering entirely
-- Only performs COBOL to Java Quarkus or C# .NET conversion (you choose)
-- Generates Java/C# code and migration reports
-- **✅ Launches web UI** at http://localhost:5250
-- Use when: You already have documentation or just need code conversion
-
-### Other Doctor.sh Commands
-```bash
-./doctor.sh                    # Diagnose configuration
-./doctor.sh setup              # Interactive setup wizard
-./doctor.sh test               # System validation and health check
-```
-
-**Helper Scripts:**
-```bash
-./helper-scripts/demo.sh                    # Quick demo with sample COBOL files
-./helper-scripts/verify-data-persistence.sh # Check database integrity
-./helper-scripts/verify-port-standardization.sh # Verify ports 5028, 7474, 7687
-```
-
-### Direct .NET Commands
-```bash
-# Full migration with reverse engineering
-dotnet run -- --source ./source
-
-# Skip reverse engineering
-dotnet run -- --source ./source --skip-reverse-engineering
-
-# Reverse engineering only
-dotnet run reverse-engineer --source ./source
-
-# MCP server standalone
-dotnet run mcp [--run-id 42]
-
-# Conversation log viewer
-dotnet run conversation
-```
-
-**Options:** `--verbose`, `--config <path>`, `--run-id <number>`, `--session-id <id>`
-
-## Step-by-Step Guide
-
-1. **Configure:** `cp Config/ai-config.local.env.example Config/ai-config.local.env` → Add Azure OpenAI endpoint, API key, deployment name
-2. **Add COBOL files:** Place your COBOL files in `./source/`
-3. **Run:** `./doctor.sh run` - Analyzes, converts (choose Java or C#), launches portal at http://localhost:5028
-4. **Choose target:** Select Java Quarkus or C# .NET when prompted
-5. **Explore:** Use portal UI (chat, graph) or connect MCP clients (Claude, Cursor)
-6. **Results:** Generated code in `output/`, documentation in `output/`, logs in `Logs/`
-
-**Portal features:** Three-panel UI, AI chat, multi-run queries, interactive graph, file content analysis
-
-**Env variables:** `MCP_AUTO_LAUNCH=0` (skip portal), `MIGRATION_DB_PATH` (custom DB location)
-
----
-
-## 🧪 Testing & Validation
-
-```bash
-# Run integration tests
-dotnet test McpChatWeb.Tests/McpChatWeb.Tests.csproj
-
-# Validate configuration
-./doctor.sh test
-
-# Verify data persistence
-./helper-scripts/verify-data-persistence.sh
-
-# Check port standardization
-./helper-scripts/verify-port-standardization.sh
+For files >150K characters or >3K lines:
+```json
+{
+  "ChunkingSettings": {
+    "EnableChunking": true,
+    "MaxLinesPerChunk": 1500,
+    "MaxParallelChunks": 3
+  }
+}
 ```
 
 ---
 
-## 📊 Real Migration Stats
+## 📊 What Gets Generated
 
-- **102 COBOL files** processed → **99 Java Quarkus files** generated (97% success rate)
-- **205 Azure OpenAI API calls**, ~1.2 hours total, $0.31 cost
-- **Outputs**: Java/C# code in `output/`, docs in `output/`, logs in `Logs/`, metadata in `Data/migration.db`, graph in Neo4j
-
----
-
-## 🔧 Advanced Topics
-- **Folder structure:** Input: `source/`, Output: `output/`
-- **Token limits:** GPT-5 Mini supports 32K tokens - adjust per agent in `appsettings.json`  
-- **Agent personas:** Modify prompts for different outcomes (DB2→PostgreSQL, other languages)
-- **Legacy languages:** Framework adaptable to APL, PL/I - update agent prompts accordingly
-
-**Known Issues:**
-- Content filtering may block Azure OpenAI calls
-- Token limits: Don't exceed MaxTokens settings (32K for GPT-5 Mini)
-- Model deployment names must match Azure configuration
-
-**Extension Ideas:**
-- Enhance agent prompts for specific migration scenarios
-- Add support for additional legacy languages (PL/I, RPG, APL)
-- Integrate with CI/CD pipelines  
-- Improve test generation capabilities
-- Contributions welcome!
+| Input | Output |
+|-------|--------|
+| `source/CUSTOMER.cbl` | `output/java/com/example/generated/CustomerService.java` |
+| `source/PAYMENT.cbl` | `output/csharp/Generated/PaymentProcessor.cs` |
+| Analysis | `output/reverse-engineering-details.md` |
+| Report | `output/migration_report_run_X.md` |
 
 ---
 
-## Disclaimer
+## 🆘 Troubleshooting
 
-This software is provided for **demonstration purposes only**. It is not intended to be relied upon for production use. The creators make no representations or warranties of any kind, express or implied, about the completeness, accuracy, reliability, suitability or availability. Any reliance on this software is strictly at your own risk.
+```bash
+./doctor.sh               # Check configuration
+./doctor.sh test          # Run system tests
+./doctor.sh chunking-health  # Check chunking setup
+```
+
+| Issue | Solution |
+|-------|----------|
+| Neo4j connection refused | `docker-compose up -d neo4j` |
+| Azure API error | Check `Config/ai-config.local.env` credentials |
+| No output generated | Ensure COBOL files are in `source/` |
+| Portal won't start | `lsof -ti :5028 \| xargs kill -9` then retry |
+
+---
+
+## 📚 Further Reading
+
+- [Smart Chunking Guide](gustav-Smart-chuncking%20how%20it%20works.md) - Deep technical details
+- [Architecture Documentation](REVERSE_ENGINEERING_ARCHITECTURE.md) - System design
+- [Features](FEATURES.md) - Full feature list
+- [Changelog](CHANGELOG.md) - Version history
+
+---
+
+## Acknowledgements
+
+Collaboration between Microsoft's Global Black Belt team and [Bankdata](https://www.bankdata.dk/). See [blog post](https://aka.ms/cobol-blog).
 
 ## License
 
-MIT License - Copyright (c) Microsoft Corporation. See full license terms in the repository.
-
----
-
-## 📝 Known TODOs
-
-### Project Naming Cleanup
-- [ ] **Rename project from "CobolToQuarkusMigration" to "LegacyModernizationAgents"**
-  - Update `CobolToQuarkusMigration.csproj` → `LegacyModernizationAgents.csproj`
-  - Update references in `Legacy-Modernization-Agents.sln`
-  - Update `doctor.sh` script references
-  - Update namespace declarations in C# files
-  - Update documentation references
-  - Update Docker and build configuration files
-  - Rationale: Project now supports multiple target languages (Java Quarkus and C# .NET), making the original name too specific
-
-### Code Refactoring
-- [ ] **Refactor parameter names in `MigrationProcess.cs`**
-  - Rename `javaOutputFolder` → `outputFolder`
-  - Rename `cobolSourceFolder` → `sourceFolder`
-  - Rationale: Current names are language-specific but the framework supports multiple target languages (Java and C#)
-
-````
+MIT License - Copyright (c) Microsoft Corporation.

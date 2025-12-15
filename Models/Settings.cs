@@ -36,6 +36,16 @@ public class AppSettings
     public ApplicationSettings ApplicationSettings { get; set; } = new ApplicationSettings();
 
     /// <summary>
+    /// Gets or sets the chunking settings for large file processing.
+    /// </summary>
+    public ChunkingSettings ChunkingSettings { get; set; } = new ChunkingSettings();
+
+    /// <summary>
+    /// Gets or sets the conversion settings for naming and consistency.
+    /// </summary>
+    public ConversionSettings ConversionSettings { get; set; } = new ConversionSettings();
+
+    /// <summary>
     /// Gets or sets the chat logging settings.
     /// </summary>
     public ChatLoggingSettings ChatLogging { get; set; } = new ChatLoggingSettings();
@@ -44,6 +54,12 @@ public class AppSettings
     /// Gets or sets the API call logging settings.
     /// </summary>
     public ApiCallLoggingSettings ApiCallLogging { get; set; } = new ApiCallLoggingSettings();
+
+    /// <summary>
+    /// Gets or sets the assembly settings for file organization, namespaces, and class splitting.
+    /// Controls how converted code is organized into files, packages/namespaces, and classes.
+    /// </summary>
+    public AssemblySettings AssemblySettings { get; set; } = new AssemblySettings();
 }
 
 /// <summary>
@@ -97,6 +113,12 @@ public class AISettings
     /// Gets or sets the deployment name for Azure OpenAI.
     /// </summary>
     public string DeploymentName { get; set; } = "gpt-4.1";
+
+    // Optional chat-specific settings (used for portal/chat/report); falls back to DeploymentName/Endpoint/ApiKey when not set
+    public string ChatDeploymentName { get; set; } = string.Empty;
+    public string ChatModelId { get; set; } = string.Empty;
+    public string ChatEndpoint { get; set; } = string.Empty;
+    public string ChatApiKey { get; set; } = string.Empty;
 
     /// <summary>
     /// Gets or sets the maximum number of tokens for AI responses.

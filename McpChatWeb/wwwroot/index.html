@@ -57,6 +57,10 @@
         <option value="">Loading runs...</option>
       </select>
       <button id="refresh-runs-btn" class="refresh-runs-btn" title="Refresh runs list">⟳</button>
+      <button id="load-latest-btn" class="load-latest-btn" title="Load the most recent migration run">🔄 Latest</button>
+      <span id="current-run-badge" class="current-run-badge">Run #<span id="current-run-id">--</span></span>
+      <span id="run-status-badge" class="run-status-badge status-idle">⏸️ Idle</span>
+      <span id="run-target-badge" class="run-target-badge">🎯 --</span>
     </div>
   </header>
 
@@ -65,6 +69,7 @@
       <h2>MCP Resources</h2>
       <button id="showAllRunsBtn" class="info-button">📊 View All Runs & Data Guide</button>
       <button id="showArchitectureBtn" class="info-button">📄 Architecture Documentation</button>
+      <button id="showMigrationMonitorBtn" class="info-button migration-monitor-btn">🔄 Migration Monitor</button>
       <div id="resources-list" class="resource-list"></div>
     </section>
 
@@ -162,6 +167,13 @@
                 <option value="force">Force Directed</option>
                 <option value="hierarchical">Hierarchical</option>
               </select>
+            </div>
+            <div class="control-group" style="border: 1px solid #fbbf24; padding: 6px 8px; border-radius: 6px; background: #fff8e1;">
+              <label class="filter-checkbox" style="font-weight: 600; color: #92400e; display: flex; gap: 8px; align-items: center;">
+                <input type="checkbox" id="include-inferred-nodes" aria-label="Include inferred nodes (targets not in files table)">
+                <span>Include inferred nodes (missing targets)</span>
+              </label>
+              <div style="font-size: 12px; color: #b45309; margin-top: 4px;">Shows placeholder nodes for dependencies whose files were not scanned.</div>
             </div>
             <div class="control-group">
               <button id="refresh-graph" type="button" class="btn-small">⟳ Refresh</button>
@@ -465,17 +477,269 @@ curl http://localhost:5028/api/data-retrieval-guide</code></pre>
   <div id="architectureModal" class="modal">
     <div class="modal-content modal-content-wide">
       <div class="modal-header">
-        <h2>📄 Reverse Engineering Architecture Documentation</h2>
+        <h2>📄 Documentation</h2>
         <span class="close arch-close">&times;</span>
       </div>
       <div class="modal-body">
-        <div class="doc-toolbar">
-          <button id="downloadMarkdownBtn" class="doc-button">⬇️ Download Markdown</button>
-          <button id="copyToClipboardBtn" class="doc-button">📋 Copy to Clipboard</button>
-          <span id="docLastModified" class="doc-meta"></span>
+        <!-- Tabs for Architecture and Report -->
+        <div class="doc-tabs">
+          <button class="doc-tab-btn active" data-doc-tab="architecture">🏗️ Architecture</button>
+          <button class="doc-tab-btn" data-doc-tab="report">📊 RE Report</button>
         </div>
-        <div id="architectureContent" class="doc-content">
-          <p>Loading documentation...</p>
+        
+        <!-- Architecture Tab Content -->
+        <div id="architectureTab" class="doc-tab-content active">
+          <div class="doc-toolbar">
+            <button id="downloadMarkdownBtn" class="doc-button">⬇️ Download Markdown</button>
+            <button id="copyToClipboardBtn" class="doc-button">📋 Copy to Clipboard</button>
+            <span id="docLastModified" class="doc-meta"></span>
+          </div>
+          <div id="architectureContent" class="doc-content">
+            <p>Loading documentation...</p>
+          </div>
+        </div>
+        
+        <!-- Reverse Engineering Report Tab Content -->
+        <div id="reportTab" class="doc-tab-content" style="display: none;">
+          <div class="doc-toolbar">
+            <button id="downloadReportBtn" class="doc-button">⬇️ Download Report</button>
+            <button id="copyReportBtn" class="doc-button">📋 Copy to Clipboard</button>
+            <button id="refreshReportBtn" class="doc-button">🔄 Refresh</button>
+            <span id="reportLastModified" class="doc-meta"></span>
+          </div>
+          <div id="reportContent" class="doc-content">
+            <p>Loading reverse engineering report...</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Unified Migration Monitor Modal -->
+  <div id="migrationMonitorModal" class="modal">
+    <div class="modal-content modal-content-wide migration-monitor-modal">
+      <div class="modal-header">
+        <h2>🔄 Migration Monitor</h2>
+        <span class="close migration-monitor-close">&times;</span>
+      </div>
+      <div class="modal-body">
+        <div class="monitor-tabs">
+          <button class="monitor-tab-btn active" data-tab="overview">📊 Overview</button>
+          <button class="monitor-tab-btn" data-tab="migrationLog">📄 Migration Log</button>
+          <button class="monitor-tab-btn" data-tab="chunks">🧩 Chunks</button>
+          <button class="monitor-tab-btn" data-tab="agents">💬 Agent Chat</button>
+          <button class="monitor-tab-btn" data-tab="logs">📜 Logs</button>
+        </div>
+        
+        <!-- Overview Tab - Process Flowchart + Stats -->
+        <div id="overviewTab" class="monitor-tab-content active">
+          <!-- Overall Progress Bar -->
+          <div class="overall-progress-section">
+            <div class="overall-progress-header">
+              <span class="overall-progress-title">📈 Overall Migration Progress</span>
+              <span class="overall-progress-percent" id="overallProgressPercent">0%</span>
+            </div>
+            <div class="overall-progress-bar-container">
+              <div class="overall-progress-bar-track">
+                <div class="overall-progress-bar-fill" id="overallProgressFill" style="width: 0%"></div>
+              </div>
+            </div>
+            <div class="overall-progress-stats">
+              <span class="progress-stat" id="overallProgressStatus">Waiting for migration...</span>
+              <span class="progress-stat" id="overallProgressTarget">Target: --</span>
+              <span class="progress-stat" id="parallelWorkers">🚀 Workers: --</span>
+            </div>
+          </div>
+          
+          <div class="monitor-header">
+            <div class="monitor-run-info">
+              <span class="run-label">Run:</span>
+              <span id="monitorRunId">-</span>
+              <span class="run-status" id="monitorRunStatus">-</span>
+            </div>
+            <div class="monitor-stats">
+              <div class="stat-card">
+                <span class="stat-value" id="monitorProgress">0%</span>
+                <span class="stat-label">Progress</span>
+              </div>
+              <div class="stat-card">
+                <span class="stat-value" id="monitorChunks">0/0</span>
+                <span class="stat-label">Chunks</span>
+              </div>
+              <div class="stat-card">
+                <span class="stat-value" id="monitorTokens">0</span>
+                <span class="stat-label">Tokens</span>
+              </div>
+              <div class="stat-card">
+                <span class="stat-value" id="monitorTime">0s</span>
+                <span class="stat-label">Time</span>
+              </div>
+            </div>
+            <button id="refreshMonitorBtn" class="refresh-btn">⟳ Refresh</button>
+          </div>
+          
+          <div class="monitor-content-grid">
+            <!-- Left: Process Flowchart -->
+            <div class="monitor-flowchart-panel">
+              <h3>Process Pipeline</h3>
+              <div class="process-flowchart" id="monitorFlowchart">
+                <!-- Stages populated by JS -->
+              </div>
+            </div>
+            
+            <!-- Right: Quick Stats & Recent Activity -->
+            <div class="monitor-sidebar">
+              <div class="sidebar-section">
+                <h4>📦 Chunk Summary</h4>
+                <div class="chunk-quick-stats">
+                  <div class="quick-stat pending"><span id="qsPending">0</span> Pending</div>
+                  <div class="quick-stat processing"><span id="qsProcessing">0</span> Processing</div>
+                  <div class="quick-stat completed"><span id="qsCompleted">0</span> Completed</div>
+                  <div class="quick-stat failed"><span id="qsFailed">0</span> Failed</div>
+                </div>
+              </div>
+              
+              <div class="sidebar-section">
+                <h4>📡 Recent Activity</h4>
+                <div class="recent-activity-mini" id="recentActivityMini">
+                  <p class="placeholder-text">No recent activity</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Migration Log Tab - Real-time process log viewer -->
+        <div id="migrationLogTab" class="monitor-tab-content">
+          <div class="migration-log-header">
+            <div class="migration-log-info">
+              <span class="target-language-badge" id="migrationTargetLanguage">--</span>
+              <span class="migration-status-text" id="migrationStatusText">Ready</span>
+            </div>
+            <div class="migration-log-controls">
+              <label class="auto-scroll-toggle">
+                <input type="checkbox" id="migrationLogAutoScroll" checked>
+                <span>Auto-scroll</span>
+              </label>
+              <button id="refreshMigrationLogBtn" class="refresh-btn">⟳ Refresh</button>
+            </div>
+          </div>
+          <div class="migration-log-container">
+            <div class="migration-log-window" id="migrationLogWindow">
+              <div class="migration-log-entries" id="migrationLogEntries">
+                <p class="loading-text">Loading migration log...</p>
+              </div>
+            </div>
+          </div>
+          <div class="live-activity-grid">
+            <div class="live-log-panel">
+              <div class="panel-title">🖥️ Live Run Log (latest file)</div>
+              <div class="live-log-window" id="liveRunLogWindow">
+                <div class="live-log-entries" id="liveRunLogEntries">
+                  <p class="placeholder-text">Waiting for log lines...</p>
+                </div>
+              </div>
+            </div>
+            <div class="active-files-panel">
+              <div class="panel-title">📂 Active Files</div>
+              <div class="active-files-list" id="activeFilesList">
+                <p class="placeholder-text">Waiting for activity...</p>
+              </div>
+            </div>
+          </div>
+          <div class="migration-log-footer">
+            <span id="migrationLogCount">0 entries</span>
+            <span id="migrationLogLastUpdate">Last update: --</span>
+          </div>
+        </div>
+        
+        <!-- Chunks Tab - Detailed chunk progress -->
+        <div id="chunksTab" class="monitor-tab-content">
+          <div class="chunks-header">
+            <div class="chunks-overall-progress">
+              <div class="overall-progress-info">
+                <span class="progress-label">Overall Progress:</span>
+                <span class="progress-value" id="overallChunkProgress">0%</span>
+                <span class="progress-detail">(<span id="completedChunks">0</span>/<span id="totalChunksCount">0</span> chunks)</span>
+              </div>
+              <div class="overall-progress-bar">
+                <div class="progress-fill" id="overallChunkProgressBar" style="width: 0%"></div>
+              </div>
+            </div>
+            <button id="refreshChunksBtn" class="refresh-btn">⟳ Refresh</button>
+          </div>
+          
+          <div class="chunks-content">
+            <div class="chunks-file-list" id="chunkFilesList">
+              <p class="loading-text">Loading chunk data...</p>
+            </div>
+            
+            <div id="chunkDetails" class="chunk-details-panel" style="display: none;">
+              <h4>Chunk Details: <span id="chunkDetailsFile">-</span></h4>
+              <div id="chunkDetailsContent" class="chunk-details-content"></div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Agent Chat Tab -->
+        <div id="agentsTab" class="monitor-tab-content">
+          <div class="agents-header">
+            <div class="agent-filter">
+              <label>Filter:</label>
+              <select id="agentFilter" title="Filter by agent type">
+                <option value="">All Agents</option>
+                <option value="CobolAnalyzer">🔬 Cobol Analyzer</option>
+                <option value="BusinessLogicExtractor">💼 Business Logic</option>
+                <option value="DependencyMapper">🔗 Dependency Mapper</option>
+                <option value="CSharpConverter">⚙️ C# Converter</option>
+                <option value="JavaConverter">☕ Java Converter</option>
+              </select>
+            </div>
+            <div class="agents-controls">
+              <label class="auto-scroll-toggle">
+                <input type="checkbox" id="agentChatAutoScroll" checked>
+                <span>Auto-scroll</span>
+              </label>
+              <button id="expandAllAgentsBtn" class="expand-btn">📖 Expand All</button>
+              <button id="collapseAllAgentsBtn" class="expand-btn">📕 Collapse All</button>
+              <button id="refreshAgentsBtn" class="refresh-btn">⟳ Refresh</button>
+            </div>
+          </div>
+          
+          <div class="conversations-list" id="conversationsList">
+            <p class="loading-text">Loading agent conversations...</p>
+          </div>
+        </div>
+
+        <!-- Logs Tab - Scrollable log windows -->
+        <div id="logsTab" class="monitor-tab-content">
+          <div class="logs-header">
+            <div class="log-type-selector">
+              <button class="log-type-btn active" data-log="all">📋 All Logs</button>
+              <button class="log-type-btn" data-log="console">🖥️ Console</button>
+              <button class="log-type-btn" data-log="agents">🤖 Agents</button>
+              <button class="log-type-btn" data-log="api">📡 API Calls</button>
+            </div>
+            <div class="logs-controls">
+              <label class="auto-scroll-toggle">
+                <input type="checkbox" id="logAutoScroll" checked>
+                <span>Auto-scroll</span>
+              </label>
+              <button id="clearLogsBtn" class="clear-logs-btn">🗑️ Clear</button>
+              <button id="refreshLogsBtn" class="refresh-btn">⟳ Refresh</button>
+            </div>
+          </div>
+          <div class="logs-container">
+            <div class="log-window" id="logWindow">
+              <div class="log-entries" id="logEntries">
+                <p class="loading-text">Loading logs...</p>
+              </div>
+            </div>
+          </div>
+          <div class="log-stats">
+            <span id="logCount">0 entries</span>
+            <span id="logLastUpdate">Last update: --</span>
+          </div>
         </div>
       </div>
     </div>
@@ -485,6 +749,8 @@ curl http://localhost:5028/api/data-retrieval-guide</code></pre>
   <script src="graph.js"></script>
   <script src="main.js"></script>
   <script src="runs-viewer.js"></script>
+  <script src="activity-dashboard.js"></script>
+  <script src="migration-monitor.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script>
     // Toggle collapsible sections
@@ -508,6 +774,13 @@ curl http://localhost:5028/api/data-retrieval-guide</code></pre>
         if (icon) icon.textContent = '▶';
       }
     }
+
+    // Global polling pause when tab is not visible (reduces CPU when tab is in background)
+    window.pageIsVisible = true;
+    document.addEventListener('visibilitychange', () => {
+      window.pageIsVisible = !document.hidden;
+      console.log('[Polling] Tab visibility changed:', window.pageIsVisible ? 'visible' : 'hidden');
+    });
   </script>
 </body>
 </html>
