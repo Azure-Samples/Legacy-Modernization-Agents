@@ -1,10 +1,11 @@
 using System.IO;
+using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
-using Microsoft.SemanticKernel;
-using Microsoft.SemanticKernel.ChatCompletion;
+using CobolToQuarkusMigration.Agents.Infrastructure;
 using CobolToQuarkusMigration.Models;
 using CobolToQuarkusMigration.Persistence;
 
@@ -12,6 +13,7 @@ namespace CobolToQuarkusMigration.Mcp;
 
 /// <summary>
 /// Minimal Model Context Protocol server that exposes migration insights backed by SQLite.
+/// Uses IChatClient for AI operations.
 /// </summary>
 public sealed class McpServer
 {
@@ -26,43 +28,55 @@ public sealed class McpServer
         WriteIndented = false
     };
     private readonly AISettings? _aiSettings;
-    private readonly Kernel? _kernel;
+    private readonly IChatClient? _chatClient;
     private readonly string? _modelId;
 
     private MigrationRunSummary? _runSummaryCache;
     private DependencyMap? _dependencyMapCache;
     private IReadOnlyList<CobolAnalysis>? _analysisCache;
 
-    public McpServer(IMigrationRepository repository, int runId, ILogger<McpServer> logger, AISettings? aiSettings = null)
+    public McpServer(IMigrationRepository repository, int runId, ILogger<McpServer> logger, AISettings? aiSettings = null, IChatClient? chatClient = null)
     {
         _repository = repository;
         _runId = runId;
         _logger = logger;
         _aiSettings = aiSettings;
 
-        if (_aiSettings != null && !string.IsNullOrEmpty(_aiSettings.Endpoint) && !string.IsNullOrEmpty(_aiSettings.ApiKey))
+        // Use provided IChatClient or create one from settings
+        if (chatClient != null)
         {
-            try
+            _chatClient = chatClient;
+            _modelId = _aiSettings?.ChatDeploymentName ?? _aiSettings?.ChatModelId ?? _aiSettings?.DeploymentName ?? _aiSettings?.ModelId ?? "chat-model";
+            _logger.LogInformation("IChatClient provided for custom Q&A with model {ModelId}", _modelId);
+        }
+        else
+        {
+            // Prefer chat-specific settings for portal/Q&A; fall back to general model settings
+            var chatEndpoint = _aiSettings?.ChatEndpoint;
+            var chatApiKey = _aiSettings?.ChatApiKey;
+            var chatDeployment = _aiSettings?.ChatDeploymentName;
+
+            if (string.IsNullOrWhiteSpace(chatEndpoint)) chatEndpoint = _aiSettings?.Endpoint;
+            if (string.IsNullOrWhiteSpace(chatApiKey)) chatApiKey = _aiSettings?.ApiKey;
+            if (string.IsNullOrWhiteSpace(chatDeployment)) chatDeployment = _aiSettings?.ChatModelId;
+            if (string.IsNullOrWhiteSpace(chatDeployment)) chatDeployment = _aiSettings?.DeploymentName;
+            if (string.IsNullOrWhiteSpace(chatDeployment)) chatDeployment = _aiSettings?.ModelId;
+
+            if (!string.IsNullOrEmpty(chatEndpoint) && !string.IsNullOrEmpty(chatApiKey) && !string.IsNullOrEmpty(chatDeployment))
             {
-                var kernelBuilder = Kernel.CreateBuilder();
-                var deploymentName = _aiSettings.DeploymentName;
-                if (string.IsNullOrEmpty(deploymentName))
+                try
                 {
-                    deploymentName = _aiSettings.ModelId;
+                    _chatClient = ChatClientFactory.CreateAzureOpenAIChatClient(
+                        chatEndpoint,
+                        chatApiKey,
+                        chatDeployment);
+                    _modelId = chatDeployment;
+                    _logger.LogInformation("IChatClient initialized for custom Q&A with model {ModelId}", _modelId);
                 }
-
-                kernelBuilder.AddAzureOpenAIChatCompletion(
-                    deploymentName: deploymentName!,
-                    endpoint: _aiSettings.Endpoint,
-                    apiKey: _aiSettings.ApiKey);
-
-                _kernel = kernelBuilder.Build();
-                _modelId = deploymentName;
-                _logger.LogInformation("Semantic Kernel initialized for custom Q&A with model {ModelId}", _modelId);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to initialize Semantic Kernel for custom Q&A");
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to initialize IChatClient for custom Q&A");
+                }
             }
         }
 
@@ -151,7 +165,7 @@ public sealed class McpServer
             ["serverInfo"] = new JsonObject
             {
                 ["name"] = "cobol-migration-insights",
-                ["version"] = "0.1.0"
+                ["version"] = "0.2.0"  // Bumped version for AF migration
             },
             ["capabilities"] = new JsonObject
             {
@@ -184,7 +198,12 @@ public sealed class McpServer
             BuildResource($"insights://runs/{_runId}/graph", "application/json", "Dependency graph visualization data (Neo4j)"),
             BuildResource($"insights://runs/{_runId}/circular-dependencies", "application/json", "Circular dependency cycles detected in codebase"),
             BuildResource($"insights://runs/{_runId}/critical-files", "application/json", "Files with highest dependency connections"),
-            BuildResource($"insights://runs/{_runId}/impact/<filename>", "application/json", "Impact analysis for a specific file")
+            BuildResource($"insights://runs/{_runId}/impact/<filename>", "application/json", "Impact analysis for a specific file"),
+            // Smart Chunking resources
+            BuildResource($"insights://runs/{_runId}/chunks", "application/json", "Chunk processing status for all files in the run"),
+            BuildResource($"insights://runs/{_runId}/chunks/<filename>", "application/json", "Detailed chunk metadata for a specific file"),
+            BuildResource($"insights://runs/{_runId}/signatures", "application/json", "All method signatures across the run for consistency tracking"),
+            BuildResource($"insights://runs/{_runId}/signatures/<filename>", "application/json", "Method signatures for a specific file")
         };
 
         var result = new JsonObject
@@ -224,7 +243,6 @@ public sealed class McpServer
                 break;
             case var graphUri when graphUri.EndsWith("/graph", StringComparison.OrdinalIgnoreCase):
                 {
-                    // Extract runId from URI: insights://runs/{runId}/graph
                     _logger.LogInformation("🔍 Processing graph request for URI: {Uri}", uri);
                     var runIdFromUri = ExtractRunIdFromUri(uri);
                     _logger.LogInformation("🔍 Extracted runId: {RunId} from URI: {Uri}", runIdFromUri, uri);
@@ -260,6 +278,37 @@ public sealed class McpServer
                         return;
                     }
 
+                    contents.Add(await BuildContentAsync(uri, payload));
+                }
+                // Smart Chunking resources
+                else if (uri.EndsWith("/chunks", StringComparison.OrdinalIgnoreCase))
+                {
+                    contents.Add(await BuildContentAsync(uri, (await BuildChunkStatusPayloadAsync())!));
+                }
+                else if (uri.Contains("/chunks/", StringComparison.OrdinalIgnoreCase))
+                {
+                    var fileName = uri[(uri.LastIndexOf('/') + 1)..];
+                    var payload = await BuildChunkDetailsPayloadAsync(Uri.UnescapeDataString(fileName));
+                    if (payload is null)
+                    {
+                        await WriteErrorAsync(request.Id, -32001, $"No chunks found for '{fileName}'");
+                        return;
+                    }
+                    contents.Add(await BuildContentAsync(uri, payload));
+                }
+                else if (uri.EndsWith("/signatures", StringComparison.OrdinalIgnoreCase))
+                {
+                    contents.Add(await BuildContentAsync(uri, (await BuildAllSignaturesPayloadAsync())!));
+                }
+                else if (uri.Contains("/signatures/", StringComparison.OrdinalIgnoreCase))
+                {
+                    var fileName = uri[(uri.LastIndexOf('/') + 1)..];
+                    var payload = await BuildFileSignaturesPayloadAsync(Uri.UnescapeDataString(fileName));
+                    if (payload is null)
+                    {
+                        await WriteErrorAsync(request.Id, -32001, $"No signatures found for '{fileName}'");
+                        return;
+                    }
                     contents.Add(await BuildContentAsync(uri, payload));
                 }
                 else
@@ -617,11 +666,9 @@ public sealed class McpServer
             builder.AppendLine(summary.AnalysisInsights);
         }
 
-        // Use Azure OpenAI to answer custom questions
-        if (!string.IsNullOrWhiteSpace(prompt) && _kernel != null && !string.IsNullOrEmpty(_modelId))
+        // Use IChatClient to answer custom questions
+        if (!string.IsNullOrWhiteSpace(prompt) && _chatClient != null && !string.IsNullOrEmpty(_modelId))
         {
-            builder.AppendLine();
-            builder.AppendLine($"**AI Model: {_modelId}**");
             builder.AppendLine();
             builder.AppendLine($"Your question: {prompt}");
             builder.AppendLine();
@@ -629,7 +676,19 @@ public sealed class McpServer
             try
             {
                 var aiResponse = await GetAIResponseAsync(prompt, summary, dependencyMap, analyses);
-                builder.AppendLine("AI Answer:");
+                
+                // Big ASCII banner to make AI response easy to find
+                builder.AppendLine();
+                builder.AppendLine("╔══════════════════════════════════════════════════════════════════╗");
+                builder.AppendLine("║     _    ___      _    _   _ ______        _______ ____          ║");
+                builder.AppendLine("║    / \\  |_ _|    / \\  | \\ | / ___\\ \\      / / ____|  _ \\         ║");
+                builder.AppendLine("║   / _ \\  | |    / _ \\ |  \\| \\___ \\\\ \\ /\\ / /|  _| | |_) |        ║");
+                builder.AppendLine("║  / ___ \\ | |   / ___ \\| |\\  |___) |\\ V  V / | |___|  _ <         ║");
+                builder.AppendLine("║ /_/   \\_\\___|_/_/   \\_\\_| \\_|____/  \\_/\\_/  |_____|_| \\_\\        ║");
+                builder.AppendLine("║                                                                  ║");
+                builder.AppendLine($"║  Model: {_modelId,-54} ║");
+                builder.AppendLine("╚══════════════════════════════════════════════════════════════════╝");
+                builder.AppendLine();
                 builder.AppendLine(aiResponse);
             }
             catch (Exception ex)
@@ -725,21 +784,22 @@ public sealed class McpServer
             }
         }
 
-        var chatHistory = new ChatHistory();
-        chatHistory.AddSystemMessage("You are an expert COBOL migration assistant. Answer questions about the COBOL to Java migration project based on the provided context. Be concise and specific.");
-        chatHistory.AddUserMessage($"Context:\n{contextBuilder}\n\nUser Question: {prompt}");
-
-        var chatCompletionService = _kernel!.GetRequiredService<IChatCompletionService>();
-        var executionSettings = new PromptExecutionSettings
+        // Use IChatClient for the response
+        var messages = new List<ChatMessage>
         {
-            ExtensionData = new Dictionary<string, object>
-            {
-                ["max_completion_tokens"] = 500  // gpt-5-mini only supports default temperature (1)
-            }
+            new(ChatRole.System, "You are an expert COBOL migration assistant. Answer questions about the COBOL to Java migration project based on the provided context. Be concise and specific."),
+            new(ChatRole.User, $"Context:\n{contextBuilder}\n\nUser Question: {prompt}")
         };
 
-        var response = await chatCompletionService.GetChatMessageContentAsync(chatHistory, executionSettings);
-        return response.Content ?? "Unable to generate response.";
+        var chatOptions = new ChatOptions
+        {
+            MaxOutputTokens = 500
+        };
+
+        var response = await _chatClient!.GetResponseAsync(messages, chatOptions);
+        var messageContent = response.Text;
+        
+        return string.IsNullOrWhiteSpace(messageContent) ? "Unable to generate response." : messageContent;
     }
 
     private async Task<MigrationRunSummary?> EnsureRunSummaryAsync()
@@ -779,7 +839,6 @@ public sealed class McpServer
     {
         Console.WriteLine($"🚀 BuildGraphPayloadAsync called with requestedRunId={requestedRunId}");
 
-        // Use requested runId from URI, or fall back to server's default _runId
         var runId = requestedRunId ?? _runId;
         Console.WriteLine($"🔍 Using runId={runId}, default _runId={_runId}");
         _logger.LogInformation("🔍 BuildGraphPayloadAsync: requestedRunId={RequestedRunId}, using runId={RunId}, default _runId={DefaultRunId}",
@@ -967,12 +1026,8 @@ public sealed class McpServer
         };
     }
 
-    /// <summary>
-    /// Extracts the runId from a resource URI like "insights://runs/44/graph"
-    /// </summary>
     private int? ExtractRunIdFromUri(string uri)
     {
-        // Pattern: insights://runs/{runId}/...
         var match = System.Text.RegularExpressions.Regex.Match(uri, @"runs/(\d+)/");
         if (match.Success && int.TryParse(match.Groups[1].Value, out var runId))
         {
@@ -981,7 +1036,223 @@ public sealed class McpServer
         }
 
         _logger.LogWarning("Could not extract runId from URI: {Uri}, using default {DefaultRunId}", uri, _runId);
-        return null; // Will use default _runId
+        return null;
+    }
+
+    // ============================================================
+    // SMART CHUNKING PAYLOAD BUILDERS
+    // ============================================================
+
+    private async Task<JsonObject?> BuildChunkStatusPayloadAsync()
+    {
+        if (_repository is not HybridMigrationRepository hybridRepo)
+        {
+            return new JsonObject
+            {
+                ["error"] = "Chunking data not available - requires HybridMigrationRepository",
+                ["files"] = new JsonArray()
+            };
+        }
+
+        try
+        {
+            var statusList = await hybridRepo.GetChunkProcessingStatusAsync(_runId);
+            var filesArray = new JsonArray();
+
+            foreach (var status in statusList)
+            {
+                filesArray.Add(new JsonObject
+                {
+                    ["sourceFile"] = status.SourceFile,
+                    ["totalChunks"] = status.TotalChunks,
+                    ["completedChunks"] = status.CompletedChunks,
+                    ["failedChunks"] = status.FailedChunks,
+                    ["pendingChunks"] = status.PendingChunks,
+                    ["progressPercentage"] = Math.Round(status.ProgressPercentage, 2),
+                    ["totalProcessingTimeMs"] = status.TotalProcessingTimeMs,
+                    ["totalTokensUsed"] = status.TotalTokensUsed
+                });
+            }
+
+            return new JsonObject
+            {
+                ["runId"] = _runId,
+                ["totalFiles"] = statusList.Count,
+                ["files"] = filesArray
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error building chunk status payload");
+            return new JsonObject
+            {
+                ["error"] = $"Failed to retrieve chunk status: {ex.Message}",
+                ["files"] = new JsonArray()
+            };
+        }
+    }
+
+    private async Task<JsonObject?> BuildChunkDetailsPayloadAsync(string fileName)
+    {
+        if (_repository is not HybridMigrationRepository hybridRepo)
+        {
+            return null;
+        }
+
+        try
+        {
+            var chunks = await hybridRepo.GetChunksForFileAsync(_runId, fileName);
+            if (chunks.Count == 0)
+            {
+                return null;
+            }
+
+            var chunksArray = new JsonArray();
+            foreach (var chunk in chunks)
+            {
+                var chunkObj = new JsonObject
+                {
+                    ["chunkIndex"] = chunk.ChunkIndex,
+                    ["startLine"] = chunk.StartLine,
+                    ["endLine"] = chunk.EndLine,
+                    ["status"] = chunk.Status,
+                    ["tokensUsed"] = chunk.TokensUsed,
+                    ["processingTimeMs"] = chunk.ProcessingTimeMs
+                };
+
+                if (chunk.SemanticUnits.Count > 0)
+                {
+                    var unitsArray = new JsonArray();
+                    foreach (var unit in chunk.SemanticUnits)
+                    {
+                        unitsArray.Add(unit);
+                    }
+                    chunkObj["semanticUnits"] = unitsArray;
+                }
+
+                if (chunk.CompletedAt.HasValue)
+                {
+                    chunkObj["completedAt"] = chunk.CompletedAt.Value.ToString("O");
+                }
+
+                chunksArray.Add(chunkObj);
+            }
+
+            var completedChunks = chunks.Count(c => c.Status == "Completed");
+            var totalLines = chunks.Max(c => c.EndLine) - chunks.Min(c => c.StartLine) + 1;
+
+            return new JsonObject
+            {
+                ["runId"] = _runId,
+                ["sourceFile"] = fileName,
+                ["totalChunks"] = chunks.Count,
+                ["completedChunks"] = completedChunks,
+                ["progressPercentage"] = chunks.Count > 0 ? Math.Round((double)completedChunks / chunks.Count * 100, 2) : 0,
+                ["totalLines"] = totalLines,
+                ["totalTokensUsed"] = chunks.Sum(c => c.TokensUsed),
+                ["totalProcessingTimeMs"] = chunks.Sum(c => c.ProcessingTimeMs),
+                ["chunks"] = chunksArray
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error building chunk details payload for {FileName}", fileName);
+            return null;
+        }
+    }
+
+    private async Task<JsonObject?> BuildAllSignaturesPayloadAsync()
+    {
+        if (_repository is not HybridMigrationRepository hybridRepo)
+        {
+            return new JsonObject
+            {
+                ["error"] = "Signature data not available - requires HybridMigrationRepository",
+                ["signatures"] = new JsonArray()
+            };
+        }
+
+        try
+        {
+            var signatures = await hybridRepo.GetAllSignaturesAsync(_runId);
+            var signaturesArray = new JsonArray();
+
+            var byFile = signatures.GroupBy(s => s.SourceFile);
+            var fileCount = byFile.Count();
+
+            foreach (var sig in signatures)
+            {
+                signaturesArray.Add(new JsonObject
+                {
+                    ["sourceFile"] = sig.SourceFile,
+                    ["legacyName"] = sig.LegacyName,
+                    ["targetMethodName"] = sig.TargetMethodName,
+                    ["targetSignature"] = sig.TargetSignature,
+                    ["returnType"] = sig.ReturnType,
+                    ["definedInChunk"] = sig.DefinedInChunk
+                });
+            }
+
+            return new JsonObject
+            {
+                ["runId"] = _runId,
+                ["totalSignatures"] = signatures.Count,
+                ["filesWithSignatures"] = fileCount,
+                ["signatures"] = signaturesArray
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error building all signatures payload");
+            return new JsonObject
+            {
+                ["error"] = $"Failed to retrieve signatures: {ex.Message}",
+                ["signatures"] = new JsonArray()
+            };
+        }
+    }
+
+    private async Task<JsonObject?> BuildFileSignaturesPayloadAsync(string fileName)
+    {
+        if (_repository is not HybridMigrationRepository hybridRepo)
+        {
+            return null;
+        }
+
+        try
+        {
+            var signatures = await hybridRepo.GetSignaturesForFileAsync(_runId, fileName);
+            if (signatures.Count == 0)
+            {
+                return null;
+            }
+
+            var signaturesArray = new JsonArray();
+            foreach (var sig in signatures)
+            {
+                signaturesArray.Add(new JsonObject
+                {
+                    ["legacyName"] = sig.LegacyName,
+                    ["targetMethodName"] = sig.TargetMethodName,
+                    ["targetSignature"] = sig.TargetSignature,
+                    ["returnType"] = sig.ReturnType,
+                    ["definedInChunk"] = sig.DefinedInChunk
+                });
+            }
+
+            return new JsonObject
+            {
+                ["runId"] = _runId,
+                ["sourceFile"] = fileName,
+                ["totalSignatures"] = signatures.Count,
+                ["signatures"] = signaturesArray
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error building file signatures payload for {FileName}", fileName);
+            return null;
+        }
     }
 
     private sealed class JsonRpcRequest : IDisposable

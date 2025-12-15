@@ -51,16 +51,10 @@ local.settings.json
 # SECURITY - Sensitive Information Protection
 # =============================================================================
 
-# Ignore all Config folder files to prevent credential leaks
-Config/
-!Config/.gitkeep
-
-# Azure OpenAI Credentials and API Keys
+# Config folder - allow most files, block local overrides with real secrets
 Config/ai-config.local.env
 Config/*.local.env
-Config/ai-config.env
-Config/appsettings.json
-Config/appsettings.local.json
+Config/*.local.json
 Config/appsettings.secrets.json
 *.key
 *.secret

@@ -63,7 +63,7 @@ DEFAULT_MCP_PORT=5028
 
 # Function to show usage
 show_usage() {
-    echo -e "${BOLD}${BLUE}🧠 COBOL to Java Quarkus Migration Tool${NC}"
+    echo -e "${BOLD}${BLUE}🧠 COBOL to Java/C# Migration Tool${NC}"
     echo -e "${BLUE}==========================================${NC}"
     echo
     echo -e "${BOLD}Usage:${NC} $0 [command]"
@@ -71,12 +71,14 @@ show_usage() {
     echo -e "${BOLD}Available Commands:${NC}"
     echo -e "  ${GREEN}setup${NC}           Interactive configuration setup"
     echo -e "  ${GREEN}test${NC}            Full system validation and testing"
-    echo -e "  ${GREEN}run${NC}             Start full migration (reverse eng + Java conversion + UI)"
-    echo -e "  ${GREEN}convert-only${NC}    Convert COBOL to Java only (skip reverse eng + UI)"
+    echo -e "  ${GREEN}run${NC}             Start full migration (auto-detects chunking needs)"
+    echo -e "  ${GREEN}convert-only${NC}    Convert COBOL only (skip reverse eng + UI)"
+    echo -e "  ${GREEN}portal${NC}          Start the web portal (documentation & monitoring)"
     echo -e "  ${GREEN}doctor${NC}          Diagnose configuration issues (default)"
     echo -e "  ${GREEN}reverse-eng${NC}     Run reverse engineering analysis only (no UI)"
     echo -e "  ${GREEN}resume${NC}          Resume interrupted migration"
     echo -e "  ${GREEN}monitor${NC}         Monitor migration progress"
+    echo -e "  ${GREEN}chunking-health${NC} Check smart chunking infrastructure"
     echo -e "  ${GREEN}chat-test${NC}       Test chat logging functionality"
     echo -e "  ${GREEN}validate${NC}        Validate system requirements"
     echo -e "  ${GREEN}conversation${NC}    Start interactive conversation mode"
@@ -86,8 +88,16 @@ show_usage() {
     echo -e "  $0 setup             ${CYAN}# Interactive setup${NC}"
     echo -e "  $0 test              ${CYAN}# Test configuration and dependencies${NC}"
     echo -e "  $0 reverse-eng       ${CYAN}# Extract business logic only (no conversion, no UI)${NC}"
-    echo -e "  $0 run               ${CYAN}# Full migration: reverse eng + Java conversion + UI${NC}"
-    echo -e "  $0 convert-only      ${CYAN}# Java conversion only (skip reverse eng) + UI${NC}"
+    echo -e "  $0 run               ${CYAN}# Full migration (auto-chunks large files)${NC}"
+    echo -e "  $0 portal            ${CYAN}# Start portal to view docs & reports${NC}"
+    echo -e "  $0 convert-only      ${CYAN}# Conversion only (skip reverse eng) + UI${NC}"
+    echo
+    echo -e "${BOLD}Smart Chunking (v0.2):${NC}"
+    echo -e "  Large files (>150K chars or >3000 lines) are automatically"
+    echo -e "  routed through SmartMigrationOrchestrator for optimal processing."
+    echo -e "  - Full Migration: Uses ChunkedMigrationProcess for conversion"
+    echo -e "  - RE-Only Mode: Uses ChunkedReverseEngineeringProcess for analysis"
+    echo -e "  No manual chunking flags required - detection is automatic."
     echo
 }
 
@@ -166,9 +176,9 @@ if not os.path.exists(db_path):
     raise SystemExit
 
 query = """
-SELECT id, status, coalesce(completed_at, updated_at, created_at)
-FROM migration_runs
-ORDER BY created_at DESC
+SELECT id, status, coalesce(completed_at, started_at)
+FROM runs
+ORDER BY started_at DESC
 LIMIT 1
 """
 
@@ -216,6 +226,12 @@ launch_mcp_web_ui() {
     local port="${MCP_WEB_PORT:-$DEFAULT_MCP_PORT}"
     local url="http://$host:$port"
 
+    # Ensure AI env is loaded (chat vs responses) before launching portal/MCP
+    if ! load_configuration || ! load_ai_config; then
+        echo -e "${RED}❌ Failed to load AI configuration. Portal launch aborted.${NC}"
+        return 1
+    fi
+
     echo ""
     echo -e "${BLUE}🌐 Launching MCP Web UI...${NC}"
     echo "================================"
@@ -248,6 +264,94 @@ launch_mcp_web_ui() {
 
     export MIGRATION_DB_PATH="$db_path"
     ASPNETCORE_URLS="$url" ASPNETCORE_HTTP_PORTS="$port" "$DOTNET_CMD" run --project "$REPO_ROOT/McpChatWeb"
+}
+
+# Function to launch portal in background for monitoring during migration
+launch_portal_background() {
+    local db_path="${1:-$REPO_ROOT/Data/migration.db}"
+    local host="${MCP_WEB_HOST:-$DEFAULT_MCP_HOST}"
+    local port="${MCP_WEB_PORT:-$DEFAULT_MCP_PORT}"
+    local url="http://$host:$port"
+
+    echo ""
+    echo -e "${BLUE}🌐 Launching Portal in Background for Monitoring...${NC}"
+    echo "===================================================="
+    
+    # Check if port is already in use and clean up
+    if lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; then
+        echo -e "${YELLOW}⚠️  Port $port is already in use. Cleaning up...${NC}"
+        local pid=$(lsof -ti:$port)
+        if [[ -n "$pid" ]]; then
+            kill -9 $pid 2>/dev/null && echo -e "${GREEN}✅ Killed existing process on port $port${NC}" || true
+            sleep 1
+        fi
+    fi
+
+    # Launch portal in background
+    export MIGRATION_DB_PATH="$db_path"
+    ASPNETCORE_URLS="$url" ASPNETCORE_HTTP_PORTS="$port" "$DOTNET_CMD" run --project "$REPO_ROOT/McpChatWeb" > "$REPO_ROOT/Logs/portal.log" 2>&1 &
+    PORTAL_PID=$!
+    
+    # Wait for portal to start
+    echo -e "${BLUE}⏳ Waiting for portal to start...${NC}"
+    local max_wait=15
+    local waited=0
+    while ! lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; do
+        sleep 1
+        waited=$((waited + 1))
+        if [[ $waited -ge $max_wait ]]; then
+            echo -e "${YELLOW}⚠️  Portal may not have started yet, continuing...${NC}"
+            break
+        fi
+    done
+    
+    if lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; then
+        echo -e "${GREEN}✅ Portal running at ${BOLD}$url${NC} (PID: $PORTAL_PID)"
+        open_url_in_browser "$url"
+    fi
+    
+    echo -e "${CYAN}📊 Monitor migration progress in portal: $url${NC}"
+    echo -e "${CYAN}📄 Click 'Migration Monitor' button to see real-time progress${NC}"
+    echo ""
+}
+
+# Function to stop background portal
+stop_portal_background() {
+    if [[ -n "$PORTAL_PID" ]] && kill -0 "$PORTAL_PID" 2>/dev/null; then
+        echo -e "${BLUE}🛑 Stopping background portal (PID: $PORTAL_PID)...${NC}"
+        kill "$PORTAL_PID" 2>/dev/null
+        wait "$PORTAL_PID" 2>/dev/null
+        echo -e "${GREEN}✅ Portal stopped${NC}"
+    fi
+}
+
+# Function to run portal standalone
+run_portal() {
+    echo -e "${BLUE}🌐 Starting Migration Portal${NC}"
+    echo "============================="
+    echo ""
+    echo "The portal provides:"
+    echo "  • 📊 Migration monitoring and progress"
+    echo "  • 📄 Architecture documentation with Mermaid diagrams"
+    echo "  • 📋 Reverse engineering reports with business logic"
+    echo "  • 🔄 Real-time agent chat and chunk status"
+    echo ""
+    
+    local db_path
+    if ! db_path="$(get_migration_db_path)" || [[ -z "$db_path" ]]; then
+        db_path="$REPO_ROOT/Data/migration.db"
+        echo -e "${YELLOW}ℹ️  Using default database path: $db_path${NC}"
+    fi
+    
+    # Check for generated RE report
+    if [[ -f "$REPO_ROOT/output/reverse-engineering-details.md" ]]; then
+        echo -e "${GREEN}✅ Reverse engineering report available in portal${NC}"
+    else
+        echo -e "${YELLOW}ℹ️  No RE report yet - run './doctor.sh reverse-eng' first${NC}"
+    fi
+    echo ""
+    
+    launch_mcp_web_ui "$db_path"
 }
 
 # Function to load configuration
@@ -334,10 +438,17 @@ run_doctor() {
     fi
 
     # Check documentation
-    if [[ -f "$REPO_ROOT/REVERSE_ENGINEERING.md" ]]; then
-        echo -e "${GREEN}✅ Reverse engineering documentation found${NC}"
+    if [[ -f "$REPO_ROOT/REVERSE_ENGINEERING_ARCHITECTURE.md" ]]; then
+        echo -e "${GREEN}✅ Reverse engineering architecture documentation found${NC}"
     else
-        echo -e "${YELLOW}⚠️  Missing reverse engineering documentation${NC}"
+        echo -e "${YELLOW}⚠️  Missing reverse engineering architecture documentation${NC}"
+    fi
+
+    # Check for generated RE report
+    if [[ -f "$REPO_ROOT/output/reverse-engineering-details.md" ]]; then
+        echo -e "${GREEN}✅ Generated reverse engineering report found${NC}"
+    else
+        echo -e "${YELLOW}ℹ️  No generated RE report yet (run reverse engineering first)${NC}"
     fi
 
     echo
@@ -431,8 +542,19 @@ run_doctor() {
     echo "• ./doctor.sh test          - Full system validation"
     echo "• ./doctor.sh run           - Start migration"
     echo "• ./doctor.sh reverse-eng   - Run reverse engineering only"
-    echo "• CONFIGURATION_GUIDE.md    - Detailed setup instructions"
-    echo "• REVERSE_ENGINEERING.md    - Reverse engineering guide"
+    echo "• ./doctor.sh portal        - Start the web portal"
+    echo ""
+    echo -e "${BLUE}📄 Documentation${NC}"
+    echo "=================="
+    echo "• CONFIGURATION_GUIDE.md                  - Detailed setup instructions"
+    echo "• REVERSE_ENGINEERING_ARCHITECTURE.md    - RE architecture & diagrams"
+    echo "• output/reverse-engineering-details.md  - Generated business logic report"
+    echo ""
+    echo -e "${BLUE}🌐 Portal Documentation${NC}"
+    echo "========================"
+    echo "• Start portal: ./doctor.sh portal (or cd McpChatWeb && dotnet run)"
+    echo "• Click '📄 Architecture Documentation' button in portal"
+    echo "• View tabs: 🏗️ Architecture (diagrams) | 📊 RE Report (business logic)"
 
     echo
     echo -e "${BLUE}💡 Troubleshooting Tips${NC}"
@@ -702,14 +824,14 @@ run_test() {
         return 1
     fi
 
-    # Check Semantic Kernel dependencies
+    # Check Microsoft Agent Framework dependencies
     echo ""
-    echo "Checking Semantic Kernel dependencies..."
-    if "$DOTNET_CMD" list package | grep -q "Microsoft.SemanticKernel"; then
-        sk_version=$("$DOTNET_CMD" list package | grep "Microsoft.SemanticKernel" | awk '{print $3}' | head -1)
-        echo -e "${GREEN}✅ Semantic Kernel dependencies resolved (version: $sk_version)${NC}"
+    echo "Checking Microsoft Agent Framework dependencies..."
+    if "$DOTNET_CMD" list package | grep -q "Microsoft.Agents.AI"; then
+        af_version=$("$DOTNET_CMD" list package | grep "Microsoft.Agents.AI" | awk '{print $3}' | head -1)
+        echo -e "${GREEN}✅ Microsoft Agent Framework dependencies resolved (version: $af_version)${NC}"
     else
-        echo -e "${YELLOW}⚠️  Semantic Kernel packages not found, checking project file...${NC}"
+        echo -e "${YELLOW}⚠️  Microsoft Agent Framework packages not found, checking project file...${NC}"
     fi
 
     # Build project
@@ -746,22 +868,39 @@ run_test() {
     # Check output directories
     echo ""
     echo "Checking output directories..."
-    if [ -d "$REPO_ROOT/output" ]; then
-        java_files=$(find "$REPO_ROOT/output" -name "*.java" 2>/dev/null | wc -l)
+    
+    # Check Java output folder
+    if [ -d "$REPO_ROOT/output/java" ]; then
+        java_files=$(find "$REPO_ROOT/output/java" -name "*.java" 2>/dev/null | wc -l)
         if [ "$java_files" -gt 0 ]; then
-            echo -e "${GREEN}✅ Found previous Java output ($java_files files)${NC}"
+            echo -e "${GREEN}✅ Found previous Java output ($java_files files) in output/java/${NC}"
         else
-            echo -e "${BLUE}ℹ️  No previous Java output found (will be created during migration)${NC}"
+            echo -e "${BLUE}ℹ️  No previous Java output found in output/java/${NC}"
         fi
-
+    else
+        echo -e "${BLUE}ℹ️  Java output directory (output/java/) will be created during migration${NC}"
+    fi
+    
+    # Check C# output folder
+    if [ -d "$REPO_ROOT/output/csharp" ]; then
+        csharp_files=$(find "$REPO_ROOT/output/csharp" -name "*.cs" 2>/dev/null | wc -l)
+        if [ "$csharp_files" -gt 0 ]; then
+            echo -e "${GREEN}✅ Found previous C# output ($csharp_files files) in output/csharp/${NC}"
+        else
+            echo -e "${BLUE}ℹ️  No previous C# output found in output/csharp/${NC}"
+        fi
+    else
+        echo -e "${BLUE}ℹ️  C# output directory (output/csharp/) will be created during migration${NC}"
+    fi
+    
+    # Check for reverse engineering output
+    if [ -d "$REPO_ROOT/output" ]; then
         md_files=$(find "$REPO_ROOT/output" -name "*.md" 2>/dev/null | wc -l)
         if [ "$md_files" -gt 0 ]; then
             echo -e "${GREEN}✅ Found previous reverse engineering output ($md_files markdown files)${NC}"
         else
             echo -e "${BLUE}ℹ️  No previous reverse engineering output found${NC}"
         fi
-    else
-        echo -e "${BLUE}ℹ️  Output directory will be created during migration${NC}"
     fi
 
     # Check logging infrastructure
@@ -792,6 +931,27 @@ run_test() {
     else
         echo -e "${BLUE}ℹ️  Reverse engineering feature not installed${NC}"
     fi
+    
+    # Check for smart chunking infrastructure (v0.2)
+    echo ""
+    echo "Checking smart chunking infrastructure (v0.2)..."
+    chunking_components=0
+    chunking_total=3
+    
+    [ -f "$REPO_ROOT/Processes/SmartMigrationOrchestrator.cs" ] && ((chunking_components++))
+    [ -f "$REPO_ROOT/Processes/ChunkedMigrationProcess.cs" ] && ((chunking_components++))
+    [ -f "$REPO_ROOT/Processes/ChunkedReverseEngineeringProcess.cs" ] && ((chunking_components++))
+    
+    if [ $chunking_components -eq $chunking_total ]; then
+        echo -e "${GREEN}✅ Smart chunking infrastructure complete ($chunking_components/$chunking_total)${NC}"
+        echo -e "   ${CYAN}SmartMigrationOrchestrator${NC} - Routes files by size/complexity"
+        echo -e "   ${CYAN}ChunkedMigrationProcess${NC} - Handles large file conversion"
+        echo -e "   ${CYAN}ChunkedReverseEngineeringProcess${NC} - Handles large file RE analysis"
+    elif [ $chunking_components -gt 0 ]; then
+        echo -e "${YELLOW}⚠️  Partial smart chunking support ($chunking_components/$chunking_total components)${NC}"
+    else
+        echo -e "${YELLOW}⚠️  Smart chunking infrastructure not found${NC}"
+    fi
 
     echo ""
     echo -e "${GREEN}🚀 Ready to run migration!${NC}"
@@ -811,16 +971,212 @@ run_test() {
     if [ "$total_files" -gt 0 ]; then
         echo "Expected Results:"
         echo "  - Process $cobol_files COBOL files and $copybook_files copybooks"
-        echo "  - Generate $cobol_files+ Java files"
+        echo "  - Generate Java files to output/java/ OR C# files to output/csharp/"
         echo "  - Create dependency maps"
         echo "  - Generate migration reports"
+        echo ""
+        echo "Target Language:"
+        echo "  - Select during migration (Java or C#)"
+        echo "  - Large files auto-split into multiple output files"
     fi
 }
 
 # Function to run migration
 run_migration() {
-    echo -e "${BLUE}🚀 Starting COBOL Migration...${NC}"
+    echo -e "${BLUE}🚀 COBOL Migration Tool${NC}"
     echo "=============================================="
+
+    echo -e "${BLUE}Using dotnet CLI:${NC} $DOTNET_CMD"
+
+    # Load configuration
+    echo "🔧 Loading AI configuration..."
+    if ! load_configuration; then
+        echo -e "${RED}❌ Configuration loading failed. Please run: ./doctor.sh setup${NC}"
+        return 1
+    fi
+
+    # Load and validate configuration
+    if ! load_ai_config; then
+        echo -e "${RED}❌ Configuration loading failed. Please check your ai-config.local.env file.${NC}"
+        return 1
+    fi
+
+    # Check for existing reverse engineering results
+    local re_output_file="$REPO_ROOT/output/reverse-engineering-details.md"
+    local has_re_report="no"
+    if [ -f "$re_output_file" ]; then
+        has_re_report="yes"
+    fi
+
+    echo ""
+    echo "📋 What would you like to do?"
+    echo "========================================"
+    echo "  1) Full Migration (Analysis + Code Conversion)"
+    echo "  2) Reverse Engineering Report Only (no code conversion)"
+    if [[ "$has_re_report" == "yes" ]]; then
+        echo "  3) Code Conversion Only (use existing RE report)"
+    fi
+    echo ""
+    
+    local max_choice=2
+    [[ "$has_re_report" == "yes" ]] && max_choice=3
+    
+    read -p "Enter choice (1-$max_choice) [default: 1]: " action_choice
+    
+    # Default to full migration
+    if [[ -z "$action_choice" ]]; then
+        action_choice="1"
+    fi
+
+    # Handle Reverse Engineering Only
+    if [[ "$action_choice" == "2" ]]; then
+        echo ""
+        echo -e "${GREEN}✅ Selected: Reverse Engineering Report Only${NC}"
+        echo ""
+        run_reverse_engineering
+        return $?
+    fi
+
+    # Handle Conversion Only (if RE report exists)
+    if [[ "$action_choice" == "3" ]] && [[ "$has_re_report" == "yes" ]]; then
+        echo ""
+        echo -e "${GREEN}✅ Selected: Code Conversion Only (using existing RE report)${NC}"
+        # Set flag to skip RE and continue to language selection
+        local skip_reverse_eng="--skip-reverse-engineering"
+    else
+        local skip_reverse_eng=""
+    fi
+
+    # For options 1 and 3, continue with language selection and migration
+    echo ""
+    echo "🎯 Select Target Language for Migration"
+    echo "========================================"
+    echo "  1) Java (Quarkus)"
+    echo "  2) C# (.NET)"
+    echo ""
+    read -p "Enter choice (1 or 2) [default: 1]: " lang_choice
+    
+    # Trim whitespace from input
+    lang_choice=$(echo "$lang_choice" | tr -d '[:space:]')
+    
+    # Validate the choice explicitly
+    if [[ "$lang_choice" == "2" ]]; then
+        export TARGET_LANGUAGE="CSharp"
+        echo -e "${GREEN}✅ Selected: C# (.NET)${NC}"
+    elif [[ "$lang_choice" == "1" ]] || [[ -z "$lang_choice" ]]; then
+        export TARGET_LANGUAGE="Java"
+        echo -e "${GREEN}✅ Selected: Java (Quarkus)${NC}"
+    else
+        echo -e "${YELLOW}⚠️  Invalid choice '$lang_choice', defaulting to Java${NC}"
+        export TARGET_LANGUAGE="Java"
+    fi
+
+    # ========================
+    # QUALITY GATE: Verify TARGET_LANGUAGE is correctly set before proceeding
+    # ========================
+    echo ""
+    echo -e "${CYAN}🔒 Quality Gate: Verifying language selection...${NC}"
+    if [[ "$TARGET_LANGUAGE" != "Java" ]] && [[ "$TARGET_LANGUAGE" != "CSharp" ]]; then
+        echo -e "${RED}❌ QUALITY GATE FAILED: TARGET_LANGUAGE='$TARGET_LANGUAGE' is invalid${NC}"
+        echo -e "${RED}   Must be 'Java' or 'CSharp'. Aborting migration.${NC}"
+        return 1
+    fi
+    
+    # Double-check: Ask for confirmation if C# was selected (to prevent accidental Java)
+    if [[ "$TARGET_LANGUAGE" == "CSharp" ]]; then
+        echo -e "${BOLD}${GREEN}▶▶▶ CONFIRMED: Target Language = C# (.NET) ◀◀◀${NC}"
+    else
+        echo -e "${BOLD}${GREEN}▶▶▶ CONFIRMED: Target Language = Java (Quarkus) ◀◀◀${NC}"
+    fi
+    echo -e "${GREEN}✅ Quality Gate PASSED: TARGET_LANGUAGE='$TARGET_LANGUAGE'${NC}"
+    echo ""
+
+    echo -e "${CYAN}🧩 Smart Chunking: AUTO-ENABLED${NC}"
+    echo "================================"
+    echo "Large files (>150K chars or >3000 lines) will automatically"
+    echo "be split into semantic chunks for optimal processing."
+    echo ""
+    
+    # Launch portal in background for monitoring
+    local db_path="$REPO_ROOT/Data/migration.db"
+    launch_portal_background "$db_path"
+    
+    echo "🚀 Starting COBOL to ${TARGET_LANGUAGE} Migration..."
+    echo "=============================================="
+
+    # For full migration (option 1), check if user wants to skip existing RE
+    if [[ -z "$skip_reverse_eng" ]] && [[ "$has_re_report" == "yes" ]]; then
+        echo ""
+        echo -e "${GREEN}✅ Found existing reverse engineering results:${NC} $(basename "$re_output_file")"
+        echo -e "${BLUE}ℹ️  You can skip reverse engineering to save time and API costs${NC}"
+        echo ""
+        read -p "Do you want to skip reverse engineering? (Y/n): " -n 1 -r
+        echo ""
+        if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
+            skip_reverse_eng="--skip-reverse-engineering"
+            echo -e "${BLUE}ℹ️  Skipping reverse engineering, using existing results${NC}"
+        else
+            echo -e "${BLUE}ℹ️  Will re-run reverse engineering as requested${NC}"
+        fi
+        echo ""
+    elif [[ -z "$skip_reverse_eng" ]]; then
+        echo ""
+        echo -e "${BLUE}ℹ️  No previous reverse engineering results found${NC}"
+        echo -e "${BLUE}ℹ️  Full migration will include reverse engineering + ${TARGET_LANGUAGE} conversion${NC}"
+        echo ""
+    fi
+
+    # Run the application - smart chunking is auto-detected
+    # Export TARGET_LANGUAGE and output folder so it's available to the dotnet process
+    export TARGET_LANGUAGE
+    export MIGRATION_DB_PATH="$REPO_ROOT/Data/migration.db"
+    if [[ "$TARGET_LANGUAGE" == "Java" ]]; then
+        export JAVA_OUTPUT_FOLDER="output/java"
+    else
+        export CSHARP_OUTPUT_FOLDER="output/csharp"
+    fi
+    
+    echo -e "${CYAN}🎯 Target: ${TARGET_LANGUAGE}${NC}"
+    echo -e "${CYAN}💾 Database: $MIGRATION_DB_PATH${NC}"
+    
+    "$DOTNET_CMD" run -- --source ./source $skip_reverse_eng
+    local migration_exit=$?
+
+    if [[ $migration_exit -ne 0 ]]; then
+        echo ""
+        echo -e "${RED}❌ Migration process failed (exit code $migration_exit).${NC}"
+        echo -e "${BLUE}ℹ️  Portal is still running at http://localhost:$DEFAULT_MCP_PORT for debugging${NC}"
+        return $migration_exit
+    fi
+    
+    # Ask if user wants to generate a migration report
+    echo ""
+    echo -e "${BLUE}📄 Generate Migration Report?${NC}"
+    echo "========================================"
+    read -p "Generate a detailed migration report for this run? (Y/n): " -n 1 -r
+    echo ""
+    if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
+        generate_migration_report
+    fi
+
+    echo ""
+    echo -e "${GREEN}✅ Migration completed successfully!${NC}"
+    echo -e "${BLUE}🌐 Portal is running at http://localhost:$DEFAULT_MCP_PORT${NC}"
+    echo -e "${CYAN}📊 View results in 'Migration Monitor' or '📄 Architecture Documentation' → '📊 RE Report'${NC}"
+    echo ""
+    echo -e "${YELLOW}Press Ctrl+C to stop the portal when done viewing.${NC}"
+    
+    # Keep portal running in foreground now
+    if [[ -n "$PORTAL_PID" ]] && kill -0 "$PORTAL_PID" 2>/dev/null; then
+        # Bring portal to foreground by waiting for it
+        wait "$PORTAL_PID"
+    fi
+}
+
+# Function to run migration with chunking auto-enabled (no prompts for chunking)
+run_migration_chunked() {
+    echo -e "${BLUE}🧩 Starting COBOL Migration with Smart Chunking...${NC}"
+    echo "===================================================="
 
     echo -e "${BLUE}Using dotnet CLI:${NC} $DOTNET_CMD"
 
@@ -843,31 +1199,51 @@ run_migration() {
     echo "  1) Java (Quarkus)"
     echo "  2) C# (.NET)"
     echo ""
-    read -p "Enter choice (1 or 2) [default: 1]: " lang_choice
+    read -p "Enter choice (1 or 2) [default: 2 - C#]: " lang_choice
     
-    # Default to Java if empty or invalid
-    if [[ -z "$lang_choice" ]] || [[ "$lang_choice" != "2" ]]; then
-        lang_choice="1"
+    # Trim whitespace from input
+    lang_choice=$(echo "$lang_choice" | tr -d '[:space:]')
+    
+    # Validate the choice explicitly - default to C# for chunked migrations
+    if [[ "$lang_choice" == "1" ]]; then
+        export TARGET_LANGUAGE="Java"
+        echo -e "${GREEN}✅ Selected: Java (Quarkus)${NC}"
+    elif [[ "$lang_choice" == "2" ]] || [[ -z "$lang_choice" ]]; then
+        export TARGET_LANGUAGE="CSharp"
+        echo -e "${GREEN}✅ Selected: C# (.NET)${NC}"
+    else
+        echo -e "${YELLOW}⚠️  Invalid choice '$lang_choice', defaulting to C# (.NET)${NC}"
+        export TARGET_LANGUAGE="CSharp"
+    fi
+
+    # ========================
+    # QUALITY GATE: Verify TARGET_LANGUAGE is correctly set
+    # ========================
+    echo ""
+    echo -e "${CYAN}🔒 Quality Gate: Verifying language selection...${NC}"
+    if [[ "$TARGET_LANGUAGE" != "Java" ]] && [[ "$TARGET_LANGUAGE" != "CSharp" ]]; then
+        echo -e "${RED}❌ QUALITY GATE FAILED: TARGET_LANGUAGE='$TARGET_LANGUAGE' is invalid${NC}"
+        echo -e "${RED}   Must be 'Java' or 'CSharp'. Aborting migration.${NC}"
+        return 1
     fi
     
-    case $lang_choice in
-        1)
-            export TARGET_LANGUAGE="Java"
-            echo -e "${GREEN}✅ Selected: Java (Quarkus)${NC}"
-            ;;
-        2)
-            export TARGET_LANGUAGE="CSharp"
-            echo -e "${GREEN}✅ Selected: C# (.NET)${NC}"
-            ;;
-        *)
-            export TARGET_LANGUAGE="Java"
-            echo -e "${YELLOW}⚠️  Invalid choice, defaulting to Java${NC}"
-            ;;
-    esac
+    if [[ "$TARGET_LANGUAGE" == "CSharp" ]]; then
+        echo -e "${BOLD}${GREEN}▶▶▶ CONFIRMED: Target Language = C# (.NET) ◀◀◀${NC}"
+    else
+        echo -e "${BOLD}${GREEN}▶▶▶ CONFIRMED: Target Language = Java (Quarkus) ◀◀◀${NC}"
+    fi
+    echo -e "${GREEN}✅ Quality Gate PASSED: TARGET_LANGUAGE='$TARGET_LANGUAGE'${NC}"
+
+    # Auto-enable chunking
+    chunking_flag="--chunked"
+    echo ""
+    echo -e "${GREEN}✅ Smart chunking auto-enabled for large file processing${NC}"
+    echo -e "${BLUE}ℹ️  Files > 10,000 lines will be split into semantic chunks${NC}"
+    echo -e "${BLUE}ℹ️  Parallel processing enabled with rate limiting${NC}"
     
     echo ""
-    echo "🚀 Starting COBOL to ${TARGET_LANGUAGE} Migration..."
-    echo "=============================================="
+    echo "🚀 Starting COBOL to ${TARGET_LANGUAGE} Migration with Smart Chunking..."
+    echo "========================================================================"
 
     # Check if reverse engineering results already exist
     local re_output_file="$REPO_ROOT/output/reverse-engineering-details.md"
@@ -875,42 +1251,70 @@ run_migration() {
     
     if [ -f "$re_output_file" ]; then
         echo ""
-        echo -e "${GREEN}✅ Found existing reverse engineering results:${NC} $(basename "$re_output_file")"
-        echo -e "${BLUE}ℹ️  You can skip reverse engineering to save time and API costs${NC}"
-        echo ""
-        read -p "Do you want to skip reverse engineering? (Y/n): " -n 1 -r
+        echo -e "${GREEN}✅ Found existing reverse engineering results${NC}"
+        read -p "Skip reverse engineering? (Y/n): " -n 1 -r
         echo ""
         if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
             skip_reverse_eng="--skip-reverse-engineering"
-            echo -e "${BLUE}ℹ️  Skipping reverse engineering, using existing results${NC}"
-        else
-            echo -e "${BLUE}ℹ️  Will re-run reverse engineering as requested${NC}"
+            echo -e "${BLUE}ℹ️  Skipping reverse engineering${NC}"
         fi
-        echo ""
-    else
-        echo ""
-        echo -e "${BLUE}ℹ️  No previous reverse engineering results found${NC}"
-        echo -e "${BLUE}ℹ️  Full migration will include reverse engineering + ${TARGET_LANGUAGE} conversion${NC}"
-        echo ""
     fi
 
-    # Run the application with updated folder structure
-    # Export TARGET_LANGUAGE so it's available to the dotnet process
+    # Show file statistics
+    echo ""
+    cobol_count=$(find "$REPO_ROOT/source" -name "*.cbl" 2>/dev/null | wc -l | tr -d ' ')
+    total_lines=$(find "$REPO_ROOT/source" -name "*.cbl" -exec wc -l {} + 2>/dev/null | tail -1 | awk '{print $1}')
+    echo -e "📁 Found ${GREEN}$cobol_count${NC} COBOL files with ${GREEN}${total_lines:-0}${NC} total lines"
+    
+    if [[ -n "$total_lines" ]] && [[ "$total_lines" -gt 10000 ]]; then
+        estimated_chunks=$((total_lines / 3000 + 1))
+        echo -e "🧩 Estimated ${GREEN}$estimated_chunks${NC} chunks to process (3000 lines each)"
+        
+        # Read parallel settings from appsettings.json
+        local parallel_workers=3
+        if command -v jq >/dev/null 2>&1 && [[ -f "$REPO_ROOT/Config/appsettings.json" ]]; then
+            parallel_workers=$(jq -r '.ChunkingSettings.MaxParallelChunks // 3' "$REPO_ROOT/Config/appsettings.json" 2>/dev/null)
+        fi
+        echo -e "⚡ Parallel workers: ${GREEN}$parallel_workers${NC}"
+        
+        # Estimate time (2 min per chunk with parallel processing)
+        local estimated_time_min=$((estimated_chunks * 2 / parallel_workers))
+        echo -e "⏱️  Estimated time: ${GREEN}~$estimated_time_min minutes${NC}"
+    fi
+    echo ""
+    
+    # Start background progress monitor
+    echo -e "${CYAN}📊 Starting progress monitor...${NC}"
+    start_progress_monitor &
+    PROGRESS_PID=$!
+    
+    # Set trap to clean up progress monitor
+    trap "kill $PROGRESS_PID 2>/dev/null; wait $PROGRESS_PID 2>/dev/null" EXIT
+
+    # Run the application with chunking enabled
     export TARGET_LANGUAGE
-    "$DOTNET_CMD" run -- --source ./source $skip_reverse_eng
+    export MIGRATION_DB_PATH="$REPO_ROOT/Data/migration.db"
+    "$DOTNET_CMD" run -- --source ./source $skip_reverse_eng $chunking_flag
     local migration_exit=$?
+
+    # Stop progress monitor
+    kill $PROGRESS_PID 2>/dev/null
+    wait $PROGRESS_PID 2>/dev/null
+    trap - EXIT
 
     if [[ $migration_exit -ne 0 ]]; then
         echo ""
-        echo -e "${RED}❌ Migration process failed (exit code $migration_exit). Skipping MCP web UI launch.${NC}"
+        echo -e "${RED}❌ Migration process failed (exit code $migration_exit).${NC}"
+        show_final_progress
         return $migration_exit
     fi
     
-    # Ask if user wants to generate a migration report
+    # Show final progress
+    show_final_progress
+    
+    # Generate migration report
     echo ""
-    echo -e "${BLUE}📄 Generate Migration Report?${NC}"
-    echo "========================================"
-    read -p "Generate a detailed migration report for this run? (Y/n): " -n 1 -r
+    read -p "Generate a detailed migration report? (Y/n): " -n 1 -r
     echo ""
     if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
         generate_migration_report
@@ -919,18 +1323,175 @@ run_migration() {
     local db_path
     if ! db_path="$(get_migration_db_path)" || [[ -z "$db_path" ]]; then
         echo ""
-        echo -e "${YELLOW}⚠️  Could not resolve migration database path. MCP web UI will not be started automatically.${NC}"
+        echo -e "${YELLOW}⚠️  Could not resolve migration database path.${NC}"
         return 0
     fi
 
     if [[ "${MCP_AUTO_LAUNCH:-1}" != "1" ]]; then
         echo ""
-        echo -e "${BLUE}ℹ️  MCP web UI launch skipped (MCP_AUTO_LAUNCH set to ${MCP_AUTO_LAUNCH}).${NC}"
-    echo -e "Use ${BOLD}MIGRATION_DB_PATH=$db_path ASPNETCORE_URLS=http://$DEFAULT_MCP_HOST:$DEFAULT_MCP_PORT $DOTNET_CMD run --project \"$REPO_ROOT/McpChatWeb\"${NC} to start manually."
+        echo -e "${BLUE}ℹ️  MCP web UI launch skipped.${NC}"
         return 0
     fi
 
     launch_mcp_web_ui "$db_path"
+}
+
+# Background progress monitor for chunked migration
+start_progress_monitor() {
+    local db_path="$REPO_ROOT/Data/migration.db"
+    local last_completed=0
+    local spinner_chars="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    local spinner_idx=0
+    
+    sleep 5  # Wait for migration to start and DB to be populated
+    
+    while true; do
+        if [[ ! -f "$db_path" ]]; then
+            sleep 2
+            continue
+        fi
+        
+        # Get latest run info
+        local run_info=$(sqlite3 "$db_path" "
+            SELECT id, status FROM runs ORDER BY started_at DESC LIMIT 1;
+        " 2>/dev/null)
+        
+        if [[ -z "$run_info" ]]; then
+            sleep 2
+            continue
+        fi
+        
+        local run_id=$(echo "$run_info" | cut -d'|' -f1)
+        local status=$(echo "$run_info" | cut -d'|' -f2)
+        
+        # Get chunk statistics
+        local chunk_stats=$(sqlite3 "$db_path" "
+            SELECT 
+                COUNT(*) as total,
+                SUM(CASE WHEN status='Completed' THEN 1 ELSE 0 END) as completed,
+                SUM(CASE WHEN status='Failed' THEN 1 ELSE 0 END) as failed,
+                SUM(CASE WHEN status='Processing' THEN 1 ELSE 0 END) as processing
+            FROM chunk_metadata WHERE run_id=$run_id;
+        " 2>/dev/null)
+        
+        if [[ -n "$chunk_stats" ]]; then
+            local total=$(echo "$chunk_stats" | cut -d'|' -f1)
+            local completed=$(echo "$chunk_stats" | cut -d'|' -f2)
+            local failed=$(echo "$chunk_stats" | cut -d'|' -f3)
+            local processing=$(echo "$chunk_stats" | cut -d'|' -f4)
+            
+            if [[ "$total" -gt 0 ]]; then
+                local percent=$((completed * 100 / total))
+                local spinner=${spinner_chars:spinner_idx:1}
+                spinner_idx=$(( (spinner_idx + 1) % ${#spinner_chars} ))
+                
+                # Build progress bar
+                local bar_width=30
+                local filled=$((completed * bar_width / total))
+                local empty=$((bar_width - filled))
+                local bar=$(printf "%${filled}s" | tr ' ' '█')$(printf "%${empty}s" | tr ' ' '░')
+                
+                # Only show update if something changed
+                if [[ "$completed" -ne "$last_completed" ]]; then
+                    echo -ne "\r\033[K"  # Clear line
+                    echo -e "${CYAN}$spinner${NC} [$bar] ${GREEN}$completed${NC}/${total} chunks (${percent}%) | ✓${completed} ⏳${processing} ✗${failed}"
+                    last_completed=$completed
+                fi
+            fi
+        fi
+        
+        # Check if migration is still running
+        if [[ "$status" == "Completed" ]] || [[ "$status" == "Failed" ]]; then
+            break
+        fi
+        
+        sleep 3
+    done
+}
+
+# Show final progress summary
+show_final_progress() {
+    local db_path="$REPO_ROOT/Data/migration.db"
+    
+    if [[ ! -f "$db_path" ]]; then
+        return
+    fi
+    
+    echo ""
+    echo -e "${BLUE}╔══════════════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${BLUE}║                        📊 Migration Summary                              ║${NC}"
+    echo -e "${BLUE}╚══════════════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    
+    # Get latest run info
+    local run_info=$(sqlite3 "$db_path" "
+        SELECT id, status, started_at, completed_at,
+               julianday(COALESCE(completed_at, datetime('now'))) - julianday(started_at)
+        FROM runs ORDER BY started_at DESC LIMIT 1;
+    " 2>/dev/null)
+    
+    if [[ -n "$run_info" ]]; then
+        local run_id=$(echo "$run_info" | cut -d'|' -f1)
+        local status=$(echo "$run_info" | cut -d'|' -f2)
+        local created=$(echo "$run_info" | cut -d'|' -f3)
+        local completed=$(echo "$run_info" | cut -d'|' -f4)
+        local duration_days=$(echo "$run_info" | cut -d'|' -f5)
+        
+        # Calculate duration in human-readable format
+        local duration_seconds=$(echo "$duration_days * 86400" | bc 2>/dev/null || echo "0")
+        local duration_minutes=$(printf "%.0f" $(echo "$duration_seconds / 60" | bc -l 2>/dev/null || echo "0"))
+        local remaining_seconds=$(printf "%.0f" $(echo "$duration_seconds - ($duration_minutes * 60)" | bc -l 2>/dev/null || echo "0"))
+        
+        echo -e "   Run ID: ${BOLD}#$run_id${NC}"
+        
+        if [[ "$status" == "Completed" ]]; then
+            echo -e "   Status: ${GREEN}✅ Completed${NC}"
+        elif [[ "$status" == "Failed" ]]; then
+            echo -e "   Status: ${RED}❌ Failed${NC}"
+        else
+            echo -e "   Status: ${YELLOW}⏳ $status${NC}"
+        fi
+        
+        echo -e "   Duration: ${duration_minutes}m ${remaining_seconds}s"
+        echo ""
+        
+        # Get chunk statistics
+        local chunk_stats=$(sqlite3 "$db_path" "
+            SELECT 
+                COUNT(*) as total,
+                SUM(CASE WHEN status='Completed' THEN 1 ELSE 0 END) as completed,
+                SUM(CASE WHEN status='Failed' THEN 1 ELSE 0 END) as failed,
+                SUM(COALESCE(tokens_used, 0)) as tokens,
+                SUM(COALESCE(processing_time_ms, 0)) / 1000.0 as time_sec
+            FROM chunk_metadata WHERE run_id=$run_id;
+        " 2>/dev/null)
+        
+        if [[ -n "$chunk_stats" ]]; then
+            local total=$(echo "$chunk_stats" | cut -d'|' -f1)
+            local completed=$(echo "$chunk_stats" | cut -d'|' -f2)
+            local failed=$(echo "$chunk_stats" | cut -d'|' -f3)
+            local tokens=$(echo "$chunk_stats" | cut -d'|' -f4)
+            local time_sec=$(echo "$chunk_stats" | cut -d'|' -f5)
+            
+            echo -e "   ${CYAN}🧩 Chunks${NC}"
+            echo -e "      Total: $total"
+            echo -e "      Completed: ${GREEN}$completed${NC}"
+            if [[ "$failed" -gt 0 ]]; then
+                echo -e "      Failed: ${RED}$failed${NC}"
+            fi
+            
+            if [[ "$tokens" -gt 0 ]]; then
+                local formatted_tokens=$(printf "%'d" $tokens 2>/dev/null || echo "$tokens")
+                echo ""
+                echo -e "   ${MAGENTA}⚡ Tokens Used: $formatted_tokens${NC}"
+            fi
+        fi
+    fi
+    
+    echo ""
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════════════════════${NC}"
+    echo -e "${DIM}For detailed progress tracking, run: ./helper-scripts/track-progress.sh${NC}"
+    echo -e "${DIM}Or open the web portal: http://localhost:5028${NC}"
 }
 
 # Function to resume migration
@@ -959,6 +1520,7 @@ run_resume() {
     fi
 
     # Run with resume logic
+    export MIGRATION_DB_PATH="$REPO_ROOT/Data/migration.db"
     "$DOTNET_CMD" run -- --source ./source --resume
 }
 
@@ -996,6 +1558,7 @@ run_chat_test() {
     echo "Testing chat logging system..."
     
     # Run a simple test
+    export MIGRATION_DB_PATH="$REPO_ROOT/Data/migration.db"
     "$DOTNET_CMD" run -- --test-chat-logging
 }
 
@@ -1058,6 +1621,23 @@ run_validate() {
     else
         echo -e "${BLUE}ℹ️  Reverse engineering feature: Not installed (optional)${NC}"
     fi
+    
+    # Validate smart chunking infrastructure (v0.2)
+    echo ""
+    echo "Checking smart chunking infrastructure (v0.2)..."
+    chunk_valid=0
+    [ -f "$REPO_ROOT/Processes/SmartMigrationOrchestrator.cs" ] && ((chunk_valid++))
+    [ -f "$REPO_ROOT/Processes/ChunkedMigrationProcess.cs" ] && ((chunk_valid++))
+    [ -f "$REPO_ROOT/Processes/ChunkedReverseEngineeringProcess.cs" ] && ((chunk_valid++))
+    [ -f "$REPO_ROOT/Chunking/ChunkingOrchestrator.cs" ] && ((chunk_valid++))
+    
+    if [ $chunk_valid -eq 4 ]; then
+        echo -e "${GREEN}✅ Smart chunking infrastructure: Complete (4/4 components)${NC}"
+    elif [ $chunk_valid -gt 0 ]; then
+        echo -e "${YELLOW}⚠️  Smart chunking infrastructure: Incomplete ($chunk_valid/4 components)${NC}"
+    else
+        echo -e "${YELLOW}⚠️  Smart chunking infrastructure: Not found${NC}"
+    fi
 
     if [ $errors -eq 0 ]; then
         echo -e "${GREEN}🎉 System validation passed!${NC}"
@@ -1085,6 +1665,7 @@ run_conversation() {
     echo "Type 'exit' to quit"
     echo ""
 
+    export MIGRATION_DB_PATH="$REPO_ROOT/Data/migration.db"
     "$DOTNET_CMD" run -- --interactive
 }
 
@@ -1144,7 +1725,33 @@ run_reverse_engineering() {
     fi
     echo ""
 
-    # Run the reverse engineering command
+    # Show file size info
+    local total_lines=0
+    local large_file_count=0
+    if command -v wc >/dev/null 2>&1; then
+        total_lines=$(find "$REPO_ROOT/source" -name "*.cbl" -exec wc -l {} + 2>/dev/null | tail -1 | awk '{print $1}')
+        # Count files over threshold
+        while IFS= read -r file; do
+            local lines=$(wc -l < "$file" 2>/dev/null | tr -d ' ')
+            if [[ "$lines" -gt 3000 ]]; then
+                large_file_count=$((large_file_count + 1))
+            fi
+        done < <(find "$REPO_ROOT/source" -name "*.cbl" 2>/dev/null)
+        
+        if [[ "$large_file_count" -gt 0 ]]; then
+            echo -e "${CYAN}🧩 Smart Chunking: AUTO-ENABLED${NC}"
+            echo "   Large files detected: $large_file_count file(s) over threshold"
+            echo "   Files >150K chars or >3000 lines will use ChunkedReverseEngineeringProcess"
+            echo "   Semantic boundary detection preserves paragraph/section context"
+            echo ""
+        fi
+    fi
+
+    # Launch portal in background for monitoring
+    launch_portal_background
+
+    # Run the reverse engineering command - chunking is auto-detected
+    export MIGRATION_DB_PATH="$REPO_ROOT/Data/migration.db"
     "$DOTNET_CMD" run reverse-engineer --source ./source
 
     local exit_code=$?
@@ -1156,13 +1763,27 @@ run_reverse_engineering() {
         echo "Output files created in: ./output/"
         echo "  • reverse-engineering-details.md - Complete analysis with business logic and technical details"
         echo ""
+        echo -e "${CYAN}📄 View in Portal:${NC}"
+        echo "  • Portal running at: http://localhost:5028"
+        echo "  • Click '📄 Architecture Documentation' → '📊 RE Report' tab"
+        echo ""
         echo "Next steps:"
-        echo "  • Review the generated documentation"
+        echo "  • Review the generated documentation in portal or output folder"
         echo "  • Run full migration: ./doctor.sh run"
         echo "  • Or run conversion only: ./doctor.sh convert-only"
+        echo ""
+        echo -e "${CYAN}Portal is running. Press Ctrl+C to stop.${NC}"
+        
+        # Keep portal running
+        if [ -n "$PORTAL_PID" ]; then
+            wait $PORTAL_PID 2>/dev/null
+        fi
     else
         echo ""
         echo -e "${RED}❌ Reverse engineering failed (exit code $exit_code)${NC}"
+        if [ -n "$PORTAL_PID" ]; then
+            echo -e "${YELLOW}Portal is still running at http://localhost:5028 for debugging${NC}"
+        fi
     fi
 
     return $exit_code
@@ -1197,6 +1818,7 @@ run_conversion_only() {
     echo ""
 
     # Run the application with skip-reverse-engineering flag
+    export MIGRATION_DB_PATH="$REPO_ROOT/Data/migration.db"
     "$DOTNET_CMD" run -- --source ./source --skip-reverse-engineering
     local migration_exit=$?
 
@@ -1235,11 +1857,15 @@ main() {
         "test")
             run_test
             ;;
-        "run")
+        "run"|"run-chunked"|"chunked")
+            # All run commands use the same function - chunking is auto-detected
             run_migration
             ;;
         "convert-only"|"conversion-only"|"convert")
             run_conversion_only
+            ;;
+        "portal"|"web"|"ui")
+            run_portal
             ;;
         "doctor"|"")
             run_doctor
@@ -1262,6 +1888,9 @@ main() {
         "conversation")
             run_conversation
             ;;
+        "chunking-health"|"chunk-health"|"chunks")
+            check_chunking_health
+            ;;
         "help"|"-h"|"--help")
             show_usage
             ;;
@@ -1272,6 +1901,160 @@ main() {
             exit 1
             ;;
     esac
+}
+
+# Function to check chunking infrastructure health
+check_chunking_health() {
+    echo -e "${BLUE}🧩 Smart Chunking Health Check${NC}"
+    echo "================================"
+    echo ""
+    
+    local db_path
+    db_path="$(get_migration_db_path)"
+    
+    # Check 1: Database existence
+    echo -e "${CYAN}1. Database Status${NC}"
+    if [[ -f "$db_path" ]]; then
+        echo -e "   ${GREEN}✅ Database found:${NC} $db_path"
+        local db_size=$(du -h "$db_path" 2>/dev/null | cut -f1)
+        echo -e "   ${GREEN}✅ Size:${NC} $db_size"
+    else
+        echo -e "   ${YELLOW}⚠️  Database not found (will be created on first run)${NC}"
+    fi
+    echo ""
+    
+    # Check 2: Required process files
+    echo -e "${CYAN}2. Smart Chunking Components${NC}"
+    local components=(
+        "Processes/SmartMigrationOrchestrator.cs:SmartMigrationOrchestrator (routes files by size)"
+        "Processes/ChunkedMigrationProcess.cs:ChunkedMigrationProcess (conversion)"
+        "Processes/ChunkedReverseEngineeringProcess.cs:ChunkedReverseEngineeringProcess (RE analysis)"
+        "Chunking/ChunkingOrchestrator.cs:ChunkingOrchestrator (chunk coordination)"
+    )
+    for component in "${components[@]}"; do
+        local file=$(echo "$component" | cut -d':' -f1)
+        local desc=$(echo "$component" | cut -d':' -f2)
+        if [[ -f "$REPO_ROOT/$file" ]]; then
+            echo -e "   ${GREEN}✅ $desc${NC}"
+        else
+            echo -e "   ${RED}❌ $desc - MISSING${NC}"
+        fi
+    done
+    echo ""
+    
+    # Check 2b: Required tables
+    echo -e "${CYAN}3. Chunking Tables${NC}"
+    if [[ -f "$db_path" ]]; then
+        local tables=("chunk_metadata" "forward_references" "signatures" "type_mappings")
+        for table in "${tables[@]}"; do
+            local exists=$(sqlite3 "$db_path" "SELECT name FROM sqlite_master WHERE type='table' AND name='$table';" 2>/dev/null)
+            if [[ -n "$exists" ]]; then
+                local count=$(sqlite3 "$db_path" "SELECT COUNT(*) FROM $table;" 2>/dev/null)
+                echo -e "   ${GREEN}✅ $table${NC} ($count rows)"
+            else
+                echo -e "   ${YELLOW}⚠️  $table not found (created on first chunked run)${NC}"
+            fi
+        done
+    else
+        echo -e "   ${YELLOW}ℹ️  Tables will be created when database is initialized${NC}"
+    fi
+    echo ""
+    
+    # Check 4: Chunking configuration
+    echo -e "${CYAN}4. Configuration (appsettings.json)${NC}"
+    local config_file="$REPO_ROOT/Config/appsettings.json"
+    if [[ -f "$config_file" ]] && command -v jq >/dev/null 2>&1; then
+        local enabled=$(jq -r '.ChunkingSettings.EnableChunking // "auto"' "$config_file" 2>/dev/null)
+        local max_lines=$(jq -r '.ChunkingSettings.MaxLinesPerChunk // 10000' "$config_file" 2>/dev/null)
+        local max_tokens=$(jq -r '.ChunkingSettings.MaxTokensPerChunk // 28000' "$config_file" 2>/dev/null)
+        local overlap=$(jq -r '.ChunkingSettings.OverlapLines // 500' "$config_file" 2>/dev/null)
+        local parallel=$(jq -r '.ChunkingSettings.MaxParallelChunks // 3' "$config_file" 2>/dev/null)
+        local resumable=$(jq -r '.ChunkingSettings.EnableResumability // true' "$config_file" 2>/dev/null)
+        
+        echo -e "   ${GREEN}✅ EnableChunking:${NC} $enabled (auto-detects large files)"
+        echo -e "   ${GREEN}✅ MaxLinesPerChunk:${NC} $max_lines"
+        echo -e "   ${GREEN}✅ MaxTokensPerChunk:${NC} $max_tokens"
+        echo -e "   ${GREEN}✅ OverlapLines:${NC} $overlap"
+        echo -e "   ${GREEN}✅ MaxParallelChunks:${NC} $parallel"
+        echo -e "   ${GREEN}✅ EnableResumability:${NC} $resumable"
+    else
+        echo -e "   ${YELLOW}⚠️  Cannot parse config (jq not installed or config missing)${NC}"
+        echo -e "   ${BLUE}ℹ️  Install jq: brew install jq${NC}"
+    fi
+    echo ""
+    
+    # Check 5: Recent chunk activity
+    echo -e "${CYAN}5. Recent Chunk Activity${NC}"
+    if [[ -f "$db_path" ]]; then
+        local recent=$(sqlite3 "$db_path" "
+            SELECT run_id, source_file, 
+                   COUNT(*) as chunks,
+                   SUM(CASE WHEN status='Completed' THEN 1 ELSE 0 END) as completed,
+                   SUM(CASE WHEN status='Failed' THEN 1 ELSE 0 END) as failed
+            FROM chunk_metadata
+            GROUP BY run_id, source_file
+            ORDER BY run_id DESC
+            LIMIT 5;
+        " 2>/dev/null)
+        
+        if [[ -n "$recent" ]]; then
+            echo -e "   Recent chunked files:"
+            echo "$recent" | while IFS='|' read -r run_id file chunks completed failed; do
+                local status_icon="✅"
+                [[ "$failed" -gt 0 ]] && status_icon="⚠️"
+                echo -e "   $status_icon Run $run_id: $file - $completed/$chunks chunks complete"
+            done
+        else
+            echo -e "   ${BLUE}ℹ️  No chunked migrations yet${NC}"
+        fi
+    else
+        echo -e "   ${BLUE}ℹ️  No migration history yet${NC}"
+    fi
+    echo ""
+    
+    # Check 6: Source file analysis
+    echo -e "${CYAN}6. Source File Analysis${NC}"
+    local cobol_files=$(find "$REPO_ROOT/source" -name "*.cbl" 2>/dev/null)
+    if [[ -n "$cobol_files" ]]; then
+        local large_file_count=0
+        local total_lines=0
+        
+        while IFS= read -r file; do
+            local lines=$(wc -l < "$file" 2>/dev/null | tr -d ' ')
+            total_lines=$((total_lines + lines))
+            if [[ "$lines" -gt 3000 ]]; then
+                large_file_count=$((large_file_count + 1))
+                echo -e "   ${YELLOW}📦 $(basename "$file")${NC} - $lines lines (will be chunked)"
+            fi
+        done <<< "$cobol_files"
+        
+        if [[ "$large_file_count" -eq 0 ]]; then
+            echo -e "   ${GREEN}✅ No large files detected${NC} (all files < 3000 lines)"
+        else
+            echo -e "   ${YELLOW}📊 $large_file_count file(s) will use smart chunking${NC}"
+        fi
+        echo -e "   ${BLUE}ℹ️  Total lines across all files:${NC} $total_lines"
+    else
+        echo -e "   ${YELLOW}⚠️  No COBOL files found in source/${NC}"
+    fi
+    echo ""
+    
+    # Summary
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════════════════════${NC}"
+    echo -e "${GREEN}💡 Smart Chunking Tips:${NC}"
+    echo "   • Files >150K chars or >3000 lines auto-trigger chunking"
+    echo "   • SmartMigrationOrchestrator routes files to appropriate process"
+    echo "   • Full migration uses ChunkedMigrationProcess for conversion"
+    echo "   • RE-only mode uses ChunkedReverseEngineeringProcess for analysis"
+    echo "   • Monitor progress in portal: http://localhost:5028"
+    echo "   • Adjust MaxLinesPerChunk in appsettings.json for tuning"
+    echo ""
+    echo -e "${GREEN}📊 Output Validation:${NC}"
+    echo "   • Generated code is validated for completeness"
+    echo "   • Large files are reassembled with proper ordering"
+    echo "   • Cross-chunk references are resolved via SignatureRegistry"
+    echo "   • Check output/<lang>/ folder for generated files"
+    echo ""
 }
 
 # Run main function with all arguments
