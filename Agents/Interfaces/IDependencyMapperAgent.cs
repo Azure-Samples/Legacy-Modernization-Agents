@@ -1,3 +1,6 @@
+using Microsoft.Extensions.Logging;
+using Microsoft.SemanticKernel;
+using Microsoft.SemanticKernel.Connectors.OpenAI;
 using CobolToQuarkusMigration.Models;
 
 namespace CobolToQuarkusMigration.Agents.Interfaces;

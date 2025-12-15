@@ -3,65 +3,34 @@ using CobolToQuarkusMigration.Models;
 using CobolToQuarkusMigration.Persistence;
 using CobolToQuarkusMigration.Processes;
 using CobolToQuarkusMigration.Agents;
-using CobolToQuarkusMigration.Agents.Infrastructure;
 using CobolToQuarkusMigration.Mcp;
-using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using Microsoft.SemanticKernel;
 using System.CommandLine;
 
 namespace CobolToQuarkusMigration;
 
-/// <summary>
-/// Main entry point for the COBOL to Java/C# migration tool.
-/// Uses dual-API architecture:
-/// - ResponsesApiClient for code agents (gpt-5.1-codex-mini via Responses API)
-/// - IChatClient for chat/reports (gpt-5.1-chat via Chat Completions API)
-/// </summary>
 internal static class Program
 {
     public static async Task<int> Main(string[] args)
     {
-        // Start live log capture for portal's Live Run Log panel
-        var logsDirectory = Path.Combine(Directory.GetCurrentDirectory(), "Logs");
-        Directory.CreateDirectory(logsDirectory);
-        
-        // Only enable live logging for migration runs (not MCP server or conversation modes)
-        var isMigrationRun = !args.Contains("mcp") && !args.Contains("conversation");
-        LiveLogWriter? liveLogWriter = null;
-        
-        if (isMigrationRun)
-        {
-            liveLogWriter = LiveLogWriter.Start(logsDirectory);
-        }
-        
-        try
-        {
-            using var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole());
-            var logger = loggerFactory.CreateLogger(nameof(Program));
-            var fileHelper = new FileHelper(loggerFactory.CreateLogger<FileHelper>());
-            var settingsHelper = new SettingsHelper(loggerFactory.CreateLogger<SettingsHelper>());
+        using var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole());
+        var logger = loggerFactory.CreateLogger(nameof(Program));
+        var fileHelper = new FileHelper(loggerFactory.CreateLogger<FileHelper>());
+        var settingsHelper = new SettingsHelper(loggerFactory.CreateLogger<SettingsHelper>());
 
-            if (!ValidateAndLoadConfiguration())
-            {
-                return 1;
-            }
-
-            var rootCommand = BuildRootCommand(loggerFactory, logger, fileHelper, settingsHelper);
-            return await rootCommand.InvokeAsync(args);
-        }
-        finally
+        if (!ValidateAndLoadConfiguration())
         {
-            // Stop live logging and restore console
-            if (liveLogWriter != null)
-            {
-                LiveLogWriter.Stop();
-            }
+            return 1;
         }
+
+        var rootCommand = BuildRootCommand(loggerFactory, logger, fileHelper, settingsHelper);
+        return await rootCommand.InvokeAsync(args);
     }
 
     private static RootCommand BuildRootCommand(ILoggerFactory loggerFactory, ILogger logger, FileHelper fileHelper, SettingsHelper settingsHelper)
     {
-        var rootCommand = new RootCommand("COBOL to Java Quarkus Migration Tool (Agent Framework)");
+        var rootCommand = new RootCommand("COBOL to Java Quarkus Migration Tool");
 
         var cobolSourceOption = new Option<string>("--source", "Path to the folder containing COBOL source files and copybooks")
         {
@@ -70,7 +39,7 @@ internal static class Program
         cobolSourceOption.AddAlias("-s");
         rootCommand.AddOption(cobolSourceOption);
 
-        var javaOutputOption = new Option<string>("--java-output", () => "output", "Path to the folder for Java output files")
+        var javaOutputOption = new Option<string>("--java-output", () => "output", "Path to the folder for output files (Java or C#)")
         {
             Arity = ArgumentArity.ZeroOrOne
         };
@@ -290,12 +259,10 @@ internal static class Program
             {
                 try
                 {
-                    var neo4jDriver = Neo4j.Driver.GraphDatabase.Driver(
+                    var neo4jDriver = Neo4jMigrationRepository.CreateResilientDriver(
                         settings.ApplicationSettings.Neo4j.Uri,
-                        Neo4j.Driver.AuthTokens.Basic(
-                            settings.ApplicationSettings.Neo4j.Username,
-                            settings.ApplicationSettings.Neo4j.Password
-                        )
+                        settings.ApplicationSettings.Neo4j.Username,
+                        settings.ApplicationSettings.Neo4j.Password
                     );
                     var neo4jLogger = loggerFactory.CreateLogger<Neo4jMigrationRepository>();
                     neo4jRepository = new Neo4jMigrationRepository(neo4jDriver, neo4jLogger);
@@ -324,20 +291,8 @@ internal static class Program
                 targetRunId = latest.RunId;
             }
 
-            // Create IChatClient for MCP server
-            IChatClient? chatClient = null;
-            var chatEndpoint = settings.AISettings?.ChatEndpoint ?? settings.AISettings?.Endpoint;
-            var chatApiKey = settings.AISettings?.ChatApiKey ?? settings.AISettings?.ApiKey;
-            var chatDeployment = settings.AISettings?.ChatDeploymentName ?? settings.AISettings?.ChatModelId ?? settings.AISettings?.DeploymentName;
-
-            if (!string.IsNullOrEmpty(chatEndpoint) && !string.IsNullOrEmpty(chatApiKey) && !string.IsNullOrEmpty(chatDeployment))
-            {
-                chatClient = ChatClientFactory.CreateAzureOpenAIChatClient(chatEndpoint, chatApiKey, chatDeployment);
-                mcpLogger.LogInformation("IChatClient initialized for MCP server with deployment: {Deployment}", chatDeployment);
-            }
-
-            var serverLogger = loggerFactory.CreateLogger<McpServer>();
-            var server = new McpServer(repository, targetRunId.Value, serverLogger, settings.AISettings, chatClient);
+            var serverLogger = loggerFactory.CreateLogger<RunMcpServerProcess>();
+            var server = new RunMcpServerProcess(repository, targetRunId.Value, serverLogger, settings.AISettings);
             var cts = new CancellationTokenSource();
 
             Console.CancelKeyPress += (sender, args) =>
@@ -372,26 +327,17 @@ internal static class Program
                 Environment.Exit(1);
             }
 
-            // Output folder validation - check both Java and C# based on target
-            var targetLanguage = settings.ApplicationSettings.TargetLanguage;
-            if (targetLanguage == TargetLanguage.CSharp)
+            // Validate output folder based on target language
+            var targetLang = settings.ApplicationSettings.TargetLanguage;
+            var outputFolder = targetLang == TargetLanguage.CSharp
+                ? settings.ApplicationSettings.CSharpOutputFolder
+                : settings.ApplicationSettings.JavaOutputFolder;
+
+            if (string.IsNullOrEmpty(outputFolder))
             {
-                // For C#, use CSharpOutputFolder if set, otherwise fall back to JavaOutputFolder or default
-                if (string.IsNullOrEmpty(settings.ApplicationSettings.CSharpOutputFolder) && 
-                    string.IsNullOrEmpty(settings.ApplicationSettings.JavaOutputFolder))
-                {
-                    settings.ApplicationSettings.CSharpOutputFolder = "output/csharp";
-                    logger.LogInformation("Using default C# output folder: output/csharp");
-                }
-            }
-            else
-            {
-                // For Java, require JavaOutputFolder
-                if (string.IsNullOrEmpty(settings.ApplicationSettings.JavaOutputFolder))
-                {
-                    logger.LogError("Java output folder not specified. Use --java-output option or set in config file.");
-                    Environment.Exit(1);
-                }
+                var langName = targetLang == TargetLanguage.CSharp ? "C#" : "Java";
+                logger.LogError($"{langName} output folder not specified. Set TARGET_LANGUAGE and output folder in config file.");
+                Environment.Exit(1);
             }
 
             if (string.IsNullOrEmpty(settings.AISettings.ApiKey) ||
@@ -403,29 +349,36 @@ internal static class Program
                 Environment.Exit(1);
             }
 
-            // Create EnhancedLogger early so it can track ALL API calls
-            var enhancedLogger = new EnhancedLogger(loggerFactory.CreateLogger<EnhancedLogger>());
-            var chatLogger = new ChatLogger(loggerFactory.CreateLogger<ChatLogger>());
+            var kernelBuilder = Kernel.CreateBuilder();
 
-            // Create ResponsesApiClient for code agents (codex model via Responses API)
-            // gpt-5.1-codex-mini uses Responses API at /openai/responses, NOT Chat Completions
-            var responsesApiClient = new ResponsesApiClient(
-                settings.AISettings.Endpoint,
-                settings.AISettings.ApiKey,
-                settings.AISettings.DeploymentName,
-                loggerFactory.CreateLogger<ResponsesApiClient>(),
-                enhancedLogger);  // Pass EnhancedLogger for API call tracking
+            if (settings.AISettings.ServiceType.Equals("OpenAI", StringComparison.OrdinalIgnoreCase))
+            {
+                kernelBuilder.AddOpenAIChatCompletion(
+                    modelId: settings.AISettings.ModelId,
+                    apiKey: settings.AISettings.ApiKey);
+            }
+            else if (settings.AISettings.ServiceType.Equals("AzureOpenAI", StringComparison.OrdinalIgnoreCase))
+            {
+                var httpClient = new HttpClient
+                {
+                    Timeout = TimeSpan.FromMinutes(10)
+                };
 
-            logger.LogInformation("ResponsesApiClient initialized for codex model: {DeploymentName}", 
-                settings.AISettings.DeploymentName);
+                kernelBuilder.AddAzureOpenAIChatCompletion(
+                    deploymentName: settings.AISettings.DeploymentName,
+                    endpoint: settings.AISettings.Endpoint,
+                    apiKey: settings.AISettings.ApiKey,
+                    httpClient: httpClient);
 
-            // Create IChatClient for chat agents (RE reports, chat via Chat Completions API)
-            var chatEndpoint = settings.AISettings.ChatEndpoint ?? settings.AISettings.Endpoint;
-            var chatApiKey = settings.AISettings.ChatApiKey ?? settings.AISettings.ApiKey;
-            var chatDeployment = settings.AISettings.ChatDeploymentName ?? settings.AISettings.DeploymentName;
-
-            IChatClient chatClient = ChatClientFactory.CreateAzureOpenAIChatClient(chatEndpoint, chatApiKey, chatDeployment);
-            logger.LogInformation("IChatClient initialized for chat model: {ChatDeployment}", chatDeployment);
+                logger.LogInformation("Using Azure OpenAI service with endpoint: {Endpoint} and deployment: {DeploymentName}",
+                    settings.AISettings.Endpoint,
+                    settings.AISettings.DeploymentName);
+            }
+            else
+            {
+                logger.LogError("Unsupported AI service type: {ServiceType}", settings.AISettings.ServiceType);
+                Environment.Exit(1);
+            }
 
             var databasePath = settings.ApplicationSettings.MigrationDatabasePath;
             if (!Path.IsPathRooted(databasePath))
@@ -443,16 +396,14 @@ internal static class Program
             {
                 try
                 {
-                    var neo4jDriver = Neo4j.Driver.GraphDatabase.Driver(
+                    var neo4jDriver = Neo4jMigrationRepository.CreateResilientDriver(
                         settings.ApplicationSettings.Neo4j.Uri,
-                        Neo4j.Driver.AuthTokens.Basic(
-                            settings.ApplicationSettings.Neo4j.Username,
-                            settings.ApplicationSettings.Neo4j.Password
-                        )
+                        settings.ApplicationSettings.Neo4j.Username,
+                        settings.ApplicationSettings.Neo4j.Password
                     );
                     var neo4jLogger = loggerFactory.CreateLogger<Neo4jMigrationRepository>();
                     neo4jMigrationRepository = new Neo4jMigrationRepository(neo4jDriver, neo4jLogger);
-                    logger.LogInformation("✅ Neo4j graph database connected at {Uri}", settings.ApplicationSettings.Neo4j.Uri);
+                    logger.LogInformation("Neo4j graph database enabled at {Uri}", settings.ApplicationSettings.Neo4j.Uri);
                 }
                 catch (Exception ex)
                 {
@@ -467,84 +418,32 @@ internal static class Program
             // Step 1: Run reverse engineering if requested (and not skipped)
             if (!skipReverseEngineering || reverseEngineerOnly)
             {
-                // EnhancedLogger and ChatLogger already created above for API tracking
-
-                // CobolAnalyzerAgent uses Responses API client (codex for code analysis)
+                var enhancedLogger = new EnhancedLogger(loggerFactory.CreateLogger<EnhancedLogger>());
                 var cobolAnalyzerAgent = new CobolAnalyzerAgent(
-                    responsesApiClient,
+                    kernelBuilder,
                     loggerFactory.CreateLogger<CobolAnalyzerAgent>(),
-                    settings.AISettings.CobolAnalyzerModelId,
-                    enhancedLogger,
-                    chatLogger);
-
-                // BusinessLogicExtractorAgent uses IChatClient (chat for RE reports)
+                    settings.AISettings.CobolAnalyzerModelId ?? settings.AISettings.ModelId,
+                    enhancedLogger);
                 var businessLogicExtractorAgent = new BusinessLogicExtractorAgent(
-                    chatClient,
+                    kernelBuilder,
                     loggerFactory.CreateLogger<BusinessLogicExtractorAgent>(),
-                    chatDeployment,
-                    enhancedLogger,
-                    chatLogger);
+                    settings.AISettings.ModelId,
+                    enhancedLogger);
 
-                // Smart routing: check for large files to decide between chunked vs direct RE
-                var cobolFiles = await fileHelper.ScanDirectoryForCobolFilesAsync(settings.ApplicationSettings.CobolSourceFolder);
-                var hasLargeFiles = cobolFiles.Any(f => 
-                    settings.ChunkingSettings.RequiresChunking(f.Content.Length, f.Content.Split('\n').Length));
+                var reverseEngineeringProcess = new ReverseEngineeringProcess(
+                    cobolAnalyzerAgent,
+                    businessLogicExtractorAgent,
+                    fileHelper,
+                    loggerFactory.CreateLogger<ReverseEngineeringProcess>(),
+                    enhancedLogger);
 
-                ReverseEngineeringResult reverseEngResult;
-
-                if (hasLargeFiles)
-                {
-                    // Use ChunkedReverseEngineeringProcess for large files
-                    Console.WriteLine("📦 Large files detected - using smart chunked reverse engineering");
-                    logger.LogInformation("Large files detected, using ChunkedReverseEngineeringProcess");
-
-                    var targetLang = settings.ApplicationSettings.TargetLanguage;
-                    
-                    var chunkingOrchestrator = new CobolToQuarkusMigration.Chunking.ChunkingOrchestrator(
-                        settings.ChunkingSettings,
-                        settings.ConversionSettings,
-                        databasePath,
-                        loggerFactory.CreateLogger<CobolToQuarkusMigration.Chunking.ChunkingOrchestrator>(),
-                        targetLang);
-
-                    var chunkedREProcess = new ChunkedReverseEngineeringProcess(
-                        cobolAnalyzerAgent,
-                        businessLogicExtractorAgent,
-                        fileHelper,
-                        settings.ChunkingSettings,
-                        chunkingOrchestrator,
-                        loggerFactory.CreateLogger<ChunkedReverseEngineeringProcess>(),
-                        enhancedLogger,
-                        databasePath);
-
-                    reverseEngResult = await chunkedREProcess.RunAsync(
-                        settings.ApplicationSettings.CobolSourceFolder,
-                        reverseEngineerOutput,
-                        (status, current, total) =>
-                        {
-                            Console.WriteLine($"{status} - {current}/{total}");
-                        });
-                }
-                else
-                {
-                    // Use standard ReverseEngineeringProcess for small files
-                    Console.WriteLine("⚡ All files below chunking threshold - using direct reverse engineering");
-
-                    var reverseEngineeringProcess = new ReverseEngineeringProcess(
-                        cobolAnalyzerAgent,
-                        businessLogicExtractorAgent,
-                        fileHelper,
-                        loggerFactory.CreateLogger<ReverseEngineeringProcess>(),
-                        enhancedLogger);
-
-                    reverseEngResult = await reverseEngineeringProcess.RunAsync(
-                        settings.ApplicationSettings.CobolSourceFolder,
-                        reverseEngineerOutput,
-                        (status, current, total) =>
-                        {
-                            Console.WriteLine($"{status} - {current}/{total}");
-                        });
-                }
+                var reverseEngResult = await reverseEngineeringProcess.RunAsync(
+                    settings.ApplicationSettings.CobolSourceFolder,
+                    reverseEngineerOutput,
+                    (status, current, total) =>
+                    {
+                        Console.WriteLine($"{status} - {current}/{total}");
+                    });
 
                 if (!reverseEngResult.Success)
                 {
@@ -560,89 +459,36 @@ internal static class Program
                 }
             }
 
-            // Step 2: Run code conversion (unless reverse-engineer-only mode)
+            // Step 2: Run Java conversion (unless reverse-engineer-only mode)
             if (!reverseEngineerOnly)
             {
-                // Determine output folder based on target language
-                var targetLang = settings.ApplicationSettings.TargetLanguage;
-                var outputFolder = targetLang == TargetLanguage.CSharp 
-                    ? settings.ApplicationSettings.CSharpOutputFolder 
-                    : settings.ApplicationSettings.JavaOutputFolder;
-
-                // Ensure output folder has a default value
-                if (string.IsNullOrEmpty(outputFolder))
-                {
-                    outputFolder = targetLang == TargetLanguage.CSharp ? "output/csharp" : "output/java";
-                }
-
-                var langName = targetLang == TargetLanguage.CSharp ? "C# .NET" : "Java Quarkus";
-                
-                // ═══════════════════════════════════════════════════════════════════
-                // QUALITY GATE: Final verification before migration starts
-                // ═══════════════════════════════════════════════════════════════════
-                Console.WriteLine("");
-                Console.WriteLine("═══════════════════════════════════════════════════════════════════");
-                Console.WriteLine("                    🔒 QUALITY GATE: PRE-MIGRATION CHECK");
-                Console.WriteLine("═══════════════════════════════════════════════════════════════════");
-                Console.WriteLine($"  Target Language:  {langName}");
-                Console.WriteLine($"  Output Folder:    {outputFolder}");
-                Console.WriteLine($"  ENV Variable:     TARGET_LANGUAGE={Environment.GetEnvironmentVariable("TARGET_LANGUAGE") ?? "(not set)"}");
-                Console.WriteLine($"  Smart Chunking:   ENABLED (auto-routes large files)");
-                Console.WriteLine($"  Chunk Threshold:  {settings.ChunkingSettings.AutoChunkCharThreshold:N0} chars / {settings.ChunkingSettings.AutoChunkLineThreshold:N0} lines");
-                
-                // Verify env var matches what we're about to do
-                var envLang = Environment.GetEnvironmentVariable("TARGET_LANGUAGE");
-                if (!string.IsNullOrEmpty(envLang))
-                {
-                    var expectedCSharp = envLang.Equals("CSharp", StringComparison.OrdinalIgnoreCase) || 
-                                         envLang.Equals("C#", StringComparison.OrdinalIgnoreCase);
-                    var actualCSharp = targetLang == TargetLanguage.CSharp;
-                    
-                    if (expectedCSharp != actualCSharp)
-                    {
-                        Console.WriteLine($"  ❌ MISMATCH DETECTED!");
-                        Console.WriteLine($"     ENV says: {(expectedCSharp ? "CSharp" : "Java")}");
-                        Console.WriteLine($"     Settings say: {targetLang}");
-                        Console.WriteLine("═══════════════════════════════════════════════════════════════════");
-                        Console.WriteLine("❌ QUALITY GATE FAILED: Language mismatch between env var and settings!");
-                        Console.WriteLine("   This indicates a bug in configuration loading. Aborting.");
-                        Environment.Exit(1);
-                    }
-                }
-                
-                Console.WriteLine($"  ✅ Quality Gate PASSED");
-                Console.WriteLine("═══════════════════════════════════════════════════════════════════");
-                Console.WriteLine("");
-                
-                Console.WriteLine($"Starting COBOL to {langName} migration with Smart Orchestration...");
-                Console.WriteLine($"Target language: {langName}");
-                Console.WriteLine($"Output folder: {outputFolder}");
-
-                // Use SmartMigrationOrchestrator for intelligent file routing
-                // - Small files → direct MigrationProcess (fast, no chunking overhead)
-                // - Large files → ChunkedMigrationProcess (preserves ALL code, no truncation)
-                var smartOrchestrator = new SmartMigrationOrchestrator(
-                    responsesApiClient,
-                    chatClient,
-                    loggerFactory,
+                var migrationProcess = new MigrationProcess(
+                    kernelBuilder,
+                    loggerFactory.CreateLogger<MigrationProcess>(),
                     fileHelper,
                     settings,
                     migrationRepository);
 
-                var migrationStats = await smartOrchestrator.RunAsync(
+                migrationProcess.InitializeAgents();
+
+                // Determine output folder based on target language
+                var migrationTargetLang = settings.ApplicationSettings.TargetLanguage;
+                var migrationOutputFolder = migrationTargetLang == TargetLanguage.CSharp
+                    ? settings.ApplicationSettings.CSharpOutputFolder
+                    : settings.ApplicationSettings.JavaOutputFolder;
+                var migrationLangName = migrationTargetLang == TargetLanguage.CSharp ? "C#" : "Java Quarkus";
+
+                Console.WriteLine($"Starting COBOL to {migrationLangName} migration process...");
+
+                await migrationProcess.RunAsync(
                     settings.ApplicationSettings.CobolSourceFolder,
-                    outputFolder,
+                    migrationOutputFolder,
                     (status, current, total) =>
                     {
                         Console.WriteLine($"{status} - {current}/{total}");
                     });
 
                 Console.WriteLine("Migration process completed successfully.");
-                Console.WriteLine($"  📊 Stats: {migrationStats.TotalFiles} files ({migrationStats.DirectFiles} direct, {migrationStats.ChunkedFiles} chunked)");
-                if (migrationStats.TotalChunks > 0)
-                {
-                    Console.WriteLine($"  📦 Total chunks processed: {migrationStats.TotalChunks}");
-                }
             }
         }
         catch (Exception ex)
@@ -661,11 +507,7 @@ internal static class Program
             string localConfigFile = Path.Combine(configDir, "ai-config.local.env");
             string templateConfigFile = Path.Combine(configDir, "ai-config.env");
 
-            if (File.Exists(templateConfigFile))
-            {
-                LoadEnvFile(templateConfigFile);
-            }
-
+            // Load local config first (highest priority among config files)
             if (File.Exists(localConfigFile))
             {
                 LoadEnvFile(localConfigFile);
@@ -674,6 +516,12 @@ internal static class Program
             {
                 Console.WriteLine("💡 Consider creating Config/ai-config.local.env for your personal settings");
                 Console.WriteLine("   You can copy from Config/ai-config.local.env.template");
+            }
+
+            // Then load template config to fill in any missing values
+            if (File.Exists(templateConfigFile))
+            {
+                LoadEnvFile(templateConfigFile);
             }
         }
         catch (Exception ex)
@@ -698,18 +546,11 @@ internal static class Program
             {
                 string key = parts[0].Trim();
                 string value = parts[1].Trim().Trim('"', '\'');
-                
-                // CRITICAL: Do NOT overwrite environment variables that are already set
-                // This preserves values exported by doctor.sh (like TARGET_LANGUAGE)
-                var existingValue = Environment.GetEnvironmentVariable(key);
-                if (string.IsNullOrEmpty(existingValue))
+
+                // Only set if not already set (allows shell script to override)
+                if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable(key)))
                 {
                     Environment.SetEnvironmentVariable(key, value);
-                }
-                else if (key == "TARGET_LANGUAGE")
-                {
-                    // Special case: Log when we preserve the user's TARGET_LANGUAGE selection
-                    Console.WriteLine($"🔒 Preserving TARGET_LANGUAGE from shell: '{existingValue}' (ignoring config file value: '{value}')");
                 }
             }
         }
@@ -719,8 +560,6 @@ internal static class Program
     {
         var aiSettings = settings.AISettings ??= new AISettings();
         var applicationSettings = settings.ApplicationSettings ??= new ApplicationSettings();
-        
-        // Primary deployment (for codex models via Responses API)
         var endpoint = Environment.GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT");
         if (!string.IsNullOrEmpty(endpoint))
         {
@@ -745,32 +584,6 @@ internal static class Program
             aiSettings.ModelId = modelId;
         }
 
-        // Chat deployment (for gpt-5.1-chat models via Chat Completions API)
-        var chatEndpoint = Environment.GetEnvironmentVariable("AZURE_OPENAI_CHAT_ENDPOINT");
-        if (!string.IsNullOrEmpty(chatEndpoint))
-        {
-            aiSettings.ChatEndpoint = chatEndpoint;
-        }
-
-        var chatApiKey = Environment.GetEnvironmentVariable("AZURE_OPENAI_CHAT_API_KEY");
-        if (!string.IsNullOrEmpty(chatApiKey))
-        {
-            aiSettings.ChatApiKey = chatApiKey;
-        }
-
-        var chatDeploymentName = Environment.GetEnvironmentVariable("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME");
-        if (!string.IsNullOrEmpty(chatDeploymentName))
-        {
-            aiSettings.ChatDeploymentName = chatDeploymentName;
-        }
-
-        var chatModelId = Environment.GetEnvironmentVariable("AZURE_OPENAI_CHAT_MODEL_ID");
-        if (!string.IsNullOrEmpty(chatModelId))
-        {
-            aiSettings.ChatModelId = chatModelId;
-        }
-
-        // Specialized model IDs
         var cobolModel = Environment.GetEnvironmentVariable("AZURE_OPENAI_COBOL_ANALYZER_MODEL");
         if (!string.IsNullOrEmpty(cobolModel))
         {
@@ -811,46 +624,27 @@ internal static class Program
             applicationSettings.JavaOutputFolder = javaOutput;
         }
 
+        if (Environment.GetEnvironmentVariable("CSHARP_OUTPUT_FOLDER") is { Length: > 0 } csharpOutput)
+        {
+            applicationSettings.CSharpOutputFolder = csharpOutput;
+        }
+
         if (Environment.GetEnvironmentVariable("TEST_OUTPUT_FOLDER") is { Length: > 0 } testOutput)
         {
             applicationSettings.TestOutputFolder = testOutput;
         }
 
+        if (Environment.GetEnvironmentVariable("TARGET_LANGUAGE") is { Length: > 0 } targetLang)
+        {
+            if (Enum.TryParse<TargetLanguage>(targetLang, true, out var parsedLang))
+            {
+                applicationSettings.TargetLanguage = parsedLang;
+            }
+        }
+
         if (Environment.GetEnvironmentVariable("MIGRATION_DB_PATH") is { Length: > 0 } migrationDb)
         {
             applicationSettings.MigrationDatabasePath = migrationDb;
-        }
-
-        // Target language selection (from doctor.sh or config file)
-        if (Environment.GetEnvironmentVariable("TARGET_LANGUAGE") is { Length: > 0 } targetLang)
-        {
-            var trimmedLang = targetLang.Trim();
-            var isCSharp = trimmedLang.Equals("CSharp", StringComparison.OrdinalIgnoreCase) ||
-                           trimmedLang.Equals("C#", StringComparison.OrdinalIgnoreCase);
-            applicationSettings.TargetLanguage = isCSharp ? TargetLanguage.CSharp : TargetLanguage.Java;
-            
-            // Quality Gate: Verify the language was correctly parsed
-            Console.WriteLine($"🎯 TARGET_LANGUAGE env var: '{trimmedLang}' → {applicationSettings.TargetLanguage}");
-            Console.WriteLine($"🔒 Quality Gate: Language selection = {applicationSettings.TargetLanguage}");
-            
-            // Additional verification: Check if the env var value matches expected values
-            if (!trimmedLang.Equals("Java", StringComparison.OrdinalIgnoreCase) &&
-                !trimmedLang.Equals("CSharp", StringComparison.OrdinalIgnoreCase) &&
-                !trimmedLang.Equals("C#", StringComparison.OrdinalIgnoreCase))
-            {
-                Console.WriteLine($"⚠️  WARNING: TARGET_LANGUAGE='{trimmedLang}' is not a recognized value.");
-                Console.WriteLine($"   Expected: 'Java' or 'CSharp'. Falling back to: {applicationSettings.TargetLanguage}");
-            }
-        }
-        else
-        {
-            Console.WriteLine($"🎯 TARGET_LANGUAGE env var not set, using config default: {applicationSettings.TargetLanguage}");
-        }
-
-        // C# output folder (separate from Java output)
-        if (Environment.GetEnvironmentVariable("CSHARP_OUTPUT_FOLDER") is { Length: > 0 } csharpOutput)
-        {
-            applicationSettings.CSharpOutputFolder = csharpOutput;
         }
     }
 
@@ -937,7 +731,7 @@ internal static class Program
             var deployment = Environment.GetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT_NAME");
             var apiKey = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_KEY");
 
-            Console.WriteLine("✅ Configuration Validation Successful (Agent Framework)");
+            Console.WriteLine("✅ Configuration Validation Successful");
             Console.WriteLine("=====================================");
             Console.WriteLine($"Endpoint: {endpoint}");
             Console.WriteLine($"Model: {modelId}");
@@ -988,48 +782,52 @@ internal static class Program
                 Environment.Exit(1);
             }
 
-            // Create EnhancedLogger and ChatLogger early for API tracking
+            var kernelBuilder = Kernel.CreateBuilder();
+
+            if (settings.AISettings.ServiceType.Equals("AzureOpenAI", StringComparison.OrdinalIgnoreCase))
+            {
+                var httpClient = new HttpClient
+                {
+                    Timeout = TimeSpan.FromMinutes(10)
+                };
+
+                kernelBuilder.AddAzureOpenAIChatCompletion(
+                    deploymentName: settings.AISettings.DeploymentName,
+                    endpoint: settings.AISettings.Endpoint,
+                    apiKey: settings.AISettings.ApiKey,
+                    httpClient: httpClient);
+
+                logger.LogInformation("Using Azure OpenAI service");
+            }
+            else
+            {
+                kernelBuilder.AddOpenAIChatCompletion(
+                    modelId: settings.AISettings.ModelId,
+                    apiKey: settings.AISettings.ApiKey);
+
+                logger.LogInformation("Using OpenAI service");
+            }
+
+            // Initialize agents
             var enhancedLogger = new EnhancedLogger(
                 loggerFactory.CreateLogger<EnhancedLogger>());
             var chatLogger = new ChatLogger(
                 loggerFactory.CreateLogger<ChatLogger>());
 
-            // Create ResponsesApiClient for code agents (codex models via Responses API)
-            var responsesApiClient = new ResponsesApiClient(
-                settings.AISettings.Endpoint,
-                settings.AISettings.ApiKey,
-                settings.AISettings.DeploymentName,
-                loggerFactory.CreateLogger<ResponsesApiClient>(),
-                enhancedLogger);  // Pass EnhancedLogger for API call tracking
-
-            logger.LogInformation("ResponsesApiClient initialized for codex model: {DeploymentName}", 
-                settings.AISettings.DeploymentName);
-
-            // Create IChatClient for chat agents (RE reports via Chat Completions API)
-            var chatEndpoint = settings.AISettings.ChatEndpoint ?? settings.AISettings.Endpoint;
-            var chatApiKey = settings.AISettings.ChatApiKey ?? settings.AISettings.ApiKey;
-            var chatDeployment = settings.AISettings.ChatDeploymentName ?? settings.AISettings.DeploymentName;
-
-            IChatClient chatClient = ChatClientFactory.CreateAzureOpenAIChatClient(chatEndpoint, chatApiKey, chatDeployment);
-            logger.LogInformation("IChatClient initialized for chat model: {ChatDeployment}", chatDeployment);
-
-            // CobolAnalyzerAgent uses ResponsesApiClient (codex for code analysis)
             var cobolAnalyzerAgent = new CobolAnalyzerAgent(
-                responsesApiClient,
+                kernelBuilder,
                 loggerFactory.CreateLogger<CobolAnalyzerAgent>(),
-                settings.AISettings.CobolAnalyzerModelId,
+                settings.AISettings.ModelId,
                 enhancedLogger,
                 chatLogger);
 
-            // BusinessLogicExtractorAgent uses IChatClient (chat for RE reports)
             var businessLogicExtractorAgent = new BusinessLogicExtractorAgent(
-                chatClient,
+                kernelBuilder,
                 loggerFactory.CreateLogger<BusinessLogicExtractorAgent>(),
-                chatDeployment,
+                settings.AISettings.ModelId,
                 enhancedLogger,
                 chatLogger);
 
-            // Use ReverseEngineeringProcess with agents
             var reverseEngineeringProcess = new ReverseEngineeringProcess(
                 cobolAnalyzerAgent,
                 businessLogicExtractorAgent,
@@ -1065,7 +863,7 @@ internal static class Program
             Console.WriteLine("🎯 Next Steps:");
             Console.WriteLine("   1. Review the generated documentation");
             Console.WriteLine("   2. Decide on your modernization strategy");
-            Console.WriteLine("   3. Run full migration if desired: dotnet run --source <path> --java-output <path>");
+            Console.WriteLine("   3. Run full migration if desired: dotnet run --source <path> --output <path>");
             Console.WriteLine();
         }
         catch (Exception ex)

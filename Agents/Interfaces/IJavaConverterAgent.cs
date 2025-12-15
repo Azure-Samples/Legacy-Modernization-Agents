@@ -1,3 +1,4 @@
+using Microsoft.SemanticKernel;
 using CobolToQuarkusMigration.Models;
 
 namespace CobolToQuarkusMigration.Agents.Interfaces;

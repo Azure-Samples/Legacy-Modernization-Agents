@@ -1,6 +1,6 @@
-using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
-using CobolToQuarkusMigration.Agents.Infrastructure;
+using Microsoft.SemanticKernel;
+using Microsoft.SemanticKernel.Connectors.OpenAI;
 using CobolToQuarkusMigration.Models;
 using CobolToQuarkusMigration.Helpers;
 using System.Diagnostics;
@@ -8,23 +8,28 @@ using System.Diagnostics;
 namespace CobolToQuarkusMigration.Agents;
 
 /// <summary>
-/// Agent that extracts business logic from COBOL code using Microsoft Agent Framework (IChatClient).
+/// Agent that extracts business logic from COBOL code and generates feature descriptions and use cases.
 /// </summary>
-public class BusinessLogicExtractorAgent : AgentBase
+public class BusinessLogicExtractorAgent
 {
-    /// <inheritdoc/>
-    protected override string AgentName => "BusinessLogicExtractorAgent";
+    private readonly IKernelBuilder _kernelBuilder;
+    private readonly ILogger<BusinessLogicExtractorAgent> _logger;
+    private readonly string _modelId;
+    private readonly EnhancedLogger? _enhancedLogger;
+    private readonly ChatLogger? _chatLogger;
 
     public BusinessLogicExtractorAgent(
-        IChatClient chatClient,
+        IKernelBuilder kernelBuilder,
         ILogger<BusinessLogicExtractorAgent> logger,
         string modelId,
         EnhancedLogger? enhancedLogger = null,
-        ChatLogger? chatLogger = null,
-        RateLimiter? rateLimiter = null,
-        AppSettings? settings = null)
-        : base(chatClient, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings)
+        ChatLogger? chatLogger = null)
     {
+        _kernelBuilder = kernelBuilder;
+        _logger = logger;
+        _modelId = modelId;
+        _enhancedLogger = enhancedLogger;
+        _chatLogger = chatLogger;
     }
 
     /// <summary>
@@ -34,9 +39,12 @@ public class BusinessLogicExtractorAgent : AgentBase
     {
         var stopwatch = Stopwatch.StartNew();
 
-        Logger.LogInformation("Extracting business logic from: {FileName}", cobolFile.FileName);
-        EnhancedLogger?.LogBehindTheScenes("REVERSE_ENGINEERING", "BUSINESS_LOGIC_EXTRACTION_START",
+        _logger.LogInformation("Extracting business logic from: {FileName}", cobolFile.FileName);
+        _enhancedLogger?.LogBehindTheScenes("REVERSE_ENGINEERING", "BUSINESS_LOGIC_EXTRACTION_START",
             $"Starting business logic extraction for {cobolFile.FileName}", cobolFile.FileName);
+
+        var kernel = _kernelBuilder.Build();
+        var apiCallId = 0;
 
         try
         {
@@ -46,11 +54,11 @@ Focus on identifying business use cases, operations, and validation rules.
 Use business-friendly terminology from the provided glossary when available.
 ";
 
-            // Build glossary context
+            // Build glossary context if available
             var glossaryContext = "";
             if (glossary?.Terms?.Any() == true)
             {
-                glossaryContext = "\n\n## Business Glossary\nUse these business-friendly translations:\n";
+                glossaryContext = "\n\n## Business Glossary\nUse these business-friendly translations when describing the code:\n";
                 foreach (var term in glossary.Terms)
                 {
                     glossaryContext += $"- {term.Term} = {term.Translation}\n";
@@ -58,23 +66,7 @@ Use business-friendly terminology from the provided glossary when available.
                 glossaryContext += "\n";
             }
 
-            // Check file size
-            const int MaxContentChars = 150_000;
-            var contentToAnalyze = cobolFile.Content;
-
-            if (contentToAnalyze.Length > MaxContentChars)
-            {
-                var errorMsg = $"❌ FILE TOO LARGE: {cobolFile.FileName} has {contentToAnalyze.Length:N0} chars (max: {MaxContentChars:N0}).";
-                Logger.LogError(errorMsg);
-                return new BusinessLogic
-                {
-                    FileName = cobolFile.FileName,
-                    FilePath = cobolFile.FilePath,
-                    BusinessPurpose = errorMsg
-                };
-            }
-
-            var userPrompt = $@"
+            var prompt = $@"
 Analyze this COBOL program and extract the business logic:
 Your goal: Identify WHAT the business does, not HOW the code works.{glossaryContext}
 
@@ -87,12 +79,22 @@ Identify each business operation the program performs:
 - DELETE / Remove operations
 - READ / Query / Fetch operations
 - VALIDATE / Check operations
+- Any other business operations
+- Describe each operation as a use case.
+
+For each use case, describe:
+- What is being created/updated/deleted
+- What triggers this operation
+- What are the key steps
 
 ### 2. Validations as Business Rules
 Extract ALL validation rules including:
 - Field validations (required, format, length, range)
-- Business logic validations
-- Error codes and their meanings
+- Business logic validations (eligibility, authorization, state)
+- Data integrity checks (duplicates, referential integrity)
+- Authorization checks (user permissions, access control)
+- Error codes (IDFEL) and their meanings
+- Error messages (BEFEL) and conditions
 
 ### 3. Business Purpose
 What business problem does this solve? (1-2 sentences)
@@ -100,59 +102,98 @@ What business problem does this solve? (1-2 sentences)
 ## Format Your Response:
 
 ## Business Purpose
-[1-2 sentences]
+[1-2 sentences describing what this does for the business]
 
 ## Use Cases
-### Use Case 1: [Operation Name]
+
+### Use Case 1: [Operation Name - e.g., Create Variant Family]
 **Trigger:** [What initiates this operation]
-**Description:** [What happens]
+**Description:** [What happens in this use case]
 **Key Steps:**
 1. [Step 1]
 2. [Step 2]
+...
+
+### Use Case 2: [Operation Name - e.g., Update Variant Family]
+[Same format as above]
 
 ## Business Rules & Validations
+
 ### Data Validations
 - [Field name] must be [requirement] - Error: [code/message]
+- [Field name] cannot be [constraint] - Error: [code/message]
 
 ### Business Logic Rules
-- [Rule description]
+- [Rule description with condition] - Error: [code/message]
+- [Rule description with action]
 
+### Authorization Rules
+- [Permission/access requirement]
+
+### Data Integrity Rules
+- [Referential integrity or consistency rule]
+
+Focus on actual rules and operations found in the code. Don't invent rules that aren't there.
 File: {cobolFile.FileName}
 
 COBOL Code:
 ```cobol
-{contentToAnalyze}
+{cobolFile.Content}
 ```
+
+
 ";
 
-            var (analysisText, usedFallback, fallbackReason) = await ExecuteWithFallbackAsync(
-                systemPrompt,
-                userPrompt,
-                cobolFile.FileName);
+            apiCallId = _enhancedLogger?.LogApiCallStart(
+                "BusinessLogicExtractorAgent",
+                "POST",
+                "Azure OpenAI Chat Completion",
+                _modelId,
+                $"Extracting business logic from {cobolFile.FileName}"
+            ) ?? 0;
 
-            if (usedFallback)
+            _chatLogger?.LogUserMessage("BusinessLogicExtractorAgent", cobolFile.FileName, prompt, systemPrompt);
+
+            var executionSettings = new OpenAIPromptExecutionSettings
             {
-                return new BusinessLogic
+                ExtensionData = new Dictionary<string, object>
                 {
-                    FileName = cobolFile.FileName,
-                    FilePath = cobolFile.FilePath,
-                    BusinessPurpose = $"Business logic extraction unavailable: {fallbackReason}"
-                };
-            }
+                    ["max_completion_tokens"] = 32768
+                }
+            };
+
+            var fullPrompt = $"{systemPrompt}\n\n{prompt}";
+            var kernelArguments = new KernelArguments(executionSettings);
+
+            var functionResult = await kernel.InvokePromptAsync(fullPrompt, kernelArguments);
+            var analysisText = functionResult.GetValue<string>() ?? string.Empty;
+
+            _chatLogger?.LogAIResponse("BusinessLogicExtractorAgent", cobolFile.FileName, analysisText);
 
             stopwatch.Stop();
-            EnhancedLogger?.LogPerformanceMetrics($"Business Logic Extraction - {cobolFile.FileName}", stopwatch.Elapsed, 1);
+            _enhancedLogger?.LogApiCallEnd(apiCallId, analysisText, analysisText.Length / 4, 0.001m);
+            _enhancedLogger?.LogPerformanceMetrics($"Business Logic Extraction - {cobolFile.FileName}", stopwatch.Elapsed, 1);
 
+            // Parse the response into structured business logic
             var businessLogic = ParseBusinessLogic(cobolFile, analysisText);
-            Logger.LogInformation("Completed business logic extraction for: {FileName}", cobolFile.FileName);
+
+            _logger.LogInformation("Completed business logic extraction for: {FileName}", cobolFile.FileName);
+
             return businessLogic;
         }
         catch (Exception ex)
         {
             stopwatch.Stop();
-            EnhancedLogger?.LogBehindTheScenes("ERROR", "BUSINESS_LOGIC_EXTRACTION_FAILED",
+
+            if (apiCallId > 0)
+            {
+                _enhancedLogger?.LogApiCallError(apiCallId, ex.Message);
+            }
+
+            _enhancedLogger?.LogBehindTheScenes("ERROR", "BUSINESS_LOGIC_EXTRACTION_FAILED",
                 $"Failed to extract business logic from {cobolFile.FileName}: {ex.Message}", ex.GetType().Name);
-            Logger.LogError(ex, "Error extracting business logic from: {FileName}", cobolFile.FileName);
+
+            _logger.LogError(ex, "Error extracting business logic from: {FileName}", cobolFile.FileName);
             throw;
         }
     }
@@ -166,93 +207,36 @@ COBOL Code:
         Glossary? glossary = null,
         Action<int, int>? progressCallback = null)
     {
-        Logger.LogInformation("Extracting business logic from {Count} COBOL files", cobolFiles.Count);
+        _logger.LogInformation("Extracting business logic from {Count} COBOL files", cobolFiles.Count);
 
+        var businessLogicList = new List<BusinessLogic>();
         int processedCount = 0;
-        var lockObj = new object();
 
-        var maxParallel = Math.Min(Settings?.ChunkingSettings?.MaxParallelAnalysis ?? 6, cobolFiles.Count);
-        var enableParallel = Settings?.ChunkingSettings?.EnableParallelProcessing ?? true;
-
-        if (enableParallel && cobolFiles.Count > 1 && maxParallel > 1)
+        foreach (var cobolFile in cobolFiles)
         {
-            Logger.LogInformation("🚀 Using parallel extraction with {Workers} workers", maxParallel);
-
-            var semaphore = new SemaphoreSlim(maxParallel, maxParallel);
-            var staggerDelay = Settings?.ChunkingSettings?.ParallelStaggerDelayMs ?? 500;
-
-            var indexedTasks = new List<Task<(int Index, BusinessLogic? Logic)>>();
-
-            for (int i = 0; i < cobolFiles.Count; i++)
+            var analysis = analyses.FirstOrDefault(a => a.FileName == cobolFile.FileName);
+            if (analysis == null)
             {
-                var cobolFile = cobolFiles[i];
-                var index = i;
-                var analysis = analyses.FirstOrDefault(a => a.FileName == cobolFile.FileName);
-
-                if (analysis == null)
-                {
-                    Logger.LogWarning("No analysis found for {FileName}", cobolFile.FileName);
-                    indexedTasks.Add(Task.FromResult<(int Index, BusinessLogic? Logic)>((index, null)));
-                    continue;
-                }
-
-                var task = Task.Run(async () =>
-                {
-                    await semaphore.WaitAsync();
-                    try
-                    {
-                        var businessLogic = await ExtractBusinessLogicAsync(cobolFile, analysis, glossary);
-                        lock (lockObj)
-                        {
-                            processedCount++;
-                            progressCallback?.Invoke(processedCount, cobolFiles.Count);
-                        }
-                        return (Index: index, Logic: (BusinessLogic?)businessLogic);
-                    }
-                    finally
-                    {
-                        semaphore.Release();
-                    }
-                });
-
-                indexedTasks.Add(task);
-                await Task.Delay(staggerDelay);
+                _logger.LogWarning("No analysis found for {FileName}, skipping business logic extraction", cobolFile.FileName);
+                continue;
             }
 
-            var results = await Task.WhenAll(indexedTasks);
+            var businessLogic = await ExtractBusinessLogicAsync(cobolFile, analysis, glossary);
+            businessLogicList.Add(businessLogic);
 
-            return results
-                .OrderBy(r => r.Index)
-                .Where(r => r.Logic != null)
-                .Select(r => r.Logic!)
-                .ToList();
+            processedCount++;
+            progressCallback?.Invoke(processedCount, cobolFiles.Count);
         }
-        else
-        {
-            var businessLogicList = new List<BusinessLogic>();
 
-            foreach (var cobolFile in cobolFiles)
-            {
-                var analysis = analyses.FirstOrDefault(a => a.FileName == cobolFile.FileName);
-                if (analysis == null)
-                {
-                    Logger.LogWarning("No analysis found for {FileName}", cobolFile.FileName);
-                    continue;
-                }
+        _logger.LogInformation("Completed business logic extraction for {Count} files", businessLogicList.Count);
 
-                var businessLogic = await ExtractBusinessLogicAsync(cobolFile, analysis, glossary);
-                businessLogicList.Add(businessLogic);
-
-                processedCount++;
-                progressCallback?.Invoke(processedCount, cobolFiles.Count);
-            }
-
-            return businessLogicList;
-        }
+        return businessLogicList;
     }
 
     private BusinessLogic ParseBusinessLogic(CobolFile cobolFile, string analysisText)
     {
+        // For now, we'll store the raw analysis and do basic parsing
+        // In a production system, we'd have more sophisticated parsing
         var businessLogic = new BusinessLogic
         {
             FileName = cobolFile.FileName,
@@ -261,22 +245,27 @@ COBOL Code:
             BusinessPurpose = ExtractBusinessPurpose(analysisText)
         };
 
+        // Parse feature descriptions, features, rules, and entities
         businessLogic.UserStories = ExtractUserStories(analysisText, cobolFile.FileName);
         businessLogic.Features = ExtractFeatures(analysisText, cobolFile.FileName);
         businessLogic.BusinessRules = ExtractBusinessRules(analysisText, cobolFile.FileName);
+        // TODO: Extract data entities when DataEntity model is defined
+        // businessLogic.DataEntities = ExtractDataEntities(analysisText);
 
         return businessLogic;
     }
 
     private string ExtractBusinessPurpose(string analysisText)
     {
+        // Look for business purpose section
         var lines = analysisText.Split('\n');
         var purposeSection = new List<string>();
         bool inPurposeSection = false;
 
         foreach (var line in lines)
         {
-            if (line.Contains("Business Purpose", StringComparison.OrdinalIgnoreCase))
+            if (line.Contains("Business Purpose", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("Overall Purpose", StringComparison.OrdinalIgnoreCase))
             {
                 inPurposeSection = true;
                 continue;
@@ -285,7 +274,8 @@ COBOL Code:
             if (inPurposeSection)
             {
                 if (string.IsNullOrWhiteSpace(line) ||
-                    line.Contains("Use Cases", StringComparison.OrdinalIgnoreCase) ||
+                    line.Contains("Feature Descriptions", StringComparison.OrdinalIgnoreCase) ||
+                    line.Contains("User Stories", StringComparison.OrdinalIgnoreCase) ||
                     line.Contains("Features", StringComparison.OrdinalIgnoreCase))
                 {
                     break;
@@ -311,11 +301,14 @@ COBOL Code:
         {
             var line = lines[i].Trim();
 
+            // Match "### Use Case X:" pattern from new prompt format
             if (line.StartsWith("###") && (line.Contains("Use Case", StringComparison.OrdinalIgnoreCase) ||
+                                          line.Contains("Feature Description", StringComparison.OrdinalIgnoreCase) ||
                                           line.Contains("User Story", StringComparison.OrdinalIgnoreCase)))
             {
                 if (currentStory != null)
                 {
+                    // Finalize previous story
                     if (descriptionLines.Count > 0)
                         currentStory.Action = string.Join(" ", descriptionLines);
                     if (stepLines.Count > 0)
@@ -335,34 +328,60 @@ COBOL Code:
             }
             else if (currentStory != null)
             {
+                // Look for new format fields
                 if (line.StartsWith("**Trigger:**", StringComparison.OrdinalIgnoreCase))
                 {
-                    currentStory.Role = line.Replace("**Trigger:**", "").Trim();
+                    currentStory.Role = line.Replace("**Trigger:**", "").Replace("Trigger:", "").Trim();
                     currentSection = "trigger";
                 }
                 else if (line.StartsWith("**Description:**", StringComparison.OrdinalIgnoreCase))
                 {
-                    descriptionLines.Add(line.Replace("**Description:**", "").Trim());
+                    descriptionLines.Add(line.Replace("**Description:**", "").Replace("Description:", "").Trim());
                     currentSection = "description";
                 }
-                else if (line.StartsWith("**Key Steps:**", StringComparison.OrdinalIgnoreCase))
+                else if (line.StartsWith("**Key Steps:**", StringComparison.OrdinalIgnoreCase) ||
+                         line.StartsWith("Key Steps:", StringComparison.OrdinalIgnoreCase))
                 {
                     currentSection = "steps";
                 }
+                // Old format support
+                else if (line.StartsWith("Role:", StringComparison.OrdinalIgnoreCase) ||
+                    line.StartsWith("As a", StringComparison.OrdinalIgnoreCase))
+                {
+                    currentStory.Role = line.Replace("Role:", "").Replace("As a", "").Trim();
+                }
+                else if (line.StartsWith("Action:", StringComparison.OrdinalIgnoreCase) ||
+                         line.StartsWith("I want to", StringComparison.OrdinalIgnoreCase))
+                {
+                    currentStory.Action = line.Replace("Action:", "").Replace("I want to", "").Trim();
+                }
+                else if (line.StartsWith("Benefit:", StringComparison.OrdinalIgnoreCase) ||
+                         line.StartsWith("So that", StringComparison.OrdinalIgnoreCase))
+                {
+                    currentStory.Benefit = line.Replace("Benefit:", "").Replace("So that", "").Trim();
+                }
+                else if (line.StartsWith("Acceptance Criteria", StringComparison.OrdinalIgnoreCase) ||
+                         line.StartsWith("Business Rules", StringComparison.OrdinalIgnoreCase))
+                {
+                    currentSection = "criteria";
+                }
+                // Collect content based on current section
                 else if (!string.IsNullOrWhiteSpace(line) && !line.StartsWith("##"))
                 {
                     if (currentSection == "description" && !line.StartsWith("**"))
                     {
                         descriptionLines.Add(line);
                     }
-                    else if (currentSection == "steps" && (line.StartsWith("-") || char.IsDigit(line[0])))
+                    else if ((currentSection == "steps" || currentSection == "criteria") &&
+                             (line.StartsWith("-") || line.StartsWith("•") || char.IsDigit(line[0])))
                     {
-                        stepLines.Add(line.TrimStart('-', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '.', ' ').Trim());
+                        stepLines.Add(line.TrimStart('-', '•', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '.', ' ').Trim());
                     }
                 }
             }
         }
 
+        // Don't forget the last story
         if (currentStory != null)
         {
             if (descriptionLines.Count > 0)
@@ -381,6 +400,7 @@ COBOL Code:
         var lines = analysisText.Split('\n');
 
         FeatureDescription? currentFeature = null;
+        string currentSection = "";
 
         for (int i = 0; i < lines.Length; i++)
         {
@@ -388,28 +408,68 @@ COBOL Code:
 
             if (line.StartsWith("###") && line.Contains("Feature", StringComparison.OrdinalIgnoreCase))
             {
-                if (currentFeature != null) features.Add(currentFeature);
+                if (currentFeature != null)
+                {
+                    features.Add(currentFeature);
+                }
                 currentFeature = new FeatureDescription
                 {
                     Id = $"F-{features.Count + 1}",
                     Name = line.Replace("###", "").Replace("Feature:", "").Trim(),
                     SourceLocation = fileName
                 };
+                currentSection = "name";
             }
             else if (currentFeature != null)
             {
                 if (line.StartsWith("Description:", StringComparison.OrdinalIgnoreCase))
                 {
                     currentFeature.Description = line.Replace("Description:", "").Trim();
+                    currentSection = "description";
+                }
+                else if (line.StartsWith("Business Rules", StringComparison.OrdinalIgnoreCase))
+                {
+                    currentSection = "rules";
+                }
+                else if (line.StartsWith("Inputs:", StringComparison.OrdinalIgnoreCase))
+                {
+                    currentSection = "inputs";
+                }
+                else if (line.StartsWith("Outputs:", StringComparison.OrdinalIgnoreCase))
+                {
+                    currentSection = "outputs";
+                }
+                else if (line.StartsWith("Processing Steps", StringComparison.OrdinalIgnoreCase))
+                {
+                    currentSection = "steps";
                 }
                 else if (line.StartsWith("-") || line.StartsWith("•"))
                 {
-                    currentFeature.ProcessingSteps.Add(line.TrimStart('-', '•').Trim());
+                    var item = line.TrimStart('-', '•').Trim();
+                    switch (currentSection)
+                    {
+                        case "rules":
+                            currentFeature.BusinessRules.Add(item);
+                            break;
+                        case "inputs":
+                            currentFeature.Inputs.Add(item);
+                            break;
+                        case "outputs":
+                            currentFeature.Outputs.Add(item);
+                            break;
+                        case "steps":
+                            currentFeature.ProcessingSteps.Add(item);
+                            break;
+                    }
                 }
             }
         }
 
-        if (currentFeature != null) features.Add(currentFeature);
+        if (currentFeature != null)
+        {
+            features.Add(currentFeature);
+        }
+
         return features;
     }
 
@@ -417,37 +477,74 @@ COBOL Code:
     {
         var rules = new List<BusinessRule>();
         var lines = analysisText.Split('\n');
+
         bool inRulesSection = false;
+        string currentCategory = "";
 
         for (int i = 0; i < lines.Length; i++)
         {
             var line = lines[i].Trim();
 
-            if (line.Contains("Business Rules", StringComparison.OrdinalIgnoreCase) ||
-                line.Contains("Validations", StringComparison.OrdinalIgnoreCase))
+            // Start of Business Rules section - look for several possible formats
+            if ((line.Contains("Business Rules", StringComparison.OrdinalIgnoreCase) &&
+                line.Contains("Validations", StringComparison.OrdinalIgnoreCase)) ||
+                (line.StartsWith("##") && line.Contains("Business Rules", StringComparison.OrdinalIgnoreCase)) ||
+                (line.Contains("Data Validations", StringComparison.OrdinalIgnoreCase) && line.StartsWith("###")) ||
+                (line.Contains("Business Logic Rules", StringComparison.OrdinalIgnoreCase) && line.StartsWith("###")))
             {
                 inRulesSection = true;
+                if (line.StartsWith("###"))
+                {
+                    currentCategory = line.Replace("###", "").Trim();
+                }
                 continue;
             }
 
             if (inRulesSection)
             {
-                if (line.StartsWith("##") && !line.Contains("Business Rules") && !line.Contains("Validations"))
+                // Check for end of rules section (next major section or source marker)
+                if ((line.StartsWith("##") && !line.Contains("Business Rules", StringComparison.OrdinalIgnoreCase) &&
+                     !line.Contains("Validations", StringComparison.OrdinalIgnoreCase)) ||
+                    line.Contains("*Source:", StringComparison.OrdinalIgnoreCase))
+                {
                     break;
+                }
 
-                if (!string.IsNullOrWhiteSpace(line) && (line.StartsWith("-") || line.StartsWith("•")))
+                // Track sub-categories
+                if (line.StartsWith("###"))
+                {
+                    currentCategory = line.Replace("###", "").Trim();
+                    continue;
+                }
+
+                // Extract rules (lines starting with -, •, **, or specific patterns)
+                if (!string.IsNullOrWhiteSpace(line) &&
+                    (line.StartsWith("-") || line.StartsWith("•") || line.StartsWith("**")))
                 {
                     var ruleText = line.TrimStart('-', '•', ' ').Trim();
-                    if (ruleText.StartsWith("**")) ruleText = ruleText.Replace("**", "").Trim();
+
+                    // Handle **Field:** pattern
+                    if (ruleText.StartsWith("**"))
+                    {
+                        ruleText = ruleText.Replace("**", "").Trim();
+                    }
 
                     if (!string.IsNullOrWhiteSpace(ruleText) && ruleText.Length > 3)
                     {
-                        rules.Add(new BusinessRule
+                        var rule = new BusinessRule
                         {
                             Id = $"BR-{rules.Count + 1}",
                             Description = ruleText,
                             SourceLocation = fileName
-                        });
+                        };
+
+                        // Add category as a condition if available
+                        if (!string.IsNullOrWhiteSpace(currentCategory))
+                        {
+                            rule.Condition = $"[{currentCategory}]";
+                        }
+
+                        rules.Add(rule);
                     }
                 }
             }
@@ -455,4 +552,13 @@ COBOL Code:
 
         return rules;
     }
+
+    // TODO: Implement when DataEntity model is defined
+    // private List<DataEntity> ExtractDataEntities(string analysisText)
+    // {
+    //     var entities = new List<DataEntity>();
+    //     // Basic extraction - can be enhanced based on needs
+    //     // This would parse data entity sections from the AI response
+    //     return entities;
+    // }
 }
