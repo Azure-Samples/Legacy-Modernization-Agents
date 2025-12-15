@@ -5,39 +5,6 @@ All notable changes to this repository are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.2.0] - 2025-12-15
-
-### Added
-- **Smart Chunking (v0.2)** - Automatic large file detection and semantic chunking for files >150K chars or >3000 lines
-- **SmartMigrationOrchestrator** - Intelligent file routing to appropriate process based on size/complexity
-- **ChunkedReverseEngineeringProcess** - Handles large file reverse engineering analysis with parallel chunk processing
-- **ChunkedMigrationProcess** - Handles large file code conversion with chunk reassembly
-- **ChunkingOrchestrator** - Semantic boundary detection (paragraphs, sections, divisions) with configurable overlap
-- **Parallel Processing** - Up to 6 parallel workers for chunk analysis with rate limiting
-- **SignatureRegistry** - Cross-chunk consistency for method signatures and type mappings
-- **Portal Chunks Tab** - Real-time chunk progress monitoring with overall progress bar
-- **Chunking Health Check** - New `./doctor.sh chunking-health` command for infrastructure diagnostics
-- **Database Tables** - `chunk_metadata`, `forward_references`, `signatures`, `type_mappings` tables
-
-### Changed
-- **doctor.sh** - Updated help text with Smart Chunking info, added component validation for chunking infrastructure
-- **Run Selector** - Fixed auto-select behavior to only trigger on initial page load, preserves user selection on refresh
-- **REVERSE_ENGINEERING_ARCHITECTURE.md** - Complete rewrite with chunking architecture, AI models (gpt-5.1-codex-mini), Mermaid diagrams
-- **Portal UI** - Simplified Chunks tab (removed 4 sub-cards, added single progress bar)
-- **AI Models** - Documented use of `gpt-5.1-codex-mini` for agents and `gpt-5.1-chat` for portal
-
-### Fixed
-- **Large File Truncation** - Fixed 88% code loss bug for files >50K LOC by routing through chunked process
-- **Stale Run Status** - Fixed interrupted runs showing as "Running" in portal dropdown
-- **Duplicate Database Path** - Fixed MIGRATION_DB_PATH export issues causing duplicate databases
-- **Portal Port Conflicts** - Improved cleanup of zombie processes on port 5028
-
-### Configuration
-- `ChunkingSettings.MaxLinesPerChunk`: 1500 (default)
-- `ChunkingSettings.OverlapLines`: 300 (default)
-- `ChunkingSettings.MaxParallelAnalysis`: 6 (default)
-- `ChunkingSettings.TokenBudgetPerMinute`: 300000
-
 ## [2.1.1] - 2025-11-24
 
 ### Changed

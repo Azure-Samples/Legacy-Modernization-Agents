@@ -30,6 +30,7 @@
 				"redhat.java",
 				"vscjava.vscode-java-pack",
 				"redhat.vscode-quarkus",
+				"ms-semantic-kernel.semantic-kernel",
 				"github.copilot",
 				"github.copilot-chat",
 				"ms-azuretools.vscode-docker",
@@ -71,7 +72,7 @@
 			"version": "lts"
 		}
 	},
-	"postCreateCommand": "dotnet restore Legacy-Modernization-Agents.sln && dotnet build Legacy-Modernization-Agents.sln && echo '\n✅ Dev Container Ready!\n\n⚠️  REQUIRED: Configure Azure OpenAI credentials:\n   1. Edit Config/appsettings.json\n   2. Replace YOUR-RESOURCE and YOUR-API-KEY-HERE with your values\n   3. Or create Config/ai-config.local.env (takes precedence)\n\n💡 Recommended: 1M+ TPM quota for best performance\n\nQuick Start:\n  ./doctor.sh run          # Full migration (interactive)\n  ./doctor.sh portal       # Launch portal only\n  ./doctor.sh reverse-eng  # Business logic extraction only\n\nEndpoints:\n  Portal: http://localhost:5028\n  Neo4j:  http://localhost:7474 (neo4j/cobol-migration-2025)\n'",
+	"postCreateCommand": "dotnet restore Legacy-Modernization-Agents.sln && dotnet build Legacy-Modernization-Agents.sln && echo '\n✅ Dev Container Ready!\n\nKey Features:\n- Enhanced Portal UI with collapsible sections\n- Migration report generation (per run)\n- Mermaid diagram support in docs\n- Extended dependency tracking (CALL, COPY, PERFORM, EXEC, READ, WRITE, OPEN, CLOSE)\n- Interactive dependency graph with filtering\n- Line-level context for all dependencies\n\nQuick Start:\n  ./doctor.sh run          # Start migration with report generation\n  ./helper-scripts/demo.sh # Run demo with sample COBOL\n  Portal: http://localhost:5028\n  Neo4j: http://localhost:7474 (neo4j/cobol-migration-2025)\n'",
 	"postStartCommand": "bash -c 'sudo chmod 666 /var/run/docker.sock && docker-compose up -d neo4j 2>/dev/null || true && echo \"🚀 Starting services...\" && sleep 3 && cd McpChatWeb && nohup dotnet run --urls \"http://localhost:5028\" > /tmp/cobol-portal.log 2>&1 & echo \"✅ Portal starting on http://localhost:5028\" && echo \"📝 Logs: tail -f /tmp/cobol-portal.log\"'",
 	"mounts": [
 		"source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"

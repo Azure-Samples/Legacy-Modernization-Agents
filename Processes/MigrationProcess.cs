@@ -1,7 +1,6 @@
-using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using Microsoft.SemanticKernel;
 using CobolToQuarkusMigration.Agents;
-using CobolToQuarkusMigration.Agents.Infrastructure;
 using CobolToQuarkusMigration.Agents.Interfaces;
 using CobolToQuarkusMigration.Helpers;
 using CobolToQuarkusMigration.Models;
@@ -12,14 +11,10 @@ namespace CobolToQuarkusMigration.Processes;
 
 /// <summary>
 /// Main class for the COBOL to Java Quarkus migration process.
-/// Uses dual-API architecture:
-/// - ResponsesApiClient for code agents (gpt-5.1-codex-mini via Responses API)
-/// - IChatClient for chat/report agents (gpt-5.1-chat via Chat Completions API)
 /// </summary>
 public class MigrationProcess
 {
-    private readonly ResponsesApiClient _responsesClient;
-    private readonly IChatClient _chatClient;
+    private readonly IKernelBuilder _kernelBuilder;
     private readonly ILogger<MigrationProcess> _logger;
     private readonly FileHelper _fileHelper;
     private readonly AppSettings _settings;
@@ -34,24 +29,20 @@ public class MigrationProcess
     private IDependencyMapperAgent? _dependencyMapperAgent;
 
     /// <summary>
-    /// Initializes a new instance with dual-API support.
+    /// Initializes a new instance of the <see cref="MigrationProcess"/> class.
     /// </summary>
-    /// <param name="responsesClient">The Responses API client for code agents (codex models).</param>
-    /// <param name="chatClient">The Chat client for report/chat agents (chat models via Chat Completions API).</param>
+    /// <param name="kernelBuilder">The kernel builder.</param>
     /// <param name="logger">The logger.</param>
     /// <param name="fileHelper">The file helper.</param>
     /// <param name="settings">The application settings.</param>
-    /// <param name="migrationRepository">The migration repository.</param>
     public MigrationProcess(
-        ResponsesApiClient responsesClient,
-        IChatClient chatClient,
+        IKernelBuilder kernelBuilder,
         ILogger<MigrationProcess> logger,
         FileHelper fileHelper,
         AppSettings settings,
         IMigrationRepository migrationRepository)
     {
-        _responsesClient = responsesClient;
-        _chatClient = chatClient;
+        _kernelBuilder = kernelBuilder;
         _logger = logger;
         _fileHelper = fileHelper;
         _settings = settings;
@@ -61,36 +52,34 @@ public class MigrationProcess
     }
 
     /// <summary>
-    /// Initializes the agents using the appropriate API client for each.
-    /// Code agents use ResponsesApiClient (codex via Responses API), others use IChatClient (chat).
+    /// Initializes the agents.
     /// </summary>
     public void InitializeAgents()
     {
-        _enhancedLogger.ShowSectionHeader("INITIALIZING AI AGENTS", "Setting up COBOL migration agents with dual-API support");
+        _enhancedLogger.ShowSectionHeader("INITIALIZING AI AGENTS", "Setting up COBOL migration agents with Azure OpenAI");
 
         var loggerFactory = LoggerFactory.Create(builder =>
         {
             builder.AddConsole();
         });
 
-        // CobolAnalyzerAgent uses Responses API client (codex for code analysis)
-        _enhancedLogger.ShowStep(1, 3, "CobolAnalyzerAgent", "Analyzing COBOL code structure and patterns (Responses API)");
+        _enhancedLogger.ShowStep(1, 3, "CobolAnalyzerAgent", "Analyzing COBOL code structure and patterns");
         _cobolAnalyzerAgent = new CobolAnalyzerAgent(
-            _responsesClient,
+            _kernelBuilder,
             loggerFactory.CreateLogger<CobolAnalyzerAgent>(),
             _settings.AISettings.CobolAnalyzerModelId,
             _enhancedLogger,
             _chatLogger);
 
-        // Initialize converter based on target language - uses Responses API (codex for code generation)
+        // Initialize converter based on target language
         var targetLang = _settings.ApplicationSettings.TargetLanguage;
         var targetName = targetLang == TargetLanguage.CSharp ? "C#" : "Java Quarkus";
 
-        _enhancedLogger.ShowStep(2, 3, $"{targetName}ConverterAgent", $"Converting COBOL to {targetName} (Responses API)");
+        _enhancedLogger.ShowStep(2, 3, $"{targetName}ConverterAgent", $"Converting COBOL to {targetName}");
         if (targetLang == TargetLanguage.CSharp)
         {
             _codeConverterAgent = new CSharpConverterAgent(
-                _responsesClient,
+                _kernelBuilder,
                 loggerFactory.CreateLogger<CSharpConverterAgent>(),
                 _settings.AISettings.JavaConverterModelId,
                 _enhancedLogger,
@@ -99,7 +88,7 @@ public class MigrationProcess
         else
         {
             _javaConverterAgent = new JavaConverterAgent(
-                _responsesClient,
+                _kernelBuilder,
                 loggerFactory.CreateLogger<JavaConverterAgent>(),
                 _settings.AISettings.JavaConverterModelId,
                 _enhancedLogger,
@@ -107,16 +96,15 @@ public class MigrationProcess
             _codeConverterAgent = (ICodeConverterAgent)_javaConverterAgent;
         }
 
-        // DependencyMapperAgent uses Responses API client (codex for analysis)
-        _enhancedLogger.ShowStep(3, 3, "DependencyMapperAgent", "Mapping COBOL dependencies and generating diagrams (Responses API)");
+        _enhancedLogger.ShowStep(3, 3, "DependencyMapperAgent", "Mapping COBOL dependencies and generating diagrams");
         _dependencyMapperAgent = new DependencyMapperAgent(
-            _responsesClient,
+            _kernelBuilder,
             loggerFactory.CreateLogger<DependencyMapperAgent>(),
             _settings.AISettings.DependencyMapperModelId ?? _settings.AISettings.CobolAnalyzerModelId,
             _enhancedLogger,
             _chatLogger);
 
-        _enhancedLogger.ShowSuccess("All agents initialized with dual-API support (Responses API for codex, Chat API for reports)");
+        _enhancedLogger.ShowSuccess("All agents initialized successfully with API call tracking");
     }
 
     /// <summary>
