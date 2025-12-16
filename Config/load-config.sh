@@ -67,7 +67,8 @@ load_env_file() {
                 
                 # Only set if not already set (allows environment override)
                 if [ -z "${!var_name}" ]; then
-                    export "$var_name=$var_value"
+                    # Use eval to allow variable expansion (e.g. VAR=$OTHER_VAR)
+                    eval "export $var_name=\"$var_value\""
                     log_info "Set $var_name"
                 else
                     log_info "Skipped $var_name (already set)"

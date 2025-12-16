@@ -18,6 +18,7 @@ namespace CobolToQuarkusMigration.Agents.Infrastructure;
 /// </summary>
 public class ResponsesApiClient : IDisposable
 {
+    private readonly string _apiVersion;
     private readonly HttpClient _httpClient;
     private readonly string _endpoint;
     private readonly string _apiKey;
@@ -40,6 +41,7 @@ public class ResponsesApiClient : IDisposable
     /// <param name="timeoutSeconds">HTTP timeout in seconds (default 600 for large code generation)</param>
     /// <param name="tokensPerMinute">TPM limit (default 1,000,000)</param>
     /// <param name="requestsPerMinute">RPM limit (default 1,000)</param>
+    /// <param name="apiVersion">API version to use (default: 2025-04-01-preview)</param>
     public ResponsesApiClient(
         string endpoint, 
         string apiKey, 
@@ -48,7 +50,8 @@ public class ResponsesApiClient : IDisposable
         EnhancedLogger? enhancedLogger = null,
         int timeoutSeconds = 600,
         int tokensPerMinute = 1_000_000,
-        int requestsPerMinute = 1_000)
+        int requestsPerMinute = 1_000,
+        string apiVersion = "2025-04-01-preview")
     {
         if (string.IsNullOrEmpty(endpoint))
             throw new ArgumentNullException(nameof(endpoint));
@@ -62,6 +65,7 @@ public class ResponsesApiClient : IDisposable
         _deploymentName = deploymentName;
         _logger = logger;
         _enhancedLogger = enhancedLogger;
+        _apiVersion = apiVersion;
         
         _rateLimitTracker = new RateLimitTracker(tokensPerMinute, requestsPerMinute, logger);
 
@@ -76,8 +80,8 @@ public class ResponsesApiClient : IDisposable
         };
 
         _logger?.LogInformation(
-            "Created Responses API client for {Deployment} (timeout: {Timeout}s, TPM: {TPM:N0}, RPM: {RPM:N0})", 
-            deploymentName, timeoutSeconds, tokensPerMinute, requestsPerMinute);
+            "Created Responses API client for {Deployment} (timeout: {Timeout}s, TPM: {TPM:N0}, RPM: {RPM:N0}, API: {ApiVersion})", 
+            deploymentName, timeoutSeconds, tokensPerMinute, requestsPerMinute, apiVersion);
     }
 
     /// <summary>
@@ -109,9 +113,8 @@ public class ResponsesApiClient : IDisposable
         // - Maximum: 64K (model limit is higher but diminishing returns)
         var maxOutputTokens = Math.Clamp(estimatedOutputNeeded, 16384, 65536);
         
-        // Always use "low" reasoning effort for code conversion tasks
-        // This minimizes tokens spent on "thinking" and maximizes actual output
-        const string reasoningEffort = "low";
+        // Use "medium" reasoning effort as "low" is not supported by gpt-5.2-chat
+        const string reasoningEffort = "medium";
         
         _logger?.LogInformation(
             "Token settings: Input ~{InputTokens}, max_output_tokens={MaxOutput}, reasoning.effort='{Effort}'",
@@ -138,14 +141,14 @@ public class ResponsesApiClient : IDisposable
     /// <param name="systemPrompt">The system instruction.</param>
     /// <param name="userPrompt">The user input/prompt.</param>
     /// <param name="maxOutputTokens">Maximum tokens for the response (includes reasoning + text output).</param>
-    /// <param name="reasoningEffort">Reasoning effort: "low", "medium", or "high". Use "low" for code tasks.</param>
+    /// <param name="reasoningEffort">Reasoning effort: "low", "medium", or "high". Use "medium" for gpt-5.2-chat.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The response text from the model.</returns>
     public async Task<string> GetResponseAsync(
         string systemPrompt,
         string userPrompt,
         int maxOutputTokens = 32768,
-        string reasoningEffort = "low",
+        string reasoningEffort = "medium",
         CancellationToken cancellationToken = default)
     {
         var estimatedInputTokens = EstimateTokens(systemPrompt) + EstimateTokens(userPrompt);
@@ -165,7 +168,7 @@ public class ResponsesApiClient : IDisposable
                 estimatedInputTokens);
         }
 
-        var uri = $"{_endpoint}/openai/responses?api-version=2025-04-01-preview";
+        var uri = $"{_endpoint}/openai/responses?api-version={_apiVersion}";
 
         // Build request body for Responses API
         // IMPORTANT: Use max_output_tokens (NOT max_tokens or max_completion_tokens)
@@ -181,7 +184,7 @@ public class ResponsesApiClient : IDisposable
             temperature = 1.0,
             reasoning = new
             {
-                effort = reasoningEffort  // "low" = less thinking, more output
+                effort = reasoningEffort  // "medium" required for gpt-5.2-chat
             }
         };
 

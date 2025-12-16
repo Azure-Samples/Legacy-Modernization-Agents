@@ -178,6 +178,24 @@ CREATE INDEX IF NOT EXISTS idx_forward_refs_target ON forward_references(run_id,
         _logger.LogInformation("SQLite database ready at {DatabasePath}", _databasePath);
     }
 
+    public async Task CleanupStaleRunsAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+UPDATE runs
+SET status = 'Terminated', completed_at = $completedAt, notes = 'Terminated automatically on startup due to improper shutdown.'
+WHERE status = 'Running'";
+        command.Parameters.AddWithValue("$completedAt", DateTime.UtcNow.ToString("O"));
+
+        var count = await command.ExecuteNonQueryAsync(cancellationToken);
+        if (count > 0)
+        {
+            _logger.LogWarning("Cleaned up {Count} stale migration runs (marked as Terminated)", count);
+        }
+    }
+
     public async Task<int> StartRunAsync(string cobolSourcePath, string javaOutputPath, CancellationToken cancellationToken = default)
     {
         await using var connection = CreateConnection();

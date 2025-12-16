@@ -28,6 +28,21 @@ public class BusinessLogicExtractorAgent : AgentBase
     }
 
     /// <summary>
+    /// Initializes a new instance using Responses API (for codex models).
+    /// </summary>
+    public BusinessLogicExtractorAgent(
+        ResponsesApiClient responsesClient,
+        ILogger<BusinessLogicExtractorAgent> logger,
+        string modelId,
+        EnhancedLogger? enhancedLogger = null,
+        ChatLogger? chatLogger = null,
+        RateLimiter? rateLimiter = null,
+        AppSettings? settings = null)
+        : base(responsesClient, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings)
+    {
+    }
+
+    /// <summary>
     /// Extracts business logic from a COBOL file.
     /// </summary>
     public async Task<BusinessLogic> ExtractBusinessLogicAsync(CobolFile cobolFile, CobolAnalysis analysis, Glossary? glossary = null)

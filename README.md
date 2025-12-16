@@ -763,26 +763,27 @@ To use different models, you have two options:
 ```json
 {
   "AISettings": {
-    "ModelId": "gpt-4o",
-    "ChatModelId": "gpt-4o-mini"
+    "ModelId": "gpt-5.1-codex-mini",
+    "ChatModelId": "gpt-5.2-chat"
   }
 }
 ```
 
 **Option B: Override via ai-config.local.env** (takes precedence)
 ```bash
-AZURE_OPENAI_MODEL_ID="gpt-4o"
-AZURE_OPENAI_DEPLOYMENT_NAME="my-gpt4o-deployment"
+# In Config/ai-config.local.env
+_CODE_MODEL="gpt-5.1-codex-mini"
+_CHAT_MODEL="gpt-5.2-chat"
 ```
 
 #### Quick Reference: Key Settings
 
 | Setting | appsettings.json Location | .env Override |
 |---------|---------------------------|---------------|
-| Codex model | `AISettings.ModelId` | `AZURE_OPENAI_MODEL_ID` |
-| Chat model | `AISettings.ChatModelId` | `AZURE_OPENAI_CHAT_MODEL_ID` |
-| API endpoint | `AISettings.Endpoint` | `AZURE_OPENAI_ENDPOINT` |
-| API key | `AISettings.ApiKey` | `AZURE_OPENAI_API_KEY` |
+| Codex model | `AISettings.ModelId` | `_CODE_MODEL` |
+| Chat model | `AISettings.ChatModelId` | `_CHAT_MODEL` |
+| API endpoint | `AISettings.Endpoint` | `_MAIN_ENDPOINT` |
+| API key | `AISettings.ApiKey` | `_MAIN_API_KEY` |
 | Neo4j enabled | `ApplicationSettings.Neo4j.Enabled` | — |
 | Chunking | `ChunkingSettings.*` | — |
 
@@ -794,9 +795,13 @@ AZURE_OPENAI_DEPLOYMENT_NAME="my-gpt4o-deployment"
 
 In `Config/ai-config.local.env`:
 ```bash
-AZURE_OPENAI_ENDPOINT="https://YOUR-RESOURCE.openai.azure.com/"
-AZURE_OPENAI_API_KEY="your-32-character-key"
-AZURE_OPENAI_DEPLOYMENT_NAME="gpt-5-mini-2"
+# Master Configuration
+_MAIN_ENDPOINT="https://YOUR-RESOURCE.openai.azure.com/"
+_MAIN_API_KEY="your key"
+
+# Model Selection
+_CHAT_MODEL="gpt-5.2-chat"           # For Portal Q&A
+_CODE_MODEL="gpt-5.1-codex-mini"     # For Code Conversion
 ```
 
 ### Neo4j (Dependency Graphs)

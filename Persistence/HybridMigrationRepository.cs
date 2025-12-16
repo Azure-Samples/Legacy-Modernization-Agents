@@ -28,6 +28,11 @@ public class HybridMigrationRepository : IMigrationRepository
         return _sqliteRepo.InitializeAsync(cancellationToken);
     }
 
+    public Task CleanupStaleRunsAsync(CancellationToken cancellationToken = default)
+    {
+        return _sqliteRepo.CleanupStaleRunsAsync(cancellationToken);
+    }
+
     public Task<int> StartRunAsync(string cobolSourcePath, string javaOutputPath, CancellationToken cancellationToken = default)
     {
         return _sqliteRepo.StartRunAsync(cobolSourcePath, javaOutputPath, cancellationToken);

@@ -226,6 +226,7 @@ public class SmartMigrationOrchestrator
         // ChunkedMigrationProcess handles both large and small files efficiently
         var chunkedProcess = new ChunkedMigrationProcess(
             _chatClient,
+            _responsesClient,
             _loggerFactory.CreateLogger<ChunkedMigrationProcess>(),
             _fileHelper,
             _settings,

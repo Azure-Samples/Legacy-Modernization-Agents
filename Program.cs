@@ -407,6 +407,9 @@ internal static class Program
             var enhancedLogger = new EnhancedLogger(loggerFactory.CreateLogger<EnhancedLogger>());
             var chatLogger = new ChatLogger(loggerFactory.CreateLogger<ChatLogger>());
 
+            // Get API version from environment or default
+            var apiVersion = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_VERSION") ?? "2025-04-01-preview";
+
             // Create ResponsesApiClient for code agents (codex model via Responses API)
             // gpt-5.1-codex-mini uses Responses API at /openai/responses, NOT Chat Completions
             var responsesApiClient = new ResponsesApiClient(
@@ -414,10 +417,11 @@ internal static class Program
                 settings.AISettings.ApiKey,
                 settings.AISettings.DeploymentName,
                 loggerFactory.CreateLogger<ResponsesApiClient>(),
-                enhancedLogger);  // Pass EnhancedLogger for API call tracking
+                enhancedLogger,
+                apiVersion: apiVersion);  // Pass EnhancedLogger for API call tracking
 
-            logger.LogInformation("ResponsesApiClient initialized for codex model: {DeploymentName}", 
-                settings.AISettings.DeploymentName);
+            logger.LogInformation("ResponsesApiClient initialized for codex model: {DeploymentName} (API: {ApiVersion})", 
+                settings.AISettings.DeploymentName, apiVersion);
 
             // Create IChatClient for chat agents (RE reports, chat via Chat Completions API)
             var chatEndpoint = settings.AISettings.ChatEndpoint ?? settings.AISettings.Endpoint;
@@ -464,6 +468,9 @@ internal static class Program
             var migrationRepository = new HybridMigrationRepository(sqliteMigrationRepository, neo4jMigrationRepository, hybridLogger);
             await migrationRepository.InitializeAsync();
 
+            // Cleanup stale runs on startup
+            await migrationRepository.CleanupStaleRunsAsync();
+
             // Step 1: Run reverse engineering if requested (and not skipped)
             if (!skipReverseEngineering || reverseEngineerOnly)
             {
@@ -477,9 +484,10 @@ internal static class Program
                     enhancedLogger,
                     chatLogger);
 
-                // BusinessLogicExtractorAgent uses IChatClient (chat for RE reports)
+                // BusinessLogicExtractorAgent uses ResponsesApiClient (codex for RE reports)
+                // This ensures compatibility with gpt-5.2-chat which requires Responses API
                 var businessLogicExtractorAgent = new BusinessLogicExtractorAgent(
-                    chatClient,
+                    responsesApiClient,
                     loggerFactory.CreateLogger<BusinessLogicExtractorAgent>(),
                     chatDeployment,
                     enhancedLogger,
@@ -994,16 +1002,20 @@ internal static class Program
             var chatLogger = new ChatLogger(
                 loggerFactory.CreateLogger<ChatLogger>());
 
+            // Get API version from environment or default
+            var apiVersion = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_VERSION") ?? "2025-04-01-preview";
+
             // Create ResponsesApiClient for code agents (codex models via Responses API)
             var responsesApiClient = new ResponsesApiClient(
                 settings.AISettings.Endpoint,
                 settings.AISettings.ApiKey,
                 settings.AISettings.DeploymentName,
                 loggerFactory.CreateLogger<ResponsesApiClient>(),
-                enhancedLogger);  // Pass EnhancedLogger for API call tracking
+                enhancedLogger,
+                apiVersion: apiVersion);  // Pass EnhancedLogger for API call tracking
 
-            logger.LogInformation("ResponsesApiClient initialized for codex model: {DeploymentName}", 
-                settings.AISettings.DeploymentName);
+            logger.LogInformation("ResponsesApiClient initialized for codex model: {DeploymentName} (API: {ApiVersion})", 
+                settings.AISettings.DeploymentName, apiVersion);
 
             // Create IChatClient for chat agents (RE reports via Chat Completions API)
             var chatEndpoint = settings.AISettings.ChatEndpoint ?? settings.AISettings.Endpoint;
@@ -1021,9 +1033,10 @@ internal static class Program
                 enhancedLogger,
                 chatLogger);
 
-            // BusinessLogicExtractorAgent uses IChatClient (chat for RE reports)
+            // BusinessLogicExtractorAgent uses ResponsesApiClient (codex for RE reports)
+            // This ensures compatibility with gpt-5.2-chat which requires Responses API
             var businessLogicExtractorAgent = new BusinessLogicExtractorAgent(
-                chatClient,
+                responsesApiClient,
                 loggerFactory.CreateLogger<BusinessLogicExtractorAgent>(),
                 chatDeployment,
                 enhancedLogger,

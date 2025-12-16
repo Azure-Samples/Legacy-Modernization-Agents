@@ -3,6 +3,8 @@ using Azure.Identity;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using OpenAI;
+using AzureOpenAIOptions = Azure.AI.OpenAI.AzureOpenAIClientOptions;
+using AzureServiceVersion = Azure.AI.OpenAI.AzureOpenAIClientOptions.ServiceVersion;
 
 namespace CobolToQuarkusMigration.Agents.Infrastructure;
 
@@ -11,6 +13,8 @@ namespace CobolToQuarkusMigration.Agents.Infrastructure;
 /// </summary>
 public static class ChatClientFactory
 {
+    private static readonly AzureServiceVersion AzureApiVersion = AzureServiceVersion.V2024_10_21;
+
     /// <summary>
     /// Creates an IChatClient for Azure OpenAI using API key authentication.
     /// </summary>
@@ -37,7 +41,8 @@ public static class ChatClientFactory
 
         var client = new AzureOpenAIClient(
             new Uri(endpoint),
-            new System.ClientModel.ApiKeyCredential(apiKey));
+            new System.ClientModel.ApiKeyCredential(apiKey),
+            CreateOptions());
 
         return client.GetChatClient(modelId).AsIChatClient();
     }
@@ -64,7 +69,8 @@ public static class ChatClientFactory
 
         var client = new AzureOpenAIClient(
             new Uri(endpoint),
-            new DefaultAzureCredential());
+            new DefaultAzureCredential(),
+            CreateOptions());
 
         return client.GetChatClient(modelId).AsIChatClient();
     }
@@ -123,4 +129,6 @@ public static class ChatClientFactory
         // Otherwise, use OpenAI
         return CreateOpenAIChatClient(apiKey, modelId, logger);
     }
+
+    private static AzureOpenAIOptions CreateOptions() => new AzureOpenAIOptions(AzureApiVersion);
 }
