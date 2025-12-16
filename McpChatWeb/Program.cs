@@ -2908,8 +2908,34 @@ app.MapGet("/api/health/databases", async () =>
 	var result = new
 	{
 		sqlite = new { connected = false, status = "Unknown", path = "" },
-		neo4j = new { connected = false, status = "Unknown", uri = "" }
+		neo4j = new { connected = false, status = "Unknown", uri = "" },
+		aiModel = new { connected = false, status = "Unknown", modelId = "", codexModelId = "" }
 	};
+
+	// Check AI Model Configuration
+	try
+	{
+		var config = app.Configuration;
+		// Try to get from environment variable first or config section
+		var chatModelId = config.GetValue<string>("AISETTINGS__CHATMODELID") 
+						  ?? config.GetValue<string>("AISettings:ChatModelId") 
+						  ?? "Unknown";
+		
+		var codexModelId = config.GetValue<string>("AISETTINGS__MODELID") 
+						  ?? config.GetValue<string>("AISettings:ModelId") 
+						  ?? "Unknown";
+		
+		result = new
+		{
+			sqlite = result.sqlite,
+			neo4j = result.neo4j,
+			aiModel = new { connected = true, status = "Configured", modelId = chatModelId, codexModelId = codexModelId }
+		};
+	}
+	catch (Exception)
+	{
+		// Ignore config errors
+	}
 
 	// Check SQLite connection
 	try
@@ -2929,7 +2955,8 @@ app.MapGet("/api/health/databases", async () =>
 			result = new
 			{
 				sqlite = new { connected = true, status = $"Connected ({count} runs)", path = fullPath },
-				neo4j = result.neo4j
+				neo4j = result.neo4j,
+				aiModel = result.aiModel
 			};
 		}
 		else
@@ -2937,7 +2964,8 @@ app.MapGet("/api/health/databases", async () =>
 			result = new
 			{
 				sqlite = new { connected = false, status = "Database file not found", path = fullPath },
-				neo4j = result.neo4j
+				neo4j = result.neo4j,
+				aiModel = result.aiModel
 			};
 		}
 	}
@@ -2946,7 +2974,8 @@ app.MapGet("/api/health/databases", async () =>
 		result = new
 		{
 			sqlite = new { connected = false, status = $"Error: {ex.Message}", path = "" },
-			neo4j = result.neo4j
+			neo4j = result.neo4j,
+			aiModel = result.aiModel
 		};
 	}
 
@@ -2966,7 +2995,8 @@ app.MapGet("/api/health/databases", async () =>
 			result = new
 			{
 				sqlite = result.sqlite,
-				neo4j = new { connected = true, status = "Connected (HTTP OK)", uri = neo4jUri }
+				neo4j = new { connected = true, status = "Connected (HTTP OK)", uri = neo4jUri },
+				aiModel = result.aiModel
 			};
 		}
 		else
@@ -2974,7 +3004,8 @@ app.MapGet("/api/health/databases", async () =>
 			result = new
 			{
 				sqlite = result.sqlite,
-				neo4j = new { connected = false, status = $"HTTP {(int)neo4jHttpResponse.StatusCode}", uri = neo4jUri }
+				neo4j = new { connected = false, status = $"HTTP {(int)neo4jHttpResponse.StatusCode}", uri = neo4jUri },
+				aiModel = result.aiModel
 			};
 		}
 	}
@@ -2983,7 +3014,8 @@ app.MapGet("/api/health/databases", async () =>
 		result = new
 		{
 			sqlite = result.sqlite,
-			neo4j = new { connected = false, status = $"Not reachable: {ex.GetType().Name}", uri = neo4jUri }
+			neo4j = new { connected = false, status = $"Not reachable: {ex.GetType().Name}", uri = neo4jUri },
+			aiModel = result.aiModel
 		};
 	}
 

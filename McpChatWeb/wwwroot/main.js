@@ -332,13 +332,42 @@ async function updateDatabaseStatus() {
       neo4jIndicator.className = 'status-indicator ' + (data.neo4j.connected ? 'connected' : 'disconnected');
       neo4jIndicator.title = `Neo4j: ${data.neo4j.status}`;
     }
+
+    // Update AI Model status (Chat)
+    const aiModelIndicator = document.getElementById('ai-model-status');
+    if (aiModelIndicator) {
+      aiModelIndicator.className = 'status-indicator ' + (data.aiModel && data.aiModel.connected ? 'connected' : 'disconnected');
+      const modelId = data.aiModel ? data.aiModel.modelId : 'Unknown';
+      aiModelIndicator.title = `Chat Model: ${modelId}`;
+      const label = aiModelIndicator.querySelector('.status-label');
+      if (label) {
+          label.textContent = data.aiModel && data.aiModel.connected ? modelId : 'Chat Model';
+      }
+    }
+
+    // Update Codex Model status
+    const codexModelIndicator = document.getElementById('codex-model-status');
+    if (codexModelIndicator) {
+      codexModelIndicator.className = 'status-indicator ' + (data.aiModel && data.aiModel.connected ? 'connected' : 'disconnected');
+      const codexId = data.aiModel ? data.aiModel.codexModelId : 'Unknown';
+      codexModelIndicator.title = `Code Model: ${codexId}`;
+      const label = codexModelIndicator.querySelector('.status-label');
+      if (label) {
+          label.textContent = data.aiModel && data.aiModel.connected ? codexId : 'Code Model';
+      }
+    }
   } catch (err) {
     console.error('Failed to update database status:', err);
-    // Set both to disconnected on error
+    // Set all to disconnected on error
     const sqliteIndicator = document.getElementById('sqlite-status');
     const neo4jIndicator = document.getElementById('neo4j-status');
+    const aiModelIndicator = document.getElementById('ai-model-status');
+    const codexModelIndicator = document.getElementById('codex-model-status');
+    
     if (sqliteIndicator) sqliteIndicator.className = 'status-indicator disconnected';
     if (neo4jIndicator) neo4jIndicator.className = 'status-indicator disconnected';
+    if (aiModelIndicator) aiModelIndicator.className = 'status-indicator disconnected';
+    if (codexModelIndicator) codexModelIndicator.className = 'status-indicator disconnected';
   }
 }
 

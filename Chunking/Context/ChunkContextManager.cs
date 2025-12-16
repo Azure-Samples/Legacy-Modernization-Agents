@@ -142,6 +142,12 @@ ON CONFLICT(run_id, source_file, chunk_index) DO UPDATE SET
             // Register signatures from this chunk (using same connection)
             foreach (var signature in conversionResult.DefinedMethods)
             {
+                // Skip registration if LegacyName is missing
+                if (string.IsNullOrWhiteSpace(signature.LegacyName))
+                {
+                    continue;
+                }
+
                 await RegisterSignatureInTransactionAsync(
                     connection, (SqliteTransaction)transaction, 
                     runId, chunk.SourceFile, chunk.ChunkIndex, signature, cancellationToken);

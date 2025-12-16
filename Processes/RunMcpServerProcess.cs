@@ -750,7 +750,7 @@ public sealed class RunMcpServerProcess
             throw new InvalidOperationException("Chat configuration is incomplete for AI response generation.");
         }
 
-        var uri = $"{endpoint.TrimEnd('/')}/openai/deployments/{deployment}/chat/completions?api-version=2024-10-01-preview";
+        var uri = $"{endpoint.TrimEnd('/')}/openai/deployments/{deployment}/chat/completions?api-version=2025-11-13";
 
         // NOTE: gpt-5.1-chat does not support custom temperature, only default (1)
         var payload = new

@@ -20,6 +20,7 @@ namespace CobolToQuarkusMigration.Processes;
 public class ChunkedMigrationProcess
 {
     private readonly IChatClient _chatClient;
+    private readonly ResponsesApiClient _responsesApiClient;
     private readonly ILogger<ChunkedMigrationProcess> _logger;
     private readonly FileHelper _fileHelper;
     private readonly AppSettings _settings;
@@ -37,12 +38,14 @@ public class ChunkedMigrationProcess
     /// </summary>
     public ChunkedMigrationProcess(
         IChatClient chatClient,
+        ResponsesApiClient responsesApiClient,
         ILogger<ChunkedMigrationProcess> logger,
         FileHelper fileHelper,
         AppSettings settings,
         IMigrationRepository migrationRepository)
     {
         _chatClient = chatClient;
+        _responsesApiClient = responsesApiClient;
         _logger = logger;
         _fileHelper = fileHelper;
         _settings = settings;
@@ -81,7 +84,7 @@ public class ChunkedMigrationProcess
         if (targetLang == TargetLanguage.CSharp)
         {
             _chunkAwareConverter = new ChunkAwareCSharpConverter(
-                _chatClient,
+                _responsesApiClient,
                 loggerFactory.CreateLogger<ChunkAwareCSharpConverter>(),
                 _settings.AISettings.JavaConverterModelId,
                 _settings.ConversionSettings,
@@ -91,7 +94,7 @@ public class ChunkedMigrationProcess
         else
         {
             _chunkAwareConverter = new ChunkAwareJavaConverter(
-                _chatClient,
+                _responsesApiClient,
                 loggerFactory.CreateLogger<ChunkAwareJavaConverter>(),
                 _settings.AISettings.JavaConverterModelId,
                 _settings.ConversionSettings,
@@ -102,7 +105,7 @@ public class ChunkedMigrationProcess
         // Initialize standard agents
         _enhancedLogger.ShowStep(3, 4, "CobolAnalyzerAgent", "COBOL structure analysis");
         _cobolAnalyzerAgent = new CobolAnalyzerAgent(
-            _chatClient,
+            _responsesApiClient,
             loggerFactory.CreateLogger<CobolAnalyzerAgent>(),
             _settings.AISettings.CobolAnalyzerModelId,
             _enhancedLogger,
@@ -110,7 +113,7 @@ public class ChunkedMigrationProcess
 
         _enhancedLogger.ShowStep(4, 4, "DependencyMapperAgent", "Cross-file dependency mapping");
         _dependencyMapperAgent = new DependencyMapperAgent(
-            _chatClient,
+            _responsesApiClient,
             loggerFactory.CreateLogger<DependencyMapperAgent>(),
             _settings.AISettings.DependencyMapperModelId ?? _settings.AISettings.CobolAnalyzerModelId,
             _enhancedLogger,
@@ -661,26 +664,17 @@ public class ChunkedMigrationProcess
     private List<string> ExtractCSharpClassNames(string code)
     {
         var classNames = new List<string>();
-        var lines = code.Split('\n');
+        // Regex to match class definitions, ignoring comments and other text
+        // Matches: [modifiers] class ClassName
+        var regex = new System.Text.RegularExpressions.Regex(
+            @"^\s*(?:public|protected|private|internal)?\s*(?:static)?\s*(?:sealed|abstract|partial)?\s*class\s+([a-zA-Z0-9_]+)",
+            System.Text.RegularExpressions.RegexOptions.Multiline);
         
-        foreach (var line in lines)
+        foreach (System.Text.RegularExpressions.Match match in regex.Matches(code))
         {
-            var trimmed = line.Trim();
-            // Match patterns like: public class ClassName, class ClassName, public partial class ClassName
-            if (trimmed.Contains(" class "))
+            if (match.Success)
             {
-                var classIndex = trimmed.IndexOf(" class ") + 7;
-                var endIndex = trimmed.IndexOfAny(new[] { ' ', '{', '<', ':' }, classIndex);
-                if (endIndex < 0) endIndex = trimmed.Length;
-                
-                if (endIndex > classIndex)
-                {
-                    var className = trimmed.Substring(classIndex, endIndex - classIndex).Trim();
-                    if (!string.IsNullOrEmpty(className) && char.IsLetter(className[0]))
-                    {
-                        classNames.Add(className);
-                    }
-                }
+                classNames.Add(match.Groups[1].Value);
             }
         }
         
@@ -746,11 +740,16 @@ public class ChunkedMigrationProcess
         var braceCount = 0;
         var content = new StringBuilder();
         
+        // Regex to match the specific class definition
+        var classRegex = new System.Text.RegularExpressions.Regex(
+            @"^\s*(?:public|protected|private|internal)?\s*(?:static)?\s*(?:sealed|abstract|partial)?\s*class\s+" + 
+            System.Text.RegularExpressions.Regex.Escape(targetClassName) + @"\b");
+
         foreach (var line in lines)
         {
             var trimmed = line.Trim();
             
-            if (!inTargetClass && trimmed.Contains($"class {targetClassName}"))
+            if (!inTargetClass && classRegex.IsMatch(line))
             {
                 inTargetClass = true;
                 braceCount = 0;
@@ -765,7 +764,7 @@ public class ChunkedMigrationProcess
                 }
                 
                 // Skip the class declaration line itself
-                if (!trimmed.Contains($"class {targetClassName}") && braceCount >= 0)
+                if (!classRegex.IsMatch(line) && braceCount >= 0)
                 {
                     // Don't include the final closing brace
                     if (braceCount > 0 || !trimmed.StartsWith("}"))
@@ -910,26 +909,17 @@ public class ChunkedMigrationProcess
     private List<string> ExtractJavaClassNames(string code)
     {
         var classNames = new List<string>();
-        var lines = code.Split('\n');
+        // Regex to match class definitions, ignoring comments and other text
+        // Matches: [modifiers] class ClassName
+        var regex = new System.Text.RegularExpressions.Regex(
+            @"^\s*(?:public|protected|private)?\s*(?:static)?\s*(?:final)?\s*(?:abstract)?\s*class\s+([a-zA-Z0-9_]+)",
+            System.Text.RegularExpressions.RegexOptions.Multiline);
         
-        foreach (var line in lines)
+        foreach (System.Text.RegularExpressions.Match match in regex.Matches(code))
         {
-            var trimmed = line.Trim();
-            // Match patterns like: public class ClassName, class ClassName, public final class ClassName
-            if (trimmed.Contains(" class "))
+            if (match.Success)
             {
-                var classIndex = trimmed.IndexOf(" class ") + 7;
-                var endIndex = trimmed.IndexOfAny(new[] { ' ', '{', '<' }, classIndex);
-                if (endIndex < 0) endIndex = trimmed.Length;
-                
-                if (endIndex > classIndex)
-                {
-                    var className = trimmed.Substring(classIndex, endIndex - classIndex).Trim();
-                    if (!string.IsNullOrEmpty(className) && char.IsLetter(className[0]))
-                    {
-                        classNames.Add(className);
-                    }
-                }
+                classNames.Add(match.Groups[1].Value);
             }
         }
         
@@ -994,11 +984,16 @@ public class ChunkedMigrationProcess
         var braceCount = 0;
         var content = new StringBuilder();
         
+        // Regex to match the specific class definition
+        var classRegex = new System.Text.RegularExpressions.Regex(
+            @"^\s*(?:public|protected|private)?\s*(?:static)?\s*(?:final)?\s*(?:abstract)?\s*class\s+" + 
+            System.Text.RegularExpressions.Regex.Escape(targetClassName) + @"\b");
+
         foreach (var line in lines)
         {
             var trimmed = line.Trim();
             
-            if (!inTargetClass && trimmed.Contains($"class {targetClassName}"))
+            if (!inTargetClass && classRegex.IsMatch(line))
             {
                 inTargetClass = true;
                 braceCount = 0;
@@ -1013,7 +1008,7 @@ public class ChunkedMigrationProcess
                 }
                 
                 // Skip the class declaration line itself
-                if (!trimmed.Contains($"class {targetClassName}") && braceCount >= 0)
+                if (!classRegex.IsMatch(line) && braceCount >= 0)
                 {
                     // Don't include the final closing brace
                     if (braceCount > 0 || !trimmed.StartsWith("}"))

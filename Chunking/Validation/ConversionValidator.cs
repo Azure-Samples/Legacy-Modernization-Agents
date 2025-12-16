@@ -52,6 +52,12 @@ public class ConversionValidator
             // Validate signatures
             foreach (var signature in result.DefinedMethods)
             {
+                // Skip validation if LegacyName is missing (cannot validate against registry)
+                if (string.IsNullOrWhiteSpace(signature.LegacyName))
+                {
+                    continue;
+                }
+
                 var validationResult = await _signatureRegistry.ValidateSignatureAsync(
                     runId, signature, cancellationToken);
 

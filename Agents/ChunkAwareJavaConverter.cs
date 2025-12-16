@@ -302,6 +302,12 @@ ANTI-ABSTRACTION RULES:
 - Do NOT create generic 'execute(operationName)' dispatchers
 - Each distinct business operation must have its own implementation
 
+REFACTORING & OPTIMIZATION (CRITICAL):
+- DETECT REPETITIVE PATTERNS: If you see repeated logic (e.g., unrolled loops, sequential blocks with similar code), REFACTOR into loops or parameterized methods.
+- DRY PRINCIPLE: Don't repeat yourself. Consolidate identical logic.
+- DATA STRUCTURES: Use Lists/Maps for VALUES/PARAMETERS to simplify code (e.g., iterating over a list of block IDs), but NOT for logic/behavior.
+- CLEAN CODE: Prefer readable, maintainable code over 1:1 transliteration of verbose COBOL.
+
 CHUNK-SPECIFIC INSTRUCTIONS:");
 
         if (chunk.ChunkIndex == 0)
@@ -309,8 +315,9 @@ CHUNK-SPECIFIC INSTRUCTIONS:");
             sb.AppendLine(@"
 - This is the FIRST chunk - include package declaration and imports
 - Include class declaration with opening brace
-- Do NOT close the class (more chunks follow)
+- Do NOT close the class (more chunks follow). STRICTLY FORBIDDEN to output the final closing brace '}'.
 - Initialize any fields needed for the file
+- CRITICAL: ALL executable logic MUST be inside methods (e.g., public void process(), private void init()). NEVER place code directly in the class body.
 
 CLASS NAMING - CRITICAL:
 Name the class based on WHAT THE PROGRAM DOES, not the original filename.
@@ -330,8 +337,9 @@ Common suffixes: Service, Processor, Handler, Validator, Calculator, Generator, 
             sb.AppendLine(@"
 - This is a MIDDLE chunk - continue from previous chunk
 - Do NOT include package/imports/class declaration
-- Do NOT close the class yet
-- Just output method bodies and fields");
+- Do NOT close the class yet. STRICTLY FORBIDDEN to output the final closing brace '}'.
+- Just output method bodies and fields
+- CRITICAL: ALL executable logic MUST be inside methods. If a paragraph spans chunks, continue the method body.");
         }
 
         // Add context from previous chunks

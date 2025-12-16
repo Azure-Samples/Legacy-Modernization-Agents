@@ -13,6 +13,12 @@ public interface IMigrationRepository
     Task InitializeAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Marks any runs that are still in 'Running' state as 'Terminated'.
+    /// This is typically called on startup to clean up runs that were interrupted.
+    /// </summary>
+    Task CleanupStaleRunsAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Starts a new migration run.
     /// </summary>
     Task<int> StartRunAsync(string cobolSourcePath, string javaOutputPath, CancellationToken cancellationToken = default);
