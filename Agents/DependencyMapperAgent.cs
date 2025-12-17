@@ -217,7 +217,7 @@ Total: {dependencyMap.Metrics.TotalPrograms} programs, {dependencyMap.Metrics.To
     {
         Logger.LogInformation("Extracting all dependency types");
 
-        foreach (var cobolFile in cobolFiles.Where(f => f.FileName.EndsWith(".cbl")))
+        foreach (var cobolFile in cobolFiles)
         {
             // Extract CALL statements
             var calledPrograms = ExtractProgramCallsWithLines(cobolFile.Content);
