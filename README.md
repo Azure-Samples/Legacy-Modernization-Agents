@@ -9,6 +9,8 @@ The migration is using Semantic Kernel Process Function where it does analysis o
 > Default to **GPT-5.1-Codex** and **GPT-5.2-Chat**.
 >
 > Always run the doctor.sh setup command first, if it complains about missing Data/migration.db just create an empty file and then run doctor.sh run
+>
+> Fine tuning of desired output should be done via the agents in the agent folder. Look for the prompts and adjust accordingly.
 
 ## 🎬 Portal Demo
 
