@@ -3,6 +3,13 @@
 This open source migration framework was developed to demonstrate AI Agents capabilities for converting legacy code like COBOL to Java or C# .NET. Each Agent has a persona that can be edited depending on the desired outcome.
 The migration is using Semantic Kernel Process Function where it does analysis of the COBOL code and it's dependencies. This information is then used to convert to either Java Quarkus or C# .NET (user's choice).
 
+> ℹ️ **Important**
+>
+> Please ensure you deploy the models via the **AI Foundry (new portal experience)** due to recent API backend changes.  
+> Default to **GPT-5.1-Codex** and **GPT-5.2-Chat**.
+>
+> Always run the doctor.sh setup command first, if it complains about missing Data/migration.db just create an empty file and then run doctor.sh run
+
 ## 🎬 Portal Demo
 
 ![Portal Demo](gifdemowithgraphandreportign.gif)
