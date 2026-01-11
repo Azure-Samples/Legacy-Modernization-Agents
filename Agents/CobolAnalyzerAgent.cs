@@ -154,14 +154,7 @@ Provide a detailed, structured analysis as described in your instructions.
             _enhancedLogger?.LogPerformanceMetrics($"COBOL Analysis - {cobolFile.FileName}", stopwatch.Elapsed, 1);
 
             // Parse the analysis into a structured object
-            var analysis = new CobolAnalysis
-            {
-                FileName = cobolFile.FileName,
-                FilePath = cobolFile.FilePath,
-                IsCopybook = cobolFile.IsCopybook,
-                RawAnalysisData = analysisText,
-                ProgramDescription = "Extracted from AI analysis"
-            };
+            var analysis = ParseAnalysisResponse(analysisText, cobolFile);
 
             _logger.LogInformation("Completed analysis of COBOL file: {FileName}", cobolFile.FileName);
 
@@ -283,7 +276,7 @@ Provide a detailed, structured analysis as described in your instructions.
             try
             {
                 string response;
-                
+
                 // Apply rate limiting if configured
                 if (_rateLimiter != null)
                 {
@@ -292,7 +285,7 @@ Provide a detailed, structured analysis as described in your instructions.
 
                 // Log the request
                 _chatLogger?.LogUserMessage(AgentName, contextIdentifier, userPrompt, systemPrompt);
-                
+
                 if (_useResponsesApi && _responsesClient != null)
                 {
                     _enhancedLogger?.LogBehindTheScenes("API_CALL", "ResponsesAPI",
@@ -304,20 +297,20 @@ Provide a detailed, structured analysis as described in your instructions.
                 {
                     _enhancedLogger?.LogBehindTheScenes("API_CALL", "ChatCompletion",
                         $"Calling Azure OpenAI Chat API for {contextIdentifier}", AgentName);
-                    
+
                     var messages = new List<Microsoft.Extensions.AI.ChatMessage>
                     {
                         new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.System, systemPrompt),
                         new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.User, userPrompt)
                     };
-                    
+
                     var options = new Microsoft.Extensions.AI.ChatOptions
                     {
                         ModelId = _modelId,
                         // NOTE: gpt-5.1-chat does NOT support custom temperature, only default (1.0)
                         MaxOutputTokens = 16384
                     };
-                    
+
                     var chatResponse = await _chatClient.GetResponseAsync(messages, options);
                     response = ExtractResponseText(chatResponse);
                 }
@@ -413,6 +406,257 @@ Provide a detailed, structured analysis as described in your instructions.
     }
 
     #endregion
+
+    /// <summary>
+    /// Parses the AI analysis response into a structured CobolAnalysis object.
+    /// Extracts program description, data divisions, procedure divisions, paragraphs, and copybooks.
+    /// </summary>
+    private CobolAnalysis ParseAnalysisResponse(string analysisText, CobolFile cobolFile)
+    {
+        var analysis = new CobolAnalysis
+        {
+            FileName = cobolFile.FileName,
+            FilePath = cobolFile.FilePath,
+            IsCopybook = cobolFile.IsCopybook,
+            RawAnalysisData = analysisText
+        };
+
+        if (string.IsNullOrWhiteSpace(analysisText))
+        {
+            analysis.ProgramDescription = "No analysis data available";
+            return analysis;
+        }
+
+        var lines = analysisText.Split('\n');
+        var currentSection = "";
+        var sectionContent = new System.Text.StringBuilder();
+
+        foreach (var line in lines)
+        {
+            var trimmedLine = line.Trim();
+            var lowerLine = trimmedLine.ToLowerInvariant();
+
+            // Detect section headers
+            if (lowerLine.Contains("program description") || lowerLine.Contains("overall description") ||
+                lowerLine.StartsWith("1.") && lowerLine.Contains("description"))
+            {
+                SaveCurrentSection(analysis, currentSection, sectionContent.ToString());
+                currentSection = "description";
+                sectionContent.Clear();
+                continue;
+            }
+            else if (lowerLine.Contains("data division") || lowerLine.StartsWith("2.") && lowerLine.Contains("data"))
+            {
+                SaveCurrentSection(analysis, currentSection, sectionContent.ToString());
+                currentSection = "data";
+                sectionContent.Clear();
+                continue;
+            }
+            else if (lowerLine.Contains("procedure division") || lowerLine.StartsWith("3.") && lowerLine.Contains("procedure"))
+            {
+                SaveCurrentSection(analysis, currentSection, sectionContent.ToString());
+                currentSection = "procedure";
+                sectionContent.Clear();
+                continue;
+            }
+            else if (lowerLine.Contains("paragraph") || lowerLine.Contains("section") && lowerLine.Contains("5."))
+            {
+                SaveCurrentSection(analysis, currentSection, sectionContent.ToString());
+                currentSection = "paragraphs";
+                sectionContent.Clear();
+                continue;
+            }
+            else if (lowerLine.Contains("copybook") || lowerLine.StartsWith("6.") && lowerLine.Contains("copy"))
+            {
+                SaveCurrentSection(analysis, currentSection, sectionContent.ToString());
+                currentSection = "copybooks";
+                sectionContent.Clear();
+                continue;
+            }
+            else if (lowerLine.Contains("variable") || lowerLine.StartsWith("4.") && lowerLine.Contains("variable"))
+            {
+                SaveCurrentSection(analysis, currentSection, sectionContent.ToString());
+                currentSection = "variables";
+                sectionContent.Clear();
+                continue;
+            }
+
+            // Skip empty lines and headers
+            if (!string.IsNullOrWhiteSpace(trimmedLine) && !trimmedLine.StartsWith("##") && !trimmedLine.StartsWith("**"))
+            {
+                sectionContent.AppendLine(trimmedLine);
+            }
+        }
+
+        // Save the last section
+        SaveCurrentSection(analysis, currentSection, sectionContent.ToString());
+
+        // If no program description was extracted, try to get it from the first paragraph of the response
+        if (string.IsNullOrWhiteSpace(analysis.ProgramDescription))
+        {
+            // Try to extract a summary from the raw analysis
+            var firstLines = string.Join(" ", lines.Take(10).Where(l => !string.IsNullOrWhiteSpace(l) && !l.Trim().StartsWith("#")));
+            if (!string.IsNullOrWhiteSpace(firstLines))
+            {
+                // Limit to first 500 chars for a concise description
+                analysis.ProgramDescription = firstLines.Length > 500 ? firstLines.Substring(0, 500) + "..." : firstLines;
+            }
+            else
+            {
+                analysis.ProgramDescription = "Technical analysis completed - see details below";
+            }
+        }
+
+        return analysis;
+    }
+
+    /// <summary>
+    /// Saves content to the appropriate section of the analysis object.
+    /// </summary>
+    private void SaveCurrentSection(CobolAnalysis analysis, string section, string content)
+    {
+        if (string.IsNullOrWhiteSpace(content)) return;
+
+        var cleanContent = content.Trim();
+
+        switch (section)
+        {
+            case "description":
+                analysis.ProgramDescription = cleanContent;
+                break;
+
+            case "data":
+                var dataItems = ParseBulletList(cleanContent);
+                analysis.DataDivisions.AddRange(dataItems);
+                break;
+
+            case "procedure":
+                var procItems = ParseBulletList(cleanContent);
+                analysis.ProcedureDivisions.AddRange(procItems);
+                break;
+
+            case "paragraphs":
+                var paragraphs = ParseParagraphs(cleanContent);
+                analysis.Paragraphs.AddRange(paragraphs);
+                break;
+
+            case "copybooks":
+                var copybooks = ParseBulletList(cleanContent);
+                analysis.CopybooksReferenced.AddRange(copybooks);
+                break;
+
+            case "variables":
+                // Variables are parsed but stored in Variables collection
+                // For now, add them to DataDivisions as additional info
+                var varItems = ParseBulletList(cleanContent);
+                foreach (var item in varItems)
+                {
+                    if (!analysis.DataDivisions.Contains(item))
+                    {
+                        analysis.DataDivisions.Add(item);
+                    }
+                }
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Parses a bullet list from content.
+    /// </summary>
+    private List<string> ParseBulletList(string content)
+    {
+        var items = new List<string>();
+        var lines = content.Split('\n');
+
+        foreach (var line in lines)
+        {
+            var trimmed = line.Trim();
+            // Remove bullet markers
+            if (trimmed.StartsWith("-") || trimmed.StartsWith("*") || trimmed.StartsWith("?"))
+            {
+                trimmed = trimmed.Substring(1).Trim();
+            }
+            // Remove numbered list markers (e.g., "1.", "2.")
+            else if (trimmed.Length > 2 && char.IsDigit(trimmed[0]) && trimmed[1] == '.')
+            {
+                trimmed = trimmed.Substring(2).Trim();
+            }
+
+            if (!string.IsNullOrWhiteSpace(trimmed))
+            {
+                items.Add(trimmed);
+            }
+        }
+
+        return items;
+    }
+
+    /// <summary>
+    /// Parses paragraph information from content.
+    /// </summary>
+    private List<CobolParagraph> ParseParagraphs(string content)
+    {
+        var paragraphs = new List<CobolParagraph>();
+        var lines = content.Split('\n');
+
+        string? currentName = null;
+        var currentDescription = new System.Text.StringBuilder();
+
+        foreach (var line in lines)
+        {
+            var trimmed = line.Trim();
+
+            // Look for paragraph names (usually uppercase or with specific markers)
+            if (trimmed.StartsWith("-") || trimmed.StartsWith("*") || trimmed.StartsWith("?"))
+            {
+                // Save previous paragraph if exists
+                if (currentName != null)
+                {
+                    paragraphs.Add(new CobolParagraph
+                    {
+                        Name = currentName,
+                        Description = currentDescription.ToString().Trim(),
+                        Logic = "",
+                        VariablesUsed = new List<string>(),
+                        ParagraphsCalled = new List<string>()
+                    });
+                }
+
+                var content2 = trimmed.Substring(1).Trim();
+                var colonIndex = content2.IndexOf(':');
+                if (colonIndex > 0)
+                {
+                    currentName = content2.Substring(0, colonIndex).Trim();
+                    currentDescription.Clear();
+                    currentDescription.Append(content2.Substring(colonIndex + 1).Trim());
+                }
+                else
+                {
+                    currentName = content2;
+                    currentDescription.Clear();
+                }
+            }
+            else if (currentName != null && !string.IsNullOrWhiteSpace(trimmed))
+            {
+                currentDescription.Append(" ").Append(trimmed);
+            }
+        }
+
+        // Save the last paragraph
+        if (currentName != null)
+        {
+            paragraphs.Add(new CobolParagraph
+            {
+                Name = currentName,
+                Description = currentDescription.ToString().Trim(),
+                Logic = "",
+                VariablesUsed = new List<string>(),
+                ParagraphsCalled = new List<string>()
+            });
+        }
+
+        return paragraphs;
+    }
 
     private static CobolAnalysis CreateFallbackAnalysis(CobolFile cobolFile, string reason)
     {
