@@ -899,9 +899,9 @@ app.MapGet("/api/runs/{runId}/report", async (int runId) =>
 		var summaryCmd = connection.CreateCommand();
 		summaryCmd.CommandText = @"
 			SELECT 
-				COUNT(DISTINCT source_file) as total_files,
-				COUNT(DISTINCT CASE WHEN source_file LIKE '%.cbl' THEN source_file END) as cobol_programs,
-				COUNT(DISTINCT CASE WHEN source_file LIKE '%.cpy' THEN source_file END) as copybooks
+				COUNT(DISTINCT file_name) as total_files,
+				COUNT(DISTINCT CASE WHEN file_name LIKE '%.cbl' THEN file_name END) as cobol_programs,
+				COUNT(DISTINCT CASE WHEN file_name LIKE '%.cpy' THEN file_name END) as copybooks
 			FROM cobol_files 
 			WHERE run_id = @runId";
 		summaryCmd.Parameters.AddWithValue("@runId", runId);
@@ -966,7 +966,8 @@ app.MapGet("/api/runs/{runId}/report", async (int runId) =>
 
 		var filesCmd = connection.CreateCommand();
 		filesCmd.CommandText = @"
-			SELECT file_name, file_path, line_count
+			SELECT file_name, file_path, 
+			       LENGTH(content) - LENGTH(REPLACE(content, char(10), '')) + 1 as line_count
 			FROM cobol_files 
 			WHERE run_id = @runId
 			ORDER BY file_name";
