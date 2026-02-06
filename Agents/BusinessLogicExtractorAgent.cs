@@ -3,7 +3,12 @@ using Microsoft.Extensions.Logging;
 using CobolToQuarkusMigration.Agents.Infrastructure;
 using CobolToQuarkusMigration.Models;
 using CobolToQuarkusMigration.Helpers;
+using CobolToQuarkusMigration.Persistence;
+using CobolToQuarkusMigration.Chunking;
+using CobolToQuarkusMigration.Chunking.Models;
 using System.Diagnostics;
+
+using System.Text.Json;
 
 namespace CobolToQuarkusMigration.Agents;
 
@@ -12,6 +17,8 @@ namespace CobolToQuarkusMigration.Agents;
 /// </summary>
 public class BusinessLogicExtractorAgent : AgentBase
 {
+    private readonly ChunkingOrchestrator? _chunkingOrchestrator;
+
     /// <inheritdoc/>
     protected override string AgentName => "BusinessLogicExtractorAgent";
 
@@ -22,9 +29,11 @@ public class BusinessLogicExtractorAgent : AgentBase
         EnhancedLogger? enhancedLogger = null,
         ChatLogger? chatLogger = null,
         RateLimiter? rateLimiter = null,
-        AppSettings? settings = null)
+        AppSettings? settings = null,
+        ChunkingOrchestrator? chunkingOrchestrator = null)
         : base(chatClient, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings)
     {
+        _chunkingOrchestrator = chunkingOrchestrator;
     }
 
     /// <summary>
@@ -37,15 +46,17 @@ public class BusinessLogicExtractorAgent : AgentBase
         EnhancedLogger? enhancedLogger = null,
         ChatLogger? chatLogger = null,
         RateLimiter? rateLimiter = null,
-        AppSettings? settings = null)
+        AppSettings? settings = null,
+        ChunkingOrchestrator? chunkingOrchestrator = null)
         : base(responsesClient, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings)
     {
+        _chunkingOrchestrator = chunkingOrchestrator;
     }
 
     /// <summary>
     /// Extracts business logic from a COBOL file.
     /// </summary>
-    public async Task<BusinessLogic> ExtractBusinessLogicAsync(CobolFile cobolFile, CobolAnalysis analysis, Glossary? glossary = null)
+    public async Task<BusinessLogic> ExtractBusinessLogicAsync(CobolFile cobolFile, CobolAnalysis analysis, Glossary? glossary = null, int? runId = null)
     {
         var stopwatch = Stopwatch.StartNew();
 
@@ -55,6 +66,29 @@ public class BusinessLogicExtractorAgent : AgentBase
 
         try
         {
+            // Check file size (use configured threshold or default to 150K)
+            int maxContentChars = Settings?.ChunkingSettings?.AutoChunkCharThreshold ?? 150_000;
+            var contentToAnalyze = cobolFile.Content;
+
+            if (contentToAnalyze.Length > maxContentChars)
+            {
+                // Attempt to use smart chunking if available
+                if (_chunkingOrchestrator != null)
+                {
+                    Logger.LogInformation("File {FileName} is too large ({Chars:N0} chars). Using Smart Chunking.", cobolFile.FileName, contentToAnalyze.Length);
+                    return await ExtractWithChunkingAsync(cobolFile, analysis, glossary);
+                }
+
+                var errorMsg = $"❌ FILE TOO LARGE: {cobolFile.FileName} has {contentToAnalyze.Length:N0} chars (max: {maxContentChars:N0}).";
+                Logger.LogError(errorMsg);
+                return new BusinessLogic
+                {
+                    FileName = cobolFile.FileName,
+                    FilePath = cobolFile.FilePath,
+                    BusinessPurpose = errorMsg
+                };
+            }
+
             var systemPrompt = @"
 You are a business analyst extracting business logic from COBOL code.
 Focus on identifying business use cases, operations, and validation rules.
@@ -71,22 +105,6 @@ Use business-friendly terminology from the provided glossary when available.
                     glossaryContext += $"- {term.Term} = {term.Translation}\n";
                 }
                 glossaryContext += "\n";
-            }
-
-            // Check file size
-            const int MaxContentChars = 150_000;
-            var contentToAnalyze = cobolFile.Content;
-
-            if (contentToAnalyze.Length > MaxContentChars)
-            {
-                var errorMsg = $"❌ FILE TOO LARGE: {cobolFile.FileName} has {contentToAnalyze.Length:N0} chars (max: {MaxContentChars:N0}).";
-                Logger.LogError(errorMsg);
-                return new BusinessLogic
-                {
-                    FileName = cobolFile.FileName,
-                    FilePath = cobolFile.FilePath,
-                    BusinessPurpose = errorMsg
-                };
             }
 
             var userPrompt = $@"
@@ -159,6 +177,7 @@ COBOL Code:
             EnhancedLogger?.LogPerformanceMetrics($"Business Logic Extraction - {cobolFile.FileName}", stopwatch.Elapsed, 1);
 
             var businessLogic = ParseBusinessLogic(cobolFile, analysisText);
+
             Logger.LogInformation("Completed business logic extraction for: {FileName}", cobolFile.FileName);
             return businessLogic;
         }
@@ -170,6 +189,106 @@ COBOL Code:
             Logger.LogError(ex, "Error extracting business logic from: {FileName}", cobolFile.FileName);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Chunking-enabled extraction method.
+    /// </summary>
+    private async Task<BusinessLogic> ExtractWithChunkingAsync(CobolFile cobolFile, CobolAnalysis analysis, Glossary? glossary)
+    {
+        if (_chunkingOrchestrator == null)
+            throw new InvalidOperationException("ChunkingOrchestrator not initialized");
+
+        Logger.LogInformation("Chunking large file {FileName} ({Chars:N0} chars)", cobolFile.FileName, cobolFile.Content.Length);
+
+        // 1. Plan chunks
+        var plan = await _chunkingOrchestrator.AnalyzeFileAsync(cobolFile.FilePath, cobolFile.Content);
+        Logger.LogInformation("Created {ChunkCount} chunks for {FileName}", plan.ChunkCount, cobolFile.FileName);
+
+        // 2. Process chunks in parallel
+        var maxParallel = Math.Min(Settings?.ChunkingSettings?.MaxParallelAnalysis ?? 4, plan.ChunkCount);
+        var semaphore = new SemaphoreSlim(maxParallel, maxParallel);
+        var chunkResults = new List<(int Index, BusinessLogic Logic)>();
+        var lockObj = new object();
+
+        var tasks = plan.Chunks.Select((chunk, index) => Task.Run(async () => 
+        {
+            await semaphore.WaitAsync();
+            try
+            {
+                // Create virtual chunk file
+                var chunkFile = new CobolFile
+                {
+                    FileName = $"{cobolFile.FileName}_chunk_{index + 1}",
+                    FilePath = cobolFile.FilePath,
+                    Content = chunk.Content,
+                    IsCopybook = cobolFile.IsCopybook
+                };
+
+                // Recursively call standard extraction (will pass size check now)
+                // Note: We reuse the main file analysis for now, or we could chunk analysis too.
+                // Reusing main analysis is safer if it exists, but usually large file analysis fails too.
+                // Ideally we should Chunk Analysis too, but BusinessLogicExtractorAgent doesn't own CobolAnalyzerAgent.
+                // We will proceed with main analysis (it might be empty or basic)
+                var chunkLogic = await ExtractBusinessLogicAsync(chunkFile, analysis, glossary);
+                
+                lock (lockObj)
+                {
+                    chunkResults.Add((index, chunkLogic));
+                }
+            }
+            finally
+            {
+                semaphore.Release();
+            }
+        }));
+
+        await Task.WhenAll(tasks);
+
+        // 3. Merge results
+        var orderedLogics = chunkResults.OrderBy(x => x.Index).Select(x => x.Logic).ToList();
+        return MergeChunkedLogic(cobolFile, orderedLogics);
+    }
+
+    private BusinessLogic MergeChunkedLogic(CobolFile originalFile, List<BusinessLogic> chunkLogics)
+    {
+        var merged = new BusinessLogic
+        {
+            FileName = originalFile.FileName,
+            FilePath = originalFile.FilePath,
+            IsCopybook = originalFile.IsCopybook,
+            BusinessPurpose = $"Extracted from {chunkLogics.Count} chunks. " +
+                string.Join(" ", chunkLogics
+                    .Select(bl => bl.BusinessPurpose)
+                    .Where(p => !string.IsNullOrWhiteSpace(p) && !p.Contains("ERROR"))
+                    .Distinct())
+        };
+
+        int storyId = 1, featureId = 1, ruleId = 1;
+
+        foreach (var chunk in chunkLogics)
+        {
+            foreach (var story in chunk.UserStories)
+            {
+                story.Id = $"US-{storyId++}";
+                merged.UserStories.Add(story);
+            }
+            foreach (var feature in chunk.Features)
+            {
+                feature.Id = $"F-{featureId++}";
+                merged.Features.Add(feature);
+            }
+            foreach (var rule in chunk.BusinessRules)
+            {
+                if (!merged.BusinessRules.Any(r => r.Description == rule.Description))
+                {
+                    rule.Id = $"BR-{ruleId++}";
+                    merged.BusinessRules.Add(rule);
+                }
+            }
+        }
+
+        return merged;
     }
 
     /// <summary>

@@ -17,10 +17,19 @@ namespace CobolToQuarkusMigration.Agents;
 public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
 {
     private readonly ConversionSettings _conversionSettings;
+    private int? _runId;
 
     public string TargetLanguage => "Java";
     public string FileExtension => ".java";
     protected override string AgentName => "ChunkAwareJavaConverter";
+
+    /// <summary>
+    /// Sets the Run ID for the current context.
+    /// </summary>
+    public void SetRunId(int runId)
+    {
+        _runId = runId;
+    }
 
     /// <summary>
     /// Initializes a new instance using Responses API (for codex models like gpt-5.1-codex-mini).
@@ -33,10 +42,12 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
         EnhancedLogger? enhancedLogger = null,
         ChatLogger? chatLogger = null,
         RateLimiter? rateLimiter = null,
-        AppSettings? settings = null)
+        AppSettings? settings = null,
+        int? runId = null)
         : base(responsesClient, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings)
     {
         _conversionSettings = conversionSettings;
+        _runId = runId;
     }
 
     /// <summary>
@@ -50,13 +61,14 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
         EnhancedLogger? enhancedLogger = null,
         ChatLogger? chatLogger = null,
         RateLimiter? rateLimiter = null,
-        AppSettings? settings = null)
+        AppSettings? settings = null,
+        int? runId = null)
         : base(chatClient, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings)
     {
         _conversionSettings = conversionSettings;
     }
 
-    private const int MaxContentChars = 150_000;
+    private int MaxContentChars => Settings?.ChunkingSettings?.AutoChunkCharThreshold ?? 150_000;
 
     /// <inheritdoc/>
     public async Task<ChunkConversionResult> ConvertChunkAsync(
@@ -89,7 +101,7 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
         {
             var systemPrompt = BuildChunkAwareSystemPrompt(chunk, context);
             var userPrompt = BuildChunkAwareUserPrompt(chunk, context);
-
+            
             EnhancedLogger?.LogBehindTheScenes("AI_PROCESSING", "CHUNK_CONVERSION_START",
                 $"Converting chunk {chunk.ChunkIndex + 1}/{context.TotalChunks} of {chunk.SourceFile}",
                 new { ChunkIndex = chunk.ChunkIndex, TotalChunks = context.TotalChunks });
@@ -286,8 +298,9 @@ FUNCTIONAL COMPLETENESS (CRITICAL):
 - Every COBOL operation must have corresponding runnable code in the output
 - You MAY consolidate small paragraphs or split large ones based on good design
 - You MAY inline trivial paragraphs (2-3 lines) into calling methods
-- The output must be FUNCTIONALLY EQUIVALENT to the input
+- The output must be FUNCTIONALLY EQUIVALENT to the input");
 
+        sb.AppendLine(@"
 Guidelines:
 1. Convert COBOL to modern Java with Quarkus framework
 2. Use proper Java naming conventions (camelCase for methods)

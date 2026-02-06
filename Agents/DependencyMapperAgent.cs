@@ -67,6 +67,9 @@ public class DependencyMapperAgent : AgentBase, IDependencyMapperAgent
             // Extract program call dependencies
             ExtractProgramCallDependencies(cobolFiles, dependencyMap);
 
+            // Extract detailed dependencies (SQL, I/O, CICS)
+            ExtractDetailedDependencies(cobolFiles, dependencyMap);
+
             // Build reverse dependencies
             BuildReverseDependencies(dependencyMap);
 
@@ -154,6 +157,115 @@ Total: {dependencyMap.Metrics.TotalPrograms} programs, {dependencyMap.Metrics.To
             Logger.LogError(ex, "Error generating Mermaid diagram");
             dependencyMap.AnalysisInsights = $"Dependency insights unavailable: {ex.Message}";
             return GenerateFallbackMermaidDiagram(dependencyMap);
+        }
+    }
+
+    private void ExtractDetailedDependencies(List<CobolFile> cobolFiles, DependencyMap dependencyMap)
+    {
+        Logger.LogInformation("Extracting detailed dependencies (SQL, CICS, I/O)");
+
+        foreach (var cobolFile in cobolFiles.Where(f => f.FileName.EndsWith(".cbl")))
+        {
+            var lines = cobolFile.Content.Split('\n');
+            bool inExecSql = false;
+            var sqlBuffer = new StringBuilder();
+            int sqlStartLine = 0;
+
+            for (int i = 0; i < lines.Length; i++)
+            {
+                var line = lines[i].Trim();
+                // Skip comments (basic check, not handling inline comments perfectly but sufficient for 80-col COBOL)
+                if (line.Length > 6 && line[6] == '*') continue;
+                if (string.IsNullOrWhiteSpace(line)) continue;
+
+                // 1. SQL Analysis
+                if (Regex.IsMatch(line, @"EXEC\s+SQL", RegexOptions.IgnoreCase))
+                {
+                    inExecSql = true;
+                    sqlStartLine = i + 1;
+                    sqlBuffer.Clear();
+                    sqlBuffer.Append(line);
+                }
+                
+                if (inExecSql)
+                {
+                    if (lines[i].Trim() != sqlBuffer.ToString()) sqlBuffer.Append(" " + line);
+                    
+                    if (Regex.IsMatch(line, @"END-EXEC", RegexOptions.IgnoreCase))
+                    {
+                        inExecSql = false;
+                        AnalyzeSqlBlock(sqlBuffer.ToString(), sqlStartLine, cobolFile.FileName, dependencyMap);
+                    }
+                }
+                else
+                {
+                     // 2. CICS Analysis
+                    if (Regex.IsMatch(line, @"EXEC\s+CICS", RegexOptions.IgnoreCase))
+                    {
+                        var match = Regex.Match(line, @"LINK\s+PROGRAM\s*\('([^']+)'\)", RegexOptions.IgnoreCase);
+                        if (match.Success)
+                        {
+                            AddDependency(dependencyMap, cobolFile.FileName, match.Groups[1].Value, "EXEC CICS", i + 1, "CICS LINK");
+                        }
+                    }
+
+                    // 3. File I/O Analysis
+                    var openMatch = Regex.Match(line, @"^OPEN\s+(INPUT|OUTPUT|I-O|EXTEND)\s+([A-Z0-9_-]+)", RegexOptions.IgnoreCase);
+                    if (openMatch.Success) AddDependency(dependencyMap, cobolFile.FileName, openMatch.Groups[2].Value, "OPEN", i + 1, $"{openMatch.Groups[1].Value} Mode");
+
+                    var readMatch = Regex.Match(line, @"^READ\s+([A-Z0-9_-]+)", RegexOptions.IgnoreCase);
+                    if (readMatch.Success) AddDependency(dependencyMap, cobolFile.FileName, readMatch.Groups[1].Value, "READ", i + 1, "File Read");
+
+                    var writeMatch = Regex.Match(line, @"^WRITE\s+([A-Z0-9_-]+)", RegexOptions.IgnoreCase);
+                    if (writeMatch.Success) AddDependency(dependencyMap, cobolFile.FileName, writeMatch.Groups[1].Value, "WRITE", i + 1, "File Write");
+
+                    var closeMatch = Regex.Match(line, @"^CLOSE\s+([A-Z0-9_-]+)", RegexOptions.IgnoreCase);
+                    if (closeMatch.Success) AddDependency(dependencyMap, cobolFile.FileName, closeMatch.Groups[1].Value, "CLOSE", i + 1, "File Close");
+                }
+            }
+        }
+    }
+
+    private void AnalyzeSqlBlock(string sqlText, int lineNumber, string sourceFile, DependencyMap dependencyMap)
+    {
+        var buffer = sqlText.ToUpper(); // Simplified upper casing
+        
+        // Find table names after FROM, JOIN, INTO, UPDATE, TABLE, INCLUDE
+        var keywords = new[] { "FROM", "JOIN", "INTO", "UPDATE", "TABLE", "INCLUDE" };
+        foreach (var keyword in keywords)
+        {
+            var matches = Regex.Matches(buffer, $@"{keyword}\s+([A-Z0-9_-]+)", RegexOptions.IgnoreCase);
+            foreach (Match match in matches)
+            {
+                var target = match.Groups[1].Value;
+                if (!IsReservedWord(target))
+                {
+                    AddDependency(dependencyMap, sourceFile, target, "EXEC SQL", lineNumber, $"{keyword} {target}");
+                }
+            }
+        }
+    }
+
+    private bool IsReservedWord(string word)
+    {
+        var reserved = new HashSet<string> { "DCLGEN", "OF", "IN", "A", "B", "SELECT", "INSERT", "UPDATE", "DELETE", "WHERE", "GROUP", "ORDER", "BY", "HAVING" };
+        return reserved.Contains(word, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private void AddDependency(DependencyMap map, string source, string target, string type, int line, string context)
+    {
+        var dep = new DependencyRelationship
+        {
+            SourceFile = source,
+            TargetFile = target,
+            DependencyType = type,
+            LineNumber = line,
+            Context = context
+        };
+        
+        if (!map.Dependencies.Any(d => d.SourceFile == dep.SourceFile && d.TargetFile == dep.TargetFile && d.DependencyType == dep.DependencyType && d.LineNumber == dep.LineNumber))
+        {
+            map.Dependencies.Add(dep);
         }
     }
 

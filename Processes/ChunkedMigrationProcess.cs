@@ -147,6 +147,12 @@ public class ChunkedMigrationProcess
         var startTime = DateTime.UtcNow;
         var runId = existingRunId ?? await _migrationRepository.StartRunAsync(cobolSourceFolder, outputFolder);
 
+        // Pass run ID to converter for spec lookup
+        _chunkAwareConverter.SetRunId(runId);
+        
+        // Show initial dashboard
+        _enhancedLogger.ShowDashboardSummary(runId, targetName, "Running", "1/6: File Discovery", 5);
+
         try
         {
             // Step 1: Discover files
@@ -172,6 +178,7 @@ public class ChunkedMigrationProcess
                 smallFiles.Count, largeFiles.Count);
 
             // Step 2: Analyze dependencies
+            _enhancedLogger.ShowDashboardSummary(runId, targetName, "Running", "2/6: Dependency Analysis", 15);
             _enhancedLogger.ShowStep(2, 6, "Dependency Analysis", "Mapping file relationships");
             progressCallback?.Invoke("Analyzing dependencies", 2, 6, null);
 
@@ -184,6 +191,7 @@ public class ChunkedMigrationProcess
             _logger.LogInformation("Processing order determined: {Count} files", processingOrder.Count);
 
             // Step 3: Process small files (standard conversion)
+            _enhancedLogger.ShowDashboardSummary(runId, targetName, "Running", "3/6: Small File Conversion", 30);
             _enhancedLogger.ShowStep(3, 6, "Small File Conversion", 
                 $"Converting {smallFiles.Count} small files");
             
@@ -195,6 +203,7 @@ public class ChunkedMigrationProcess
             }
 
             // Step 4: Process large files (chunked conversion) - in parallel
+            _enhancedLogger.ShowDashboardSummary(runId, targetName, "Running", "4/6: Large File Chunking", 50);
             _enhancedLogger.ShowStep(4, 6, "Large File Chunking", 
                 $"Processing {largeFiles.Count} large files with smart chunking");
 
@@ -275,6 +284,7 @@ public class ChunkedMigrationProcess
             }
 
             // Step 5: Assembly & validation
+            _enhancedLogger.ShowDashboardSummary(runId, targetName, "Running", "5/6: Assembly & Validation", 80);
             _enhancedLogger.ShowStep(5, 6, "Assembly & Validation", 
                 "Combining chunks and validating consistency");
             progressCallback?.Invoke("Assembling converted code", 5, 6, null);
@@ -282,6 +292,7 @@ public class ChunkedMigrationProcess
             var assembledFiles = AssembleChunkedFiles(largeFileResults);
 
             // Step 6: Output generation
+            _enhancedLogger.ShowDashboardSummary(runId, targetName, "Running", "6/6: Output Generation", 95);
             _enhancedLogger.ShowStep(6, 6, "Output Generation", "Writing converted files");
             progressCallback?.Invoke("Saving output files", 6, 6, null);
 
@@ -297,6 +308,7 @@ public class ChunkedMigrationProcess
             await _chatLogger.SaveChatLogJsonAsync();
             _logger.LogInformation("Full chat logs saved to Logs folder");
 
+            _enhancedLogger.ShowDashboardSummary(runId, targetName, "Completed", "Done", 100);
             await _migrationRepository.CompleteRunAsync(runId, "Completed");
 
             _enhancedLogger.ShowSuccess(

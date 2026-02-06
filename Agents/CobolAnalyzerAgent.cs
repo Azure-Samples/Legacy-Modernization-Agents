@@ -82,17 +82,17 @@ public class CobolAnalyzerAgent : ICobolAnalyzerAgent
 
         try
         {
-            // Character limit for API safety
-            const int MaxContentChars = 150_000;
+            // Character limit for API safety (use configured threshold or default to 150K)
+            int maxContentChars = _settings?.ChunkingSettings?.AutoChunkCharThreshold ?? 150_000;
 
             var contentToAnalyze = cobolFile.Content;
 
             _logger.LogInformation("File {FileName} has {Length:N0} characters", cobolFile.FileName, contentToAnalyze.Length);
 
             // NEVER TRUNCATE - fail if file is too large
-            if (contentToAnalyze.Length > MaxContentChars)
+            if (contentToAnalyze.Length > maxContentChars)
             {
-                var errorMsg = $"❌ FILE TOO LARGE: {cobolFile.FileName} has {contentToAnalyze.Length:N0} chars (max: {MaxContentChars:N0}). " +
+                var errorMsg = $"❌ FILE TOO LARGE: {cobolFile.FileName} has {contentToAnalyze.Length:N0} chars (max: {maxContentChars:N0}). " +
                               "Large files are automatically chunked for processing. Truncation is disabled to preserve context.";
 
                 _logger.LogError(errorMsg);

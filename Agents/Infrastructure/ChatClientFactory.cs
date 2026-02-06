@@ -1,5 +1,6 @@
 using Azure.AI.OpenAI;
 using Azure.Identity;
+using Azure.Core;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using OpenAI;
@@ -13,7 +14,7 @@ namespace CobolToQuarkusMigration.Agents.Infrastructure;
 /// </summary>
 public static class ChatClientFactory
 {
-    private static readonly AzureServiceVersion AzureApiVersion = AzureServiceVersion.V2024_10_21;
+    private static readonly AzureServiceVersion AzureApiVersion = AzureServiceVersion.V2024_06_01;
 
     /// <summary>
     /// Creates an IChatClient for Azure OpenAI using API key authentication.
@@ -48,6 +49,38 @@ public static class ChatClientFactory
     }
 
     /// <summary>
+    /// Creates an IChatClient for Azure OpenAI using a TokenCredential (e.g. DefaultAzureCredential).
+    /// </summary>
+    /// <param name="endpoint">The Azure OpenAI endpoint.</param>
+    /// <param name="credential">The token credential.</param>
+    /// <param name="modelId">The deployment/model name.</param>
+    /// <param name="logger">Optional logger.</param>
+    /// <returns>An IChatClient instance.</returns>
+    public static IChatClient CreateAzureOpenAIChatClient(
+        string endpoint,
+        TokenCredential credential,
+        string modelId,
+        ILogger? logger = null)
+    {
+        if (string.IsNullOrEmpty(endpoint))
+            throw new ArgumentNullException(nameof(endpoint));
+        if (credential == null)
+            throw new ArgumentNullException(nameof(credential));
+        if (string.IsNullOrEmpty(modelId))
+            throw new ArgumentNullException(nameof(modelId));
+
+        logger?.LogInformation("Creating Azure OpenAI chat client with TokenCredential for endpoint: {Endpoint}, model: {Model}",
+            endpoint, modelId);
+
+        var client = new AzureOpenAIClient(
+            new Uri(endpoint),
+            credential,
+            CreateOptions());
+
+        return client.GetChatClient(modelId).AsIChatClient();
+    }
+
+    /// <summary>
     /// Creates an IChatClient for Azure OpenAI using DefaultAzureCredential (managed identity, etc.).
     /// </summary>
     /// <param name="endpoint">The Azure OpenAI endpoint.</param>
@@ -59,20 +92,7 @@ public static class ChatClientFactory
         string modelId,
         ILogger? logger = null)
     {
-        if (string.IsNullOrEmpty(endpoint))
-            throw new ArgumentNullException(nameof(endpoint));
-        if (string.IsNullOrEmpty(modelId))
-            throw new ArgumentNullException(nameof(modelId));
-
-        logger?.LogInformation("Creating Azure OpenAI chat client with DefaultAzureCredential for endpoint: {Endpoint}, model: {Model}",
-            endpoint, modelId);
-
-        var client = new AzureOpenAIClient(
-            new Uri(endpoint),
-            new DefaultAzureCredential(),
-            CreateOptions());
-
-        return client.GetChatClient(modelId).AsIChatClient();
+        return CreateAzureOpenAIChatClient(endpoint, new DefaultAzureCredential(), modelId, logger);
     }
 
     /// <summary>

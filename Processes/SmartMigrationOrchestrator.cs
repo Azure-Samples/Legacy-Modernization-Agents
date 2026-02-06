@@ -80,6 +80,7 @@ public class SmartMigrationOrchestrator
         string cobolSourceFolder,
         string outputFolder,
         Action<string, int, int>? progressCallback = null,
+        int? existingRunId = null,
         CancellationToken cancellationToken = default)
     {
         var stats = new MigrationStats();
@@ -89,6 +90,11 @@ public class SmartMigrationOrchestrator
         _enhancedLogger.ShowSectionHeader(
             $"🧠 SMART MIGRATION ORCHESTRATOR",
             $"Intelligent file routing for COBOL to {targetName}");
+
+        if (existingRunId.HasValue)
+        {
+            _enhancedLogger.ShowWarning($"Resuming migration for Run ID: {existingRunId}");
+        }
 
         // Step 1: Scan and categorize files
         _enhancedLogger.ShowStep(1, 4, "File Analysis", "Scanning and categorizing COBOL files");
@@ -128,6 +134,7 @@ public class SmartMigrationOrchestrator
                 outputFolder, 
                 stats,
                 progressCallback,
+                existingRunId,
                 cancellationToken);
         }
         else if (smallFiles.Count > 0)
@@ -139,7 +146,8 @@ public class SmartMigrationOrchestrator
             await ProcessSmallFilesOnlyAsync(
                 cobolSourceFolder, 
                 outputFolder, 
-                progressCallback);
+                progressCallback,
+                existingRunId);
             
             stats.DirectFiles = smallFiles.Count;
         }
@@ -217,6 +225,7 @@ public class SmartMigrationOrchestrator
         string outputFolder,
         MigrationStats stats,
         Action<string, int, int>? progressCallback,
+        int? existingRunId,
         CancellationToken cancellationToken)
     {
         _enhancedLogger.ShowSectionHeader(
@@ -241,7 +250,7 @@ public class SmartMigrationOrchestrator
             {
                 progressCallback?.Invoke(status, current + 1, 4);
             },
-            existingRunId: null,
+            existingRunId: existingRunId,
             cancellationToken);
 
         stats.ChunkedFiles = largeFiles.Count;
@@ -254,7 +263,8 @@ public class SmartMigrationOrchestrator
     private async Task ProcessSmallFilesOnlyAsync(
         string cobolSourceFolder,
         string outputFolder,
-        Action<string, int, int>? progressCallback)
+        Action<string, int, int>? progressCallback,
+        int? existingRunId = null)
     {
         _enhancedLogger.ShowSectionHeader(
             "⚡ DIRECT MIGRATION PROCESS",
@@ -276,7 +286,8 @@ public class SmartMigrationOrchestrator
             (status, current, total) =>
             {
                 progressCallback?.Invoke(status, current + 1, 4);
-            });
+            },
+            existingRunId);
     }
 
     /// <summary>

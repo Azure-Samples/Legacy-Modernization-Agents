@@ -165,6 +165,103 @@ app.MapGet("/api/resources", async (IMcpClient client, CancellationToken cancell
 	return Results.Ok(resources);
 });
 
+app.MapPost("/api/tools/call", async (ToolCallRequest request, IMcpClient client, CancellationToken cancellationToken) =>
+{
+    try
+    {
+        if (string.IsNullOrWhiteSpace(request.Name))
+        {
+            return Results.BadRequest(new { error = "Tool name is required" });
+        }
+
+        Console.WriteLine($"🔧 Calling tool: {request.Name}");
+
+        var result = await client.CallToolAsync(request.Name, request.Arguments ?? new Dictionary<string, object>(), cancellationToken);
+        return Results.Ok(new { result });
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"❌ Error calling tool {request.Name}: {ex.Message}");
+        return Results.Problem($"Failed to call tool: {ex.Message}");
+    }
+});
+
+app.MapGet("/api/specs", async (int? runId, CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var dbPath = GetMigrationDbPath();
+        if (!File.Exists(dbPath))
+        {
+            return Results.Ok(new { specs = new List<object>() });
+        }
+
+        await using var connection = new SqliteConnection($"Data Source={dbPath}");
+        await connection.OpenAsync(cancellationToken);
+
+        // First check if table exists
+        await using var checkCmd = connection.CreateCommand();
+        checkCmd.CommandText = "SELECT name FROM sqlite_master WHERE type='table' AND name='spec_service_definitions'";
+        var tableName = await checkCmd.ExecuteScalarAsync(cancellationToken);
+        
+        if (tableName == null)
+        {
+            return Results.Ok(new { specs = new List<object>(), message = "Spec definitions table not found (no specs generated yet?)" });
+        }
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+            SELECT s.id, s.run_id, s.name, s.description, s.status, p.source_file
+            FROM spec_service_definitions s
+            LEFT JOIN spec_provenance p ON s.provenance_id = p.id
+            ORDER BY s.id DESC";
+        
+        var specs = new List<object>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+             specs.Add(new {
+                 id = reader.GetInt32(0),
+                 runId = reader.GetInt32(1),
+                 name = reader.GetString(2),
+                 description = reader.IsDBNull(3) ? null : reader.GetString(3),
+                 status = reader.GetInt32(4), // 0=Draft, 1=Review, 2=Approved, 3=Rejected
+                 statusLabel = reader.GetInt32(4) switch { 0 => "Draft", 1 => "Review", 2 => "Approved", 3 => "Rejected", _ => "Unknown" },
+                 // Fallback to Name if source_file is missing (heuristic for old specs)
+                 sourceFile = reader.IsDBNull(5) ? reader.GetString(2) : reader.GetString(5)
+             });
+        }
+        
+        return Results.Ok(new { specs });
+    }
+    catch (Exception ex)
+    {
+         Console.WriteLine($"❌ Error listing specs: {ex.Message}");
+         return Results.Problem($"Failed to list specs: {ex.Message}");
+    }
+});
+
+app.MapGet("/api/profiles", async () =>
+{
+    try
+    {
+        var configPath = Path.Combine(Directory.GetCurrentDirectory(), "..", "Config", "GenerationProfiles.json");
+        if (!File.Exists(configPath))
+        {
+            return Results.Ok(new { profiles = new List<object>(), message = "Profiles config not found" });
+        }
+        
+        var json = await File.ReadAllTextAsync(configPath);
+        // We can just return the raw JSON parsing it to ensure validity
+        var data = JsonSerializer.Deserialize<JsonObject>(json);
+        return Results.Ok(data);
+    }
+    catch (Exception ex)
+    {
+         return Results.Problem($"Failed to list profiles: {ex.Message}");
+    }
+});
+
 // Read a specific MCP resource by URI - used by chunk status viewer
 app.MapGet("/api/resources/read", async (string uri, IMcpClient client, CancellationToken cancellationToken) =>
 {
@@ -175,6 +272,16 @@ app.MapGet("/api/resources/read", async (string uri, IMcpClient client, Cancella
 			return Results.BadRequest(new { error = "URI parameter is required" });
 		}
 
+		// Handle spec:// URIs directly from the database
+		// REMOVED: spec://locked optimization is broken (returns markdown instead of JSON)
+		// Letting it fall through to McpServer which handles it correctly
+		/*
+		if (uri.StartsWith("spec://locked/"))
+		{
+			// ... disabled implementation ...
+		}
+		*/
+		
 		Console.WriteLine($"📦 Reading MCP resource: {uri}");
 		var content = await client.ReadResourceAsync(uri, cancellationToken);
 		
@@ -968,25 +1075,37 @@ app.MapGet("/api/runs/all", async () =>
 	{
 		// Query SQLite directly - it's faster and more reliable
 		var dbPath = GetMigrationDbPath();
+        Console.WriteLine($"📊 API Request: listing runs from {dbPath}");
 
 		if (File.Exists(dbPath))
 		{
-			await using var connection = new SqliteConnection($"Data Source={dbPath}");
+			// Use ReadOnly mode to prevent locking issues
+			await using var connection = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly");
 			await connection.OpenAsync();
 
 			await using var command = connection.CreateCommand();
-			command.CommandText = "SELECT id, status FROM runs ORDER BY id DESC";
+                        command.CommandText = "SELECT id, status, java_output FROM runs ORDER BY id DESC";
+                        
+                        var sqliteRuns = new List<object>();
+                        var sqliteRunIds = new List<int>();
+                        await using var reader = await command.ExecuteReaderAsync();
+                        while (await reader.ReadAsync())
+                        {
+                                var id = reader.GetInt32(0);
+                                var status = reader.IsDBNull(1) ? "Unknown" : reader.GetString(1);
+                                
+                                // Determine language logic
+                                string targetLanguage = "Unknown";
+                                if (!reader.IsDBNull(2))
+                                {
+                                    var output = reader.GetString(2);
+                                    if (output.IndexOf("csharp", StringComparison.OrdinalIgnoreCase) >= 0) targetLanguage = "C#";
+                                    else if (output.IndexOf("java", StringComparison.OrdinalIgnoreCase) >= 0 || output.Equals("output", StringComparison.OrdinalIgnoreCase)) targetLanguage = "Java";
+                                }
 
-			var sqliteRuns = new List<object>();
-			var sqliteRunIds = new List<int>();
-			await using var reader = await command.ExecuteReaderAsync();
-			while (await reader.ReadAsync())
-			{
-				var id = reader.GetInt32(0);
-				var status = reader.IsDBNull(1) ? "Unknown" : reader.GetString(1);
-				sqliteRunIds.Add(id);
-				sqliteRuns.Add(new { id, status });
-			}
+                                sqliteRunIds.Add(id);
+                                sqliteRuns.Add(new { id, status, targetLanguage });
+                        }
 
 			var verbose = Environment.GetEnvironmentVariable("MCP_VERBOSE_RUNS");
 			var shouldLog = !string.IsNullOrWhiteSpace(verbose) && !verbose.Equals("0") && !verbose.Equals("false", StringComparison.OrdinalIgnoreCase);
@@ -1177,6 +1296,70 @@ app.MapGet("/api/runs/{runId}/dependencies", async (string runId, IMcpClient cli
 	}
 
 	return Results.Ok(new { runId = runId, nodeCount = 0, edgeCount = 0, error = "Unable to fetch dependencies" });
+});
+
+// Deep analysis for SQL usage for a specific run - direct DB access for max detail
+app.MapGet("/api/runs/{runId}/sql-usage", async (string runId) =>
+{
+	try
+	{
+		var parsedRunId = ParseRunIdOrNull(runId);
+		if (parsedRunId is null)
+		{
+			return Results.BadRequest(new { error = "Invalid runId" });
+		}
+		
+		var dbPath = GetMigrationDbPath();
+		var details = new List<object>();
+		
+		if (File.Exists(dbPath))
+		{
+			var connectionString = $"Data Source={dbPath};Cache=Shared";
+			await using var connection = new SqliteConnection(connectionString);
+			await connection.OpenAsync();
+			
+			// Get analysis texts that mention SQL
+			var cmd = connection.CreateCommand();
+			cmd.CommandText = @"
+				SELECT f.file_path, a.raw_analysis 
+				FROM analyses a
+				JOIN cobol_files f ON a.cobol_file_id = f.id
+				WHERE f.run_id = $runId 
+				AND (a.raw_analysis LIKE '%Embedded SQL%' OR a.raw_analysis LIKE '%DB2 Interaction%')";
+			cmd.Parameters.AddWithValue("$runId", parsedRunId.Value);
+
+			await using var reader = await cmd.ExecuteReaderAsync();
+			while (await reader.ReadAsync())
+			{
+				var path = reader.GetString(0);
+				var analysis = reader.GetString(1);
+				var fileName = Path.GetFileName(path);
+
+				// Extract SQL blocks using Regex
+				// Find sections starting with ### Embedded SQL or similar, until the next ### header
+				var sectionMatches = System.Text.RegularExpressions.Regex.Matches(analysis, @"###\s*(?:Embedded SQL|DB2 Interaction|Database)([\s\S]*?)(?=\n###|\z)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+				
+				foreach (System.Text.RegularExpressions.Match match in sectionMatches)
+				{
+					if (match.Groups.Count > 1)
+					{
+						var content = match.Groups[1].Value.Trim();
+						details.Add(new {
+							file = fileName,
+							analysis = content
+						});
+					}
+				}
+			}
+		}
+
+		return Results.Ok(new { runId = parsedRunId.Value, details = details });
+	}
+	catch (Exception ex)
+	{
+		Console.WriteLine($"Error getting SQL usage for run {runId}: {ex.Message}");
+		return Results.Ok(new { error = ex.Message });
+	}
 });
 
 // Generate migration report for a specific run
@@ -1453,19 +1636,27 @@ app.MapGet("/api/runs/{runId}/chunks", async (string runId) =>
 			});
 		}
 
-		// If no chunks exist, we still want the UI to know chunking was skipped because files were small
+		// Get total programs count
 		var programs = 0;
-		if (files.Count == 0)
-		{
-			await using var programsCmd = connection.CreateCommand();
-			programsCmd.CommandText = "SELECT COUNT(*) FROM cobol_files WHERE run_id = $runId AND is_copybook = 0";
-			programsCmd.Parameters.AddWithValue("$runId", parsedRunId.Value);
-			programs = Convert.ToInt32(await programsCmd.ExecuteScalarAsync() ?? 0);
-		}
+		await using var programsCmd = connection.CreateCommand();
+		programsCmd.CommandText = "SELECT COUNT(*) FROM cobol_files WHERE run_id = $runId AND is_copybook = 0";
+		programsCmd.Parameters.AddWithValue("$runId", parsedRunId.Value);
+		programs = Convert.ToInt32(await programsCmd.ExecuteScalarAsync() ?? 0);
 
-		var usingDirectProcessing = files.Count == 0 && programs > 0;
+		var chunkedFilesCount = files.Count;
+		var smallFilesCount = Math.Max(0, programs - chunkedFilesCount);
+		var smartMigrationActive = chunkedFilesCount > 0;
+		var usingDirectProcessing = chunkedFilesCount == 0 && programs > 0;
 
-		return Results.Ok(new { runId = parsedRunId.Value, files, usingDirectProcessing });
+		return Results.Ok(new { 
+			runId = parsedRunId.Value, 
+			files, 
+			usingDirectProcessing,
+			totalFiles = programs,
+			chunkedFiles = chunkedFilesCount,
+			smallFiles = smallFilesCount,
+			smartMigrationActive
+		});
 	}
 	catch (Exception ex)
 	{
@@ -3071,15 +3262,27 @@ app.MapGet("/api/activity/live", async () =>
 		int? currentRunId = null;
 		string? runStatus = null;
 		string? sourceDir = null;
+		string targetLanguage = "csharp"; // Default
+
 		await using (var cmd = connection.CreateCommand())
 		{
-			cmd.CommandText = "SELECT id, status, cobol_source FROM runs ORDER BY id DESC LIMIT 1";
+			cmd.CommandText = "SELECT id, status, cobol_source, java_output FROM runs ORDER BY id DESC LIMIT 1";
 			await using var reader = await cmd.ExecuteReaderAsync();
 			if (await reader.ReadAsync())
 			{
 				currentRunId = reader.GetInt32(0);
 				runStatus = reader.IsDBNull(1) ? null : reader.GetString(1);
 				sourceDir = reader.IsDBNull(2) ? null : reader.GetString(2);
+				
+				var outputDir = reader.IsDBNull(3) ? "" : reader.GetString(3);
+				if (!string.IsNullOrEmpty(outputDir) && outputDir.Contains("java", StringComparison.OrdinalIgnoreCase) && !outputDir.Contains("csharp", StringComparison.OrdinalIgnoreCase))
+				{
+					targetLanguage = "java";
+				}
+				else if (!string.IsNullOrEmpty(outputDir) && outputDir.Contains("csharp", StringComparison.OrdinalIgnoreCase))
+				{
+					targetLanguage = "csharp";
+				}
 			}
 		}
 
@@ -3091,6 +3294,7 @@ app.MapGet("/api/activity/live", async () =>
 		var programCount = 0;
 		var analysisCount = 0;
 		var totalChunkCount = 0;  // Moved outside so it's accessible in result construction
+		var chunkedFileCount = 0;
 		
 		if (currentRunId.HasValue)
 		{
@@ -3114,6 +3318,14 @@ app.MapGet("/api/activity/live", async () =>
 						failed = reader.IsDBNull(3) ? 0 : reader.GetInt32(3)
 					};
 				}
+			}
+
+			// Get count of files that have chunks (for smart migration stats)
+			await using (var cmd = connection.CreateCommand())
+			{
+				cmd.CommandText = "SELECT COUNT(DISTINCT source_file) FROM chunk_metadata WHERE run_id = @runId";
+				cmd.Parameters.AddWithValue("@runId", currentRunId.Value);
+				chunkedFileCount = Convert.ToInt32(await cmd.ExecuteScalarAsync() ?? 0);
 			}
 
 			// Check if using direct processing (no chunks but has files)
@@ -3301,6 +3513,7 @@ app.MapGet("/api/activity/live", async () =>
 				runId = currentRunId,
 				phase = phase,
 				currentFile = sourceDir,
+				targetLanguage = targetLanguage,
 				usingDirectProcessing = usingDirectProcessing,
 				progress = new {
 					totalChunks = totalChunkCount,
@@ -3317,7 +3530,11 @@ app.MapGet("/api/activity/live", async () =>
 				completedChunks = usingDirectProcessing ? analysisCount : chunkStats.completed,
 				failedChunks = chunkStats.failed,
 				currentChunks = currentChunks,
-				usingDirectProcessing = usingDirectProcessing
+				usingDirectProcessing = usingDirectProcessing,
+				smartMigrationActive = chunkedFileCount > 0,
+				totalFiles = totalFiles,
+				chunkedFiles = chunkedFileCount,
+				smallFiles = Math.Max(0, totalFiles - chunkedFileCount)
 			},
 			apiCalls = new {
 				recentCalls = recentApiCalls,
@@ -3337,6 +3554,95 @@ app.MapGet("/api/activity/live", async () =>
 	{
 		Console.WriteLine($"❌ Activity API error: {ex.Message}");
 		return Results.Ok(activity);
+	}
+});
+
+app.MapGet("/api/files/local", async (string path) =>
+{
+	try
+	{
+		// Robust root detection for source files
+		var currentDir = Directory.GetCurrentDirectory();
+		var repoRoot = currentDir;
+        
+        // Find the root that contains "source" folder
+        // check current
+		if (!Directory.Exists(Path.Combine(repoRoot, "source")))
+		{
+			// check parent
+			var parent = Directory.GetParent(currentDir)?.FullName;
+			if (parent != null && Directory.Exists(Path.Combine(parent, "source")))
+			{
+				repoRoot = parent;
+			}
+            else 
+            {
+                // check ../.. (grandparent)
+                var grantParent = Directory.GetParent(parent ?? "")?.FullName;
+                if (grantParent != null && Directory.Exists(Path.Combine(grantParent, "source")))
+                {
+                    repoRoot = grantParent;
+                }
+                else
+                {
+                    // Fallback to standard .. logic
+                    repoRoot = Path.GetFullPath("..");
+                }
+            }
+		}
+
+        // Clean the input path - prevent double "source/source/"
+        var cleanPath = path.Replace('\\', '/');
+        if (cleanPath.StartsWith("source/") && Directory.Exists(Path.Combine(repoRoot, "source")))
+        {
+             // If input is "source/file.cbl" and we have a "source" folder in root, 
+             // Path.Combine(root, "source/file.cbl") works perfectly.
+             // But if path implies logic from "source" root, let's just ensure we map correctly.
+        }
+
+		// Security check: ensure path is within repo root
+		var fullPath = Path.GetFullPath(Path.Combine(repoRoot, cleanPath));
+		
+		Console.WriteLine($"🔍 File Request: '{path}' -> '{fullPath}' (Root: {repoRoot})");
+
+		if (!File.Exists(fullPath))
+		{
+            // Try fallback: maybe path lacked "source/" prefix?
+            if (!cleanPath.StartsWith("source/") && Directory.Exists(Path.Combine(repoRoot, "source")))
+            {
+                var altPath = Path.GetFullPath(Path.Combine(repoRoot, "source", cleanPath));
+                if (File.Exists(altPath))
+                {
+                     fullPath = altPath;
+                     Console.WriteLine($"🔍 Autocorrected path to: {fullPath}");
+                }
+                else
+                {
+                    Console.WriteLine($"❌ File not found at: {fullPath} OR {altPath}");
+			        return Results.NotFound($"File not found: {path}");
+                }
+            }
+            else 
+            {
+			    Console.WriteLine($"❌ File not found: {fullPath}");
+			    return Results.NotFound($"File not found: {path} (Resolved: {fullPath})");
+            }
+		}
+
+		var content = await File.ReadAllTextAsync(fullPath);
+		var fileInfo = new FileInfo(fullPath);
+		
+		return Results.Ok(new
+		{
+			content,
+			filename = Path.GetFileName(fullPath),
+			lastModified = fileInfo.LastWriteTimeUtc,
+			sizeBytes = fileInfo.Length
+		});
+	}
+	catch (Exception ex)
+	{
+		return Results.Problem($"Failed to read file: {ex.Message}");
 	}
 });
 

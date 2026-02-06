@@ -1,4 +1,27 @@
 services:
+  portal:
+    build: .
+    container_name: cobol-migration-portal
+    restart: unless-stopped
+    ports:
+      - "5028:5028"
+    env_file:
+      - ./Config/ai-config.env
+      - ./Config/ai-config.local.env
+    volumes:
+      - ./Data:/app/Data
+      - ./Logs:/app/Logs
+      - ./Config:/app/Config
+    environment:
+      - MIGRATION_DB_PATH=/app/Data/migration.db
+      - Mcp__DotnetExecutable=dotnet
+      - Mcp__AssemblyPath=/app/cli/CobolToQuarkusMigration.dll
+      - Mcp__ConfigPath=/app/Config/appsettings.json
+      - Mcp__WorkingDirectory=/app
+      - ApplicationSettings__Neo4j__Uri=bolt://neo4j:7687
+    depends_on:
+      - neo4j
+
   neo4j:
     image: neo4j:5.15.0
     container_name: cobol-migration-neo4j

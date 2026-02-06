@@ -200,6 +200,53 @@ public class EnhancedLogger
     }
 
     /// <summary>
+    /// Displays a dashboard-like summary of the migration status in ASCII format.
+    /// </summary>
+    /// <param name="runId">Run ID.</param>
+    /// <param name="targetLanguage">Target Language (Java/C#).</param>
+    /// <param name="status">Current Status (e.g. Running, Completed).</param>
+    /// <param name="phase">Current Phase.</param>
+    /// <param name="progressPercent">Overall Progress Percentage.</param>
+    public void ShowDashboardSummary(int runId, string targetLanguage, string status, string phase, double progressPercent)
+    {
+        lock (_consoleLock)
+        {
+            var width = 76; // Inner width
+            var border = new string('═', width);
+            var thinBorder = new string('─', width); 
+
+            Console.WriteLine();
+            Console.WriteLine($"{Colors.BrightCyan}╔{border}╗{Colors.Reset}");
+            
+            // Header content
+            var statusColor = status.ToUpper() == "RUNNING" ? Colors.BrightGreen : (status.ToUpper() == "FAILED" ? Colors.BrightRed : Colors.BrightWhite);
+            var langColor = targetLanguage.ToUpper().Contains("C#") ? Colors.BrightMagenta : Colors.BrightGreen;
+            
+            // Allow for manual padding since ANSI codes mess up simple PadRight
+            Console.Write($"{Colors.BrightCyan}║{Colors.Reset} ");
+            Console.Write($"RUN #{runId} | TARGET: {langColor}{targetLanguage}{Colors.Reset} | STATUS: {statusColor}{status.ToUpper()}{Colors.Reset}");
+            
+            // Calculate padding manually to right-align the closing border
+            // Rough estimation involves assuming fixed length for ANSI-stripped strings, but let's just cheat and newline it cleanly
+            Console.WriteLine(); 
+            
+            Console.WriteLine($"{Colors.BrightCyan}╠{thinBorder}╣{Colors.Reset}");
+            
+            // Progress Bar
+            var progressBarWidth = 30;
+            var filled = (int)(progressPercent / 100.0 * progressBarWidth);
+            var empty = progressBarWidth - filled;
+            var bar = $"{Colors.BrightGreen}{new string('█', filled)}{Colors.BrightBlack}{new string('░', empty)}{Colors.Reset}";
+            
+            Console.Write($"{Colors.BrightCyan}║{Colors.Reset} {Colors.BrightYellow}PHASE:{Colors.Reset} {phase.PadRight(20)} PROG: [{bar}] {Colors.BrightWhite}{progressPercent:F1}%{Colors.Reset}");
+            Console.WriteLine();
+
+            Console.WriteLine($"{Colors.BrightCyan}╚{border}╝{Colors.Reset}");
+            Console.WriteLine();
+        }
+    }
+
+    /// <summary>
     /// Logs an agent conversation entry for debugging and analysis.
     /// </summary>
     /// <param name="agentName">Name of the agent.</param>

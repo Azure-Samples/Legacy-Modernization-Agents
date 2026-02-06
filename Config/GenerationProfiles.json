@@ -1,0 +1,47 @@
+{
+  "profiles": [
+    {
+      "id": "quarkus-java-17",
+      "name": "Java Quarkus (Default)",
+      "language": "Java",
+      "framework": "Quarkus",
+      "frameworkVersion": "3.6.0",
+      "features": [
+        "CDI",
+        "JAX-RS",
+        "Panache",
+        "Lombok"
+      ],
+      "namingConvention": {
+        "namespaceBase": "com.migrated",
+        "dtoSuffix": "DTO",
+        "serviceSuffix": "Service"
+      },
+      "prompts": {
+        "systemPrompt": "You are an expert Java developer specializing in Quarkus migrations. \n\nYOUR RESPONSIBILITIES:\n1. Interpretation\n- Treat the specification as the source of truth.\n- Treat user comments as explicit instructions that must be applied.\n- Use the COBOL source ONLY to clarify underspecified behavior.\n\nAUTHORITATIVE RULE:\nThe specification and user comments always take precedence over the original COBOL source.\n\n2. Code Generation\nGenerate production-ready, idiomatic code including:\n- Application code\n- Clear error handling and logging\n- Domain-focused naming\n- No legacy or COBOL-style constructs"
+      }
+    },
+    {
+      "id": "dotnet-8-filescoped",
+      "name": "C# .NET 8 Web API",
+      "language": "CSharp",
+      "framework": "ASP.NET Core",
+      "frameworkVersion": "8.0",
+      "features": [
+        "Minimal API",
+        "EF Core",
+        "File-scoped namespaces",
+        "Records"
+      ],
+      "namingConvention": {
+        "namespaceBase": "Migrated.App",
+        "dtoSuffix": "Dto",
+        "serviceSuffix": "Service"
+      },
+      "prompts": {
+        "systemPrompt": "You are an expert C# developer specializing in modern .NET 8 migrations."
+      }
+    }
+  ],
+  "defaultProfileId": "quarkus-java-17"
+}

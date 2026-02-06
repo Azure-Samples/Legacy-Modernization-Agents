@@ -5,6 +5,7 @@ using CobolToQuarkusMigration.Agents.Interfaces;
 using CobolToQuarkusMigration.Models;
 using CobolToQuarkusMigration.Helpers;
 using System.Diagnostics;
+using System.Text;
 
 namespace CobolToQuarkusMigration.Agents;
 
@@ -20,6 +21,16 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
     public string TargetLanguage => "Java";
     public string FileExtension => ".java";
 
+    private int? _runId;
+
+    /// <summary>
+    /// Sets the Run ID for the current context.
+    /// </summary>
+    public void SetRunId(int runId)
+    {
+        _runId = runId;
+    }
+
     /// <summary>
     /// Initializes a new instance using Responses API (for codex models like gpt-5.1-codex-mini).
     /// </summary>
@@ -30,7 +41,8 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
         EnhancedLogger? enhancedLogger = null,
         ChatLogger? chatLogger = null,
         RateLimiter? rateLimiter = null,
-        AppSettings? settings = null)
+        AppSettings? settings = null,
+        int? runId = null)
         : base(responsesClient, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings)
     {
     }
@@ -45,7 +57,8 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
         EnhancedLogger? enhancedLogger = null,
         ChatLogger? chatLogger = null,
         RateLimiter? rateLimiter = null,
-        AppSettings? settings = null)
+        AppSettings? settings = null,
+        int? runId = null)
         : base(chatClient, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings)
     {
     }
@@ -151,25 +164,29 @@ CRITICAL: Your response MUST start with 'package' and contain ONLY valid Java co
             string sanitizedContent = SanitizeCobolContent(contentToConvert);
 
             // User prompt for Java conversion
-            var userPrompt = $@"
-Convert the following COBOL program to Java with Quarkus:
+            var userPromptBuilder = new StringBuilder();
+            userPromptBuilder.AppendLine("Convert the following COBOL program to Java with Quarkus:");
+            userPromptBuilder.AppendLine();
+            userPromptBuilder.AppendLine("```cobol");
+            userPromptBuilder.AppendLine(sanitizedContent);
+            userPromptBuilder.AppendLine("```");
+            
+            userPromptBuilder.AppendLine();
+            userPromptBuilder.AppendLine("Here is the analysis of the COBOL program to help you understand its structure:");
+            userPromptBuilder.AppendLine();
+            userPromptBuilder.AppendLine(cobolAnalysis.RawAnalysisData);
+            
+            userPromptBuilder.AppendLine();
+            userPromptBuilder.AppendLine("IMPORTANT REQUIREMENTS:");
+            userPromptBuilder.AppendLine("1. Return ONLY the Java code - NO explanations, NO markdown blocks, NO additional text");
+            userPromptBuilder.AppendLine("2. Start with: package com.example.something; (single line, lowercase, no comments)");
+            userPromptBuilder.AppendLine("3. Do NOT include newlines or explanatory text in the package declaration");
+            userPromptBuilder.AppendLine("4. Your response must be valid, compilable Java code starting with 'package' and ending with the class closing brace");
+            
+            userPromptBuilder.AppendLine();
+            userPromptBuilder.AppendLine("Note: The original code contains Danish error handling terms replaced with placeholders.");
 
-```cobol
-{sanitizedContent}
-```
-
-Here is the analysis of the COBOL program to help you understand its structure:
-
-{cobolAnalysis.RawAnalysisData}
-
-IMPORTANT REQUIREMENTS:
-1. Return ONLY the Java code - NO explanations, NO markdown blocks, NO additional text
-2. Start with: package com.example.something; (single line, lowercase, no comments)
-3. Do NOT include newlines or explanatory text in the package declaration
-4. Your response must be valid, compilable Java code starting with 'package' and ending with the class closing brace
-
-Note: The original code contains Danish error handling terms replaced with placeholders.
-";
+            var userPrompt = userPromptBuilder.ToString();
 
             var (javaCode, usedFallback, fallbackReason) = await ExecuteWithFallbackAsync(
                 systemPrompt,

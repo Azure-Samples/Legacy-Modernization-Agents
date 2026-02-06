@@ -646,48 +646,87 @@
 
   function displayChunkStatus(data, container) {
     const files = data.files || [];
+    const totalFiles = data.totalFiles || 0;
+    const chunkedFiles = data.chunkedFiles || files.length;
+    // Calculate small files if not provided (fallback logic)
+    const smallFiles = data.smallFiles !== undefined ? data.smallFiles : Math.max(0, totalFiles - chunkedFiles);
+    const smartActive = data.smartMigrationActive !== undefined ? data.smartMigrationActive : (files.length > 0);
 
-    if (files.length === 0 && data.usingDirectProcessing) {
-      container.innerHTML = `
-        <div class="chunk-empty-state">
-          <div class="empty-icon">🧩</div>
-          <p class="info">Smart chunking skipped</p>
-          <p class="hint">All files were under the chunk threshold and processed directly.</p>
-          <div class="auto-refresh-indicator">
-            <span class="refresh-dot"></span>
-            Live monitoring continues for conversion and assembly.
-          </div>
-        </div>
-      `;
-      return;
-    }
-
-    if (files.length === 0) {
-      container.innerHTML = `
-        <div class="chunk-empty-state">
-          <div class="empty-icon">🧩</div>
-          <p class="info">No chunked files found for this run.</p>
-          <p class="hint">Files are chunked when they exceed the configured line limit.</p>
-          <div class="auto-refresh-indicator">
-            <span class="refresh-dot"></span>
-            Auto-refreshing...
-          </div>
-        </div>
-      `;
-      return;
-    }
-
-    // Calculate overall progress
     const totalChunks = files.reduce((sum, f) => sum + f.totalChunks, 0);
     const completedChunks = files.reduce((sum, f) => sum + f.completedChunks, 0);
     const failedChunks = files.reduce((sum, f) => sum + f.failedChunks, 0);
     const processingChunks = files.reduce((sum, f) => sum + (f.pendingChunks || 0), 0);
-    const overallProgress = totalChunks > 0 ? (completedChunks / totalChunks * 100) : 0;
+    const overallProgress = totalChunks > 0 ? (completedChunks / totalChunks * 100) : (totalFiles > 0 && chunkedFiles === 0 ? 100 : 0);
 
     let html = `
+      <div class="smart-migration-stats-container">
+        <div class="smart-stat-card ${smartActive ? 'status-enabled' : 'status-disabled'}">
+          <div class="stat-icon">${smartActive ? '⚡' : '⚪'}</div>
+          <div class="stat-content">
+            <div class="stat-label">Smart Migration</div>
+            <div class="stat-value">${smartActive ? 'Enabled' : 'Disabled'}</div>
+          </div>
+        </div>
+        
+        <div class="smart-stat-card">
+          <div class="stat-icon">📄</div>
+          <div class="stat-content">
+            <div class="stat-label">Small Files</div>
+            <div class="stat-value">${smallFiles}</div>
+            <div class="stat-sub">Direct Processing</div>
+          </div>
+        </div>
+        
+        <div class="smart-stat-card">
+          <div class="stat-icon">📚</div>
+          <div class="stat-content">
+            <div class="stat-label">Large Files</div>
+            <div class="stat-value">${chunkedFiles}</div>
+            <div class="stat-sub">Chunked</div>
+          </div>
+        </div>
+        
+        <div class="smart-stat-card">
+          <div class="stat-icon">🧩</div>
+          <div class="stat-content">
+            <div class="stat-label">Total Chunks</div>
+            <div class="stat-value">${totalChunks}</div>
+            <div class="stat-sub">${files.length} Files</div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    if (files.length === 0) {
+      if (totalFiles > 0 && chunkedFiles === 0) {
+         html += `
+          <div class="chunk-empty-state">
+            <div class="empty-icon">✨</div>
+            <p class="info">All files processed directly</p>
+            <p class="hint">No large files detected requiring chunking.</p>
+          </div>
+        `;
+      } else {
+        html += `
+          <div class="chunk-empty-state">
+            <div class="empty-icon">🧩</div>
+            <p class="info">No chunk data available</p>
+            <p class="hint">Waiting for analysis or file discovery...</p>
+            <div class="auto-refresh-indicator">
+              <span class="refresh-dot"></span>
+              Auto-refreshing...
+            </div>
+          </div>
+        `;
+      }
+      container.innerHTML = html;
+      return;
+    }
+
+    html += `
       <div class="chunk-overall-progress">
         <div class="overall-header">
-          <span class="overall-title">Overall Progress</span>
+          <span class="overall-title">Chunk Processing Progress</span>
           <span class="overall-percentage">${overallProgress.toFixed(1)}%</span>
         </div>
         <div class="overall-progress-bar">

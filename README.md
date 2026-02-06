@@ -155,7 +155,7 @@ docker-compose up -d neo4j
 # 4. Build
 dotnet build
 
-# 5. Run migration
+# 5. Run migration but we recommend using the next section with doctor.sh run or portal for just loading the portal
 ./doctor.sh run
 ```
 
@@ -186,9 +186,8 @@ When you run `./doctor.sh run`, you'll be prompted:
 Select target language:
   [1] Java Quarkus
   [2] C# .NET
-  [3] Both (Java + C#)
 
-Enter choice (1-3): 
+Enter choice (1-2): 
 ```
 
 After migration completes:
@@ -438,7 +437,7 @@ Naming strategies are configured in `ConversionSettings`:
 
 ### Hybrid Database Architecture
 
-This project uses a **dual-database approach** for optimal performance:
+This project uses a **dual-database approach** for optimal performance, enhanced with Regex-based deep analysis:
 
 ```mermaid
 flowchart TB
@@ -446,7 +445,9 @@ flowchart TB
         COBOL["COBOL Files<br/>source/*.cbl, *.cpy"]
     end
     
-    subgraph AGENTS["🤖 AI Agents"]
+    subgraph PROCESS["⚙️ Processing Pipeline"]
+        REGEX["Regex / Syntax Parsing<br/>(Deep SQL/Variable Extraction)"]
+        AGENTS["🤖 AI Agents<br/>(MS Agent Framework)"]
         ANALYZER["CobolAnalyzerAgent"]
         EXTRACTOR["BusinessLogicExtractor"]
         CONVERTER["Java/C# Converter"]
@@ -454,18 +455,31 @@ flowchart TB
     end
     
     subgraph STORAGE["💾 Hybrid Storage"]
-        SQLITE[("SQLite<br/>Data/migration.db<br/><br/>• Run metadata<br/>• File content<br/>• AI analyses<br/>• Generated code")]
-        NEO4J[("Neo4j<br/>bolt://localhost:7687<br/><br/>• Dependencies<br/>• Relationships<br/>• Graph queries")]
+        SQLITE[("SQLite<br/>Data/migration.db<br/><br/>• Run metadata<br/>• File content<br/>• Raw AI analysis<br/>• Generated code")]
+        NEO4J[("Neo4j<br/>bolt://localhost:7687<br/><br/>• Dependencies<br/>• Relationship Graph<br/>• Impact Analysis")]
     end
     
     subgraph OUTPUT["📦 Output"]
         CODE["Java/C# Code<br/>output/java or output/csharp"]
-        PORTAL["Web Portal<br/>localhost:5028"]
+        PORTAL["Web Portal & MCP Server<br/>localhost:5028"]
     end
     
-    COBOL --> AGENTS
-    AGENTS --> STORAGE
-    STORAGE --> OUTPUT
+    COBOL --> REGEX
+    REGEX --> AGENTS
+    
+    AGENTS --> ANALYZER
+    AGENTS --> EXTRACTOR
+    AGENTS --> CONVERTER
+    AGENTS --> MAPPER
+    
+    ANALYZER --> SQLITE
+    EXTRACTOR --> SQLITE
+    CONVERTER --> SQLITE
+    CONVERTER --> CODE
+    MAPPER --> NEO4J
+    
+    SQLITE --> PORTAL
+    NEO4J --> PORTAL
 ```
 
 #### Why Two Databases?
@@ -492,38 +506,43 @@ The Neo4j dependency graph enables:
 
 ### Agent Pipeline
 
+The migration follows a strict **Deep Code Analysis** pipeline:
+
 ```mermaid
 sequenceDiagram
-    participant User
-    participant doctor.sh
-    participant SmartOrchestrator
-    participant Agents
-    participant SQLite
-    participant Neo4j
-    participant Portal
+    participant U as User
+    participant O as Orchestrator
+    participant AA as Analyzer Agent
+    participant DA as Dependency Agent
+    participant SQ as SQLite
+    participant CA as Converter Agent
 
-    User->>doctor.sh: ./doctor.sh run
-    doctor.sh->>SmartOrchestrator: Start migration
+    U->>O: Run "analyze" (Step 1)
     
-    Note over SmartOrchestrator: File size check
-    
-    alt Small files (<150K chars)
-        SmartOrchestrator->>Agents: Direct processing
-    else Large files (>150K chars)
-        SmartOrchestrator->>Agents: Chunked processing
+    rect rgb(240, 248, 255)
+        Note over O, SQ: 1. Deep Analysis Phase
+        O->>O: Determine File Type<br/>(Program vs Copybook)
+        O->>O: Regex Parse (SQL, Variables)
+        O->>SQ: Store raw metadata
+        O->>AA: Analyze Structure & Logic
+        AA->>SQ: Save Analysis Result
     end
     
-    Agents->>Agents: 1. CobolAnalyzerAgent
-    Agents->>Agents: 2. BusinessLogicExtractor
-    Agents->>Agents: 3. JavaConverter / CSharpConverter
-    Agents->>Agents: 4. DependencyMapperAgent
-    
-    Agents->>SQLite: Store metadata, code
-    Agents->>Neo4j: Store dependency graph
-    
-    SmartOrchestrator->>doctor.sh: Migration complete
-    doctor.sh->>Portal: Launch http://localhost:5028
-    Portal->>User: View results, chat, graph
+    rect rgb(255, 240, 245)
+        Note over O, SQ: 2. Dependency Phase
+        U->>O: Run "dependencies" (Step 2)
+        O->>DA: Resolve Calls/Includes
+        DA->>SQ: Read definitions
+        DA->>SQ: Write graph nodes
+    end
+
+    rect rgb(240, 255, 240)
+        Note over O, SQ: 3. Conversion Phase
+        U->>O: Run "convert" (Step 3)
+        O->>SQ: Fetch analysis & deps
+        O->>CA: Generate Modern Code
+        CA->>SQ: Save generated code
+    end
 ```
 
 ### Process Flow
@@ -547,13 +566,38 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-  CLI[["CLI / doctor.sh\n- Loads AI config, target language, concurrency\n- Orchestrates reverse engineering + conversion"]]
-  REVERSE["ReverseEngineeringProcess\nInputs: COBOL folder, glossary\nOutputs: analyses + business logic\nSteps (parallelizable):\n1. CobolAnalyzerAgent\n2. BusinessLogicExtractorAgent\n3. Persist to SQLite/Neo4j"]
-  MIGRATION["MigrationProcess\nInputs: ReverseEngineeringResult + settings\nOutputs: Java/C# code, dependency graphs, reports\nSteps:\n1. CobolAnalyzerAgent (reuse/refresh)\n2. DependencyMapperAgent\n3. CodeConverterAgent (Java or C#)\n4. Persist run data\n5. Optional report"]
-  STORAGE["Repositories & Storage\n- SqliteMigrationRepository\n- Neo4jMigrationRepository\n- HybridMigrationRepository"]
-  ACCESS["Access / Presentation\n- MCP Server + McpProcessClient\n- McpChatWeb portal\n- External MCP clients (Cursor, Claude, etc.)"]
+  CLI[["CLI / doctor.sh\n- Loads AI config\n- Selects target language"]]
+  
+  subgraph ANALYZE_PHASE["PHASE 1: Deep Analysis"]
+      REGEX["Regex Parsing\n(Fast SQL/Variable Extraction)"]
+      ANALYZER["CobolAnalyzerAgent\n(Structure & Logic)"]
+      SQLITE[("SQLite Storage")]
+  end
+  
+  subgraph DEPENDENCY_PHASE["PHASE 2: Dependencies"]
+      MAPPER["DependencyMapperAgent\n(Builds Graph)"]
+      NEO4J[("Neo4j Graph DB")]
+  end
+  
+  subgraph CONVERT_PHASE["PHASE 3: Conversion"]
+      FETCHER["Context Fetcher\n(Aggregates Dependencies)"]
+      CONVERTER["CodeConverterAgent\n(Java/C# Generation)"]
+      OUTPUT["Output Files"]
+  end
 
-  CLI --> REVERSE --> MIGRATION --> STORAGE --> ACCESS
+  CLI --> REGEX
+  REGEX --> SQLITE
+  REGEX --> ANALYZE_PHASE
+  
+  ANALYZER --> SQLITE
+  
+  SQLITE --> MAPPER
+  MAPPER --> NEO4J
+  
+  SQLITE --> FETCHER
+  NEO4J --> FETCHER
+  FETCHER --> CONVERTER
+  CONVERTER --> OUTPUT
 ```
 
 ### 🔀 Agent Responsibilities & Interactions
@@ -870,6 +914,7 @@ For files >150K characters or >3K lines:
 - [Smart Chunking Guide](gustav-Smart-chuncking%20how%20it%20works.md) - Deep technical details
 - [Architecture Documentation](REVERSE_ENGINEERING_ARCHITECTURE.md) - System design
 - [Features](FEATURES.md) - Full feature list
+- [Spec-Driven Roadmap](TODO.md) - Future plans for MITM workflow
 - [Changelog](CHANGELOG.md) - Version history
 
 ---

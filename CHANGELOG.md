@@ -5,6 +5,12 @@ All notable changes to this repository are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2026-02-06
+### Changed
+- **Streamlined Workflow** - Removed "Spec-Driven Migration" (MITM) workflow to focus on the "Deep Code Analysis" pipeline.
+- **Improved Documentation** - Updated architecture diagrams in `README.md` to reflect the new "Deep SQL Analysis" flow (Regex -> SQLite -> Portal).
+- **Cleanup** - Refactored `doctor.sh` to remove deprecated functions and menu options.
+
 ## [2.2.2] - 2025-12-16
 
 ### Fixed

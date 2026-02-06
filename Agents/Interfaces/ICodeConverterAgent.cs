@@ -33,4 +33,9 @@ public interface ICodeConverterAgent
     /// Gets the file extension for the target language.
     /// </summary>
     string FileExtension { get; }
+
+    /// <summary>
+    /// Sets the Run ID for the current context.
+    /// </summary>
+    void SetRunId(int runId);
 }

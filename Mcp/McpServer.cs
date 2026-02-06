@@ -5,7 +5,9 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using CobolToQuarkusMigration.Agents;
 using CobolToQuarkusMigration.Agents.Infrastructure;
+using CobolToQuarkusMigration.Helpers;
 using CobolToQuarkusMigration.Models;
 using CobolToQuarkusMigration.Persistence;
 
@@ -29,23 +31,29 @@ public sealed class McpServer
     };
     private readonly AISettings? _aiSettings;
     private readonly IChatClient? _chatClient;
+    private readonly ResponsesApiClient? _responsesClient;
     private readonly string? _modelId;
+    private readonly BusinessLogicExtractorAgent? _extractorAgent;
+    private readonly ProfileManager _profileManager;
 
     private MigrationRunSummary? _runSummaryCache;
     private DependencyMap? _dependencyMapCache;
     private IReadOnlyList<CobolAnalysis>? _analysisCache;
 
-    public McpServer(IMigrationRepository repository, int runId, ILogger<McpServer> logger, AISettings? aiSettings = null, IChatClient? chatClient = null)
+    public McpServer(IMigrationRepository repository, int runId, ILogger<McpServer> logger, AISettings? aiSettings = null, IChatClient? chatClient = null, ResponsesApiClient? responsesClient = null)
     {
         _repository = repository;
         _runId = runId;
         _logger = logger;
         _aiSettings = aiSettings;
+        _chatClient = chatClient;
+        _responsesClient = responsesClient;
+        
+        _profileManager = new ProfileManager(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Config", "GenerationProfiles.json"));
 
         // Use provided IChatClient or create one from settings
-        if (chatClient != null)
+        if (_chatClient != null)
         {
-            _chatClient = chatClient;
             _modelId = _aiSettings?.ChatDeploymentName ?? _aiSettings?.ChatModelId ?? _aiSettings?.DeploymentName ?? _aiSettings?.ModelId ?? "chat-model";
             _logger.LogInformation("IChatClient provided for custom Q&A with model {ModelId}", _modelId);
         }
@@ -78,6 +86,25 @@ public sealed class McpServer
                     _logger.LogWarning(ex, "Failed to initialize IChatClient for custom Q&A");
                 }
             }
+        }
+
+        // Initialize Agents - Prefer ResponsesApiClient if available
+        var extractorLogger = logger as ILogger<BusinessLogicExtractorAgent> ?? new LoggerFactory().CreateLogger<BusinessLogicExtractorAgent>();
+        
+        if (_responsesClient != null)
+        {
+            _extractorAgent = new BusinessLogicExtractorAgent(_responsesClient, extractorLogger, _aiSettings?.ModelId ?? "extractor-model");
+            _logger.LogInformation("Agents initialized with ResponsesApiClient");
+        }
+        else if (_chatClient != null)
+        {
+             _extractorAgent = new BusinessLogicExtractorAgent(_chatClient, extractorLogger, _modelId ?? "extractor-model");
+             _logger.LogInformation("Agents initialized with IChatClient");
+        }
+        else
+        {
+            _extractorAgent = null;
+            _logger.LogWarning("AI Client not available, Agents will not be functional.");
         }
 
         var inputStream = Console.OpenStandardInput();
@@ -133,6 +160,12 @@ public sealed class McpServer
                         case "messages/create":
                             await HandleMessagesCreateAsync(request);
                             break;
+                        case "tools/call":
+                            await HandleToolsCallAsync(request);
+                            break;
+                        case "tools/list":
+                            await HandleToolsListAsync(request);
+                            break;
                         default:
                             if (request.Id.HasValue)
                             {
@@ -169,6 +202,11 @@ public sealed class McpServer
             },
             ["capabilities"] = new JsonObject
             {
+                ["tools"] = new JsonObject
+                {
+                    ["list"] = true,
+                    ["call"] = true
+                },
                 ["resources"] = new JsonObject
                 {
                     ["list"] = true,
@@ -199,11 +237,13 @@ public sealed class McpServer
             BuildResource($"insights://runs/{_runId}/circular-dependencies", "application/json", "Circular dependency cycles detected in codebase"),
             BuildResource($"insights://runs/{_runId}/critical-files", "application/json", "Files with highest dependency connections"),
             BuildResource($"insights://runs/{_runId}/impact/<filename>", "application/json", "Impact analysis for a specific file"),
+            
             // Smart Chunking resources
             BuildResource($"insights://runs/{_runId}/chunks", "application/json", "Chunk processing status for all files in the run"),
             BuildResource($"insights://runs/{_runId}/chunks/<filename>", "application/json", "Detailed chunk metadata for a specific file"),
             BuildResource($"insights://runs/{_runId}/signatures", "application/json", "All method signatures across the run for consistency tracking"),
-            BuildResource($"insights://runs/{_runId}/signatures/<filename>", "application/json", "Method signatures for a specific file")
+            BuildResource($"insights://runs/{_runId}/signatures/<filename>", "application/json", "Method signatures for a specific file"),
+            BuildResource($"insights://runs/{_runId}/source/<filename>", "text/x-cobol", "Original COBOL source code")
         };
 
         var result = new JsonObject
@@ -311,6 +351,24 @@ public sealed class McpServer
                     }
                     contents.Add(await BuildContentAsync(uri, payload));
                 }
+                else if (uri.Contains("/source/", StringComparison.OrdinalIgnoreCase))
+                {
+                    var fileName = uri[(uri.LastIndexOf('/') + 1)..];
+                    var sourceCode = await GetCobolSourceAsync(Uri.UnescapeDataString(fileName));
+                    
+                    if (sourceCode is null)
+                    {
+                         await WriteErrorAsync(request.Id, -32001, $"Source code for '{fileName}' not found");
+                         return;
+                    }
+
+                    contents.Add(new JsonObject 
+                    {
+                        ["uri"] = uri,
+                        ["mimeType"] = "text/x-cobol",
+                        ["text"] = sourceCode
+                    });
+                }
                 else
                 {
                     await WriteErrorAsync(request.Id, -32602, $"Unknown resource '{uri}'");
@@ -325,6 +383,34 @@ public sealed class McpServer
         };
 
         await WriteResultAsync(request.Id, result);
+    }
+
+    private async Task HandleToolsListAsync(JsonRpcRequest request)
+    {
+        var tools = new JsonArray
+        {
+        };
+
+        await WriteResultAsync(request.Id, new JsonObject { ["tools"] = tools });
+    }
+
+    private async Task HandleToolsCallAsync(JsonRpcRequest request)
+    {
+        if (!request.Params.HasValue)
+        {
+            await WriteErrorAsync(request.Id, -32602, "Missing params");
+            return;
+        }
+
+        var name = request.Params.Value.GetProperty("name").GetString();
+        var arguments = request.Params.Value.GetProperty("arguments");
+
+        switch (name)
+        {
+            default:
+                await WriteErrorAsync(request.Id, -32601, $"Tool '{name}' not found");
+                break;
+        }
     }
 
     private async Task HandleMessagesCreateAsync(JsonRpcRequest request)
@@ -694,7 +780,9 @@ public sealed class McpServer
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to get AI response for question: {Prompt}", prompt);
-                builder.AppendLine("Unable to get AI answer. Using fallback response.");
+                builder.AppendLine($"Unable to get AI answer. Error: {ex.Message}");
+                // builder.AppendLine(ex.StackTrace); // Uncomment for more details if needed
+                builder.AppendLine("Using fallback response.");
                 AppendFallbackResponse(builder, prompt, analyses, dependencyMap);
             }
         }
@@ -748,6 +836,45 @@ public sealed class McpServer
         }
     }
 
+
+    private string ExtractResponseText(ChatResponse response)
+    {
+        if (response == null)
+            return string.Empty;
+
+        var sb = new StringBuilder();
+        
+        Console.Error.WriteLine($"[Debug] ChatResponse: Messages={response.Messages.Count}, FinishReason={response.FinishReason}");
+
+        foreach (var message in response.Messages)
+        {
+            Console.Error.WriteLine($"[Debug] Message: Role={message.Role}, TextLen={message.Text?.Length ?? 0}, Contents={message.Contents?.Count ?? 0}");
+            
+            if (message.Role == ChatRole.Assistant)
+            {
+                if (!string.IsNullOrEmpty(message.Text))
+                {
+                    sb.Append(message.Text);
+                }
+                else if (message.Contents != null)
+                {
+                    foreach (var content in message.Contents)
+                    {
+                        Console.Error.WriteLine($"[Debug] Content Type: {content.GetType().Name}");
+                        if (content is TextContent textContent)
+                        {
+                            sb.Append(textContent.Text);
+                        }
+                    }
+                }
+            }
+        }
+        
+        var result = sb.ToString();
+        Console.Error.WriteLine($"[Debug] Extracted text length: {result.Length}");
+        return result;
+    }
+
     private async Task<string> GetAIResponseAsync(string prompt, MigrationRunSummary summary, DependencyMap? dependencyMap, IReadOnlyList<CobolAnalysis> analyses)
     {
         // Build context for the AI
@@ -785,7 +912,7 @@ public sealed class McpServer
         }
 
         // Use IChatClient for the response
-        var messages = new List<ChatMessage>
+        var messages = new List<Microsoft.Extensions.AI.ChatMessage>
         {
             new(ChatRole.System, "You are an expert COBOL migration assistant. Answer questions about the COBOL to Java migration project based on the provided context. Be concise and specific."),
             new(ChatRole.User, $"Context:\n{contextBuilder}\n\nUser Question: {prompt}")
@@ -793,13 +920,18 @@ public sealed class McpServer
 
         var chatOptions = new ChatOptions
         {
-            MaxOutputTokens = 500
+            MaxOutputTokens = 4000
         };
 
         var response = await _chatClient!.GetResponseAsync(messages, chatOptions);
-        var messageContent = response.Text;
+        var messageContent = ExtractResponseText(response);
         
-        return string.IsNullOrWhiteSpace(messageContent) ? "Unable to generate response." : messageContent;
+        if (string.IsNullOrWhiteSpace(messageContent))
+        {
+            return $"Unable to generate response. FinishReason: {response.FinishReason}";
+        }
+        
+        return messageContent;
     }
 
     private async Task<MigrationRunSummary?> EnsureRunSummaryAsync()
@@ -1039,6 +1171,103 @@ public sealed class McpServer
         return null;
     }
 
+    private async Task<string?> GetCobolSourceAsync(string fileName)
+    {
+        try
+        {
+            var summary = await EnsureRunSummaryAsync();
+            var sourcePath = summary?.CobolSourcePath;
+            
+            // Default to "source" if not set in summary
+            if (string.IsNullOrEmpty(sourcePath)) sourcePath = "source";
+            
+            Console.Error.WriteLine($"[McpServer] DEBUG: Request to read file '{fileName}' (configured source path: '{sourcePath}')");
+
+            // Define search candidates
+            var candidates = new List<string>();
+            
+            // Case 1: Absolute path from summary
+            if (Path.IsPathRooted(sourcePath))
+            {
+                candidates.Add(sourcePath);
+            }
+            else
+            {
+                // Case 2: Relative path from current directory
+                candidates.Add(Path.Combine(Directory.GetCurrentDirectory(), sourcePath));
+            }
+            
+            // Case 3: Fallback "source" in current directory (if different)
+            var fallback = Path.Combine(Directory.GetCurrentDirectory(), "source");
+            if (!candidates.Contains(fallback)) candidates.Add(fallback);
+
+            foreach (var dir in candidates)
+            {
+                if (!Directory.Exists(dir)) continue;
+
+                try 
+                {
+                    // 1. Try case-insensitive fuzzy search for fileName*
+                    // This handles Bdsda10i -> BDSDA10I.cpy or Bdsda10i.cbl
+                    var matches = Directory.GetFiles(dir, $"{fileName}*", new EnumerationOptions 
+                    { 
+                        MatchCasing = MatchCasing.CaseInsensitive,
+                        RecurseSubdirectories = false 
+                    });
+
+                    foreach (var matchPath in matches)
+                    {
+                        var name = Path.GetFileName(matchPath);
+                        // Check exact match (case-insensitive)
+                        if (name.Equals(fileName, StringComparison.OrdinalIgnoreCase)) 
+                        {
+                            return await ReadFileSafeAsync(matchPath);
+                        }
+                        
+                        // Check common extensions
+                        var extensions = new[] { ".cbl", ".cpy", ".cob", ".pl1", ".jcl" };
+                        foreach (var ext in extensions)
+                        {
+                             if (name.Equals(fileName + ext, StringComparison.OrdinalIgnoreCase))
+                             {
+                                 return await ReadFileSafeAsync(matchPath);
+                             }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[McpServer] Scan error in {dir}: {ex.Message}");
+                }
+            }
+            
+            Console.Error.WriteLine($"[McpServer] File {fileName} not found in any candidate directory.");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error reading source file {FileName}", fileName);
+            Console.Error.WriteLine($"[McpServer] FATAL ERROR reading source file {fileName}: {ex}");
+        }
+        return null;
+    }
+
+    private async Task<string> ReadFileSafeAsync(string path)
+    {
+        Console.Error.WriteLine($"[McpServer] Reading file: {path}");
+        var info = new FileInfo(path);
+        if (info.Length > 5_000_000) 
+            return "File too large to view via MCP (Start of file only):\n" + await ReadHeadAsync(path);
+        return await File.ReadAllTextAsync(path);
+    }
+
+    private async Task<string> ReadHeadAsync(string path)
+    {
+        var buffer = new char[5000];
+        using var reader = new StreamReader(path);
+        var read = await reader.ReadAsync(buffer, 0, buffer.Length);
+        return new string(buffer, 0, read) + "\n... (truncated)";
+    }
+
     // ============================================================
     // SMART CHUNKING PAYLOAD BUILDERS
     // ============================================================
@@ -1056,6 +1285,9 @@ public sealed class McpServer
 
         try
         {
+            var analyses = await hybridRepo.GetAnalysesAsync(_runId);
+            var totalFiles = analyses.Count;
+
             var statusList = await hybridRepo.GetChunkProcessingStatusAsync(_runId);
             var filesArray = new JsonArray();
 
@@ -1074,10 +1306,23 @@ public sealed class McpServer
                 });
             }
 
+            // Calculate Smart Migration stats
+            var chunkedFilesCount = statusList.Count;
+            // Files that are analyzed but not in chunk list are considered "Small Files" (processed directly)
+            var smallFilesCount = Math.Max(0, totalFiles - chunkedFilesCount);
+            
+            // Heuristic: If we have ANY chunk records, Smart Migration was likely enabled/active.
+            // If totalFiles > 0 and chunkedFiles == 0, it might mean all files were small OR chunking step hasn't run.
+            // But we'll represent what we see in the DB.
+            var smartMigrationActive = chunkedFilesCount > 0;
+
             return new JsonObject
             {
                 ["runId"] = _runId,
-                ["totalFiles"] = statusList.Count,
+                ["smartMigrationActive"] = smartMigrationActive,
+                ["totalFiles"] = totalFiles,
+                ["chunkedFiles"] = chunkedFilesCount,
+                ["smallFiles"] = smallFilesCount,
                 ["files"] = filesArray
             };
         }

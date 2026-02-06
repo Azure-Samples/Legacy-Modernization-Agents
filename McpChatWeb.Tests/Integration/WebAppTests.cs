@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Net.Http.Json;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 using McpChatWeb;
@@ -81,6 +82,15 @@ public sealed class WebAppFactory : WebApplicationFactory<Program>
 
         public Task<string> SendChatAsync(string prompt, CancellationToken cancellationToken = default)
             => Task.FromResult($"Echo: {prompt}");
+
+        public Task<JsonObject> CallToolAsync(string toolName, Dictionary<string, object> arguments, CancellationToken cancellationToken = default)
+        {
+            var result = new JsonObject
+            {
+                ["result"] = $"Tool {toolName} executed."
+            };
+            return Task.FromResult(result);
+        }
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }

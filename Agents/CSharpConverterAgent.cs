@@ -6,6 +6,8 @@ using CobolToQuarkusMigration.Models;
 using CobolToQuarkusMigration.Helpers;
 using System.Diagnostics;
 
+using System.Text;
+
 namespace CobolToQuarkusMigration.Agents;
 
 /// <summary>
@@ -19,6 +21,16 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
     public string TargetLanguage => "CSharp";
     public string FileExtension => ".cs";
 
+    private int? _runId;
+
+    /// <summary>
+    /// Sets the Run ID for the current context.
+    /// </summary>
+    public void SetRunId(int runId)
+    {
+        _runId = runId;
+    }
+
     /// <summary>
     /// Initializes a new instance using Responses API (for codex models like gpt-5.1-codex-mini).
     /// </summary>
@@ -29,9 +41,11 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
         EnhancedLogger? enhancedLogger = null,
         ChatLogger? chatLogger = null,
         RateLimiter? rateLimiter = null,
-        AppSettings? settings = null)
+        AppSettings? settings = null,
+        int? runId = null)
         : base(responsesClient, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings)
     {
+        _runId = runId;
     }
 
     /// <summary>
@@ -44,9 +58,11 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
         EnhancedLogger? enhancedLogger = null,
         ChatLogger? chatLogger = null,
         RateLimiter? rateLimiter = null,
-        AppSettings? settings = null)
+        AppSettings? settings = null,
+        int? runId = null)
         : base(chatClient, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings)
     {
+        _runId = runId;
     }
 
     /// <inheritdoc/>
@@ -142,25 +158,31 @@ CRITICAL: Your response MUST start with 'namespace' or 'using' and contain ONLY 
                     cobolFile.FileName, estimatedTokens);
             }
 
+            // Sanitize COBOL content for content filtering
             string sanitizedContent = SanitizeCobolContent(contentToConvert);
 
-            var userPrompt = $@"
-Convert the following COBOL program to C# with .NET:
+            // =========================================================================================
+            // SPEC-DRIVEN CODE GENERATION (MITM HOOK)
+            var userPromptBuilder = new StringBuilder();
+            userPromptBuilder.AppendLine("Convert the following COBOL program to C# with .NET:");
+            userPromptBuilder.AppendLine();
+            userPromptBuilder.AppendLine("```cobol");
+            userPromptBuilder.AppendLine(sanitizedContent);
+            userPromptBuilder.AppendLine("```");
 
-```cobol
-{sanitizedContent}
-```
+            userPromptBuilder.AppendLine();
+            userPromptBuilder.AppendLine("Here is the analysis of the COBOL program:");
+            userPromptBuilder.AppendLine();
+            userPromptBuilder.AppendLine(cobolAnalysis.RawAnalysisData);
+            
+            userPromptBuilder.AppendLine();
+            userPromptBuilder.AppendLine("IMPORTANT REQUIREMENTS:");
+            userPromptBuilder.AppendLine("1. Return ONLY the C# code - NO explanations, NO markdown blocks");
+            userPromptBuilder.AppendLine("2. Start with: namespace CobolMigration.Something; (single line)");
+            userPromptBuilder.AppendLine("3. Your response must be valid, compilable C# code");
 
-Here is the analysis of the COBOL program:
-
-{cobolAnalysis.RawAnalysisData}
-
-IMPORTANT REQUIREMENTS:
-1. Return ONLY the C# code - NO explanations, NO markdown blocks
-2. Start with: namespace CobolMigration.Something; (single line)
-3. Your response must be valid, compilable C# code
-";
-
+            var userPrompt = userPromptBuilder.ToString();
+            
             var (csharpCode, usedFallback, fallbackReason) = await ExecuteWithFallbackAsync(
                 systemPrompt,
                 userPrompt,

@@ -145,7 +145,12 @@ echo "Starting portal in background..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
-cd /workspaces/Legacy-Modernization-Agents/McpChatWeb
+# Use relative path from the script location or current directory
+# If running from root: ./McpChatWeb
+# If script is in helper-scripts/: ../McpChatWeb
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_ROOT/McpChatWeb"
 
 # Start portal in background
 nohup dotnet run --urls "http://localhost:5028" > /tmp/cobol-portal.log 2>&1 &
