@@ -74,7 +74,10 @@
 
     <main>
     <section class="panel resources-panel">
-      <h2>MCP Resources</h2>
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <h2>MCP Resources</h2>
+        <button id="refresh-resources" type="button" class="btn-small" title="Refresh resource list">⟳</button>
+      </div>
       <button id="showAllRunsBtn" class="info-button">📊 View All Runs & Data Guide</button>
       <button id="showArchitectureBtn" class="info-button">📄 Architecture Documentation</button>
       <button id="showMigrationMonitorBtn" class="info-button migration-monitor-btn">🔄 Migration Monitor</button>
@@ -148,8 +151,11 @@
       </article>
     </section>
 
-    <section class="panel graph-panel">
-      <h2>Dependency Graph <span class="run-id-badge" id="graph-run-badge" style="display: none;">| Run <span id="current-run-id">...</span></span></h2>
+    <section class="panel graph-panel" id="main-graph-panel">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <h2>Dependency Graph <span class="run-id-badge" id="graph-run-badge" style="display: none;">| Run <span id="current-run-id">...</span></span></h2>
+        <button id="expand-graph-btn" class="btn-small" title="Expand View" style="background: 334155; color: white; border: 1px solid #475569;">⛶ Expand</button>
+      </div>
       
       <div class="graph-toolbar">
         <!-- Controls Section -->
@@ -183,6 +189,16 @@
               </label>
               <div style="font-size: 12px; color: #b45309; margin-top: 4px;">Shows placeholder nodes for dependencies whose files were not scanned.</div>
             </div>
+            
+            <div class="control-group" style="border: 1px solid #8b5cf6; padding: 6px 8px; border-radius: 6px; background: #f3e8ff; margin-bottom: 8px;">
+               <label class="filter-checkbox" style="font-weight: 600; color: #5b21b6; display: flex; gap: 8px; align-items: center;">
+                 <input type="checkbox" id="analyze-deeper-toggle" checked>
+                 <span>Deep Code Analysis</span>
+               </label>
+               <div style="font-size: 12px; color: #6d28d9; margin-top: 4px;">Shows detailed SQL, CICS, and File I/O dependencies.</div>
+               <button id="view-sql-details-btn" class="btn-prominent">🔍 View SQL Details</button>
+            </div>
+
             <div class="control-group">
               <button id="refresh-graph" type="button" class="btn-small">⟳ Refresh</button>
               <button id="fit-graph" type="button" class="btn-small">⊡ Fit</button>
@@ -325,6 +341,9 @@
         <button id="close-details" type="button">×</button>
         <div id="details-content"></div>
       </div>
+      
+      <!-- Live Activity Dashboard (Collapsible) -->
+      <div id="activity-dashboard-container" style="margin-top: auto; border-top: 1px solid rgba(59, 130, 246, 0.2); padding-top: 15px;"></div>
     </section>
   </main>
 
@@ -753,6 +772,24 @@ curl http://localhost:5028/api/data-retrieval-guide</code></pre>
     </div>
   </div>
 
+  <!-- SQL Details Modal -->
+  <div id="sqlDetailsModal" class="modal">
+    <div class="modal-content modal-content-wide">
+      <div class="modal-header">
+        <h2>🗄️ SQL & Data Access Details</h2>
+        <span class="close sql-close">&times;</span>
+      </div>
+      <div class="modal-body">
+        <div class="sql-toolbar" style="margin-bottom: 15px;">
+           <input type="text" id="sqlSearch" placeholder="Filter tables or programs..." style="padding: 8px; border-radius: 4px; border: 1px solid #cbd5e1; width: 300px;">
+        </div>
+        <div class="sql-content" id="sqlDetailsContent">
+          <p>Loading SQL details...</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  
   <script src="run-selector.js"></script>
   <script src="graph.js"></script>
   <script src="main.js"></script>

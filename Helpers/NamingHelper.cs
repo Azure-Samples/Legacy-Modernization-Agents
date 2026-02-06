@@ -9,6 +9,33 @@ namespace CobolToQuarkusMigration.Helpers;
 public static class NamingHelper
 {
     /// <summary>
+    /// Converts a string to PascalCase (e.g. "my_var" -> "MyVar", "ABC-DEF" -> "AbcDef")
+    /// </summary>
+    public static string ToPascalCase(string input)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+            return string.Empty;
+
+        var sb = new StringBuilder();
+        bool capitalizeNext = true;
+        
+        foreach (char c in input)
+        {
+            if (char.IsLetterOrDigit(c))
+            {
+                sb.Append(capitalizeNext ? char.ToUpper(c) : char.ToLower(c));
+                capitalizeNext = false;
+            }
+            else
+            {
+                capitalizeNext = true;
+            }
+        }
+        
+        return sb.ToString();
+    }
+
+    /// <summary>
     /// Derives a unique, valid class name from a COBOL filename.
     /// This ensures each COBOL file produces a uniquely named output file.
     /// </summary>

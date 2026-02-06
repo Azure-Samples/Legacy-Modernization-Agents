@@ -3,24 +3,44 @@
 const modal = document.getElementById('allRunsModal');
 const btn = document.getElementById('showAllRunsBtn');
 const span = document.getElementsByClassName('close')[0];
+let runsPollingInterval = null;
 
 // Open modal
 btn.onclick = function() {
   modal.style.display = 'block';
   loadAllRuns();
+  startRunsPolling();
 };
 
 // Close modal
 span.onclick = function() {
   modal.style.display = 'none';
+  stopRunsPolling();
 };
 
 // Close on outside click
 window.onclick = function(event) {
   if (event.target == modal) {
     modal.style.display = 'none';
+    stopRunsPolling();
   }
 };
+
+function startRunsPolling() {
+  if (runsPollingInterval) clearInterval(runsPollingInterval);
+  runsPollingInterval = setInterval(() => {
+    if (modal.style.display === 'block') {
+      loadAllRuns(true); // silent refresh
+    }
+  }, 10000);
+}
+
+function stopRunsPolling() {
+  if (runsPollingInterval) {
+    clearInterval(runsPollingInterval);
+    runsPollingInterval = null;
+  }
+}
 
 // Tab switching
 document.querySelectorAll('.tab-button').forEach(button => {
@@ -44,18 +64,22 @@ document.querySelectorAll('.tab-button').forEach(button => {
 });
 
 // Load all runs from API
-async function loadAllRuns() {
+async function loadAllRuns(silent = false) {
   try {
     const response = await fetch('/api/runs/all');
     const data = await response.json();
     
     const runsList = document.getElementById('runsList');
-    runsList.innerHTML = '';
+    if (!silent) runsList.innerHTML = '';
     
     const runsPayload = data.runsDetailed || data.runs || [];
 
     if (runsPayload.length > 0) {
-      runsList.innerHTML = '<p>Click on any run to view its dependencies:</p>';
+      if (!silent) runsList.innerHTML = '<p>Click on any run to view its dependencies:</p>';
+      
+      // If silent, compare logic could be added here to avoid full redraw
+      // For now, full redraw is simple and effective for small lists
+      const tempContainer = document.createElement('div');
       
       runsPayload.forEach(run => {
         const runId = run.id ?? run; // support legacy numeric shape
@@ -72,14 +96,16 @@ async function loadAllRuns() {
           </div>
           <div id="run-${runId}-details" class="run-details"></div>
         `;
-        runsList.appendChild(runCard);
+        tempContainer.appendChild(runCard);
       });
+      
+      runsList.innerHTML = tempContainer.innerHTML;
     } else {
       runsList.innerHTML = '<p>No migration runs found.</p>';
     }
   } catch (error) {
     console.error('Error loading runs:', error);
-    document.getElementById('runsList').innerHTML = '<p class="error">Error loading runs.</p>';
+    if (!silent) document.getElementById('runsList').innerHTML = '<p class="error">Error loading runs.</p>';
   }
 }
 

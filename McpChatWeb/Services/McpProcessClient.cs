@@ -196,6 +196,49 @@ public sealed class McpProcessClient : IMcpClient, IDisposable
         return contentNode[0]?.ToJsonString() ?? string.Empty;
     }
 
+    public async Task<JsonObject> CallToolAsync(string name, Dictionary<string, object> arguments, CancellationToken cancellationToken = default)
+    {
+        await EnsureReadyAsync(cancellationToken).ConfigureAwait(false);
+
+        var argsNode = new JsonObject();
+        foreach (var kvp in arguments)
+        {
+            if (kvp.Value is JsonElement je)
+            {
+                argsNode[kvp.Key] = JsonNode.Parse(je.GetRawText());
+            }
+            else if (kvp.Value is string s)
+            {
+                argsNode[kvp.Key] = s;
+            }
+            else if (kvp.Value is int i)
+            {
+                argsNode[kvp.Key] = i;
+            }
+            else if (kvp.Value is bool b)
+            {
+                argsNode[kvp.Key] = b;
+            }
+            else if (kvp.Value is null)
+            {
+                argsNode[kvp.Key] = null;
+            }
+            else
+            {
+                argsNode[kvp.Key] = kvp.Value.ToString();
+            }
+        }
+
+        var parameters = new JsonObject
+        {
+            ["name"] = name,
+            ["arguments"] = argsNode
+        };
+
+        var response = await SendRequestAsync("tools/call", parameters, cancellationToken).ConfigureAwait(false);
+        return response; // Return the full result object directly
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (_process is null)

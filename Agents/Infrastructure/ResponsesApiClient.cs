@@ -1,9 +1,12 @@
 using System.Net.Http.Json;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 using CobolToQuarkusMigration.Helpers;
+using Azure.Identity;
+using Azure.Core;
 
 namespace CobolToQuarkusMigration.Agents.Infrastructure;
 
@@ -27,6 +30,12 @@ public class ResponsesApiClient : IDisposable
     private readonly EnhancedLogger? _enhancedLogger;
     private readonly JsonSerializerOptions _jsonOptions;
     
+    // Auth state - Semaphore for thread-safe token acquisition
+    private readonly SemaphoreSlim _authLock = new(1, 1);
+    private bool _hasSwitchedToEntraId;
+    private string? _cachedAccessToken;
+    private DateTimeOffset _accessTokenExpiresOn;
+
     // Rate limiting for 1M TPM / 1K RPM limits
     private readonly RateLimitTracker _rateLimitTracker;
 
@@ -55,13 +64,12 @@ public class ResponsesApiClient : IDisposable
     {
         if (string.IsNullOrEmpty(endpoint))
             throw new ArgumentNullException(nameof(endpoint));
-        if (string.IsNullOrEmpty(apiKey))
-            throw new ArgumentNullException(nameof(apiKey));
+        // api key is optional now
         if (string.IsNullOrEmpty(deploymentName))
             throw new ArgumentNullException(nameof(deploymentName));
 
         _endpoint = endpoint.TrimEnd('/');
-        _apiKey = apiKey;
+        _apiKey = apiKey ?? ""; // Allow empty key, will trigger Entra ID
         _deploymentName = deploymentName;
         _logger = logger;
         _enhancedLogger = enhancedLogger;
@@ -70,7 +78,17 @@ public class ResponsesApiClient : IDisposable
         _rateLimitTracker = new RateLimitTracker(tokensPerMinute, requestsPerMinute, logger);
 
         _httpClient = new HttpClient();
-        _httpClient.DefaultRequestHeaders.Add("api-key", apiKey);
+        if (!string.IsNullOrEmpty(_apiKey))
+        {
+            _httpClient.DefaultRequestHeaders.Add("api-key", _apiKey);
+        }
+        else
+        {
+            // No key provided, default to Entra ID immediately
+            _hasSwitchedToEntraId = true;
+            _logger?.LogInformation("No API Key provided, using Microsoft Entra ID (DefaultAzureCredential) authentication.");
+        }
+
         _httpClient.Timeout = TimeSpan.FromSeconds(timeoutSeconds);
 
         _jsonOptions = new JsonSerializerOptions
@@ -181,7 +199,7 @@ public class ResponsesApiClient : IDisposable
                 new { type = "message", role = "user", content = userPrompt }
             },
             max_output_tokens = maxOutputTokens,
-            temperature = 1.0,
+            // temperature removed as it is outdated/invalid for newer models (gpt-5/o1)
             reasoning = new
             {
                 effort = reasoningEffort  // "medium" required for gpt-5.2-chat
@@ -189,8 +207,7 @@ public class ResponsesApiClient : IDisposable
         };
 
         var json = JsonSerializer.Serialize(requestBody, _jsonOptions);
-        using var content = new StringContent(json, Encoding.UTF8, "application/json");
-
+        
         var startTime = DateTime.UtcNow;
         
         // Track API call start for statistics
@@ -200,70 +217,132 @@ public class ResponsesApiClient : IDisposable
             uri, 
             _deploymentName,
             $"Input: {estimatedInputTokens} tokens, MaxOutput: {maxOutputTokens}, Reasoning: {reasoningEffort}") ?? 0;
-        
-        try
+
+        // Try loop to handle Auth fallback
+        int attempts = 0;
+        int maxAttempts = 2; // 1 normal + 1 fallback
+
+        while (attempts < maxAttempts)
         {
-            using var response = await _httpClient.PostAsync(uri, content, cancellationToken);
-            var responseText = await response.Content.ReadAsStringAsync(cancellationToken);
-
-            if (!response.IsSuccessStatusCode)
+            attempts++;
+            
+            try
             {
-                _enhancedLogger?.LogApiCallError(apiCallId, $"HTTP {response.StatusCode}");
-                _logger?.LogError("Responses API failed ({StatusCode}): {Body}", response.StatusCode, responseText);
-                throw new HttpRequestException($"Responses API failed with status {response.StatusCode}: {responseText}");
-            }
+                using var requestMessage = new HttpRequestMessage(HttpMethod.Post, uri);
+                requestMessage.Content = new StringContent(json, Encoding.UTF8, "application/json");
 
-            var parsed = JsonNode.Parse(responseText);
-            
-            // Extract actual token usage for rate limiting
-            var usage = parsed?["usage"];
-            var actualInputTokens = usage?["input_tokens"]?.GetValue<int>() ?? estimatedInputTokens;
-            var actualOutputTokens = usage?["output_tokens"]?.GetValue<int>() ?? 0;
-            var reasoningTokens = usage?["output_tokens_details"]?["reasoning_tokens"]?.GetValue<int>() ?? 0;
-            var actualTotalTokens = actualInputTokens + actualOutputTokens;
-            
-            // Record actual usage for rate limiting
-            _rateLimitTracker.RecordUsage(actualTotalTokens);
-            
-            var elapsed = DateTime.UtcNow - startTime;
-            
-            // Track API call completion for statistics
-            _enhancedLogger?.LogApiCallEnd(
-                apiCallId, 
-                $"Output: {actualOutputTokens} tokens ({reasoningTokens} reasoning)", 
-                actualTotalTokens);
-            
-            _logger?.LogInformation(
-                "Responses API completed in {Elapsed:F1}s: {Input} input + {Output} output ({Reasoning} reasoning) = {Total} tokens",
-                elapsed.TotalSeconds, actualInputTokens, actualOutputTokens, reasoningTokens, actualTotalTokens);
-            
-            // Check for incomplete status
-            var status = parsed?["status"]?.GetValue<string>();
-            if (status == "incomplete")
-            {
-                var reason = parsed?["incomplete_details"]?["reason"]?.GetValue<string>();
-                
-                if (reason == "max_output_tokens" && reasoningTokens >= actualOutputTokens * 0.9)
+                // Handle Authentication Strategy
+                if (_hasSwitchedToEntraId)
                 {
-                    throw new InvalidOperationException(
-                        $"Model exhausted max_output_tokens ({maxOutputTokens}) on reasoning ({reasoningTokens} tokens) " +
-                        $"with minimal text output. Solutions: 1) Chunk the input, 2) Use reasoning.effort='low', " +
-                        $"3) Increase max_output_tokens.");
+                    await EnsureEntraIdTokenAsync(cancellationToken);
+                    requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _cachedAccessToken);
+                    // Ensure api-key header is NOT present on the request
+                    if (_httpClient.DefaultRequestHeaders.Contains("api-key"))
+                    {
+                        // We can't easily remove it from shared _httpClient without side effects, 
+                        // but overriding it here with Remove/Add on the message might not work if it's on the client.
+                        // Actually, headers on the request message override client defaults if they conflict, 
+                        // but "api-key" is custom. 
+                        // The safest way is to remove it from the CLIENT if we made the switch permanent.
+                        _httpClient.DefaultRequestHeaders.Remove("api-key");
+                    }
                 }
                 
-                _logger?.LogWarning(
-                    "Response incomplete: {Reason}. Output={Output}, Reasoning={Reasoning}",
-                    reason, actualOutputTokens, reasoningTokens);
+                using var response = await _httpClient.SendAsync(requestMessage, cancellationToken);
+                var responseText = await response.Content.ReadAsStringAsync(cancellationToken);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    // Check for Key Auth disabled (HTTP 403 Forbidden)
+                    // {"error":{"code":"AuthenticationTypeDisabled","message": "Key based authentication is disabled for this resource."}}
+                    if (response.StatusCode == System.Net.HttpStatusCode.Forbidden && !_hasSwitchedToEntraId)
+                    {
+                        if (responseText.Contains("AuthenticationTypeDisabled") || responseText.Contains("Key based authentication is disabled"))
+                        {
+                            _logger?.LogWarning("⚠️ Azure Resource has disabled API Key authentication. Automatically switching to Microsoft Entra ID (DefaultAzureCredential)...");
+                            
+                            // Switch strategy and retry immediately
+                            _hasSwitchedToEntraId = true;
+                            _enhancedLogger?.LogBehindTheScenes("AUTH_SWITCH", "EntraID", "Switched to Entra ID auth due to 403", "System");
+                            continue;
+                        }
+                    }
+
+                    _enhancedLogger?.LogApiCallError(apiCallId, $"HTTP {response.StatusCode}");
+                    
+                    // Check for Tenant Mismatch error
+                    if (response.StatusCode == System.Net.HttpStatusCode.BadRequest && 
+                        responseText.Contains("Tenant provided in token does not match resource token"))
+                    {
+                        var tenantMsg = "🛑 Tenant Mismatch Error: The authentication token is for the wrong Azure Tenant.\n" +
+                                      "   To fix this:\n" +
+                                      "   1. Run: az login --tenant <RESOURCE_TENANT_ID>\n" +
+                                      "   2. Or set AZURE_TENANT_ID environment variable in Config/ai-config.local.env\n" +
+                                      "   See azlogin-auth-guide.md for details.";
+                        _logger?.LogError(tenantMsg);
+                        Console.WriteLine($"\n{tenantMsg}\n");
+                        throw new InvalidOperationException($"Azure Authentication Failed: Tenant mismatch. {responseText}");
+                    }
+
+                    _logger?.LogError("Responses API failed ({StatusCode}): {Body}", response.StatusCode, responseText);
+                    throw new HttpRequestException($"Responses API failed with status {response.StatusCode}: {responseText}");
+                }
+
+                var parsed = JsonNode.Parse(responseText);
+                
+                // Extract actual token usage for rate limiting
+                var usage = parsed?["usage"];
+                var actualInputTokens = usage?["input_tokens"]?.GetValue<int>() ?? estimatedInputTokens;
+                var actualOutputTokens = usage?["output_tokens"]?.GetValue<int>() ?? 0;
+                var reasoningTokens = usage?["output_tokens_details"]?["reasoning_tokens"]?.GetValue<int>() ?? 0;
+                var actualTotalTokens = actualInputTokens + actualOutputTokens;
+                
+                // Record actual usage for rate limiting
+                _rateLimitTracker.RecordUsage(actualTotalTokens);
+                
+                var elapsed = DateTime.UtcNow - startTime;
+                
+                // Track API call completion for statistics
+                _enhancedLogger?.LogApiCallEnd(
+                    apiCallId, 
+                    $"Output: {actualOutputTokens} tokens ({reasoningTokens} reasoning)", 
+                    actualTotalTokens);
+                
+                _logger?.LogInformation(
+                    "Responses API completed in {Elapsed:F1}s: {Input} input + {Output} output ({Reasoning} reasoning) = {Total} tokens",
+                    elapsed.TotalSeconds, actualInputTokens, actualOutputTokens, reasoningTokens, actualTotalTokens);
+                
+                // Check for incomplete status
+                var status = parsed?["status"]?.GetValue<string>();
+                if (status == "incomplete")
+                {
+                    var reason = parsed?["incomplete_details"]?["reason"]?.GetValue<string>();
+                    
+                    if (reason == "max_output_tokens" && reasoningTokens >= actualOutputTokens * 0.9)
+                    {
+                        throw new InvalidOperationException(
+                            $"Model exhausted max_output_tokens ({maxOutputTokens}) on reasoning ({reasoningTokens} tokens) " +
+                            $"with minimal text output. Solutions: 1) Chunk the input, 2) Use reasoning.effort='low', " +
+                            $"3) Increase max_output_tokens.");
+                    }
+                    
+                    _logger?.LogWarning(
+                        "Response incomplete: {Reason}. Output={Output}, Reasoning={Reasoning}",
+                        reason, actualOutputTokens, reasoningTokens);
+                }
+                
+                // Parse the output
+                return ParseResponseOutput(parsed, responseText);
             }
-            
-            // Parse the output
-            return ParseResponseOutput(parsed, responseText);
+            catch (Exception ex) when (ex is not InvalidOperationException && !(ex is HttpRequestException && attempts < maxAttempts))
+            {
+                // Let the retry loop handle HttpRequestException if we decide to add more logic there (currently only handled via continue)
+                _logger?.LogError(ex, "Responses API error after {Elapsed:F1}s", (DateTime.UtcNow - startTime).TotalSeconds);
+                throw;
+            }
         }
-        catch (Exception ex) when (ex is not InvalidOperationException)
-        {
-            _logger?.LogError(ex, "Responses API error after {Elapsed:F1}s", (DateTime.UtcNow - startTime).TotalSeconds);
-            throw;
-        }
+        
+        throw new InvalidOperationException("Should not reach here");
     }
 
     /// <summary>
@@ -316,9 +395,52 @@ public class ResponsesApiClient : IDisposable
         return rawResponse;
     }
 
+    private async Task EnsureEntraIdTokenAsync(CancellationToken cancellationToken)
+    {
+        // Double-check locking pattern to avoid unnecessary waiting
+        if (!string.IsNullOrEmpty(_cachedAccessToken) && DateTimeOffset.UtcNow < _accessTokenExpiresOn)
+        {
+            return;
+        }
+
+        try 
+        {
+            await _authLock.WaitAsync(cancellationToken);
+            
+            // Re-check after acquiring lock
+            if (!string.IsNullOrEmpty(_cachedAccessToken) && DateTimeOffset.UtcNow < _accessTokenExpiresOn)
+            {
+                return;
+            }
+
+            _logger?.LogInformation("Acquiring new Entra ID access token for Azure Cognitive Services...");
+
+            // Use DefaultAzureCredential to support VS Code, CLI, Env Vars, and Managed Identity
+            var credential = new DefaultAzureCredential();
+            var context = new TokenRequestContext(new[] { "https://cognitiveservices.azure.com/.default" });
+            var tokenResult = await credential.GetTokenAsync(context, cancellationToken);
+
+            _cachedAccessToken = tokenResult.Token;
+            // Expire 2 minutes early to be safe
+            _accessTokenExpiresOn = tokenResult.ExpiresOn.AddMinutes(-2);
+            
+            _logger?.LogInformation("Successfully acquired Entra ID access token (Expires: {Expires})", _accessTokenExpiresOn);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Failed to acquire Entra ID token");
+            throw;
+        }
+        finally
+        {
+            _authLock.Release();
+        }
+    }
+
     public void Dispose()
     {
         _httpClient.Dispose();
+        _authLock.Dispose();
     }
 }
 

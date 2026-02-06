@@ -524,9 +524,28 @@ main.three-panel-layout {
 .graph-panel {
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
   position: relative;
   max-height: 100%;
+  transition: all 0.3s ease;
+}
+
+.graph-panel.expanded {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 2000;
+  background: rgba(15, 23, 42, 0.98);
+  padding: 1rem;
+  max-height: none;
+}
+
+.graph-panel.expanded #dependency-graph {
+  height: calc(100vh - 100px);
+  max-height: none;
 }
 
 /* Graph Toolbar */
@@ -1010,7 +1029,7 @@ main.three-panel-layout {
 .modal {
   display: none;
   position: fixed;
-  z-index: 1000;
+  z-index: 3000; /* Ensure it's above expanded graph (z-index 2000) */
   left: 0;
   top: 0;
   width: 100%;
@@ -5392,4 +5411,222 @@ main.three-panel-layout {
 
 .active-file-time {
   opacity: 0.8;
+}
+/* Specification Review Styles */
+.spec-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 1rem;
+}
+
+.spec-list {
+  padding: 1rem;
+  background: rgba(15, 23, 42, 0.4);
+  border-radius: 8px;
+}
+
+.spec-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.spec-table th, .spec-table td {
+  padding: 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid rgba(59, 130, 246, 0.2);
+}
+
+.spec-table th {
+  color: #38bdf8;
+  font-weight: 600;
+  background: rgba(59, 130, 246, 0.1);
+}
+
+.spec-table tr:hover {
+  background: rgba(59, 130, 246, 0.05);
+}
+
+.status-badge {
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+.status-draft { background: rgba(148, 163, 184, 0.2); color: #cbd5e1; }
+.status-review { background: rgba(245, 158, 11, 0.2); color: #fbbf24; }
+.status-approved { background: rgba(16, 185, 129, 0.2); color: #34d399; }
+.status-rejected { background: rgba(239, 68, 68, 0.2); color: #f87171; }
+
+.spec-detail {
+  padding: 1rem;
+  background: rgba(15, 23, 42, 0.6);
+  border-radius: 8px;
+}
+
+.spec-meta {
+  margin-bottom: 1rem;
+  padding: 1rem;
+  background: rgba(30, 41, 59, 0.4);
+  border-radius: 6px;
+  border: 1px solid rgba(59, 130, 246, 0.2);
+}
+
+.spec-meta p {
+  margin: 0.5rem 0;
+  color: #cbd5e1;
+}
+
+.spec-meta strong {
+  color: #60a5fa;
+}
+
+#specDetailContent {
+  background: #0f172a;
+  padding: 1rem;
+  border-radius: 6px;
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  margin-bottom: 1.5rem;
+  max-height: 500px;
+  overflow-y: auto;
+  color: #e2e8f0;
+}
+
+.spec-actions {
+  display: flex;
+  gap: 1rem;
+  border-top: 1px solid rgba(59, 130, 246, 0.2);
+  padding-top: 1rem;
+}
+
+.btn-approve {
+  background: linear-gradient(135deg, #059669, #10b981);
+  color: white;
+}
+
+.btn-reject {
+  background: linear-gradient(135deg, #dc2626, #ef4444);
+  color: white;
+}
+
+.btn-secondary {
+  background: rgba(71, 85, 105, 0.5);
+  color: #cbd5e1;
+}
+
+.btn-view {
+  padding: 0.25rem 0.75rem;
+  font-size: 0.8rem;
+}
+
+
+/* Smart Migration Stats Dashboard */
+.smart-migration-stats-container {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+
+.smart-stat-card {
+  background: rgba(30, 41, 59, 0.6);
+  border: 1px solid rgba(56, 189, 248, 0.2);
+  border-radius: 12px;
+  padding: 1.25rem;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.smart-stat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 16px rgba(15, 23, 42, 0.3);
+  border-color: rgba(56, 189, 248, 0.4);
+}
+
+.smart-stat-card .stat-icon {
+  font-size: 2rem;
+  width: 3rem;
+  height: 3rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(56, 189, 248, 0.1);
+  border-radius: 50%;
+  border: 1px solid rgba(56, 189, 248, 0.2);
+}
+
+.smart-stat-card .stat-content {
+  flex: 1;
+}
+
+.smart-stat-card .stat-label {
+  color: #94a3b8;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.25rem;
+}
+
+.smart-stat-card .stat-value {
+  color: #f1f5f9;
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.smart-stat-card .stat-sub {
+  color: #64748b;
+  font-size: 0.8rem;
+  margin-top: 0.25rem;
+}
+
+.smart-stat-card.status-enabled .stat-value {
+  color: #10b981;
+}
+
+.smart-stat-card.status-enabled .stat-icon {
+  background: rgba(16, 185, 129, 0.1);
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+.smart-stat-card.status-disabled .stat-value {
+  color: #64748b;
+}
+
+.smart-stat-card.status-disabled .stat-icon {
+  filter: grayscale(1);
+  opacity: 0.5;
+}
+
+
+/* Prominent Action Button */
+.btn-prominent {
+  width: 100%;
+  margin-top: 0.5rem;
+  background: linear-gradient(135deg, #7c3aed, #6d28d9);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 0.6rem;
+  font-weight: 600;
+  box-shadow: 0 4px 6px -1px rgba(124, 58, 237, 0.5);
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  cursor: pointer;
+}
+
+.btn-prominent:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 12px -1px rgba(124, 58, 237, 0.6);
+  background: linear-gradient(135deg, #8b5cf6, #7c3aed);
+}
+
+.btn-prominent:active {
+  transform: translateY(0);
+  box-shadow: 0 2px 4px -1px rgba(124, 58, 237, 0.5);
 }

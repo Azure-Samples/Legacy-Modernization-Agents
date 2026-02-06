@@ -21,8 +21,7 @@ The reverse engineering process extracts business logic from COBOL source code, 
   "AISettings": {
     "CobolAnalyzerModelId": "gpt-5.1-codex-mini",
     "ChatModelId": "gpt-5.1-chat",
-    "MaxTokens": 16384,
-    "Temperature": 0.1
+    "MaxTokens": 16384
   }
 }
 ```

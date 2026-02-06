@@ -126,9 +126,11 @@ public class AISettings
     public int MaxTokens { get; set; } = 4000;
 
     /// <summary>
-    /// Gets or sets the temperature for AI responses (0.0 to 2.0).
+    /// Optional: The estimated context window size of the model (e.g., 128000 for gpt-4o).
+    /// Used to intelligently configure chunking thresholds.
+    /// If not present, the system will attempt to detect it from the model name.
     /// </summary>
-    public double Temperature { get; set; } = 0.1;
+    public int? ContextWindowSize { get; set; }
 }
 
 /// <summary>

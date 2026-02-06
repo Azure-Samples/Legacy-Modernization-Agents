@@ -98,13 +98,15 @@ public class MigrationProcess
         }
         else
         {
-            _javaConverterAgent = new JavaConverterAgent(
+            var javaAgent = new JavaConverterAgent(
                 _responsesClient,
                 loggerFactory.CreateLogger<JavaConverterAgent>(),
                 _settings.AISettings.JavaConverterModelId,
                 _enhancedLogger,
                 _chatLogger);
-            _codeConverterAgent = (ICodeConverterAgent)_javaConverterAgent;
+            
+            _javaConverterAgent = javaAgent;
+            _codeConverterAgent = javaAgent;
         }
 
         // DependencyMapperAgent uses Responses API client (codex for analysis)
@@ -125,11 +127,13 @@ public class MigrationProcess
     /// <param name="cobolSourceFolder">The folder containing COBOL source files.</param>
     /// <param name="javaOutputFolder">The folder for Java output files.</param>
     /// <param name="progressCallback">Optional callback for progress reporting.</param>
+    /// <param name="existingRunId">Optional existing run ID to resume.</param>
     /// <returns>A task representing the asynchronous operation.</returns>
     public async Task RunAsync(
         string cobolSourceFolder,
         string javaOutputFolder,
-        Action<string, int, int>? progressCallback = null)
+        Action<string, int, int>? progressCallback = null,
+        int? existingRunId = null)
     {
         var migrationTargetLang = _settings.ApplicationSettings.TargetLanguage;
         var targetName = migrationTargetLang == TargetLanguage.CSharp ? "C# .NET" : "JAVA QUARKUS";
@@ -146,13 +150,43 @@ public class MigrationProcess
 
         var totalSteps = 6;
         var startTime = DateTime.UtcNow;
-        var runId = await _migrationRepository.StartRunAsync(cobolSourceFolder, javaOutputFolder);
+        
+        int runId;
+        if (existingRunId.HasValue)
+        {
+             runId = existingRunId.Value;
+             _logger.LogInformation("Resuming existing run ID: {RunId}", runId);
+             _enhancedLogger.ShowWarning($"Resuming migration for Run ID: {runId}");
+        }
+        else
+        {
+             runId = await _migrationRepository.StartRunAsync(cobolSourceFolder, javaOutputFolder);
+        }
         _activeRunId = runId;
+
+        // Show initial dashboard
+        _enhancedLogger.ShowDashboardSummary(
+            runId, 
+            targetName, 
+            "RUNNING", 
+            "Initializing", 
+            0);
+
+        // Pass run ID to agent for Spec Lookup (works for both C# and Java converters)
+        _codeConverterAgent?.SetRunId(runId);
+        
+        // Also call directly on _javaConverterAgent if it's separate (though _codeConverterAgent covers it in current logic)
+        // Kept for safety if instantiation logic changes
+        if (_javaConverterAgent != null && _javaConverterAgent != _codeConverterAgent)
+        {
+             _javaConverterAgent.SetRunId(runId);
+        }
 
         try
         {
             // Step 1: Scan the COBOL source folder for COBOL files
             _enhancedLogger.ShowStep(1, totalSteps, "File Discovery", "Scanning for COBOL programs and copybooks");
+            _enhancedLogger.ShowDashboardSummary(runId, targetName, "RUNNING", "File Discovery", 5);
             _enhancedLogger.LogBehindTheScenes("MIGRATION", "STEP_1_START",
                 $"Starting file discovery in {cobolSourceFolder}");
             progressCallback?.Invoke("Scanning for COBOL files", 1, totalSteps);
@@ -175,6 +209,7 @@ public class MigrationProcess
 
             // Step 2: Analyze dependencies
             _enhancedLogger.ShowStep(2, totalSteps, "Dependency Analysis", "Mapping COBOL relationships and dependencies");
+            _enhancedLogger.ShowDashboardSummary(runId, targetName, "RUNNING", "Dependency Analysis", 20);
             _enhancedLogger.LogBehindTheScenes("MIGRATION", "STEP_2_START",
                 "Starting AI-powered dependency analysis");
             progressCallback?.Invoke("Analyzing dependencies", 2, totalSteps);
@@ -197,6 +232,7 @@ public class MigrationProcess
 
             // Step 3: Analyze the COBOL files
             _enhancedLogger.ShowStep(3, totalSteps, "COBOL Analysis", "AI-powered code structure analysis");
+            _enhancedLogger.ShowDashboardSummary(runId, targetName, "RUNNING", "COBOL Analysis", 40);
             _enhancedLogger.LogBehindTheScenes("MIGRATION", "STEP_3_START",
                 $"Starting COBOL analysis for {cobolFiles.Count} files using AI model");
             progressCallback?.Invoke("Analyzing COBOL files", 3, totalSteps);
@@ -222,11 +258,12 @@ public class MigrationProcess
             var frameworkName = targetLang == TargetLanguage.CSharp ? ".NET" : "Quarkus";
 
             _enhancedLogger.ShowStep(4, totalSteps, $"{langName} Conversion", $"Converting to {langName} {frameworkName} microservices");
+            _enhancedLogger.ShowDashboardSummary(runId, targetName, "RUNNING", $"{langName} Conversion", 60);
             _enhancedLogger.LogBehindTheScenes("MIGRATION", "STEP_4_START",
                 $"Starting AI-powered COBOL to {langName} conversion");
             progressCallback?.Invoke($"Converting to {langName}", 4, totalSteps);
 
-            var codeFiles = await _codeConverterAgent.ConvertAsync(
+            var codeFiles = await _codeConverterAgent!.ConvertAsync(
                 cobolFiles,
                 cobolAnalyses,
                 (current, total) =>
@@ -281,6 +318,7 @@ public class MigrationProcess
             var saveLangName = targetLang == TargetLanguage.CSharp ? "C#" : "Java";
             var fileExtension = targetLang == TargetLanguage.CSharp ? ".cs" : ".java";
             _enhancedLogger.ShowStep(5, totalSteps, "File Generation", $"Writing {saveLangName} output files");
+            _enhancedLogger.ShowDashboardSummary(runId, targetName, "RUNNING", "File Generation", 80);
             _enhancedLogger.LogBehindTheScenes("MIGRATION", "STEP_5_START",
                 $"Writing {javaFiles.Count} {saveLangName} files to {javaOutputFolder}");
             progressCallback?.Invoke($"Saving {saveLangName} files", 5, totalSteps);
@@ -304,7 +342,7 @@ public class MigrationProcess
                 {
                     // Fallback shouldn't happen, but handle gracefully
                     _logger.LogWarning("Unexpected file type: {Type} for {FileName}", javaFile.GetType().Name, javaFile.FileName);
-                    await _fileHelper.SaveCodeFileAsync(javaFile, javaOutputFolder, fileExtension);
+                    await _fileHelper.SaveCodeFileAsync((CodeFile)javaFile, javaOutputFolder, fileExtension);
                 }
 
                 _enhancedLogger.ShowProgressBar(i + 1, javaFiles.Count, $"Saving {saveLangName} files");
@@ -313,6 +351,7 @@ public class MigrationProcess
                 progressCallback?.Invoke($"Saving {saveLangName} files ({i + 1}/{javaFiles.Count})", 5, totalSteps);
             }            // Step 6: Generate migration report
             _enhancedLogger.ShowStep(6, totalSteps, "Report Generation", "Creating migration summary and metrics");
+            _enhancedLogger.ShowDashboardSummary(runId, targetName, "RUNNING", "Report Generation", 95);
             _enhancedLogger.LogBehindTheScenes("MIGRATION", "STEP_6_START",
                 "Generating comprehensive migration report and documentation");
             progressCallback?.Invoke("Generating reports", 6, totalSteps);
@@ -354,6 +393,7 @@ public class MigrationProcess
             }
 
             _enhancedLogger.ShowSuccess("Migration process completed successfully!");
+            _enhancedLogger.ShowDashboardSummary(runId, targetName, "COMPLETED", "Finished", 100);
 
             var totalTime = DateTime.UtcNow - startTime;
             _enhancedLogger.LogBehindTheScenes("MIGRATION", "COMPLETION",

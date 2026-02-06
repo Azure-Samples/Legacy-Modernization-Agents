@@ -173,7 +173,113 @@ CREATE INDEX IF NOT EXISTS idx_type_mappings_run_file ON type_mappings(run_id, s
 CREATE INDEX IF NOT EXISTS idx_type_mappings_variable ON type_mappings(run_id, legacy_variable);
 CREATE INDEX IF NOT EXISTS idx_chunk_metadata_run_file ON chunk_metadata(run_id, source_file);
 CREATE INDEX IF NOT EXISTS idx_forward_refs_run_file ON forward_references(run_id, source_file);
-CREATE INDEX IF NOT EXISTS idx_forward_refs_target ON forward_references(run_id, target_method);";
+CREATE INDEX IF NOT EXISTS idx_forward_refs_target ON forward_references(run_id, target_method);
+
+-- Specification Layer Tables
+CREATE TABLE IF NOT EXISTS spec_provenance (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    source_file TEXT NOT NULL,
+    start_line INTEGER NOT NULL,
+    end_line INTEGER NOT NULL,
+    context_name TEXT,
+    content_hash TEXT,
+    FOREIGN KEY(run_id) REFERENCES runs(id)
+);
+
+CREATE TABLE IF NOT EXISTS spec_rosetta_dictionary (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    legacy_term TEXT NOT NULL,
+    canonical_term TEXT NOT NULL,
+    context TEXT,
+    definition TEXT,
+    is_approved INTEGER DEFAULT 0,
+    confidence REAL,
+    FOREIGN KEY(run_id) REFERENCES runs(id)
+);
+
+CREATE TABLE IF NOT EXISTS spec_data_entities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT,
+    provenance_id INTEGER,
+    FOREIGN KEY(run_id) REFERENCES runs(id),
+    FOREIGN KEY(provenance_id) REFERENCES spec_provenance(id)
+);
+
+CREATE TABLE IF NOT EXISTS spec_data_fields (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    data_entity_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    legacy_name TEXT,
+    data_type INTEGER NOT NULL,
+    length INTEGER,
+    scale INTEGER,
+    is_nullable INTEGER DEFAULT 0,
+    is_collection INTEGER DEFAULT 0,
+    collection_size INTEGER,
+    default_value TEXT,
+    FOREIGN KEY(data_entity_id) REFERENCES spec_data_entities(id)
+);
+
+CREATE TABLE IF NOT EXISTS spec_business_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    rule_id TEXT NOT NULL,
+    title TEXT,
+    description TEXT,
+    logic_definition TEXT,
+    priority INTEGER DEFAULT 0,
+    provenance_id INTEGER,
+    FOREIGN KEY(run_id) REFERENCES runs(id),
+    FOREIGN KEY(provenance_id) REFERENCES spec_provenance(id)
+);
+
+CREATE TABLE IF NOT EXISTS spec_rule_entities (
+    rule_id INTEGER NOT NULL,
+    entity_id INTEGER NOT NULL,
+    PRIMARY KEY(rule_id, entity_id),
+    FOREIGN KEY(rule_id) REFERENCES spec_business_rules(id),
+    FOREIGN KEY(entity_id) REFERENCES spec_data_entities(id)
+);
+
+CREATE TABLE IF NOT EXISTS spec_service_definitions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT,
+    status INTEGER DEFAULT 0,
+    provenance_id INTEGER,
+    FOREIGN KEY(run_id) REFERENCES runs(id),
+    FOREIGN KEY(provenance_id) REFERENCES spec_provenance(id)
+);
+
+CREATE TABLE IF NOT EXISTS spec_service_operations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    service_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    output_entity_id INTEGER,
+    FOREIGN KEY(service_id) REFERENCES spec_service_definitions(id),
+    FOREIGN KEY(output_entity_id) REFERENCES spec_data_entities(id)
+);
+
+CREATE TABLE IF NOT EXISTS spec_operation_inputs (
+    operation_id INTEGER NOT NULL,
+    field_id INTEGER NOT NULL,
+    PRIMARY KEY(operation_id, field_id),
+    FOREIGN KEY(operation_id) REFERENCES spec_service_operations(id),
+    FOREIGN KEY(field_id) REFERENCES spec_data_fields(id)
+);
+
+CREATE TABLE IF NOT EXISTS spec_operation_rules (
+    operation_id INTEGER NOT NULL,
+    rule_id INTEGER NOT NULL,
+    PRIMARY KEY(operation_id, rule_id),
+    FOREIGN KEY(operation_id) REFERENCES spec_service_operations(id),
+    FOREIGN KEY(rule_id) REFERENCES spec_business_rules(id)
+);";
         await command.ExecuteNonQueryAsync(cancellationToken);
         _logger.LogInformation("SQLite database ready at {DatabasePath}", _databasePath);
     }

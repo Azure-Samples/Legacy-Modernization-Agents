@@ -83,10 +83,10 @@ public class ChunkingSettings
     // Chunk sizing
     public int MaxLinesPerChunk { get; set; } = 1500;            // Lines per chunk
     public int OverlapLines { get; set; } = 300;                 // Context overlap
-    public int MaxTokensPerChunk { get; set; } = 20_000;         // Token budget
+    public int MaxTokensPerChunk { get; set; } = 28_000;         // Token budget
 
     // Parallel processing
-    public int MaxParallelChunks { get; set; } = 3;              // Conversion workers
+    public int MaxParallelChunks { get; set; } = 6;              // Conversion workers
     public int MaxParallelAnalysis { get; set; } = 6;            // Analysis workers
     public bool EnableParallelProcessing { get; set; } = true;
 
@@ -788,8 +788,8 @@ CREATE TABLE forward_references (
     "AutoChunkLineThreshold": 3000,
     "MaxLinesPerChunk": 1500,
     "OverlapLines": 300,
-    "MaxTokensPerChunk": 20000,
-    "MaxParallelChunks": 3,
+    "MaxTokensPerChunk": 28000,
+    "MaxParallelChunks": 6,
     "MaxParallelAnalysis": 6,
     "EnableParallelProcessing": true,
     "TokenBudgetPerMinute": 300000,
@@ -849,9 +849,12 @@ CREATE TABLE forward_references (
    # CLI
    ./helper-scripts/track-progress.sh --watch
 
-   # Portal
+   # Portal (Enhanced v0.3)
    open http://localhost:5028
-   # Click "🔄 Migration Monitor" for real-time chunk progress
+   # • Live Activity dashboard now embedded in left panel
+   # • View Target Language (Java ☕ / C# ⚙️) in run selector
+   # • Real-time tracking of Active Workers and Phases
+   # Click "🔄 Migration Monitor" for deep-dive chunk analysis
    ```
 
 ---

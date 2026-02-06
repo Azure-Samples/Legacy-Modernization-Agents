@@ -8,6 +8,11 @@ namespace CobolToQuarkusMigration.Agents.Interfaces;
 public interface IJavaConverterAgent
 {
     /// <summary>
+    /// Sets the Run ID for the current context.
+    /// </summary>
+    void SetRunId(int runId);
+
+    /// <summary>
     /// Converts a COBOL file to Java Quarkus.
     /// </summary>
     /// <param name="cobolFile">The COBOL file to convert.</param>

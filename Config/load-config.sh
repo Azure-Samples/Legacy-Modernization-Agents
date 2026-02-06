@@ -91,7 +91,7 @@ validate_config() {
     # Required variables
     local required_vars=(
         "AZURE_OPENAI_ENDPOINT"
-        "AZURE_OPENAI_API_KEY"
+        # "AZURE_OPENAI_API_KEY" <-- Now optional for Entra ID
         "AZURE_OPENAI_DEPLOYMENT_NAME"
         "AZURE_OPENAI_MODEL_ID"
     )

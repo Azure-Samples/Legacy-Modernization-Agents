@@ -15,10 +15,30 @@
 
   // Create the dashboard HTML structure
   function createDashboardHTML() {
+    const container = document.getElementById('activity-dashboard-container');
     const dashboard = document.createElement('div');
     dashboard.id = 'activity-dashboard';
     dashboard.className = 'activity-dashboard';
+    
+    if (container) {
+        dashboard.style.position = 'static';
+        dashboard.style.width = '100%';
+        dashboard.style.maxWidth = '100%';
+        dashboard.style.right = 'auto';
+        dashboard.style.bottom = 'auto';
+        dashboard.style.transform = 'none';
+        dashboard.style.zIndex = '1';
+        dashboard.style.boxShadow = 'none';
+        dashboard.style.background = 'rgba(15, 23, 42, 0.3)';
+    }
+
     dashboard.innerHTML = `
+      <style>
+        .activity-dashboard .language-java { color: #f472b6; font-weight: 500; }
+        .activity-dashboard .language-csharp { color: #a78bfa; font-weight: 500; }
+        .activity-dashboard .mode-direct { color: #fbbf24; }
+        .activity-dashboard .mode-chunked { color: #38bdf8; }
+      </style>
       <div class="activity-header" id="activity-header">
         <div class="activity-title">
           <span class="activity-icon">📊</span>
@@ -73,6 +93,10 @@
               <span class="status-label">Phase:</span>
               <span class="status-value" id="run-phase-value">-</span>
             </div>
+            <div class="status-row">
+              <span class="status-label">Target:</span>
+              <span class="status-value" id="run-target-value">-</span>
+            </div>
             <div class="status-row" id="processing-mode-row">
               <span class="status-label">Mode:</span>
               <span class="status-value" id="processing-mode-value">-</span>
@@ -89,6 +113,7 @@
         <!-- Processing Stats (replaces Chunk Processing for direct mode) -->
         <div class="activity-section">
           <h4>📦 Processing Stats</h4>
+          <div id="smart-stats-summary" class="smart-stats-summary" style="display:none; margin-bottom: 1rem;"></div>
           <div class="chunk-stats" id="chunk-stats">
             <div class="chunk-stat pending">
               <span class="chunk-count" id="pending-count">0</span>
@@ -133,7 +158,16 @@
       </div>
     `;
 
-    document.body.appendChild(dashboard);
+    if (container) {
+        container.innerHTML = '';
+        container.appendChild(dashboard);
+        // Default to collapsed for clean view
+        // setTimeout(() => {
+        //    if (!isExpanded) toggleDashboard();
+        // }, 100);
+    } else {
+        document.body.appendChild(dashboard);
+    }
   }
 
   // Setup event listeners
@@ -236,6 +270,14 @@
     document.getElementById('run-status-value').className = 'status-value status-' + (migration.status || '').toLowerCase().replace(/\s+/g, '-');
     document.getElementById('run-phase-value').textContent = migration.phase || '-';
     
+    // Show target language
+    const targetElem = document.getElementById('run-target-value');
+    if (targetElem) {
+        const lang = (migration.targetLanguage || 'csharp').toLowerCase();
+        targetElem.textContent = lang === 'csharp' ? 'C# (.NET)' : 'Java (Quarkus)';
+        targetElem.className = 'status-value language-' + lang;
+    }
+
     // Show processing mode
     const processingMode = document.getElementById('processing-mode-value');
     if (processingMode) {
@@ -264,6 +306,30 @@
 
   // Update chunk statistics
   function updateChunkStats(chunks) {
+    // Update Smart Migration Summary if available
+    const smartStats = document.getElementById('smart-stats-summary');
+    if (chunks.smartMigrationActive && smartStats) {
+      smartStats.style.display = 'grid';
+      smartStats.style.gridTemplateColumns = 'repeat(3, 1fr)';
+      smartStats.style.gap = '0.5rem';
+      smartStats.innerHTML = `
+        <div class="mini-stat-card" style="background:rgba(56,189,248,0.1); padding:0.5rem; border-radius:6px; text-align:center;">
+          <div style="font-size:0.75rem; color:#94a3b8;">Small Files</div>
+          <div style="font-size:1.1rem; font-weight:bold; color:#f1f5f9;">${chunks.smallFiles || 0}</div>
+        </div>
+        <div class="mini-stat-card" style="background:rgba(56,189,248,0.1); padding:0.5rem; border-radius:6px; text-align:center;">
+          <div style="font-size:0.75rem; color:#94a3b8;">Large Files</div>
+          <div style="font-size:1.1rem; font-weight:bold; color:#f1f5f9;">${chunks.chunkedFiles || 0}</div>
+        </div>
+        <div class="mini-stat-card" style="background:rgba(56,189,248,0.1); padding:0.5rem; border-radius:6px; text-align:center;">
+          <div style="font-size:0.75rem; color:#94a3b8;">Total Chunks</div>
+          <div style="font-size:1.1rem; font-weight:bold; color:#f1f5f9;">${chunks.pendingChunks + chunks.processingChunks + chunks.completedChunks + chunks.failedChunks}</div>
+        </div>
+      `;
+    } else if (smartStats) {
+      smartStats.style.display = 'none';
+    }
+
     document.getElementById('pending-count').textContent = chunks.pendingChunks || chunks.pendingFiles || 0;
     document.getElementById('processing-count').textContent = chunks.processingChunks || chunks.processingFiles || 0;
     document.getElementById('completed-count').textContent = chunks.completedChunks || chunks.completedFiles || 0;
@@ -282,9 +348,12 @@
           : '';
         
         // Handle both chunk and file items
-        const rangeInfo = item.chunkIndex !== undefined 
-          ? `#${item.chunkIndex} [${item.startLine}-${item.endLine}]`
-          : (item.lineCount ? `${item.lineCount} lines` : '');
+        let rangeInfo = '';
+        if (item.chunkIndex !== undefined && item.chunkIndex !== null) {
+          rangeInfo = `#${item.chunkIndex} [${item.startLine}-${item.endLine}]`;
+        } else if (item.lineCount) {
+          rangeInfo = `${item.lineCount} lines`;
+        }
           
         return `
           <div class="chunk-item ${statusClass}">

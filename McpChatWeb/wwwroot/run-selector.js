@@ -2,7 +2,7 @@
 let currentRunId = null;
 let availableRuns = [];
 let runSelectorRefreshInterval = null;
-const RUN_SELECTOR_REFRESH_MS = 3000; // Refresh every 3 seconds for faster detection of new runs
+const RUN_SELECTOR_REFRESH_MS = 5000; // Refresh every 5 seconds for better responsiveness
 
 // Initialize run selector
 async function initRunSelector() {
@@ -152,7 +152,11 @@ function normalizeRuns(rawRuns) {
     if (typeof r === 'number') {
       return { id: r, status: 'Unknown' };
     }
-    return { id: r.id, status: r.status || 'Unknown' };
+    return { 
+      id: r.id, 
+      status: r.status || 'Unknown',
+      targetLanguage: r.targetLanguage || 'Unknown'
+    };
   });
 }
 
@@ -243,7 +247,13 @@ function populateRunSelector(runs, selectedRunId) {
     const status = (run.status || '').toLowerCase();
     const isFailed = status.includes('fail') || status.includes('cancel');
     const statusLabel = status ? ` (${run.status})` : '';
-    option.textContent = `${isFailed ? '❌ ' : ''}Run ${run.id}${statusLabel}`;
+    
+    // Language icon
+    let langIcon = '';
+    if (run.targetLanguage === 'Java') langIcon = '☕ ';
+    else if (run.targetLanguage === 'C#') langIcon = '⚙️ ';
+    
+    option.textContent = `${langIcon}${isFailed ? '❌ ' : ''}Run ${run.id}${statusLabel}`;
     
     if (run.id === selectedRunId) {
       option.selected = true;

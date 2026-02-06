@@ -17,10 +17,19 @@ namespace CobolToQuarkusMigration.Agents;
 public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
 {
     private readonly ConversionSettings _conversionSettings;
+    private int? _runId;
 
     public string TargetLanguage => "CSharp";
     public string FileExtension => ".cs";
     protected override string AgentName => "ChunkAwareCSharpConverter";
+
+    /// <summary>
+    /// Sets the Run ID for the current context.
+    /// </summary>
+    public void SetRunId(int runId)
+    {
+        _runId = runId;
+    }
 
     /// <summary>
     /// Initializes a new instance using Responses API (for codex models like gpt-5.1-codex-mini).
@@ -33,7 +42,8 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
         EnhancedLogger? enhancedLogger = null,
         ChatLogger? chatLogger = null,
         RateLimiter? rateLimiter = null,
-        AppSettings? settings = null)
+        AppSettings? settings = null,
+        int? runId = null)
         : base(responsesClient, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings)
     {
         _conversionSettings = conversionSettings;
@@ -50,13 +60,14 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
         EnhancedLogger? enhancedLogger = null,
         ChatLogger? chatLogger = null,
         RateLimiter? rateLimiter = null,
-        AppSettings? settings = null)
+        AppSettings? settings = null,
+        int? runId = null)
         : base(chatClient, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings)
     {
         _conversionSettings = conversionSettings;
     }
 
-    private const int MaxContentChars = 150_000;
+    private int MaxContentChars => Settings?.ChunkingSettings?.AutoChunkCharThreshold ?? 150_000;
 
     /// <inheritdoc/>
     public async Task<ChunkConversionResult> ConvertChunkAsync(
@@ -89,10 +100,6 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
         {
             var systemPrompt = BuildChunkAwareSystemPrompt(chunk, context);
             var userPrompt = BuildChunkAwareUserPrompt(chunk, context);
-
-            EnhancedLogger?.LogBehindTheScenes("AI_PROCESSING", "CHUNK_CONVERSION_START",
-                $"Converting chunk {chunk.ChunkIndex + 1}/{context.TotalChunks} of {chunk.SourceFile}",
-                new { ChunkIndex = chunk.ChunkIndex, TotalChunks = context.TotalChunks });
 
             var (csharpCode, usedFallback, fallbackReason) = await ExecuteWithFallbackAsync(
                 systemPrompt, userPrompt, $"{chunk.SourceFile} chunk {chunk.ChunkIndex}");
@@ -287,8 +294,9 @@ FUNCTIONAL COMPLETENESS (CRITICAL):
 - Every COBOL operation must have corresponding runnable code in the output
 - You MAY consolidate small paragraphs or split large ones based on good design
 - You MAY inline trivial paragraphs (2-3 lines) into calling methods
-- The output must be FUNCTIONALLY EQUIVALENT to the input
+- The output must be FUNCTIONALLY EQUIVALENT to the input");
 
+        sb.AppendLine(@"
 Guidelines:
 1. Convert COBOL to modern C# with .NET 8 patterns
 2. Use proper C# naming conventions (PascalCase for methods/properties)

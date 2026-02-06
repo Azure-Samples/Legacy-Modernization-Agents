@@ -485,7 +485,6 @@ run_doctor() {
             # Check required variables
             required_vars=(
                 "AZURE_OPENAI_ENDPOINT"
-                "AZURE_OPENAI_API_KEY"
                 "AZURE_OPENAI_DEPLOYMENT_NAME"
                 "AZURE_OPENAI_MODEL_ID"
             )
@@ -1018,8 +1017,8 @@ run_migration() {
     fi
     echo ""
     
-    local max_choice=2
-    [[ "$has_re_report" == "yes" ]] && max_choice=3
+    local max_choice=3
+    # [[ "$has_re_report" == "yes" ]] && max_choice=3
     
     read -p "Enter choice (1-$max_choice) [default: 1]: " action_choice
     
@@ -1810,16 +1809,53 @@ run_conversion_only() {
     fi
 
     echo ""
-    echo "🔄 Starting Java Conversion Only..."
-    echo "==================================="
+    echo "🔄 Starting Conversion Only..."
+    echo "=============================="
     echo ""
     echo -e "${BLUE}ℹ️  Reverse engineering will be skipped${NC}"
-    echo -e "${BLUE}ℹ️  Only COBOL to Java Quarkus conversion will be performed${NC}"
     echo ""
+    
+    # ------------------------------------------------------------------
+    # TARGET LANGUAGE SELECTION (if not already set)
+    # ------------------------------------------------------------------
+    if [[ -z "$TARGET_LANGUAGE" ]]; then
+        echo "🎯 Select Target Language"
+        echo "========================"
+        echo "  1) Java (Quarkus)"
+        echo "  2) C# (.NET)"
+        echo ""
+        read -p "Enter choice (1 or 2) [default: 1]: " lang_choice
+        lang_choice=$(echo "$lang_choice" | tr -d '[:space:]')
+        
+        if [[ "$lang_choice" == "2" ]]; then
+            export TARGET_LANGUAGE="CSharp"
+            echo -e "${GREEN}✅ Selected: C# (.NET)${NC}"
+        elif [[ "$lang_choice" == "1" ]] || [[ -z "$lang_choice" ]]; then
+            export TARGET_LANGUAGE="Java"
+            echo -e "${GREEN}✅ Selected: Java (Quarkus)${NC}"
+        else
+            echo -e "${YELLOW}⚠️  Invalid choice, defaulting to Java${NC}"
+            export TARGET_LANGUAGE="Java"
+        fi
+        echo ""
+    fi
+     # Export output folder variables based on language selection
+    if [[ "$TARGET_LANGUAGE" == "Java" ]]; then
+        export JAVA_OUTPUT_FOLDER="output/java"
+    else
+        export CSHARP_OUTPUT_FOLDER="output/csharp"
+    fi
 
     # Run the application with skip-reverse-engineering flag
     export MIGRATION_DB_PATH="$REPO_ROOT/Data/migration.db"
-    "$DOTNET_CMD" run -- --source ./source --skip-reverse-engineering
+    
+    # Check for resume flag
+    resume_flag=""
+    if [[ "$1" == "--resume" ]]; then
+        resume_flag="--resume"
+    fi
+    
+    "$DOTNET_CMD" run -- --source ./source --skip-reverse-engineering $resume_flag
     local migration_exit=$?
 
     if [[ $migration_exit -ne 0 ]]; then
@@ -2012,8 +2048,24 @@ check_chunking_health() {
     fi
     echo ""
     
-    # Check 6: Source file analysis
-    echo -e "${CYAN}6. Source File Analysis${NC}"
+    # Check 6: Container Health
+    echo -e "${CYAN}6. Container Health${NC}"
+    
+    # Check if container is running
+    if command -v docker >/dev/null 2>&1; then
+        if docker ps --format '{{.Names}}' | grep -q "cobol-migration-portal"; then
+            echo -e "   ${GREEN}✅ Container 'cobol-migration-portal' is running${NC}"
+        else
+            echo -e "   ${YELLOW}⚠️  Container 'cobol-migration-portal' is NOT running${NC}"
+            echo -e "      (Run 'docker-compose up -d' to start the containerized portal)"
+        fi
+    else
+        echo -e "   ${YELLOW}⚠️  Docker not available - skipping container checks${NC}"
+    fi
+    echo ""
+    
+    # Check 7: Source file analysis
+    echo -e "${CYAN}7. Source File Analysis${NC}"
     local cobol_files=$(find "$REPO_ROOT/source" -name "*.cbl" 2>/dev/null)
     if [[ -n "$cobol_files" ]]; then
         local large_file_count=0
