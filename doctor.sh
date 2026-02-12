@@ -365,6 +365,117 @@ load_configuration() {
     fi
 }
 
+# Pre-check: verify AI connectivity via API key or Azure AD (Entra ID) auth
+check_ai_connectivity() {
+    echo ""
+    echo -e "${BLUE}🔌 Pre-Check: AI Service Connectivity${NC}"
+    echo "======================================="
+
+    local endpoint="${AZURE_OPENAI_ENDPOINT}"
+    local api_key="${AZURE_OPENAI_API_KEY}"
+    local deployment="${AZURE_OPENAI_DEPLOYMENT_NAME}"
+
+    # Determine authentication method
+    local auth_method=""
+    local has_api_key=false
+    local has_azure_ad=false
+
+    # Check for valid API key
+    if [[ -n "$api_key" ]] && [[ "$api_key" != *"your-"* ]] && [[ "$api_key" != *"placeholder"* ]] && [[ "$api_key" != *"key-placeholder"* ]]; then
+        has_api_key=true
+        auth_method="API Key"
+    fi
+
+    # Check for Azure AD / Entra ID login
+    if command -v az >/dev/null 2>&1; then
+        if az account show >/dev/null 2>&1; then
+            has_azure_ad=true
+            local az_account
+            az_account=$(az account show --query "{name:name, user:user.name}" -o tsv 2>/dev/null)
+            if [[ "$has_api_key" == true ]]; then
+                auth_method="API Key (Azure AD also available)"
+            else
+                auth_method="Azure AD (Entra ID)"
+            fi
+        fi
+    fi
+
+    # Fail if neither auth method is available
+    if [[ "$has_api_key" == false ]] && [[ "$has_azure_ad" == false ]]; then
+        echo -e "${RED}❌ No valid authentication found!${NC}"
+        echo ""
+        echo "  You must configure one of the following:"
+        echo "    1) Set a valid API key in Config/ai-config.local.env"
+        echo "    2) Log in via Azure CLI: az login"
+        echo ""
+        echo "  For API key setup:  ./doctor.sh setup"
+        echo "  For Azure AD setup: az login && ./doctor.sh run"
+        return 1
+    fi
+
+    echo -e "  Auth method: ${GREEN}$auth_method${NC}"
+    if [[ "$has_azure_ad" == true ]]; then
+        local az_user
+        az_user=$(az account show --query "user.name" -o tsv 2>/dev/null)
+        local az_sub
+        az_sub=$(az account show --query "name" -o tsv 2>/dev/null)
+        echo -e "  Azure account: ${GREEN}$az_user${NC} (${az_sub})"
+    fi
+
+    # Connection check: attempt a lightweight request to the endpoint
+    if [[ -z "$endpoint" ]] || [[ "$endpoint" == *"your-"* ]]; then
+        echo -e "${RED}❌ Endpoint not configured. Update AZURE_OPENAI_ENDPOINT in Config/ai-config.local.env${NC}"
+        return 1
+    fi
+
+    echo -e "  Endpoint: ${GREEN}$endpoint${NC}"
+    echo -ne "  Connection: "
+
+    # Build the test URL — try to reach the endpoint root or models list
+    local test_url="${endpoint%/}/openai/models?api-version=2024-06-01"
+    local http_status=""
+    local curl_args=("-s" "-o" "/dev/null" "-w" "%{http_code}" "--connect-timeout" "10" "--max-time" "15")
+
+    if [[ "$has_api_key" == true ]]; then
+        http_status=$(curl "${curl_args[@]}" -H "api-key: $api_key" "$test_url" 2>/dev/null)
+    elif [[ "$has_azure_ad" == true ]]; then
+        local token
+        token=$(az account get-access-token --resource "https://cognitiveservices.azure.com" --query "accessToken" -o tsv 2>/dev/null)
+        if [[ -n "$token" ]]; then
+            http_status=$(curl "${curl_args[@]}" -H "Authorization: Bearer $token" "$test_url" 2>/dev/null)
+        else
+            echo -e "${YELLOW}⚠️  Could not obtain Azure AD token for Cognitive Services${NC}"
+            echo -e "  ${YELLOW}Try: az login --scope https://cognitiveservices.azure.com/.default${NC}"
+            return 1
+        fi
+    fi
+
+    if [[ -z "$http_status" ]] || [[ "$http_status" == "000" ]]; then
+        echo -e "${RED}❌ FAILED (could not reach endpoint)${NC}"
+        echo -e "  ${YELLOW}Check that the endpoint URL is correct and accessible from this network.${NC}"
+        return 1
+    elif [[ "$http_status" == "200" ]]; then
+        echo -e "${GREEN}✅ OK (HTTP $http_status)${NC}"
+    elif [[ "$http_status" == "401" ]] || [[ "$http_status" == "403" ]]; then
+        echo -e "${RED}❌ FAILED (HTTP $http_status - authentication rejected)${NC}"
+        if [[ "$has_api_key" == true ]]; then
+            echo -e "  ${YELLOW}Your API key may be invalid or expired. Update Config/ai-config.local.env.${NC}"
+        else
+            echo -e "  ${YELLOW}Your Azure AD token lacks permissions. Check RBAC role assignments.${NC}"
+        fi
+        return 1
+    elif [[ "$http_status" == "404" ]]; then
+        # 404 on models endpoint is acceptable — the endpoint is reachable
+        echo -e "${GREEN}✅ OK (endpoint reachable, HTTP $http_status on models list)${NC}"
+    else
+        # Other status codes (e.g. 429, 500) — endpoint is reachable but may have issues
+        echo -e "${YELLOW}⚠️  Reachable (HTTP $http_status — may have temporary issues)${NC}"
+    fi
+
+    echo ""
+    return 0
+}
+
 # Function for configuration doctor (original functionality)
 run_doctor() {
     echo -e "${BLUE}🏥 Configuration Doctor - COBOL Migration Tool${NC}"
@@ -457,7 +568,7 @@ run_doctor() {
     if [[ "$local_config_exists" == false ]]; then
         echo -e "${YELLOW}🔧 Local Configuration Setup${NC}"
         echo "----------------------------"
-        echo "You need a local configuration file with your Azure OpenAI credentials."
+        echo "You need a local configuration file with your AI service credentials."
         echo
         read -p "Would you like me to create Config/ai-config.local.env from the template? (y/n): " create_local
         
@@ -465,7 +576,7 @@ run_doctor() {
             if [[ -f "$REPO_ROOT/Config/ai-config.local.env.template" ]]; then
                 cp "$REPO_ROOT/Config/ai-config.local.env.template" "$REPO_ROOT/Config/ai-config.local.env"
                 echo -e "${GREEN}✅ Created Config/ai-config.local.env from template${NC}"
-                echo -e "${YELLOW}⚠️  You must edit this file with your actual Azure OpenAI credentials before running the migration tool.${NC}"
+                echo -e "${YELLOW}⚠️  You must edit this file with your actual AI service credentials before running the migration tool.${NC}"
                 local_config_exists=true
             else
                 echo -e "${RED}❌ Template file not found: Config/ai-config.local.env.template${NC}"
@@ -524,7 +635,7 @@ run_doctor() {
                 echo
                 echo "Next steps:"
                 echo "1. Edit Config/ai-config.local.env"
-                echo "2. Replace template placeholders with your actual Azure OpenAI credentials"
+                echo "2. Replace template placeholders with your actual AI service credentials"
                 echo "3. Run this doctor script again to validate"
                 echo
                 echo "Need help? Run: ./doctor.sh setup"
@@ -558,9 +669,9 @@ run_doctor() {
     echo
     echo -e "${BLUE}💡 Troubleshooting Tips${NC}"
     echo "======================"
-    echo "• Make sure your Azure OpenAI resource is deployed and accessible"
-    echo "• Verify your model deployment names match your Azure setup"
-    echo "• Check that your API key has proper permissions"
+    echo "• Make sure your AI service endpoint is deployed and accessible"
+    echo "• Verify your model deployment names match your provider setup"
+    echo "• Check that your API key has proper permissions (or Azure AD login is active)"
     echo "• Ensure your endpoint URL is correct (should end with /)"
 
     echo
@@ -720,11 +831,11 @@ run_setup() {
     echo -e "${BLUE}🔧 Interactive Configuration Setup${NC}"
     echo "=================================="
     echo ""
-    echo "Please provide your Azure OpenAI configuration details:"
+    echo "Please provide your AI service configuration details:"
     echo ""
 
-    # Get Azure OpenAI Endpoint
-    read -p "Azure OpenAI Endpoint (e.g., https://your-resource.openai.azure.com/): " endpoint
+    # Get AI Endpoint
+    read -p "AI Endpoint (e.g., https://your-resource.openai.azure.com/): " endpoint
     if [[ -n "$endpoint" ]]; then
         # Ensure endpoint ends with /
         [[ "${endpoint}" != */ ]] && endpoint="${endpoint}/"
@@ -732,7 +843,7 @@ run_setup() {
     fi
 
     # Get API Key
-    read -s -p "Azure OpenAI API Key: " api_key
+    read -s -p "API Key (leave empty for Azure AD/Entra ID auth): " api_key
     echo ""
     if [[ -n "$api_key" ]]; then
         sed -i.bak "s|AZURE_OPENAI_API_KEY=\".*\"|AZURE_OPENAI_API_KEY=\"$api_key\"|" "$LOCAL_CONFIG"
@@ -799,7 +910,7 @@ run_test() {
         echo ""
         echo "To fix this:"
         echo "1. Run: ./doctor.sh setup"
-        echo "2. Edit Config/ai-config.local.env with your Azure OpenAI credentials"
+        echo "2. Edit Config/ai-config.local.env with your AI service credentials"
         echo "3. Run this test again"
         return 1
     fi
@@ -997,6 +1108,12 @@ run_migration() {
     # Load and validate configuration
     if ! load_ai_config; then
         echo -e "${RED}❌ Configuration loading failed. Please check your ai-config.local.env file.${NC}"
+        return 1
+    fi
+
+    # Pre-check: verify AI connectivity
+    if ! check_ai_connectivity; then
+        echo -e "${RED}❌ AI connectivity check failed. Please fix authentication before running migration.${NC}"
         return 1
     fi
 
@@ -1688,6 +1805,12 @@ run_reverse_engineering() {
         return 1
     fi
 
+    # Pre-check: verify AI connectivity
+    if ! check_ai_connectivity; then
+        echo -e "${RED}❌ AI connectivity check failed. Please fix authentication before running.${NC}"
+        return 1
+    fi
+
     # Check if reverse engineering components are present
     if [ ! -f "$REPO_ROOT/Processes/ReverseEngineeringProcess.cs" ]; then
         echo -e "${RED}❌ Reverse engineering feature not found.${NC}"
@@ -1805,6 +1928,12 @@ run_conversion_only() {
     # Load and validate configuration
     if ! load_ai_config; then
         echo -e "${RED}❌ Configuration loading failed. Please check your ai-config.local.env file.${NC}"
+        return 1
+    fi
+
+    # Pre-check: verify AI connectivity
+    if ! check_ai_connectivity; then
+        echo -e "${RED}❌ AI connectivity check failed. Please fix authentication before running.${NC}"
         return 1
     fi
 
