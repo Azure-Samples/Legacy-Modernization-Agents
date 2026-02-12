@@ -196,7 +196,7 @@ Provide a detailed, structured analysis as described in your instructions.
         {
             _logger.LogInformation("🚀 Using parallel analysis with {Workers} workers for {FileCount} files", maxParallel, cobolFiles.Count);
 
-            var semaphore = new SemaphoreSlim(maxParallel, maxParallel);
+            using var semaphore = new SemaphoreSlim(maxParallel, maxParallel);
             var staggerDelay = _settings?.ChunkingSettings?.ParallelStaggerDelayMs ?? 500;
 
             // Use indexed tuples to preserve original order after parallel completion
