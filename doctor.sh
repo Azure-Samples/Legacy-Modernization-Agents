@@ -434,7 +434,10 @@ check_ai_connectivity() {
     # Build the test URL — try to reach the endpoint root or models list
     local test_url="${endpoint%/}/openai/models?api-version=2024-06-01"
     local http_status=""
-    local curl_args=("-s" "-o" "/dev/null" "-w" "%{http_code}" "--connect-timeout" "10" "--max-time" "15")
+    local response_body=""
+    local tmp_response
+    tmp_response=$(mktemp)
+    local curl_args=("-s" "-o" "$tmp_response" "-w" "%{http_code}" "--connect-timeout" "10" "--max-time" "15")
 
     if [[ "$has_api_key" == true ]]; then
         http_status=$(curl "${curl_args[@]}" -H "api-key: $api_key" "$test_url" 2>/dev/null)
@@ -444,9 +447,25 @@ check_ai_connectivity() {
         if [[ -n "$token" ]]; then
             http_status=$(curl "${curl_args[@]}" -H "Authorization: Bearer $token" "$test_url" 2>/dev/null)
         else
+            rm -f "$tmp_response"
             echo -e "${YELLOW}⚠️  Could not obtain Azure AD token for Cognitive Services${NC}"
             echo -e "  ${YELLOW}Try: az login --scope https://cognitiveservices.azure.com/.default${NC}"
             return 1
+        fi
+    fi
+
+    response_body=$(cat "$tmp_response" 2>/dev/null)
+    rm -f "$tmp_response"
+
+    # Extract a human-readable error message from the JSON response (if any)
+    local error_msg=""
+    if [[ -n "$response_body" ]]; then
+        # Try jq first, fall back to grep/sed
+        if command -v jq >/dev/null 2>&1; then
+            error_msg=$(echo "$response_body" | jq -r '(.error.message // .error.code // .message // empty)' 2>/dev/null)
+        fi
+        if [[ -z "$error_msg" ]]; then
+            error_msg=$(echo "$response_body" | grep -o '"message":"[^"]*"' | head -1 | sed 's/"message":"//;s/"$//')
         fi
     fi
 
@@ -458,6 +477,11 @@ check_ai_connectivity() {
         echo -e "${GREEN}✅ OK (HTTP $http_status)${NC}"
     elif [[ "$http_status" == "401" ]] || [[ "$http_status" == "403" ]]; then
         echo -e "${RED}❌ FAILED (HTTP $http_status - authentication rejected)${NC}"
+        if [[ -n "$error_msg" ]]; then
+            echo -e "  ${YELLOW}Error: $error_msg${NC}"
+        elif [[ -n "$response_body" ]]; then
+            echo -e "  ${YELLOW}Response: $response_body${NC}"
+        fi
         if [[ "$has_api_key" == true ]]; then
             echo -e "  ${YELLOW}Your API key may be invalid or expired. Update Config/ai-config.local.env.${NC}"
         else
@@ -468,8 +492,14 @@ check_ai_connectivity() {
         # 404 on models endpoint is acceptable — the endpoint is reachable
         echo -e "${GREEN}✅ OK (endpoint reachable, HTTP $http_status on models list)${NC}"
     else
-        # Other status codes (e.g. 429, 500) — endpoint is reachable but may have issues
-        echo -e "${YELLOW}⚠️  Reachable (HTTP $http_status — may have temporary issues)${NC}"
+        # Other status codes (e.g. 400, 429, 500) — endpoint is reachable but request failed
+        echo -e "${RED}❌ FAILED (HTTP $http_status)${NC}"
+        if [[ -n "$error_msg" ]]; then
+            echo -e "  ${YELLOW}Error: $error_msg${NC}"
+        elif [[ -n "$response_body" ]]; then
+            echo -e "  ${YELLOW}Response: $response_body${NC}"
+        fi
+        return 1
     fi
 
     echo ""
@@ -1113,7 +1143,7 @@ run_migration() {
 
     # Pre-check: verify AI connectivity
     if ! check_ai_connectivity; then
-        echo -e "${RED}❌ AI connectivity check failed. Please fix authentication before running migration.${NC}"
+        echo -e "${RED}❌ Please fix connection issues first.${NC}"
         return 1
     fi
 
@@ -1807,7 +1837,7 @@ run_reverse_engineering() {
 
     # Pre-check: verify AI connectivity
     if ! check_ai_connectivity; then
-        echo -e "${RED}❌ AI connectivity check failed. Please fix authentication before running.${NC}"
+        echo -e "${RED}❌ Please fix connection issues first.${NC}"
         return 1
     fi
 
@@ -1933,7 +1963,7 @@ run_conversion_only() {
 
     # Pre-check: verify AI connectivity
     if ! check_ai_connectivity; then
-        echo -e "${RED}❌ AI connectivity check failed. Please fix authentication before running.${NC}"
+        echo -e "${RED}❌ Please fix connection issues first.${NC}"
         return 1
     fi
 
