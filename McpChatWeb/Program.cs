@@ -3591,6 +3591,28 @@ app.MapGet("/api/files/local", async (string path) =>
             }
 		}
 
+        // Helper to resolve a path under a given root and ensure it does not escape that root
+        static string? ResolveSafePath(string baseRoot, string relative)
+        {
+            // Normalize base root to full path with trailing separator
+            var normalizedRoot = Path.GetFullPath(baseRoot);
+            if (!normalizedRoot.EndsWith(Path.DirectorySeparatorChar) && !normalizedRoot.EndsWith(Path.AltDirectorySeparatorChar))
+            {
+                normalizedRoot += Path.DirectorySeparatorChar;
+            }
+
+            // Combine and normalize the candidate path
+            var candidate = Path.GetFullPath(Path.Combine(normalizedRoot, relative));
+
+            // Ensure the candidate stays within the root
+            if (!candidate.StartsWith(normalizedRoot, StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            return candidate;
+        }
+
         // Clean the input path - prevent double "source/source/"
         var cleanPath = path.Replace('\\', '/');
         if (cleanPath.StartsWith("source/") && Directory.Exists(Path.Combine(repoRoot, "source")))
@@ -3601,7 +3623,12 @@ app.MapGet("/api/files/local", async (string path) =>
         }
 
 		// Security check: ensure path is within repo root
-		var fullPath = Path.GetFullPath(Path.Combine(repoRoot, cleanPath));
+		var fullPath = ResolveSafePath(repoRoot, cleanPath);
+        if (fullPath is null)
+        {
+            Console.WriteLine($"❌ Rejected path traversal attempt: '{path}' under root '{repoRoot}'");
+            return Results.BadRequest("Invalid path");
+        }
 		
 		Console.WriteLine($"🔍 File Request: '{path}' -> '{fullPath}' (Root: {repoRoot})");
 
@@ -3610,15 +3637,16 @@ app.MapGet("/api/files/local", async (string path) =>
             // Try fallback: maybe path lacked "source/" prefix?
             if (!cleanPath.StartsWith("source/") && Directory.Exists(Path.Combine(repoRoot, "source")))
             {
-                var altPath = Path.GetFullPath(Path.Combine(repoRoot, "source", cleanPath));
-                if (File.Exists(altPath))
+                var sourceRoot = Path.Combine(repoRoot, "source");
+                var altPath = ResolveSafePath(sourceRoot, cleanPath);
+                if (altPath != null && File.Exists(altPath))
                 {
                      fullPath = altPath;
                      Console.WriteLine($"🔍 Autocorrected path to: {fullPath}");
                 }
                 else
                 {
-                    Console.WriteLine($"❌ File not found at: {fullPath} OR {altPath}");
+                    Console.WriteLine($"❌ File not found at: {fullPath} OR (safe alt under source)");
 			        return Results.NotFound($"File not found: {path}");
                 }
             }
