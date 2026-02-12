@@ -174,8 +174,12 @@ public class NamingConventionEnforcer
 
         if (reservedWords.Contains(name.ToLowerInvariant()))
         {
-            // Common escape strategy: prefix with underscore or suffix with type
-            return "@" + name; // C# allows @ prefix for reserved words
+            // Language-specific escape strategy:
+            // - C#: use @ prefix (e.g., @class)
+            // - Java: append underscore (e.g., class_)
+            return targetLanguage == TargetLanguage.CSharp
+                ? "@" + name
+                : name + "_";
         }
 
         return name;
