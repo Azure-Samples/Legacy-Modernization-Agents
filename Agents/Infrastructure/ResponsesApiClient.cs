@@ -316,7 +316,7 @@ public class ResponsesApiClient : IDisposable
                 var status = parsed?["status"]?.GetValue<string>();
                 if (status == "incomplete")
                 {
-                    var reason = parsed?["incomplete_details"]?["reason"]?.GetValue<string>();
+                    var reason = parsed["incomplete_details"]?["reason"]?.GetValue<string>();
                     
                     if (reason == "max_output_tokens" && reasoningTokens >= actualOutputTokens * 0.9)
                     {
