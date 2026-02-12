@@ -43,6 +43,15 @@ public class SemanticUnitChunker : IChunker
             return Task.FromResult<IReadOnlyList<ChunkResult>>(new[] { singleChunk });
         }
 
+        // Fallback: no semantic units found (e.g. pure data copybooks without
+        // DIVISION / SECTION / PARAGRAPH markers) — use line-based chunking so
+        // the file is still split into manageable pieces.
+        if (semanticUnits.Count == 0)
+        {
+            return Task.FromResult(CreateLineBasedChunks(
+                lines, filePath, semanticUnits, settings));
+        }
+
         // Check if any semantic unit is larger than MaxLinesPerChunk
         // If so, we need line-based chunking as a fallback
         var hasOversizedUnits = semanticUnits.Any(u => u.LineCount > settings.MaxLinesPerChunk);
