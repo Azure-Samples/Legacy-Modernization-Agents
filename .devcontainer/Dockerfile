@@ -54,16 +54,13 @@ RUN echo 'echo ""' >> /home/vscode/.bashrc && \
     echo 'echo "║  🚀 COBOL Migration Dev Container Ready!              ║"' >> /home/vscode/.bashrc && \
     echo 'echo "╚══════════════════════════════════════════════════════════╝"' >> /home/vscode/.bashrc && \
     echo 'echo ""' >> /home/vscode/.bashrc && \
-    echo 'echo "⚠️  SETUP REQUIRED:"' >> /home/vscode/.bashrc && \
-    echo 'echo "  Edit Config/appsettings.json and add your Azure OpenAI keys"' >> /home/vscode/.bashrc && \
-    echo 'echo "  💡 Recommended: 1M+ TPM quota for best performance"' >> /home/vscode/.bashrc && \
-    echo 'echo ""' >> /home/vscode/.bashrc && \
     echo 'echo "📊 Quick Commands:"' >> /home/vscode/.bashrc && \
-    echo 'echo "  ./doctor.sh run       - Start full migration (interactive)"' >> /home/vscode/.bashrc && \
-    echo 'echo "  ./doctor.sh portal    - Launch web portal only"' >> /home/vscode/.bashrc && \
-    echo 'echo "  ./doctor.sh reverse-eng - Business logic extraction"' >> /home/vscode/.bashrc && \
-    echo 'echo "  demo                  - Run demo with sample COBOL"' >> /home/vscode/.bashrc && \
-    echo 'echo "  verify-setup          - Check if everything is configured"' >> /home/vscode/.bashrc && \
+    echo 'echo "  demo           - Start demo with existing data (runs ./helper-scripts/demo.sh)"' >> /home/vscode/.bashrc && \
+    echo 'echo "  migration-run  - Run full COBOL migration"' >> /home/vscode/.bashrc && \
+    echo 'echo "  reverse-eng    - Run reverse engineering"' >> /home/vscode/.bashrc && \
+    echo 'echo "  portal-start   - Start web portal manually"' >> /home/vscode/.bashrc && \
+    echo 'echo "  verify-setup   - Check if everything is configured"' >> /home/vscode/.bashrc && \
+    echo 'echo "  neo4j-status   - Check Neo4j container status"' >> /home/vscode/.bashrc && \
     echo 'echo ""' >> /home/vscode/.bashrc && \
     echo 'echo "🌐 Endpoints:"' >> /home/vscode/.bashrc && \
     echo 'echo "  Portal:        http://localhost:5028"' >> /home/vscode/.bashrc && \

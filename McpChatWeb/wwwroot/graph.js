@@ -7,7 +7,6 @@ class DependencyGraph {
     this.currentQuery = 'full';
     this.currentLayout = 'force';
     this.runId = null; // Will be loaded dynamically
-    this.includeInferred = false; // Toggle to include inferred nodes
     this.isRendering = false;
     this.controlsSetup = false;
     
@@ -27,7 +26,6 @@ class DependencyGraph {
     const refreshBtn = document.getElementById('refresh-graph');
     const fitBtn = document.getElementById('fit-graph');
     const stabilizeBtn = document.getElementById('stabilize-graph');
-    const includeInferredToggle = document.getElementById('include-inferred-nodes');
     const closeDetailsBtn = document.getElementById('close-details');
 
     if (querySelect) {
@@ -40,12 +38,12 @@ class DependencyGraph {
     if (layoutSelect) {
       layoutSelect.addEventListener('change', (e) => {
         this.currentLayout = e.target.value;
-        this.loadAndRender(this.runId);
+        this.loadAndRender();
       });
     }
 
     if (refreshBtn) {
-      refreshBtn.addEventListener('click', () => this.loadAndRender(this.runId));
+      refreshBtn.addEventListener('click', () => this.loadAndRender());
     }
 
     if (fitBtn) {
@@ -65,13 +63,6 @@ class DependencyGraph {
             this.network.setOptions({ physics: false });
           }, 2000);
         }
-      });
-    }
-
-    if (includeInferredToggle) {
-      includeInferredToggle.addEventListener('change', () => {
-        this.includeInferred = includeInferredToggle.checked;
-        this.loadAndRender(this.runId);
       });
     }
 
@@ -217,11 +208,7 @@ class DependencyGraph {
   async fetchGraphData(runId = null) {
     try {
       // Fetch from the MCP-powered API endpoint with optional runId
-      const params = [];
-      if (runId) params.push(`runId=${runId}`);
-      if (this.includeInferred) params.push('includeInferred=true');
-      const query = params.length ? `?${params.join('&')}` : '';
-      const url = `/api/graph${query}`;
+      const url = runId ? `/api/graph?runId=${runId}` : '/api/graph';
       console.log(`🔍 Fetching graph data from: ${url}${runId ? ` (Run ${runId})` : ' (current run)'}`);
       
       const response = await fetch(url);
@@ -415,40 +402,30 @@ class DependencyGraph {
         const nodeSize = 20 + (connections * 3); // Size based on connections
         const importance = connections > 5 ? 'Critical' : connections > 2 ? 'Important' : 'Standard';
         
-        // Determine node type: Copybook, CalledProgram, Program, or Inferred placeholder
+        // Determine node type: Copybook, CalledProgram, or Program
         const isCalledProgram = !n.isCopybook && calledProgramIds.has(n.id);
-        const isInferred = !!n.isInferred;
-        const nodeType = isInferred
-          ? 'Inferred (missing in files table)'
-          : (n.isCopybook ? 'Copybook (.cpy)' : (isCalledProgram ? 'Called Program (.cbl)' : 'Program (.cbl)'));
+        const nodeType = n.isCopybook ? 'Copybook (.cpy)' : (isCalledProgram ? 'Called Program (.cbl)' : 'Program (.cbl)');
         
-        // Color scheme aligned to portal palette:
-        // Inferred = amber, Copybook = coral/red, Called Program = emerald, Program = blue
+        // Color scheme: Copybook=red, CalledProgram=green, Program=blue
         let backgroundColor, borderColor, highlightBg, highlightBorder, shadowColor;
-        if (isInferred) {
-          backgroundColor = '#f59e0b';
-          borderColor = '#d97706';
-          highlightBg = '#fcd34d';
-          highlightBorder = '#b45309';
-          shadowColor = 'rgba(245, 158, 11, 0.5)';
-        } else if (n.isCopybook) {
-          backgroundColor = '#f87171';
-          borderColor = '#ef4444';
-          highlightBg = '#fecaca';
-          highlightBorder = '#b91c1c';
-          shadowColor = 'rgba(248, 113, 113, 0.5)';
+        if (n.isCopybook) {
+          backgroundColor = '#f16667';
+          borderColor = '#dc2626';
+          highlightBg = '#fca5a5';
+          highlightBorder = '#991b1b';
+          shadowColor = 'rgba(241, 102, 103, 0.5)';
         } else if (isCalledProgram) {
-          backgroundColor = '#22c55e';
-          borderColor = '#16a34a';
-          highlightBg = '#86efac';
-          highlightBorder = '#15803d';
-          shadowColor = 'rgba(34, 197, 94, 0.5)';
+          backgroundColor = '#10b981';
+          borderColor = '#059669';
+          highlightBg = '#6ee7b7';
+          highlightBorder = '#047857';
+          shadowColor = 'rgba(16, 185, 129, 0.5)';
         } else {
-          backgroundColor = '#38bdf8';
-          borderColor = '#0ea5e9';
-          highlightBg = '#bae6fd';
-          highlightBorder = '#0369a1';
-          shadowColor = 'rgba(56, 189, 248, 0.5)';
+          backgroundColor = '#68bdf6';
+          borderColor = '#1d4ed8';
+          highlightBg = '#93c5fd';
+          highlightBorder = '#1e3a8a';
+          shadowColor = 'rgba(104, 189, 246, 0.5)';
         }
         
         return {

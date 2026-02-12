@@ -1,5 +1,4 @@
 let resourcesList, refreshButton, chatForm, promptInput, responseCard, responseBody, loadingIndicator, loadingStages;
-let runSummaryContainer, runSummaryBody, runSummaryButton, mcpCallVisual, mcpCallAscii;
 
 function initializeElements() {
   resourcesList = document.getElementById('resources-list');
@@ -14,16 +13,6 @@ function initializeElements() {
     ai: document.getElementById('stage-ai'),
     response: document.getElementById('stage-response')
   };
-
-  runSummaryContainer = document.getElementById('run-summary-container');
-  runSummaryBody = document.getElementById('run-summary-body');
-  runSummaryButton = document.getElementById('toggle-run-summary');
-  mcpCallVisual = document.getElementById('mcp-call-visual');
-  mcpCallAscii = document.getElementById('mcp-call-ascii');
-
-  if (runSummaryButton) {
-    runSummaryButton.addEventListener('click', toggleRunSummary);
-  }
 }
 
 async function fetchResources() {
@@ -158,55 +147,6 @@ function updateStageStatus(stage, status) {
   }
 }
 
-function setRunSummary(summaryText) {
-  if (!runSummaryContainer || !runSummaryBody || !runSummaryButton) return;
-
-  const hasSummary = !!summaryText && summaryText.trim().length > 0;
-  if (!hasSummary) {
-    runSummaryContainer.hidden = true;
-    runSummaryBody.hidden = true;
-    return;
-  }
-
-  runSummaryBody.textContent = summaryText.trim();
-  runSummaryBody.hidden = true;
-  runSummaryContainer.hidden = false;
-  runSummaryButton.textContent = '▶ Run summary (collapsed)';
-}
-
-function toggleRunSummary() {
-  if (!runSummaryBody || !runSummaryButton) return;
-  const willShow = runSummaryBody.hidden;
-  runSummaryBody.hidden = !willShow;
-  runSummaryButton.textContent = `${willShow ? '▼' : '▶'} Run summary (${willShow ? 'expanded' : 'collapsed'})`;
-}
-
-function renderMcpVisual(modelId, isMcpCall) {
-  if (!mcpCallVisual || !mcpCallAscii) return;
-
-  if (!isMcpCall) {
-    mcpCallVisual.hidden = true;
-    return;
-  }
-
-  const resolvedModel = modelId && modelId.length > 0 ? modelId : 'unknown-model';
-  const asciiArt = [
-    'User prompt',
-    '    |',
-    '    v',
-    '+---------------+',
-    '|    MCP call    |',
-    '+---------------+',
-    '    |',
-    ` model: ${resolvedModel}`,
-    '    |',
-    'AI answer'
-  ].join('\n');
-
-  mcpCallAscii.textContent = asciiArt;
-  mcpCallVisual.hidden = false;
-}
-
 async function handleChatSubmit(event) {
   event.preventDefault();
   const prompt = promptInput.value.trim();
@@ -219,8 +159,6 @@ async function handleChatSubmit(event) {
   setLoadingStage('db');
   updateStageStatus('db', 'Fetching migration data...');
   toggleLoading(chatForm.querySelector('button'), true);
-  setRunSummary('');
-  renderMcpVisual(null, false);
   
   try {
     // Move to stage 2: Azure OpenAI
@@ -252,8 +190,6 @@ async function handleChatSubmit(event) {
     // Small delay to show final stage
     await new Promise(resolve => setTimeout(resolve, 300));
     
-    setRunSummary(payload.runSummary);
-    renderMcpVisual(payload.model, payload.isMcpCall);
     responseBody.textContent = payload.response ?? 'No content returned.';
     responseCard.hidden = false;
     
@@ -393,9 +329,7 @@ function initializeApp() {
   
   // Start database status monitoring
   updateDatabaseStatus();
-  setInterval(() => {
-    if (window.pageIsVisible !== false) updateDatabaseStatus();
-  }, 10000); // Update every 10 seconds
+  setInterval(updateDatabaseStatus, 10000); // Update every 10 seconds
 }
 
 // Ensure DOM is ready before initializing

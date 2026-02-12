@@ -9,7 +9,7 @@ using Microsoft.Extensions.Options;
 
 namespace McpChatWeb.Services;
 
-public sealed class McpProcessClient : IMcpClient, IDisposable
+public sealed class McpProcessClient : IMcpClient
 {
     private readonly SemaphoreSlim _mutex = new(1, 1);
     private readonly McpOptions _options;
@@ -20,58 +20,14 @@ public sealed class McpProcessClient : IMcpClient, IDisposable
     private Task? _stderrDrainer;
     private long _nextId = 1;
     private bool _initialized;
-    private bool _disposed;
 
     public McpProcessClient(IOptions<McpOptions> options)
     {
         _options = options.Value;
-        // Register cleanup on app domain unload to prevent zombie processes
-        AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
-    }
-
-    private void OnProcessExit(object? sender, EventArgs e)
-    {
-        Dispose();
-    }
-
-    public void Dispose()
-    {
-        if (_disposed) return;
-        _disposed = true;
-        
-        AppDomain.CurrentDomain.ProcessExit -= OnProcessExit;
-        
-        try
-        {
-            _stdin?.Dispose();
-            _stdout?.Dispose();
-        }
-        catch { /* ignore */ }
-        
-        try
-        {
-            if (_process is { HasExited: false })
-            {
-                _process.Kill(entireProcessTree: true);
-                _process.WaitForExit(1000);
-            }
-            _process?.Dispose();
-        }
-        catch { /* ignore */ }
-        
-        _process = null;
-        _stdin = null;
-        _stdout = null;
-        _stderrDrainer = null;
-        
-        _mutex.Dispose();
-        _sendLock.Dispose();
     }
 
     public async Task EnsureReadyAsync(CancellationToken cancellationToken = default)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        
         await _mutex.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -82,14 +38,6 @@ public sealed class McpProcessClient : IMcpClient, IDisposable
                     await InitializeAsync(cancellationToken).ConfigureAwait(false);
                 }
                 return;
-            }
-
-            // Clean up any existing dead process before starting new one
-            if (_process is not null)
-            {
-                try { _process.Kill(entireProcessTree: true); } catch { }
-                try { _process.Dispose(); } catch { }
-                _process = null;
             }
 
             await StartProcessAsync(cancellationToken).ConfigureAwait(false);
@@ -328,20 +276,6 @@ public sealed class McpProcessClient : IMcpClient, IDisposable
             CreateNoWindow = true
         };
 
-        // Copy Azure OpenAI environment variables to the subprocess
-        foreach (var key in Environment.GetEnvironmentVariables().Keys)
-        {
-            var keyStr = key?.ToString();
-            if (!string.IsNullOrEmpty(keyStr) && keyStr.StartsWith("AZURE_OPENAI", StringComparison.OrdinalIgnoreCase))
-            {
-                var value = Environment.GetEnvironmentVariable(keyStr);
-                if (!string.IsNullOrEmpty(value))
-                {
-                    psi.Environment[keyStr] = value;
-                }
-            }
-        }
-
         _process = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start MCP process");
         _stdin = new StreamWriter(_process.StandardInput.BaseStream, new UTF8Encoding(false)) { AutoFlush = true };
         _stdout = new StreamReader(_process.StandardOutput.BaseStream, new UTF8Encoding(false));
@@ -409,14 +343,6 @@ public sealed class McpProcessClient : IMcpClient, IDisposable
                 var reply = await ReadResponseAsync(cancellationToken).ConfigureAwait(false);
                 if (reply is null)
                 {
-                    // If the MCP process died, stop spinning and surface an error so the caller can restart it.
-                    if (_process?.HasExited == true)
-                    {
-                        throw new InvalidOperationException("MCP process exited while waiting for a response.");
-                    }
-
-                    // Avoid a hot loop on malformed/empty frames.
-                    await Task.Delay(10, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
 
