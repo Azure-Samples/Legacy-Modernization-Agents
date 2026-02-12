@@ -67,8 +67,15 @@ load_env_file() {
                 
                 # Only set if not already set (allows environment override)
                 if [ -z "${!var_name}" ]; then
-                    # Use eval to allow variable expansion (e.g. VAR=$OTHER_VAR)
-                    eval "export $var_name=\"$var_value\""
+                    # Safely expand variable references without using eval
+                    if command -v envsubst >/dev/null 2>&1; then
+                        local expanded_value
+                        expanded_value=$(printf '%s' "$var_value" | envsubst)
+                        export "$var_name=$expanded_value"
+                    else
+                        # Fallback: assign literal value without expansion
+                        export "$var_name=$var_value"
+                    fi
                     log_info "Set $var_name"
                 else
                     log_info "Skipped $var_name (already set)"
