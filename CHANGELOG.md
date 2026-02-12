@@ -5,6 +5,21 @@ All notable changes to this repository are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.1] - 2026-02-12
+
+### Fixed
+- **Chunking Fallback for Data-Only Copybooks** - Added line-based chunking fallback in `SemanticUnitChunker` when no semantic units (DIVISION/SECTION/PARAGRAPH) are found, fixing crash on pure-data copybooks like `STRESSCOPY.cpy` (10K lines)
+- **SemaphoreSlim Disposal** - Added `using var` to `SemaphoreSlim` across 5 files to ensure proper disposal
+- **RateLimiter Over-Release** - Added `lockHeld` flag pattern to prevent `SemaphoreSlim.Release()` being called without a matching `WaitAsync()`
+- **Config Script Injection** - Replaced `eval` with `envsubst` in `Config/load-config.sh` to prevent command injection
+- **Port Cleanup Stability** - Fixed `doctor.sh` port cleanup in both `launch_portal_background()` and `launch_mcp_web_ui()` to use `lsof -sTCP:LISTEN` instead of `lsof -ti:`, preventing accidental killing of client connections (e.g., VS Code browser tabs)
+
+### Added
+- **Chunking Stress Test** - New unit test `ChunkFileAsync_NoSemanticUnits_LargeFile_FallsBackToLineBased` validating line-based fallback for large copybooks
+
+### Changed
+- **doctor.sh** - Updated to 2,274 LoC with improved port cleanup logic
+
 ## [2.3.0] - 2026-02-06
 ### Changed
 - **Streamlined Workflow** - Removed "Spec-Driven Migration" (MITM) workflow to focus on the "Deep Code Analysis" pipeline.
