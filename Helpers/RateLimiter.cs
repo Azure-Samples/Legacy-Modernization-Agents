@@ -120,83 +120,76 @@ public class RateLimiter
         await _concurrencySemaphore.WaitAsync(cancellationToken);
         Interlocked.Increment(ref _activeRequests);
         
+        var lockHeld = false;
+
         try
         {
             await _tokenBucketLock.WaitAsync(cancellationToken);
-            try
+            lockHeld = true;
+
+            // Check if we need to reset the minute counter
+            var now = DateTime.UtcNow;
+            if ((now - _minuteStartTime).TotalMinutes >= 1)
             {
-                // Check if we need to reset the minute counter
-                var now = DateTime.UtcNow;
-                if ((now - _minuteStartTime).TotalMinutes >= 1)
-                {
-                    _tokensUsedThisMinute = 0;
-                    _minuteStartTime = now;
-                    _logger?.LogDebug("Token bucket reset for new minute");
-                }
-
-                // Calculate required delay (staggered for parallel workers)
-                var timeSinceLastRequest = now - _lastRequestTime;
-                var requiredDelay = TimeSpan.FromMilliseconds(_delayBetweenRequestsMs);
-                
-                if (timeSinceLastRequest < requiredDelay)
-                {
-                    var waitTime = requiredDelay - timeSinceLastRequest;
-                    _logger?.LogDebug("Rate limit: waiting {WaitMs}ms before next request (worker {Active}/{Max})", 
-                        (int)waitTime.TotalMilliseconds, _activeRequests, _maxParallelRequests);
-                    
-                    // Release lock during wait so other workers can proceed with stagger
-                    _tokenBucketLock.Release();
-                    try
-                    {
-                        await Task.Delay(waitTime, cancellationToken);
-                    }
-                    finally
-                    {
-                        await _tokenBucketLock.WaitAsync(cancellationToken);
-                    }
-                }
-
-                // Check token budget with safety factor
-                var estimatedTotalTokens = estimatedInputTokens + _maxOutputTokens;
-                var effectiveBudget = (int)(_tokensPerMinute * _safetyFactor);
-                
-                if (_tokensUsedThisMinute + estimatedTotalTokens > effectiveBudget)
-                {
-                    // Calculate wait time until next minute
-                    now = DateTime.UtcNow;
-                    var waitUntilNextMinute = 60000 - (int)(now - _minuteStartTime).TotalMilliseconds;
-                    if (waitUntilNextMinute > 0)
-                    {
-                        _logger?.LogInformation(
-                            "Token budget exhausted ({Used}/{Budget} tokens), waiting {WaitMs}ms for next minute (worker {Active}/{Max})",
-                            _tokensUsedThisMinute, effectiveBudget, waitUntilNextMinute, _activeRequests, _maxParallelRequests);
-                        
-                        // Release lock during wait
-                        _tokenBucketLock.Release();
-                        try
-                        {
-                            await Task.Delay(waitUntilNextMinute, cancellationToken);
-                        }
-                        finally
-                        {
-                            await _tokenBucketLock.WaitAsync(cancellationToken);
-                        }
-                        
-                        _tokensUsedThisMinute = 0;
-                        _minuteStartTime = DateTime.UtcNow;
-                    }
-                }
-
-                _lastRequestTime = DateTime.UtcNow;
-                _tokensUsedThisMinute += estimatedTotalTokens;
-                
-                _logger?.LogDebug("Request allowed: {Used}/{Budget} tokens used this minute", 
-                    _tokensUsedThisMinute, effectiveBudget);
+                _tokensUsedThisMinute = 0;
+                _minuteStartTime = now;
+                _logger?.LogDebug("Token bucket reset for new minute");
             }
-            finally
+
+            // Calculate required delay (staggered for parallel workers)
+            var timeSinceLastRequest = now - _lastRequestTime;
+            var requiredDelay = TimeSpan.FromMilliseconds(_delayBetweenRequestsMs);
+            
+            if (timeSinceLastRequest < requiredDelay)
             {
+                var waitTime = requiredDelay - timeSinceLastRequest;
+                _logger?.LogDebug("Rate limit: waiting {WaitMs}ms before next request (worker {Active}/{Max})", 
+                    (int)waitTime.TotalMilliseconds, _activeRequests, _maxParallelRequests);
+                
+                // Release lock during wait so other workers can proceed with stagger
                 _tokenBucketLock.Release();
+                lockHeld = false;
+
+                await Task.Delay(waitTime, cancellationToken);
+
+                await _tokenBucketLock.WaitAsync(cancellationToken);
+                lockHeld = true;
             }
+
+            // Check token budget with safety factor
+            var estimatedTotalTokens = estimatedInputTokens + _maxOutputTokens;
+            var effectiveBudget = (int)(_tokensPerMinute * _safetyFactor);
+            
+            if (_tokensUsedThisMinute + estimatedTotalTokens > effectiveBudget)
+            {
+                // Calculate wait time until next minute
+                now = DateTime.UtcNow;
+                var waitUntilNextMinute = 60000 - (int)(now - _minuteStartTime).TotalMilliseconds;
+                if (waitUntilNextMinute > 0)
+                {
+                    _logger?.LogInformation(
+                        "Token budget exhausted ({Used}/{Budget} tokens), waiting {WaitMs}ms for next minute (worker {Active}/{Max})",
+                        _tokensUsedThisMinute, effectiveBudget, waitUntilNextMinute, _activeRequests, _maxParallelRequests);
+                    
+                    // Release lock during wait
+                    _tokenBucketLock.Release();
+                    lockHeld = false;
+
+                    await Task.Delay(waitUntilNextMinute, cancellationToken);
+
+                    await _tokenBucketLock.WaitAsync(cancellationToken);
+                    lockHeld = true;
+                    
+                    _tokensUsedThisMinute = 0;
+                    _minuteStartTime = DateTime.UtcNow;
+                }
+            }
+
+            _lastRequestTime = DateTime.UtcNow;
+            _tokensUsedThisMinute += estimatedTotalTokens;
+            
+            _logger?.LogDebug("Request allowed: {Used}/{Budget} tokens used this minute", 
+                _tokensUsedThisMinute, effectiveBudget);
         }
         catch
         {
@@ -204,6 +197,13 @@ public class RateLimiter
             Interlocked.Decrement(ref _activeRequests);
             _concurrencySemaphore.Release();
             throw;
+        }
+        finally
+        {
+            if (lockHeld)
+            {
+                _tokenBucketLock.Release();
+            }
         }
     }
 
