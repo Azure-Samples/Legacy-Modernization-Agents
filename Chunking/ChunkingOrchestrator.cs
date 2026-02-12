@@ -264,7 +264,7 @@ public class ChunkingOrchestrator
         CancellationToken cancellationToken)
     {
         var maxParallel = Math.Min(_chunkingSettings.MaxParallelChunks, chunksToProcess.Count);
-        var semaphore = new SemaphoreSlim(maxParallel, maxParallel);
+        using var semaphore = new SemaphoreSlim(maxParallel, maxParallel);
         var staggerDelay = _chunkingSettings.ParallelStaggerDelayMs;
         var processingLock = new object();
         var completedCount = 0;

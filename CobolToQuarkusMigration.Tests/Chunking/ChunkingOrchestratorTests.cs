@@ -327,7 +327,7 @@ public class ChunkingOrchestratorTests : IDisposable
         var content = GenerateCobolProgram(300);
         var plan = await _orchestrator.AnalyzeFileAsync("cancel.cbl", content);
 
-        var cts = new CancellationTokenSource();
+        using var cts = new CancellationTokenSource();
         int processedCount = 0;
 
         Task<ChunkConversionResult> ConvertChunk(ChunkResult chunk, ChunkContext context)
