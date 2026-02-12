@@ -248,12 +248,13 @@ launch_mcp_web_ui() {
 
     echo -e "${BLUE}➡️  Starting web server at${NC} ${BOLD}$url${NC}"
     
-    # Check if port is already in use and clean up
+    # Check if port is already in use and clean up (only kill the LISTEN socket owner)
     if lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; then
         echo -e "${YELLOW}⚠️  Port $port is already in use. Cleaning up...${NC}"
-        local pid=$(lsof -ti:$port)
-        if [[ -n "$pid" ]]; then
-            kill -9 $pid 2>/dev/null && echo -e "${GREEN}✅ Killed existing process on port $port${NC}" || true
+        local listen_pids
+        listen_pids=$(lsof -Pi :$port -sTCP:LISTEN -t 2>/dev/null)
+        if [[ -n "$listen_pids" ]]; then
+            echo "$listen_pids" | xargs kill -9 2>/dev/null && echo -e "${GREEN}✅ Killed existing process on port $port${NC}" || true
             sleep 1
         fi
     fi
@@ -277,12 +278,13 @@ launch_portal_background() {
     echo -e "${BLUE}🌐 Launching Portal in Background for Monitoring...${NC}"
     echo "===================================================="
     
-    # Check if port is already in use and clean up
+    # Check if port is already in use and clean up (only kill the LISTEN socket owner)
     if lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; then
         echo -e "${YELLOW}⚠️  Port $port is already in use. Cleaning up...${NC}"
-        local pid=$(lsof -ti:$port)
-        if [[ -n "$pid" ]]; then
-            kill -9 $pid 2>/dev/null && echo -e "${GREEN}✅ Killed existing process on port $port${NC}" || true
+        local listen_pids
+        listen_pids=$(lsof -Pi :$port -sTCP:LISTEN -t 2>/dev/null)
+        if [[ -n "$listen_pids" ]]; then
+            echo "$listen_pids" | xargs kill -9 2>/dev/null && echo -e "${GREEN}✅ Killed existing process on port $port${NC}" || true
             sleep 1
         fi
     fi
