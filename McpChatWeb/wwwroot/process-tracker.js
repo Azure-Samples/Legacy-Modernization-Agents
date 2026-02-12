@@ -325,7 +325,17 @@
 
   function getAgentBadge(agentName) {
     const agent = AGENTS[agentName] || { name: agentName || 'Unknown', color: '#64748b', icon: '🤖' };
-    return `<span class="agent-badge" style="background: ${agent.color}">${agent.icon} ${agent.name}</span>`;
+
+    const badge = document.createElement('span');
+    badge.className = 'agent-badge';
+
+    if (agent.color) {
+      badge.style.background = agent.color;
+    }
+
+    badge.textContent = `${agent.icon} ${agent.name}`;
+
+    return badge.outerHTML;
   }
 
   function startPolling() {
