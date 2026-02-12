@@ -87,10 +87,9 @@ validate_config() {
     
     log_info "Validating configuration..."
     
-    # Required variables
+    # Required variables (API key is optional - Azure AD auth is supported)
     local required_vars=(
         "AZURE_OPENAI_ENDPOINT"
-        "AZURE_OPENAI_API_KEY"
         "AZURE_OPENAI_DEPLOYMENT_NAME"
         "AZURE_OPENAI_MODEL_ID"
     )
@@ -107,6 +106,19 @@ validate_config() {
         fi
     done
     
+    # API key is optional - check separately with warning instead of error
+    # Empty or placeholder values mean Azure AD auth will be used
+    if [ -z "${AZURE_OPENAI_API_KEY}" ] || [[ "${AZURE_OPENAI_API_KEY}" == *"your-"* ]] || [[ "${AZURE_OPENAI_API_KEY}" == *"placeholder"* ]]; then
+        log_warning "⚠️  AZURE_OPENAI_API_KEY is not set or contains placeholder - will use Azure AD (DefaultAzureCredential)"
+        log_warning "   Make sure you've run 'az login' before starting the migration"
+        # Clear placeholder to ensure Azure AD is used
+        if [[ "${AZURE_OPENAI_API_KEY}" == *"your-"* ]] || [[ "${AZURE_OPENAI_API_KEY}" == *"placeholder"* ]]; then
+            export AZURE_OPENAI_API_KEY=""
+        fi
+    else
+        log_success "✓ AZURE_OPENAI_API_KEY is configured"
+    fi
+    
     return $errors
 }
 
@@ -116,7 +128,13 @@ show_config_summary() {
     echo "  Endpoint: ${AZURE_OPENAI_ENDPOINT:-'NOT SET'}"
     echo "  Model ID: ${AZURE_OPENAI_MODEL_ID:-'NOT SET'}"
     echo "  Deployment: ${AZURE_OPENAI_DEPLOYMENT_NAME:-'NOT SET'}"
-    echo "  API Key: ${AZURE_OPENAI_API_KEY:0:10}... (${#AZURE_OPENAI_API_KEY} chars)"
+    if [ -n "${AZURE_OPENAI_API_KEY}" ] && [[ "${AZURE_OPENAI_API_KEY}" != *"your-"* ]] && [[ "${AZURE_OPENAI_API_KEY}" != *"placeholder"* ]]; then
+        echo "  API Key: ${AZURE_OPENAI_API_KEY:0:10}... (${#AZURE_OPENAI_API_KEY} chars)"
+        echo "  Auth Method: API Key"
+    else
+        echo "  API Key: (not set or placeholder)"
+        echo "  Auth Method: Azure AD (DefaultAzureCredential)"
+    fi
     echo "  Source Folder: ${COBOL_SOURCE_FOLDER:-'SampleCobol'}"
     echo "  Output Folder: ${JAVA_OUTPUT_FOLDER:-'JavaOutput'}"
 }

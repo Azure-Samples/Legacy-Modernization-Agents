@@ -80,7 +80,7 @@ This checks:
 - ✅ Database status
 - ✅ Configuration files
 
-### 4. Configure Azure OpenAI (Required)
+### 4. Configure AI Endpoint (Required)
 
 ```bash
 # Copy the template
@@ -91,9 +91,9 @@ nano Config/ai-config.local.env
 ```
 
 Required values:
-- `AZURE_OPENAI_ENDPOINT` - Your Azure OpenAI endpoint URL
-- `AZURE_OPENAI_API_KEY` - Your API key
+- `AZURE_OPENAI_ENDPOINT` - Your AI endpoint URL
 - `AZURE_OPENAI_DEPLOYMENT_NAME` - Your deployment name (e.g., "gpt-5-mini-2" or "gpt-4o")
+- `AZURE_OPENAI_API_KEY` - Your API key (optional if using `az login`)
 
 ### 5. Run Demo
 

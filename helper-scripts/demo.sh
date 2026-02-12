@@ -145,10 +145,20 @@ echo "Starting portal in background..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
-cd /workspaces/Legacy-Modernization-Agents/McpChatWeb
+# Get the script's directory and navigate to McpChatWeb
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_ROOT/McpChatWeb"
+
+# Use .NET 9 if available (for macOS with Homebrew), otherwise default dotnet
+if [ -x "/opt/homebrew/opt/dotnet@9/bin/dotnet" ]; then
+    DOTNET_CMD="/opt/homebrew/opt/dotnet@9/bin/dotnet"
+else
+    DOTNET_CMD="dotnet"
+fi
 
 # Start portal in background
-nohup dotnet run --urls "http://localhost:5028" > /tmp/cobol-portal.log 2>&1 &
+nohup $DOTNET_CMD run --urls "http://localhost:5028" > /tmp/cobol-portal.log 2>&1 &
 PORTAL_PID=$!
 
 # Wait for portal to be ready (max 30 seconds)
