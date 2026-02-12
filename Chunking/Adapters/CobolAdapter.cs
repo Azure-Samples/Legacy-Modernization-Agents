@@ -121,7 +121,6 @@ public class CobolAdapter : ILanguageAdapter
         foreach (var line in lines)
         {
             lineIndex++;
-            var trimmedLine = line.TrimStart();
 
             if (IdentificationDivisionRegex.IsMatch(line))
             {
