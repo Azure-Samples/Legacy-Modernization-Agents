@@ -207,7 +207,7 @@ COBOL Code:
 
         // 2. Process chunks in parallel
         var maxParallel = Math.Min(Settings?.ChunkingSettings?.MaxParallelAnalysis ?? 4, plan.ChunkCount);
-        var semaphore = new SemaphoreSlim(maxParallel, maxParallel);
+        using var semaphore = new SemaphoreSlim(maxParallel, maxParallel);
         var chunkResults = new List<(int Index, BusinessLogic Logic)>();
         var lockObj = new object();
 
@@ -312,7 +312,7 @@ COBOL Code:
         {
             Logger.LogInformation("🚀 Using parallel extraction with {Workers} workers", maxParallel);
 
-            var semaphore = new SemaphoreSlim(maxParallel, maxParallel);
+            using var semaphore = new SemaphoreSlim(maxParallel, maxParallel);
             var staggerDelay = Settings?.ChunkingSettings?.ParallelStaggerDelayMs ?? 500;
 
             var indexedTasks = new List<Task<(int Index, BusinessLogic? Logic)>>();

@@ -89,7 +89,16 @@ public sealed class McpServer
         }
 
         // Initialize Agents - Prefer ResponsesApiClient if available
-        var extractorLogger = logger as ILogger<BusinessLogicExtractorAgent> ?? new LoggerFactory().CreateLogger<BusinessLogicExtractorAgent>();
+        ILogger<BusinessLogicExtractorAgent> extractorLogger;
+        if (logger is ILogger<BusinessLogicExtractorAgent> existingExtractorLogger)
+        {
+            extractorLogger = existingExtractorLogger;
+        }
+        else
+        {
+            using var loggerFactory = new LoggerFactory();
+            extractorLogger = loggerFactory.CreateLogger<BusinessLogicExtractorAgent>();
+        }
         
         if (_responsesClient != null)
         {
