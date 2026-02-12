@@ -143,7 +143,7 @@ public class ChunkedReverseEngineeringProcess
                     _logger.LogInformation("🚀 Processing {Count} large files in parallel with {Workers} workers", 
                         largeFiles.Count, maxParallel);
 
-                    var semaphore = new SemaphoreSlim(maxParallel, maxParallel);
+                    using var semaphore = new SemaphoreSlim(maxParallel, maxParallel);
                     var processedLarge = 0;
                     var lockObj = new object();
 
@@ -267,7 +267,7 @@ public class ChunkedReverseEngineeringProcess
             _logger.LogInformation("🚀 Analyzing {ChunkCount} chunks in parallel with {Workers} workers for {FileName}",
                 plan.ChunkCount, maxParallel, largeFile.FileName);
 
-            var semaphore = new SemaphoreSlim(maxParallel, maxParallel);
+            using var semaphore = new SemaphoreSlim(maxParallel, maxParallel);
             var indexedTasks = new List<Task<(int Index, CobolAnalysis Analysis, BusinessLogic Logic)>>();
 
             for (int i = 0; i < plan.Chunks.Count; i++)

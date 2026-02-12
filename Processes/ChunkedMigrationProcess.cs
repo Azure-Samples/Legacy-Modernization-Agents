@@ -219,7 +219,7 @@ public class ChunkedMigrationProcess
                     _logger.LogInformation("🚀 Processing {Count} large files in parallel with {Workers} workers",
                         largeFiles.Count, maxParallel);
 
-                    var semaphore = new SemaphoreSlim(maxParallel, maxParallel);
+                    using var semaphore = new SemaphoreSlim(maxParallel, maxParallel);
                     var processedCount = 0;
                     var lockObj = new object();
 
