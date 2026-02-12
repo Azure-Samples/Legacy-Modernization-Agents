@@ -119,6 +119,40 @@ public class SemanticUnitChunkerTests
     }
 
     [Fact]
+    public async Task ChunkFileAsync_NoSemanticUnits_LargeFile_FallsBackToLineBased()
+    {
+        // Arrange — simulates a pure-data copybook (no DIVISION/SECTION/PARAGRAPH)
+        var content = GenerateCopybookContent(5000);
+        var settings = new ChunkingSettings
+        {
+            EnableChunking = true,
+            MaxLinesPerChunk = 1000,
+            MaxTokensPerChunk = 28000,
+            OverlapLines = 100
+        };
+        var semanticUnits = new List<SemanticUnit>(); // empty — no divisions/sections
+
+        // Act
+        var chunks = await _chunker.ChunkFileAsync(content, "STRESSCOPY.cpy", semanticUnits, settings);
+
+        // Assert — should produce multiple line-based chunks instead of 0
+        chunks.Should().HaveCountGreaterThan(1,
+            "a large copybook with no semantic units must still be chunked via line-based fallback");
+        chunks.Should().AllSatisfy(c => c.SourceFile.Should().Be("STRESSCOPY.cpy"));
+
+        // Verify sequential indices and complete coverage
+        for (int i = 0; i < chunks.Count; i++)
+        {
+            chunks[i].ChunkIndex.Should().Be(i);
+            chunks[i].TotalChunks.Should().Be(chunks.Count);
+        }
+
+        // Verify no gaps: first chunk starts at line 1, last chunk reaches the end
+        chunks[0].StartLine.Should().Be(1);
+        chunks[^1].EndLine.Should().Be(5000);
+    }
+
+    [Fact]
     public void EstimateTokenCount_ReturnsReasonableValue()
     {
         // Arrange
@@ -215,5 +249,28 @@ public class SemanticUnitChunkerTests
             });
         }
         return units;
+    }
+
+    /// <summary>
+    /// Generates pure-data copybook content (no DIVISION/SECTION/PARAGRAPH markers).
+    /// </summary>
+    private static string GenerateCopybookContent(int lineCount)
+    {
+        var lines = new List<string>
+        {
+            "      * STRESS-COPY - generated copybook",
+            "       01  STRESS-ROOT."
+        };
+
+        var groupNum = 1;
+        while (lines.Count < lineCount)
+        {
+            lines.Add($"           05  SCB-GRP-{groupNum:D4}.");
+            lines.Add($"               10  SCB-FLD-{groupNum:D4}A  PIC X(20) VALUE SPACES.");
+            lines.Add($"               10  SCB-FLD-{groupNum:D4}B  PIC 9(09) COMP VALUE {groupNum}.");
+            groupNum++;
+        }
+
+        return string.Join("\n", lines.Take(lineCount));
     }
 }
