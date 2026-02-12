@@ -117,7 +117,17 @@ show_config_summary() {
     echo "  Endpoint: ${AZURE_OPENAI_ENDPOINT:-'NOT SET'}"
     echo "  Model ID: ${AZURE_OPENAI_MODEL_ID:-'NOT SET'}"
     echo "  Deployment: ${AZURE_OPENAI_DEPLOYMENT_NAME:-'NOT SET'}"
-    echo "  API Key: ${AZURE_OPENAI_API_KEY:0:10}... (${#AZURE_OPENAI_API_KEY} chars)"
+
+    # API key may be optional (e.g., when using Entra ID). Avoid misleading or leaking empty/placeholder values.
+    if [ -z "${AZURE_OPENAI_API_KEY}" ]; then
+        echo "  API Key: NOT SET (using Entra ID or other auth)"
+    elif [[ "${AZURE_OPENAI_API_KEY}" == *"your-"* ]] || [[ "${AZURE_OPENAI_API_KEY}" == *"placeholder"* ]]; then
+        echo "  API Key: PLACEHOLDER VALUE (update ai-config.local.env with a real key or use Entra ID)"
+    else
+        local key_length=${#AZURE_OPENAI_API_KEY}
+        local key_preview="${AZURE_OPENAI_API_KEY:0:4}"
+        echo "  API Key: ${key_preview}... (${key_length} chars)"
+    fi
     echo "  Source Folder: ${COBOL_SOURCE_FOLDER:-'SampleCobol'}"
     echo "  Output Folder: ${JAVA_OUTPUT_FOLDER:-'JavaOutput'}"
 }
