@@ -10,32 +10,24 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
 BOLD='\033[1m'
 NC='\033[0m' # No Color
 
 # Get repository root (directory containing this script)
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Determine the preferred dotnet CLI (favor .NET 9 installations when available)
+# Determine the preferred dotnet CLI (favor .NET 10 installations when available)
 detect_dotnet_cli() {
     local default_cli="dotnet"
     local cli_candidate="$default_cli"
 
-    # Check if default dotnet has .NET 9 runtime
+    # Check if default dotnet has .NET 10 runtime
     if command -v "$default_cli" >/dev/null 2>&1; then
-        if "$default_cli" --list-runtimes 2>/dev/null | grep -q "Microsoft.NETCore.App 9."; then
+        if "$default_cli" --list-runtimes 2>/dev/null | grep -q "Microsoft.NETCore.App 10."; then
             echo "$default_cli"
             return
         fi
-    fi
-
-    # Fallback: Check Homebrew .NET 9 location
-    local homebrew_dotnet9="/opt/homebrew/opt/dotnet/libexec/dotnet"
-    if [ -x "$homebrew_dotnet9" ]; then
-        export DOTNET_ROOT="/opt/homebrew/opt/dotnet/libexec"
-        export PATH="$DOTNET_ROOT:$PATH"
-        echo "$homebrew_dotnet9"
-        return
     fi
 
     # Use whatever dotnet is available
@@ -79,8 +71,6 @@ show_usage() {
     echo -e "  ${GREEN}resume${NC}          Resume interrupted migration"
     echo -e "  ${GREEN}monitor${NC}         Monitor migration progress"
     echo -e "  ${GREEN}chunking-health${NC} Check smart chunking infrastructure"
-    echo -e "  ${GREEN}chat-test${NC}       Test chat logging functionality"
-    echo -e "  ${GREEN}validate${NC}        Validate system requirements"
     echo -e "  ${GREEN}conversation${NC}    Start interactive conversation mode"
     echo
     echo -e "${BOLD}Examples:${NC}"
@@ -605,13 +595,13 @@ run_doctor() {
         read -p "Would you like me to create Config/ai-config.local.env from the template? (y/n): " create_local
         
         if [[ "$create_local" =~ ^[Yy]$ ]]; then
-            if [[ -f "$REPO_ROOT/Config/ai-config.local.env.template" ]]; then
-                cp "$REPO_ROOT/Config/ai-config.local.env.template" "$REPO_ROOT/Config/ai-config.local.env"
-                echo -e "${GREEN}✅ Created Config/ai-config.local.env from template${NC}"
+            if [[ -f "$REPO_ROOT/Config/ai-config.local.env.example" ]]; then
+                cp "$REPO_ROOT/Config/ai-config.local.env.example" "$REPO_ROOT/Config/ai-config.local.env"
+                echo -e "${GREEN}✅ Created Config/ai-config.local.env from example${NC}"
                 echo -e "${YELLOW}⚠️  You must edit this file with your actual AI service credentials before running the migration tool.${NC}"
                 local_config_exists=true
             else
-                echo -e "${RED}❌ Template file not found: Config/ai-config.local.env.template${NC}"
+                echo -e "${RED}❌ Example file not found: Config/ai-config.local.env.example${NC}"
             fi
         fi
         echo
@@ -714,6 +704,13 @@ run_doctor() {
 generate_migration_report() {
     echo -e "${BLUE}📝 Generating Migration Report...${NC}"
     
+    if ! command -v sqlite3 >/dev/null 2>&1; then
+        echo -e "${RED}❌ sqlite3 is not installed. Install it to generate reports.${NC}"
+        echo -e "${YELLOW}   macOS: brew install sqlite3${NC}"
+        echo -e "${YELLOW}   Linux: sudo apt install sqlite3${NC}"
+        return 1
+    fi
+
     local db_path="$REPO_ROOT/Data/migration.db"
     
     if [ ! -f "$db_path" ]; then
@@ -848,10 +845,10 @@ run_setup() {
 
     # Create local config from template
     echo -e "${BLUE}📁 Creating local configuration file...${NC}"
-    TEMPLATE_CONFIG="$REPO_ROOT/Config/ai-config.local.env.template"
+    TEMPLATE_CONFIG="$REPO_ROOT/Config/ai-config.local.env.example"
 
     if [ ! -f "$TEMPLATE_CONFIG" ]; then
-        echo -e "${RED}❌ Template configuration file not found: $TEMPLATE_CONFIG${NC}"
+        echo -e "${RED}❌ Example configuration file not found: $TEMPLATE_CONFIG${NC}"
         return 1
     fi
 
@@ -954,12 +951,12 @@ run_test() {
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}✅ .NET version: $dotnet_version${NC}"
         
-        # Check if it's .NET 9.0 or higher
+        # Check if it's .NET 10.0 or higher
         major_version=$(echo $dotnet_version | cut -d. -f1)
-        if [ "$major_version" -ge 9 ]; then
-            echo -e "${GREEN}✅ .NET 9.0+ requirement satisfied${NC}"
+        if [ "$major_version" -ge 10 ]; then
+            echo -e "${GREEN}✅ .NET 10.0+ requirement satisfied${NC}"
         else
-            echo -e "${YELLOW}⚠️  Warning: .NET 9.0+ recommended (current: $dotnet_version)${NC}"
+            echo -e "${YELLOW}⚠️  Warning: .NET 10.0+ recommended (current: $dotnet_version)${NC}"
         fi
     else
         echo -e "${RED}❌ .NET is not installed or not in PATH${NC}"
@@ -1690,112 +1687,6 @@ run_monitor() {
     tail -f "$REPO_ROOT/Logs"/*.log 2>/dev/null || echo "No active log files found"
 }
 
-# Function to test chat logging
-run_chat_test() {
-    echo -e "${BLUE}💬 Testing Chat Logging Functionality${NC}"
-    echo "====================================="
-
-    echo -e "${BLUE}Using dotnet CLI:${NC} $DOTNET_CMD"
-
-    # Load configuration
-    if ! load_configuration || ! load_ai_config; then
-        echo -e "${RED}❌ Configuration loading failed.${NC}"
-        return 1
-    fi
-
-    echo "Testing chat logging system..."
-    
-    # Run a simple test
-    export MIGRATION_DB_PATH="$REPO_ROOT/Data/migration.db"
-    "$DOTNET_CMD" run -- --test-chat-logging
-}
-
-# Function to validate system
-run_validate() {
-    echo -e "${BLUE}✅ System Validation${NC}"
-    echo "==================="
-
-    errors=0
-
-    # Check .NET
-    if command -v dotnet >/dev/null 2>&1; then
-        echo -e "${GREEN}✅ .NET CLI available${NC}"
-    else
-        echo -e "${RED}❌ .NET CLI not found${NC}"
-        ((errors++))
-    fi
-
-    # Check configuration files
-    required_files=(
-        "Config/ai-config.env"
-        "Config/load-config.sh"
-        "Config/appsettings.json"
-        "CobolToQuarkusMigration.csproj"
-        "Program.cs"
-    )
-
-    for file in "${required_files[@]}"; do
-    if [ -f "$REPO_ROOT/$file" ]; then
-            echo -e "${GREEN}✅ $file${NC}"
-        else
-            echo -e "${RED}❌ Missing: $file${NC}"
-            ((errors++))
-        fi
-    done
-
-    # Check directories
-    for dir in "source" "output"; do
-    if [ -d "$REPO_ROOT/$dir" ]; then
-            echo -e "${GREEN}✅ Directory: $dir${NC}"
-        else
-            echo -e "${YELLOW}⚠️  Creating directory: $dir${NC}"
-            mkdir -p "$REPO_ROOT/$dir"
-        fi
-    done
-
-    # Validate reverse engineering components
-    echo ""
-    echo "Checking reverse engineering feature..."
-    re_valid=0
-    [ -f "$REPO_ROOT/Models/BusinessLogic.cs" ] && ((re_valid++))
-    [ -f "$REPO_ROOT/Agents/BusinessLogicExtractorAgent.cs" ] && ((re_valid++))
-    [ -f "$REPO_ROOT/Processes/ReverseEngineeringProcess.cs" ] && ((re_valid++))
-    
-    if [ $re_valid -eq 3 ]; then
-        echo -e "${GREEN}✅ Reverse engineering feature: Complete (3/3 components)${NC}"
-    elif [ $re_valid -gt 0 ]; then
-        echo -e "${YELLOW}⚠️  Reverse engineering feature: Incomplete ($re_valid/3 components)${NC}"
-        ((errors++))
-    else
-        echo -e "${BLUE}ℹ️  Reverse engineering feature: Not installed (optional)${NC}"
-    fi
-    
-    # Validate smart chunking infrastructure (v0.2)
-    echo ""
-    echo "Checking smart chunking infrastructure (v0.2)..."
-    chunk_valid=0
-    [ -f "$REPO_ROOT/Processes/SmartMigrationOrchestrator.cs" ] && ((chunk_valid++))
-    [ -f "$REPO_ROOT/Processes/ChunkedMigrationProcess.cs" ] && ((chunk_valid++))
-    [ -f "$REPO_ROOT/Processes/ChunkedReverseEngineeringProcess.cs" ] && ((chunk_valid++))
-    [ -f "$REPO_ROOT/Chunking/ChunkingOrchestrator.cs" ] && ((chunk_valid++))
-    
-    if [ $chunk_valid -eq 4 ]; then
-        echo -e "${GREEN}✅ Smart chunking infrastructure: Complete (4/4 components)${NC}"
-    elif [ $chunk_valid -gt 0 ]; then
-        echo -e "${YELLOW}⚠️  Smart chunking infrastructure: Incomplete ($chunk_valid/4 components)${NC}"
-    else
-        echo -e "${YELLOW}⚠️  Smart chunking infrastructure: Not found${NC}"
-    fi
-
-    if [ $errors -eq 0 ]; then
-        echo -e "${GREEN}🎉 System validation passed!${NC}"
-        return 0
-    else
-        echo -e "${RED}❌ System validation failed with $errors errors${NC}"
-        return 1
-    fi
-}
-
 # Function for conversation mode
 run_conversation() {
     echo -e "${BLUE}💭 Interactive Conversation Mode${NC}"
@@ -2075,12 +1966,6 @@ main() {
             ;;
         "monitor")
             run_monitor
-            ;;
-        "chat-test")
-            run_chat_test
-            ;;
-        "validate")
-            run_validate
             ;;
         "conversation")
             run_conversation
