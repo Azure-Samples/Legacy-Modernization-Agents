@@ -351,13 +351,13 @@ run_doctor() {
         read -p "Would you like me to create Config/ai-config.local.env from the template? (y/n): " create_local
         
         if [[ "$create_local" =~ ^[Yy]$ ]]; then
-            if [[ -f "$REPO_ROOT/Config/ai-config.local.env.template" ]]; then
-                cp "$REPO_ROOT/Config/ai-config.local.env.template" "$REPO_ROOT/Config/ai-config.local.env"
+            if [[ -f "$REPO_ROOT/Config/ai-config.local.env.example" ]]; then
+                cp "$REPO_ROOT/Config/ai-config.local.env.example" "$REPO_ROOT/Config/ai-config.local.env"
                 echo -e "${GREEN}✅ Created Config/ai-config.local.env from template${NC}"
                 echo -e "${YELLOW}⚠️  You must edit this file with your actual Azure OpenAI credentials before running the migration tool.${NC}"
                 local_config_exists=true
             else
-                echo -e "${RED}❌ Template file not found: Config/ai-config.local.env.template${NC}"
+                echo -e "${RED}❌ Template file not found: Config/ai-config.local.env.example${NC}"
             fi
         fi
         echo
@@ -384,8 +384,13 @@ run_doctor() {
             for var in "${required_vars[@]}"; do
                 value="${!var}"
                 if [[ -z "$value" ]]; then
-                    echo -e "${RED}❌ Missing: $var${NC}"
-                    config_valid=false
+                    # API key is optional (Azure AD auth supported)
+                    if [[ "$var" == "AZURE_OPENAI_API_KEY" ]]; then
+                        echo -e "${BLUE}ℹ️  $var: (empty - will use Azure AD/DefaultAzureCredential)${NC}"
+                    else
+                        echo -e "${RED}❌ Missing: $var${NC}"
+                        config_valid=false
+                    fi
                 elif [[ "$value" == *"your-"* ]]; then
                     echo -e "${YELLOW}⚠️  Template placeholder detected in $var: $value${NC}"
                     config_valid=false
@@ -399,6 +404,16 @@ run_doctor() {
                     fi
                 fi
             done
+            
+            # Show authentication method summary
+            echo ""
+            api_key_value="${AZURE_OPENAI_API_KEY:-}"
+            if [[ -n "$api_key_value" && "$api_key_value" != *"your-"* ]]; then
+                echo -e "${GREEN}🔑 Authentication Method: API Key${NC}"
+            else
+                echo -e "${BLUE}🔐 Authentication Method: Azure AD (DefaultAzureCredential)${NC}"
+                echo -e "${YELLOW}   ⚠️  Ensure you've run 'az login' before starting migration${NC}"
+            fi
             
             echo
             
@@ -584,7 +599,7 @@ run_setup() {
 
     # Create local config from template
     echo -e "${BLUE}📁 Creating local configuration file...${NC}"
-    TEMPLATE_CONFIG="$REPO_ROOT/Config/ai-config.local.env.template"
+    TEMPLATE_CONFIG="$REPO_ROOT/Config/ai-config.local.env.example"
 
     if [ ! -f "$TEMPLATE_CONFIG" ]; then
         echo -e "${RED}❌ Template configuration file not found: $TEMPLATE_CONFIG${NC}"

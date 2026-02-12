@@ -1,13 +1,15 @@
 # Legacy Modernization Agents to migrate COBOL to Java or C# developed with the Semantic Kernel Process Function
 
-This open source migration framework was developed to demonstrate AI Agents capabilities for converting legacy code like COBOL to Java or C# .NET. Each Agent has a persona that can be edited depending on the desired outcome.
-The migration is using Semantic Kernel Process Function where it does analysis of the COBOL code and it's dependencies. This information is then used to convert to either Java Quarkus or C# .NET (user's choice).
+This open source migration framework was developed to demonstrate Multi-agentic capabilities for converting legacy code like COBOL to Java or C# .NET. Each Agent has a persona that can be edited depending on the desired outcome.
+This migration tool is using the Semantic Kernel Process Function to analyse the the legacy code and its dependencies. This information is then used to convert to either Java Quarkus or C# .NET (user's choice).
+
+Currently we are focusing on COBOL to Java Quarkus or .NET but we aspire to develop the framework further so that it can be used for any legacy language and target language.
 
 ## Acknowledgements of collaboration
 This project is a collaboration between Microsoft's Global Black Belt team and [Bankdata](https://www.bankdata.dk/). If you want to learn more about the collaboration and background of this project, have a look at [this](https://aka.ms/cobol-blog) and [this](https://www.bankdata.dk/about/news/microsoft-and-bankdata-launch-open-source-ai-framework-for-modernizing-legacy-systems) blog post.
 
 ## Call-to-Action
-We are looking for real COBOL code to further improve this framework. If you want to actively collaborate, please reach out to us by opening an issue in this repository. - Gustav Kaleta & Julia Kordick
+We are looking for real COBOL and other legacy code to further improve this framework. If you want to actively collaborate, please reach out to us by opening an issue or pull request in this repository. - Gustav Kaleta & Julia Kordick
 
 # Want to see the framework in action?
 Have a look at the talk Julia did at the WeAreDevelopers World Congress 2025: https://www.youtube.com/watch?v=62OI_y-KRlw
@@ -25,17 +27,16 @@ Have a look at the talk Julia did at the WeAreDevelopers World Congress 2025: ht
 
 ### Prerequisites Checklist
 
-- [ ] Docker Desktop installed and running
-- [ ] .NET 9.0 SDK installed (`dotnet --version` shows 9.0.x) - [Download](https://dotnet.microsoft.com/download/dotnet/9.0)
-- [ ] Azure OpenAI credentials ready (endpoint + API key) - GPT-5 and codex recommended
-- [ ] 8GB RAM minimum, 16GB recommended
+#### When you want to use the dev container
+- [ ] AI credentials ready (e.g. Azure OpenAI or AI Foundry) (endpoint + API key) - currently we recommend GPT-5 and codex models
 - [ ] Modern browser (Chrome, Edge, Firefox, Safari)
 
-> **Note:** Hybrid database architecture: SQLite (metadata) + Neo4j (dependency graphs)
+#### Additionally needed if you want to run completely locally
+ - [ ] Docker Desktop installed and running
+ - [ ] .NET 9.0 SDK installed (`dotnet --version` shows 9.0.x) - [Download](https://dotnet.microsoft.com/download/dotnet/9.0)
+ - [ ] 8GB RAM minimum, 16GB recommended
 
 ### ⚡ Fast Track Setup (Dev Container)
-
-**Best for:** Team collaboration, consistent environment
 
 ```bash
 # 1. Clone repository
@@ -48,31 +49,25 @@ code .
 # 3. When prompted, click "Reopen in Container"
 # Wait 3-5 minutes for first-time setup
 
-# 4. Configure Azure OpenAI (in container terminal)
+# 4. Configure AI endpoint (in container terminal)
 cp Config/ai-config.local.env.example Config/ai-config.local.env
 nano Config/ai-config.local.env
 # Edit: AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME
 
-# 5. Run demo
+# 5. After setting up the AI config, verify setup with
+./doctor.sh doctor
+
+# 6. (optional) Run demo
 ./helper-scripts/demo.sh
-# OR if in devcontainer, simply use:
-demo
 ```
 
-✅ **Done!** Portal opens at http://localhost:5028
+If you run the demo, the portal opens at http://localhost:5028 ✅
 
 <img width="1715" height="963" alt="Portal experience with metadata and graph data fronted by MCP" src="gifdemowithgraphandreportign.gif" />
-
-**Fully automated environment** with .NET 9, Java 17, Neo4j, SQLite, Azure CLI, and pre-configured VS Code extensions.
-
-**Included:** C# Dev Kit, Java Pack, Quarkus, Semantic Kernel, Neo4j, SQLite extensions  
-**Aliases:** `demo`, `migration-run`, `portal-start`, `neo4j-status`
 
 ---
 
 ### 🔧 Manual Setup (Local Development)
-
-**Best for:** Experienced developers, custom configurations
 
 #### Step 1: Install Prerequisites
 
@@ -106,29 +101,52 @@ docker ps | grep neo4j
 # Wait 30 seconds for Neo4j to be ready
 ```
 
-#### Step 3: Configure Azure OpenAI
+#### Step 3: Configure AI endpoint(s) 
 
 ```bash
 # Copy template
-cp Config/ai-config.local.env.example Config/ai-config.local.env
+cp Config/ai-config.local.env.template Config/ai-config.local.env
 
 # Edit with your credentials
 nano Config/ai-config.local.env
 ```
 
-**Required values:**
+##### Step 3.1: Authentication via API key
+
 ```bash
 AZURE_OPENAI_ENDPOINT="https://YOUR-RESOURCE.openai.azure.com/"
-AZURE_OPENAI_API_KEY="your-32-character-key-here"
+AZURE_OPENAI_API_KEY="12345678901234567890123456"  # your 32-character key here
 AZURE_OPENAI_DEPLOYMENT_NAME="gpt-5-mini-2"
 ```
 
-**Find your values:**
-- Endpoint: Azure Portal → OpenAI Resource → Keys and Endpoint → Endpoint
-- API Key: Azure Portal → OpenAI Resource → Keys and Endpoint → Key 1
+##### Step 3.2: Authentication via az login
+
+Instead of using an API key, you can authenticate via the Azure CLI. Add the following to `Config/ai-config.local.env`:
+
+```bash
+AZURE_OPENAI_ENDPOINT="https://YOUR-RESOURCE.openai.azure.com/"
+AZURE_OPENAI_API_KEY="your-32-character-key-here"  # keep the default value here
+AZURE_OPENAI_DEPLOYMENT_NAME="gpt-5-mini-2"
+```
+
+Open your terminal, ensure the Azure CLI is installed and run:
+```bash
+az login
+```
+
+**Find your values (in Azure):**
+- Endpoint: Azure Portal → OpenAI/AI Foundry Resource → Keys and Endpoint → Endpoint
+- API Key: Azure Portal → OpenAI/AI Foundry Resource → Keys and Endpoint → Key 1
 - Deployment: Your deployment name (e.g., "gpt-5-mini-2" or "gpt-4o")
 
-#### Step 4: Build Project
+#### Step 4: Verify your setup
+```bash
+# run
+./doctor.sh doctor
+```
+If you setup the API key authentication there should be no warnings. If you are using az login there will be a warning about the API key but that is expected.
+
+#### Step 5: Build Project
 
 ```bash
 # Restore dependencies
@@ -136,25 +154,16 @@ dotnet restore
 
 # Build solution
 dotnet build
-
-# Verify zero warnings
-# Output should show: "0 Warning(s), 0 Error(s)"
 ```
 
-#### Step 5: Run Demo
+#### Step 6: (optional) run demo
 
 ```bash
 # One command to start everything
 ./helper-scripts/demo.sh
-# OR if in devcontainer:
-demo
-
-# Or manual steps:
-# 1. Ensure Neo4j is running
-# 2. cd McpChatWeb
-# 3. dotnet run
-# 4. Open http://localhost:5028
 ```
+
+The portal should open automatically at http://localhost:5028 ✅
 
 ---
 
@@ -357,7 +366,7 @@ docker-compose up -d neo4j
 curl http://localhost:7474
 ```
 
-#### Issue: "Azure OpenAI API error"
+#### Issue: "AI endpoint API errors"
 
 **Solution:**
 ```bash
@@ -365,8 +374,8 @@ curl http://localhost:7474
 ./doctor.sh doctor
 
 # Verify endpoint ends with /
-# Verify API key is 32 characters
-# Verify deployment name matches your Azure OpenAI deployment (e.g., "gpt-5-mini-2")
+# Verify API key is correct or you authenticated via az login
+# Verify deployment name matches your AI deployment (e.g., "gpt-5-mini-2")
 
 # Test connection
 ./doctor.sh test
@@ -411,10 +420,9 @@ You're all set when:
 - ✅ Graph displays nodes and edges
 - ✅ File analysis returns detailed data
 - ✅ Multi-run queries work
-- ✅ Zero build warnings
 - ✅ Neo4j accessible at http://localhost:7474
 
-**Time to start migrating COBOL! 🚀**
+**Time to start migrating legacy code! 🚀**
 
 ---
 
@@ -422,7 +430,7 @@ You're all set when:
 <img width="1715" height="963" alt="Portal with metadata and graph visualization" src="https://github.com/user-attachments/assets/c1faca51-dc21-41cf-9a51-70da5a3c8255" />
 <img width="802" height="855" alt="MCP fronting Neo4j with Azure OpenAI" src="https://github.com/user-attachments/assets/2b93d018-0d54-479a-a090-2d6eb40f391e" />
 
-## ✨ Features
+## ✨ Current features
 
 ### 1. 🔄 Dual Language Support (Java & C#)
 
@@ -436,7 +444,7 @@ You're all set when:
 
 **Extract Business Logic Without Full Migration:**
 - Standalone `reverse-engineer` command
-- Generates human-readable documentation from COBOL
+- Generates human-readable documentation from legacy code.
 - Produces business features, user stories, and domain models
 - Glossary support (`Data/glossary.json`) translates technical terms
 - Output: Comprehensive markdown with business rules and architecture
@@ -671,13 +679,6 @@ Access comprehensive data access documentation directly in the portal via the **
 ```bash
 GET /api/data-retrieval-guide
 ```
-
-**Modal Features:**
-- Dark theme matching portal design
-- Syntax highlighting for code blocks
-- Organized in collapsible sections
-- Close with X button or click outside
-
 ---
 
 ## �🏗️ Complete Architecture
@@ -709,7 +710,7 @@ flowchart TB
     
     subgraph ACCESS["🌐 Access Layer"]
         MCP["🎯 MCP Server<br/>JSON-RPC API"]
-        PORTAL["🖥️ Web Portal<br/>localhost:5250"]
+        PORTAL["🖥️ Web Portal<br/>localhost:5028"]
         BROWSER["🔍 Neo4j Browser<br/>localhost:7474"]
     end
     
@@ -785,11 +786,11 @@ flowchart TB
 
 ### 🖼️ Three-Panel Portal UI
 
-The web portal at `localhost:5250` features a modern three-panel layout:
+The web portal at `localhost:5028` features a modern three-panel layout:
 
 ```mermaid
 graph TB
-    subgraph PORTAL["🌐 Web Portal Layout (localhost:5250)"]
+    subgraph PORTAL["🌐 Web Portal Layout (localhost:5028)"]
         direction LR
         subgraph LEFT["📋 Left Panel<br/>(300px)"]
             RESOURCES["MCP Resources<br/>• Migration Runs<br/>• COBOL Files<br/>• Dependencies<br/>• Java Files<br/>• Graph Queries"]
@@ -934,63 +935,15 @@ sequenceDiagram
 5. `McpServer` exposes data via MCP resources; `McpChatWeb` surfaces chat, graphs, reports.
 6. Portal and MCP clients display progress, allow queries, and fetch generated artifacts.
 
-### 🔐 Configure Azure OpenAI Credentials
+### 🔐 AI Authentication
 
-The project requires Azure OpenAI for **two purposes**:
+The project uses AI for migration agents and the MCP chat server. Both share the same configuration from `Config/ai-config.local.env`.
 
-1. **Migration Agents** (CobolAnalyzer, JavaConverter, DependencyMapper) - For code analysis and conversion
-2. **MCP Chat Server** - For natural language queries about migration data
+Two authentication methods are supported:
+- **API Key** — set `AZURE_OPENAI_API_KEY` in your config file
+- **Azure AD** — leave the API key empty and run `az login` before starting
 
-**Both use the same Azure OpenAI configuration** from `Config/appsettings.json`.
-
-The project uses a secure two-file configuration system:
-
-1. **`Config/ai-config.env`** - Template with default values (✅ safe to commit)
-2. **`Config/ai-config.local.env`** - Your actual credentials (❌ never commit)
-
-**Setup your credentials:**
-
-```bash
-# 1. Copy the template to create your local config
-cp Config/ai-config.local.env.example Config/ai-config.local.env
-
-# 2. Edit your local config with real values
-nano Config/ai-config.local.env
-```
-
-**In `Config/ai-config.local.env`, update these lines:**
-```bash
-# Replace with your actual Azure OpenAI endpoint
-AZURE_OPENAI_ENDPOINT="https://YOUR-RESOURCE-NAME.openai.azure.com/"
-
-# Replace with your actual API key  
-AZURE_OPENAI_API_KEY="your-32-character-api-key-here"
-
-# Update deployment name to match your Azure setup
-# Mini is a cheaper version and typically faster when testing
-AZURE_OPENAI_DEPLOYMENT_NAME="gpt-5-mini-2"
-```
-
-**🔍 How to find your Azure OpenAI values:**
-- **Endpoint**: Azure Portal → Your OpenAI Resource → "Resource Management" → "Keys and Endpoint" → Endpoint
-- **API Key**: Azure Portal → Your OpenAI Resource → "Resource Management" → "Keys and Endpoint" → Key 1
-- **Deployment Name**: Azure AI Foundry → Your deployment name (e.g., "gpt-5-mini-2" or "gpt-4o")
-
-**📋 Example `ai-config.local.env` with real values:**
-```bash
-# Example - replace with your actual values
-AZURE_OPENAI_ENDPOINT="https://my-company-openai.openai.azure.com/"
-AZURE_OPENAI_API_KEY="1234567890abcdef1234567890abcdef"
-AZURE_OPENAI_DEPLOYMENT_NAME="gpt-5-mini-2"
-AZURE_OPENAI_MODEL_ID="gpt-5-mini"
-```
-
-**⚠️ IMPORTANT**: 
-- Make sure your endpoint ends with `/`
-- API key should be 32 characters long
-- Deployment name must match your Azure OpenAI deployment (e.g., "gpt-5-mini-2", "gpt-4o")
-
-**Usage:** Same credentials power both migration agents and MCP chat server via `Config/appsettings.json`
+For full setup instructions, see [Step 3: Configure AI endpoint(s)](#step-3-configure-ai-endpoints) above.
 
 ### Neo4j Database
 
@@ -1052,7 +1005,7 @@ The `doctor.sh` script provides three distinct migration workflows:
 - Skips reverse engineering entirely
 - Only performs COBOL to Java Quarkus or C# .NET conversion (you choose)
 - Generates Java/C# code and migration reports
-- **✅ Launches web UI** at http://localhost:5250
+- **✅ Launches web UI** at http://localhost:5028
 - Use when: You already have documentation or just need code conversion
 
 ### Other Doctor.sh Commands
@@ -1070,6 +1023,9 @@ The `doctor.sh` script provides three distinct migration workflows:
 ```
 
 ### Direct .NET Commands
+
+> **Note:** While you can use the .NET CLI directly, we recommend using `./doctor.sh` instead — it handles configuration validation, Neo4j startup, target language selection, portal auto-launch, and report generation for you.
+
 ```bash
 # Full migration with reverse engineering
 dotnet run -- --source ./source
@@ -1091,7 +1047,7 @@ dotnet run conversation
 
 ## Step-by-Step Guide
 
-1. **Configure:** `cp Config/ai-config.local.env.example Config/ai-config.local.env` → Add Azure OpenAI endpoint, API key, deployment name
+1. **Configure:** `cp Config/ai-config.local.env.example Config/ai-config.local.env` → Add AI endpoint, deployment name, and either API key or use `az login`
 2. **Add COBOL files:** Place your COBOL files in `./source/`
 3. **Run:** `./doctor.sh run` - Analyzes, converts (choose Java or C#), launches portal at http://localhost:5028
 4. **Choose target:** Select Java Quarkus or C# .NET when prompted

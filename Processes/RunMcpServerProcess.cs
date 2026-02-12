@@ -2,6 +2,7 @@ using System.IO;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Azure.Identity;
 using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
@@ -40,7 +41,7 @@ public sealed class RunMcpServerProcess
         _logger = logger;
         _aiSettings = aiSettings;
         
-        if (_aiSettings != null && !string.IsNullOrEmpty(_aiSettings.Endpoint) && !string.IsNullOrEmpty(_aiSettings.ApiKey))
+        if (_aiSettings != null && !string.IsNullOrEmpty(_aiSettings.Endpoint))
         {
             try
             {
@@ -51,10 +52,20 @@ public sealed class RunMcpServerProcess
                     deploymentName = _aiSettings.ModelId;
                 }
                 
-                kernelBuilder.AddAzureOpenAIChatCompletion(
-                    deploymentName: deploymentName!,
-                    endpoint: _aiSettings.Endpoint,
-                    apiKey: _aiSettings.ApiKey);
+                if (!string.IsNullOrEmpty(_aiSettings.ApiKey))
+                {
+                    kernelBuilder.AddAzureOpenAIChatCompletion(
+                        deploymentName: deploymentName!,
+                        endpoint: _aiSettings.Endpoint,
+                        apiKey: _aiSettings.ApiKey);
+                }
+                else
+                {
+                    kernelBuilder.AddAzureOpenAIChatCompletion(
+                        deploymentName: deploymentName!,
+                        endpoint: _aiSettings.Endpoint,
+                        credentials: new DefaultAzureCredential());
+                }
                 
                 _kernel = kernelBuilder.Build();
                 _modelId = deploymentName;

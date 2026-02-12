@@ -1,4 +1,5 @@
-﻿using CobolToQuarkusMigration.Helpers;
+﻿using Azure.Identity;
+using CobolToQuarkusMigration.Helpers;
 using CobolToQuarkusMigration.Models;
 using CobolToQuarkusMigration.Persistence;
 using CobolToQuarkusMigration.Processes;
@@ -340,11 +341,10 @@ internal static class Program
                 Environment.Exit(1);
             }
 
-            if (string.IsNullOrEmpty(settings.AISettings.ApiKey) ||
-                string.IsNullOrEmpty(settings.AISettings.Endpoint) ||
+            if (string.IsNullOrEmpty(settings.AISettings.Endpoint) ||
                 string.IsNullOrEmpty(settings.AISettings.DeploymentName))
             {
-                logger.LogError("Azure OpenAI configuration incomplete. Please ensure API key, endpoint, and deployment name are configured.");
+                logger.LogError("Azure OpenAI configuration incomplete. Please ensure endpoint and deployment name are configured.");
                 logger.LogError("You can set them in Config/ai-config.local.env or as environment variables.");
                 Environment.Exit(1);
             }
@@ -353,6 +353,11 @@ internal static class Program
 
             if (settings.AISettings.ServiceType.Equals("OpenAI", StringComparison.OrdinalIgnoreCase))
             {
+                if (string.IsNullOrEmpty(settings.AISettings.ApiKey))
+                {
+                    logger.LogError("OpenAI API key is required for OpenAI service.");
+                    Environment.Exit(1);
+                }
                 kernelBuilder.AddOpenAIChatCompletion(
                     modelId: settings.AISettings.ModelId,
                     apiKey: settings.AISettings.ApiKey);
@@ -364,13 +369,28 @@ internal static class Program
                     Timeout = TimeSpan.FromMinutes(10)
                 };
 
-                kernelBuilder.AddAzureOpenAIChatCompletion(
-                    deploymentName: settings.AISettings.DeploymentName,
-                    endpoint: settings.AISettings.Endpoint,
-                    apiKey: settings.AISettings.ApiKey,
-                    httpClient: httpClient);
+                if (!string.IsNullOrEmpty(settings.AISettings.ApiKey))
+                {
+                    kernelBuilder.AddAzureOpenAIChatCompletion(
+                        deploymentName: settings.AISettings.DeploymentName,
+                        endpoint: settings.AISettings.Endpoint,
+                        apiKey: settings.AISettings.ApiKey,
+                        httpClient: httpClient);
 
-                logger.LogInformation("Using Azure OpenAI service with endpoint: {Endpoint} and deployment: {DeploymentName}",
+                    logger.LogInformation("Using Azure OpenAI service with API key authentication");
+                }
+                else
+                {
+                    kernelBuilder.AddAzureOpenAIChatCompletion(
+                        deploymentName: settings.AISettings.DeploymentName,
+                        endpoint: settings.AISettings.Endpoint,
+                        credentials: new DefaultAzureCredential(),
+                        httpClient: httpClient);
+
+                    logger.LogInformation("Using Azure OpenAI service with Azure AD (DefaultAzureCredential) authentication");
+                }
+
+                logger.LogInformation("Endpoint: {Endpoint}, Deployment: {DeploymentName}",
                     settings.AISettings.Endpoint,
                     settings.AISettings.DeploymentName);
             }
@@ -515,7 +535,7 @@ internal static class Program
             else
             {
                 Console.WriteLine("💡 Consider creating Config/ai-config.local.env for your personal settings");
-                Console.WriteLine("   You can copy from Config/ai-config.local.env.template");
+                Console.WriteLine("   You can copy from Config/ai-config.local.env.example");
             }
 
             // Then load template config to fill in any missing values
@@ -654,13 +674,16 @@ internal static class Program
         {
             LoadEnvironmentVariables();
 
+            // API key is optional - if not provided, Azure AD (DefaultAzureCredential) will be used
             var requiredSettings = new Dictionary<string, string?>
             {
                 ["AZURE_OPENAI_ENDPOINT"] = Environment.GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT"),
-                ["AZURE_OPENAI_API_KEY"] = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_KEY"),
                 ["AZURE_OPENAI_DEPLOYMENT_NAME"] = Environment.GetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT_NAME"),
                 ["AZURE_OPENAI_MODEL_ID"] = Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL_ID")
             };
+            
+            // API key is optional (for Azure AD auth support)
+            var optionalApiKey = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_KEY");
 
             var missingSettings = new List<string>();
             var invalidSettings = new List<string>();
@@ -677,15 +700,17 @@ internal static class Program
                     {
                         invalidSettings.Add($"{setting.Key} (invalid URL format)");
                     }
-                    else if (setting.Key == "AZURE_OPENAI_API_KEY" && setting.Value.Contains("your-api-key"))
-                    {
-                        invalidSettings.Add($"{setting.Key} (contains template placeholder)");
-                    }
                     else if (setting.Key == "AZURE_OPENAI_ENDPOINT" && setting.Value.Contains("your-resource"))
                     {
                         invalidSettings.Add($"{setting.Key} (contains template placeholder)");
                     }
                 }
+            }
+            
+            // Check optional API key for template placeholders (if provided, it should be valid)
+            if (!string.IsNullOrEmpty(optionalApiKey) && optionalApiKey.Contains("your-api-key"))
+            {
+                invalidSettings.Add("AZURE_OPENAI_API_KEY (contains template placeholder)");
             }
 
             if (missingSettings.Any() || invalidSettings.Any())
@@ -717,7 +742,7 @@ internal static class Program
 
                 Console.WriteLine("Configuration Setup Instructions:");
                 Console.WriteLine("1. Run: ./setup.sh (for interactive setup)");
-                Console.WriteLine("2. Or manually copy Config/ai-config.local.env.template to Config/ai-config.local.env");
+                Console.WriteLine("2. Or manually copy Config/ai-config.local.env.example to Config/ai-config.local.env");
                 Console.WriteLine("3. Edit Config/ai-config.local.env with your actual Azure OpenAI credentials");
                 Console.WriteLine("4. Ensure your model deployment names match your Azure OpenAI setup");
                 Console.WriteLine();
@@ -736,7 +761,18 @@ internal static class Program
             Console.WriteLine($"Endpoint: {endpoint}");
             Console.WriteLine($"Model: {modelId}");
             Console.WriteLine($"Deployment: {deployment}");
-            Console.WriteLine($"API Key: {apiKey?.Substring(0, Math.Min(8, apiKey.Length))}... ({apiKey?.Length} chars)");
+            
+            // Show authentication method
+            if (!string.IsNullOrEmpty(apiKey))
+            {
+                Console.WriteLine($"API Key: {apiKey.Substring(0, Math.Min(8, apiKey.Length))}... ({apiKey.Length} chars)");
+                Console.WriteLine("🔑 Authentication: API Key");
+            }
+            else
+            {
+                Console.WriteLine("🔐 Authentication: Azure AD (DefaultAzureCredential)");
+                Console.WriteLine("   ⚠️  Ensure you've run 'az login' before starting migration");
+            }
             Console.WriteLine();
 
             return true;
@@ -774,11 +810,10 @@ internal static class Program
                 Environment.Exit(1);
             }
 
-            if (string.IsNullOrEmpty(settings.AISettings.ApiKey) ||
-                string.IsNullOrEmpty(settings.AISettings.Endpoint) ||
+            if (string.IsNullOrEmpty(settings.AISettings.Endpoint) ||
                 string.IsNullOrEmpty(settings.AISettings.DeploymentName))
             {
-                logger.LogError("Azure OpenAI configuration incomplete. Please ensure API key, endpoint, and deployment name are configured.");
+                logger.LogError("Azure OpenAI configuration incomplete. Please ensure endpoint and deployment name are configured.");
                 Environment.Exit(1);
             }
 
@@ -791,16 +826,34 @@ internal static class Program
                     Timeout = TimeSpan.FromMinutes(10)
                 };
 
-                kernelBuilder.AddAzureOpenAIChatCompletion(
-                    deploymentName: settings.AISettings.DeploymentName,
-                    endpoint: settings.AISettings.Endpoint,
-                    apiKey: settings.AISettings.ApiKey,
-                    httpClient: httpClient);
+                if (!string.IsNullOrEmpty(settings.AISettings.ApiKey))
+                {
+                    kernelBuilder.AddAzureOpenAIChatCompletion(
+                        deploymentName: settings.AISettings.DeploymentName,
+                        endpoint: settings.AISettings.Endpoint,
+                        apiKey: settings.AISettings.ApiKey,
+                        httpClient: httpClient);
 
-                logger.LogInformation("Using Azure OpenAI service");
+                    logger.LogInformation("Using Azure OpenAI service with API key authentication");
+                }
+                else
+                {
+                    kernelBuilder.AddAzureOpenAIChatCompletion(
+                        deploymentName: settings.AISettings.DeploymentName,
+                        endpoint: settings.AISettings.Endpoint,
+                        credentials: new DefaultAzureCredential(),
+                        httpClient: httpClient);
+
+                    logger.LogInformation("Using Azure OpenAI service with Azure AD (DefaultAzureCredential) authentication");
+                }
             }
             else
             {
+                if (string.IsNullOrEmpty(settings.AISettings.ApiKey))
+                {
+                    logger.LogError("OpenAI API key is required for OpenAI service.");
+                    Environment.Exit(1);
+                }
                 kernelBuilder.AddOpenAIChatCompletion(
                     modelId: settings.AISettings.ModelId,
                     apiKey: settings.AISettings.ApiKey);
