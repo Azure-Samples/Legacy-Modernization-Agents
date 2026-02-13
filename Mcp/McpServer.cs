@@ -412,7 +412,6 @@ public sealed class McpServer
         }
 
         var name = request.Params.Value.GetProperty("name").GetString();
-        var arguments = request.Params.Value.GetProperty("arguments");
 
         switch (name)
         {
