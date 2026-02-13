@@ -454,4 +454,32 @@ public class FileHelper
         await File.WriteAllTextAsync(filePath, json);
         _logger.LogInformation("Dependency map saved: {FilePath}", filePath);
     }
+
+    /// <summary>
+    /// Loads the glossary from disk.
+    /// </summary>
+    /// <returns>The glossary or null if not found.</returns>
+    public async Task<Glossary?> LoadGlossaryAsync()
+    {
+        var glossaryPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Data", "glossary.json");
+        if (!File.Exists(glossaryPath))
+        {
+            _logger.LogWarning("Glossary file not found at {Path}", glossaryPath);
+            return null;
+        }
+
+        try
+        {
+            var content = await File.ReadAllTextAsync(glossaryPath);
+            return System.Text.Json.JsonSerializer.Deserialize<Glossary>(content, new System.Text.Json.JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to load glossary from {Path}", glossaryPath);
+            return null;
+        }
+    }
 }

@@ -3,24 +3,44 @@
 const modal = document.getElementById('allRunsModal');
 const btn = document.getElementById('showAllRunsBtn');
 const span = document.getElementsByClassName('close')[0];
+let runsPollingInterval = null;
 
 // Open modal
 btn.onclick = function() {
   modal.style.display = 'block';
   loadAllRuns();
+  startRunsPolling();
 };
 
 // Close modal
 span.onclick = function() {
   modal.style.display = 'none';
+  stopRunsPolling();
 };
 
 // Close on outside click
 window.onclick = function(event) {
   if (event.target == modal) {
     modal.style.display = 'none';
+    stopRunsPolling();
   }
 };
+
+function startRunsPolling() {
+  if (runsPollingInterval) clearInterval(runsPollingInterval);
+  runsPollingInterval = setInterval(() => {
+    if (modal.style.display === 'block') {
+      loadAllRuns(true); // silent refresh
+    }
+  }, 10000);
+}
+
+function stopRunsPolling() {
+  if (runsPollingInterval) {
+    clearInterval(runsPollingInterval);
+    runsPollingInterval = null;
+  }
+}
 
 // Tab switching
 document.querySelectorAll('.tab-button').forEach(button => {
@@ -44,23 +64,31 @@ document.querySelectorAll('.tab-button').forEach(button => {
 });
 
 // Load all runs from API
-async function loadAllRuns() {
+async function loadAllRuns(silent = false) {
   try {
     const response = await fetch('/api/runs/all');
     const data = await response.json();
     
     const runsList = document.getElementById('runsList');
-    runsList.innerHTML = '';
+    if (!silent) runsList.innerHTML = '';
     
-    if (data.runs && data.runs.length > 0) {
-      runsList.innerHTML = '<p>Click on any run to view its dependencies:</p>';
+    const runsPayload = data.runsDetailed || data.runs || [];
+
+    if (runsPayload.length > 0) {
+      if (!silent) runsList.innerHTML = '<p>Click on any run to view its dependencies:</p>';
       
-      data.runs.forEach(runId => {
+      // If silent, compare logic could be added here to avoid full redraw
+      // For now, full redraw is simple and effective for small lists
+      const tempContainer = document.createElement('div');
+      
+      runsPayload.forEach(run => {
+        const runId = run.id ?? run; // support legacy numeric shape
+        const status = run.status || 'Unknown';
         const runCard = document.createElement('div');
         runCard.className = 'run-card';
         runCard.innerHTML = `
           <div class="run-header">
-            <h4>🔹 Run ${runId}</h4>
+            <h4>🔹 Run ${runId} (${status})</h4>
             <div style="display: flex; gap: 0.5rem;">
               <button onclick="loadRunDetails(${runId})" class="load-btn">View Dependencies</button>
               <button onclick="generateRunReport(${runId})" class="load-btn" style="background: rgba(16, 185, 129, 0.2); border-color: rgba(16, 185, 129, 0.4); color: #10b981;">📄 Generate Report</button>
@@ -68,14 +96,16 @@ async function loadAllRuns() {
           </div>
           <div id="run-${runId}-details" class="run-details"></div>
         `;
-        runsList.appendChild(runCard);
+        tempContainer.appendChild(runCard);
       });
+      
+      runsList.innerHTML = tempContainer.innerHTML;
     } else {
       runsList.innerHTML = '<p>No migration runs found.</p>';
     }
   } catch (error) {
     console.error('Error loading runs:', error);
-    document.getElementById('runsList').innerHTML = '<p class="error">Error loading runs.</p>';
+    if (!silent) document.getElementById('runsList').innerHTML = '<p class="error">Error loading runs.</p>';
   }
 }
 
@@ -180,6 +210,36 @@ const archBtn = document.getElementById('showArchitectureBtn');
 const archClose = document.querySelector('.arch-close');
 
 let architectureMarkdown = '';
+let reportMarkdown = '';
+
+// Documentation tab switching
+document.querySelectorAll('.doc-tab-btn').forEach(button => {
+  button.addEventListener('click', () => {
+    const tabName = button.getAttribute('data-doc-tab');
+    
+    // Hide all doc tab contents
+    document.querySelectorAll('.doc-tab-content').forEach(content => {
+      content.style.display = 'none';
+    });
+    
+    // Remove active class from all buttons
+    document.querySelectorAll('.doc-tab-btn').forEach(btn => {
+      btn.classList.remove('active');
+    });
+    
+    // Show selected tab
+    const tabElement = document.getElementById(tabName + 'Tab');
+    if (tabElement) {
+      tabElement.style.display = 'block';
+    }
+    button.classList.add('active');
+    
+    // Load content if switching to report tab
+    if (tabName === 'report' && !reportMarkdown) {
+      loadReverseEngineeringReport();
+    }
+  });
+});
 
 // Open architecture modal
 if (archBtn) {
@@ -216,6 +276,17 @@ async function loadArchitectureDoc() {
     
     const response = await fetch('/api/documentation/architecture');
     if (!response.ok) {
+      if (response.status === 404) {
+        const errorData = await response.json();
+        contentDiv.innerHTML = `
+          <div style="text-align: center; padding: 2rem; color: #94a3b8;">
+            <p style="font-size: 3rem; margin-bottom: 1rem;">📄</p>
+            <h3 style="color: #f1f5f9; margin-bottom: 0.5rem;">No Architecture Doc</h3>
+            <p>${errorData.hint || 'Place the architecture markdown in the repo root as REVERSE_ENGINEERING_ARCHITECTURE.md'}</p>
+            <p style="font-size: 0.85rem; margin-top: 1rem; color: #64748b;">Expected location: ../REVERSE_ENGINEERING_ARCHITECTURE.md</p>
+          </div>`;
+        return;
+      }
       throw new Error(`HTTP ${response.status}`);
     }
     
@@ -272,7 +343,8 @@ async function loadArchitectureDoc() {
     // Update last modified
     if (lastModifiedSpan && data.lastModified) {
       const date = new Date(data.lastModified);
-      lastModifiedSpan.textContent = `Last updated: ${date.toLocaleDateString()} ${date.toLocaleTimeString()}`;
+      const sizeKB = data.sizeBytes ? Math.round(data.sizeBytes / 1024) : 0;
+      lastModifiedSpan.textContent = `Last updated: ${date.toLocaleDateString()} ${date.toLocaleTimeString()}${data.sizeBytes ? ` (${sizeKB} KB)` : ''}`;
     }
   } catch (error) {
     console.error('Error loading architecture documentation:', error);
@@ -408,6 +480,104 @@ document.getElementById('copyToClipboardBtn')?.addEventListener('click', async (
     console.error('Failed to copy:', error);
     alert('Failed to copy to clipboard');
   }
+});
+
+// Load and render reverse engineering report
+async function loadReverseEngineeringReport() {
+  const contentDiv = document.getElementById('reportContent');
+  const lastModifiedSpan = document.getElementById('reportLastModified');
+  
+  try {
+    contentDiv.innerHTML = '<p style="text-align: center; color: #94a3b8;"><em>Loading reverse engineering report...</em></p>';
+    
+    const response = await fetch('/api/documentation/reverse-engineering-report');
+    if (!response.ok) {
+      if (response.status === 404) {
+        const errorData = await response.json();
+        contentDiv.innerHTML = `
+          <div style="text-align: center; padding: 2rem; color: #94a3b8;">
+            <p style="font-size: 3rem; margin-bottom: 1rem;">📋</p>
+            <h3 style="color: #f1f5f9; margin-bottom: 0.5rem;">No Report Available</h3>
+            <p>${errorData.hint || 'Run reverse engineering first to generate the report'}</p>
+            <p style="font-size: 0.85rem; margin-top: 1rem; color: #64748b;">Expected location: output/reverse-engineering-details.md</p>
+          </div>`;
+        return;
+      }
+      throw new Error(`HTTP ${response.status}`);
+    }
+    
+    const data = await response.json();
+    reportMarkdown = data.content;
+    
+    // Render markdown using marked.js
+    if (typeof marked !== 'undefined') {
+      marked.setOptions({
+        breaks: true,
+        gfm: true,
+        headerIds: true,
+        mangle: false
+      });
+      
+      contentDiv.innerHTML = marked.parse(reportMarkdown);
+    } else {
+      contentDiv.innerHTML = `<pre>${escapeHtml(reportMarkdown)}</pre>`;
+    }
+    
+    // Update last modified and size
+    if (lastModifiedSpan && data.lastModified) {
+      const date = new Date(data.lastModified);
+      const sizeKB = data.sizeBytes ? Math.round(data.sizeBytes / 1024) : 0;
+      lastModifiedSpan.textContent = `Last updated: ${date.toLocaleDateString()} ${date.toLocaleTimeString()} (${sizeKB} KB)`;
+    }
+  } catch (error) {
+    console.error('Error loading reverse engineering report:', error);
+    contentDiv.innerHTML = `<p style="color: #ef4444;">Failed to load report: ${error.message}</p>`;
+  }
+}
+
+// Download reverse engineering report
+document.getElementById('downloadReportBtn')?.addEventListener('click', () => {
+  if (!reportMarkdown) return;
+  
+  const blob = new Blob([reportMarkdown], { type: 'text/markdown' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'reverse-engineering-details.md';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+});
+
+// Copy report to clipboard
+document.getElementById('copyReportBtn')?.addEventListener('click', async () => {
+  if (!reportMarkdown) return;
+  
+  try {
+    await navigator.clipboard.writeText(reportMarkdown);
+    
+    const btn = document.getElementById('copyReportBtn');
+    const originalText = btn.textContent;
+    btn.textContent = '✅ Copied!';
+    btn.style.background = 'rgba(16, 185, 129, 0.2)';
+    btn.style.borderColor = 'rgba(16, 185, 129, 0.5)';
+    
+    setTimeout(() => {
+      btn.textContent = originalText;
+      btn.style.background = '';
+      btn.style.borderColor = '';
+    }, 2000);
+  } catch (error) {
+    console.error('Failed to copy:', error);
+    alert('Failed to copy to clipboard');
+  }
+});
+
+// Refresh report button
+document.getElementById('refreshReportBtn')?.addEventListener('click', () => {
+  reportMarkdown = ''; // Clear cache
+  loadReverseEngineeringReport();
 });
 
 // Helper function to escape HTML

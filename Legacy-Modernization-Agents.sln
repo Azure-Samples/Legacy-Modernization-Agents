@@ -8,6 +8,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "McpChatWeb.Tests", "McpChat
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "McpChatWeb", "McpChatWeb\McpChatWeb.csproj", "{75694E7C-0EC9-B314-C13D-AE57A8DCB18C}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CobolToQuarkusMigration.Tests", "CobolToQuarkusMigration.Tests\CobolToQuarkusMigration.Tests.csproj", "{7793E18E-032C-4C44-BE85-95C3AF3163BE}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -26,6 +28,10 @@ Global
 		{75694E7C-0EC9-B314-C13D-AE57A8DCB18C}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{75694E7C-0EC9-B314-C13D-AE57A8DCB18C}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{75694E7C-0EC9-B314-C13D-AE57A8DCB18C}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7793E18E-032C-4C44-BE85-95C3AF3163BE}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7793E18E-032C-4C44-BE85-95C3AF3163BE}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7793E18E-032C-4C44-BE85-95C3AF3163BE}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7793E18E-032C-4C44-BE85-95C3AF3163BE}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

@@ -67,7 +67,15 @@ load_env_file() {
                 
                 # Only set if not already set (allows environment override)
                 if [ -z "${!var_name}" ]; then
-                    export "$var_name=$var_value"
+                    # Safely expand variable references without using eval
+                    if command -v envsubst >/dev/null 2>&1; then
+                        local expanded_value
+                        expanded_value=$(printf '%s' "$var_value" | envsubst)
+                        export "$var_name=$expanded_value"
+                    else
+                        # Fallback: assign literal value without expansion
+                        export "$var_name=$var_value"
+                    fi
                     log_info "Set $var_name"
                 else
                     log_info "Skipped $var_name (already set)"
@@ -87,9 +95,10 @@ validate_config() {
     
     log_info "Validating configuration..."
     
-    # Required variables (API key is optional - Azure AD auth is supported)
+    # Required variables
     local required_vars=(
         "AZURE_OPENAI_ENDPOINT"
+        # "AZURE_OPENAI_API_KEY" <-- Now optional for Entra ID
         "AZURE_OPENAI_DEPLOYMENT_NAME"
         "AZURE_OPENAI_MODEL_ID"
     )
@@ -106,19 +115,6 @@ validate_config() {
         fi
     done
     
-    # API key is optional - check separately with warning instead of error
-    # Empty or placeholder values mean Azure AD auth will be used
-    if [ -z "${AZURE_OPENAI_API_KEY}" ] || [[ "${AZURE_OPENAI_API_KEY}" == *"your-"* ]] || [[ "${AZURE_OPENAI_API_KEY}" == *"placeholder"* ]]; then
-        log_warning "⚠️  AZURE_OPENAI_API_KEY is not set or contains placeholder - will use Azure AD (DefaultAzureCredential)"
-        log_warning "   Make sure you've run 'az login' before starting the migration"
-        # Clear placeholder to ensure Azure AD is used
-        if [[ "${AZURE_OPENAI_API_KEY}" == *"your-"* ]] || [[ "${AZURE_OPENAI_API_KEY}" == *"placeholder"* ]]; then
-            export AZURE_OPENAI_API_KEY=""
-        fi
-    else
-        log_success "✓ AZURE_OPENAI_API_KEY is configured"
-    fi
-    
     return $errors
 }
 
@@ -128,12 +124,16 @@ show_config_summary() {
     echo "  Endpoint: ${AZURE_OPENAI_ENDPOINT:-'NOT SET'}"
     echo "  Model ID: ${AZURE_OPENAI_MODEL_ID:-'NOT SET'}"
     echo "  Deployment: ${AZURE_OPENAI_DEPLOYMENT_NAME:-'NOT SET'}"
-    if [ -n "${AZURE_OPENAI_API_KEY}" ] && [[ "${AZURE_OPENAI_API_KEY}" != *"your-"* ]] && [[ "${AZURE_OPENAI_API_KEY}" != *"placeholder"* ]]; then
-        echo "  API Key: ${AZURE_OPENAI_API_KEY:0:10}... (${#AZURE_OPENAI_API_KEY} chars)"
-        echo "  Auth Method: API Key"
+
+    # API key may be optional (e.g., when using Entra ID). Avoid misleading or leaking empty/placeholder values.
+    if [ -z "${AZURE_OPENAI_API_KEY}" ]; then
+        echo "  API Key: NOT SET (using Entra ID or other auth)"
+    elif [[ "${AZURE_OPENAI_API_KEY}" == *"your-"* ]] || [[ "${AZURE_OPENAI_API_KEY}" == *"placeholder"* ]]; then
+        echo "  API Key: PLACEHOLDER VALUE (update ai-config.local.env with a real key or use Entra ID)"
     else
-        echo "  API Key: (not set or placeholder)"
-        echo "  Auth Method: Azure AD (DefaultAzureCredential)"
+        local key_length=${#AZURE_OPENAI_API_KEY}
+        local key_preview="${AZURE_OPENAI_API_KEY:0:4}"
+        echo "  API Key: ${key_preview}... (${key_length} chars)"
     fi
     echo "  Source Folder: ${COBOL_SOURCE_FOLDER:-'SampleCobol'}"
     echo "  Output Folder: ${JAVA_OUTPUT_FOLDER:-'JavaOutput'}"

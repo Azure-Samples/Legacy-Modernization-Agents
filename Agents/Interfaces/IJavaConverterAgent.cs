@@ -1,4 +1,3 @@
-using Microsoft.SemanticKernel;
 using CobolToQuarkusMigration.Models;
 
 namespace CobolToQuarkusMigration.Agents.Interfaces;
@@ -8,6 +7,11 @@ namespace CobolToQuarkusMigration.Agents.Interfaces;
 /// </summary>
 public interface IJavaConverterAgent
 {
+    /// <summary>
+    /// Sets the Run ID for the current context.
+    /// </summary>
+    void SetRunId(int runId);
+
     /// <summary>
     /// Converts a COBOL file to Java Quarkus.
     /// </summary>
