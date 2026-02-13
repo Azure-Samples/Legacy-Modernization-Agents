@@ -845,7 +845,7 @@ run_setup() {
 
     # Create local config from template
     echo -e "${BLUE}📁 Creating local configuration file...${NC}"
-    TEMPLATE_CONFIG="$REPO_ROOT/Config/ai-config.local.env.example"
+    TEMPLATE_CONFIG="$REPO_ROOT/Config/ai-config.local.env.template"
 
     if [ ! -f "$TEMPLATE_CONFIG" ]; then
         echo -e "${RED}❌ Example configuration file not found: $TEMPLATE_CONFIG${NC}"
