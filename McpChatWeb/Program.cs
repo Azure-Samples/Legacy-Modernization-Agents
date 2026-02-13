@@ -2385,7 +2385,6 @@ app.MapGet("/api/runs/{runId}/migration-log", async (string runId, int? lines, s
 		}
 		var logsBasePath = Path.GetFullPath(Path.Combine("..", "Logs"), Directory.GetCurrentDirectory());
 		var migrationPath = Path.Combine(logsBasePath, "Migration");
-		var today = DateTime.Now.ToString("yyyy-MM-dd");
 		
 		// Get run information
 		var dbPath = GetMigrationDbPath();
