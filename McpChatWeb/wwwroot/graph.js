@@ -7,6 +7,7 @@ class DependencyGraph {
     this.currentQuery = 'full';
     this.currentLayout = 'force';
     this.runId = null; // Will be loaded dynamically
+    this.includeInferred = false; // Toggle to include inferred nodes
     this.isRendering = false;
     this.controlsSetup = false;
     
@@ -26,6 +27,7 @@ class DependencyGraph {
     const refreshBtn = document.getElementById('refresh-graph');
     const fitBtn = document.getElementById('fit-graph');
     const stabilizeBtn = document.getElementById('stabilize-graph');
+    const includeInferredToggle = document.getElementById('include-inferred-nodes');
     const closeDetailsBtn = document.getElementById('close-details');
 
     if (querySelect) {
@@ -38,12 +40,12 @@ class DependencyGraph {
     if (layoutSelect) {
       layoutSelect.addEventListener('change', (e) => {
         this.currentLayout = e.target.value;
-        this.loadAndRender();
+        this.loadAndRender(this.runId);
       });
     }
 
     if (refreshBtn) {
-      refreshBtn.addEventListener('click', () => this.loadAndRender());
+      refreshBtn.addEventListener('click', () => this.loadAndRender(this.runId));
     }
 
     if (fitBtn) {
@@ -66,11 +68,70 @@ class DependencyGraph {
       });
     }
 
+    if (includeInferredToggle) {
+      includeInferredToggle.addEventListener('change', () => {
+        this.includeInferred = includeInferredToggle.checked;
+        this.loadAndRender(this.runId);
+      });
+    }
+
     if (closeDetailsBtn) {
       closeDetailsBtn.addEventListener('click', () => {
         document.getElementById('node-details').hidden = true;
       });
     }
+
+    // New Controls
+    const expandBtn = document.getElementById('expand-graph-btn');
+    const deepAnalysisToggle = document.getElementById('analyze-deeper-toggle');
+    const viewSqlBtn = document.getElementById('view-sql-details-btn');
+    const closeSqlDetailsBtn = document.querySelector('.close.sql-close');
+    const sqlModal = document.getElementById('sqlDetailsModal');
+
+    if (expandBtn) {
+        expandBtn.addEventListener('click', () => {
+            document.querySelector('.graph-panel').classList.toggle('expanded');
+            setTimeout(() => {
+                if (this.network) this.network.fit();
+            }, 300);
+        });
+    }
+
+    if (deepAnalysisToggle) {
+        deepAnalysisToggle.addEventListener('change', () => {
+            // Deep analysis requires inferred nodes (for SQLCA, etc.)
+            const includeInferredToggle = document.getElementById('include-inferred-nodes');
+            if (deepAnalysisToggle.checked && includeInferredToggle && !includeInferredToggle.checked) {
+                console.log('🔄 Deep Analysis enabled: Auto-enabling inferred nodes and reloading...');
+                includeInferredToggle.checked = true;
+                this.includeInferred = true;
+                this.loadAndRender(this.runId);
+            } else {
+                // Just re-apply filters if we already have the nodes or are disabling
+                this.applyFilters();
+            }
+        });
+    }
+
+    if (viewSqlBtn) {
+        viewSqlBtn.addEventListener('click', () => {
+             this.populateSqlDetails();
+             if (sqlModal) sqlModal.style.display = 'block';
+        });
+    }
+    
+    if (closeSqlDetailsBtn && sqlModal) {
+        closeSqlDetailsBtn.addEventListener('click', () => {
+            sqlModal.style.display = 'none';
+        });
+    }
+
+    // Close modal when clicking outside
+    window.addEventListener('click', (event) => {
+        if (event.target === sqlModal) {
+            sqlModal.style.display = 'none';
+        }
+    });
 
     // Add filter checkbox listeners
     const showPrograms = document.getElementById('show-programs');
@@ -156,7 +217,11 @@ class DependencyGraph {
   async fetchGraphData(runId = null) {
     try {
       // Fetch from the MCP-powered API endpoint with optional runId
-      const url = runId ? `/api/graph?runId=${runId}` : '/api/graph';
+      const params = [];
+      if (runId) params.push(`runId=${runId}`);
+      if (this.includeInferred) params.push('includeInferred=true');
+      const query = params.length ? `?${params.join('&')}` : '';
+      const url = `/api/graph${query}`;
       console.log(`🔍 Fetching graph data from: ${url}${runId ? ` (Run ${runId})` : ' (current run)'}`);
       
       const response = await fetch(url);
@@ -350,30 +415,40 @@ class DependencyGraph {
         const nodeSize = 20 + (connections * 3); // Size based on connections
         const importance = connections > 5 ? 'Critical' : connections > 2 ? 'Important' : 'Standard';
         
-        // Determine node type: Copybook, CalledProgram, or Program
+        // Determine node type: Copybook, CalledProgram, Program, or Inferred placeholder
         const isCalledProgram = !n.isCopybook && calledProgramIds.has(n.id);
-        const nodeType = n.isCopybook ? 'Copybook (.cpy)' : (isCalledProgram ? 'Called Program (.cbl)' : 'Program (.cbl)');
+        const isInferred = !!n.isInferred;
+        const nodeType = isInferred
+          ? 'Inferred (missing in files table)'
+          : (n.isCopybook ? 'Copybook (.cpy)' : (isCalledProgram ? 'Called Program (.cbl)' : 'Program (.cbl)'));
         
-        // Color scheme: Copybook=red, CalledProgram=green, Program=blue
+        // Color scheme aligned to portal palette:
+        // Inferred = amber, Copybook = coral/red, Called Program = emerald, Program = blue
         let backgroundColor, borderColor, highlightBg, highlightBorder, shadowColor;
-        if (n.isCopybook) {
-          backgroundColor = '#f16667';
-          borderColor = '#dc2626';
-          highlightBg = '#fca5a5';
-          highlightBorder = '#991b1b';
-          shadowColor = 'rgba(241, 102, 103, 0.5)';
+        if (isInferred) {
+          backgroundColor = '#f59e0b';
+          borderColor = '#d97706';
+          highlightBg = '#fcd34d';
+          highlightBorder = '#b45309';
+          shadowColor = 'rgba(245, 158, 11, 0.5)';
+        } else if (n.isCopybook) {
+          backgroundColor = '#f87171';
+          borderColor = '#ef4444';
+          highlightBg = '#fecaca';
+          highlightBorder = '#b91c1c';
+          shadowColor = 'rgba(248, 113, 113, 0.5)';
         } else if (isCalledProgram) {
-          backgroundColor = '#10b981';
-          borderColor = '#059669';
-          highlightBg = '#6ee7b7';
-          highlightBorder = '#047857';
-          shadowColor = 'rgba(16, 185, 129, 0.5)';
+          backgroundColor = '#22c55e';
+          borderColor = '#16a34a';
+          highlightBg = '#86efac';
+          highlightBorder = '#15803d';
+          shadowColor = 'rgba(34, 197, 94, 0.5)';
         } else {
-          backgroundColor = '#68bdf6';
-          borderColor = '#1d4ed8';
-          highlightBg = '#93c5fd';
-          highlightBorder = '#1e3a8a';
-          shadowColor = 'rgba(104, 189, 246, 0.5)';
+          backgroundColor = '#38bdf8';
+          borderColor = '#0ea5e9';
+          highlightBg = '#bae6fd';
+          highlightBorder = '#0369a1';
+          shadowColor = 'rgba(56, 189, 248, 0.5)';
         }
         
         return {
@@ -442,6 +517,8 @@ class DependencyGraph {
           'COPY': { color: '#3b82f6', width: 2.5, fontSize: 11 },    // Blue
           'PERFORM': { color: '#f59e0b', width: 2.5, fontSize: 11 }, // Amber
           'EXEC': { color: '#8b5cf6', width: 2.5, fontSize: 11 },    // Purple
+          'EXEC SQL': { color: '#8b5cf6', width: 2.5, fontSize: 11 }, // Purple (SQL)
+          'EXEC CICS': { color: '#8b5cf6', width: 2.5, fontSize: 11 }, // Purple (CICS)
           'READ': { color: '#06b6d4', width: 2, fontSize: 10 },      // Cyan
           'WRITE': { color: '#ec4899', width: 2, fontSize: 10 },     // Pink
           'OPEN': { color: '#84cc16', width: 2, fontSize: 10 },      // Lime
@@ -574,6 +651,9 @@ class DependencyGraph {
     try {
       this.network = new vis.Network(container, data, options);
       console.log('✅ vis.Network created successfully');
+      
+      // Apply initial filters based on UI state
+      this.applyFilters();
     } catch (error) {
       console.error('❌ Error creating vis.Network:', error);
       this.updateInfo(`Error creating graph: ${error.message}`);
@@ -683,17 +763,21 @@ class DependencyGraph {
     }
 
     // Get filter checkbox states
+    const deepAnalysis = document.getElementById('analyze-deeper-toggle')?.checked ?? false;
+    
     const showPrograms = document.getElementById('show-programs')?.checked ?? true;
     const showCopybooks = document.getElementById('show-copybooks')?.checked ?? true;
     const showCalledPrograms = document.getElementById('show-called-programs')?.checked ?? true;
     const showCallEdges = document.getElementById('show-call-edges')?.checked ?? true;
     const showCopyEdges = document.getElementById('show-copy-edges')?.checked ?? true;
     const showPerformEdges = document.getElementById('show-perform-edges')?.checked ?? true;
-    const showExecEdges = document.getElementById('show-exec-edges')?.checked ?? true;
-    const showReadEdges = document.getElementById('show-read-edges')?.checked ?? true;
-    const showWriteEdges = document.getElementById('show-write-edges')?.checked ?? true;
-    const showOpenEdges = document.getElementById('show-open-edges')?.checked ?? true;
-    const showCloseEdges = document.getElementById('show-close-edges')?.checked ?? true;
+    
+    // Detailed edges depend on deep analysis toggle if individual controls missing
+    const showExecEdges = document.getElementById('show-exec-edges')?.checked ?? deepAnalysis;
+    const showReadEdges = document.getElementById('show-read-edges')?.checked ?? deepAnalysis;
+    const showWriteEdges = document.getElementById('show-write-edges')?.checked ?? deepAnalysis;
+    const showOpenEdges = document.getElementById('show-open-edges')?.checked ?? deepAnalysis;
+    const showCloseEdges = document.getElementById('show-close-edges')?.checked ?? deepAnalysis;
 
     // Get all nodes and edges
     const allNodes = this.network.body.data.nodes;
@@ -739,7 +823,7 @@ class DependencyGraph {
         edgeTypeVisible = false;
       } else if (edgeType === 'PERFORM' && !showPerformEdges) {
         edgeTypeVisible = false;
-      } else if (edgeType === 'EXEC' && !showExecEdges) {
+      } else if ((edgeType === 'EXEC' || edgeType.startsWith('EXEC ')) && !showExecEdges) {
         edgeTypeVisible = false;
       } else if (edgeType === 'READ' && !showReadEdges) {
         edgeTypeVisible = false;
@@ -766,6 +850,94 @@ class DependencyGraph {
     const visibleCount = visibleNodeIds.size;
     const totalCount = allNodes.length;
     this.updateInfo(`Showing ${visibleCount} of ${totalCount} nodes`);
+  }
+
+  async populateSqlDetails() {
+    const modalContent = document.getElementById('sqlDetailsContent');
+    if (!modalContent || !this.network) return;
+    
+    modalContent.innerHTML = '<div class="text-center p-4"><div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500 mx-auto"></div><p class="mt-2 text-gray-400">Loading deep SQL analysis...</p></div>';
+
+    try {
+        let deepDetails = [];
+        if (this.runId) {
+            const response = await fetch(`/api/runs/${this.runId}/sql-usage`);
+            if (response.ok) {
+                const data = await response.json();
+                if (data.details) deepDetails = data.details;
+            }
+        }
+
+        const edges = this.network.body.data.edges.get();
+        const nodes = this.network.body.data.nodes.get();
+        
+        // Filter SQL/DB2/CICS/File edges
+        const dbEdges = edges.filter(e => 
+            ['EXEC SQL', 'EXEC CICS', 'READ', 'WRITE', 'OPEN', 'CLOSE']
+            .includes((e.edgeType || '').toUpperCase())
+        );
+        
+        let html = '';
+        
+        // Section 1: Graph Summary
+        html += '<h3 class="text-lg font-bold text-white mb-2">Graph Relationships</h3>';
+        if (dbEdges.length === 0) {
+            html += '<p class="text-gray-400 mb-4">No detailed SQL or Data Access operations found in current graph structure.</p>';
+        } else {
+             html += '<table class="w-full text-left border-collapse mb-6">';
+            html += '<thead><tr class="text-gray-400 border-b border-gray-700"><th class="p-2">Type</th><th class="p-2">Program</th><th class="p-2">Operation</th><th class="p-2">Target</th></tr></thead>';
+            html += '<tbody>';
+            
+            dbEdges.forEach(edge => {
+                const sourceNode = nodes.find(n => n.id === edge.from);
+                const targetNode = nodes.find(n => n.id === edge.to);
+                const type = edge.edgeType || 'UNKNOWN';
+                
+                let badgeColor = 'bg-gray-700';
+                if (type.includes('SQL')) badgeColor = 'bg-blue-900 text-blue-200';
+                else if (type.includes('CICS')) badgeColor = 'bg-green-900 text-green-200';
+                else badgeColor = 'bg-yellow-900 text-yellow-200';
+                
+                html += `<tr class="border-b border-gray-800 hover:bg-gray-800/50">
+                    <td class="p-2"><span class="px-2 py-1 rounded text-xs ${badgeColor}">${type}</span></td>
+                    <td class="p-2 text-white">${sourceNode ? sourceNode.label : edge.from}</td>
+                    <td class="p-2 text-gray-300">${edge.label || type}</td>
+                    <td class="p-2 text-white font-mono">${targetNode ? targetNode.label : edge.to}</td>
+                </tr>`;
+            });
+            html += '</tbody></table>';
+        }
+
+        // Section 2: Deep Analysis
+        html += '<h3 class="text-lg font-bold text-white mb-2 border-t border-gray-700 pt-4">Deep Code Analysis</h3>';
+        if (deepDetails.length === 0) {
+             html += '<p class="text-gray-400">No deep code analysis available for SQL/DB2.</p>';
+        } else {
+            html += '<div class="space-y-4">';
+            deepDetails.forEach(item => {
+                 // Simple markdown rendering for the identified block
+                 // Escape HTML to prevent injection, then basic formatting
+                 let safeAnalysis = item.analysis
+                    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                 
+                 // Highlight Table/Column lines
+                 safeAnalysis = safeAnalysis.replace(/(Table:\s*`?[A-Z0-9_\-]+`?)/gi, '<strong class="text-blue-300">$1</strong>');
+                 safeAnalysis = safeAnalysis.replace(/(Column:\s*`?[A-Z0-9_\-]+`?)/gi, '<span class="text-green-200 ml-4">$1</span>');
+
+                 html += `<div class="bg-gray-800 rounded p-3 border border-gray-700">
+                    <div class="font-bold text-yellow-500 mb-2">📄 ${item.file}</div>
+                    <div class="font-mono text-xs text-gray-300 overflow-x-auto whitespace-pre-wrap">${safeAnalysis}</div>
+                 </div>`;
+            });
+            html += '</div>';
+        }
+
+        modalContent.innerHTML = html;
+
+    } catch (err) {
+        console.error('Error fetching details:', err);
+        modalContent.innerHTML = `<p class="text-red-400">Error loading details: ${err.message}</p>`;
+    }
   }
 }
 

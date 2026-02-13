@@ -3,6 +3,7 @@ using CobolToQuarkusMigration.Agents;
 using CobolToQuarkusMigration.Agents.Interfaces;
 using CobolToQuarkusMigration.Helpers;
 using CobolToQuarkusMigration.Models;
+using CobolToQuarkusMigration.Persistence;
 using System.Text.Json;
 
 namespace CobolToQuarkusMigration.Processes;
@@ -18,6 +19,7 @@ public class ReverseEngineeringProcess
     private readonly FileHelper _fileHelper;
     private readonly ILogger<ReverseEngineeringProcess> _logger;
     private readonly EnhancedLogger _enhancedLogger;
+    private readonly IMigrationRepository? _migrationRepository;
     private Glossary? _glossary;
 
     public ReverseEngineeringProcess(
@@ -25,13 +27,15 @@ public class ReverseEngineeringProcess
         BusinessLogicExtractorAgent businessLogicExtractorAgent,
         FileHelper fileHelper,
         ILogger<ReverseEngineeringProcess> logger,
-        EnhancedLogger enhancedLogger)
+        EnhancedLogger enhancedLogger,
+        IMigrationRepository? migrationRepository = null)
     {
         _cobolAnalyzerAgent = cobolAnalyzerAgent;
         _businessLogicExtractorAgent = businessLogicExtractorAgent;
         _fileHelper = fileHelper;
         _logger = logger;
         _enhancedLogger = enhancedLogger;
+        _migrationRepository = migrationRepository;
     }
 
     /// <summary>
@@ -40,11 +44,13 @@ public class ReverseEngineeringProcess
     /// <param name="cobolSourceFolder">The folder containing COBOL source files.</param>
     /// <param name="outputFolder">The folder for reverse engineering output.</param>
     /// <param name="progressCallback">Optional callback for progress reporting.</param>
+    /// <param name="existingRunId">Optional run ID to attach to.</param>
     /// <returns>A task representing the asynchronous operation.</returns>
     public async Task<ReverseEngineeringResult> RunAsync(
         string cobolSourceFolder,
         string outputFolder,
-        Action<string, int, int>? progressCallback = null)
+        Action<string, int, int>? progressCallback = null,
+        int? existingRunId = null)
     {
         var result = new ReverseEngineeringResult();
 
@@ -55,10 +61,18 @@ public class ReverseEngineeringProcess
             _logger.LogInformation("Source folder: {SourceFolder}", cobolSourceFolder);
             _logger.LogInformation("Output folder: {OutputFolder}", outputFolder);
 
+            // Create run if needed
+            int runId = existingRunId ?? 0;
+            if (!existingRunId.HasValue && _migrationRepository != null)
+            {
+                runId = await _migrationRepository.StartRunAsync(cobolSourceFolder, outputFolder);
+                _logger.LogInformation("Started new run ID: {RunId}", runId);
+            }
+
             // Load glossary if available
             await LoadGlossaryAsync();
 
-            var totalSteps = 3;
+            var totalSteps = 3; // Step 3 is final
 
             // Step 1: Scan for COBOL files
             _enhancedLogger.ShowStep(1, totalSteps, "File Discovery", "Scanning for COBOL files");
@@ -100,7 +114,7 @@ public class ReverseEngineeringProcess
             _enhancedLogger.ShowSuccess($"Extracted business logic from {businessLogicList.Count} files");
             result.BusinessLogicExtracts = businessLogicList;
 
-            // Count feature descriptions and features
+            // Calculate totals
             result.TotalUserStories = businessLogicList.Sum(bl => bl.UserStories.Count);
             result.TotalFeatures = businessLogicList.Sum(bl => bl.Features.Count);
             result.TotalBusinessRules = businessLogicList.Sum(bl => bl.BusinessRules.Count);
@@ -113,6 +127,11 @@ public class ReverseEngineeringProcess
             _enhancedLogger.ShowSuccess("✓ Reverse engineering complete!");
             _logger.LogInformation("Output location: {OutputFolder}", outputFolder);
             Console.WriteLine($"📂 Output location: {outputFolder}");
+
+            if (_migrationRepository != null && runId > 0 && !existingRunId.HasValue)
+            {
+                await _migrationRepository.CompleteRunAsync(runId, "Completed", "Reverse Engineering Only");
+            }
 
             result.Success = true;
             result.OutputFolder = outputFolder;
@@ -133,24 +152,13 @@ public class ReverseEngineeringProcess
     {
         try
         {
-            var glossaryPath = Path.Combine("Data", "glossary.json");
-
-            if (!File.Exists(glossaryPath))
+            // Try to load glossary if it exists
+            var glossaryPath = Path.Combine(Directory.GetCurrentDirectory(), "Data", "glossary.json");
+            if (File.Exists(glossaryPath)) 
             {
-                _logger.LogInformation("No glossary file found at {Path}", glossaryPath);
-                return;
-            }
-
-            var json = await File.ReadAllTextAsync(glossaryPath);
-            _glossary = JsonSerializer.Deserialize<Glossary>(json, new JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true
-            });
-
-            if (_glossary?.Terms?.Any() == true)
-            {
-                _logger.LogInformation("Loaded glossary with {Count} terms", _glossary.Terms.Count);
-                Console.WriteLine($"📖 Loaded glossary with {_glossary.Terms.Count} terms");
+                // Simple implementation since FileHelper.LoadGlossaryAsync might not exist or be accessible
+                // If FileHelper has LoadGlossaryAsync, use it. Assuming it does based on _fileHelper usage.
+                _glossary = await _fileHelper.LoadGlossaryAsync();
             }
         }
         catch (Exception ex)

@@ -8,9 +8,12 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Azure.Identity" Version="1.13.2" />
+    <PackageReference Include="Azure.AI.OpenAI" Version="2.1.0" />
+    <PackageReference Include="Azure.Identity" Version="1.17.1" />
+    <PackageReference Include="Microsoft.Agents.AI.AzureAI" Version="1.0.0-preview.251204.1" />
+    <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.0.0-preview.251204.1" />
+    <PackageReference Include="Microsoft.Extensions.AI" Version="10.0.1" />
     <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="8.0.0" />
-    <PackageReference Include="Microsoft.SemanticKernel" Version="1.22.0" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.8" />
     <PackageReference Include="Neo4j.Driver" Version="5.15.0" />
     <PackageReference Include="System.CommandLine" Version="2.0.0-beta4.22272.1" />
@@ -19,16 +22,25 @@
   <ItemGroup>
     <Compile Remove="McpChatWeb\**\*.cs" />
     <Compile Remove="McpChatWeb.Tests\**\*.cs" />
+    <Compile Remove="CobolToQuarkusMigration.Tests\**\*.cs" />
     <EmbeddedResource Remove="McpChatWeb\**\*" />
     <EmbeddedResource Remove="McpChatWeb.Tests\**\*" />
+    <EmbeddedResource Remove="CobolToQuarkusMigration.Tests\**\*" />
     <None Remove="McpChatWeb\**\*" />
     <None Remove="McpChatWeb.Tests\**\*" />
+    <None Remove="CobolToQuarkusMigration.Tests\**\*" />
     <Content Remove="McpChatWeb\**\*" />
     <Content Remove="McpChatWeb.Tests\**\*" />
+    <Content Remove="CobolToQuarkusMigration.Tests\**\*" />
   </ItemGroup>
 
 <ItemGroup>
-  <Compile Remove="output\**" />
-</ItemGroup>
+    <None Update="Config\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
 
+  <ItemGroup>
+    <Compile Remove="output\**" />
+  </ItemGroup>
 </Project>

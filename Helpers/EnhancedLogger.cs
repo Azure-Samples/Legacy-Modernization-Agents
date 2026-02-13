@@ -200,6 +200,53 @@ public class EnhancedLogger
     }
 
     /// <summary>
+    /// Displays a dashboard-like summary of the migration status in ASCII format.
+    /// </summary>
+    /// <param name="runId">Run ID.</param>
+    /// <param name="targetLanguage">Target Language (Java/C#).</param>
+    /// <param name="status">Current Status (e.g. Running, Completed).</param>
+    /// <param name="phase">Current Phase.</param>
+    /// <param name="progressPercent">Overall Progress Percentage.</param>
+    public void ShowDashboardSummary(int runId, string targetLanguage, string status, string phase, double progressPercent)
+    {
+        lock (_consoleLock)
+        {
+            var width = 76; // Inner width
+            var border = new string('═', width);
+            var thinBorder = new string('─', width); 
+
+            Console.WriteLine();
+            Console.WriteLine($"{Colors.BrightCyan}╔{border}╗{Colors.Reset}");
+            
+            // Header content
+            var statusColor = status.ToUpper() == "RUNNING" ? Colors.BrightGreen : (status.ToUpper() == "FAILED" ? Colors.BrightRed : Colors.BrightWhite);
+            var langColor = targetLanguage.ToUpper().Contains("C#") ? Colors.BrightMagenta : Colors.BrightGreen;
+            
+            // Allow for manual padding since ANSI codes mess up simple PadRight
+            Console.Write($"{Colors.BrightCyan}║{Colors.Reset} ");
+            Console.Write($"RUN #{runId} | TARGET: {langColor}{targetLanguage}{Colors.Reset} | STATUS: {statusColor}{status.ToUpper()}{Colors.Reset}");
+            
+            // Calculate padding manually to right-align the closing border
+            // Rough estimation involves assuming fixed length for ANSI-stripped strings, but let's just cheat and newline it cleanly
+            Console.WriteLine(); 
+            
+            Console.WriteLine($"{Colors.BrightCyan}╠{thinBorder}╣{Colors.Reset}");
+            
+            // Progress Bar
+            var progressBarWidth = 30;
+            var filled = (int)(progressPercent / 100.0 * progressBarWidth);
+            var empty = progressBarWidth - filled;
+            var bar = $"{Colors.BrightGreen}{new string('█', filled)}{Colors.BrightBlack}{new string('░', empty)}{Colors.Reset}";
+            
+            Console.Write($"{Colors.BrightCyan}║{Colors.Reset} {Colors.BrightYellow}PHASE:{Colors.Reset} {phase.PadRight(20)} PROG: [{bar}] {Colors.BrightWhite}{progressPercent:F1}%{Colors.Reset}");
+            Console.WriteLine();
+
+            Console.WriteLine($"{Colors.BrightCyan}╚{border}╝{Colors.Reset}");
+            Console.WriteLine();
+        }
+    }
+
+    /// <summary>
     /// Logs an agent conversation entry for debugging and analysis.
     /// </summary>
     /// <param name="agentName">Name of the agent.</param>
@@ -367,17 +414,15 @@ public class EnhancedLogger
     }
 
     /// <summary>
-    /// Truncates text to a specified length for logging.
+    /// Returns text as-is (no truncation for full visibility).
     /// </summary>
-    /// <param name="text">Text to truncate.</param>
-    /// <param name="maxLength">Maximum length.</param>
-    /// <returns>Truncated text.</returns>
+    /// <param name="text">Text to return.</param>
+    /// <param name="maxLength">Ignored - kept for compatibility.</param>
+    /// <returns>Full text without truncation.</returns>
     private static string TruncateText(string text, int maxLength)
     {
-        if (string.IsNullOrEmpty(text) || text.Length <= maxLength)
-            return text;
-
-        return text.Substring(0, maxLength - 3) + "...";
+        // NO TRUNCATION - return full text for debugging visibility
+        return text ?? string.Empty;
     }
 
     /// <summary>
@@ -387,14 +432,14 @@ public class EnhancedLogger
     /// <param name="method">HTTP method or API method.</param>
     /// <param name="endpoint">API endpoint or service.</param>
     /// <param name="model">AI model being used.</param>
-    /// <param name="request">Request details (truncated for logging).</param>
+    /// <param name="request">Request details (full - no truncation).</param>
     /// <returns>API call tracking ID.</returns>
     public int LogApiCallStart(string agent, string method, string endpoint, string model, string request = "")
     {
         lock (_consoleLock)
         {
             var callId = ++_apiCallCounter;
-            var truncatedRequest = request.Length > 100 ? request.Substring(0, 100) + "..." : request;
+            // NO TRUNCATION - store full request for debugging
             
             var apiCall = new ApiCallEntry
             {
@@ -404,7 +449,7 @@ public class EnhancedLogger
                 Method = method,
                 Endpoint = endpoint,
                 Model = model,
-                Request = truncatedRequest
+                Request = request  // Full request, no truncation
             };
             
             _apiCalls.Add(apiCall);
@@ -416,9 +461,11 @@ public class EnhancedLogger
                             $"{Colors.Magenta}{model}{Colors.Reset} " +
                             $"{Colors.Green}@ {DateTime.Now:HH:mm:ss.fff}{Colors.Reset}");
             
-            if (!string.IsNullOrEmpty(truncatedRequest))
+            // Show first 500 chars in console for readability, but full data is stored
+            var consoleRequest = request.Length > 500 ? request.Substring(0, 500) + $"... [{request.Length} total chars]" : request;
+            if (!string.IsNullOrEmpty(request))
             {
-                Console.WriteLine($"   {Colors.BrightBlue}📤 Request:{Colors.Reset} {truncatedRequest}");
+                Console.WriteLine($"   {Colors.BrightBlue}📤 Request:{Colors.Reset} {consoleRequest}");
             }
             
             _logger.LogInformation("API Call #{CallId} started: {Agent} -> {Method} {Endpoint} using {Model}", 
@@ -432,7 +479,7 @@ public class EnhancedLogger
     /// Logs the completion of an API call.
     /// </summary>
     /// <param name="callId">API call tracking ID.</param>
-    /// <param name="response">Response details (truncated for logging).</param>
+    /// <param name="response">Response details (full - no truncation).</param>
     /// <param name="tokensUsed">Number of tokens consumed.</param>
     /// <param name="cost">Estimated cost of the call.</param>
     public void LogApiCallEnd(int callId, string response = "", int tokensUsed = 0, decimal cost = 0)
@@ -443,7 +490,7 @@ public class EnhancedLogger
             if (apiCall != null)
             {
                 apiCall.Duration = DateTime.UtcNow - apiCall.Timestamp;
-                apiCall.Response = response.Length > 200 ? response.Substring(0, 200) + "..." : response;
+                apiCall.Response = response;  // Full response, no truncation
                 apiCall.IsSuccess = true;
                 apiCall.TokensUsed = tokensUsed;
                 apiCall.Cost = cost;
@@ -545,25 +592,27 @@ public class EnhancedLogger
     /// <param name="category">Category of the operation (e.g., "FILE_IO", "AI_PROCESSING", "VALIDATION").</param>
     /// <param name="operation">Specific operation being performed.</param>
     /// <param name="details">Detailed information about the operation.</param>
-    /// <param name="data">Optional data payload (will be truncated for logging).</param>
+    /// <param name="data">Optional data payload (full - no truncation).</param>
     public void LogBehindTheScenes(string category, string operation, string details, object? data = null)
     {
         lock (_consoleLock)
         {
             var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
             var categoryColor = GetCategoryColor(category);
-            var truncatedData = data?.ToString()?.Length > 150 ? 
-                data.ToString()!.Substring(0, 150) + "..." : 
-                data?.ToString() ?? "";
+            var dataString = data?.ToString() ?? "";
+            // Show first 500 chars in console for readability
+            var consoleData = dataString.Length > 500 ? 
+                dataString.Substring(0, 500) + $"... [{dataString.Length} total chars]" : 
+                dataString;
 
             Console.WriteLine($"{Colors.BrightBlack}[{timestamp}]{Colors.Reset} " +
                             $"{categoryColor}[{category}]{Colors.Reset} " +
                             $"{Colors.BrightWhite}{operation}{Colors.Reset} " +
                             $"{Colors.BrightBlue}→{Colors.Reset} {details}");
             
-            if (!string.IsNullOrEmpty(truncatedData))
+            if (!string.IsNullOrEmpty(consoleData))
             {
-                Console.WriteLine($"   {Colors.BrightBlack}💾 Data:{Colors.Reset} {truncatedData}");
+                Console.WriteLine($"   {Colors.BrightBlack}💾 Data:{Colors.Reset} {consoleData}");
             }
         }
         
@@ -854,7 +903,8 @@ public class EnhancedLogger
                         {
                             serializedData = ex.ToString();
                         }
-                        else if (data.GetType().FullName?.Contains("Microsoft.SemanticKernel") == true)
+                        else if (data.GetType().FullName?.Contains("Microsoft.Extensions.AI") == true ||
+                                 data.GetType().FullName?.Contains("Microsoft.Agents") == true)
                         {
                             serializedData = data.ToString();
                         }
@@ -917,8 +967,8 @@ public class EnhancedLogger
                 apiCall.Method,
                 apiCall.Endpoint,
                 apiCall.Model,
-                Request = apiCall.Request.Length > 1000 ? apiCall.Request.Substring(0, 1000) + "..." : apiCall.Request,
-                Response = apiCall.Response.Length > 2000 ? apiCall.Response.Substring(0, 2000) + "..." : apiCall.Response,
+                Request = apiCall.Request,  // Full request - no truncation
+                Response = apiCall.Response,  // Full response - no truncation
                 DurationMs = apiCall.Duration.TotalMilliseconds,
                 apiCall.IsSuccess,
                 apiCall.Error,
@@ -946,7 +996,11 @@ public class EnhancedLogger
                     c.IsSuccess,
                     c.TokensUsed,
                     c.Cost,
-                    Status = c.IsSuccess ? "SUCCESS" : "ERROR"
+                    Status = c.IsSuccess ? "SUCCESS" : "ERROR",
+                    // Include full error, request and response for debugging
+                    Error = c.Error ?? "",
+                    Request = c.Request,  // Full request - no truncation
+                    Response = c.Response  // Full response - no truncation
                 }).ToList();
 
                 var liveData = new
