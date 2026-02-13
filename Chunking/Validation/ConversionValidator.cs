@@ -363,7 +363,8 @@ public class ConversionValidator
             // Check for legacy variable name usage in converted code
             var legacyPattern = mapping.LegacyVariable.Replace("-", "");
 
-            if (chunk.ConvertedCode.Contains(mapping.LegacyVariable, StringComparison.OrdinalIgnoreCase))
+            if (chunk.ConvertedCode.Contains(mapping.LegacyVariable, StringComparison.OrdinalIgnoreCase) ||
+                chunk.ConvertedCode.Contains(legacyPattern, StringComparison.OrdinalIgnoreCase))
             {
                 issues.Add(new ConsistencyIssue
                 {
@@ -371,7 +372,7 @@ public class ConversionValidator
                     EntityName = mapping.LegacyVariable,
                     Expected = mapping.TargetFieldName,
                     Actual = mapping.LegacyVariable,
-                    Description = $"Found legacy variable name '{mapping.LegacyVariable}' " +
+                    Description = $"Found legacy variable name '{mapping.LegacyVariable}' (or pattern '{legacyPattern}') " +
                                  $"in converted code - should be '{mapping.TargetFieldName}'",
                     Severity = IssueSeverity.Warning,
                     CanAutoFix = true
