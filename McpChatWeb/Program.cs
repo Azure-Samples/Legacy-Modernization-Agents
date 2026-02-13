@@ -1,4 +1,5 @@
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Builder;
@@ -906,11 +907,10 @@ app.MapGet("/api/graph", async (IMcpClient client, int? runId, bool? includeInfe
 			if (includeInferredNodes)
 			{
 				var nodeMap = nodes.ToDictionary(n => (string)((dynamic)n).id, n => n);
-				foreach (var edge in edges)
+				foreach (dynamic edge in edges.Cast<dynamic>())
 				{
-					var e = (dynamic)edge;
-					var sourceId = (string)e.source;
-					var targetId = (string)e.target;
+					var sourceId = (string)edge.source;
+					var targetId = (string)edge.target;
 
 					if (!nodeMap.ContainsKey(sourceId))
 					{
