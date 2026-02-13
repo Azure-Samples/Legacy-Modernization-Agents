@@ -10,32 +10,24 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
 BOLD='\033[1m'
 NC='\033[0m' # No Color
 
 # Get repository root (directory containing this script)
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Determine the preferred dotnet CLI (favor .NET 9 installations when available)
+# Determine the preferred dotnet CLI (favor .NET 10 installations when available)
 detect_dotnet_cli() {
     local default_cli="dotnet"
     local cli_candidate="$default_cli"
 
-    # Check if default dotnet has .NET 9 runtime
+    # Check if default dotnet has .NET 10 runtime
     if command -v "$default_cli" >/dev/null 2>&1; then
-        if "$default_cli" --list-runtimes 2>/dev/null | grep -q "Microsoft.NETCore.App 9."; then
+        if "$default_cli" --list-runtimes 2>/dev/null | grep -q "Microsoft.NETCore.App 10."; then
             echo "$default_cli"
             return
         fi
-    fi
-
-    # Fallback: Check Homebrew .NET 9 location
-    local homebrew_dotnet9="/opt/homebrew/opt/dotnet/libexec/dotnet"
-    if [ -x "$homebrew_dotnet9" ]; then
-        export DOTNET_ROOT="/opt/homebrew/opt/dotnet/libexec"
-        export PATH="$DOTNET_ROOT:$PATH"
-        echo "$homebrew_dotnet9"
-        return
     fi
 
     # Use whatever dotnet is available
@@ -714,6 +706,13 @@ run_doctor() {
 generate_migration_report() {
     echo -e "${BLUE}📝 Generating Migration Report...${NC}"
     
+    if ! command -v sqlite3 >/dev/null 2>&1; then
+        echo -e "${RED}❌ sqlite3 is not installed. Install it to generate reports.${NC}"
+        echo -e "${YELLOW}   macOS: brew install sqlite3${NC}"
+        echo -e "${YELLOW}   Linux: sudo apt install sqlite3${NC}"
+        return 1
+    fi
+
     local db_path="$REPO_ROOT/Data/migration.db"
     
     if [ ! -f "$db_path" ]; then
@@ -851,7 +850,7 @@ run_setup() {
     TEMPLATE_CONFIG="$REPO_ROOT/Config/ai-config.local.env.template"
 
     if [ ! -f "$TEMPLATE_CONFIG" ]; then
-        echo -e "${RED}❌ Template configuration file not found: $TEMPLATE_CONFIG${NC}"
+        echo -e "${RED}❌ Example configuration file not found: $TEMPLATE_CONFIG${NC}"
         return 1
     fi
 
@@ -954,12 +953,12 @@ run_test() {
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}✅ .NET version: $dotnet_version${NC}"
         
-        # Check if it's .NET 9.0 or higher
+        # Check if it's .NET 10.0 or higher
         major_version=$(echo $dotnet_version | cut -d. -f1)
-        if [ "$major_version" -ge 9 ]; then
-            echo -e "${GREEN}✅ .NET 9.0+ requirement satisfied${NC}"
+        if [ "$major_version" -ge 10 ]; then
+            echo -e "${GREEN}✅ .NET 10.0+ requirement satisfied${NC}"
         else
-            echo -e "${YELLOW}⚠️  Warning: .NET 9.0+ recommended (current: $dotnet_version)${NC}"
+            echo -e "${YELLOW}⚠️  Warning: .NET 10.0+ recommended (current: $dotnet_version)${NC}"
         fi
     else
         echo -e "${RED}❌ .NET is not installed or not in PATH${NC}"
@@ -2075,12 +2074,6 @@ main() {
             ;;
         "monitor")
             run_monitor
-            ;;
-        "chat-test")
-            run_chat_test
-            ;;
-        "validate")
-            run_validate
             ;;
         "conversation")
             run_conversation
