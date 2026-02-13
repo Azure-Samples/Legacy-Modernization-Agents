@@ -1853,7 +1853,6 @@ app.MapGet("/api/runs/{runId}/process-status", async (string runId) =>
 		// Determine stage statuses based on data
 		var isRunning = runStatus == "Running";
 		var isCompleted = runStatus == "Completed";
-		var isFailed = runStatus == "Failed";
 		
 		// Check if this run used chunking (has chunk metadata)
 		var usedChunking = totalChunks > 0;
