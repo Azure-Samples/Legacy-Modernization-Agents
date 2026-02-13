@@ -83,8 +83,7 @@ builder.Services.PostConfigure<McpOptions>(options =>
 });
 builder.Services.AddSingleton<IMcpClient, McpProcessClient>();
 
-builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddOpenApi();
 
 var app = builder.Build();
 
@@ -153,8 +152,7 @@ await CleanupStaleRunsAsync();
 
 if (app.Environment.IsDevelopment())
 {
-	app.UseSwagger();
-	app.UseSwaggerUI();
+	app.MapOpenApi();
 }
 
 app.UseDefaultFiles();
