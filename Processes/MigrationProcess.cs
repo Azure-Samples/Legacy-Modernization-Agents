@@ -80,7 +80,8 @@ public class MigrationProcess
             loggerFactory.CreateLogger<CobolAnalyzerAgent>(),
             _settings.AISettings.CobolAnalyzerModelId,
             _enhancedLogger,
-            _chatLogger);
+            _chatLogger,
+            settings: _settings);
 
         // Initialize converter based on target language - uses Responses API (codex for code generation)
         var targetLang = _settings.ApplicationSettings.TargetLanguage;
@@ -94,7 +95,8 @@ public class MigrationProcess
                 loggerFactory.CreateLogger<CSharpConverterAgent>(),
                 _settings.AISettings.JavaConverterModelId,
                 _enhancedLogger,
-                _chatLogger);
+                _chatLogger,
+                settings: _settings);
         }
         else
         {
@@ -103,7 +105,8 @@ public class MigrationProcess
                 loggerFactory.CreateLogger<JavaConverterAgent>(),
                 _settings.AISettings.JavaConverterModelId,
                 _enhancedLogger,
-                _chatLogger);
+                _chatLogger,
+                settings: _settings);
             
             _javaConverterAgent = javaAgent;
             _codeConverterAgent = javaAgent;
@@ -116,7 +119,8 @@ public class MigrationProcess
             loggerFactory.CreateLogger<DependencyMapperAgent>(),
             _settings.AISettings.DependencyMapperModelId ?? _settings.AISettings.CobolAnalyzerModelId,
             _enhancedLogger,
-            _chatLogger);
+            _chatLogger,
+            settings: _settings);
 
         _enhancedLogger.ShowSuccess("All agents initialized with dual-API support (Responses API for codex, Chat API for reports)");
     }

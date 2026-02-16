@@ -597,7 +597,8 @@ internal static class Program
                     loggerFactory.CreateLogger<CobolAnalyzerAgent>(),
                     settings.AISettings.CobolAnalyzerModelId,
                     enhancedLogger,
-                    chatLogger);
+                    chatLogger,
+                    settings: settings);
 
                 // BusinessLogicExtractorAgent uses ResponsesApiClient (codex for RE reports)
                 // This ensures compatibility with gpt-5.2-chat which requires Responses API
@@ -607,7 +608,8 @@ internal static class Program
                     chatDeployment,
                     enhancedLogger,
                     chatLogger,
-                    chunkingOrchestrator: chunkingOrchestrator);
+                    chunkingOrchestrator: chunkingOrchestrator,
+                    settings: settings);
 
                 // Smart routing: check for large files to decide between chunked vs direct RE
                 var cobolFiles = await fileHelper.ScanDirectoryForCobolFilesAsync(settings.ApplicationSettings.CobolSourceFolder);
@@ -1330,7 +1332,8 @@ internal static class Program
                 loggerFactory.CreateLogger<CobolAnalyzerAgent>(),
                 settings.AISettings.CobolAnalyzerModelId,
                 enhancedLogger,
-                chatLogger);
+                chatLogger,
+                settings: settings);
 
             // BusinessLogicExtractorAgent uses ResponsesApiClient (codex for RE reports)
             // This ensures compatibility with gpt-5.2-chat which requires Responses API
@@ -1340,7 +1343,8 @@ internal static class Program
                 chatDeployment,
                 enhancedLogger,
                 chatLogger,
-                chunkingOrchestrator: chunkingOrchestrator);
+                chunkingOrchestrator: chunkingOrchestrator,
+                settings: settings);
 
             // Smart routing: check for large files to decide between chunked vs direct RE
             var cobolFiles = await fileHelper.ScanDirectoryForCobolFilesAsync(settings.ApplicationSettings.CobolSourceFolder);
