@@ -5,6 +5,21 @@ All notable changes to this repository are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.0] - 2026-02-16
+
+### Added
+- **Speed Profile Selection** - New interactive prompt in `doctor.sh` lets you choose between four speed profiles before running migrations, reverse engineering, or conversion-only:
+  - **TURBO** — Low reasoning on ALL files with no exceptions. 65K token ceiling (speed comes from low reasoning effort, not token starvation). Designed for testing and smoke runs where speed matters more than quality.
+  - **FAST** — Low reasoning on most files, medium only on the most complex ones. 32K token cap. Good for quick iterations and proof-of-concept runs.
+  - **BALANCED** (default) — Uses the three-tier content-aware reasoning system. Simple files get low effort, complex files get high effort. Uses `appsettings.json` defaults.
+  - **THOROUGH** — Maximum reasoning on all files regardless of complexity. Best for critical codebases where accuracy matters more than speed.
+- **Shared `select_speed_profile()` function** — Called from `run_migration()`, `run_reverse_engineering()`, and `run_conversion_only()`. Sets `CODEX_*` environment variables that are picked up by `Program.cs` `OverrideSettingsFromEnvironment()` at startup — no C# changes needed.
+- **Adaptive Re-Chunking on Output Exhaustion** — When reasoning exhaustion retries fail (all escalation attempts exhausted), `AgentBase` now automatically splits the COBOL source at the best semantic boundary (DIVISION > SECTION > paragraph > midpoint) and processes each half independently with 50-line overlap for context continuity. Results are merged with duplicate package/import/class removal and validated for truncation signals. This solves the TURBO/FAST paradox where small output token caps caused repeated exhaustion failures rather than triggering the existing input-size-based chunking.
+
+### Changed
+- **README.md** — Added Speed Profile documentation with profile comparison table
+- **doctor.sh** — Added `select_speed_profile()` function and integrated into all three run commands
+
 ## [2.3.1] - 2026-02-12
 
 ### Fixed

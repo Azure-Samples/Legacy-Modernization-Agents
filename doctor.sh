@@ -1122,6 +1122,78 @@ run_test() {
     fi
 }
 
+# Function to select migration speed profile
+# Sets environment variables that override the three-tier reasoning system
+# in appsettings.json via Program.cs OverrideSettingsFromEnvironment().
+select_speed_profile() {
+    echo ""
+    echo "Speed Profile"
+    echo "======================================"
+    echo "  Controls how much reasoning effort the AI model spends per file."
+    echo "  Higher effort means better output quality but slower processing."
+    echo ""
+    echo "  1) TURBO"
+    echo "     Lowest reasoning on ALL files, no exceptions. Speed comes from low"
+    echo "     reasoning effort, not token starvation. 65K token ceiling. Designed"
+    echo "     for testing and smoke runs where speed matters more than quality."
+    echo ""
+    echo "  2) FAST"
+    echo "     Low reasoning on most files, medium only on the most complex ones."
+    echo "     32K token ceiling. Good for quick iterations and proof-of-concept"
+    echo "     runs."
+    echo ""
+    echo "  3) BALANCED (default)"
+    echo "     Uses the three-tier content-aware reasoning system. Simple files get"
+    echo "     low effort, complex files get high effort. 100K token ceiling. This"
+    echo "     is the recommended setting for production migrations."
+    echo ""
+    echo "  4) THOROUGH"
+    echo "     Maximum reasoning on all files regardless of complexity. 100K token"
+    echo "     ceiling. Best for critical codebases where accuracy matters more"
+    echo "     than speed. Highest token consumption and slowest processing."
+    echo ""
+    read -p "Enter choice (1-4) [default: 3]: " speed_choice
+    speed_choice=$(echo "$speed_choice" | tr -d '[:space:]')
+
+    case "$speed_choice" in
+        1)
+            echo -e "${GREEN}Selected: TURBO${NC}"
+            export CODEX_LOW_REASONING_EFFORT="low"
+            export CODEX_MEDIUM_REASONING_EFFORT="low"
+            export CODEX_HIGH_REASONING_EFFORT="low"
+            export CODEX_MAX_OUTPUT_TOKENS="65536"
+            export CODEX_MIN_OUTPUT_TOKENS="8192"
+            export CODEX_LOW_MULTIPLIER="1.0"
+            export CODEX_MEDIUM_MULTIPLIER="1.0"
+            export CODEX_HIGH_MULTIPLIER="1.5"
+            ;;
+        2)
+            echo -e "${GREEN}Selected: FAST${NC}"
+            export CODEX_LOW_REASONING_EFFORT="low"
+            export CODEX_MEDIUM_REASONING_EFFORT="low"
+            export CODEX_HIGH_REASONING_EFFORT="medium"
+            export CODEX_MAX_OUTPUT_TOKENS="32768"
+            export CODEX_MIN_OUTPUT_TOKENS="16384"
+            ;;
+        4)
+            echo -e "${GREEN}Selected: THOROUGH${NC}"
+            export CODEX_LOW_REASONING_EFFORT="medium"
+            export CODEX_MEDIUM_REASONING_EFFORT="high"
+            export CODEX_HIGH_REASONING_EFFORT="high"
+            export CODEX_MAX_OUTPUT_TOKENS="100000"
+            export CODEX_MIN_OUTPUT_TOKENS="32768"
+            ;;
+        3|"")
+            echo -e "${GREEN}Selected: BALANCED (default)${NC}"
+            # No overrides — uses appsettings.json defaults
+            ;;
+        *)
+            echo -e "${YELLOW}Invalid choice, using BALANCED${NC}"
+            ;;
+    esac
+    echo ""
+}
+
 # Function to run migration
 run_migration() {
     echo -e "${BLUE}🚀 COBOL Migration Tool${NC}"
@@ -1237,6 +1309,9 @@ run_migration() {
     fi
     echo -e "${GREEN}✅ Quality Gate PASSED: TARGET_LANGUAGE='$TARGET_LANGUAGE'${NC}"
     echo ""
+
+    # Select speed profile
+    select_speed_profile
 
     echo -e "${CYAN}🧩 Smart Chunking: AUTO-ENABLED${NC}"
     echo "================================"
@@ -1849,6 +1924,9 @@ run_reverse_engineering() {
         return 1
     fi
 
+    # Select speed profile
+    select_speed_profile
+
     echo ""
     echo "🔍 Starting Reverse Engineering Analysis..."
     echo "=========================================="
@@ -1967,6 +2045,9 @@ run_conversion_only() {
         echo -e "${RED}❌ Please fix connection issues first.${NC}"
         return 1
     fi
+
+    # Select speed profile
+    select_speed_profile
 
     echo ""
     echo "🔄 Starting Conversion Only..."
