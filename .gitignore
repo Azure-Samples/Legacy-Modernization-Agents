@@ -81,19 +81,13 @@ Config/appsettings.secrets.json
 # =============================================================================
 
 # COBOL Source Files (Contains proprietary business logic)
-# Note: Sample files in source/ are kept for demo purposes
 source/*
 !source/.gitkeep
-!source/*.cbl
-!source/*.cpy
 
-# Ignore COBOL files everywhere else (but not in source/)
+# Ignore COBOL files everywhere
 *.cbl
 *.cpy
 *.cob
-# Re-allow sample files in source
-!source/*.cbl
-!source/*.cpy
 
 # Generated Output (Contains converted business logic and reverse engineering results)
 output/*
@@ -124,7 +118,8 @@ migration_backup*.sql
 # =============================================================================
 
 # All log files (May contain API calls, credentials, business data)
-Logs/
+Logs/*
+!Logs/.gitkeep
 logs/
 *.log
 Log/
