@@ -175,11 +175,13 @@ public static class TokenHelper
     /// <param name="tokensPerMinuteLimit">Your TPM limit (e.g., 300000).</param>
     /// <param name="estimatedInputTokens">Estimated input tokens per request.</param>
     /// <param name="maxOutputTokens">Max output tokens per request.</param>
+    /// <param name="minDelayMs">Minimum delay floor in milliseconds (default 2000). Use lower values for fast profiles.</param>
     /// <returns>Recommended delay in milliseconds between requests.</returns>
     public static int CalculateRequestDelay(
         int tokensPerMinuteLimit, 
         int estimatedInputTokens, 
-        int maxOutputTokens)
+        int maxOutputTokens,
+        int minDelayMs = 2000)
     {
         // Total tokens per request
         var tokensPerRequest = estimatedInputTokens + maxOutputTokens;
@@ -193,8 +195,8 @@ public static class TokenHelper
         
         var delayMs = (int)(60000 / safeRequestsPerMinute);
         
-        // Minimum 15 seconds, maximum 120 seconds (very conservative)
-        return Math.Clamp(delayMs, 15000, 120000);
+        // Configurable minimum, maximum 120 seconds
+        return Math.Clamp(delayMs, Math.Max(500, minDelayMs), 120000);
     }
 
     /// <summary>
