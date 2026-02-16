@@ -1087,6 +1087,19 @@ internal static class Program
             && double.TryParse(codexExMult, out var cemVal))
             codexProfile.ReasoningExhaustionRetryMultiplier = cemVal;
 
+        // ── Speed-profile overrides for ChunkingSettings ────────────────────
+        var chunkingSettings = settings.ChunkingSettings ??= new ChunkingSettings();
+
+        if (Environment.GetEnvironmentVariable("CODEX_STAGGER_DELAY_MS") is { Length: > 0 } staggerMs
+            && int.TryParse(staggerMs, out var sVal))
+            chunkingSettings.ParallelStaggerDelayMs = sVal;
+        if (Environment.GetEnvironmentVariable("CODEX_MAX_PARALLEL_CONVERSION") is { Length: > 0 } maxParConv
+            && int.TryParse(maxParConv, out var mpcVal))
+            chunkingSettings.MaxParallelConversion = mpcVal;
+        if (Environment.GetEnvironmentVariable("CODEX_RATE_LIMIT_SAFETY_FACTOR") is { Length: > 0 } safetyFactor
+            && double.TryParse(safetyFactor, out var sfVal))
+            chunkingSettings.RateLimitSafetyFactor = sfVal;
+
         // Chat Profile overrides (subset — chat profiles are simpler)
         var chatProfile = settings.ChatProfile ??= new ModelProfileSettings();
 

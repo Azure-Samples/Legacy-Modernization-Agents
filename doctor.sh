@@ -1134,13 +1134,13 @@ select_speed_profile() {
     echo ""
     echo "  1) TURBO"
     echo "     Lowest reasoning on ALL files, no exceptions. Speed comes from low"
-    echo "     reasoning effort, not token starvation. 65K token ceiling. Designed"
-    echo "     for testing and smoke runs where speed matters more than quality."
+    echo "     reasoning effort + parallel file conversion (4 workers). 65K token"
+    echo "     ceiling. Designed for testing and smoke runs."
     echo ""
     echo "  2) FAST"
     echo "     Low reasoning on most files, medium only on the most complex ones."
-    echo "     32K token ceiling. Good for quick iterations and proof-of-concept"
-    echo "     runs."
+    echo "     32K token ceiling, parallel conversion (3 workers). Good for quick"
+    echo "     iterations and proof-of-concept runs."
     echo ""
     echo "  3) BALANCED (default)"
     echo "     Uses the three-tier content-aware reasoning system. Simple files get"
@@ -1166,6 +1166,9 @@ select_speed_profile() {
             export CODEX_LOW_MULTIPLIER="1.0"
             export CODEX_MEDIUM_MULTIPLIER="1.0"
             export CODEX_HIGH_MULTIPLIER="1.5"
+            export CODEX_STAGGER_DELAY_MS="200"
+            export CODEX_MAX_PARALLEL_CONVERSION="4"
+            export CODEX_RATE_LIMIT_SAFETY_FACTOR="0.85"
             ;;
         2)
             echo -e "${GREEN}Selected: FAST${NC}"
@@ -1174,6 +1177,8 @@ select_speed_profile() {
             export CODEX_HIGH_REASONING_EFFORT="medium"
             export CODEX_MAX_OUTPUT_TOKENS="32768"
             export CODEX_MIN_OUTPUT_TOKENS="16384"
+            export CODEX_STAGGER_DELAY_MS="500"
+            export CODEX_MAX_PARALLEL_CONVERSION="3"
             ;;
         4)
             echo -e "${GREEN}Selected: THOROUGH${NC}"
