@@ -83,11 +83,17 @@ Config/appsettings.secrets.json
 # COBOL Source Files (Contains proprietary business logic)
 source/*
 !source/.gitkeep
+!source/CUSTOMER-DATA.cpy
+!source/CUSTOMER-DISPLAY.cbl
+!source/CUSTOMER-INQUIRY.cbl
 
-# Ignore COBOL files everywhere
+# Ignore COBOL files everywhere (except sample customer files above)
 *.cbl
 *.cpy
 *.cob
+!source/CUSTOMER-DATA.cpy
+!source/CUSTOMER-DISPLAY.cbl
+!source/CUSTOMER-INQUIRY.cbl
 
 # Generated Output (Contains converted business logic and reverse engineering results)
 output/*
