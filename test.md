@@ -1,5 +1,68 @@
 # Three-Tier Content-Aware Reasoning System — Implementation Plan
 
+## Review Verdict: APPROVED
+
+**Status: Correct, scalable, and future-proof.**
+
+This design solves the three hardest problems at once:
+1. No accidental model hard-coding (GPT-4.1 problem is genuinely gone)
+2. Fast-by-default, safe-by-escalation behavior
+3. Config-driven intelligence, not code-driven guesses
+
+### What was validated as correct
+
+| Area | Why it's right |
+|------|---------------|
+| Zero hardcoded models | `string.Empty` defaults + profile injection + env var override = misconfiguration fails loudly, not silently |
+| Three independent safety nets | Indicators (cheap, deterministic) → Structural baselines (impossible to miss) → Retry escalation (self-healing) |
+| Typed `ReasoningExhaustionException` | Semantic failure classification + structured retry + clean separation. Retry logic in `AgentBase`, not the client — correct ownership |
+| Profile separation (Codex vs Chat) | Chat doesn't support "low" reasoning; Codex benefits massively from it; token multipliers differ materially |
+
+Core design principle confirmed: *Unknown complexity should be handled reactively, not predicted exhaustively.*
+
+---
+
+## Refinements (4 action items — incorporated into implementation)
+
+### ACTION 1: Conditional MinOutputTokens floor
+**Affects:** `ResponsesApiClient.cs` → `CalculateTokenSettings()`
+
+**Problem:** Flat `MinOutputTokens = 32768` wastes tokens on small chunks and slows retries.
+
+**Fix:** Apply the floor only when `complexity >= medium` OR `inputTokens >= MinOutputTokens / 2`. For low-complexity small inputs, use `estimatedOutputNeeded` directly (still capped by `MaxOutputTokens`).
+
+### ACTION 2: Density calculations exclude noise lines
+**Affects:** `ResponsesApiClient.cs` → `CalculateComplexityScore()`
+
+**Problem:** Using raw `lines.Length` dilutes density when files are heavily commented or have many blank/directive lines.
+
+**Fix:** Add a `CountMeaningfulLines()` helper that excludes:
+- Blank lines
+- Comment lines (column 7 = `*` or `//` or full-line `*>`)
+- Compiler directives (`CBL`, `PROCESS`, `EJECT`, `SKIP1/2/3`)
+
+Use this count as the denominator for PIC density and level-number density.
+
+### ACTION 3: Retry escalation thrash guard
+**Affects:** `AgentBase.cs` → reasoning exhaustion catch block
+
+**Problem:** If `currentMaxTokens` already hit `Profile.MaxOutputTokens` AND `currentEffort == HighReasoningEffort`, retrying is expensive and hopeless.
+
+**Fix:** Before each retry iteration, check: if tokens are already at max AND effort is already high → break out and fail fast with a clear error message. Do not burn another API call.
+
+### ACTION 4: Log reasoning_ratio metric
+**Affects:** `ResponsesApiClient.cs` → `GetResponseAsync()` (after parsing usage)
+
+**Problem:** Missing the single most diagnostic metric for tuning complexity thresholds.
+
+**Fix:** After extracting `reasoningTokens` and `actualOutputTokens`, compute and log:
+```
+reasoning_ratio = reasoningTokens / max(actualOutputTokens, 1)
+```
+Log as structured data: `"reasoning_ratio={Ratio:F2}"` alongside existing token logging. This tells us which chunks are thinking-heavy and where thresholds need tuning.
+
+---
+
 ## Design Principles
 
 1. **Zero hardcoded model names in C# code** — all model names come from `appsettings.json` / env vars
@@ -12,8 +75,8 @@
 | # | File | What Changes |
 |---|------|-------------|
 | 1 | `Models/Settings.cs` | Remove hardcoded `gpt-4.1` defaults → `string.Empty`; add `ComplexityIndicator` + `ModelProfileSettings` classes; add `CodexProfile` + `ChatProfile` to `AppSettings` |
-| 2 | `Agents/Infrastructure/ResponsesApiClient.cs` | Add `ReasoningExhaustionException`; constructor takes `ModelProfileSettings?`; add `CalculateComplexityScore()` with config-driven regex; three-tier `CalculateTokenSettings`; throw typed exception on exhaustion |
-| 3 | `Agents/Infrastructure/AgentBase.cs` | Add `catch (ReasoningExhaustionException)` in `ExecuteWithFallbackAsync`; escalation loop doubles tokens + promotes effort |
+| 2 | `Agents/Infrastructure/ResponsesApiClient.cs` | Add `ReasoningExhaustionException`; constructor takes `ModelProfileSettings?`; add `CalculateComplexityScore()` with config-driven regex; three-tier `CalculateTokenSettings`; throw typed exception on exhaustion. **+ACTION 1** (conditional MinOutputTokens), **+ACTION 2** (noise-filtered density), **+ACTION 4** (reasoning_ratio logging) |
+| 3 | `Agents/Infrastructure/AgentBase.cs` | Add `catch (ReasoningExhaustionException)` in `ExecuteWithFallbackAsync`; escalation loop doubles tokens + promotes effort. **+ACTION 3** (thrash guard) |
 | 4 | `Config/appsettings.json` | Add `CodexProfile` and `ChatProfile` top-level sections with all tuning values |
 | 5 | `Config/ai-config.env` | Add section 4 with commented-out profile env vars |
 | 6 | `Program.cs` | Add profile env var overrides in `OverrideSettingsFromEnvironment()`; pass `profile:` to all 3 `ResponsesApiClient` constructors |
@@ -490,6 +553,11 @@ public class ResponsesApiClient : IDisposable
     private static readonly Regex ExecSqlDliRegex = new(
         @"EXEC\s+(SQL|DLI)\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+    // ACTION 2: Regex to identify COBOL noise lines (blanks, comments, compiler directives)
+    private static readonly Regex NoiseLineRegex = new(
+        @"^\s*$|^.{6}\*|^\s*\*>|^\s*(CBL|PROCESS|EJECT|SKIP1|SKIP2|SKIP3)\b",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
     // Pre-compiled config-driven indicator regexes (built at construction)
     private readonly List<(Regex regex, int weight)> _compiledIndicators;
 
@@ -589,6 +657,7 @@ public class ResponsesApiClient : IDisposable
     /// Calculates a complexity score for COBOL source using config-driven indicators
     /// plus structural baseline floors (PIC density, level-number density) and
     /// COPY/EXEC amplifiers.
+    /// ACTION 2: Density calculations use meaningful lines only (excludes blanks, comments, directives).
     /// </summary>
     /// <param name="cobolSource">The raw COBOL source text.</param>
     /// <returns>A non-negative complexity score. Higher = more complex.</returns>
@@ -609,9 +678,10 @@ public class ResponsesApiClient : IDisposable
             }
         }
 
-        // 2. Structural baseline floors
+        // 2. Structural baseline floors — ACTION 2: use meaningful lines only
         var lines = cobolSource.Split('\n');
-        var totalLines = Math.Max(lines.Length, 1);
+        var meaningfulLines = CountMeaningfulLines(lines);
+        var totalLines = Math.Max(meaningfulLines, 1);
 
         // PIC density floor
         var picCount = PicRegex.Matches(cobolSource).Count;
@@ -657,8 +727,24 @@ public class ResponsesApiClient : IDisposable
     }
 
     /// <summary>
+    /// ACTION 2: Counts meaningful COBOL lines, excluding blanks, comments, and compiler directives.
+    /// This prevents heavily-commented or whitespace-padded files from diluting density scores.
+    /// </summary>
+    private static int CountMeaningfulLines(string[] lines)
+    {
+        int count = 0;
+        foreach (var line in lines)
+        {
+            if (!NoiseLineRegex.IsMatch(line))
+                count++;
+        }
+        return count;
+    }
+
+    /// <summary>
     /// Calculates optimal max_output_tokens and reasoning effort based on content complexity.
     /// Uses three-tier system: low / medium / high based on complexity score.
+    /// ACTION 1: MinOutputTokens floor is conditional — only applied for medium+ complexity or large inputs.
     /// </summary>
     public (int maxOutputTokens, string reasoningEffort) CalculateTokenSettings(
         string systemPrompt, 
@@ -692,8 +778,21 @@ public class ResponsesApiClient : IDisposable
         // Calculate output tokens with tier-specific multiplier
         var estimatedOutputNeeded = (int)(inputTokens * multiplier);
 
-        // Clamp to profile limits
-        var maxOutputTokens = Math.Clamp(estimatedOutputNeeded, Profile.MinOutputTokens, Profile.MaxOutputTokens);
+        // ACTION 1: Conditional MinOutputTokens floor — only enforce for medium+ complexity
+        // or large inputs. Small/simple chunks use estimated tokens directly (still capped by max).
+        int effectiveMinTokens;
+        if (complexityScore >= Profile.MediumThreshold || inputTokens >= Profile.MinOutputTokens / 2)
+        {
+            effectiveMinTokens = Profile.MinOutputTokens;
+        }
+        else
+        {
+            // For low-complexity small inputs, allow smaller allocations
+            effectiveMinTokens = Math.Max(4096, estimatedOutputNeeded);
+        }
+
+        // Clamp to profile limits with conditional floor
+        var maxOutputTokens = Math.Clamp(estimatedOutputNeeded, effectiveMinTokens, Profile.MaxOutputTokens);
 
         _logger?.LogInformation(
             "Token settings: Input ~{InputTokens}, complexity={Score} → {Tier} (effort='{Effort}', " +
@@ -847,6 +946,12 @@ public class ResponsesApiClient : IDisposable
                 _logger?.LogInformation(
                     "Responses API completed in {Elapsed:F1}s: {Input} input + {Output} output ({Reasoning} reasoning) = {Total} tokens",
                     elapsed.TotalSeconds, actualInputTokens, actualOutputTokens, reasoningTokens, actualTotalTokens);
+                
+                // ACTION 4: Log reasoning_ratio — the single most diagnostic metric for threshold tuning
+                var reasoningRatio = (double)reasoningTokens / Math.Max(actualOutputTokens, 1);
+                _logger?.LogInformation(
+                    "Reasoning ratio: {Ratio:F2} (reasoning={Reasoning}, output={Output})",
+                    reasoningRatio, reasoningTokens, actualOutputTokens);
                 
                 // Check for incomplete status — throw TYPED exception for reasoning exhaustion
                 var status = parsed?["status"]?.GetValue<string>();
@@ -1056,6 +1161,21 @@ The only method that changes is `ExecuteWithFallbackAsync`. Add this catch block
                         currentEffort = profile.MediumReasoningEffort;
                     else if (currentEffort == profile.MediumReasoningEffort && currentEffort != profile.HighReasoningEffort)
                         currentEffort = profile.HighReasoningEffort;
+
+                    // ACTION 3: Thrash guard — if already at max tokens AND max effort, don't burn another API call
+                    if (currentMaxTokens >= profile.MaxOutputTokens && currentEffort == profile.HighReasoningEffort
+                        && exhaustionRetry > 0)
+                    {
+                        Logger.LogError(
+                            "[{Agent}] Thrash guard: already at max tokens ({Tokens}) and max effort ('{Effort}') " +
+                            "for {Context}. Failing fast — further retries are hopeless.",
+                            AgentName, currentMaxTokens, currentEffort, contextIdentifier);
+
+                        EnhancedLogger?.LogBehindTheScenes("REASONING_EXHAUSTION", "THRASH_GUARD",
+                            $"Stopped retrying: tokens={currentMaxTokens} (max), effort='{currentEffort}' (max)", AgentName);
+
+                        break;
+                    }
 
                     Logger.LogInformation(
                         "[{Agent}] Reasoning exhaustion retry {Retry}/{MaxRetries} for {Context}: " +
@@ -1442,14 +1562,23 @@ var responsesApiClient = new ResponsesApiClient(
 
 ## Summary
 
-| File | Key Change | Status |
-|------|-----------|--------|
-| `Models/Settings.cs` | `string.Empty` defaults + `ComplexityIndicator` + `ModelProfileSettings` classes + `CodexProfile`/`ChatProfile` on `AppSettings` | **Not yet applied** |
-| `ResponsesApiClient.cs` | `ReasoningExhaustionException` + profile-aware constructor + `CalculateComplexityScore()` + three-tier `CalculateTokenSettings` | **Not yet applied** |
-| `AgentBase.cs` | `catch (ReasoningExhaustionException)` with escalation loop | **Not yet applied** |
-| `appsettings.json` | `CodexProfile` + `ChatProfile` JSON sections with 19 indicators | **Not yet applied** |
-| `ai-config.env` | Section 4 with commented-out profile env vars | **Not yet applied** |
-| `Program.cs` | Profile env var overrides + `profile: settings.CodexProfile` on 3 constructors | **Not yet applied** |
+| File | Key Change | Actions | Status |
+|------|-----------|---------|--------|
+| `Models/Settings.cs` | `string.Empty` defaults + `ComplexityIndicator` + `ModelProfileSettings` classes + `CodexProfile`/`ChatProfile` on `AppSettings` | — | **Not yet applied** |
+| `ResponsesApiClient.cs` | `ReasoningExhaustionException` + profile-aware constructor + `CalculateComplexityScore()` + three-tier `CalculateTokenSettings` | ACTION 1, 2, 4 | **Not yet applied** |
+| `AgentBase.cs` | `catch (ReasoningExhaustionException)` with escalation loop | ACTION 3 | **Not yet applied** |
+| `appsettings.json` | `CodexProfile` + `ChatProfile` JSON sections with 19 indicators | — | **Not yet applied** |
+| `ai-config.env` | Section 4 with commented-out profile env vars | — | **Not yet applied** |
+| `Program.cs` | Profile env var overrides + `profile: settings.CodexProfile` on 3 constructors | — | **Not yet applied** |
+
+### Refinement Actions Recap
+
+| # | Action | File | What |
+|---|--------|------|------|
+| 1 | Conditional MinOutputTokens | `ResponsesApiClient.cs` | Floor only applies for medium+ complexity or large inputs |
+| 2 | Noise-filtered density | `ResponsesApiClient.cs` | Exclude blanks, comments, compiler directives from line count |
+| 3 | Thrash guard | `AgentBase.cs` | Fail fast when already at max tokens + max effort |
+| 4 | Reasoning ratio metric | `ResponsesApiClient.cs` | Log `reasoning_tokens / output_tokens` for threshold tuning |
 
 ### Design Principles Recap
 
@@ -1459,3 +1588,7 @@ var responsesApiClient = new ResponsesApiClient(
 - **Env vars override everything** — for runtime tuning without redeploying
 - **Config-driven regex complexity indicators** — add/remove/tune patterns without code changes
 - **Typed exception (`ReasoningExhaustionException`)** — enables structured retry with escalation in `AgentBase`
+- **Conditional token floors** (ACTION 1) — don't waste tokens on small/simple chunks
+- **Noise-filtered density scoring** (ACTION 2) — accurate complexity even with heavily-commented COBOL
+- **Thrash guard on retries** (ACTION 3) — fail fast when escalation has nowhere left to go
+- **Reasoning ratio logging** (ACTION 4) — the golden diagnostic metric for production tuning
