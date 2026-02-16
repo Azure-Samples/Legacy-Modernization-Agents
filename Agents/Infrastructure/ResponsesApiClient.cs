@@ -102,6 +102,7 @@ public class ResponsesApiClient : IDisposable
     /// <param name="enhancedLogger">Optional enhanced logger for API call tracking</param>
     /// <param name="profile">Optional model profile for three-tier reasoning. Falls back to conservative defaults.</param>
     /// <param name="apiVersion">API version (default: 2025-04-01-preview)</param>
+    /// <param name="rateLimitSafetyFactor">Safety margin for rate limiting (0.5–0.99, default 0.90)</param>
     public ResponsesApiClient(
         string endpoint, 
         string apiKey, 
@@ -109,7 +110,8 @@ public class ResponsesApiClient : IDisposable
         ILogger? logger = null,
         EnhancedLogger? enhancedLogger = null,
         ModelProfileSettings? profile = null,
-        string apiVersion = "2025-04-01-preview")
+        string apiVersion = "2025-04-01-preview",
+        double rateLimitSafetyFactor = 0.90)
     {
         if (string.IsNullOrEmpty(endpoint))
             throw new ArgumentNullException(nameof(endpoint));
@@ -127,7 +129,7 @@ public class ResponsesApiClient : IDisposable
         Profile = profile ?? new ModelProfileSettings();
 
         _rateLimitTracker = new RateLimitTracker(
-            Profile.TokensPerMinute, Profile.RequestsPerMinute, logger);
+            Profile.TokensPerMinute, Profile.RequestsPerMinute, logger, rateLimitSafetyFactor);
 
         _httpClient = new HttpClient();
         if (!string.IsNullOrEmpty(_apiKey))
@@ -646,13 +648,14 @@ internal class RateLimitTracker
     private readonly Queue<(DateTime time, int tokens)> _tokenHistory = new();
     private readonly Queue<DateTime> _requestHistory = new();
     
-    // Safety margin: stay at 90% of limits to avoid hitting them
-    private const double SafetyMargin = 0.90;
+    // Safety margin: configurable fraction of limits to stay under
+    private readonly double _safetyMargin;
 
-    public RateLimitTracker(int tokensPerMinute, int requestsPerMinute, ILogger? logger)
+    public RateLimitTracker(int tokensPerMinute, int requestsPerMinute, ILogger? logger, double safetyMargin = 0.90)
     {
-        _tokensPerMinute = (int)(tokensPerMinute * SafetyMargin);
-        _requestsPerMinute = (int)(requestsPerMinute * SafetyMargin);
+        _safetyMargin = Math.Clamp(safetyMargin, 0.5, 0.99);
+        _tokensPerMinute = (int)(tokensPerMinute * _safetyMargin);
+        _requestsPerMinute = (int)(requestsPerMinute * _safetyMargin);
         _logger = logger;
     }
 

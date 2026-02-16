@@ -356,7 +356,8 @@ internal static class Program
                     loggerFactory.CreateLogger<ResponsesApiClient>(),
                     enhancedLogger,
                     profile: settings.CodexProfile,
-                    apiVersion: apiVersion);
+                    apiVersion: apiVersion,
+                    rateLimitSafetyFactor: settings.ChunkingSettings.RateLimitSafetyFactor);
                 mcpLogger.LogInformation("ResponsesApiClient initialized for codex model: {DeploymentName} (Entra ID)", settings.AISettings.DeploymentName);
             }
 
@@ -508,7 +509,8 @@ internal static class Program
                 loggerFactory.CreateLogger<ResponsesApiClient>(),
                 enhancedLogger,
                 profile: settings.CodexProfile,
-                apiVersion: apiVersion);  // Pass EnhancedLogger for API call tracking
+                apiVersion: apiVersion,
+                rateLimitSafetyFactor: settings.ChunkingSettings.RateLimitSafetyFactor);  // Pass EnhancedLogger for API call tracking
 
             logger.LogInformation("ResponsesApiClient initialized for codex model: {DeploymentName} (API: {ApiVersion}, Entra ID)", 
                 settings.AISettings.DeploymentName, apiVersion);
@@ -1291,7 +1293,8 @@ internal static class Program
                 loggerFactory.CreateLogger<ResponsesApiClient>(),
                 enhancedLogger,
                 profile: settings.CodexProfile,
-                apiVersion: apiVersion);  // Pass EnhancedLogger for API call tracking
+                apiVersion: apiVersion,
+                rateLimitSafetyFactor: settings.ChunkingSettings.RateLimitSafetyFactor);
 
             logger.LogInformation("ResponsesApiClient initialized for codex model: {DeploymentName} (API: {ApiVersion}, Entra ID)", 
                 settings.AISettings.DeploymentName, apiVersion);

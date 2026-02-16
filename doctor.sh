@@ -1144,13 +1144,13 @@ select_speed_profile() {
     echo ""
     echo "  3) BALANCED (default)"
     echo "     Uses the three-tier content-aware reasoning system. Simple files get"
-    echo "     low effort, complex files get high effort. 100K token ceiling. This"
-    echo "     is the recommended setting for production migrations."
+    echo "     low effort, complex files get high effort. 100K token ceiling,"
+    echo "     parallel conversion (2 workers). Recommended for production."
     echo ""
     echo "  4) THOROUGH"
     echo "     Maximum reasoning on all files regardless of complexity. 100K token"
-    echo "     ceiling. Best for critical codebases where accuracy matters more"
-    echo "     than speed. Highest token consumption and slowest processing."
+    echo "     ceiling, parallel conversion (2 workers). Best for critical codebases"
+    echo "     where accuracy matters more than speed."
     echo ""
     read -p "Enter choice (1-4) [default: 3]: " speed_choice
     speed_choice=$(echo "$speed_choice" | tr -d '[:space:]')
@@ -1187,10 +1187,13 @@ select_speed_profile() {
             export CODEX_HIGH_REASONING_EFFORT="high"
             export CODEX_MAX_OUTPUT_TOKENS="100000"
             export CODEX_MIN_OUTPUT_TOKENS="32768"
+            export CODEX_STAGGER_DELAY_MS="1500"
+            export CODEX_MAX_PARALLEL_CONVERSION="2"
             ;;
         3|"")
             echo -e "${GREEN}Selected: BALANCED (default)${NC}"
-            # No overrides — uses appsettings.json defaults
+            export CODEX_STAGGER_DELAY_MS="1000"
+            export CODEX_MAX_PARALLEL_CONVERSION="2"
             ;;
         *)
             echo -e "${YELLOW}Invalid choice, using BALANCED${NC}"
