@@ -71,6 +71,8 @@ show_usage() {
     echo -e "  ${GREEN}resume${NC}          Resume interrupted migration"
     echo -e "  ${GREEN}monitor${NC}         Monitor migration progress"
     echo -e "  ${GREEN}chunking-health${NC} Check smart chunking infrastructure"
+    echo -e "  ${GREEN}chat-test${NC}       Test chat logging functionality"
+    echo -e "  ${GREEN}validate${NC}        Validate system requirements"
     echo -e "  ${GREEN}conversation${NC}    Start interactive conversation mode"
     echo
     echo -e "${BOLD}Examples:${NC}"
@@ -595,13 +597,13 @@ run_doctor() {
         read -p "Would you like me to create Config/ai-config.local.env from the template? (y/n): " create_local
         
         if [[ "$create_local" =~ ^[Yy]$ ]]; then
-            if [[ -f "$REPO_ROOT/Config/ai-config.local.env.example" ]]; then
-                cp "$REPO_ROOT/Config/ai-config.local.env.example" "$REPO_ROOT/Config/ai-config.local.env"
-                echo -e "${GREEN}✅ Created Config/ai-config.local.env from example${NC}"
+            if [[ -f "$REPO_ROOT/Config/ai-config.local.env.template" ]]; then
+                cp "$REPO_ROOT/Config/ai-config.local.env.template" "$REPO_ROOT/Config/ai-config.local.env"
+                echo -e "${GREEN}✅ Created Config/ai-config.local.env from template${NC}"
                 echo -e "${YELLOW}⚠️  You must edit this file with your actual AI service credentials before running the migration tool.${NC}"
                 local_config_exists=true
             else
-                echo -e "${RED}❌ Example file not found: Config/ai-config.local.env.example${NC}"
+                echo -e "${RED}❌ Template file not found: Config/ai-config.local.env.template${NC}"
             fi
         fi
         echo
@@ -1120,6 +1122,83 @@ run_test() {
     fi
 }
 
+# Function to select migration speed profile
+# Sets environment variables that override the three-tier reasoning system
+# in appsettings.json via Program.cs OverrideSettingsFromEnvironment().
+select_speed_profile() {
+    echo ""
+    echo "Speed Profile"
+    echo "======================================"
+    echo "  Controls how much reasoning effort the AI model spends per file."
+    echo "  Higher effort means better output quality but slower processing."
+    echo ""
+    echo "  1) TURBO"
+    echo "     Lowest reasoning on ALL files, no exceptions. Speed comes from low"
+    echo "     reasoning effort + parallel file conversion (4 workers). 65K token"
+    echo "     ceiling. Designed for testing and smoke runs."
+    echo ""
+    echo "  2) FAST"
+    echo "     Low reasoning on most files, medium only on the most complex ones."
+    echo "     32K token ceiling, parallel conversion (3 workers). Good for quick"
+    echo "     iterations and proof-of-concept runs."
+    echo ""
+    echo "  3) BALANCED (default)"
+    echo "     Uses the three-tier content-aware reasoning system. Simple files get"
+    echo "     low effort, complex files get high effort. 100K token ceiling. This"
+    echo "     is the recommended setting for production migrations."
+    echo ""
+    echo "  4) THOROUGH"
+    echo "     Maximum reasoning on all files regardless of complexity. 100K token"
+    echo "     ceiling. Best for critical codebases where accuracy matters more"
+    echo "     than speed. Highest token consumption and slowest processing."
+    echo ""
+    read -p "Enter choice (1-4) [default: 3]: " speed_choice
+    speed_choice=$(echo "$speed_choice" | tr -d '[:space:]')
+
+    case "$speed_choice" in
+        1)
+            echo -e "${GREEN}Selected: TURBO${NC}"
+            export CODEX_LOW_REASONING_EFFORT="low"
+            export CODEX_MEDIUM_REASONING_EFFORT="low"
+            export CODEX_HIGH_REASONING_EFFORT="low"
+            export CODEX_MAX_OUTPUT_TOKENS="65536"
+            export CODEX_MIN_OUTPUT_TOKENS="8192"
+            export CODEX_LOW_MULTIPLIER="1.0"
+            export CODEX_MEDIUM_MULTIPLIER="1.0"
+            export CODEX_HIGH_MULTIPLIER="1.5"
+            export CODEX_STAGGER_DELAY_MS="200"
+            export CODEX_MAX_PARALLEL_CONVERSION="4"
+            export CODEX_RATE_LIMIT_SAFETY_FACTOR="0.85"
+            ;;
+        2)
+            echo -e "${GREEN}Selected: FAST${NC}"
+            export CODEX_LOW_REASONING_EFFORT="low"
+            export CODEX_MEDIUM_REASONING_EFFORT="low"
+            export CODEX_HIGH_REASONING_EFFORT="medium"
+            export CODEX_MAX_OUTPUT_TOKENS="32768"
+            export CODEX_MIN_OUTPUT_TOKENS="16384"
+            export CODEX_STAGGER_DELAY_MS="500"
+            export CODEX_MAX_PARALLEL_CONVERSION="3"
+            ;;
+        4)
+            echo -e "${GREEN}Selected: THOROUGH${NC}"
+            export CODEX_LOW_REASONING_EFFORT="medium"
+            export CODEX_MEDIUM_REASONING_EFFORT="high"
+            export CODEX_HIGH_REASONING_EFFORT="high"
+            export CODEX_MAX_OUTPUT_TOKENS="100000"
+            export CODEX_MIN_OUTPUT_TOKENS="32768"
+            ;;
+        3|"")
+            echo -e "${GREEN}Selected: BALANCED (default)${NC}"
+            # No overrides — uses appsettings.json defaults
+            ;;
+        *)
+            echo -e "${YELLOW}Invalid choice, using BALANCED${NC}"
+            ;;
+    esac
+    echo ""
+}
+
 # Function to run migration
 run_migration() {
     echo -e "${BLUE}🚀 COBOL Migration Tool${NC}"
@@ -1235,6 +1314,9 @@ run_migration() {
     fi
     echo -e "${GREEN}✅ Quality Gate PASSED: TARGET_LANGUAGE='$TARGET_LANGUAGE'${NC}"
     echo ""
+
+    # Select speed profile
+    select_speed_profile
 
     echo -e "${CYAN}🧩 Smart Chunking: AUTO-ENABLED${NC}"
     echo "================================"
@@ -1687,6 +1769,112 @@ run_monitor() {
     tail -f "$REPO_ROOT/Logs"/*.log 2>/dev/null || echo "No active log files found"
 }
 
+# Function to test chat logging
+run_chat_test() {
+    echo -e "${BLUE}💬 Testing Chat Logging Functionality${NC}"
+    echo "====================================="
+
+    echo -e "${BLUE}Using dotnet CLI:${NC} $DOTNET_CMD"
+
+    # Load configuration
+    if ! load_configuration || ! load_ai_config; then
+        echo -e "${RED}❌ Configuration loading failed.${NC}"
+        return 1
+    fi
+
+    echo "Testing chat logging system..."
+    
+    # Run a simple test
+    export MIGRATION_DB_PATH="$REPO_ROOT/Data/migration.db"
+    "$DOTNET_CMD" run -- --test-chat-logging
+}
+
+# Function to validate system
+run_validate() {
+    echo -e "${BLUE}✅ System Validation${NC}"
+    echo "==================="
+
+    errors=0
+
+    # Check .NET
+    if command -v dotnet >/dev/null 2>&1; then
+        echo -e "${GREEN}✅ .NET CLI available${NC}"
+    else
+        echo -e "${RED}❌ .NET CLI not found${NC}"
+        ((errors++))
+    fi
+
+    # Check configuration files
+    required_files=(
+        "Config/ai-config.env"
+        "Config/load-config.sh"
+        "Config/appsettings.json"
+        "CobolToQuarkusMigration.csproj"
+        "Program.cs"
+    )
+
+    for file in "${required_files[@]}"; do
+    if [ -f "$REPO_ROOT/$file" ]; then
+            echo -e "${GREEN}✅ $file${NC}"
+        else
+            echo -e "${RED}❌ Missing: $file${NC}"
+            ((errors++))
+        fi
+    done
+
+    # Check directories
+    for dir in "source" "output"; do
+    if [ -d "$REPO_ROOT/$dir" ]; then
+            echo -e "${GREEN}✅ Directory: $dir${NC}"
+        else
+            echo -e "${YELLOW}⚠️  Creating directory: $dir${NC}"
+            mkdir -p "$REPO_ROOT/$dir"
+        fi
+    done
+
+    # Validate reverse engineering components
+    echo ""
+    echo "Checking reverse engineering feature..."
+    re_valid=0
+    [ -f "$REPO_ROOT/Models/BusinessLogic.cs" ] && ((re_valid++))
+    [ -f "$REPO_ROOT/Agents/BusinessLogicExtractorAgent.cs" ] && ((re_valid++))
+    [ -f "$REPO_ROOT/Processes/ReverseEngineeringProcess.cs" ] && ((re_valid++))
+    
+    if [ $re_valid -eq 3 ]; then
+        echo -e "${GREEN}✅ Reverse engineering feature: Complete (3/3 components)${NC}"
+    elif [ $re_valid -gt 0 ]; then
+        echo -e "${YELLOW}⚠️  Reverse engineering feature: Incomplete ($re_valid/3 components)${NC}"
+        ((errors++))
+    else
+        echo -e "${BLUE}ℹ️  Reverse engineering feature: Not installed (optional)${NC}"
+    fi
+    
+    # Validate smart chunking infrastructure (v0.2)
+    echo ""
+    echo "Checking smart chunking infrastructure (v0.2)..."
+    chunk_valid=0
+    [ -f "$REPO_ROOT/Processes/SmartMigrationOrchestrator.cs" ] && ((chunk_valid++))
+    [ -f "$REPO_ROOT/Processes/ChunkedMigrationProcess.cs" ] && ((chunk_valid++))
+    [ -f "$REPO_ROOT/Processes/ChunkedReverseEngineeringProcess.cs" ] && ((chunk_valid++))
+    [ -f "$REPO_ROOT/Chunking/ChunkingOrchestrator.cs" ] && ((chunk_valid++))
+    
+    if [ $chunk_valid -eq 4 ]; then
+        echo -e "${GREEN}✅ Smart chunking infrastructure: Complete (4/4 components)${NC}"
+    elif [ $chunk_valid -gt 0 ]; then
+        echo -e "${YELLOW}⚠️  Smart chunking infrastructure: Incomplete ($chunk_valid/4 components)${NC}"
+    else
+        echo -e "${YELLOW}⚠️  Smart chunking infrastructure: Not found${NC}"
+    fi
+
+    if [ $errors -eq 0 ]; then
+        echo -e "${GREEN}🎉 System validation passed!${NC}"
+        return 0
+    else
+        echo -e "${RED}❌ System validation failed with $errors errors${NC}"
+        return 1
+    fi
+}
+
 # Function for conversation mode
 run_conversation() {
     echo -e "${BLUE}💭 Interactive Conversation Mode${NC}"
@@ -1740,6 +1928,9 @@ run_reverse_engineering() {
         echo "This feature may not be available in your version."
         return 1
     fi
+
+    # Select speed profile
+    select_speed_profile
 
     echo ""
     echo "🔍 Starting Reverse Engineering Analysis..."
@@ -1859,6 +2050,9 @@ run_conversion_only() {
         echo -e "${RED}❌ Please fix connection issues first.${NC}"
         return 1
     fi
+
+    # Select speed profile
+    select_speed_profile
 
     echo ""
     echo "🔄 Starting Conversion Only..."

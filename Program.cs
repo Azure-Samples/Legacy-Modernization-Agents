@@ -355,6 +355,7 @@ internal static class Program
                     settings.AISettings.DeploymentName,
                     loggerFactory.CreateLogger<ResponsesApiClient>(),
                     enhancedLogger,
+                    profile: settings.CodexProfile,
                     apiVersion: apiVersion);
                 mcpLogger.LogInformation("ResponsesApiClient initialized for codex model: {DeploymentName} (Entra ID)", settings.AISettings.DeploymentName);
             }
@@ -506,6 +507,7 @@ internal static class Program
                 settings.AISettings.DeploymentName,
                 loggerFactory.CreateLogger<ResponsesApiClient>(),
                 enhancedLogger,
+                profile: settings.CodexProfile,
                 apiVersion: apiVersion);  // Pass EnhancedLogger for API call tracking
 
             logger.LogInformation("ResponsesApiClient initialized for codex model: {DeploymentName} (API: {ApiVersion}, Entra ID)", 
@@ -1020,6 +1022,99 @@ internal static class Program
         {
             applicationSettings.CSharpOutputFolder = csharpOutput;
         }
+
+        // ── Model Profile Overrides (Three-Tier Reasoning) ──────────────────
+
+        // Codex Profile overrides
+        var codexProfile = settings.CodexProfile ??= new ModelProfileSettings();
+
+        if (Environment.GetEnvironmentVariable("CODEX_LOW_REASONING_EFFORT") is { Length: > 0 } codexLowEffort)
+            codexProfile.LowReasoningEffort = codexLowEffort;
+        if (Environment.GetEnvironmentVariable("CODEX_MEDIUM_REASONING_EFFORT") is { Length: > 0 } codexMedEffort)
+            codexProfile.MediumReasoningEffort = codexMedEffort;
+        if (Environment.GetEnvironmentVariable("CODEX_HIGH_REASONING_EFFORT") is { Length: > 0 } codexHighEffort)
+            codexProfile.HighReasoningEffort = codexHighEffort;
+
+        if (Environment.GetEnvironmentVariable("CODEX_MEDIUM_THRESHOLD") is { Length: > 0 } codexMedThresh
+            && int.TryParse(codexMedThresh, out var cmtVal))
+            codexProfile.MediumThreshold = cmtVal;
+        if (Environment.GetEnvironmentVariable("CODEX_HIGH_THRESHOLD") is { Length: > 0 } codexHighThresh
+            && int.TryParse(codexHighThresh, out var chtVal))
+            codexProfile.HighThreshold = chtVal;
+
+        if (Environment.GetEnvironmentVariable("CODEX_LOW_MULTIPLIER") is { Length: > 0 } codexLowMult
+            && double.TryParse(codexLowMult, out var clmVal))
+            codexProfile.LowMultiplier = clmVal;
+        if (Environment.GetEnvironmentVariable("CODEX_MEDIUM_MULTIPLIER") is { Length: > 0 } codexMedMult
+            && double.TryParse(codexMedMult, out var cmmVal))
+            codexProfile.MediumMultiplier = cmmVal;
+        if (Environment.GetEnvironmentVariable("CODEX_HIGH_MULTIPLIER") is { Length: > 0 } codexHighMult
+            && double.TryParse(codexHighMult, out var chmVal))
+            codexProfile.HighMultiplier = chmVal;
+
+        if (Environment.GetEnvironmentVariable("CODEX_MIN_OUTPUT_TOKENS") is { Length: > 0 } codexMinTokens
+            && int.TryParse(codexMinTokens, out var cminVal))
+            codexProfile.MinOutputTokens = cminVal;
+        if (Environment.GetEnvironmentVariable("CODEX_MAX_OUTPUT_TOKENS") is { Length: > 0 } codexMaxTokens
+            && int.TryParse(codexMaxTokens, out var cmaxVal))
+            codexProfile.MaxOutputTokens = cmaxVal;
+
+        if (Environment.GetEnvironmentVariable("CODEX_TIMEOUT_SECONDS") is { Length: > 0 } codexTimeout
+            && int.TryParse(codexTimeout, out var ctVal))
+            codexProfile.TimeoutSeconds = ctVal;
+        if (Environment.GetEnvironmentVariable("CODEX_TOKENS_PER_MINUTE") is { Length: > 0 } codexTpm
+            && int.TryParse(codexTpm, out var ctpmVal))
+            codexProfile.TokensPerMinute = ctpmVal;
+        if (Environment.GetEnvironmentVariable("CODEX_REQUESTS_PER_MINUTE") is { Length: > 0 } codexRpm
+            && int.TryParse(codexRpm, out var crpmVal))
+            codexProfile.RequestsPerMinute = crpmVal;
+
+        if (Environment.GetEnvironmentVariable("CODEX_PIC_DENSITY_FLOOR") is { Length: > 0 } codexPicFloor
+            && double.TryParse(codexPicFloor, out var cpfVal))
+            codexProfile.PicDensityFloor = cpfVal;
+        if (Environment.GetEnvironmentVariable("CODEX_LEVEL_DENSITY_FLOOR") is { Length: > 0 } codexLevelFloor
+            && double.TryParse(codexLevelFloor, out var clfVal))
+            codexProfile.LevelDensityFloor = clfVal;
+
+        if (Environment.GetEnvironmentVariable("CODEX_ENABLE_AMPLIFIERS") is { Length: > 0 } codexAmps
+            && bool.TryParse(codexAmps, out var caVal))
+            codexProfile.EnableAmplifiers = caVal;
+
+        if (Environment.GetEnvironmentVariable("CODEX_EXHAUSTION_MAX_RETRIES") is { Length: > 0 } codexExRetries
+            && int.TryParse(codexExRetries, out var cerVal))
+            codexProfile.ReasoningExhaustionMaxRetries = cerVal;
+        if (Environment.GetEnvironmentVariable("CODEX_EXHAUSTION_RETRY_MULTIPLIER") is { Length: > 0 } codexExMult
+            && double.TryParse(codexExMult, out var cemVal))
+            codexProfile.ReasoningExhaustionRetryMultiplier = cemVal;
+
+        // ── Speed-profile overrides for ChunkingSettings ────────────────────
+        var chunkingSettings = settings.ChunkingSettings ??= new ChunkingSettings();
+
+        if (Environment.GetEnvironmentVariable("CODEX_STAGGER_DELAY_MS") is { Length: > 0 } staggerMs
+            && int.TryParse(staggerMs, out var sVal))
+            chunkingSettings.ParallelStaggerDelayMs = sVal;
+        if (Environment.GetEnvironmentVariable("CODEX_MAX_PARALLEL_CONVERSION") is { Length: > 0 } maxParConv
+            && int.TryParse(maxParConv, out var mpcVal))
+            chunkingSettings.MaxParallelConversion = mpcVal;
+        if (Environment.GetEnvironmentVariable("CODEX_RATE_LIMIT_SAFETY_FACTOR") is { Length: > 0 } safetyFactor
+            && double.TryParse(safetyFactor, out var sfVal))
+            chunkingSettings.RateLimitSafetyFactor = sfVal;
+
+        // Chat Profile overrides (subset — chat profiles are simpler)
+        var chatProfile = settings.ChatProfile ??= new ModelProfileSettings();
+
+        if (Environment.GetEnvironmentVariable("CHAT_TIMEOUT_SECONDS") is { Length: > 0 } chatTimeout
+            && int.TryParse(chatTimeout, out var chatTVal))
+            chatProfile.TimeoutSeconds = chatTVal;
+        if (Environment.GetEnvironmentVariable("CHAT_TOKENS_PER_MINUTE") is { Length: > 0 } chatTpm
+            && int.TryParse(chatTpm, out var chatTpmVal))
+            chatProfile.TokensPerMinute = chatTpmVal;
+        if (Environment.GetEnvironmentVariable("CHAT_MIN_OUTPUT_TOKENS") is { Length: > 0 } chatMinTokens
+            && int.TryParse(chatMinTokens, out var chatMinVal))
+            chatProfile.MinOutputTokens = chatMinVal;
+        if (Environment.GetEnvironmentVariable("CHAT_MAX_OUTPUT_TOKENS") is { Length: > 0 } chatMaxTokens
+            && int.TryParse(chatMaxTokens, out var chatMaxVal))
+            chatProfile.MaxOutputTokens = chatMaxVal;
     }
 
     private static bool ValidateAndLoadConfiguration()
@@ -1193,6 +1288,7 @@ internal static class Program
                 settings.AISettings.DeploymentName,
                 loggerFactory.CreateLogger<ResponsesApiClient>(),
                 enhancedLogger,
+                profile: settings.CodexProfile,
                 apiVersion: apiVersion);  // Pass EnhancedLogger for API call tracking
 
             logger.LogInformation("ResponsesApiClient initialized for codex model: {DeploymentName} (API: {ApiVersion}, Entra ID)", 

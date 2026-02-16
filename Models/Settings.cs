@@ -60,6 +60,18 @@ public class AppSettings
     /// Controls how converted code is organized into files, packages/namespaces, and classes.
     /// </summary>
     public AssemblySettings AssemblySettings { get; set; } = new AssemblySettings();
+
+    /// <summary>
+    /// Gets or sets the model profile for Codex/Responses API models.
+    /// Loaded from appsettings.json "CodexProfile" section.
+    /// </summary>
+    public ModelProfileSettings CodexProfile { get; set; } = new ModelProfileSettings();
+
+    /// <summary>
+    /// Gets or sets the model profile for Chat Completions API models.
+    /// Loaded from appsettings.json "ChatProfile" section.
+    /// </summary>
+    public ModelProfileSettings ChatProfile { get; set; } = new ModelProfileSettings();
 }
 
 /// <summary>
@@ -84,20 +96,21 @@ public class AISettings
 
     /// <summary>
     /// Gets or sets the model ID for general use.
+    /// Must be configured in appsettings.json or env vars — no default model name.
     /// </summary>
-    public string ModelId { get; set; } = "gpt-4.1";
+    public string ModelId { get; set; } = string.Empty;
 
     /// <summary>
     /// Gets or sets the model ID for the COBOL analyzer.
+    /// Falls back to ModelId when empty.
     /// </summary>
-    public string CobolAnalyzerModelId { get; set; } = "gpt-4.1";
+    public string CobolAnalyzerModelId { get; set; } = string.Empty;
 
     /// <summary>
     /// Gets or sets the model ID for the Java converter.
-    /// <summary>
-    /// Gets or sets the model ID for the Java converter.
+    /// Falls back to ModelId when empty.
     /// </summary>
-    public string JavaConverterModelId { get; set; } = "gpt-4.1";
+    public string JavaConverterModelId { get; set; } = string.Empty;
 
     /// <summary>
     /// Gets or sets the model ID for the dependency mapper.
@@ -106,13 +119,15 @@ public class AISettings
 
     /// <summary>
     /// Gets or sets the model ID for the unit test generator.
+    /// Falls back to ModelId when empty.
     /// </summary>
-    public string UnitTestModelId { get; set; } = "gpt-4.1";
+    public string UnitTestModelId { get; set; } = string.Empty;
 
     /// <summary>
     /// Gets or sets the deployment name for Azure OpenAI.
+    /// Must be configured in appsettings.json or env vars — no default deployment name.
     /// </summary>
-    public string DeploymentName { get; set; } = "gpt-4.1";
+    public string DeploymentName { get; set; } = string.Empty;
 
     // Optional chat-specific settings (used for portal/chat/report); falls back to DeploymentName/Endpoint/ApiKey when not set
     public string ChatDeploymentName { get; set; } = string.Empty;
@@ -225,4 +240,120 @@ public class Neo4jSettings
     /// Gets or sets the database name (default is "neo4j").
     /// </summary>
     public string Database { get; set; } = "neo4j";
+}
+
+// ============================================================================
+// Three-Tier Content-Aware Reasoning — Model Profile Settings
+// ============================================================================
+
+/// <summary>
+/// A single complexity indicator: a regex pattern with a weight.
+/// Matched against COBOL source to calculate a complexity score.
+/// Loaded from appsettings.json CodexProfile.ComplexityIndicators array.
+/// </summary>
+public class ComplexityIndicator
+{
+    /// <summary>
+    /// Regex pattern to match in the COBOL source (case-insensitive).
+    /// Example: "EXEC\\s+SQL", "EXEC\\s+CICS", "PERFORM\\s+VARYING"
+    /// </summary>
+    public string Pattern { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Weight added to complexity score per match.
+    /// Typical range: 1-5. Higher = more complex.
+    /// </summary>
+    public int Weight { get; set; } = 1;
+}
+
+/// <summary>
+/// Model profile settings for content-aware reasoning effort and token management.
+/// One instance per API type (Codex vs Chat). No hardcoded model names —
+/// all tuning comes from appsettings.json / env vars.
+/// 
+/// C# defaults are a conservative safety net. appsettings.json provides
+/// the actual model-appropriate values.
+/// </summary>
+public class ModelProfileSettings
+{
+    // ── Reasoning effort labels ──────────────────────────────────────────
+    /// <summary>Reasoning effort string for LOW complexity. e.g. "low" or "medium".</summary>
+    public string LowReasoningEffort { get; set; } = "medium";
+
+    /// <summary>Reasoning effort string for MEDIUM complexity.</summary>
+    public string MediumReasoningEffort { get; set; } = "medium";
+
+    /// <summary>Reasoning effort string for HIGH complexity.</summary>
+    public string HighReasoningEffort { get; set; } = "high";
+
+    // ── Complexity score thresholds ──────────────────────────────────────
+    /// <summary>Score at or above which we jump from low → medium tier.</summary>
+    public int MediumThreshold { get; set; } = 5;
+
+    /// <summary>Score at or above which we jump from medium → high tier.</summary>
+    public int HighThreshold { get; set; } = 15;
+
+    // ── Token multipliers per tier ───────────────────────────────────────
+    /// <summary>Output-token multiplier for LOW complexity (relative to estimated input).</summary>
+    public double LowMultiplier { get; set; } = 1.5;
+
+    /// <summary>Output-token multiplier for MEDIUM complexity.</summary>
+    public double MediumMultiplier { get; set; } = 2.0;
+
+    /// <summary>Output-token multiplier for HIGH complexity.</summary>
+    public double HighMultiplier { get; set; } = 3.0;
+
+    // ── Token limits ─────────────────────────────────────────────────────
+    /// <summary>Minimum max_output_tokens regardless of estimation.</summary>
+    public int MinOutputTokens { get; set; } = 16384;
+
+    /// <summary>Maximum max_output_tokens cap.</summary>
+    public int MaxOutputTokens { get; set; } = 65536;
+
+    // ── Operational limits ───────────────────────────────────────────────
+    /// <summary>HTTP timeout in seconds for this model profile.</summary>
+    public int TimeoutSeconds { get; set; } = 600;
+
+    /// <summary>Tokens-per-minute rate limit.</summary>
+    public int TokensPerMinute { get; set; } = 300_000;
+
+    /// <summary>Requests-per-minute rate limit.</summary>
+    public int RequestsPerMinute { get; set; } = 1_000;
+
+    // ── Structural baseline floors ───────────────────────────────────────
+    /// <summary>
+    /// PIC density floor: if (PIC count / meaningful lines) exceeds this,
+    /// add +3 to complexity score. Catches data-heavy programs.
+    /// </summary>
+    public double PicDensityFloor { get; set; } = 0.25;
+
+    /// <summary>
+    /// Level-number density floor: if (level-number count / meaningful lines) exceeds this,
+    /// add +2 to complexity score.
+    /// </summary>
+    public double LevelDensityFloor { get; set; } = 0.30;
+
+    // ── COPY/EXEC amplifiers ─────────────────────────────────────────────
+    /// <summary>Enable COPY/EXEC amplifier bonuses.</summary>
+    public bool EnableAmplifiers { get; set; } = true;
+
+    /// <summary>Bonus added when COPY appears near WORKING-STORAGE/LINKAGE data.</summary>
+    public int CopyNearStorageBonus { get; set; } = 3;
+
+    /// <summary>Bonus added for EXEC SQL or EXEC DLI presence.</summary>
+    public int ExecSqlDliBonus { get; set; } = 4;
+
+    // ── Reasoning exhaustion retry ───────────────────────────────────────
+    /// <summary>Max retries when reasoning exhaustion is detected.</summary>
+    public int ReasoningExhaustionMaxRetries { get; set; } = 2;
+
+    /// <summary>Multiplier for max_output_tokens on each retry (e.g. 2.0 = double).</summary>
+    public double ReasoningExhaustionRetryMultiplier { get; set; } = 2.0;
+
+    // ── Complexity indicators (config-driven regex) ──────────────────────
+    /// <summary>
+    /// List of regex patterns + weights for complexity scoring.
+    /// Loaded from appsettings.json. Empty list = no content-based scoring (baseline only).
+    /// </summary>
+    public List<ComplexityIndicator> ComplexityIndicators { get; set; } = new();
 }

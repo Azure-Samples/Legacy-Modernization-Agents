@@ -196,6 +196,30 @@ Migration complete! Generate report? (Y/n): Y
 Launch web portal? (Y/n): Y
 ```
 
+### Speed Profile
+
+After selecting your action and target language, `doctor.sh` prompts for a **speed profile** that controls how much reasoning effort the AI model spends per file. This applies to migrations, reverse engineering, and conversion-only runs.
+
+```
+Speed Profile
+======================================
+  1) TURBO
+  2) FAST
+  3) BALANCED (default)
+  4) THOROUGH
+
+Enter choice (1-4) [default: 3]:
+```
+
+| Profile | Reasoning Effort | Max Output Tokens | Best For |
+|---------|-----------------|-------------------|----------|
+| **TURBO** | Low on ALL files, no exceptions | 65,536 | Testing, smoke runs. Speed from low reasoning effort, not token starvation. |
+| **FAST** | Low on most, medium on complex | 32,768 | Quick iterations, proof-of-concept runs. Good balance of speed and quality. |
+| **BALANCED** | Content-aware (low/medium/high based on file complexity) | 100,000 | Production migrations. Simple files get low effort, complex files get high effort. |
+| **THOROUGH** | Medium-to-high on all files | 100,000 | Critical codebases where accuracy matters more than speed. Highest token cost. |
+
+The speed profile works by setting environment variables that override the three-tier content-aware reasoning system configured in `appsettings.json`. No C# code changes are needed — the existing `Program.cs` environment variable override mechanism handles everything at startup.
+
 ### Other Commands
 
 ```bash

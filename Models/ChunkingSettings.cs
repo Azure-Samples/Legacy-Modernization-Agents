@@ -143,6 +143,14 @@ public class ChunkingSettings
     /// </summary>
     public int MaxParallelAnalysis { get; set; } = 6;
 
+    /// <summary>
+    /// Maximum number of files to convert concurrently during the conversion phase.
+    /// Set to 1 for sequential processing (default, safest).
+    /// Higher values dramatically speed up multi-file runs.
+    /// Default: 1 (sequential).
+    /// </summary>
+    public int MaxParallelConversion { get; set; } = 1;
+
     // =====================================================================
     // HELPER METHODS
     // =====================================================================
