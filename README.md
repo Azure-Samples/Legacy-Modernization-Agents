@@ -11,6 +11,18 @@ The migration uses Microsoft Agent Framework with a dual-API architecture (Respo
 
 ---
 
+> [!TIP]
+> **Two ways to use this framework:**
+>
+> | Command | What it does |
+> |---|---|
+> | `./doctor.sh run` | **Run a full migration** — analyze COBOL, convert to Java/C#, generate reports, and launch the portal |
+> | `./doctor.sh portal` | **Open the portal only** — browse previous migration results, dependency graphs, and chat with your codebase at http://localhost:5028 |
+>
+> Both commands handle all configuration, dependency checks, and service startup automatically.
+
+---
+
 ## 📋 Table of Contents
 - [Quick Start](#-quick-start)
 - [Usage: doctor.sh](#-usage-doctorsh)
@@ -19,6 +31,7 @@ The migration uses Microsoft Agent Framework with a dual-API architecture (Respo
 - [Customizing Agent Behavior](#-customizing-agent-behavior)
 - [File Splitting & Naming](#-file-splitting--naming)
 - [Architecture](#-architecture)
+- [Smart Chunking & Token Strategy](#-smart-chunking--token-strategy)
 - [Build & Run](#-build--run)
 
 ---
@@ -585,6 +598,119 @@ sequenceDiagram
 - ✅ Edge type filtering with color-coded visualization
 - ✅ Line number context for all dependencies
 
+###  Smart Chunking & Token Strategy
+
+Large COBOL files (>3,000 lines or >150K characters) are automatically split at semantic boundaries (DIVISION → SECTION → paragraph) and processed with content-aware reasoning effort. A three-tier complexity scoring system analyzes each file's COBOL patterns (EXEC SQL, CICS, REDEFINES, etc.) to dynamically allocate reasoning effort and output tokens — simple files get fast processing while complex files get thorough analysis.
+
+```mermaid
+flowchart TD
+    subgraph INPUT["📥 FILE INTAKE"]
+        A[COBOL Source File] --> B{File Size Check}
+        B -->|"≤ 3,000 lines<br>≤ 150,000 chars"| C[Single-File Processing]
+        B -->|"> 3,000 lines<br>> 150,000 chars"| D[Smart Chunking Required]
+    end
+
+    subgraph TOKEN_EST["🔢 TOKEN ESTIMATION"]
+        C --> E[TokenHelper.EstimateCobolTokens]
+        D --> E
+        E -->|"COBOL: chars ÷ 3.0"| F[Estimated Input Tokens]
+        E -->|"General: chars ÷ 3.5"| F
+    end
+
+    subgraph COMPLEXITY["🎯 THREE-TIER COMPLEXITY SCORING"]
+        F --> G[Complexity Score Calculation]
+        G -->|"Σ regex×weight + density bonuses"| H{Score Threshold}
+        H -->|"< 5"| I["🟢 LOW<br>effort: low<br>multiplier: 1.5×"]
+        H -->|"5 – 14"| J["🟡 MEDIUM<br>effort: medium<br>multiplier: 2.5×"]
+        H -->|"≥ 15"| K["🔴 HIGH<br>effort: high<br>multiplier: 3.5×"]
+    end
+
+    subgraph OUTPUT_CALC["📐 OUTPUT TOKEN CALCULATION"]
+        I --> L[estimatedOutput = input × multiplier]
+        J --> L
+        K --> L
+        L --> M["clamp(estimated, minTokens, maxTokens)"]
+        M -->|"Codex: 32,768 – 100,000"| N[Final maxOutputTokens]
+        M -->|"Chat: 16,384 – 65,536"| N
+    end
+
+    subgraph CHUNKING["✂️ SMART CHUNKING"]
+        D --> O[CobolAdapter.IdentifySemanticUnits]
+        O --> P[Divisions / Sections / Paragraphs]
+        P --> Q[SemanticUnitChunker.ChunkFileAsync]
+        Q --> R{Chunking Decision}
+        R -->|"≤ MaxLinesPerChunk"| S[Single Chunk]
+        R -->|"Semantic units found"| T["Semantic Boundary Split<br>Priority: DIVISION > SECTION > Paragraph"]
+        R -->|"No units / oversized units"| U["Line-Based Fallback<br>overlap: 300 lines"]
+    end
+
+    subgraph CONTEXT["📋 CONTEXT WINDOW MANAGEMENT"]
+        T --> V[ChunkContextManager]
+        U --> V
+        S --> V
+        V --> W["Full Detail Window<br>(last 3 chunks)"]
+        V --> X["Compressed History<br>(older → 30% size)"]
+        V --> Y["Cross-Chunk State<br>signatures + type mappings"]
+        W --> Z[ChunkContext]
+        X --> Z
+        Y --> Z
+    end
+
+    subgraph RATE_LIMIT["⏱️ DUAL RATE LIMITING"]
+        direction TB
+        Z --> AA["System A: RateLimiter<br>(Token Bucket + Semaphore)"]
+        Z --> AB["System B: RateLimitTracker<br>(Sliding Window TPM/RPM)"]
+        
+        AA --> AC{Capacity Check}
+        AB --> AC
+        AC -->|"Budget: 300K TPM × 0.7"| AD[Wait / Proceed]
+        AC -->|"Concurrency: max 3 parallel"| AD
+        AC -->|"Stagger: 2,000ms between workers"| AD
+    end
+
+    subgraph API_CALL["🤖 API CALL + ESCALATION"]
+        AD --> AE[Azure OpenAI Responses API]
+        AE --> AF{Response Status}
+        AF -->|"Complete"| AG[✅ Success]
+        AF -->|"Reasoning Exhaustion<br>reasoning ≥ 90% of output"| AH["Escalation Loop<br>① Double maxTokens<br>② Promote effort<br>③ Thrash guard"]
+        AH -->|"Max 2 retries"| AE
+        AH -->|"All retries failed"| AI["Adaptive Re-Chunking<br>Split at semantic midpoint<br>50-line overlap"]
+        AI --> AE
+        AF -->|"429 Rate Limited"| AJ["Exponential Backoff<br>5s → 60s max<br>up to 5 retries"]
+        AJ --> AE
+    end
+
+    subgraph RECONCILE["🔗 RECONCILIATION"]
+        AG --> AK[Record Chunk Result]
+        AK --> AL[Validate Chunk Output]
+        AL --> AM{More Chunks?}
+        AM -->|Yes| V
+        AM -->|No| AN[Reconciliation Pass]
+        AN --> AO["Merge Results<br>Resolve forward references<br>Deduplicate imports"]
+    end
+
+    subgraph FINAL["📤 FINAL OUTPUT"]
+        AO --> AP[Converted Java/C# Code]
+        AP --> AQ[Write to Output Directory]
+    end
+
+    classDef low fill:#d4edda,stroke:#28a745,color:#000
+    classDef medium fill:#fff3cd,stroke:#ffc107,color:#000
+    classDef high fill:#f8d7da,stroke:#dc3545,color:#000
+    classDef process fill:#d1ecf1,stroke:#17a2b8,color:#000
+    classDef rate fill:#e2d5f1,stroke:#6f42c1,color:#000
+
+    class I low
+    class J medium
+    class K high
+    class AA,AB,AC,AD rate
+    class AE,AF,AG,AH,AI,AJ process
+```
+
+> For detailed ASCII diagrams, constants reference tables, and complexity scoring indicator weights, see [smart-chunking-architecture.md](smart-chunking-architecture.md).
+
+---
+
 ### 🔄 Agent Flowchart
 
 ```mermaid
@@ -896,8 +1022,9 @@ See [Parallel Jobs Formula](#parallel-jobs-formula) for chunking configuration d
 
 ## 📚 Further Reading
 
-- [Smart Chunking Guide](docs/Smart-chuncking-how%20it-works.md) - Deep technical details
-- [Architecture Documentation](docs/REVERSE_ENGINEERING_ARCHITECTURE.md) - System design
+- [Smart Chunking & Token Architecture](smart-chunking-architecture.md) - Full diagrams, constants reference, and complexity scoring details
+- [Smart Chunking Guide](Smart-chuncking-how%20it-works.md) - Deep technical details
+- [Architecture Documentation](REVERSE_ENGINEERING_ARCHITECTURE.md) - System design
 - [Changelog](CHANGELOG.md) - Version history
 
 ---
