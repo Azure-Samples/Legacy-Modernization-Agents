@@ -1380,11 +1380,16 @@ select_speed_profile() {
             export CODEX_HIGH_REASONING_EFFORT="high"
             export CODEX_MAX_OUTPUT_TOKENS="100000"
             export CODEX_MIN_OUTPUT_TOKENS="32768"
+            export CODEX_LOW_MULTIPLIER="2.0"
+            export CODEX_MEDIUM_MULTIPLIER="3.0"
+            export CODEX_HIGH_MULTIPLIER="3.5"
             export CODEX_STAGGER_DELAY_MS="1500"
             export CODEX_MAX_PARALLEL_CONVERSION="2"
             ;;
         3|"")
             echo -e "${GREEN}Selected: BALANCED (default)${NC}"
+            # Multipliers intentionally not overridden — uses appsettings.json defaults
+            # (1.5/2.5/3.5 with 100K max) for the full three-tier content-aware system.
             export CODEX_STAGGER_DELAY_MS="1000"
             export CODEX_MAX_PARALLEL_CONVERSION="2"
             ;;

@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Environment Variable Overrides for Timing** — New env vars `CODEX_STAGGER_DELAY_MS`, `CODEX_MAX_PARALLEL_CONVERSION`, and `CODEX_RATE_LIMIT_SAFETY_FACTOR` allow fine-tuning of parallelism and rate limiting without code changes.
 
 ### Fixed
-- **Settings Injection Bug** — All agent constructors in `MigrationProcess.cs`, `ChunkedMigrationProcess.cs`, and `Program.cs` were missing the `settings` parameter, causing `AppSettings` to always be `null` inside agents. This meant `MaxParallelConversion` always defaulted to 1 (sequential), making the parallel conversion feature dead code. All 10 constructor call sites now pass `settings` correctly.
+- **Settings Injection Bug** — All agent constructors in `MigrationProcess.cs`, `ChunkedMigrationProcess.cs`, and `Program.cs` were missing the `settings` parameter, causing `AppSettings` to always be `null` inside agents. As a result, runtime configuration (including environment variable overrides such as `CODEX_MAX_PARALLEL_CONVERSION`) could not be applied, and agents fell back to the default `MaxParallelConversion` value of 1 (sequential). All 10 constructor call sites now pass `settings` correctly so both static config and env var overrides take effect as intended.
 - **Hardcoded Rate Limit Safety Margin** — `RateLimitTracker.SafetyMargin` was hardcoded at 0.90, ignoring the configurable `RateLimitSafetyFactor` from `ChunkingSettings`. Now accepts a `safetyMargin` parameter wired from settings (TURBO=0.85, default=0.70).
 
 ### Changed
