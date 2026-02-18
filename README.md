@@ -71,7 +71,6 @@ To avoid throttling (429 errors), use this formula to calculate safe parallel jo
 MaxParallelJobs = ─────────────────────────────────
                   TokensPerRequest × RequestsPerMinute
 ```
-<img width="1715" height="963" alt="Portal experience with metadata and graph data fronted by MCP" src="gifdemowithgraphandreportign.gif" />
 
 **Where:**
 - **TPM** = Your Azure quota (tokens per minute)
