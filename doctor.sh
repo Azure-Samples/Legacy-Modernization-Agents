@@ -73,7 +73,7 @@ show_usage() {
     echo -e "  ${GREEN}chunking-health${NC} Check smart chunking infrastructure"
     echo -e "  ${GREEN}chat-test${NC}       Test chat logging functionality"
     echo -e "  ${GREEN}validate${NC}        Validate system requirements"
-    echo -e "  ${GREEN}conversation${NC}    Start interactive conversation mode"
+    echo -e "  ${GREEN}conversation${NC}    Generate conversation log from migration data"
     echo
     echo -e "${BOLD}Examples:${NC}"
     echo -e "  $0                   ${CYAN}# Run configuration doctor${NC}"
@@ -573,7 +573,7 @@ run_doctor() {
     fi
 
     # Check documentation
-    if [[ -f "$REPO_ROOT/REVERSE_ENGINEERING_ARCHITECTURE.md" ]]; then
+    if [[ -f "$REPO_ROOT/docs/REVERSE_ENGINEERING_ARCHITECTURE.md" ]]; then
         echo -e "${GREEN}✅ Reverse engineering architecture documentation found${NC}"
     else
         echo -e "${YELLOW}⚠️  Missing reverse engineering architecture documentation${NC}"
@@ -597,13 +597,13 @@ run_doctor() {
         read -p "Would you like me to create Config/ai-config.local.env from the template? (y/n): " create_local
         
         if [[ "$create_local" =~ ^[Yy]$ ]]; then
-            if [[ -f "$REPO_ROOT/Config/ai-config.local.env.template" ]]; then
-                cp "$REPO_ROOT/Config/ai-config.local.env.template" "$REPO_ROOT/Config/ai-config.local.env"
-                echo -e "${GREEN}✅ Created Config/ai-config.local.env from template${NC}"
+            if [[ -f "$REPO_ROOT/Config/ai-config.local.env.example" ]]; then
+                cp "$REPO_ROOT/Config/ai-config.local.env.example" "$REPO_ROOT/Config/ai-config.local.env"
+                echo -e "${GREEN}✅ Created Config/ai-config.local.env from example${NC}"
                 echo -e "${YELLOW}⚠️  You must edit this file with your actual AI service credentials before running the migration tool.${NC}"
                 local_config_exists=true
             else
-                echo -e "${RED}❌ Template file not found: Config/ai-config.local.env.template${NC}"
+                echo -e "${RED}❌ Example file not found: Config/ai-config.local.env.example${NC}"
             fi
         fi
         echo
@@ -618,30 +618,77 @@ run_doctor() {
         if load_configuration && load_ai_config 2>/dev/null; then
             
             # Check required variables
-            required_vars=(
-                "AZURE_OPENAI_ENDPOINT"
-                "AZURE_OPENAI_DEPLOYMENT_NAME"
-                "AZURE_OPENAI_MODEL_ID"
-            )
-            
             config_valid=true
-            
-            for var in "${required_vars[@]}"; do
+
+            # --- Core: Endpoint (required) ---
+            echo -e "${CYAN}Endpoint:${NC}"
+            endpoint_val="${AZURE_OPENAI_ENDPOINT}"
+            if [[ -z "$endpoint_val" ]]; then
+                echo -e "  ${RED}❌ AZURE_OPENAI_ENDPOINT is not set${NC}"
+                config_valid=false
+            elif [[ "$endpoint_val" == *"your-"* ]] || [[ "$endpoint_val" == *"placeholder"* ]]; then
+                echo -e "  ${YELLOW}⚠️  AZURE_OPENAI_ENDPOINT contains placeholder: $endpoint_val${NC}"
+                config_valid=false
+            else
+                echo -e "  ${GREEN}✅ AZURE_OPENAI_ENDPOINT: $endpoint_val${NC}"
+            fi
+            echo
+
+            # --- Authentication ---
+            echo -e "${CYAN}Authentication:${NC}"
+            api_key_val="${AZURE_OPENAI_API_KEY}"
+            if [[ -n "$api_key_val" ]] && [[ "$api_key_val" != *"your-"* ]] && [[ "$api_key_val" != *"placeholder"* ]] && [[ "$api_key_val" != *"key-placeholder"* ]]; then
+                masked_key="${api_key_val:0:4}...${api_key_val: -4}"
+                echo -e "  ${GREEN}✅ API Key: $masked_key${NC}"
+            elif command -v az >/dev/null 2>&1 && az account show >/dev/null 2>&1; then
+                local az_user
+                az_user=$(az account show --query "user.name" -o tsv 2>/dev/null)
+                echo -e "  ${GREEN}✅ Azure AD (Entra ID): $az_user${NC}"
+            else
+                echo -e "  ${RED}❌ No valid auth: set API key in ai-config.local.env or run 'az login'${NC}"
+                config_valid=false
+            fi
+            echo
+
+            # --- Code Model (Responses API - used by migration agents) ---
+            echo -e "${CYAN}Code Model (migration agents):${NC}"
+            code_vars=("AISETTINGS__DEPLOYMENTNAME" "AISETTINGS__MODELID")
+            for var in "${code_vars[@]}"; do
                 value="${!var}"
                 if [[ -z "$value" ]]; then
-                    echo -e "${RED}❌ Missing: $var${NC}"
+                    echo -e "  ${RED}❌ $var is not set${NC}"
                     config_valid=false
-                elif [[ "$value" == *"your-"* ]]; then
-                    echo -e "${YELLOW}⚠️  Template placeholder detected in $var: $value${NC}"
+                elif [[ "$value" == *"your-"* ]] || [[ "$value" == *"placeholder"* ]]; then
+                    echo -e "  ${YELLOW}⚠️  $var contains placeholder: $value${NC}"
                     config_valid=false
                 else
-                    # Mask API key for display
-                    if [[ "$var" == "AZURE_OPENAI_API_KEY" ]]; then
-                        masked_value="${value:0:8}...${value: -4}"
-                        echo -e "${GREEN}✅ $var: $masked_value${NC}"
-                    else
-                        echo -e "${GREEN}✅ $var: $value${NC}"
-                    fi
+                    echo -e "  ${GREEN}✅ $var: $value${NC}"
+                fi
+            done
+            echo
+
+            # --- Chat Model (Chat Completions API - used by portal & reports) ---
+            echo -e "${CYAN}Chat Model (portal & reports):${NC}"
+            chat_vars=("AISETTINGS__CHATDEPLOYMENTNAME" "AISETTINGS__CHATMODELID")
+            for var in "${chat_vars[@]}"; do
+                value="${!var}"
+                if [[ -z "$value" ]]; then
+                    echo -e "  ${YELLOW}⚠️  $var is not set (will fall back to code model)${NC}"
+                else
+                    echo -e "  ${GREEN}✅ $var: $value${NC}"
+                fi
+            done
+
+            # --- Agent-specific model overrides (optional) ---
+            echo
+            echo -e "${CYAN}Agent model overrides (optional):${NC}"
+            agent_vars=("AZURE_OPENAI_COBOL_ANALYZER_MODEL" "AZURE_OPENAI_JAVA_CONVERTER_MODEL" "AZURE_OPENAI_DEPENDENCY_MAPPER_MODEL" "AZURE_OPENAI_UNIT_TEST_MODEL")
+            for var in "${agent_vars[@]}"; do
+                value="${!var}"
+                if [[ -n "$value" ]]; then
+                    echo -e "  ${GREEN}✅ $var: $value${NC}"
+                else
+                    echo -e "  ${BLUE}ℹ️  $var: (defaults to code model)${NC}"
                 fi
             done
             
@@ -680,9 +727,8 @@ run_doctor() {
     echo ""
     echo -e "${BLUE}📄 Documentation${NC}"
     echo "=================="
-    echo "• CONFIGURATION_GUIDE.md                  - Detailed setup instructions"
-    echo "• REVERSE_ENGINEERING_ARCHITECTURE.md    - RE architecture & diagrams"
-    echo "• output/reverse-engineering-details.md  - Generated business logic report"
+    echo "• docs/REVERSE_ENGINEERING_ARCHITECTURE.md - RE architecture & diagrams"
+    echo "• output/reverse-engineering-details.md    - Generated business logic report"
     echo ""
     echo -e "${BLUE}🌐 Portal Documentation${NC}"
     echo "========================"
@@ -847,7 +893,7 @@ run_setup() {
 
     # Create local config from template
     echo -e "${BLUE}📁 Creating local configuration file...${NC}"
-    TEMPLATE_CONFIG="$REPO_ROOT/Config/ai-config.local.env.template"
+    TEMPLATE_CONFIG="$REPO_ROOT/Config/ai-config.local.env.example"
 
     if [ ! -f "$TEMPLATE_CONFIG" ]; then
         echo -e "${RED}❌ Example configuration file not found: $TEMPLATE_CONFIG${NC}"
@@ -870,23 +916,24 @@ run_setup() {
     if [[ -n "$endpoint" ]]; then
         # Ensure endpoint ends with /
         [[ "${endpoint}" != */ ]] && endpoint="${endpoint}/"
-        sed -i.bak "s|AZURE_OPENAI_ENDPOINT=\".*\"|AZURE_OPENAI_ENDPOINT=\"$endpoint\"|" "$LOCAL_CONFIG"
+        sed -i.bak "s|_MAIN_ENDPOINT=\".*\"|_MAIN_ENDPOINT=\"$endpoint\"|" "$LOCAL_CONFIG"
     fi
 
     # Get API Key
     read -s -p "API Key (leave empty for Azure AD/Entra ID auth): " api_key
     echo ""
     if [[ -n "$api_key" ]]; then
-        sed -i.bak "s|AZURE_OPENAI_API_KEY=\".*\"|AZURE_OPENAI_API_KEY=\"$api_key\"|" "$LOCAL_CONFIG"
+        sed -i.bak "s|_MAIN_API_KEY=\".*\"|_MAIN_API_KEY=\"$api_key\"|" "$LOCAL_CONFIG"
+    else
+        echo -e "${BLUE}ℹ️  No API key set — will use Azure AD (Entra ID) via 'az login'.${NC}"
+        echo -e "${BLUE}   Make sure you have the 'Cognitive Services OpenAI User' role.${NC}"
+        echo -e "${BLUE}   See: azlogin-auth-guide.md for details.${NC}"
     fi
 
-    # Get Model Deployment Name
-    read -p "Model Deployment Name (default: gpt-4.1): " deployment_name
-    deployment_name=${deployment_name:-gpt-4.1}
-    sed -i.bak "s|AZURE_OPENAI_DEPLOYMENT_NAME=\".*\"|AZURE_OPENAI_DEPLOYMENT_NAME=\"$deployment_name\"|" "$LOCAL_CONFIG"
-
-    # Update model ID to match deployment name
-    sed -i.bak "s|AZURE_OPENAI_MODEL_ID=\".*\"|AZURE_OPENAI_MODEL_ID=\"$deployment_name\"|" "$LOCAL_CONFIG"
+    # Get Code Model Deployment Name
+    read -p "Code Model Deployment Name (default: gpt-5.1-codex-mini): " code_model
+    code_model=${code_model:-gpt-5.1-codex-mini}
+    sed -i.bak "s|_CODE_MODEL=\".*\"|_CODE_MODEL=\"$code_model\"|" "$LOCAL_CONFIG"
 
     # Clean up backup file
     rm -f "$LOCAL_CONFIG.bak"
@@ -1334,24 +1381,8 @@ run_migration() {
     echo "🚀 Starting COBOL to ${TARGET_LANGUAGE} Migration..."
     echo "=============================================="
 
-    # For full migration (option 1), check if user wants to skip existing RE
-    if [[ -z "$skip_reverse_eng" ]] && [[ "$has_re_report" == "yes" ]]; then
+    if [[ -z "$skip_reverse_eng" ]]; then
         echo ""
-        echo -e "${GREEN}✅ Found existing reverse engineering results:${NC} $(basename "$re_output_file")"
-        echo -e "${BLUE}ℹ️  You can skip reverse engineering to save time and API costs${NC}"
-        echo ""
-        read -p "Do you want to skip reverse engineering? (Y/n): " -n 1 -r
-        echo ""
-        if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
-            skip_reverse_eng="--skip-reverse-engineering"
-            echo -e "${BLUE}ℹ️  Skipping reverse engineering, using existing results${NC}"
-        else
-            echo -e "${BLUE}ℹ️  Will re-run reverse engineering as requested${NC}"
-        fi
-        echo ""
-    elif [[ -z "$skip_reverse_eng" ]]; then
-        echo ""
-        echo -e "${BLUE}ℹ️  No previous reverse engineering results found${NC}"
         echo -e "${BLUE}ℹ️  Full migration will include reverse engineering + ${TARGET_LANGUAGE} conversion${NC}"
         echo ""
     fi
@@ -1401,327 +1432,6 @@ run_migration() {
         # Bring portal to foreground by waiting for it
         wait "$PORTAL_PID"
     fi
-}
-
-# Function to run migration with chunking auto-enabled (no prompts for chunking)
-run_migration_chunked() {
-    echo -e "${BLUE}🧩 Starting COBOL Migration with Smart Chunking...${NC}"
-    echo "===================================================="
-
-    echo -e "${BLUE}Using dotnet CLI:${NC} $DOTNET_CMD"
-
-    # Load configuration
-    echo "🔧 Loading AI configuration..."
-    if ! load_configuration; then
-        echo -e "${RED}❌ Configuration loading failed. Please run: ./doctor.sh setup${NC}"
-        return 1
-    fi
-
-    # Load and validate configuration
-    if ! load_ai_config; then
-        echo -e "${RED}❌ Configuration loading failed. Please check your ai-config.local.env file.${NC}"
-        return 1
-    fi
-
-    echo ""
-    echo "🎯 Select Target Language for Migration"
-    echo "========================================"
-    echo "  1) Java (Quarkus)"
-    echo "  2) C# (.NET)"
-    echo ""
-    read -p "Enter choice (1 or 2) [default: 2 - C#]: " lang_choice
-    
-    # Trim whitespace from input
-    lang_choice=$(echo "$lang_choice" | tr -d '[:space:]')
-    
-    # Validate the choice explicitly - default to C# for chunked migrations
-    if [[ "$lang_choice" == "1" ]]; then
-        export TARGET_LANGUAGE="Java"
-        echo -e "${GREEN}✅ Selected: Java (Quarkus)${NC}"
-    elif [[ "$lang_choice" == "2" ]] || [[ -z "$lang_choice" ]]; then
-        export TARGET_LANGUAGE="CSharp"
-        echo -e "${GREEN}✅ Selected: C# (.NET)${NC}"
-    else
-        echo -e "${YELLOW}⚠️  Invalid choice '$lang_choice', defaulting to C# (.NET)${NC}"
-        export TARGET_LANGUAGE="CSharp"
-    fi
-
-    # ========================
-    # QUALITY GATE: Verify TARGET_LANGUAGE is correctly set
-    # ========================
-    echo ""
-    echo -e "${CYAN}🔒 Quality Gate: Verifying language selection...${NC}"
-    if [[ "$TARGET_LANGUAGE" != "Java" ]] && [[ "$TARGET_LANGUAGE" != "CSharp" ]]; then
-        echo -e "${RED}❌ QUALITY GATE FAILED: TARGET_LANGUAGE='$TARGET_LANGUAGE' is invalid${NC}"
-        echo -e "${RED}   Must be 'Java' or 'CSharp'. Aborting migration.${NC}"
-        return 1
-    fi
-    
-    if [[ "$TARGET_LANGUAGE" == "CSharp" ]]; then
-        echo -e "${BOLD}${GREEN}▶▶▶ CONFIRMED: Target Language = C# (.NET) ◀◀◀${NC}"
-    else
-        echo -e "${BOLD}${GREEN}▶▶▶ CONFIRMED: Target Language = Java (Quarkus) ◀◀◀${NC}"
-    fi
-    echo -e "${GREEN}✅ Quality Gate PASSED: TARGET_LANGUAGE='$TARGET_LANGUAGE'${NC}"
-
-    # Auto-enable chunking
-    chunking_flag="--chunked"
-    echo ""
-    echo -e "${GREEN}✅ Smart chunking auto-enabled for large file processing${NC}"
-    echo -e "${BLUE}ℹ️  Files > 10,000 lines will be split into semantic chunks${NC}"
-    echo -e "${BLUE}ℹ️  Parallel processing enabled with rate limiting${NC}"
-    
-    echo ""
-    echo "🚀 Starting COBOL to ${TARGET_LANGUAGE} Migration with Smart Chunking..."
-    echo "========================================================================"
-
-    # Check if reverse engineering results already exist
-    local re_output_file="$REPO_ROOT/output/reverse-engineering-details.md"
-    local skip_reverse_eng=""
-    
-    if [ -f "$re_output_file" ]; then
-        echo ""
-        echo -e "${GREEN}✅ Found existing reverse engineering results${NC}"
-        read -p "Skip reverse engineering? (Y/n): " -n 1 -r
-        echo ""
-        if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
-            skip_reverse_eng="--skip-reverse-engineering"
-            echo -e "${BLUE}ℹ️  Skipping reverse engineering${NC}"
-        fi
-    fi
-
-    # Show file statistics
-    echo ""
-    cobol_count=$(find "$REPO_ROOT/source" -name "*.cbl" 2>/dev/null | wc -l | tr -d ' ')
-    total_lines=$(find "$REPO_ROOT/source" -name "*.cbl" -exec wc -l {} + 2>/dev/null | tail -1 | awk '{print $1}')
-    echo -e "📁 Found ${GREEN}$cobol_count${NC} COBOL files with ${GREEN}${total_lines:-0}${NC} total lines"
-    
-    if [[ -n "$total_lines" ]] && [[ "$total_lines" -gt 10000 ]]; then
-        estimated_chunks=$((total_lines / 3000 + 1))
-        echo -e "🧩 Estimated ${GREEN}$estimated_chunks${NC} chunks to process (3000 lines each)"
-        
-        # Read parallel settings from appsettings.json
-        local parallel_workers=3
-        if command -v jq >/dev/null 2>&1 && [[ -f "$REPO_ROOT/Config/appsettings.json" ]]; then
-            parallel_workers=$(jq -r '.ChunkingSettings.MaxParallelChunks // 3' "$REPO_ROOT/Config/appsettings.json" 2>/dev/null)
-        fi
-        echo -e "⚡ Parallel workers: ${GREEN}$parallel_workers${NC}"
-        
-        # Estimate time (2 min per chunk with parallel processing)
-        local estimated_time_min=$((estimated_chunks * 2 / parallel_workers))
-        echo -e "⏱️  Estimated time: ${GREEN}~$estimated_time_min minutes${NC}"
-    fi
-    echo ""
-    
-    # Start background progress monitor
-    echo -e "${CYAN}📊 Starting progress monitor...${NC}"
-    start_progress_monitor &
-    PROGRESS_PID=$!
-    
-    # Set trap to clean up progress monitor
-    trap "kill $PROGRESS_PID 2>/dev/null; wait $PROGRESS_PID 2>/dev/null" EXIT
-
-    # Run the application with chunking enabled
-    export TARGET_LANGUAGE
-    export MIGRATION_DB_PATH="$REPO_ROOT/Data/migration.db"
-    "$DOTNET_CMD" run -- --source ./source $skip_reverse_eng $chunking_flag
-    local migration_exit=$?
-
-    # Stop progress monitor
-    kill $PROGRESS_PID 2>/dev/null
-    wait $PROGRESS_PID 2>/dev/null
-    trap - EXIT
-
-    if [[ $migration_exit -ne 0 ]]; then
-        echo ""
-        echo -e "${RED}❌ Migration process failed (exit code $migration_exit).${NC}"
-        show_final_progress
-        return $migration_exit
-    fi
-    
-    # Show final progress
-    show_final_progress
-    
-    # Generate migration report
-    echo ""
-    read -p "Generate a detailed migration report? (Y/n): " -n 1 -r
-    echo ""
-    if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
-        generate_migration_report
-    fi
-
-    local db_path
-    if ! db_path="$(get_migration_db_path)" || [[ -z "$db_path" ]]; then
-        echo ""
-        echo -e "${YELLOW}⚠️  Could not resolve migration database path.${NC}"
-        return 0
-    fi
-
-    if [[ "${MCP_AUTO_LAUNCH:-1}" != "1" ]]; then
-        echo ""
-        echo -e "${BLUE}ℹ️  MCP web UI launch skipped.${NC}"
-        return 0
-    fi
-
-    launch_mcp_web_ui "$db_path"
-}
-
-# Background progress monitor for chunked migration
-start_progress_monitor() {
-    local db_path="$REPO_ROOT/Data/migration.db"
-    local last_completed=0
-    local spinner_chars="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-    local spinner_idx=0
-    
-    sleep 5  # Wait for migration to start and DB to be populated
-    
-    while true; do
-        if [[ ! -f "$db_path" ]]; then
-            sleep 2
-            continue
-        fi
-        
-        # Get latest run info
-        local run_info=$(sqlite3 "$db_path" "
-            SELECT id, status FROM runs ORDER BY started_at DESC LIMIT 1;
-        " 2>/dev/null)
-        
-        if [[ -z "$run_info" ]]; then
-            sleep 2
-            continue
-        fi
-        
-        local run_id=$(echo "$run_info" | cut -d'|' -f1)
-        local status=$(echo "$run_info" | cut -d'|' -f2)
-        
-        # Get chunk statistics
-        local chunk_stats=$(sqlite3 "$db_path" "
-            SELECT 
-                COUNT(*) as total,
-                SUM(CASE WHEN status='Completed' THEN 1 ELSE 0 END) as completed,
-                SUM(CASE WHEN status='Failed' THEN 1 ELSE 0 END) as failed,
-                SUM(CASE WHEN status='Processing' THEN 1 ELSE 0 END) as processing
-            FROM chunk_metadata WHERE run_id=$run_id;
-        " 2>/dev/null)
-        
-        if [[ -n "$chunk_stats" ]]; then
-            local total=$(echo "$chunk_stats" | cut -d'|' -f1)
-            local completed=$(echo "$chunk_stats" | cut -d'|' -f2)
-            local failed=$(echo "$chunk_stats" | cut -d'|' -f3)
-            local processing=$(echo "$chunk_stats" | cut -d'|' -f4)
-            
-            if [[ "$total" -gt 0 ]]; then
-                local percent=$((completed * 100 / total))
-                local spinner=${spinner_chars:spinner_idx:1}
-                spinner_idx=$(( (spinner_idx + 1) % ${#spinner_chars} ))
-                
-                # Build progress bar
-                local bar_width=30
-                local filled=$((completed * bar_width / total))
-                local empty=$((bar_width - filled))
-                local bar=$(printf "%${filled}s" | tr ' ' '█')$(printf "%${empty}s" | tr ' ' '░')
-                
-                # Only show update if something changed
-                if [[ "$completed" -ne "$last_completed" ]]; then
-                    echo -ne "\r\033[K"  # Clear line
-                    echo -e "${CYAN}$spinner${NC} [$bar] ${GREEN}$completed${NC}/${total} chunks (${percent}%) | ✓${completed} ⏳${processing} ✗${failed}"
-                    last_completed=$completed
-                fi
-            fi
-        fi
-        
-        # Check if migration is still running
-        if [[ "$status" == "Completed" ]] || [[ "$status" == "Failed" ]]; then
-            break
-        fi
-        
-        sleep 3
-    done
-}
-
-# Show final progress summary
-show_final_progress() {
-    local db_path="$REPO_ROOT/Data/migration.db"
-    
-    if [[ ! -f "$db_path" ]]; then
-        return
-    fi
-    
-    echo ""
-    echo -e "${BLUE}╔══════════════════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${BLUE}║                        📊 Migration Summary                              ║${NC}"
-    echo -e "${BLUE}╚══════════════════════════════════════════════════════════════════════════╝${NC}"
-    echo ""
-    
-    # Get latest run info
-    local run_info=$(sqlite3 "$db_path" "
-        SELECT id, status, started_at, completed_at,
-               julianday(COALESCE(completed_at, datetime('now'))) - julianday(started_at)
-        FROM runs ORDER BY started_at DESC LIMIT 1;
-    " 2>/dev/null)
-    
-    if [[ -n "$run_info" ]]; then
-        local run_id=$(echo "$run_info" | cut -d'|' -f1)
-        local status=$(echo "$run_info" | cut -d'|' -f2)
-        local created=$(echo "$run_info" | cut -d'|' -f3)
-        local completed=$(echo "$run_info" | cut -d'|' -f4)
-        local duration_days=$(echo "$run_info" | cut -d'|' -f5)
-        
-        # Calculate duration in human-readable format
-        local duration_seconds=$(echo "$duration_days * 86400" | bc 2>/dev/null || echo "0")
-        local duration_minutes=$(printf "%.0f" $(echo "$duration_seconds / 60" | bc -l 2>/dev/null || echo "0"))
-        local remaining_seconds=$(printf "%.0f" $(echo "$duration_seconds - ($duration_minutes * 60)" | bc -l 2>/dev/null || echo "0"))
-        
-        echo -e "   Run ID: ${BOLD}#$run_id${NC}"
-        
-        if [[ "$status" == "Completed" ]]; then
-            echo -e "   Status: ${GREEN}✅ Completed${NC}"
-        elif [[ "$status" == "Failed" ]]; then
-            echo -e "   Status: ${RED}❌ Failed${NC}"
-        else
-            echo -e "   Status: ${YELLOW}⏳ $status${NC}"
-        fi
-        
-        echo -e "   Duration: ${duration_minutes}m ${remaining_seconds}s"
-        echo ""
-        
-        # Get chunk statistics
-        local chunk_stats=$(sqlite3 "$db_path" "
-            SELECT 
-                COUNT(*) as total,
-                SUM(CASE WHEN status='Completed' THEN 1 ELSE 0 END) as completed,
-                SUM(CASE WHEN status='Failed' THEN 1 ELSE 0 END) as failed,
-                SUM(COALESCE(tokens_used, 0)) as tokens,
-                SUM(COALESCE(processing_time_ms, 0)) / 1000.0 as time_sec
-            FROM chunk_metadata WHERE run_id=$run_id;
-        " 2>/dev/null)
-        
-        if [[ -n "$chunk_stats" ]]; then
-            local total=$(echo "$chunk_stats" | cut -d'|' -f1)
-            local completed=$(echo "$chunk_stats" | cut -d'|' -f2)
-            local failed=$(echo "$chunk_stats" | cut -d'|' -f3)
-            local tokens=$(echo "$chunk_stats" | cut -d'|' -f4)
-            local time_sec=$(echo "$chunk_stats" | cut -d'|' -f5)
-            
-            echo -e "   ${CYAN}🧩 Chunks${NC}"
-            echo -e "      Total: $total"
-            echo -e "      Completed: ${GREEN}$completed${NC}"
-            if [[ "$failed" -gt 0 ]]; then
-                echo -e "      Failed: ${RED}$failed${NC}"
-            fi
-            
-            if [[ "$tokens" -gt 0 ]]; then
-                local formatted_tokens=$(printf "%'d" $tokens 2>/dev/null || echo "$tokens")
-                echo ""
-                echo -e "   ${MAGENTA}⚡ Tokens Used: $formatted_tokens${NC}"
-            fi
-        fi
-    fi
-    
-    echo ""
-    echo -e "${BLUE}═══════════════════════════════════════════════════════════════════════════${NC}"
-    echo -e "${DIM}For detailed progress tracking, run: ./helper-scripts/track-progress.sh${NC}"
-    echo -e "${DIM}Or open the web portal: http://localhost:5028${NC}"
 }
 
 # Function to resume migration
@@ -1878,10 +1588,10 @@ run_validate() {
     fi
 }
 
-# Function for conversation mode
+# Function for conversation log generation
 run_conversation() {
-    echo -e "${BLUE}💭 Interactive Conversation Mode${NC}"
-    echo "================================"
+    echo -e "${BLUE}💭 Conversation Log Generator${NC}"
+    echo "=============================="
 
     echo -e "${BLUE}Using dotnet CLI:${NC} $DOTNET_CMD"
     
@@ -1891,12 +1601,11 @@ run_conversation() {
         return 1
     fi
 
-    echo "Starting interactive conversation with the migration system..."
-    echo "Type 'exit' to quit"
+    echo "Generating readable conversation log from migration data..."
     echo ""
 
     export MIGRATION_DB_PATH="$REPO_ROOT/Data/migration.db"
-    "$DOTNET_CMD" run -- --interactive
+    "$DOTNET_CMD" run -- conversation
 }
 
 # Function for reverse engineering
