@@ -275,7 +275,7 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
                             return (Index: i, Result: (CodeFile?)null);
                         }
 
-                        await Task.Delay(i * staggerDelay);
+                        await Task.Delay((i % maxParallel) * staggerDelay);
                         var result = await ConvertAsync(cobolFile, analysis);
                         var done = Interlocked.Increment(ref completed);
                         progressCallback?.Invoke(done, cobolFiles.Count);

@@ -84,7 +84,7 @@ public class ResponsesApiClient : IDisposable
     private static readonly Regex ExecSqlDliRegex = new(
         @"EXEC\s+(SQL|DLI)\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
-    // ACTION 2: Regex to identify COBOL noise lines (blanks, comments, compiler directives)
+    // Regex to identify COBOL noise lines (blanks, comments, compiler directives)
     private static readonly Regex NoiseLineRegex = new(
         @"^\s*$|^.{6}\*|^\s*\*>|^\s*(CBL|PROCESS|EJECT|SKIP1|SKIP2|SKIP3)\b",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -185,10 +185,51 @@ public class ResponsesApiClient : IDisposable
     }
 
     /// <summary>
+    /// Extracts COBOL source code from a user prompt that may contain instructions and markdown markers.
+    /// Returns the raw COBOL content so complexity scoring isn't inflated by instruction text.
+    /// </summary>
+    private static string ExtractCobolSource(string userPrompt)
+    {
+        if (string.IsNullOrWhiteSpace(userPrompt))
+            return string.Empty;
+
+        // Try ```cobol ... ``` block first
+        var cobolStart = userPrompt.IndexOf("```cobol", StringComparison.OrdinalIgnoreCase);
+        if (cobolStart >= 0)
+        {
+            var contentStart = userPrompt.IndexOf('\n', cobolStart);
+            if (contentStart < 0) contentStart = cobolStart + 8;
+            else contentStart++;
+
+            var contentEnd = userPrompt.IndexOf("```", contentStart, StringComparison.Ordinal);
+            if (contentEnd < 0) contentEnd = userPrompt.Length;
+
+            return userPrompt[contentStart..contentEnd].Trim();
+        }
+
+        // Try generic ``` block
+        var genericStart = userPrompt.IndexOf("```", StringComparison.Ordinal);
+        if (genericStart >= 0)
+        {
+            var contentStart = userPrompt.IndexOf('\n', genericStart);
+            if (contentStart < 0) contentStart = genericStart + 3;
+            else contentStart++;
+
+            var contentEnd = userPrompt.IndexOf("```", contentStart, StringComparison.Ordinal);
+            if (contentEnd < 0) contentEnd = userPrompt.Length;
+
+            return userPrompt[contentStart..contentEnd].Trim();
+        }
+
+        // No code block markers — return full prompt as fallback
+        return userPrompt;
+    }
+
+    /// <summary>
     /// Calculates a complexity score for COBOL source using config-driven indicators
     /// plus structural baseline floors (PIC density, level-number density) and
     /// COPY/EXEC amplifiers.
-    /// ACTION 2: Density calculations use meaningful lines only (excludes blanks, comments, directives).
+    /// Density calculations use meaningful lines only (excludes blanks, comments, directives).
     /// </summary>
     /// <param name="cobolSource">The raw COBOL source text.</param>
     /// <returns>A non-negative complexity score. Higher = more complex.</returns>
@@ -209,7 +250,7 @@ public class ResponsesApiClient : IDisposable
             }
         }
 
-        // 2. Structural baseline floors — ACTION 2: use meaningful lines only
+        // 2. Structural baseline floors — use meaningful lines only
         var lines = cobolSource.Split('\n');
         var meaningfulLines = CountMeaningfulLines(lines);
         var totalLines = Math.Max(meaningfulLines, 1);
@@ -258,7 +299,7 @@ public class ResponsesApiClient : IDisposable
     }
 
     /// <summary>
-    /// ACTION 2: Counts meaningful COBOL lines, excluding blanks, comments, and compiler directives.
+    /// Counts meaningful COBOL lines, excluding blanks, comments, and compiler directives.
     /// This prevents heavily-commented or whitespace-padded files from diluting density scores.
     /// </summary>
     private static int CountMeaningfulLines(string[] lines)
@@ -269,7 +310,7 @@ public class ResponsesApiClient : IDisposable
     /// <summary>
     /// Calculates optimal max_output_tokens and reasoning effort based on content complexity.
     /// Uses three-tier system: low / medium / high based on complexity score.
-    /// ACTION 1: MinOutputTokens floor is conditional — only applied for medium+ complexity or large inputs.
+    /// MinOutputTokens floor is conditional — only applied for medium+ complexity or large inputs.
     /// </summary>
     public (int maxOutputTokens, string reasoningEffort) CalculateTokenSettings(
         string systemPrompt, 
@@ -277,8 +318,9 @@ public class ResponsesApiClient : IDisposable
     {
         var inputTokens = EstimateTokens(systemPrompt) + EstimateTokens(userPrompt);
 
-        // Calculate complexity score from the user prompt (which contains COBOL source)
-        var complexityScore = CalculateComplexityScore(userPrompt);
+        // Calculate complexity score from extracted COBOL source (not the full prompt with instructions)
+        var cobolSource = ExtractCobolSource(userPrompt);
+        var complexityScore = CalculateComplexityScore(cobolSource);
 
         // Determine tier based on complexity score
         string reasoningEffort;
@@ -303,7 +345,7 @@ public class ResponsesApiClient : IDisposable
         // Calculate output tokens with tier-specific multiplier
         var estimatedOutputNeeded = (int)(inputTokens * multiplier);
 
-        // ACTION 1: Conditional MinOutputTokens floor — only enforce for medium+ complexity
+        // Conditional MinOutputTokens floor — only enforce for medium+ complexity
         // or large inputs. For low-complexity small inputs, allow smaller allocations.
         int effectiveMinTokens =
             (complexityScore >= Profile.MediumThreshold || inputTokens >= Profile.MinOutputTokens / 2)
@@ -495,7 +537,7 @@ public class ResponsesApiClient : IDisposable
                     "Responses API completed in {Elapsed:F1}s: {Input} input + {Output} output ({Reasoning} reasoning) = {Total} tokens",
                     elapsed.TotalSeconds, actualInputTokens, actualOutputTokens, reasoningTokens, actualTotalTokens);
                 
-                // ACTION 4: Log reasoning_ratio — the single most diagnostic metric for threshold tuning
+                // Log reasoning_ratio — the single most diagnostic metric for threshold tuning
                 var reasoningRatio = (double)reasoningTokens / Math.Max(actualOutputTokens, 1);
                 _logger?.LogInformation(
                     "Reasoning ratio: {Ratio:F2} (reasoning={Reasoning}, output={Output})",

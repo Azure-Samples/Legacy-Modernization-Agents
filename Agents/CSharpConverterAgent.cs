@@ -213,7 +213,7 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
                             return (Index: i, Result: (CodeFile?)null);
                         }
 
-                        await Task.Delay(i * staggerDelay);
+                        await Task.Delay((i % maxParallel) * staggerDelay);
                         var codeFile = await ConvertAsync(cobolFile, cobolAnalysis);
                         var done = Interlocked.Increment(ref completed);
                         progressCallback?.Invoke(done, cobolFiles.Count);

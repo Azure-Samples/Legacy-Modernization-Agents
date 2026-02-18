@@ -493,6 +493,12 @@ internal static class Program
                 Environment.Exit(1);
             }
 
+            if (string.IsNullOrEmpty(settings.AISettings.ModelId))
+            {
+                logger.LogError("ModelId is not configured. Set AISettings:ModelId in appsettings.json or AZURE_OPENAI_MODEL_ID environment variable.");
+                Environment.Exit(1);
+            }
+
             // Create EnhancedLogger early so it can track ALL API calls
             var enhancedLogger = new EnhancedLogger(loggerFactory.CreateLogger<EnhancedLogger>());
             var chatLogger = new ChatLogger(loggerFactory.CreateLogger<ChatLogger>());

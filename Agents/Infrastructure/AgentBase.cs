@@ -202,9 +202,8 @@ public abstract class AgentBase
                     else if (currentEffort == profile.MediumReasoningEffort && currentEffort != profile.HighReasoningEffort)
                         currentEffort = profile.HighReasoningEffort;
 
-                    // ACTION 3: Thrash guard — if already at max tokens AND max effort, don't burn another API call
-                    if (currentMaxTokens >= profile.MaxOutputTokens && currentEffort == profile.HighReasoningEffort
-                        && exhaustionRetry > 0)
+                    // Thrash guard — if already at max tokens AND max effort, don't burn another API call
+                    if (currentMaxTokens >= profile.MaxOutputTokens && currentEffort == profile.HighReasoningEffort)
                     {
                         Logger.LogError(
                             "[{Agent}] Thrash guard: already at max tokens ({Tokens}) and max effort ('{Effort}') " +
@@ -732,8 +731,9 @@ ADAPTIVE RE-CHUNK INSTRUCTIONS (PART 2 of 2):
         var cleanedPart2Lines = new List<string>();
         var seenPackageOrImport = false;
 
-        foreach (var line in part2Lines)
+        for (int idx = 0; idx < part2Lines.Count; idx++)
         {
+            var line = part2Lines[idx];
             var trimmed = line.TrimStart();
 
             // Skip package declarations and import statements at the top of part 2
@@ -756,17 +756,12 @@ ADAPTIVE RE-CHUNK INSTRUCTIONS (PART 2 of 2):
 
             cleanedPart2Lines.Add(line);
 
-            // Once we hit actual code, stop filtering
+            // Once we hit actual code, stop filtering and add all remaining lines
             if (!string.IsNullOrWhiteSpace(trimmed) &&
                 !trimmed.StartsWith("package ") && !trimmed.StartsWith("import ") && !trimmed.StartsWith("using "))
             {
-                // Add remaining lines without filtering
-                var currentIdx = part2Lines.IndexOf(line);
-                if (currentIdx >= 0)
-                {
-                    cleanedPart2Lines.AddRange(part2Lines.Skip(currentIdx + 1));
-                    break;
-                }
+                cleanedPart2Lines.AddRange(part2Lines.Skip(idx + 1));
+                break;
             }
         }
 

@@ -2022,6 +2022,12 @@ main() {
         "chunking-health"|"chunk-health"|"chunks")
             check_chunking_health
             ;;
+        "chat-test")
+            run_chat_test
+            ;;
+        "validate")
+            run_validate
+            ;;
         "help"|"-h"|"--help")
             show_usage
             ;;

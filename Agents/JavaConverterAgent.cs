@@ -234,7 +234,7 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
                             return (Index: i, Result: (JavaFile?)null);
                         }
 
-                        await Task.Delay(i * staggerDelay);
+                        await Task.Delay((i % maxParallel) * staggerDelay);
                         var javaFile = await ConvertToJavaAsync(cobolFile, cobolAnalysis);
                         var done = Interlocked.Increment(ref completed);
                         progressCallback?.Invoke(done, cobolFiles.Count);

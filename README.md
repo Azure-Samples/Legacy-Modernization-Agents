@@ -598,7 +598,7 @@ sequenceDiagram
 - ✅ Edge type filtering with color-coded visualization
 - ✅ Line number context for all dependencies
 
-###  Smart Chunking & Token Strategy
+### Smart Chunking & Token Strategy
 
 Large COBOL files (>3,000 lines or >150K characters) are automatically split at semantic boundaries (DIVISION → SECTION → paragraph) and processed with content-aware reasoning effort. A three-tier complexity scoring system analyzes each file's COBOL patterns (EXEC SQL, CICS, REDEFINES, etc.) to dynamically allocate reasoning effort and output tokens — simple files get fast processing while complex files get thorough analysis.
 
