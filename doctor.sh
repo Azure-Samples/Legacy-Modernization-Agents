@@ -71,7 +71,6 @@ show_usage() {
     echo -e "  ${GREEN}resume${NC}          Resume interrupted migration"
     echo -e "  ${GREEN}monitor${NC}         Monitor migration progress"
     echo -e "  ${GREEN}chunking-health${NC} Check smart chunking infrastructure"
-    echo -e "  ${GREEN}chat-test${NC}       Test chat logging functionality"
     echo -e "  ${GREEN}validate${NC}        Validate system requirements"
     echo -e "  ${GREEN}conversation${NC}    Generate conversation log from migration data"
     echo
@@ -1633,26 +1632,6 @@ run_monitor() {
     tail -f "$REPO_ROOT/Logs"/*.log 2>/dev/null || echo "No active log files found"
 }
 
-# Function to test chat logging
-run_chat_test() {
-    echo -e "${BLUE}💬 Testing Chat Logging Functionality${NC}"
-    echo "====================================="
-
-    echo -e "${BLUE}Using dotnet CLI:${NC} $DOTNET_CMD"
-
-    # Load configuration
-    if ! load_configuration || ! load_ai_config; then
-        echo -e "${RED}❌ Configuration loading failed.${NC}"
-        return 1
-    fi
-
-    echo "Testing chat logging system..."
-    
-    # Run a simple test
-    export MIGRATION_DB_PATH="$REPO_ROOT/Data/migration.db"
-    "$DOTNET_CMD" run -- --test-chat-logging
-}
-
 # Function to validate system
 run_validate() {
     echo -e "${BLUE}✅ System Validation${NC}"
@@ -2029,9 +2008,6 @@ main() {
             ;;
         "chunking-health"|"chunk-health"|"chunks")
             check_chunking_health
-            ;;
-        "chat-test")
-            run_chat_test
             ;;
         "validate")
             run_validate
