@@ -89,7 +89,8 @@ public class ChunkedMigrationProcess
                 _settings.AISettings.JavaConverterModelId,
                 _settings.ConversionSettings,
                 _enhancedLogger,
-                _chatLogger);
+                _chatLogger,
+                settings: _settings);
         }
         else
         {
@@ -99,7 +100,8 @@ public class ChunkedMigrationProcess
                 _settings.AISettings.JavaConverterModelId,
                 _settings.ConversionSettings,
                 _enhancedLogger,
-                _chatLogger);
+                _chatLogger,
+                settings: _settings);
         }
 
         // Initialize standard agents
@@ -109,7 +111,8 @@ public class ChunkedMigrationProcess
             loggerFactory.CreateLogger<CobolAnalyzerAgent>(),
             _settings.AISettings.CobolAnalyzerModelId,
             _enhancedLogger,
-            _chatLogger);
+            _chatLogger,
+            settings: _settings);
 
         _enhancedLogger.ShowStep(4, 4, "DependencyMapperAgent", "Cross-file dependency mapping");
         _dependencyMapperAgent = new DependencyMapperAgent(
@@ -117,7 +120,8 @@ public class ChunkedMigrationProcess
             loggerFactory.CreateLogger<DependencyMapperAgent>(),
             _settings.AISettings.DependencyMapperModelId ?? _settings.AISettings.CobolAnalyzerModelId,
             _enhancedLogger,
-            _chatLogger);
+            _chatLogger,
+            settings: _settings);
 
         _enhancedLogger.ShowSuccess("All chunked migration agents initialized");
     }

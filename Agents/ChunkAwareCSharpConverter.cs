@@ -247,8 +247,56 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
         List<CobolAnalysis> cobolAnalyses,
         Action<int, int>? progressCallback = null)
     {
-        var results = new List<CodeFile>();
+        var maxParallel = Math.Min(
+            Settings?.ChunkingSettings?.MaxParallelConversion ?? 1, cobolFiles.Count);
+        var enableParallel = maxParallel > 1 && cobolFiles.Count > 1;
 
+        if (enableParallel)
+        {
+            Logger.LogInformation(
+                "\u26a1 Parallel conversion: {Workers} workers for {Files} files",
+                maxParallel, cobolFiles.Count);
+
+            var staggerDelay = Settings?.ChunkingSettings?.ParallelStaggerDelayMs ?? 500;
+            using var semaphore = new SemaphoreSlim(maxParallel, maxParallel);
+            var completed = 0;
+
+            var tasks = cobolFiles.Select((cobolFile, i) =>
+            {
+                var analysis = i < cobolAnalyses.Count ? cobolAnalyses[i] : null;
+                return Task.Run(async () =>
+                {
+                    await semaphore.WaitAsync();
+                    try
+                    {
+                        if (analysis == null)
+                        {
+                            Logger.LogWarning("No analysis found for file: {FileName}", cobolFile.FileName);
+                            return (Index: i, Result: (CodeFile?)null);
+                        }
+
+                        await Task.Delay((i % maxParallel) * staggerDelay);
+                        var result = await ConvertAsync(cobolFile, analysis);
+                        var done = Interlocked.Increment(ref completed);
+                        progressCallback?.Invoke(done, cobolFiles.Count);
+                        return (Index: i, Result: (CodeFile?)result);
+                    }
+                    finally
+                    {
+                        semaphore.Release();
+                    }
+                });
+            }).ToList();
+
+            var all = await Task.WhenAll(tasks);
+            return all.Where(r => r.Result != null)
+                      .OrderBy(r => r.Index)
+                      .Select(r => r.Result!)
+                      .ToList();
+        }
+
+        // Sequential fallback
+        var results = new List<CodeFile>();
         for (int i = 0; i < cobolFiles.Count; i++)
         {
             var cobolFile = cobolFiles[i];

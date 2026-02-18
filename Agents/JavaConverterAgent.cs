@@ -206,6 +206,58 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
     {
         Logger.LogInformation("Converting {Count} COBOL files to Java", cobolFiles.Count);
 
+        var maxParallel = Math.Min(
+            Settings?.ChunkingSettings?.MaxParallelConversion ?? 1, cobolFiles.Count);
+        var enableParallel = maxParallel > 1 && cobolFiles.Count > 1;
+
+        if (enableParallel)
+        {
+            Logger.LogInformation(
+                "\u26a1 Parallel conversion: {Workers} workers for {Files} files",
+                maxParallel, cobolFiles.Count);
+
+            var staggerDelay = Settings?.ChunkingSettings?.ParallelStaggerDelayMs ?? 500;
+            using var semaphore = new SemaphoreSlim(maxParallel, maxParallel);
+            var completed = 0;
+
+            var tasks = cobolFiles.Select((cobolFile, i) =>
+            {
+                var cobolAnalysis = i < cobolAnalyses.Count ? cobolAnalyses[i] : null;
+                return Task.Run(async () =>
+                {
+                    await semaphore.WaitAsync();
+                    try
+                    {
+                        if (cobolAnalysis == null)
+                        {
+                            Logger.LogWarning("No analysis found for COBOL file: {FileName}", cobolFile.FileName);
+                            return (Index: i, Result: (JavaFile?)null);
+                        }
+
+                        await Task.Delay((i % maxParallel) * staggerDelay);
+                        var javaFile = await ConvertToJavaAsync(cobolFile, cobolAnalysis);
+                        var done = Interlocked.Increment(ref completed);
+                        progressCallback?.Invoke(done, cobolFiles.Count);
+                        return (Index: i, Result: (JavaFile?)javaFile);
+                    }
+                    finally
+                    {
+                        semaphore.Release();
+                    }
+                });
+            }).ToList();
+
+            var all = await Task.WhenAll(tasks);
+            var result = all.Where(r => r.Result != null)
+                            .OrderBy(r => r.Index)
+                            .Select(r => r.Result!)
+                            .ToList();
+
+            Logger.LogInformation("Completed parallel conversion of {Count} COBOL files to Java", cobolFiles.Count);
+            return result;
+        }
+
+        // Sequential fallback
         var javaFiles = new List<JavaFile>();
         int processedCount = 0;
 

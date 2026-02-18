@@ -3,12 +3,39 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using CobolToQuarkusMigration.Helpers;
+using CobolToQuarkusMigration.Models;
 using Azure.Identity;
 using Azure.Core;
+using System.Linq;
 
 namespace CobolToQuarkusMigration.Agents.Infrastructure;
+
+/// <summary>
+/// Thrown when the model exhausts max_output_tokens on internal reasoning
+/// with minimal text output. Caught by AgentBase for retry with escalated tokens.
+/// </summary>
+public class ReasoningExhaustionException : Exception
+{
+    public int MaxOutputTokens { get; }
+    public int ReasoningTokens { get; }
+    public int ActualOutputTokens { get; }
+    public string ReasoningEffort { get; }
+
+    public ReasoningExhaustionException(
+        int maxOutputTokens, int reasoningTokens, int actualOutputTokens, string reasoningEffort)
+        : base($"Model exhausted max_output_tokens ({maxOutputTokens}) on reasoning " +
+               $"({reasoningTokens} tokens) with minimal text output ({actualOutputTokens} tokens). " +
+               $"Reasoning effort was '{reasoningEffort}'.")
+    {
+        MaxOutputTokens = maxOutputTokens;
+        ReasoningTokens = reasoningTokens;
+        ActualOutputTokens = actualOutputTokens;
+        ReasoningEffort = reasoningEffort;
+    }
+}
 
 /// <summary>
 /// Client for Azure OpenAI Responses API (used by codex/reasoning models like gpt-5.1-codex-mini).
@@ -18,6 +45,11 @@ namespace CobolToQuarkusMigration.Agents.Infrastructure;
 /// - Uses max_output_tokens (NOT max_tokens or max_completion_tokens)
 /// - Supports reasoning.effort parameter ("low", "medium", "high")
 /// - Returns output in a different JSON structure
+/// 
+/// Now supports three-tier content-aware reasoning via ModelProfileSettings:
+/// - Calculates complexity score from COBOL source using config-driven regex indicators
+/// - Maps score to low/medium/high reasoning tier with per-tier token multipliers
+/// - Throws ReasoningExhaustionException (caught by AgentBase) when model burns all tokens on reasoning
 /// </summary>
 public class ResponsesApiClient : IDisposable
 {
@@ -36,46 +68,69 @@ public class ResponsesApiClient : IDisposable
     private string? _cachedAccessToken;
     private DateTimeOffset _accessTokenExpiresOn;
 
-    // Rate limiting for 1M TPM / 1K RPM limits
+    // Rate limiting
     private readonly RateLimitTracker _rateLimitTracker;
 
+    // Three-tier reasoning profile
+    /// <summary>The model profile controlling reasoning effort and token limits.</summary>
+    public ModelProfileSettings Profile { get; }
+
+    // Pre-compiled structural regexes (always available, not config-driven)
+    private static readonly Regex PicRegex = new(@"\bPIC\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex LevelRegex = new(@"^\s*\d{2}\s+", RegexOptions.Compiled | RegexOptions.Multiline);
+    private static readonly Regex CopyNearStorageRegex = new(
+        @"(WORKING-STORAGE|LINKAGE)\s+SECTION[\s\S]{0,500}COPY\b",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex ExecSqlDliRegex = new(
+        @"EXEC\s+(SQL|DLI)\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    // Regex to identify COBOL noise lines (blanks, comments, compiler directives)
+    // Uses fixed-format column positions: col 7 = indicator area, cols 1-6 = sequence number area
+    private static readonly Regex NoiseLineRegex = new(
+        @"^\s*$|^.{6}\*|^.{0,5}\*>|^.{7}\s*(CBL|PROCESS|EJECT|SKIP1|SKIP2|SKIP3)\b",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    // Pre-compiled config-driven indicator regexes (built at construction)
+    private readonly List<(Regex regex, int weight)> _compiledIndicators;
+
     /// <summary>
-    /// Creates a new Responses API client with rate limiting.
+    /// Creates a new Responses API client with optional content-aware reasoning profile.
     /// </summary>
-    /// <param name="endpoint">Azure OpenAI endpoint (e.g., https://your-resource.openai.azure.com/)</param>
-    /// <param name="apiKey">Azure OpenAI API key</param>
-    /// <param name="deploymentName">Deployment name (e.g., gpt-5.1-codex-mini)</param>
+    /// <param name="endpoint">Azure OpenAI endpoint</param>
+    /// <param name="apiKey">Azure OpenAI API key (empty = Entra ID)</param>
+    /// <param name="deploymentName">Deployment name</param>
     /// <param name="logger">Optional logger</param>
     /// <param name="enhancedLogger">Optional enhanced logger for API call tracking</param>
-    /// <param name="timeoutSeconds">HTTP timeout in seconds (default 600 for large code generation)</param>
-    /// <param name="tokensPerMinute">TPM limit (default 1,000,000)</param>
-    /// <param name="requestsPerMinute">RPM limit (default 1,000)</param>
-    /// <param name="apiVersion">API version to use (default: 2025-04-01-preview)</param>
+    /// <param name="profile">Optional model profile for three-tier reasoning. Falls back to conservative defaults.</param>
+    /// <param name="apiVersion">API version (default: 2025-04-01-preview)</param>
+    /// <param name="rateLimitSafetyFactor">Safety margin for rate limiting (0.5–0.99, default 0.90)</param>
     public ResponsesApiClient(
         string endpoint, 
         string apiKey, 
         string deploymentName, 
         ILogger? logger = null,
         EnhancedLogger? enhancedLogger = null,
-        int timeoutSeconds = 600,
-        int tokensPerMinute = 1_000_000,
-        int requestsPerMinute = 1_000,
-        string apiVersion = "2025-04-01-preview")
+        ModelProfileSettings? profile = null,
+        string apiVersion = "2025-04-01-preview",
+        double rateLimitSafetyFactor = 0.90)
     {
         if (string.IsNullOrEmpty(endpoint))
             throw new ArgumentNullException(nameof(endpoint));
-        // api key is optional now
         if (string.IsNullOrEmpty(deploymentName))
             throw new ArgumentNullException(nameof(deploymentName));
 
         _endpoint = endpoint.TrimEnd('/');
-        _apiKey = apiKey ?? ""; // Allow empty key, will trigger Entra ID
+        _apiKey = apiKey ?? "";
         _deploymentName = deploymentName;
         _logger = logger;
         _enhancedLogger = enhancedLogger;
         _apiVersion = apiVersion;
-        
-        _rateLimitTracker = new RateLimitTracker(tokensPerMinute, requestsPerMinute, logger);
+
+        // Use provided profile or conservative defaults
+        Profile = profile ?? new ModelProfileSettings();
+
+        _rateLimitTracker = new RateLimitTracker(
+            Profile.TokensPerMinute, Profile.RequestsPerMinute, logger, rateLimitSafetyFactor);
 
         _httpClient = new HttpClient();
         if (!string.IsNullOrEmpty(_apiKey))
@@ -84,12 +139,11 @@ public class ResponsesApiClient : IDisposable
         }
         else
         {
-            // No key provided, default to Entra ID immediately
             _hasSwitchedToEntraId = true;
             _logger?.LogInformation("No API Key provided, using Microsoft Entra ID (DefaultAzureCredential) authentication.");
         }
 
-        _httpClient.Timeout = TimeSpan.FromSeconds(timeoutSeconds);
+        _httpClient.Timeout = TimeSpan.FromSeconds(Profile.TimeoutSeconds);
 
         _jsonOptions = new JsonSerializerOptions
         {
@@ -97,9 +151,28 @@ public class ResponsesApiClient : IDisposable
             WriteIndented = false
         };
 
+        // Pre-compile config-driven complexity indicator regexes
+        _compiledIndicators = new List<(Regex, int)>();
+        foreach (var indicator in Profile.ComplexityIndicators
+            .Where(i => !string.IsNullOrWhiteSpace(i.Pattern)))
+        {
+            try
+            {
+                var regex = new Regex(indicator.Pattern, RegexOptions.Compiled | RegexOptions.IgnoreCase);
+                _compiledIndicators.Add((regex, indicator.Weight));
+            }
+            catch (ArgumentException ex)
+            {
+                _logger?.LogWarning("Invalid complexity indicator regex '{Pattern}': {Error}",
+                    indicator.Pattern, ex.Message);
+            }
+        }
+
         _logger?.LogInformation(
-            "Created Responses API client for {Deployment} (timeout: {Timeout}s, TPM: {TPM:N0}, RPM: {RPM:N0}, API: {ApiVersion})", 
-            deploymentName, timeoutSeconds, tokensPerMinute, requestsPerMinute, apiVersion);
+            "Created Responses API client for {Deployment} (timeout: {Timeout}s, TPM: {TPM:N0}, RPM: {RPM:N0}, " +
+            "indicators: {Count}, thresholds: {Med}/{High}, API: {ApiVersion})",
+            deploymentName, Profile.TimeoutSeconds, Profile.TokensPerMinute, Profile.RequestsPerMinute,
+            _compiledIndicators.Count, Profile.MediumThreshold, Profile.HighThreshold, apiVersion);
     }
 
     /// <summary>
@@ -113,31 +186,184 @@ public class ResponsesApiClient : IDisposable
     }
 
     /// <summary>
-    /// Calculates optimal max_output_tokens based on input size.
-    /// For code conversion, output is typically 1.5-2x the input size.
+    /// Extracts COBOL source code from a user prompt that may contain instructions and markdown markers.
+    /// Returns the raw COBOL content so complexity scoring isn't inflated by instruction text.
+    /// </summary>
+    private static string ExtractCobolSource(string userPrompt)
+    {
+        if (string.IsNullOrWhiteSpace(userPrompt))
+            return string.Empty;
+
+        // Try ```cobol ... ``` block first
+        var cobolStart = userPrompt.IndexOf("```cobol", StringComparison.OrdinalIgnoreCase);
+        if (cobolStart >= 0)
+        {
+            var contentStart = userPrompt.IndexOf('\n', cobolStart);
+            if (contentStart < 0) contentStart = cobolStart + 8;
+            else contentStart++;
+
+            var contentEnd = userPrompt.IndexOf("```", contentStart, StringComparison.Ordinal);
+            if (contentEnd < 0) contentEnd = userPrompt.Length;
+
+            return userPrompt[contentStart..contentEnd].Trim();
+        }
+
+        // Try generic ``` block
+        var genericStart = userPrompt.IndexOf("```", StringComparison.Ordinal);
+        if (genericStart >= 0)
+        {
+            var contentStart = userPrompt.IndexOf('\n', genericStart);
+            if (contentStart < 0) contentStart = genericStart + 3;
+            else contentStart++;
+
+            var contentEnd = userPrompt.IndexOf("```", contentStart, StringComparison.Ordinal);
+            if (contentEnd < 0) contentEnd = userPrompt.Length;
+
+            return userPrompt[contentStart..contentEnd].Trim();
+        }
+
+        // No code block markers — return full prompt as fallback
+        return userPrompt;
+    }
+
+    /// <summary>
+    /// Calculates a complexity score for COBOL source using config-driven indicators
+    /// plus structural baseline floors (PIC density, level-number density) and
+    /// COPY/EXEC amplifiers.
+    /// Density calculations use meaningful lines only (excludes blanks, comments, directives).
+    /// </summary>
+    /// <param name="cobolSource">The raw COBOL source text.</param>
+    /// <returns>A non-negative complexity score. Higher = more complex.</returns>
+    public int CalculateComplexityScore(string cobolSource)
+    {
+        if (string.IsNullOrWhiteSpace(cobolSource))
+            return 0;
+
+        int score = 0;
+
+        // 1. Config-driven regex indicators
+        foreach (var (regex, weight) in _compiledIndicators)
+        {
+            var matches = regex.Matches(cobolSource);
+            if (matches.Count > 0)
+            {
+                score += weight * matches.Count;
+            }
+        }
+
+        // 2. Structural baseline floors — use meaningful lines only
+        var lines = cobolSource.Split('\n');
+        var meaningfulLines = CountMeaningfulLines(lines);
+        var totalLines = Math.Max(meaningfulLines, 1);
+
+        // PIC density floor
+        var picCount = PicRegex.Matches(cobolSource).Count;
+        var picDensity = (double)picCount / totalLines;
+        if (picDensity > Profile.PicDensityFloor)
+        {
+            score += 3;
+            _logger?.LogDebug("PIC density {Density:P1} exceeds floor {Floor:P1}, +3",
+                picDensity, Profile.PicDensityFloor);
+        }
+
+        // Level-number density floor
+        var levelCount = LevelRegex.Matches(cobolSource).Count;
+        var levelDensity = (double)levelCount / totalLines;
+        if (levelDensity > Profile.LevelDensityFloor)
+        {
+            score += 2;
+            _logger?.LogDebug("Level-number density {Density:P1} exceeds floor {Floor:P1}, +2",
+                levelDensity, Profile.LevelDensityFloor);
+        }
+
+        // 3. COPY/EXEC amplifiers
+        if (Profile.EnableAmplifiers)
+        {
+            if (CopyNearStorageRegex.IsMatch(cobolSource))
+            {
+                score += Profile.CopyNearStorageBonus;
+                _logger?.LogDebug("COPY near WORKING-STORAGE/LINKAGE detected, +{Bonus}",
+                    Profile.CopyNearStorageBonus);
+            }
+
+            if (ExecSqlDliRegex.IsMatch(cobolSource))
+            {
+                score += Profile.ExecSqlDliBonus;
+                _logger?.LogDebug("EXEC SQL/DLI detected, +{Bonus}", Profile.ExecSqlDliBonus);
+            }
+        }
+
+        _logger?.LogInformation("Complexity score: {Score} (thresholds: med={Med}, high={High})",
+            score, Profile.MediumThreshold, Profile.HighThreshold);
+
+        return score;
+    }
+
+    /// <summary>
+    /// Counts meaningful COBOL lines, excluding blanks, comments, and compiler directives.
+    /// This prevents heavily-commented or whitespace-padded files from diluting density scores.
+    /// </summary>
+    private static int CountMeaningfulLines(string[] lines)
+    {
+        return lines.Count(line => !NoiseLineRegex.IsMatch(line));
+    }
+
+    /// <summary>
+    /// Calculates optimal max_output_tokens and reasoning effort based on content complexity.
+    /// Uses three-tier system: low / medium / high based on complexity score.
+    /// MinOutputTokens floor is conditional — only applied for medium+ complexity or large inputs.
     /// </summary>
     public (int maxOutputTokens, string reasoningEffort) CalculateTokenSettings(
         string systemPrompt, 
         string userPrompt)
     {
         var inputTokens = EstimateTokens(systemPrompt) + EstimateTokens(userPrompt);
-        
-        // For code conversion, expect output to be ~2x input (COBOL → C#/Java expansion)
-        // Plus some headroom for reasoning (which comes out of max_output_tokens)
-        var estimatedOutputNeeded = (int)(inputTokens * 2.5);
-        
-        // Clamp to reasonable limits
-        // - Minimum: 16K to handle small files properly
-        // - Maximum: 64K (model limit is higher but diminishing returns)
-        var maxOutputTokens = Math.Clamp(estimatedOutputNeeded, 16384, 65536);
-        
-        // Use "medium" reasoning effort as "low" is not supported by gpt-5.2-chat
-        const string reasoningEffort = "medium";
-        
+
+        // Calculate complexity score from extracted COBOL source (not the full prompt with instructions)
+        var cobolSource = ExtractCobolSource(userPrompt);
+        var complexityScore = CalculateComplexityScore(cobolSource);
+
+        // Determine tier based on complexity score
+        string reasoningEffort;
+        double multiplier;
+
+        if (complexityScore >= Profile.HighThreshold)
+        {
+            reasoningEffort = Profile.HighReasoningEffort;
+            multiplier = Profile.HighMultiplier;
+        }
+        else if (complexityScore >= Profile.MediumThreshold)
+        {
+            reasoningEffort = Profile.MediumReasoningEffort;
+            multiplier = Profile.MediumMultiplier;
+        }
+        else
+        {
+            reasoningEffort = Profile.LowReasoningEffort;
+            multiplier = Profile.LowMultiplier;
+        }
+
+        // Calculate output tokens with tier-specific multiplier
+        var estimatedOutputNeeded = (int)(inputTokens * multiplier);
+
+        // Conditional MinOutputTokens floor — only enforce for medium+ complexity
+        // or large inputs. For low-complexity small inputs, allow smaller allocations.
+        int effectiveMinTokens =
+            (complexityScore >= Profile.MediumThreshold || inputTokens >= Profile.MinOutputTokens / 2)
+                ? Profile.MinOutputTokens
+                : Math.Max(4096, estimatedOutputNeeded);
+
+        // Clamp to profile limits with conditional floor
+        var maxOutputTokens = Math.Clamp(estimatedOutputNeeded, effectiveMinTokens, Profile.MaxOutputTokens);
+
         _logger?.LogInformation(
-            "Token settings: Input ~{InputTokens}, max_output_tokens={MaxOutput}, reasoning.effort='{Effort}'",
-            inputTokens, maxOutputTokens, reasoningEffort);
-        
+            "Token settings: Input ~{InputTokens}, complexity={Score} → {Tier} (effort='{Effort}', " +
+            "multiplier={Mult:F1}×), max_output_tokens={MaxOutput}",
+            inputTokens, complexityScore,
+            complexityScore >= Profile.HighThreshold ? "HIGH" :
+            complexityScore >= Profile.MediumThreshold ? "MEDIUM" : "LOW",
+            reasoningEffort, multiplier, maxOutputTokens);
+
         return (maxOutputTokens, reasoningEffort);
     }
 
@@ -312,7 +538,13 @@ public class ResponsesApiClient : IDisposable
                     "Responses API completed in {Elapsed:F1}s: {Input} input + {Output} output ({Reasoning} reasoning) = {Total} tokens",
                     elapsed.TotalSeconds, actualInputTokens, actualOutputTokens, reasoningTokens, actualTotalTokens);
                 
-                // Check for incomplete status
+                // Log reasoning_ratio — the single most diagnostic metric for threshold tuning
+                var reasoningRatio = (double)reasoningTokens / Math.Max(actualOutputTokens, 1);
+                _logger?.LogInformation(
+                    "Reasoning ratio: {Ratio:F2} (reasoning={Reasoning}, output={Output})",
+                    reasoningRatio, reasoningTokens, actualOutputTokens);
+                
+                // Check for incomplete status — throw TYPED exception for reasoning exhaustion
                 var status = parsed?["status"]?.GetValue<string>();
                 if (status == "incomplete")
                 {
@@ -320,10 +552,9 @@ public class ResponsesApiClient : IDisposable
                     
                     if (reason == "max_output_tokens" && reasoningTokens >= actualOutputTokens * 0.9)
                     {
-                        throw new InvalidOperationException(
-                            $"Model exhausted max_output_tokens ({maxOutputTokens}) on reasoning ({reasoningTokens} tokens) " +
-                            $"with minimal text output. Solutions: 1) Chunk the input, 2) Use reasoning.effort='low', " +
-                            $"3) Increase max_output_tokens.");
+                        // TYPED exception — caught by AgentBase for retry with escalated tokens
+                        throw new ReasoningExhaustionException(
+                            maxOutputTokens, reasoningTokens, actualOutputTokens, reasoningEffort);
                     }
                     
                     _logger?.LogWarning(
@@ -334,7 +565,9 @@ public class ResponsesApiClient : IDisposable
                 // Parse the output
                 return ParseResponseOutput(parsed, responseText);
             }
-            catch (Exception ex) when (ex is not InvalidOperationException && !(ex is HttpRequestException && attempts < maxAttempts))
+            catch (Exception ex) when (ex is not InvalidOperationException && 
+                                        ex is not ReasoningExhaustionException &&
+                                        !(ex is HttpRequestException && attempts < maxAttempts))
             {
                 // Let the retry loop handle HttpRequestException if we decide to add more logic there (currently only handled via continue)
                 _logger?.LogError(ex, "Responses API error after {Elapsed:F1}s", (DateTime.UtcNow - startTime).TotalSeconds);
@@ -458,13 +691,14 @@ internal class RateLimitTracker
     private readonly Queue<(DateTime time, int tokens)> _tokenHistory = new();
     private readonly Queue<DateTime> _requestHistory = new();
     
-    // Safety margin: stay at 90% of limits to avoid hitting them
-    private const double SafetyMargin = 0.90;
+    // Safety margin: configurable fraction of limits to stay under
+    private readonly double _safetyMargin;
 
-    public RateLimitTracker(int tokensPerMinute, int requestsPerMinute, ILogger? logger)
+    public RateLimitTracker(int tokensPerMinute, int requestsPerMinute, ILogger? logger, double safetyMargin = 0.90)
     {
-        _tokensPerMinute = (int)(tokensPerMinute * SafetyMargin);
-        _requestsPerMinute = (int)(requestsPerMinute * SafetyMargin);
+        _safetyMargin = Math.Clamp(safetyMargin, 0.5, 0.99);
+        _tokensPerMinute = (int)(tokensPerMinute * _safetyMargin);
+        _requestsPerMinute = (int)(requestsPerMinute * _safetyMargin);
         _logger = logger;
     }
 
@@ -570,7 +804,7 @@ internal class RateLimitTracker
 public static class ResponsesApiClientFactory
 {
     /// <summary>
-    /// Creates a ResponsesApiClient for Azure OpenAI with default rate limits.
+    /// Creates a ResponsesApiClient for Azure OpenAI with profile-based configuration.
     /// </summary>
     public static ResponsesApiClient CreateAzureClient(
         string endpoint,
@@ -578,13 +812,10 @@ public static class ResponsesApiClientFactory
         string deploymentName,
         ILogger? logger = null,
         EnhancedLogger? enhancedLogger = null,
-        int tokensPerMinute = 1_000_000,
-        int requestsPerMinute = 1_000)
+        ModelProfileSettings? profile = null)
     {
         return new ResponsesApiClient(
             endpoint, apiKey, deploymentName, logger, enhancedLogger,
-            timeoutSeconds: 600,
-            tokensPerMinute: tokensPerMinute,
-            requestsPerMinute: requestsPerMinute);
+            profile: profile);
     }
 }
