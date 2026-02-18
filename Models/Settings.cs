@@ -108,7 +108,6 @@ public class AISettings
 
     /// <summary>
     /// Gets or sets the model ID for the Java converter.
-    /// Falls back to ModelId when empty.
     /// </summary>
     public string JavaConverterModelId { get; set; } = string.Empty;
 
