@@ -95,12 +95,9 @@ validate_config() {
     
     log_info "Validating configuration..."
     
-    # Required variables
+    # Core: Endpoint is always required
     local required_vars=(
         "AZURE_OPENAI_ENDPOINT"
-        # "AZURE_OPENAI_API_KEY" <-- Now optional for Entra ID
-        "AZURE_OPENAI_DEPLOYMENT_NAME"
-        "AZURE_OPENAI_MODEL_ID"
     )
     
     for var in "${required_vars[@]}"; do
@@ -110,6 +107,30 @@ validate_config() {
         elif [[ "${!var}" == *"your-"* ]] || [[ "${!var}" == *"placeholder"* ]]; then
             log_error "Variable $var contains placeholder value: ${!var}"
             ((errors++))
+        else
+            log_success "✓ $var is configured"
+        fi
+    done
+
+    # Code model settings (Responses API - used by migration agents)
+    local code_vars=("AISETTINGS__DEPLOYMENTNAME" "AISETTINGS__MODELID")
+    for var in "${code_vars[@]}"; do
+        if [ -z "${!var}" ]; then
+            log_error "Required variable $var is not set (code model for migration agents)"
+            ((errors++))
+        elif [[ "${!var}" == *"your-"* ]] || [[ "${!var}" == *"placeholder"* ]]; then
+            log_error "Variable $var contains placeholder value: ${!var}"
+            ((errors++))
+        else
+            log_success "✓ $var is configured"
+        fi
+    done
+
+    # Chat model settings (optional - falls back to code model)
+    local chat_vars=("AISETTINGS__CHATDEPLOYMENTNAME" "AISETTINGS__CHATMODELID")
+    for var in "${chat_vars[@]}"; do
+        if [ -z "${!var}" ]; then
+            log_warning "$var is not set (will fall back to code model)"
         else
             log_success "✓ $var is configured"
         fi

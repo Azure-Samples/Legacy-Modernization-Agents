@@ -1,7 +1,7 @@
 # Legacy Modernization Agents - COBOL to Java/C# Migration
 
 This open source migration framework was developed to demonstrate AI Agents capabilities for converting legacy code like COBOL to Java or C# .NET. Each Agent has a persona that can be edited depending on the desired outcome.
-The migration is using Semantic Kernel Process Function where it does analysis of the COBOL code and it's dependencies. This information is then used to convert to either Java Quarkus or C# .NET (user's choice).
+The migration uses Microsoft Agent Framework with a dual-API architecture (Responses API + Chat Completions API) to analyze COBOL code and its dependencies, then convert to either Java Quarkus or C# .NET (user's choice).
 
 ## 🎬 Portal Demo
 
@@ -29,9 +29,9 @@ The migration is using Semantic Kernel Process Function where it does analysis o
 
 | Requirement | Version | Notes |
 |-------------|---------|-------|
-| **.NET SDK** | 9.0+ | [Download](https://dotnet.microsoft.com/download) |
+| **.NET SDK** | 10.0+ | [Download](https://dotnet.microsoft.com/download) |
 | **Docker Desktop** | Latest | Must be running for Neo4j |
-| **Azure OpenAI** | — | Endpoint + API Key |
+| **AI Endpoint** | — | Endpoint + API Key or via `az login` (see below) |
 
 ### Supported LLMs
 
@@ -72,8 +72,6 @@ MaxParallelJobs = ────────────────────�
                   TokensPerRequest × RequestsPerMinute
 ```
 <img width="1715" height="963" alt="Portal experience with metadata and graph data fronted by MCP" src="gifdemowithgraphandreportign.gif" />
-
-**Fully automated environment** with .NET 9, Java 17, Neo4j, SQLite, Azure CLI, and pre-configured VS Code extensions.
 
 **Where:**
 - **TPM** = Your Azure quota (tokens per minute)
@@ -147,7 +145,9 @@ cd Legacy-Modernization-Agents
 
 # 2. Configure Azure OpenAI
 cp Config/ai-config.local.env.example Config/ai-config.local.env
-# Edit: AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME
+# Edit: _MAIN_ENDPOINT (required), _CODE_MODEL / _CHAT_MODEL (optional)
+# Auth: use 'az login' (recommended) OR set _MAIN_API_KEY
+# See azlogin-auth-guide.md for Entra ID setup details
 
 # 3. Start Neo4j (dependency graph storage)
 docker-compose up -d neo4j
@@ -555,12 +555,12 @@ sequenceDiagram
 - ✅ Multi-run queries and comparisons
 - ✅ File content analysis with line counts
 - ✅ Comprehensive data retrieval guide
-- ✅ **NEW:** Enhanced dependency tracking (CALL, COPY, PERFORM, EXEC, READ, WRITE, OPEN, CLOSE)
-- ✅ **NEW:** Migration report generation per run
-- ✅ **NEW:** Mermaid diagram rendering in documentation
-- ✅ **NEW:** Collapsible filter sections for cleaner UI
-- ✅ **NEW:** Edge type filtering with color-coded visualization
-- ✅ **NEW:** Line number context for all dependencies
+- ✅ Enhanced dependency tracking (CALL, COPY, PERFORM, EXEC, READ, WRITE, OPEN, CLOSE)
+- ✅ Migration report generation per run
+- ✅ Mermaid diagram rendering in documentation
+- ✅ Collapsible filter sections for cleaner UI
+- ✅ Edge type filtering with color-coded visualization
+- ✅ Line number context for all dependencies
 
 ### 🔄 Agent Flowchart
 
@@ -644,7 +644,7 @@ sequenceDiagram
   - `DependencyMapperAgent` (seed data for relationships)
   - `CodeConverterAgent` (guides translation prompts)
 - **Interactions:**
-  - Uses Azure OpenAI via Semantic Kernel with concurrency guard (e.g., 3 AI calls at a time).
+  - Uses Azure OpenAI via `ResponsesApiClient` / `IChatClient` with concurrency guard.
   - Results persisted by `SqliteMigrationRepository`.
 
 #### BusinessLogicExtractorAgent
@@ -670,7 +670,7 @@ sequenceDiagram
   - `CobolAnalysis` per file
   - Target language settings (Quarkus vs. .NET)
   - Migration run metadata (for logging & metrics)
-- **Outputs:** `CodeFile` records saved under `output/java-output/` or `output/dotnet-output/`.
+- **Outputs:** `CodeFile` records saved under `output/java/` or `output/csharp/`.
 - **Interactions:**
   - Concurrency guards (pipeline slots vs. AI calls) ensure Azure OpenAI limits respected.
   - Results pushed to portal via repositories for browsing/download.
@@ -681,20 +681,13 @@ sequenceDiagram
 - Both values can be surfaced via CLI flags or environment variables to let `doctor.sh` tune runtime.
 
 ### 🔄 End-to-End Data Flow
-1. `doctor.sh run` → load configs → choose target language → optional reverse engineering skip.
-2. `ReverseEngineeringProcess` → discover files → analyze → extract business logic → emit markdown/glossary.
-3. `MigrationProcess` → analyze (reuse or fresh) → map dependencies → convert code → persist outputs.
-4. `HybridMigrationRepository` coordinates writes to SQLite (structured data) and Neo4j (graph edges).
-5. `McpServer` exposes data via MCP resources; `McpChatWeb` surfaces chat, graphs, reports.
-6. Portal and MCP clients display progress, allow queries, and fetch generated artifacts.
-
-1. **Source scanning** - Reads all `.cbl`/`.cpy` files from `source/`
-2. **Analysis** - CobolAnalyzerAgent extracts structure
-3. **Business logic** - BusinessLogicExtractorAgent generates documentation
-4. **Conversion** - JavaConverter or CSharpConverter generates target code
-5. **Dependencies** - DependencyMapperAgent maps relationships to Neo4j
-6. **Storage** - Metadata to SQLite, graphs to Neo4j
-7. **Portal** - Web UI queries both databases for full picture
+1. `doctor.sh run` → load configs → choose target language
+2. **Source scanning** - Reads all `.cbl`/`.cpy` files from `source/`
+3. **Analysis** - `CobolAnalyzerAgent` extracts structure; `BusinessLogicExtractorAgent` generates documentation
+4. **Dependencies** - `DependencyMapperAgent` maps CALL/COPY/PERFORM relationships → Neo4j
+5. **Conversion** - `JavaConverterAgent` or `CSharpConverterAgent` generates target code → `output/`
+6. **Storage** - `HybridMigrationRepository` writes metadata to SQLite, graph edges to Neo4j
+7. **Portal** - `McpChatWeb` surfaces chat, graphs, and reports at http://localhost:5028
 
 ---
 
@@ -738,11 +731,6 @@ dotnet build
 ```bash
 ./doctor.sh portal   # Opens http://localhost:5028
 ```
-
-### Portal Features
-- **Left panel**: MCP resources list
-- **Center panel**: AI chat (ask about your COBOL)
-- **Right panel**: Interactive dependency graph
 
 ---
 
@@ -799,27 +787,6 @@ The `load-config.sh` script:
 3. Exports all values as environment variables
 4. .NET app reads these env vars, which override `appsettings.json`
 
-#### Example: Changing Models
-
-To use different models, you have two options:
-
-**Option A: Edit appsettings.json** (for non-secret changes)
-```json
-{
-  "AISettings": {
-    "ModelId": "gpt-5.1-codex-mini",
-    "ChatModelId": "gpt-5.2-chat"
-  }
-}
-```
-
-**Option B: Override via ai-config.local.env** (takes precedence)
-```bash
-# In Config/ai-config.local.env
-_CODE_MODEL="gpt-5.1-codex-mini"
-_CHAT_MODEL="gpt-5.2-chat"
-```
-
 #### Quick Reference: Key Settings
 
 | Setting | appsettings.json Location | .env Override |
@@ -841,12 +808,16 @@ In `Config/ai-config.local.env`:
 ```bash
 # Master Configuration
 _MAIN_ENDPOINT="https://YOUR-RESOURCE.openai.azure.com/"
-_MAIN_API_KEY="your key"
+_MAIN_API_KEY="your key"   # Leave empty to use 'az login' (Entra ID) instead
 
-# Model Selection
+# Model Selection (override appsettings.json)
 _CHAT_MODEL="gpt-5.2-chat"           # For Portal Q&A
 _CODE_MODEL="gpt-5.1-codex-mini"     # For Code Conversion
 ```
+
+> 💡 **Prefer keyless auth?** Run `az login` and leave `_MAIN_API_KEY` empty.
+> You need the **"Cognitive Services OpenAI User"** role on your Azure OpenAI resource.
+> See [Azure AD / Entra ID Authentication Guide](azlogin-auth-guide.md) for full instructions.
 
 ### Neo4j (Dependency Graphs)
 
@@ -868,16 +839,7 @@ Start with: `docker-compose up -d neo4j`
 
 ### Smart Chunking (Large Files)
 
-For files >150K characters or >3K lines:
-```json
-{
-  "ChunkingSettings": {
-    "EnableChunking": true,
-    "MaxLinesPerChunk": 1500,
-    "MaxParallelChunks": 3
-  }
-}
-```
+See [Parallel Jobs Formula](#parallel-jobs-formula) for chunking configuration details.
 
 ---
 
@@ -903,7 +865,7 @@ For files >150K characters or >3K lines:
 | Issue | Solution |
 |-------|----------|
 | Neo4j connection refused | `docker-compose up -d neo4j` |
-| Azure API error | Check `Config/ai-config.local.env` credentials |
+| Azure API error | Check `Config/ai-config.local.env` credentials or run `az login` |
 | No output generated | Ensure COBOL files are in `source/` |
 | Portal won't start | `lsof -ti :5028 \| xargs kill -9` then retry |
 
@@ -911,10 +873,8 @@ For files >150K characters or >3K lines:
 
 ## 📚 Further Reading
 
-- [Smart Chunking Guide](gustav-Smart-chuncking%20how%20it%20works.md) - Deep technical details
-- [Architecture Documentation](REVERSE_ENGINEERING_ARCHITECTURE.md) - System design
-- [Features](FEATURES.md) - Full feature list
-- [Spec-Driven Roadmap](TODO.md) - Future plans for MITM workflow
+- [Smart Chunking Guide](docs/Smart-chuncking-how%20it-works.md) - Deep technical details
+- [Architecture Documentation](docs/REVERSE_ENGINEERING_ARCHITECTURE.md) - System design
 - [Changelog](CHANGELOG.md) - Version history
 
 ---
