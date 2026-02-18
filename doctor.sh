@@ -1367,6 +1367,9 @@ select_speed_profile() {
             export CODEX_HIGH_REASONING_EFFORT="medium"
             export CODEX_MAX_OUTPUT_TOKENS="32768"
             export CODEX_MIN_OUTPUT_TOKENS="16384"
+            export CODEX_LOW_MULTIPLIER="1.0"
+            export CODEX_MEDIUM_MULTIPLIER="1.5"
+            export CODEX_HIGH_MULTIPLIER="2.0"
             export CODEX_STAGGER_DELAY_MS="500"
             export CODEX_MAX_PARALLEL_CONVERSION="3"
             ;;

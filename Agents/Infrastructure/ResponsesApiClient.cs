@@ -85,8 +85,9 @@ public class ResponsesApiClient : IDisposable
         @"EXEC\s+(SQL|DLI)\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     // Regex to identify COBOL noise lines (blanks, comments, compiler directives)
+    // Uses fixed-format column positions: col 7 = indicator area, cols 1-6 = sequence number area
     private static readonly Regex NoiseLineRegex = new(
-        @"^\s*$|^.{6}\*|^\s*\*>|^\s*(CBL|PROCESS|EJECT|SKIP1|SKIP2|SKIP3)\b",
+        @"^\s*$|^.{6}\*|^.{0,5}\*>|^.{7}\s*(CBL|PROCESS|EJECT|SKIP1|SKIP2|SKIP3)\b",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     // Pre-compiled config-driven indicator regexes (built at construction)

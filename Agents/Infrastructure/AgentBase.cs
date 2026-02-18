@@ -435,7 +435,7 @@ public abstract class AgentBase
     /// Paragraph headers are identified as lines that start in Area A (cols 8-11) and end with a period.
     /// </summary>
     private static readonly Regex CobolBoundaryRegex = new(
-        @"^\s{0,3}\S.*\b(DIVISION|SECTION)\b|^       \S[\w-]+\.\s*$",
+        @"^\s{0,3}\S.*\b(DIVISION|SECTION)\b|^\s{7}\S[\w-]+\.\s*$",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     /// <summary>
