@@ -357,6 +357,134 @@ load_configuration() {
     fi
 }
 
+# Verify that configured model deployments exist on the Azure OpenAI resource
+check_model_deployments() {
+    echo ""
+    echo -e "${BLUE}🤖 Verifying Model Deployments${NC}"
+    echo "================================="
+
+    local endpoint="${AZURE_OPENAI_ENDPOINT}"
+    local api_key="${AZURE_OPENAI_API_KEY}"
+    local has_api_key=false
+    local token=""
+
+    # Determine auth method
+    if [[ -n "$api_key" ]] && [[ "$api_key" != *"your-"* ]] && [[ "$api_key" != *"placeholder"* ]] && [[ "$api_key" != *"key-placeholder"* ]]; then
+        has_api_key=true
+    fi
+
+    if [[ "$has_api_key" == false ]]; then
+        if command -v az >/dev/null 2>&1 && az account show >/dev/null 2>&1; then
+            token=$(az account get-access-token --resource "https://cognitiveservices.azure.com" --query "accessToken" -o tsv 2>/dev/null)
+            if [[ -z "$token" ]]; then
+                echo -e "  ${YELLOW}⚠️  Could not obtain Azure AD token, skipping deployment check${NC}"
+                return 0
+            fi
+        else
+            echo -e "  ${YELLOW}⚠️  No auth available, skipping deployment check${NC}"
+            return 0
+        fi
+    fi
+
+    # Collect unique deployment names and their roles
+    local code_deploy="${AISETTINGS__DEPLOYMENTNAME}"
+    local chat_deploy="${AISETTINGS__CHATDEPLOYMENTNAME}"
+
+    # Build parallel arrays (bash 3 compatible, no associative arrays)
+    local deploy_names=""
+    local deploy_roles=""
+
+    if [[ -n "$code_deploy" ]]; then
+        deploy_names="$code_deploy"
+        deploy_roles="code model (migration agents)"
+    fi
+    if [[ -n "$chat_deploy" ]] && [[ "$chat_deploy" != "$code_deploy" ]]; then
+        deploy_names="${deploy_names}|${chat_deploy}"
+        deploy_roles="${deploy_roles}|chat model (portal & reports)"
+    elif [[ -n "$chat_deploy" ]] && [[ -n "$deploy_roles" ]]; then
+        deploy_roles="${deploy_roles} + chat model"
+    fi
+
+    if [[ -z "$deploy_names" ]]; then
+        echo -e "  ${YELLOW}⚠️  No deployment names configured, skipping check${NC}"
+        return 0
+    fi
+
+    local all_ok=true
+    local api_version="2024-06-01"
+    local idx=0
+
+    IFS='|' read -ra _deploy_arr <<< "$deploy_names"
+    IFS='|' read -ra _role_arr <<< "$deploy_roles"
+
+    for deploy_name in "${_deploy_arr[@]}"; do
+        local role="${_role_arr[$idx]}"
+        idx=$((idx + 1))
+
+        # Use a lightweight inference probe: POST a minimal (invalid) chat completion.
+        # This only needs inference-level RBAC permissions.
+        # Expected: 400 = deployment exists, 404 = not found, 200 = also exists.
+        local test_url="${endpoint%/}/openai/deployments/${deploy_name}/chat/completions?api-version=${api_version}"
+        local tmp_resp
+        tmp_resp=$(mktemp)
+        local curl_args=("-s" "-o" "$tmp_resp" "-w" "%{http_code}" "--connect-timeout" "10" "--max-time" "15")
+        local http_status=""
+        local post_body='{"messages":[],"max_tokens":1}'
+
+        if [[ "$has_api_key" == true ]]; then
+            http_status=$(curl "${curl_args[@]}" -X POST -H "api-key: $api_key" -H "Content-Type: application/json" -d "$post_body" "$test_url" 2>/dev/null)
+        else
+            http_status=$(curl "${curl_args[@]}" -X POST -H "Authorization: Bearer $token" -H "Content-Type: application/json" -d "$post_body" "$test_url" 2>/dev/null)
+        fi
+
+        local body
+        body=$(cat "$tmp_resp" 2>/dev/null)
+        rm -f "$tmp_resp"
+
+        # 400 = deployment exists but our dummy request is invalid (expected)
+        # 200 = deployment exists and responded
+        # 404 = deployment truly not found
+        if [[ "$http_status" == "200" ]] || [[ "$http_status" == "400" ]]; then
+            echo -e "  ${GREEN}✅ Deployment '${deploy_name}' exists${NC} (${role})"
+        elif [[ "$http_status" == "404" ]]; then
+            # Check error code to distinguish "deployment not found" from "endpoint not found"
+            local error_code=""
+            if command -v jq >/dev/null 2>&1; then
+                error_code=$(echo "$body" | jq -r '(.error.code // empty)' 2>/dev/null)
+            fi
+            if [[ "$error_code" == "DeploymentNotFound" ]]; then
+                echo -e "  ${RED}❌ Deployment '${deploy_name}' NOT FOUND${NC} (${role})"
+                echo -e "     ${YELLOW}Create this deployment in the Azure portal or update the name in Config/ai-config.local.env${NC}"
+                all_ok=false
+            else
+                echo -e "  ${RED}❌ Deployment '${deploy_name}' NOT FOUND (HTTP 404)${NC} (${role})"
+                echo -e "     ${YELLOW}Create this deployment in the Azure portal or update the name in Config/ai-config.local.env${NC}"
+                all_ok=false
+            fi
+        elif [[ "$http_status" == "429" ]]; then
+            echo -e "  ${GREEN}✅ Deployment '${deploy_name}' exists${NC} (${role}) ${YELLOW}(rate limited)${NC}"
+        else
+            local error_msg=""
+            if command -v jq >/dev/null 2>&1; then
+                error_msg=$(echo "$body" | jq -r '(.error.message // .error.code // empty)' 2>/dev/null)
+            fi
+            echo -e "  ${YELLOW}⚠️  Deployment '${deploy_name}' check returned HTTP ${http_status}${NC} (${role})"
+            if [[ -n "$error_msg" ]]; then
+                echo -e "     ${YELLOW}Error: $error_msg${NC}"
+            fi
+        fi
+    done
+
+    echo ""
+    if [[ "$all_ok" == false ]]; then
+        echo -e "  ${RED}❌ One or more model deployments are missing.${NC}"
+        echo -e "  ${YELLOW}Fix: Verify deployment names in Config/ai-config.local.env match your Azure OpenAI resource.${NC}"
+        return 1
+    fi
+
+    return 0
+}
+
 # Pre-check: verify AI connectivity via API key or Azure AD (Entra ID) auth
 check_ai_connectivity() {
     echo ""
@@ -495,6 +623,12 @@ check_ai_connectivity() {
     fi
 
     echo ""
+
+    # Verify model deployments exist
+    if ! check_model_deployments; then
+        return 1
+    fi
+
     return 0
 }
 
@@ -1137,6 +1271,15 @@ run_test() {
         echo -e "${YELLOW}⚠️  Partial smart chunking support ($chunking_components/$chunking_total components)${NC}"
     else
         echo -e "${YELLOW}⚠️  Smart chunking infrastructure not found${NC}"
+    fi
+
+    # Verify model deployments
+    echo ""
+    echo "Checking model deployments..."
+    if load_configuration >/dev/null 2>&1 && load_ai_config >/dev/null 2>&1; then
+        check_model_deployments
+    else
+        echo -e "${YELLOW}⚠️  Could not load config to verify deployments${NC}"
     fi
 
     echo ""
