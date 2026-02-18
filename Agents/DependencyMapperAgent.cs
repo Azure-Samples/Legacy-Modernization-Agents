@@ -128,23 +128,15 @@ public class DependencyMapperAgent : AgentBase, IDependencyMapperAgent
 
         try
         {
-            var systemPrompt = @"
-You are an expert in creating Mermaid diagrams for software architecture visualization. 
-Create a clear, well-organized Mermaid flowchart for COBOL program dependencies.
-Return only the Mermaid diagram code, no additional text.
-";
+            var systemPrompt = PromptLoader.LoadSection("DependencyMapper", "MermaidSystem");
 
-            var userPrompt = $@"
-Create a Mermaid diagram for the following COBOL dependency structure:
-
-Programs and their copybook dependencies:
-{string.Join("\n", dependencyMap.CopybookUsage.Select(kv => $"- {kv.Key}: {string.Join(", ", kv.Value)}"))}
-
-Dependency relationships:
-{string.Join("\n", dependencyMap.Dependencies.Select(d => $"- {d.SourceFile} → {d.TargetFile} ({d.DependencyType})"))}
-
-Total: {dependencyMap.Metrics.TotalPrograms} programs, {dependencyMap.Metrics.TotalCopybooks} copybooks
-";
+            var userPrompt = PromptLoader.LoadSection("DependencyMapper", "MermaidUser", new Dictionary<string, string>
+            {
+                ["CopybookUsage"] = string.Join("\n", dependencyMap.CopybookUsage.Select(kv => $"- {kv.Key}: {string.Join(", ", kv.Value)}")),
+                ["Dependencies"] = string.Join("\n", dependencyMap.Dependencies.Select(d => $"- {d.SourceFile} → {d.TargetFile} ({d.DependencyType})")),
+                ["TotalPrograms"] = dependencyMap.Metrics.TotalPrograms.ToString(),
+                ["TotalCopybooks"] = dependencyMap.Metrics.TotalCopybooks.ToString()
+            });
 
             var mermaidDiagram = await ExecuteChatCompletionAsync(systemPrompt, userPrompt, "dependency-diagram");
             mermaidDiagram = mermaidDiagram.Replace("```mermaid", "").Replace("```", "").Trim();
@@ -398,28 +390,17 @@ Total: {dependencyMap.Metrics.TotalPrograms} programs, {dependencyMap.Metrics.To
             // Perform AI-powered analysis for additional insights
             if (cobolFiles.Any())
             {
-                var systemPrompt = @"
-You are an expert COBOL dependency analyzer. Analyze the provided COBOL code structure and identify:
-1. Data flow dependencies between copybooks
-2. Potential circular dependencies
-3. Modularity recommendations
-Provide a brief analysis.
-";
+                var systemPrompt = PromptLoader.LoadSection("DependencyMapper", "AnalysisSystem");
 
                 var fileStructure = string.Join("\n", cobolFiles.Take(5).Select(f =>
                     $"File: {f.FileName}\nType: {(f.FileName.EndsWith(".cbl") ? "Program" : "Copybook")}\nSize: {f.Content.Length} chars"));
 
-                var userPrompt = $@"
-Analyze the dependency structure of this COBOL project:
-
-{fileStructure}
-
-Copybook usage patterns:
-{string.Join("\n", dependencyMap.CopybookUsage.Take(10).Select(kvp =>
-    $"{kvp.Key} uses: {string.Join(", ", kvp.Value)}"))}
-
-Provide insights about the dependency architecture.
-";
+                var userPrompt = PromptLoader.LoadSection("DependencyMapper", "AnalysisUser", new Dictionary<string, string>
+                {
+                    ["FileStructure"] = fileStructure,
+                    ["CopybookUsagePatterns"] = string.Join("\n", dependencyMap.CopybookUsage.Take(10).Select(kvp =>
+                        $"{kvp.Key} uses: {string.Join(", ", kvp.Value)}"))
+                });
 
                 var insights = await ExecuteChatCompletionAsync(systemPrompt, userPrompt, "dependency-analysis");
                 dependencyMap.AnalysisInsights = insights;
