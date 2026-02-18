@@ -160,7 +160,7 @@ public class ResponsesApiClient : IDisposable
                 var regex = new Regex(indicator.Pattern, RegexOptions.Compiled | RegexOptions.IgnoreCase);
                 _compiledIndicators.Add((regex, indicator.Weight));
             }
-            catch (RegexParseException ex)
+            catch (ArgumentException ex)
             {
                 _logger?.LogWarning("Invalid complexity indicator regex '{Pattern}': {Error}",
                     indicator.Pattern, ex.Message);
