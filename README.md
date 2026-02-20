@@ -155,7 +155,7 @@ This project uses **Microsoft Agent Framework** (`Microsoft.Agents.AI.*`), **not
 git clone https://github.com/Azure-Samples/Legacy-Modernization-Agents.git
 cd Legacy-Modernization-Agents
 
-# 2. Configure Azure OpenAI
+# 2. Configure Azure OpenAI connection
 cp Config/ai-config.env.example Config/ai-config.local.env
 # Edit: _MAIN_ENDPOINT (required), _CODE_MODEL / _CHAT_MODEL (optional)
 # Auth: use 'az login' (recommended) OR set _MAIN_API_KEY
@@ -165,7 +165,7 @@ cp Config/ai-config.env.example Config/ai-config.local.env
 docker-compose up -d neo4j
 
 # 4. Build
-dotnet build .\LegacyModernizationAgents.sln
+dotnet build .\Legacy-Modernization-Agents.sln
 ```
 
 # 5. Run migration but we recommend using the next section with doctor.sh run or portal for just loading the portal
