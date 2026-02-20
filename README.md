@@ -707,7 +707,7 @@ flowchart TD
     class AE,AF,AG,AH,AI,AJ process
 ```
 
-> For detailed ASCII diagrams, constants reference tables, and complexity scoring indicator weights, see [smart-chunking-architecture.md](smart-chunking-architecture.md).
+> For detailed ASCII diagrams, constants reference tables, and complexity scoring indicator weights, see [smart-chunking-architecture.md](docs/smart-chunking-architecture.md).
 
 ---
 
@@ -1022,7 +1022,7 @@ See [Parallel Jobs Formula](#parallel-jobs-formula) for chunking configuration d
 
 ## 📚 Further Reading
 
-- [Smart Chunking & Token Architecture](smart-chunking-architecture.md) - Full diagrams, constants reference, and complexity scoring details
+- [Smart Chunking & Token Architecture](docs/smart-chunking-architecture.md) - Full diagrams, constants reference, and complexity scoring details
 - [Smart Chunking Guide](Smart-chuncking-how%20it-works.md) - Deep technical details
 - [Architecture Documentation](REVERSE_ENGINEERING_ARCHITECTURE.md) - System design
 - [Changelog](CHANGELOG.md) - Version history
