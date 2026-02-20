@@ -51,7 +51,7 @@ builder.Services.PostConfigure<McpOptions>(options =>
 
 	if (string.IsNullOrWhiteSpace(options.AssemblyPath))
 	{
-		var candidateFrameworks = new[] { "net9.0", "net8.0" };
+		var candidateFrameworks = new[] { "net10.0", "net9.0", "net8.0" };
 		foreach (var framework in candidateFrameworks)
 		{
 			var candidate = Path.Combine(repoRoot, "bin", buildConfiguration, framework, "CobolToQuarkusMigration.dll");
