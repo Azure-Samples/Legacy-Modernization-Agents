@@ -11,8 +11,8 @@ on:
 
 permissions:
   contents: read
-  issues: write
-  pull-requests: write
+  issues: read
+  pull-requests: read
 
 tracker-id: documentation-updater
 engine: copilot
@@ -34,6 +34,15 @@ tools:
     - "grep -r '*' docs"
     - "git"
 
+safe-outputs:
+  create-issue:
+    title-prefix: "[docs] "
+    labels: [documentation]
+    close-older-issues: true
+    max: 2
+  add-comment:
+    max: 2
+
 timeout-minutes: 45
 ---
 
@@ -51,7 +60,10 @@ This workflow is triggered in three scenarios. You **must** determine which scen
 | `pull_request` `opened` or `synchronize` | PR is open against `main` | **Flow B** |
 | `pull_request` `closed` with `merged == true` | PR was just merged into `main` | **Flow C → Flow A** |
 
-Use the event context (`${{ github.event_name }}`, `${{ github.event.action }}`, `${{ github.event.pull_request.merged }}`) to determine the active flow.
+Use the event context to determine the active flow:
+- If `${{ github.event.pull_request.number }}` is empty/unset, this is a **push** event → **Flow A**
+- If `${{ github.event.pull_request.number }}` is set and `${{ github.event.pull_request.state }}` is `open`, this is a PR opened/updated → **Flow B**
+- If `${{ github.event.pull_request.number }}` is set and `${{ github.event.pull_request.state }}` is `closed`, this is a merged PR → **Flow C → Flow A**
 
 ---
 
@@ -66,10 +78,8 @@ Use the event context (`${{ github.event_name }}`, `${{ github.event.action }}`,
 3. **Check documentation** (see [Documentation Check Process](#documentation-check-process) below).
 4. **If documentation is up to date**: Exit gracefully. No action needed.
 5. **If documentation is outdated or missing**:
-   - **Open a GitHub issue** using `create_issue` with:
-     - **Title**: `[docs] Documentation update needed for push to main by @${{ github.actor }}`
-     - **Labels**: `documentation`
-     - **Assignee**: `${{ github.actor }}`
+   - **Request issue creation** via safe-output with:
+     - **Title**: `Documentation update needed for push to main by @${{ github.actor }}`
      - **Body**: Include a summary of what code changed, which documentation is missing or outdated, and specific suggestions for what should be documented. Reference the commit SHAs.
 
 ---
@@ -84,7 +94,7 @@ Use the event context (`${{ github.event_name }}`, `${{ github.event.action }}`,
 2. **Check documentation** (see [Documentation Check Process](#documentation-check-process) below).
 3. **If documentation is up to date**: Leave a short nice and approving comment on the PR confirming docs look good, and exit gracefully.
 4. **If documentation is outdated or missing**:
-   - **Comment on the PR** using `create_issue_comment` (on the PR number) with:
+   - **Request a comment** on the PR via safe-output with:
      - A clear summary of which documentation is missing or outdated
      - Specific suggestions for what should be documented and where
      - A checklist the author can follow to fix the gaps before merging
@@ -102,10 +112,8 @@ Use the event context (`${{ github.event_name }}`, `${{ github.event.action }}`,
 2. **Check documentation** (see [Documentation Check Process](#documentation-check-process) below).
 3. **If documentation is up to date**: Exit gracefully. The author addressed any earlier feedback.
 4. **If documentation is still outdated or missing**:
-   - **Escalate to Flow A**: Open a GitHub issue using `create_issue` with:
-     - **Title**: `[docs] Documentation update needed after merge of PR #${{ github.event.pull_request.number }}`
-     - **Labels**: `documentation`
-     - **Assignee**: `${{ github.actor }}` (the user who merged the PR)
+   - **Escalate to Flow A**: Request issue creation via safe-output with:
+     - **Title**: `Documentation update needed after merge of PR #${{ github.event.pull_request.number }}`
      - **Body**: Include a summary of the merged PR, what documentation is missing, and specific suggestions. Reference the PR number.
 
 ---
@@ -175,8 +183,9 @@ A change does **not** require documentation updates if:
 
 ## Important Notes
 
-- You have access to GitHub tools to search and review code changes, create issues, and comment on PRs
+- You have access to GitHub tools to search and review code changes
 - You have access to bash commands to explore the documentation structure
+- Issues and PR comments are created via safe-outputs — you do **not** have direct write permissions
 - You do **not** have the edit tool — your job is to notify, not to fix
 - Always read the documentation instructions before analyzing
 - Focus on user-facing features and changes that affect the developer experience
