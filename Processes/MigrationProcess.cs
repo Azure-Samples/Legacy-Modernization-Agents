@@ -126,6 +126,17 @@ public class MigrationProcess
     }
 
     /// <summary>
+    /// Sets the business logic context extracted during reverse engineering so that
+    /// the converter agents can inject it into their conversion prompts.
+    /// Must be called after <see cref="InitializeAgents"/>.
+    /// </summary>
+    /// <param name="businessLogicExtracts">Per-file business logic from reverse engineering.</param>
+    public void SetBusinessLogicContext(List<BusinessLogic> businessLogicExtracts)
+    {
+        _codeConverterAgent?.SetBusinessLogicContext(businessLogicExtracts);
+    }
+
+    /// <summary>
     /// Runs the migration process.
     /// </summary>
     /// <param name="cobolSourceFolder">The folder containing COBOL source files.</param>

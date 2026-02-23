@@ -583,6 +583,9 @@ internal static class Program
                 await migrationRepository.CleanupStaleRunsAsync();
             }
 
+            // Holds business logic extracted during reverse engineering to be passed into migration
+            ReverseEngineeringResult? reverseEngResultForMigration = null;
+
             // Step 1: Run reverse engineering if requested (and not skipped)
             if (!skipReverseEngineering || reverseEngineerOnly)
             {
@@ -678,6 +681,9 @@ internal static class Program
                     logger.LogError("Reverse engineering failed: {Error}", reverseEngResult.ErrorMessage);
                     Environment.Exit(1);
                 }
+
+                // Store reverse engineering result so migration can use the extracted business logic
+                reverseEngResultForMigration = reverseEngResult;
 
                 // If reverse-engineer-only mode, exit here
                 if (reverseEngineerOnly)
@@ -781,7 +787,8 @@ internal static class Program
                     {
                         Console.WriteLine($"{status} - {current}/{total}");
                     },
-                    existingRunId: resumeRunId);
+                    existingRunId: resumeRunId,
+                    businessLogicExtracts: reverseEngResultForMigration?.BusinessLogicExtracts);
 
                 Console.WriteLine("Migration process completed successfully.");
                 Console.WriteLine($"  📊 Stats: {migrationStats.TotalFiles} files ({migrationStats.DirectFiles} direct, {migrationStats.ChunkedFiles} chunked)");

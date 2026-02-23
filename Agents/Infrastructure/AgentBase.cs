@@ -811,4 +811,49 @@ ADAPTIVE RE-CHUNK INSTRUCTIONS (PART 2 of 2):
 
         return merged;
     }
+
+    /// <summary>
+    /// Formats a <see cref="BusinessLogic"/> object as a concise text block suitable for injection
+    /// into AI conversion prompts. Shared by all converter agents.
+    /// </summary>
+    /// <param name="businessLogic">The business logic extracted during reverse engineering.</param>
+    /// <returns>A formatted string describing the business logic context.</returns>
+    protected static string FormatBusinessLogicContext(BusinessLogic businessLogic)
+    {
+        var sb = new StringBuilder();
+        if (!string.IsNullOrWhiteSpace(businessLogic.BusinessPurpose))
+        {
+            sb.AppendLine($"Purpose: {businessLogic.BusinessPurpose}");
+        }
+        if (businessLogic.BusinessRules.Count > 0)
+        {
+            sb.AppendLine("Business Rules:");
+            foreach (var rule in businessLogic.BusinessRules)
+            {
+                sb.AppendLine($"- {rule.Description}");
+                if (!string.IsNullOrWhiteSpace(rule.Condition))
+                    sb.AppendLine($"  Condition: {rule.Condition}");
+                if (!string.IsNullOrWhiteSpace(rule.Action))
+                    sb.AppendLine($"  Action: {rule.Action}");
+            }
+        }
+        if (businessLogic.Features.Count > 0)
+        {
+            sb.AppendLine("Features:");
+            foreach (var feature in businessLogic.Features)
+            {
+                sb.AppendLine($"- {feature.Name}: {feature.Description}");
+            }
+        }
+        if (businessLogic.UserStories.Count > 0)
+        {
+            sb.AppendLine("Feature Descriptions:");
+            foreach (var story in businessLogic.UserStories)
+            {
+                sb.AppendLine($"- {story.Title}: {story.Action}");
+            }
+        }
+        sb.AppendLine();
+        return sb.ToString();
+    }
 }

@@ -127,6 +127,17 @@ public class ChunkedMigrationProcess
     }
 
     /// <summary>
+    /// Sets the business logic context extracted during reverse engineering so that
+    /// the chunk-aware converter can inject it into its conversion prompts.
+    /// Must be called after <see cref="InitializeAgents"/>.
+    /// </summary>
+    /// <param name="businessLogicExtracts">Per-file business logic from reverse engineering.</param>
+    public void SetBusinessLogicContext(List<BusinessLogic> businessLogicExtracts)
+    {
+        _chunkAwareConverter?.SetBusinessLogicContext(businessLogicExtracts);
+    }
+
+    /// <summary>
     /// Runs the chunked migration process.
     /// </summary>
     public async Task RunAsync(

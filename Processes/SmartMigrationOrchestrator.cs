@@ -76,11 +76,18 @@ public class SmartMigrationOrchestrator
     /// <summary>
     /// Runs the smart migration, automatically routing files to the appropriate process.
     /// </summary>
+    /// <param name="cobolSourceFolder">The folder containing COBOL source files.</param>
+    /// <param name="outputFolder">The folder for output files.</param>
+    /// <param name="progressCallback">Optional callback for progress reporting.</param>
+    /// <param name="existingRunId">Optional run ID to resume.</param>
+    /// <param name="businessLogicExtracts">Optional business logic extracted during reverse engineering to guide conversion.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
     public async Task<MigrationStats> RunAsync(
         string cobolSourceFolder,
         string outputFolder,
         Action<string, int, int>? progressCallback = null,
         int? existingRunId = null,
+        List<BusinessLogic>? businessLogicExtracts = null,
         CancellationToken cancellationToken = default)
     {
         var stats = new MigrationStats();
@@ -135,6 +142,7 @@ public class SmartMigrationOrchestrator
                 stats,
                 progressCallback,
                 existingRunId,
+                businessLogicExtracts,
                 cancellationToken);
         }
         else if (smallFiles.Count > 0)
@@ -147,7 +155,8 @@ public class SmartMigrationOrchestrator
                 cobolSourceFolder, 
                 outputFolder, 
                 progressCallback,
-                existingRunId);
+                existingRunId,
+                businessLogicExtracts);
             
             stats.DirectFiles = smallFiles.Count;
         }
@@ -226,6 +235,7 @@ public class SmartMigrationOrchestrator
         MigrationStats stats,
         Action<string, int, int>? progressCallback,
         int? existingRunId,
+        List<BusinessLogic>? businessLogicExtracts,
         CancellationToken cancellationToken)
     {
         _enhancedLogger.ShowSectionHeader(
@@ -242,6 +252,11 @@ public class SmartMigrationOrchestrator
             _migrationRepository);
 
         chunkedProcess.InitializeAgents();
+
+        if (businessLogicExtracts != null && businessLogicExtracts.Count > 0)
+        {
+            chunkedProcess.SetBusinessLogicContext(businessLogicExtracts);
+        }
 
         await chunkedProcess.RunAsync(
             cobolSourceFolder,
@@ -264,7 +279,8 @@ public class SmartMigrationOrchestrator
         string cobolSourceFolder,
         string outputFolder,
         Action<string, int, int>? progressCallback,
-        int? existingRunId = null)
+        int? existingRunId = null,
+        List<BusinessLogic>? businessLogicExtracts = null)
     {
         _enhancedLogger.ShowSectionHeader(
             "⚡ DIRECT MIGRATION PROCESS",
@@ -279,6 +295,11 @@ public class SmartMigrationOrchestrator
             _migrationRepository);
 
         migrationProcess.InitializeAgents();
+
+        if (businessLogicExtracts != null && businessLogicExtracts.Count > 0)
+        {
+            migrationProcess.SetBusinessLogicContext(businessLogicExtracts);
+        }
 
         await migrationProcess.RunAsync(
             cobolSourceFolder,
