@@ -106,6 +106,13 @@ internal static class Program
         skipReverseEngineeringOption.AddAlias("-skip-re");
         rootCommand.AddOption(skipReverseEngineeringOption);
 
+        var reuseReOption = new Option<bool>("--reuse-re", () => false, "When combined with --skip-reverse-engineering, loads business logic persisted from the latest previous RE run and injects it into the conversion prompts")
+        {
+            Arity = ArgumentArity.ZeroOrOne
+        };
+        reuseReOption.AddAlias("-reuse-re");
+        rootCommand.AddOption(reuseReOption);
+
         var configOption = new Option<string>("--config", () => "Config/appsettings.json", "Path to the configuration file")
         {
             Arity = ArgumentArity.ZeroOrOne
@@ -129,10 +136,10 @@ internal static class Program
         var reverseEngineerCommand = BuildReverseEngineerCommand(loggerFactory, fileHelper, settingsHelper);
         rootCommand.AddCommand(reverseEngineerCommand);
 
-        rootCommand.SetHandler(async (string cobolSource, string javaOutput, string reverseEngineerOutput, bool reverseEngineerOnly, bool skipReverseEngineering, string configPath, bool resume) =>
+        rootCommand.SetHandler(async (string cobolSource, string javaOutput, string reverseEngineerOutput, bool reverseEngineerOnly, bool skipReverseEngineering, bool reuseRe, string configPath, bool resume) =>
         {
-            await RunMigrationAsync(loggerFactory, logger, fileHelper, settingsHelper, cobolSource, javaOutput, reverseEngineerOutput, reverseEngineerOnly, skipReverseEngineering, configPath, resume);
-        }, cobolSourceOption, javaOutputOption, reverseEngineerOutputOption, reverseEngineerOnlyOption, skipReverseEngineeringOption, configOption, resumeOption);
+            await RunMigrationAsync(loggerFactory, logger, fileHelper, settingsHelper, cobolSource, javaOutput, reverseEngineerOutput, reverseEngineerOnly, skipReverseEngineering, reuseRe, configPath, resume);
+        }, cobolSourceOption, javaOutputOption, reverseEngineerOutputOption, reverseEngineerOnlyOption, skipReverseEngineeringOption, reuseReOption, configOption, resumeOption);
 
         return rootCommand;
     }
@@ -446,7 +453,7 @@ internal static class Program
         }
     }
 
-    private static async Task RunMigrationAsync(ILoggerFactory loggerFactory, ILogger logger, FileHelper fileHelper, SettingsHelper settingsHelper, string cobolSource, string javaOutput, string reverseEngineerOutput, bool reverseEngineerOnly, bool skipReverseEngineering, string configPath, bool resume)
+    private static async Task RunMigrationAsync(ILoggerFactory loggerFactory, ILogger logger, FileHelper fileHelper, SettingsHelper settingsHelper, string cobolSource, string javaOutput, string reverseEngineerOutput, bool reverseEngineerOnly, bool skipReverseEngineering, bool reuseRe, string configPath, bool resume)
     {
         try
         {
@@ -622,6 +629,15 @@ internal static class Program
                     chunkingOrchestrator: chunkingOrchestrator,
                     settings: settings);
 
+                // DependencyMapperAgent uses ResponsesApiClient (codex for dependency analysis)
+                var dependencyMapperAgent = new DependencyMapperAgent(
+                    responsesApiClient,
+                    loggerFactory.CreateLogger<DependencyMapperAgent>(),
+                    settings.AISettings.DependencyMapperModelId ?? settings.AISettings.CobolAnalyzerModelId,
+                    enhancedLogger,
+                    chatLogger,
+                    settings: settings);
+
                 // Smart routing: check for large files to decide between chunked vs direct RE
                 var cobolFiles = await fileHelper.ScanDirectoryForCobolFilesAsync(settings.ApplicationSettings.CobolSourceFolder);
                 var hasLargeFiles = cobolFiles.Any(f => 
@@ -640,12 +656,14 @@ internal static class Program
                     var chunkedREProcess = new ChunkedReverseEngineeringProcess(
                         cobolAnalyzerAgent,
                         businessLogicExtractorAgent,
+                        dependencyMapperAgent,
                         fileHelper,
                         settings.ChunkingSettings,
                         chunkingOrchestrator,
                         loggerFactory.CreateLogger<ChunkedReverseEngineeringProcess>(),
                         enhancedLogger,
-                        databasePath);
+                        databasePath,
+                        migrationRepository);
 
                     reverseEngResult = await chunkedREProcess.RunAsync(
                         settings.ApplicationSettings.CobolSourceFolder,
@@ -663,9 +681,11 @@ internal static class Program
                     var reverseEngineeringProcess = new ReverseEngineeringProcess(
                         cobolAnalyzerAgent,
                         businessLogicExtractorAgent,
+                        dependencyMapperAgent,
                         fileHelper,
                         loggerFactory.CreateLogger<ReverseEngineeringProcess>(),
-                        enhancedLogger);
+                        enhancedLogger,
+                        migrationRepository);
 
                     reverseEngResult = await reverseEngineeringProcess.RunAsync(
                         settings.ApplicationSettings.CobolSourceFolder,
@@ -690,6 +710,40 @@ internal static class Program
                 {
                     Console.WriteLine("Reverse engineering completed successfully. Skipping Java conversion as requested.");
                     return;
+                }
+            }
+            else
+            {
+                // --skip-reverse-engineering: only load persisted business logic when --reuse-re is also set
+                if (reuseRe)
+                {
+                    var latestRun = await migrationRepository.GetLatestRunAsync();
+                    if (latestRun != null && latestRun.RunId > 0)
+                    {
+                        var savedLogic = await migrationRepository.GetBusinessLogicAsync(latestRun.RunId);
+                        if (savedLogic.Count > 0)
+                        {
+                            Console.WriteLine($"♻️  Loaded {savedLogic.Count} business logic entries from Run #{latestRun.RunId} (use --reuse-re with a specific run by passing --resume).");
+                            reverseEngResultForMigration = new ReverseEngineeringResult
+                            {
+                                Success = true,
+                                RunId = latestRun.RunId,
+                                BusinessLogicExtracts = savedLogic.ToList()
+                            };
+                        }
+                        else
+                        {
+                            Console.WriteLine($"⚠️  --reuse-re: no persisted business logic found for Run #{latestRun.RunId}. Migration will proceed without business logic context.");
+                        }
+                    }
+                    else
+                    {
+                        Console.WriteLine("⚠️  --reuse-re: no previous run found. Migration will proceed without business logic context.");
+                    }
+                }
+                else
+                {
+                    Console.WriteLine("ℹ️  Skipping reverse engineering. Pass --reuse-re to inject business logic from a previous RE run.");
                 }
             }
 
@@ -788,7 +842,9 @@ internal static class Program
                         Console.WriteLine($"{status} - {current}/{total}");
                     },
                     existingRunId: resumeRunId,
-                    businessLogicExtracts: reverseEngResultForMigration?.BusinessLogicExtracts);
+                    businessLogicExtracts: reverseEngResultForMigration?.BusinessLogicExtracts,
+                    existingDependencyMap: reverseEngResultForMigration?.DependencyMap,
+                    runType: skipReverseEngineering ? "Conversion Only" : "Full Migration");
 
                 Console.WriteLine("Migration process completed successfully.");
                 Console.WriteLine($"  📊 Stats: {migrationStats.TotalFiles} files ({migrationStats.DirectFiles} direct, {migrationStats.ChunkedFiles} chunked)");
@@ -1362,6 +1418,15 @@ internal static class Program
                 chunkingOrchestrator: chunkingOrchestrator,
                 settings: settings);
 
+            // DependencyMapperAgent uses ResponsesApiClient (codex for dependency analysis)
+            var dependencyMapperAgent = new DependencyMapperAgent(
+                responsesApiClient,
+                loggerFactory.CreateLogger<DependencyMapperAgent>(),
+                settings.AISettings.DependencyMapperModelId ?? settings.AISettings.CobolAnalyzerModelId,
+                enhancedLogger,
+                chatLogger,
+                settings: settings);
+
             // Smart routing: check for large files to decide between chunked vs direct RE
             var cobolFiles = await fileHelper.ScanDirectoryForCobolFilesAsync(settings.ApplicationSettings.CobolSourceFolder);
             var hasLargeFiles = cobolFiles.Any(f => 
@@ -1380,6 +1445,7 @@ internal static class Program
                 var chunkedProcess = new ChunkedReverseEngineeringProcess(
                     cobolAnalyzerAgent,
                     businessLogicExtractorAgent,
+                    dependencyMapperAgent,
                     fileHelper,
                     settings.ChunkingSettings,
                     chunkingOrchestrator,
@@ -1398,6 +1464,7 @@ internal static class Program
                 var reverseEngineeringProcess = new ReverseEngineeringProcess(
                     cobolAnalyzerAgent,
                     businessLogicExtractorAgent,
+                    dependencyMapperAgent,
                     fileHelper,
                     loggerFactory.CreateLogger<ReverseEngineeringProcess>(),
                     enhancedLogger,

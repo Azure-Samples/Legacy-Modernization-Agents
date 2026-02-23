@@ -5,6 +5,7 @@ using CobolToQuarkusMigration.Helpers;
 using CobolToQuarkusMigration.Models;
 using CobolToQuarkusMigration.Chunking;
 using CobolToQuarkusMigration.Chunking.Models;
+using CobolToQuarkusMigration.Persistence;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 
@@ -18,32 +19,38 @@ public class ChunkedReverseEngineeringProcess
 {
     private readonly ICobolAnalyzerAgent _cobolAnalyzerAgent;
     private readonly BusinessLogicExtractorAgent _businessLogicExtractorAgent;
+    private readonly IDependencyMapperAgent _dependencyMapperAgent;
     private readonly FileHelper _fileHelper;
     private readonly ILogger<ChunkedReverseEngineeringProcess> _logger;
     private readonly EnhancedLogger _enhancedLogger;
     private readonly ChunkingSettings _chunkingSettings;
     private readonly ChunkingOrchestrator _chunkingOrchestrator;
     private readonly string _databasePath;
+    private readonly IMigrationRepository? _migrationRepository;
     private Glossary? _glossary;
 
     public ChunkedReverseEngineeringProcess(
         ICobolAnalyzerAgent cobolAnalyzerAgent,
         BusinessLogicExtractorAgent businessLogicExtractorAgent,
+        IDependencyMapperAgent dependencyMapperAgent,
         FileHelper fileHelper,
         ChunkingSettings chunkingSettings,
         ChunkingOrchestrator chunkingOrchestrator,
         ILogger<ChunkedReverseEngineeringProcess> logger,
         EnhancedLogger enhancedLogger,
-        string databasePath)
+        string databasePath,
+        IMigrationRepository? migrationRepository = null)
     {
         _cobolAnalyzerAgent = cobolAnalyzerAgent;
         _businessLogicExtractorAgent = businessLogicExtractorAgent;
+        _dependencyMapperAgent = dependencyMapperAgent;
         _fileHelper = fileHelper;
         _chunkingSettings = chunkingSettings;
         _chunkingOrchestrator = chunkingOrchestrator;
         _logger = logger;
         _enhancedLogger = enhancedLogger;
         _databasePath = databasePath;
+        _migrationRepository = migrationRepository;
     }
 
     /// <summary>
@@ -67,7 +74,14 @@ public class ChunkedReverseEngineeringProcess
             // Load glossary if available
             await LoadGlossaryAsync();
 
-            var totalSteps = 4; // Added chunking step
+            // Start a new DB run when none was provided by the caller
+            if (!runId.HasValue && _migrationRepository != null)
+            {
+                runId = await _migrationRepository.StartRunAsync(cobolSourceFolder, outputFolder);
+                _logger.LogInformation("Started new run ID: {RunId}", runId);
+            }
+
+            var totalSteps = 5; // Step 4 = dependency mapping, Step 5 = documentation
 
             // Step 1: Scan for COBOL files
             _enhancedLogger.ShowStep(1, totalSteps, "File Discovery", "Scanning for COBOL files");
@@ -83,6 +97,11 @@ public class ChunkedReverseEngineeringProcess
             {
                 _enhancedLogger.ShowWarning("No COBOL files found. Nothing to reverse engineer.");
                 return result;
+            }
+
+            if (_migrationRepository != null && runId.HasValue && runId.Value > 0)
+            {
+                await _migrationRepository.SaveCobolFilesAsync(runId.Value, cobolFiles);
             }
 
             // Separate small files from large files needing chunking
@@ -206,16 +225,36 @@ public class ChunkedReverseEngineeringProcess
                 }
             }
 
-            // Step 4: Generate documentation
-            _enhancedLogger.ShowStep(4, totalSteps, "Documentation Generation", "Generating reverse engineering report");
-            progressCallback?.Invoke("Generating documentation", 4, totalSteps);
-
             // Count feature descriptions and features
             result.TotalUserStories = result.BusinessLogicExtracts.Sum(bl => bl.UserStories.Count);
             result.TotalFeatures = result.BusinessLogicExtracts.Sum(bl => bl.Features.Count);
             result.TotalBusinessRules = result.BusinessLogicExtracts.Sum(bl => bl.BusinessRules.Count);
 
-            await GenerateOutputAsync(outputFolder, result);
+            // Persist for --reuse-re
+            if (_migrationRepository != null && runId.HasValue && runId.Value > 0)
+            {
+                await _migrationRepository.SaveBusinessLogicAsync(runId.Value, result.BusinessLogicExtracts);
+                result.RunId = runId.Value;
+            }
+
+            // Step 4: Map dependencies
+            _enhancedLogger.ShowStep(4, totalSteps, "Dependency Mapping", "Analyzing inter-program dependencies and copybook usage");
+            progressCallback?.Invoke("Mapping dependencies", 4, totalSteps);
+
+            var dependencyMap = await _dependencyMapperAgent.AnalyzeDependenciesAsync(cobolFiles, result.TechnicalAnalyses);
+            _enhancedLogger.ShowSuccess($"Dependency analysis complete - {dependencyMap.Dependencies.Count} relationships found");
+            result.DependencyMap = dependencyMap;
+
+            if (_migrationRepository != null && runId.HasValue && runId.Value > 0)
+            {
+                await _migrationRepository.SaveDependencyMapAsync(runId.Value, dependencyMap);
+            }
+
+            // Step 5: Generate documentation
+            _enhancedLogger.ShowStep(5, totalSteps, "Documentation Generation", "Generating reverse engineering report");
+            progressCallback?.Invoke("Generating documentation", 5, totalSteps);
+
+            await GenerateOutputAsync(outputFolder, result, dependencyMap);
 
             _enhancedLogger.ShowSuccess("✓ Chunked reverse engineering complete!");
             _logger.LogInformation("Output location: {OutputFolder}", outputFolder);
@@ -223,6 +262,12 @@ public class ChunkedReverseEngineeringProcess
 
             result.Success = true;
             result.OutputFolder = outputFolder;
+
+            if (_migrationRepository != null && runId.HasValue && runId.Value > 0)
+            {
+                result.RunId = runId.Value;
+                await _migrationRepository.CompleteRunAsync(runId.Value, "Completed", "Reverse Engineering Only");
+            }
 
             return result;
         }
@@ -558,7 +603,7 @@ ON CONFLICT(run_id, source_file, chunk_index) DO NOTHING;";
         }
     }
 
-    private async Task GenerateOutputAsync(string outputFolder, ReverseEngineeringResult result)
+    private async Task GenerateOutputAsync(string outputFolder, ReverseEngineeringResult result, DependencyMap? dependencyMap = null)
     {
         Directory.CreateDirectory(outputFolder);
 
@@ -567,6 +612,12 @@ ON CONFLICT(run_id, source_file, chunk_index) DO NOTHING;";
         var outputPath = Path.Combine(outputFolder, "reverse-engineering-details.md");
         await File.WriteAllTextAsync(outputPath, content);
         _logger.LogInformation("Generated reverse engineering documentation: {Path}", outputPath);
+
+        if (dependencyMap != null)
+        {
+            await _fileHelper.SaveDependencyOutputsAsync(dependencyMap, outputFolder);
+            _logger.LogInformation("Generated dependency map in: {Folder}", outputFolder);
+        }
     }
 
     private string GenerateReverseEngineeringDetailsMarkdown(ReverseEngineeringResult result)
@@ -581,7 +632,7 @@ ON CONFLICT(run_id, source_file, chunk_index) DO NOTHING;";
         sb.AppendLine();
         sb.AppendLine($"**Generated**: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
         sb.AppendLine($"**Total Files Analyzed**: {result.TotalFilesAnalyzed} ({programCount} programs, {copybookCount} copybooks)");
-        sb.AppendLine($"**Total Feature Descriptions**: {result.TotalUserStories}");
+        sb.AppendLine($"**Total User Stories**: {result.TotalUserStories}");
         sb.AppendLine($"**Total Features**: {result.TotalFeatures}");
         sb.AppendLine($"**Total Business Rules**: {result.TotalBusinessRules}");
         sb.AppendLine();
@@ -793,6 +844,15 @@ ON CONFLICT(run_id, source_file, chunk_index) DO NOTHING;";
                 {
                     sb.AppendLine($"- ... and {analysis.Paragraphs.Count - 20} more");
                 }
+                sb.AppendLine();
+            }
+
+            // Fall back to raw AI response when structured fields were not parsed
+            bool hasStructuredData = analysis.DataDivisions.Any() || analysis.ProcedureDivisions.Any()
+                || analysis.CopybooksReferenced.Any() || analysis.Paragraphs.Any();
+            if (!hasStructuredData && !string.IsNullOrWhiteSpace(analysis.RawAnalysisData))
+            {
+                sb.AppendLine(analysis.RawAnalysisData);
                 sb.AppendLine();
             }
 

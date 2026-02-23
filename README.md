@@ -17,6 +17,8 @@ The migration uses Microsoft Agent Framework with a dual-API architecture (Respo
 > | Command | What it does |
 > |---|---|
 > | `./doctor.sh run` | **Run a full migration** — analyze COBOL, convert to Java/C#, generate reports, and launch the portal |
+> | `./doctor.sh reverse-eng` | **Extract business logic only** — runs RE analysis, persists results to DB, launches the portal |
+> | `./doctor.sh convert-only` | **Convert only** — skips RE; prompts whether to inject persisted RE results from a previous run |
 > | `./doctor.sh portal` | **Open the portal only** — browse previous migration results, dependency graphs, and chat with your codebase at http://localhost:5028 |
 >
 > Both commands handle all configuration, dependency checks, and service startup automatically.
@@ -182,9 +184,23 @@ dotnet build
 ```bash
 ./doctor.sh run           # Full migration: analyze → convert → launch portal
 ./doctor.sh portal        # Launch web portal only (http://localhost:5028)
-./doctor.sh reverse-eng   # Extract business logic docs (no code conversion)
-./doctor.sh convert-only  # Code conversion only (skip analysis)
+./doctor.sh reverse-eng   # Extract business logic, persist to DB, launch portal
+./doctor.sh convert-only  # Conversion only; prompts to reuse persisted RE context
 ```
+
+#### Business Logic Persistence and --reuse-re
+
+After every `reverse-eng` or full `run`, extracted business logic is persisted to the SQLite database. This enables three distinct conversion modes:
+
+| Mode | Command | RE context in prompts? |
+|------|---------|------------------------|
+| Full migration | `./doctor.sh run` | ✅ Yes — RE runs first, results injected automatically |
+| Pure conversion | `./doctor.sh convert-only` → answer **N** | ❌ No context |
+| Conversion + cached RE | `./doctor.sh convert-only` → answer **Y** | ✅ Yes — loads persisted results from last RE run |
+
+The `--reuse-re` flag can also be passed directly: `dotnet run -- --source ./source --skip-reverse-engineering --reuse-re`.
+
+Persisted RE results are visible in the portal — each run card has a **🔬 RE Results** button that shows per-file story/feature/rule counts and lets you delete results you are unsatisfied with.
 
 ### doctor.sh run - Interactive Options
 
@@ -272,10 +288,10 @@ The `BusinessLogicExtractorAgent` analyzes COBOL source code and produces human-
 ### Running Reverse Engineering Only
 
 ```bash
-./doctor.sh reverse-eng    # Extract business logic (no code conversion)
+./doctor.sh reverse-eng    # Extract business logic, persist to DB, launch portal
 ```
 
-This generates `output/reverse-engineering-details.md` containing all extracted business knowledge.
+This generates `output/reverse-engineering-details.md` and persists the extracted business logic to the SQLite database. Results can be reused in a later `convert-only` run (see [Business Logic Persistence and --reuse-re](#business-logic-persistence-and---reuse-re)).
 
 ### Sample Output
 
@@ -597,6 +613,7 @@ sequenceDiagram
 - ✅ Collapsible filter sections for cleaner UI
 - ✅ Edge type filtering with color-coded visualization
 - ✅ Line number context for all dependencies
+- ✅ Per-run **🔬 RE Results** button — view persisted business logic extracts and delete unsatisfactory results
 
 ### Smart Chunking & Token Strategy
 
@@ -773,7 +790,8 @@ sequenceDiagram
   RE->>BizLogic: extract business logic summaries
   BizLogic-->>RE: BusinessLogic[]
   RE->>Repo: persist analyses + documentation
-  RE-->>CLI: ReverseEngineeringResult
+  RE->>Repo: persist BusinessLogic[] to business_logic table
+  RE-->>CLI: ReverseEngineeringResult (with RunId)
   CLI->>Migration: start migration run with latest analyses
   Migration->>Analyzer: reuse or refresh CobolAnalysis
   Migration->>DepMap: build dependency graph (CALL/COPY/...)
@@ -803,6 +821,7 @@ sequenceDiagram
 - **Interactions:**
   - Runs in parallel with analyzer results.
   - Writes documentation via `FileHelper` and logs via `EnhancedLogger`.
+  - Results persisted to the `business_logic` SQLite table via `IMigrationRepository.SaveBusinessLogicAsync`, enabling reuse in subsequent `--skip-reverse-engineering --reuse-re` runs.
 
 #### DependencyMapperAgent
 - **Purpose:** Identify CALL/COPY/PERFORM/IO relationships and build graph metadata.

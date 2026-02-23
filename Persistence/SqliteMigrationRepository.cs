@@ -279,7 +279,24 @@ CREATE TABLE IF NOT EXISTS spec_operation_rules (
     PRIMARY KEY(operation_id, rule_id),
     FOREIGN KEY(operation_id) REFERENCES spec_service_operations(id),
     FOREIGN KEY(rule_id) REFERENCES spec_business_rules(id)
-);";
+);
+
+-- Reverse engineering business logic (persisted for cross-run reuse)
+CREATE TABLE IF NOT EXISTS business_logic (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    file_name TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    is_copybook INTEGER NOT NULL DEFAULT 0,
+    business_purpose TEXT,
+    user_stories_json TEXT,
+    features_json TEXT,
+    business_rules_json TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(run_id) REFERENCES runs(id),
+    UNIQUE(run_id, file_name)
+);
+CREATE INDEX IF NOT EXISTS idx_business_logic_run ON business_logic(run_id);";
         await command.ExecuteNonQueryAsync(cancellationToken);
         _logger.LogInformation("SQLite database ready at {DatabasePath}", _databasePath);
     }
@@ -775,6 +792,85 @@ WHERE run_id = $runId AND (file_name LIKE $term OR content LIKE $term)";
         }
 
         return result;
+    }
+
+    public async Task SaveBusinessLogicAsync(int runId, IEnumerable<BusinessLogic> businessLogicExtracts, CancellationToken cancellationToken = default)
+    {
+        var list = businessLogicExtracts.ToList();
+        await using var connection = CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        var sqliteTransaction = (SqliteTransaction)transaction;
+
+        // Replace any existing data for this run
+        await using (var deleteCmd = connection.CreateCommand())
+        {
+            deleteCmd.Transaction = sqliteTransaction;
+            deleteCmd.CommandText = "DELETE FROM business_logic WHERE run_id = $runId";
+            deleteCmd.Parameters.AddWithValue("$runId", runId);
+            await deleteCmd.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        foreach (var bl in list)
+        {
+            await using var cmd = connection.CreateCommand();
+            cmd.Transaction = sqliteTransaction;
+            cmd.CommandText = @"
+INSERT INTO business_logic (run_id, file_name, file_path, is_copybook, business_purpose, user_stories_json, features_json, business_rules_json)
+VALUES ($runId, $fileName, $filePath, $isCopybook, $businessPurpose, $userStories, $features, $businessRules)";
+            cmd.Parameters.AddWithValue("$runId", runId);
+            cmd.Parameters.AddWithValue("$fileName", bl.FileName);
+            cmd.Parameters.AddWithValue("$filePath", bl.FilePath);
+            cmd.Parameters.AddWithValue("$isCopybook", bl.IsCopybook ? 1 : 0);
+            cmd.Parameters.AddWithValue("$businessPurpose", bl.BusinessPurpose ?? (object)DBNull.Value);
+            cmd.Parameters.AddWithValue("$userStories", SerializeOrNull(bl.UserStories) ?? (object)DBNull.Value);
+            cmd.Parameters.AddWithValue("$features", SerializeOrNull(bl.Features) ?? (object)DBNull.Value);
+            cmd.Parameters.AddWithValue("$businessRules", SerializeOrNull(bl.BusinessRules) ?? (object)DBNull.Value);
+            await cmd.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        _logger.LogInformation("Persisted business logic for {Count} files in run {RunId}", list.Count, runId);
+    }
+
+    public async Task<IReadOnlyList<BusinessLogic>> GetBusinessLogicAsync(int runId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var cmd = connection.CreateCommand();
+        cmd.CommandText = @"
+SELECT file_name, file_path, is_copybook, business_purpose, user_stories_json, features_json, business_rules_json
+FROM business_logic WHERE run_id = $runId ORDER BY file_name";
+        cmd.Parameters.AddWithValue("$runId", runId);
+
+        var result = new List<BusinessLogic>();
+        await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            result.Add(new BusinessLogic
+            {
+                FileName = reader.GetString(0),
+                FilePath = reader.GetString(1),
+                IsCopybook = reader.GetInt32(2) == 1,
+                BusinessPurpose = reader.IsDBNull(3) ? string.Empty : reader.GetString(3),
+                UserStories = DeserializeList<UserStory>(reader, 4) ?? new List<UserStory>(),
+                Features = DeserializeList<FeatureDescription>(reader, 5) ?? new List<FeatureDescription>(),
+                BusinessRules = DeserializeList<BusinessRule>(reader, 6) ?? new List<BusinessRule>()
+            });
+        }
+
+        return result;
+    }
+
+    public async Task DeleteBusinessLogicAsync(int runId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var cmd = connection.CreateCommand();
+        cmd.CommandText = "DELETE FROM business_logic WHERE run_id = $runId";
+        cmd.Parameters.AddWithValue("$runId", runId);
+        var deleted = await cmd.ExecuteNonQueryAsync(cancellationToken);
+        _logger.LogInformation("Deleted business logic for {Count} files in run {RunId}", deleted, runId);
     }
 
     public SqliteConnection CreateConnection() => new(_connectionString);

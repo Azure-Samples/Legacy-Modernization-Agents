@@ -88,7 +88,9 @@ public class SmartMigrationOrchestrator
         Action<string, int, int>? progressCallback = null,
         int? existingRunId = null,
         List<BusinessLogic>? businessLogicExtracts = null,
-        CancellationToken cancellationToken = default)
+        DependencyMap? existingDependencyMap = null,
+        CancellationToken cancellationToken = default,
+        string? runType = null)
     {
         var stats = new MigrationStats();
         var targetName = _settings.ApplicationSettings.TargetLanguage == TargetLanguage.CSharp 
@@ -143,7 +145,9 @@ public class SmartMigrationOrchestrator
                 progressCallback,
                 existingRunId,
                 businessLogicExtracts,
-                cancellationToken);
+                existingDependencyMap,
+                cancellationToken,
+                runType);
         }
         else if (smallFiles.Count > 0)
         {
@@ -156,7 +160,9 @@ public class SmartMigrationOrchestrator
                 outputFolder, 
                 progressCallback,
                 existingRunId,
-                businessLogicExtracts);
+                businessLogicExtracts,
+                existingDependencyMap,
+                runType: runType);
             
             stats.DirectFiles = smallFiles.Count;
         }
@@ -236,7 +242,9 @@ public class SmartMigrationOrchestrator
         Action<string, int, int>? progressCallback,
         int? existingRunId,
         List<BusinessLogic>? businessLogicExtracts,
-        CancellationToken cancellationToken)
+        DependencyMap? existingDependencyMap,
+        CancellationToken cancellationToken,
+        string? runType = null)
     {
         _enhancedLogger.ShowSectionHeader(
             "📦 CHUNKED MIGRATION PROCESS",
@@ -258,6 +266,11 @@ public class SmartMigrationOrchestrator
             chunkedProcess.SetBusinessLogicContext(businessLogicExtracts);
         }
 
+        if (existingDependencyMap != null)
+        {
+            chunkedProcess.SetDependencyMap(existingDependencyMap);
+        }
+
         await chunkedProcess.RunAsync(
             cobolSourceFolder,
             outputFolder,
@@ -266,7 +279,8 @@ public class SmartMigrationOrchestrator
                 progressCallback?.Invoke(status, current + 1, 4);
             },
             existingRunId: existingRunId,
-            cancellationToken);
+            cancellationToken: cancellationToken,
+            runType: runType);
 
         stats.ChunkedFiles = largeFiles.Count;
         stats.DirectFiles = smallFiles.Count;
@@ -280,7 +294,9 @@ public class SmartMigrationOrchestrator
         string outputFolder,
         Action<string, int, int>? progressCallback,
         int? existingRunId = null,
-        List<BusinessLogic>? businessLogicExtracts = null)
+        List<BusinessLogic>? businessLogicExtracts = null,
+        DependencyMap? existingDependencyMap = null,
+        string? runType = null)
     {
         _enhancedLogger.ShowSectionHeader(
             "⚡ DIRECT MIGRATION PROCESS",
@@ -301,6 +317,11 @@ public class SmartMigrationOrchestrator
             migrationProcess.SetBusinessLogicContext(businessLogicExtracts);
         }
 
+        if (existingDependencyMap != null)
+        {
+            migrationProcess.SetDependencyMap(existingDependencyMap);
+        }
+
         await migrationProcess.RunAsync(
             cobolSourceFolder,
             outputFolder,
@@ -308,7 +329,8 @@ public class SmartMigrationOrchestrator
             {
                 progressCallback?.Invoke(status, current + 1, 4);
             },
-            existingRunId);
+            existingRunId,
+            runType);
     }
 
     /// <summary>

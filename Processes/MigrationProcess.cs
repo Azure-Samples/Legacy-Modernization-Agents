@@ -136,6 +136,13 @@ public class MigrationProcess
         _codeConverterAgent?.SetBusinessLogicContext(businessLogicExtracts);
     }
 
+    public void SetDependencyMap(DependencyMap dependencyMap)
+    {
+        _existingDependencyMap = dependencyMap;
+    }
+
+    private DependencyMap? _existingDependencyMap;
+
     /// <summary>
     /// Runs the migration process.
     /// </summary>
@@ -148,7 +155,8 @@ public class MigrationProcess
         string cobolSourceFolder,
         string javaOutputFolder,
         Action<string, int, int>? progressCallback = null,
-        int? existingRunId = null)
+        int? existingRunId = null,
+        string? runType = null)
     {
         var migrationTargetLang = _settings.ApplicationSettings.TargetLanguage;
         var targetName = migrationTargetLang == TargetLanguage.CSharp ? "C# .NET" : "JAVA QUARKUS";
@@ -222,28 +230,31 @@ public class MigrationProcess
                 $"Discovered {cobolFiles.Count} COBOL files ({cobolFiles.Count(f => f.FileName.EndsWith(".cbl"))} programs, {cobolFiles.Count(f => f.FileName.EndsWith(".cpy"))} copybooks)");
             _enhancedLogger.ShowSuccess($"Found {cobolFiles.Count} COBOL files");
 
-            // Step 2: Analyze dependencies
+            // Step 2: Dependency analysis (reused from RE when available)
             _enhancedLogger.ShowStep(2, totalSteps, "Dependency Analysis", "Mapping COBOL relationships and dependencies");
             _enhancedLogger.ShowDashboardSummary(runId, targetName, "RUNNING", "Dependency Analysis", 20);
-            _enhancedLogger.LogBehindTheScenes("MIGRATION", "STEP_2_START",
-                "Starting AI-powered dependency analysis");
             progressCallback?.Invoke("Analyzing dependencies", 2, totalSteps);
 
-            var dependencyMap = await _dependencyMapperAgent.AnalyzeDependenciesAsync(cobolFiles, new List<CobolAnalysis>());
-
-            // Save dependency map and Mermaid diagram
-            var dependencyMapPath = Path.Combine(javaOutputFolder, "dependency-map.json");
-            var mermaidDiagramPath = Path.Combine(javaOutputFolder, "dependency-diagram.md");
+            DependencyMap dependencyMap;
+            if (_existingDependencyMap != null)
+            {
+                dependencyMap = _existingDependencyMap;
+                _enhancedLogger.ShowSuccess($"Reusing dependency map from reverse engineering ({dependencyMap.Dependencies.Count} relationships)");
+            }
+            else
+            {
+                _enhancedLogger.LogBehindTheScenes("MIGRATION", "STEP_2_START", "Starting AI-powered dependency analysis");
+                dependencyMap = await _dependencyMapperAgent.AnalyzeDependenciesAsync(cobolFiles, new List<CobolAnalysis>());
+                _enhancedLogger.ShowSuccess($"Dependency analysis complete - {dependencyMap.Dependencies.Count} relationships found");
+            }
 
             _enhancedLogger.LogBehindTheScenes("FILE_OUTPUT", "DEPENDENCY_EXPORT",
-                $"Saving dependency map to {dependencyMapPath}");
-            await _fileHelper.SaveDependencyMapAsync(dependencyMap, dependencyMapPath);
-            await File.WriteAllTextAsync(mermaidDiagramPath, $"# COBOL Dependency Diagram\n\n```mermaid\n{dependencyMap.MermaidDiagram}\n```");
+                $"Saving dependency map to {javaOutputFolder}");
+            await _fileHelper.SaveDependencyOutputsAsync(dependencyMap, javaOutputFolder);
             await _migrationRepository.SaveDependencyMapAsync(runId, dependencyMap);
 
             _enhancedLogger.LogBehindTheScenes("MIGRATION", "DEPENDENCIES_ANALYZED",
                 $"Found {dependencyMap.Dependencies.Count} dependencies, {dependencyMap.CopybookUsage.Count} copybook relationships");
-            _enhancedLogger.ShowSuccess($"Dependency analysis complete - {dependencyMap.Dependencies.Count} relationships found");
 
             // Step 3: Analyze the COBOL files
             _enhancedLogger.ShowStep(3, totalSteps, "COBOL Analysis", "AI-powered code structure analysis");
@@ -414,7 +425,7 @@ public class MigrationProcess
             _enhancedLogger.LogBehindTheScenes("MIGRATION", "COMPLETION",
                 $"Total migration completed in {totalTime.TotalSeconds:F1} seconds");
             _logger.LogInformation("Total migration time: {TotalTime}", totalTime);
-            await _migrationRepository.CompleteRunAsync(runId, "Completed");
+            await _migrationRepository.CompleteRunAsync(runId, "Completed", runType);
 
             progressCallback?.Invoke("Migration completed successfully", totalSteps, totalSteps);
         }

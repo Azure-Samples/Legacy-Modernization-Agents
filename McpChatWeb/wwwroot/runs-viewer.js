@@ -91,10 +91,12 @@ async function loadAllRuns(silent = false) {
             <h4>🔹 Run ${runId} (${status})</h4>
             <div style="display: flex; gap: 0.5rem;">
               <button onclick="loadRunDetails(${runId})" class="load-btn">View Dependencies</button>
+              <button onclick="loadReDetails(${runId})" class="load-btn" style="background: rgba(99, 102, 241, 0.2); border-color: rgba(99, 102, 241, 0.4); color: #818cf8;">🔬 RE Results</button>
               <button onclick="generateRunReport(${runId})" class="load-btn" style="background: rgba(16, 185, 129, 0.2); border-color: rgba(16, 185, 129, 0.4); color: #10b981;">📄 Generate Report</button>
             </div>
           </div>
           <div id="run-${runId}-details" class="run-details"></div>
+          <div id="run-${runId}-re" class="run-details"></div>
         `;
         tempContainer.appendChild(runCard);
       });
@@ -203,53 +205,129 @@ async function downloadRunData(runId) {
 window.loadRunDetails = loadRunDetails;
 window.viewRunInGraph = viewRunInGraph;
 window.downloadRunData = downloadRunData;
+window.loadReDetails = loadReDetails;
+window.deleteReResult = deleteReResult;
 
-// Architecture Documentation Modal Handler
+// Load reverse engineering business logic summary for a run
+async function loadReDetails(runId) {
+  const div = document.getElementById(`run-${runId}-re`);
+  div.innerHTML = '<p class="loading">⏳ Loading RE results...</p>';
+
+  try {
+    const response = await fetch(`/api/runs/${runId}/business-logic`);
+    const data = await response.json();
+
+    if (data.error) {
+      div.innerHTML = `<p class="error">❌ ${data.error}</p>`;
+      return;
+    }
+
+    if (!data.files || data.files.length === 0) {
+      div.innerHTML = `
+        <div class="run-stats" style="border-top: 1px solid rgba(99,102,241,0.2); margin-top: 0.5rem; padding-top: 0.75rem;">
+          <p style="color: #94a3b8; margin: 0;">⚠️ No persisted business logic found for Run ${runId}.</p>
+          <p style="color: #64748b; font-size: 0.8rem; margin: 0.25rem 0 0;">Run reverse engineering first, or it may have been deleted.</p>
+        </div>`;
+      return;
+    }
+
+    const programs = data.files.filter(f => !f.isCopybook);
+    const copybooks = data.files.filter(f => f.isCopybook);
+    const totalStories  = data.files.reduce((s, f) => s + f.storyCount, 0);
+    const totalFeatures = data.files.reduce((s, f) => s + f.featureCount, 0);
+    const totalRules    = data.files.reduce((s, f) => s + f.ruleCount, 0);
+    const rawCreated = data.files[0]?.createdAt;
+    const firstCreated = rawCreated
+      ? new Date(rawCreated.replace(' ', 'T')).toLocaleString()
+      : 'unknown';
+
+    const fileRows = data.files.map(f => `
+      <tr>
+        <td style="padding: 0.3rem 0.5rem;">
+          <div style="color: ${f.isCopybook ? '#f16667' : '#68bdf6'}; font-size: 0.78rem;">${f.fileName}</div>
+          ${f.businessPurpose ? `<div style="color: #64748b; font-size: 0.72rem; margin-top: 2px; line-height: 1.3;">${f.businessPurpose}</div>` : ''}
+        </td>
+        <td style="padding: 0.3rem 0.5rem; color: #94a3b8; text-align: center; vertical-align: top">${f.storyCount}</td>
+        <td style="padding: 0.3rem 0.5rem; color: #94a3b8; text-align: center; vertical-align: top">${f.featureCount}</td>
+        <td style="padding: 0.3rem 0.5rem; color: #94a3b8; text-align: center; vertical-align: top">${f.ruleCount}</td>
+      </tr>`).join('');
+
+    div.innerHTML = `
+      <div style="border-top: 1px solid rgba(99,102,241,0.2); margin-top: 0.5rem; padding-top: 0.75rem;">
+        <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 0.75rem;">
+          ${[
+            ['Programs',       programs.length],
+            ['Copybooks',      copybooks.length],
+            ['User Stories',   totalStories],
+            ['Features',       totalFeatures],
+            ['Business Rules', totalRules],
+          ].map(([label, val]) => `
+            <div style="background: rgba(99,102,241,0.08); border: 1px solid rgba(99,102,241,0.2); border-radius: 5px; padding: 5px 10px; display: flex; gap: 6px; align-items: center;">
+              <span style="color: #94a3b8; font-size: 0.75rem;">${label}:</span>
+              <span style="color: #818cf8; font-size: 0.9rem; font-weight: 600;">${val}</span>
+            </div>`).join('')}
+        </div>
+        <p style="color: #64748b; font-size: 0.75rem; margin: 0 0 0.5rem;">Extracted: ${firstCreated}</p>
+        <div style="max-height: 180px; overflow-y: auto; margin-bottom: 0.75rem;">
+          <table style="width: 100%; font-size: 0.78rem; border-collapse: collapse;">
+            <thead>
+              <tr style="color: #64748b;">
+                <th style="padding: 0.2rem 0.5rem; text-align: left">File</th>
+                <th style="padding: 0.2rem 0.5rem; text-align: center">Stories</th>
+                <th style="padding: 0.2rem 0.5rem; text-align: center">Features</th>
+                <th style="padding: 0.2rem 0.5rem; text-align: center">Rules</th>
+              </tr>
+            </thead>
+            <tbody>${fileRows}</tbody>
+          </table>
+        </div>
+        <button onclick="deleteReResult(${runId})" style="background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.4); color: #f87171; padding: 0.35rem 0.75rem; border-radius: 4px; cursor: pointer; font-size: 0.8rem;">🗑️ Delete RE Result for Run ${runId}</button>
+      </div>`;
+  } catch (error) {
+    console.error(`Error loading RE results for run ${runId}:`, error);
+    div.innerHTML = '<p class="error">❌ Error loading RE results</p>';
+  }
+}
+
+// Delete persisted business logic for a run
+async function deleteReResult(runId) {
+  if (!confirm(`Delete the reverse engineering result for Run ${runId}?\n\nThis allows you to re-run reverse engineering and replace it. The migration/conversion data for this run is not affected.`)) return;
+
+  const div = document.getElementById(`run-${runId}-re`);
+  div.innerHTML = '<p class="loading">⏳ Deleting...</p>';
+
+  try {
+    const response = await fetch(`/api/runs/${runId}/business-logic`, { method: 'DELETE' });
+    const data = await response.json();
+    if (data.success) {
+      div.innerHTML = `<p style="color: #10b981; padding: 0.5rem 0;">✅ ${data.message}</p>`;
+    } else {
+      div.innerHTML = `<p class="error">❌ ${data.error || 'Unexpected error'}</p>`;
+    }
+  } catch (error) {
+    console.error(`Error deleting RE result for run ${runId}:`, error);
+    div.innerHTML = '<p class="error">❌ Error deleting RE result</p>';
+  }
+}
+
+// Reverse Engineering Results Modal Handler
 const archModal = document.getElementById('architectureModal');
 const archBtn = document.getElementById('showArchitectureBtn');
 const archClose = document.querySelector('.arch-close');
 
-let architectureMarkdown = '';
 let reportMarkdown = '';
 
-// Documentation tab switching
-document.querySelectorAll('.doc-tab-btn').forEach(button => {
-  button.addEventListener('click', () => {
-    const tabName = button.getAttribute('data-doc-tab');
-    
-    // Hide all doc tab contents
-    document.querySelectorAll('.doc-tab-content').forEach(content => {
-      content.style.display = 'none';
-    });
-    
-    // Remove active class from all buttons
-    document.querySelectorAll('.doc-tab-btn').forEach(btn => {
-      btn.classList.remove('active');
-    });
-    
-    // Show selected tab
-    const tabElement = document.getElementById(tabName + 'Tab');
-    if (tabElement) {
-      tabElement.style.display = 'block';
-    }
-    button.classList.add('active');
-    
-    // Load content if switching to report tab
-    if (tabName === 'report' && !reportMarkdown) {
-      loadReverseEngineeringReport();
-    }
-  });
-});
-
-// Open architecture modal
+// Open modal and load report
 if (archBtn) {
   archBtn.onclick = function() {
     archModal.style.display = 'block';
-    loadArchitectureDoc();
+    if (!reportMarkdown) {
+      loadReverseEngineeringReport();
+    }
   };
 }
 
-// Close architecture modal
+// Close modal
 if (archClose) {
   archClose.onclick = function() {
     archModal.style.display = 'none';
@@ -265,92 +343,6 @@ window.onclick = function(event) {
     archModal.style.display = 'none';
   }
 };
-
-// Load and render architecture documentation with Mermaid diagrams
-async function loadArchitectureDoc() {
-  const contentDiv = document.getElementById('architectureContent');
-  const lastModifiedSpan = document.getElementById('docLastModified');
-  
-  try {
-    contentDiv.innerHTML = '<p style="text-align: center; color: #94a3b8;"><em>Loading documentation...</em></p>';
-    
-    const response = await fetch('/api/documentation/architecture');
-    if (!response.ok) {
-      if (response.status === 404) {
-        const errorData = await response.json();
-        contentDiv.innerHTML = `
-          <div style="text-align: center; padding: 2rem; color: #94a3b8;">
-            <p style="font-size: 3rem; margin-bottom: 1rem;">📄</p>
-            <h3 style="color: #f1f5f9; margin-bottom: 0.5rem;">No Architecture Doc</h3>
-            <p>${errorData.hint || 'Place the architecture markdown in the repo root as REVERSE_ENGINEERING_ARCHITECTURE.md'}</p>
-            <p style="font-size: 0.85rem; margin-top: 1rem; color: #64748b;">Expected location: ../REVERSE_ENGINEERING_ARCHITECTURE.md</p>
-          </div>`;
-        return;
-      }
-      throw new Error(`HTTP ${response.status}`);
-    }
-    
-    const data = await response.json();
-    architectureMarkdown = data.content;
-    
-    // Render markdown using marked.js
-    if (typeof marked !== 'undefined') {
-      // Configure marked for GFM and code blocks
-      marked.setOptions({
-        breaks: true,
-        gfm: true,
-        headerIds: true,
-        mangle: false
-      });
-      
-      contentDiv.innerHTML = marked.parse(architectureMarkdown);
-      
-      // Render all Mermaid diagrams
-      if (window.mermaid) {
-        const mermaidBlocks = contentDiv.querySelectorAll('code.language-mermaid');
-        
-        for (let i = 0; i < mermaidBlocks.length; i++) {
-          const codeBlock = mermaidBlocks[i];
-          const mermaidCode = codeBlock.textContent;
-          const container = document.createElement('div');
-          container.className = 'mermaid-diagram';
-          container.style.cssText = 'background: #0f172a; padding: 1.5rem; border-radius: 8px; margin: 1rem 0; overflow-x: auto;';
-          
-          try {
-            const { svg } = await window.mermaid.render(`mermaid-diagram-${i}`, mermaidCode);
-            container.innerHTML = svg;
-            
-            // Add zoom controls
-            const svgElement = container.querySelector('svg');
-            if (svgElement) {
-              svgElement.style.maxWidth = '100%';
-              svgElement.style.height = 'auto';
-            }
-            
-            codeBlock.parentElement.replaceWith(container);
-          } catch (err) {
-            console.error('Mermaid render error:', err);
-            container.innerHTML = `<p style="color: #f87171;">⚠️ Error rendering diagram: ${err.message}</p><pre style="background: #1e293b; padding: 1rem; border-radius: 4px; overflow-x: auto;">${escapeHtml(mermaidCode)}</pre>`;
-            codeBlock.parentElement.replaceWith(container);
-          }
-        }
-      }
-    } else {
-      // Fallback to plain text if marked.js not loaded
-      contentDiv.innerHTML = `<pre>${escapeHtml(architectureMarkdown)}</pre>`;
-    }
-    
-    // Update last modified
-    if (lastModifiedSpan && data.lastModified) {
-      const date = new Date(data.lastModified);
-      const sizeKB = data.sizeBytes ? Math.round(data.sizeBytes / 1024) : 0;
-      lastModifiedSpan.textContent = `Last updated: ${date.toLocaleDateString()} ${date.toLocaleTimeString()}${data.sizeBytes ? ` (${sizeKB} KB)` : ''}`;
-    }
-  } catch (error) {
-    console.error('Error loading architecture documentation:', error);
-    contentDiv.innerHTML = `<p style="color: #ef4444;">Failed to load documentation: ${error.message}</p>`;
-  }
-}
 
 // Generate migration report for a specific run
 async function generateRunReport(runId) {
@@ -441,46 +433,6 @@ async function downloadRunReport(runId) {
     alert(`Failed to download report: ${error.message}`);
   }
 }
-
-// Download markdown file
-document.getElementById('downloadMarkdownBtn')?.addEventListener('click', () => {
-  if (!architectureMarkdown) return;
-  
-  const blob = new Blob([architectureMarkdown], { type: 'text/markdown' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'REVERSE_ENGINEERING_ARCHITECTURE.md';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-});
-
-// Copy to clipboard
-document.getElementById('copyToClipboardBtn')?.addEventListener('click', async () => {
-  if (!architectureMarkdown) return;
-  
-  try {
-    await navigator.clipboard.writeText(architectureMarkdown);
-    
-    // Visual feedback
-    const btn = document.getElementById('copyToClipboardBtn');
-    const originalText = btn.textContent;
-    btn.textContent = '✅ Copied!';
-    btn.style.background = 'rgba(16, 185, 129, 0.2)';
-    btn.style.borderColor = 'rgba(16, 185, 129, 0.5)';
-    
-    setTimeout(() => {
-      btn.textContent = originalText;
-      btn.style.background = '';
-      btn.style.borderColor = '';
-    }, 2000);
-  } catch (error) {
-    console.error('Failed to copy:', error);
-    alert('Failed to copy to clipboard');
-  }
-});
 
 // Load and render reverse engineering report
 async function loadReverseEngineeringReport() {
