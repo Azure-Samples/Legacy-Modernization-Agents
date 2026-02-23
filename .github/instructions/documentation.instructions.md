@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 All documentation in the `docs/` directory should have a speaking filename and a **Last updated**: YYYY-MM-DD date at the top of the file. 
 
-Workflows and CI/CD pipelines should be mentioned in a short list on the bottom of the `README.md`. There is no deep dive documentation needed and they also do not need to be mentioned in the `CHANGELOG.md`.
+Workflows, CI/CD pipelines and agents should be mentioned in a short list on the bottom of the `README.md`. There is no deep dive documentation needed and they also do not need to be mentioned in the `CHANGELOG.md`.
 
 General rules:
 - clear, precise and technical tone, not promotional
