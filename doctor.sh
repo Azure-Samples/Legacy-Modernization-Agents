@@ -82,10 +82,10 @@ show_usage() {
     echo -e "  ${GREEN}setup${NC}           Interactive configuration setup"
     echo -e "  ${GREEN}test${NC}            Full system validation and testing"
     echo -e "  ${GREEN}run${NC}             Start full migration (auto-detects chunking needs)"
-    echo -e "  ${GREEN}convert-only${NC}    Convert COBOL only (skip reverse eng + UI)"
+    echo -e "  ${GREEN}convert-only${NC}    Convert COBOL only (skips RE; prompts to reuse persisted RE context)"
     echo -e "  ${GREEN}portal${NC}          Start the web portal (documentation & monitoring)"
     echo -e "  ${GREEN}doctor${NC}          Diagnose configuration issues (default)"
-    echo -e "  ${GREEN}reverse-eng${NC}     Run reverse engineering analysis only (no UI)"
+    echo -e "  ${GREEN}reverse-eng${NC}     Run reverse engineering analysis only (no conversion) + Portal"
     echo -e "  ${GREEN}resume${NC}          Resume interrupted migration"
     echo -e "  ${GREEN}monitor${NC}         Monitor migration progress"
     echo -e "  ${GREEN}chunking-health${NC} Check smart chunking infrastructure"
@@ -96,12 +96,21 @@ show_usage() {
     echo -e "  $0                   ${CYAN}# Run configuration doctor${NC}"
     echo -e "  $0 setup             ${CYAN}# Interactive setup${NC}"
     echo -e "  $0 test              ${CYAN}# Test configuration and dependencies${NC}"
-    echo -e "  $0 reverse-eng       ${CYAN}# Extract business logic only (no conversion, no UI)${NC}"
+    echo -e "  $0 reverse-eng       ${CYAN}# Extract business logic only (no conversion) + Portal${NC}"
     echo -e "  $0 run               ${CYAN}# Full migration (auto-chunks large files)${NC}"
     echo -e "  $0 portal            ${CYAN}# Start portal to view docs & reports${NC}"
-    echo -e "  $0 convert-only      ${CYAN}# Conversion only (skip reverse eng) + UI${NC}"
+    echo -e "  $0 convert-only      ${CYAN}# Conversion only (prompts to reuse cached RE results) + UI${NC}"
     echo
-    echo -e "${BOLD}Smart Chunking (v0.2):${NC}"
+    echo -e "${BOLD}Business Logic Persistence (--reuse-re):${NC}"
+  echo -e "  RE results are automatically persisted to the database after each run."
+  echo -e "  ${GREEN}Mode 1${NC} — Full migration (default): RE runs and context is injected into prompts."
+  echo -e "  ${GREEN}Mode 2${NC} — ${GREEN}--skip-reverse-engineering${NC}: Pure conversion, no RE context."
+  echo -e "  ${GREEN}Mode 3${NC} — ${GREEN}--skip-reverse-engineering --reuse-re${NC}: Loads cached RE results from"
+  echo -e "          the database and injects them into conversion prompts."
+  echo -e "  The ${GREEN}convert-only${NC} command prompts interactively for the --reuse-re choice."
+  echo -e "  To view or delete persisted RE results, open the Portal → 🔬 RE Results button."
+  echo
+  echo -e "${BOLD}Smart Chunking (v0.2):${NC}"
     echo -e "  Large files (>150K chars or >3000 lines) are automatically"
     echo -e "  routed through SmartMigrationOrchestrator for optimal processing."
     echo -e "  - Full Migration: Uses ChunkedMigrationProcess for conversion"
@@ -878,14 +887,11 @@ run_doctor() {
     echo ""
     echo -e "${BLUE}📄 Documentation${NC}"
     echo "=================="
-    echo "• docs/REVERSE_ENGINEERING_ARCHITECTURE.md - RE architecture & diagrams"
-    echo "• output/reverse-engineering-details.md    - Generated business logic report"
+    echo "• output/reverse-engineering-details.md - Generated business logic report"
     echo ""
     echo -e "${BLUE}🌐 Portal Documentation${NC}"
     echo "========================"
     echo "• Start portal: ./doctor.sh portal (or cd McpChatWeb && dotnet run)"
-    echo "• Click '📄 Architecture Documentation' button in portal"
-    echo "• View tabs: 🏗️ Architecture (diagrams) | 📊 RE Report (business logic)"
 
     echo
     echo -e "${BLUE}💡 Troubleshooting Tips${NC}"
@@ -1592,7 +1598,7 @@ run_migration() {
     echo ""
     echo -e "${GREEN}✅ Migration completed successfully!${NC}"
     echo -e "${BLUE}🌐 Portal is running at http://localhost:$DEFAULT_MCP_PORT${NC}"
-    echo -e "${CYAN}📊 View results in 'Migration Monitor' or '📄 Architecture Documentation' → '📊 RE Report'${NC}"
+    echo -e "${CYAN}📊 View results in 'Migration Monitor' or '📄 Reverse Engineering Results'${NC}"
     echo ""
     echo -e "${YELLOW}Press Ctrl+C to stop the portal when done viewing.${NC}"
     
@@ -1859,15 +1865,18 @@ run_reverse_engineering() {
         echo ""
         echo "Output files created in: ./output/"
         echo "  • reverse-engineering-details.md - Complete analysis with business logic and technical details"
+        echo "  • Results persisted to database — use './doctor.sh convert-only' and answer 'y' to"
+        echo "    inject them into conversion prompts (or pass --skip-reverse-engineering --reuse-re)"
         echo ""
         echo -e "${CYAN}📄 View in Portal:${NC}"
         echo "  • Portal running at: http://localhost:5028"
-        echo "  • Click '📄 Architecture Documentation' → '📊 RE Report' tab"
+        echo "  • Click '📄 Reverse Engineering Results' button to view the full RE report"
+        echo "  • Each run card now has a '🔬 RE Results' button to view or delete persisted results"
         echo ""
         echo "Next steps:"
         echo "  • Review the generated documentation in portal or output folder"
         echo "  • Run full migration: ./doctor.sh run"
-        echo "  • Or run conversion only: ./doctor.sh convert-only"
+        echo "  • Or run conversion only with RE context: ./doctor.sh convert-only  (answer 'y' to reuse)"
         echo ""
         echo -e "${CYAN}Portal is running. Press Ctrl+C to stop.${NC}"
         
@@ -1921,7 +1930,27 @@ run_conversion_only() {
     echo ""
     echo -e "${BLUE}ℹ️  Reverse engineering will be skipped${NC}"
     echo ""
-    
+
+    # ------------------------------------------------------------------
+    # BUSINESS LOGIC REUSE PROMPT
+    # ------------------------------------------------------------------
+    echo -e "${BOLD}♻️  Reuse Business Logic from a Previous RE Run?${NC}"
+    echo "============================================================"
+    echo "  If you ran reverse engineering before, results are persisted in"
+    echo "  the database and can be injected into conversion prompts for"
+    echo "  higher-quality output."
+    echo ""
+    read -p "Reuse business logic from last RE run? (y/N): " -n 1 -r
+    echo ""
+    local reuse_re_flag=""
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        reuse_re_flag="--reuse-re"
+        echo -e "${GREEN}✅ Will load business logic from previous RE run and inject into prompts${NC}"
+    else
+        echo -e "${BLUE}ℹ️  Pure conversion mode — no business logic context will be used${NC}"
+    fi
+    echo ""
+
     # ------------------------------------------------------------------
     # TARGET LANGUAGE SELECTION (if not already set)
     # ------------------------------------------------------------------
@@ -1962,7 +1991,7 @@ run_conversion_only() {
         resume_flag="--resume"
     fi
     
-    "$DOTNET_CMD" run -- --source ./source --skip-reverse-engineering $resume_flag
+    "$DOTNET_CMD" run -- --source ./source --skip-reverse-engineering $reuse_re_flag $resume_flag
     local migration_exit=$?
 
     if [[ $migration_exit -ne 0 ]]; then

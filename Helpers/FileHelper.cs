@@ -429,6 +429,16 @@ public class FileHelper
         return "GeneratedClass";
     }
 
+    /// <summary>Writes dependency-map.json and dependency-diagram.md to <paramref name="outputFolder"/>.</summary>
+    public async Task SaveDependencyOutputsAsync(DependencyMap dependencyMap, string outputFolder)
+    {
+        Directory.CreateDirectory(outputFolder);
+        await SaveDependencyMapAsync(dependencyMap, Path.Combine(outputFolder, "dependency-map.json"));
+        await File.WriteAllTextAsync(
+            Path.Combine(outputFolder, "dependency-diagram.md"),
+            $"# COBOL Dependency Diagram\n\n```mermaid\n{dependencyMap.MermaidDiagram}\n```");
+    }
+
     /// <summary>
     /// Saves a dependency map to disk as JSON.
     /// </summary>

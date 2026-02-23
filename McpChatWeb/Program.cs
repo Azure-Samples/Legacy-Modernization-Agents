@@ -801,6 +801,98 @@ You can still access the data directly:
 						contextData += $"\nAvailable copybooks: {string.Join(", ", copybooks)}\n";
 					}
 				}
+
+				// Inject RE (reverse engineering) results from the latest run
+				var hasBlTable = await TableHasColumnAsync(connection, "business_logic", "file_name", cancellationToken);
+				if (hasBlTable)
+				{
+					// Get the latest run that has RE results
+					using var latestReRunCmd = connection.CreateCommand();
+					latestReRunCmd.CommandText = "SELECT run_id FROM business_logic ORDER BY run_id DESC LIMIT 1";
+					var latestReRunObj = await latestReRunCmd.ExecuteScalarAsync(cancellationToken);
+
+					if (latestReRunObj != null)
+					{
+						var latestReRunId = Convert.ToInt32(latestReRunObj);
+						using var blCmd = connection.CreateCommand();
+						blCmd.CommandText = @"
+							SELECT file_name, business_purpose, user_stories_json, features_json, business_rules_json
+							FROM business_logic
+							WHERE run_id = $runId
+							ORDER BY file_name
+							LIMIT 20";
+						blCmd.Parameters.AddWithValue("$runId", latestReRunId);
+
+						var reSection = new System.Text.StringBuilder();
+						reSection.AppendLine($"\nReverse Engineering Results (Run {latestReRunId}):");
+
+						using (var reader = await blCmd.ExecuteReaderAsync(cancellationToken))
+						{
+							while (await reader.ReadAsync(cancellationToken))
+							{
+								var fileName = reader.GetString(0);
+								var purpose = reader.IsDBNull(1) ? null : reader.GetString(1);
+								var userStoriesJson = reader.IsDBNull(2) ? null : reader.GetString(2);
+								var featuresJson = reader.IsDBNull(3) ? null : reader.GetString(3);
+								var rulesJson = reader.IsDBNull(4) ? null : reader.GetString(4);
+
+								reSection.AppendLine($"\nFile: {fileName}");
+								if (!string.IsNullOrWhiteSpace(purpose))
+									reSection.AppendLine($"  Business Purpose: {purpose}");
+
+								if (!string.IsNullOrWhiteSpace(userStoriesJson) && userStoriesJson != "[]")
+								{
+									try
+									{
+										var stories = System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.Nodes.JsonArray>(userStoriesJson);
+										if (stories != null && stories.Count > 0)
+										{
+											reSection.AppendLine($"  User Stories ({stories.Count}):");
+											foreach (var s in stories.Take(5))
+												reSection.AppendLine($"    - {s}");
+											if (stories.Count > 5) reSection.AppendLine($"    ... and {stories.Count - 5} more");
+										}
+									}
+									catch { }
+								}
+
+								if (!string.IsNullOrWhiteSpace(featuresJson) && featuresJson != "[]")
+								{
+									try
+									{
+										var features = System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.Nodes.JsonArray>(featuresJson);
+										if (features != null && features.Count > 0)
+										{
+											reSection.AppendLine($"  Features ({features.Count}):");
+											foreach (var f in features.Take(5))
+												reSection.AppendLine($"    - {f}");
+											if (features.Count > 5) reSection.AppendLine($"    ... and {features.Count - 5} more");
+										}
+									}
+									catch { }
+								}
+
+								if (!string.IsNullOrWhiteSpace(rulesJson) && rulesJson != "[]")
+								{
+									try
+									{
+										var rules = System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.Nodes.JsonArray>(rulesJson);
+										if (rules != null && rules.Count > 0)
+										{
+											reSection.AppendLine($"  Business Rules ({rules.Count}):");
+											foreach (var r in rules.Take(5))
+												reSection.AppendLine($"    - {r}");
+											if (rules.Count > 5) reSection.AppendLine($"    ... and {rules.Count - 5} more");
+										}
+									}
+									catch { }
+								}
+							}
+						}
+
+						contextData += reSection.ToString();
+					}
+				}
 			}
 		}
 
@@ -1082,7 +1174,7 @@ app.MapGet("/api/runs/all", async () =>
 			await connection.OpenAsync();
 
 			await using var command = connection.CreateCommand();
-                        command.CommandText = "SELECT id, status, java_output FROM runs ORDER BY id DESC";
+                        command.CommandText = "SELECT id, status, java_output, notes FROM runs ORDER BY id DESC";
                         
                         var sqliteRuns = new List<object>();
                         var sqliteRunIds = new List<int>();
@@ -1091,6 +1183,19 @@ app.MapGet("/api/runs/all", async () =>
                         {
                                 var id = reader.GetInt32(0);
                                 var status = reader.IsDBNull(1) ? "Unknown" : reader.GetString(1);
+                                var notes = reader.IsDBNull(3) ? null : reader.GetString(3);
+                                
+                                // Determine run type from notes
+                                string runType = "Full Migration";
+                                if (!string.IsNullOrEmpty(notes))
+                                {
+                                    if (notes.IndexOf("Reverse Engineering Only", StringComparison.OrdinalIgnoreCase) >= 0)
+                                        runType = "RE Only";
+                                    else if (notes.IndexOf("Conversion Only", StringComparison.OrdinalIgnoreCase) >= 0)
+                                        runType = "Conversion Only";
+                                    else if (notes.IndexOf("Full Migration", StringComparison.OrdinalIgnoreCase) >= 0)
+                                        runType = "Full Migration";
+                                }
                                 
                                 // Determine language logic
                                 string targetLanguage = "Unknown";
@@ -1102,7 +1207,7 @@ app.MapGet("/api/runs/all", async () =>
                                 }
 
                                 sqliteRunIds.Add(id);
-                                sqliteRuns.Add(new { id, status, targetLanguage });
+                                sqliteRuns.Add(new { id, status, targetLanguage, runType });
                         }
 
 			var verbose = Environment.GetEnvironmentVariable("MCP_VERBOSE_RUNS");
@@ -1225,6 +1330,91 @@ app.MapPost("/api/runs/cleanup-stale", async () =>
 	{
 		Console.WriteLine($"❌ Error cleaning up stale runs: {ex.Message}");
 		return Results.Problem($"Failed to cleanup stale runs: {ex.Message}");
+	}
+});
+
+// Get persisted business logic summary for a run
+app.MapGet("/api/runs/{runId}/business-logic", async (string runId) =>
+{
+	try
+	{
+		var parsedRunId = ParseRunIdOrNull(runId);
+		if (parsedRunId is null) return Results.BadRequest(new { error = "Invalid runId" });
+
+		var dbPath = GetMigrationDbPath();
+		if (!File.Exists(dbPath)) return Results.NotFound(new { error = "Database not found" });
+
+		await using var connection = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly");
+		await connection.OpenAsync();
+
+		// Check table exists (may be an older DB without the table)
+		var hasTable = await TableHasColumnAsync(connection, "business_logic", "file_name", default);
+		if (!hasTable) return Results.Ok(new { runId = parsedRunId.Value, files = Array.Empty<object>(), total = 0 });
+
+		await using var cmd = connection.CreateCommand();
+		cmd.CommandText = @"
+SELECT file_name, is_copybook, business_purpose,
+       (SELECT COUNT(*) FROM json_each(user_stories_json))   AS story_count,
+       (SELECT COUNT(*) FROM json_each(features_json))       AS feature_count,
+       (SELECT COUNT(*) FROM json_each(business_rules_json)) AS rule_count,
+       created_at
+FROM business_logic WHERE run_id = $runId ORDER BY file_name";
+		cmd.Parameters.AddWithValue("$runId", parsedRunId.Value);
+
+		var files = new List<object>();
+		await using var reader = await cmd.ExecuteReaderAsync();
+		while (await reader.ReadAsync())
+		{
+			files.Add(new
+			{
+				fileName      = reader.GetString(0),
+				isCopybook    = reader.GetInt32(1) == 1,
+				businessPurpose = reader.IsDBNull(2) ? null : reader.GetString(2),
+				storyCount    = reader.IsDBNull(3) ? 0 : reader.GetInt32(3),
+				featureCount  = reader.IsDBNull(4) ? 0 : reader.GetInt32(4),
+				ruleCount     = reader.IsDBNull(5) ? 0 : reader.GetInt32(5),
+				createdAt     = reader.IsDBNull(6) ? null : reader.GetString(6)
+			});
+		}
+
+		return Results.Ok(new { runId = parsedRunId.Value, files, total = files.Count });
+	}
+	catch (Exception ex)
+	{
+		Console.WriteLine($"❌ Error fetching business logic for run {runId}: {ex.Message}");
+		return Results.Problem($"Failed to fetch business logic: {ex.Message}");
+	}
+});
+
+// Delete persisted business logic for a run (allows re-running reverse engineering cleanly)
+app.MapDelete("/api/runs/{runId}/business-logic", async (string runId) =>
+{
+	try
+	{
+		var parsedRunId = ParseRunIdOrNull(runId);
+		if (parsedRunId is null) return Results.BadRequest(new { error = "Invalid runId" });
+
+		var dbPath = GetMigrationDbPath();
+		if (!File.Exists(dbPath)) return Results.NotFound(new { error = "Database not found" });
+
+		await using var connection = new SqliteConnection($"Data Source={dbPath}");
+		await connection.OpenAsync();
+
+		var hasTable = await TableHasColumnAsync(connection, "business_logic", "file_name", default);
+		if (!hasTable) return Results.Ok(new { success = true, deleted = 0, message = "No business logic table found (nothing to delete)" });
+
+		await using var cmd = connection.CreateCommand();
+		cmd.CommandText = "DELETE FROM business_logic WHERE run_id = $runId";
+		cmd.Parameters.AddWithValue("$runId", parsedRunId.Value);
+		var deleted = await cmd.ExecuteNonQueryAsync();
+
+		Console.WriteLine($"🗑️  Deleted business logic for {deleted} file(s) in run {parsedRunId.Value}");
+		return Results.Ok(new { success = true, deleted, message = $"Deleted business logic for {deleted} file(s) in run {parsedRunId.Value}" });
+	}
+	catch (Exception ex)
+	{
+		Console.WriteLine($"❌ Error deleting business logic for run {runId}: {ex.Message}");
+		return Results.Problem($"Failed to delete business logic: {ex.Message}");
 	}
 });
 
@@ -3016,42 +3206,6 @@ app.MapPost("/api/switch-run", (SwitchRunRequest request, IMcpClient client) =>
 	catch (Exception ex)
 	{
 		return Results.Problem($"Failed to switch run: {ex.Message}");
-	}
-});
-
-// Architecture documentation endpoint
-app.MapGet("/api/documentation/architecture", async () =>
-{
-	try
-	{
-		// Expect the architecture doc at the repository root
-		var docPath = Path.Combine("..", "REVERSE_ENGINEERING_ARCHITECTURE.md");
-		var fullPath = Path.GetFullPath(docPath, app.Environment.ContentRootPath);
-
-		if (!File.Exists(fullPath))
-		{
-			return Results.NotFound(new
-			{
-				error = "Architecture documentation not found",
-				path = fullPath,
-				hint = "Expected file ../REVERSE_ENGINEERING_ARCHITECTURE.md"
-			});
-		}
-
-		var content = await File.ReadAllTextAsync(fullPath);
-		var fileInfo = new FileInfo(fullPath);
-
-		return Results.Ok(new
-		{
-			content,
-			filename = "REVERSE_ENGINEERING_ARCHITECTURE.md",
-			lastModified = fileInfo.LastWriteTimeUtc,
-			sizeBytes = fileInfo.Length
-		});
-	}
-	catch (Exception ex)
-	{
-		return Results.Problem($"Failed to read architecture documentation: {ex.Message}");
 	}
 });
 

@@ -72,4 +72,13 @@ public interface IMigrationRepository
     /// Searches COBOL files for the provided term.
     /// </summary>
     Task<IReadOnlyList<CobolFile>> SearchCobolFilesAsync(int runId, string? searchTerm, CancellationToken cancellationToken = default);
+
+    /// <summary>Saves extracted business logic for the run, replacing existing records.</summary>
+    Task SaveBusinessLogicAsync(int runId, IEnumerable<BusinessLogic> businessLogicExtracts, CancellationToken cancellationToken = default);
+
+    /// <summary>Returns all business logic entries for the run, or an empty list if none.</summary>
+    Task<IReadOnlyList<BusinessLogic>> GetBusinessLogicAsync(int runId, CancellationToken cancellationToken = default);
+
+    /// <summary>Deletes all business logic for the run.</summary>
+    Task DeleteBusinessLogicAsync(int runId, CancellationToken cancellationToken = default);
 }

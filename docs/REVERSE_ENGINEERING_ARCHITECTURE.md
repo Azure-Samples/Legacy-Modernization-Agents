@@ -1,7 +1,7 @@
 # Reverse Engineering Process Architecture
 
 > **Version:** 0.2 (Smart Chunking)  
-> **Last Updated:** December 2025
+> **Last Updated:** 2026-02-23
 
 ## Overview
 
@@ -46,8 +46,10 @@ flowchart TB
     Merge --> Generate[Generate Documentation]
     
     Generate --> Output1[/reverse-engineering-details.md/]
+    Generate --> Output2[(business_logic table<br/>SQLite migration.db)]
     
     Output1 --> End([Complete])
+    Output2 --> End
     
     style SizeCheck fill:#fff4e1,stroke:#333,stroke-width:2px,color:#000
     style Chunked fill:#e1f5ff,stroke:#333,stroke-width:2px,color:#000
@@ -96,7 +98,7 @@ graph TB
     
     subgraph "Output Layer"
         DetailsMD[reverse-engineering-details.md<br/>Business logic & technical analysis]
-        DB[(SQLite<br/>migration.db)]
+        DB[(SQLite<br/>migration.db<br/><br/>• chunk_metadata<br/>• business_logic)]
     end
     
     COBOL --> FileHelper
@@ -121,6 +123,7 @@ graph TB
     CobolAnalysis --> BusinessLogic
     
     BusinessLogicModel --> DetailsMD
+    BusinessLogicModel --> DB
     CobolAnalysis --> DetailsMD
     ChunkMeta --> DB
     
@@ -265,9 +268,11 @@ sequenceDiagram
     end
     
     rect rgba(129, 199, 132, 0.3)
-    Note over Process,FS: Generate Documentation
+    Note over Process,FS: Generate Documentation & Persist
     Process->>Process: GenerateReverseEngineeringDetailsMarkdown()
     Process->>FS: Write reverse-engineering-details.md
+    Process->>DB: SaveBusinessLogicAsync(runId, businessLogicExtracts)
+    Note over DB: Stored in business_logic table<br/>for reuse via --reuse-re
     end
     
     Process-->>User: ✅ Complete with statistics
@@ -347,7 +352,7 @@ flowchart LR
     
     subgraph "Output"
         BL[reverse-engineering-details.md]
-        DB[(chunk_metadata)]
+        DB[(SQLite<br/>chunk_metadata<br/>business_logic)]
     end
     
     F1 --> Small --> A1
@@ -359,6 +364,7 @@ flowchart LR
     A2 --> B2 --> BL
     A3 --> B3 --> BL
     
+    B1 & B2 & B3 --> DB
     C1 & C2 & C3 --> DB
     
     style Large fill:#e1f5ff,stroke:#333,stroke-width:2px,color:#000
@@ -401,6 +407,12 @@ flowchart LR
 - Chunk metadata stored in SQLite for portal dashboard
 - Real-time progress tracking via SSE updates
 - Portal available at `http://localhost:5028`
+
+### 8. **Business Logic Persistence**
+- Extracted `BusinessLogic` records are persisted to the `business_logic` SQLite table via `IMigrationRepository.SaveBusinessLogicAsync`
+- Enables reuse in subsequent conversion runs without re-running RE
+- Pass `--skip-reverse-engineering --reuse-re` (or answer **Y** in `./doctor.sh convert-only`) to inject persisted results into conversion prompts
+- Persisted results are visible per run in the portal via the **🔬 RE Results** button and can be deleted there
 
 ## Performance Characteristics
 
@@ -450,6 +462,24 @@ pie title Token Distribution per Small File
 
 ## Database Schema (Chunking)
 
+### business_logic Table
+```sql
+CREATE TABLE business_logic (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    file_name TEXT NOT NULL,
+    file_path TEXT,
+    is_copybook INTEGER NOT NULL DEFAULT 0,
+    business_purpose TEXT,
+    user_stories_json TEXT,   -- JSON array
+    features_json TEXT,       -- JSON array
+    business_rules_json TEXT, -- JSON array
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(run_id, file_name)
+);
+CREATE INDEX idx_business_logic_run ON business_logic(run_id);
+```
+
 ### chunk_metadata Table
 ```sql
 CREATE TABLE chunk_metadata (
@@ -486,8 +516,9 @@ The web portal at `http://localhost:5028` provides:
 
 - **Chunks Tab**: Real-time progress of chunk processing
 - **RE Report Tab**: Generated business logic documentation
-- **Architecture Tab**: Mermaid diagrams from analysis
+- **Reverse Engineering Results Tab**: Mermaid diagrams from analysis
 - **Chat**: Interactive Q&A about results (using `gpt-5.1-chat`)
+- **🔬 RE Results button** (per run card): View persisted business logic extracts (per-file story/feature/rule counts) and delete results that need to be regenerated
 
 ## Future Enhancements
 
@@ -501,13 +532,20 @@ The web portal at `http://localhost:5028` provides:
 ## CLI Commands
 
 ```bash
-# Run reverse engineering only
+# Run reverse engineering only (persists results to DB, launches portal)
 ./doctor.sh reverse-eng
+
+# Convert only, reusing persisted RE results (interactive prompt)
+./doctor.sh convert-only
+# → answer Y to inject business logic from last RE run
+
+# Or pass flags directly
+dotnet run -- --source ./source --skip-reverse-engineering --reuse-re
 
 # Check chunking infrastructure health
 ./doctor.sh chunking-health
 
-# Start portal to view results
+# Start portal to view results and manage RE data
 ./doctor.sh portal
 ```
 

@@ -472,13 +472,19 @@ public class BusinessLogicExtractorAgent : AgentBase
         {
             var line = lines[i].Trim();
 
-            if (line.StartsWith("###") && line.Contains("Feature", StringComparison.OrdinalIgnoreCase))
+            if (line.StartsWith("###") && (line.Contains("Feature", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("Use Case", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("Operation", StringComparison.OrdinalIgnoreCase)))
             {
                 if (currentFeature != null) features.Add(currentFeature);
                 currentFeature = new FeatureDescription
                 {
                     Id = $"F-{features.Count + 1}",
-                    Name = line.Replace("###", "").Replace("Feature:", "").Trim(),
+                    Name = System.Text.RegularExpressions.Regex.Replace(
+                        line.Replace("###", "").Trim(),
+                        @"^(Feature|Use Case \d+|Operation)[\s:]*",
+                        "",
+                        System.Text.RegularExpressions.RegexOptions.IgnoreCase).Trim(),
                     SourceLocation = fileName
                 };
             }

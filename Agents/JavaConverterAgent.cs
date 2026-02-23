@@ -22,6 +22,7 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
     public string FileExtension => ".java";
 
     private int? _runId;
+    private List<BusinessLogic> _businessLogicExtracts = new();
 
     /// <summary>
     /// Sets the Run ID for the current context.
@@ -29,6 +30,12 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
     public void SetRunId(int runId)
     {
         _runId = runId;
+    }
+
+    /// <inheritdoc/>
+    public void SetBusinessLogicContext(List<BusinessLogic> businessLogicExtracts)
+    {
+        _businessLogicExtracts = businessLogicExtracts ?? new();
     }
 
     /// <summary>
@@ -105,7 +112,18 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
             userPromptBuilder.AppendLine("Here is the analysis of the COBOL program to help you understand its structure:");
             userPromptBuilder.AppendLine();
             userPromptBuilder.AppendLine(cobolAnalysis.RawAnalysisData);
-            
+
+            // Inject business logic context from reverse engineering when available
+            var businessLogic = _businessLogicExtracts
+                .FirstOrDefault(bl => string.Equals(bl.FileName, cobolFile.FileName, StringComparison.OrdinalIgnoreCase));
+            if (businessLogic != null)
+            {
+                userPromptBuilder.AppendLine();
+                userPromptBuilder.AppendLine("Here is the extracted business logic from the reverse engineering phase. Use this to ensure the converted code faithfully implements all business rules and features:");
+                userPromptBuilder.AppendLine();
+                userPromptBuilder.Append(FormatBusinessLogicContext(businessLogic));
+            }
+
             userPromptBuilder.AppendLine();
             userPromptBuilder.AppendLine("IMPORTANT REQUIREMENTS:");
             userPromptBuilder.AppendLine("1. Return ONLY the Java code - NO explanations, NO markdown blocks, NO additional text");
