@@ -32,6 +32,7 @@ The migration uses Microsoft Agent Framework with a dual-API architecture (Respo
 - [File Splitting & Naming](#-file-splitting--naming)
 - [Architecture](#-architecture)
 - [Smart Chunking & Token Strategy](#-smart-chunking--token-strategy)
+- [Workers per Codex Run](#-workers-per-codex-run)
 - [Build & Run](#-build--run)
 
 ---
@@ -828,6 +829,98 @@ sequenceDiagram
 - **Pipeline concurrency (`--max-parallel`)** controls how many files/chunks run simultaneously (e.g., 8).
 - **AI concurrency (`--max-ai-parallel`)** caps concurrent Azure OpenAI calls (e.g., 3) to avoid throttling.
 - Both values can be surfaced via CLI flags or environment variables to let `doctor.sh` tune runtime.
+
+---
+
+### 👷 Workers per Codex Run
+
+Each agent phase (analysis, business-logic extraction, conversion) spawns a bounded worker pool. Workers acquire a `SemaphoreSlim` slot, send one request to the Azure OpenAI **Responses API** (codex model), then release the slot so the next file can proceed. A stagger delay prevents burst collisions at startup.
+
+#### Worker Allocation Flowchart
+
+```mermaid
+flowchart TD
+    subgraph INPUT["📂 COBOL File Queue"]
+        FILES["file_1.cbl … file_N.cbl"]
+    end
+
+    subgraph POOL["👷 Worker Pool (SemaphoreSlim)"]
+        direction LR
+        W1["Worker 1"]
+        W2["Worker 2"]
+        W3["Worker 3 … (up to MaxParallelConversion)"]
+    end
+
+    subgraph CODEX_CALL["🤖 Responses API Call (per worker)"]
+        STAGGER["Stagger delay\n(workerIndex × ParallelStaggerDelayMs)"]
+        RATE["RateLimitTracker.WaitForCapacityAsync\n(TPM / RPM budget)"]
+        API["POST /openai/deployments/{model}/responses\nmax_output_tokens, reasoning.effort"]
+        RETRY429["429 → Exponential backoff\n5 s → 60 s, up to 5 retries"]
+        RETRYEXH["ReasoningExhaustion → Escalate tokens\nup to 2 retries, then adaptive re-chunk"]
+    end
+
+    subgraph RESULT["📤 Result"]
+        SAVE["Save CodeFile to SQLite\nWrite to output/ directory"]
+        PROGRESS["progressCallback(done, total)"]
+    end
+
+    FILES -->|"Acquire slot"| W1
+    FILES -->|"Acquire slot"| W2
+    FILES -->|"Acquire slot"| W3
+    W1 --> STAGGER
+    W2 --> STAGGER
+    W3 --> STAGGER
+    STAGGER --> RATE
+    RATE --> API
+    API -->|"HTTP 429"| RETRY429
+    RETRY429 --> API
+    API -->|"ReasoningExhaustionException"| RETRYEXH
+    RETRYEXH --> API
+    API -->|"Success"| SAVE
+    SAVE --> PROGRESS
+    PROGRESS -->|"Release slot"| FILES
+```
+
+#### Worker Sequence — Single Codex API Call
+
+```mermaid
+sequenceDiagram
+    participant OS as Orchestrator
+    participant SM as SemaphoreSlim
+    participant RL as RateLimitTracker
+    participant API as Azure OpenAI<br/>Responses API
+    participant DB as SQLite / Output
+
+    OS->>SM: WaitAsync() — acquire worker slot
+    SM-->>OS: slot granted
+    OS->>OS: Task.Delay(workerIndex × staggerMs)
+    OS->>RL: WaitForCapacityAsync(estimatedTokens)
+    RL-->>OS: capacity available
+
+    OS->>API: POST /responses<br/>{model, prompt, max_output_tokens, reasoning.effort}
+    alt HTTP 200
+        API-->>OS: generated code
+        OS->>RL: RecordUsage(actualTokens)
+        OS->>DB: persist CodeFile + metadata
+    else HTTP 429 (rate limited)
+        API-->>OS: 429 Too Many Requests
+        OS->>OS: exponential backoff (5 s → 60 s, ≤5 retries)
+        OS->>API: retry request
+    else ReasoningExhaustion
+        API-->>OS: output_tokens ≥ 90% spent on reasoning
+        OS->>OS: double maxOutputTokens, promote effort tier
+        OS->>API: retry request (≤2 escalations)
+    end
+    OS->>SM: Release() — free worker slot
+```
+
+| Setting | Default | Controls |
+|---------|---------|---------|
+| `ChunkingSettings.MaxParallelConversion` | `1` | Max concurrent codex workers for file conversion |
+| `ChunkingSettings.MaxParallelAnalysis` | `6` | Max concurrent workers for COBOL analysis |
+| `ChunkingSettings.ParallelStaggerDelayMs` | `500` | ms delay between worker starts (per slot index) |
+| `ModelProfileSettings.TokensPerMinute` | varies | TPM budget used by `RateLimitTracker` |
+| `ModelProfileSettings.RequestsPerMinute` | varies | RPM budget used by `RateLimitTracker` |
 
 ### 🔄 End-to-End Data Flow
 1. `doctor.sh run` → load configs → choose target language
