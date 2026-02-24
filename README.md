@@ -707,7 +707,7 @@ flowchart TD
     class AE,AF,AG,AH,AI,AJ process
 ```
 
-> For detailed ASCII diagrams, constants reference tables, and complexity scoring indicator weights, see [smart-chunking-architecture.md](smart-chunking-architecture.md).
+> For detailed ASCII diagrams, constants reference tables, and complexity scoring indicator weights, see [smart-chunking-architecture.md](docs/smart-chunking-architecture.md).
 
 ---
 
@@ -1022,10 +1022,21 @@ See [Parallel Jobs Formula](#parallel-jobs-formula) for chunking configuration d
 
 ## 📚 Further Reading
 
-- [Smart Chunking & Token Architecture](smart-chunking-architecture.md) - Full diagrams, constants reference, and complexity scoring details
+- [Smart Chunking & Token Architecture](docs/smart-chunking-architecture.md) - Full diagrams, constants reference, and complexity scoring details
 - [Smart Chunking Guide](Smart-chuncking-how%20it-works.md) - Deep technical details
 - [Architecture Documentation](REVERSE_ENGINEERING_ARCHITECTURE.md) - System design
 - [Changelog](CHANGELOG.md) - Version history
+
+---
+
+## ⚙️ Workflows
+
+| Workflow / Agent | Trigger | Description |
+|---|---|---|
+| [Documentation Updater](.github/workflows/documentation-updater.lock.yml) | Push / PR to `main` | Checks documentation completeness and reports gaps via issues or PR comments |
+| [Documentation Audit](.github/workflows/documentation-audit.lock.yml) | Weekly schedule | Performs a full audit of project documentation for accuracy and completeness |
+| [Test Enhancer](.github/workflows/test-enhancer.lock.yml) | On demand | Agentic workflow that analyzes the codebase and proposes improvements to test coverage |
+| [Branch Reviewer](.github/agents/branch-reviewer.agent.md) | On demand (Copilot CLI) | Reviews branch changes, summarizes commits, and detects breaking changes vs. `main` |
 
 ---
 

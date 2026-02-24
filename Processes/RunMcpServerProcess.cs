@@ -54,19 +54,21 @@ public sealed class RunMcpServerProcess
         if (string.IsNullOrWhiteSpace(chatDeployment)) chatDeployment = _aiSettings?.DeploymentName;
         if (string.IsNullOrWhiteSpace(chatDeployment)) chatDeployment = _aiSettings?.ModelId;
 
-        if (!string.IsNullOrEmpty(chatEndpoint) && !string.IsNullOrEmpty(chatApiKey) && !string.IsNullOrEmpty(chatDeployment))
+        if (!string.IsNullOrEmpty(chatEndpoint) && !string.IsNullOrEmpty(chatDeployment))
         {
             try
             {
+                bool useEntraId = string.IsNullOrEmpty(chatApiKey) || chatApiKey.Contains("your-api-key");
                 _chatClient = ChatClientFactory.CreateChatClient(
                     chatEndpoint,
-                    chatApiKey,
+                    chatApiKey ?? string.Empty,
                     chatDeployment,
-                    useDefaultCredential: false,
+                    useDefaultCredential: useEntraId,
                     _logger);
                 
                 _modelId = chatDeployment;
-                _logger.LogInformation("IChatClient initialized for custom Q&A with model {ModelId}", _modelId);
+                _logger.LogInformation("IChatClient initialized for custom Q&A with model {ModelId} ({AuthMode})", 
+                    _modelId, useEntraId ? "Entra ID" : "API Key");
             }
             catch (Exception ex)
             {

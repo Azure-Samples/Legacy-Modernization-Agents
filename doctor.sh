@@ -14,6 +14,24 @@ MAGENTA='\033[0;35m'
 BOLD='\033[1m'
 NC='\033[0m' # No Color
 
+# Resolve the sqlite3 command, handling Windows (Git Bash / MSYS2) paths
+SQLITE3_CMD=""
+resolve_sqlite3() {
+    if [ -n "$SQLITE3_CMD" ]; then return 0; fi
+    if command -v sqlite3 >/dev/null 2>&1; then
+        SQLITE3_CMD="sqlite3"
+    elif command -v sqlite3.exe >/dev/null 2>&1; then
+        SQLITE3_CMD="sqlite3.exe"
+    else
+        local winget_match
+        winget_match=$(find "${LOCALAPPDATA:-/dev/null}/Microsoft/WinGet/Packages" -name "sqlite3.exe" 2>/dev/null | head -1)
+        if [ -n "$winget_match" ]; then
+            SQLITE3_CMD="$winget_match"
+        fi
+    fi
+    [ -n "$SQLITE3_CMD" ]
+}
+
 # Get repository root (directory containing this script)
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -885,10 +903,11 @@ run_doctor() {
 generate_migration_report() {
     echo -e "${BLUE}📝 Generating Migration Report...${NC}"
     
-    if ! command -v sqlite3 >/dev/null 2>&1; then
+    if ! resolve_sqlite3; then
         echo -e "${RED}❌ sqlite3 is not installed. Install it to generate reports.${NC}"
-        echo -e "${YELLOW}   macOS: brew install sqlite3${NC}"
-        echo -e "${YELLOW}   Linux: sudo apt install sqlite3${NC}"
+        echo -e "${YELLOW}   macOS:   brew install sqlite3${NC}"
+        echo -e "${YELLOW}   Linux:   sudo apt install sqlite3${NC}"
+        echo -e "${YELLOW}   Windows: winget install SQLite.SQLite  (then restart your terminal)${NC}"
         return 1
     fi
 
@@ -900,7 +919,7 @@ generate_migration_report() {
     fi
     
     # Get the latest run ID
-    local run_id=$(sqlite3 "$db_path" "SELECT MAX(run_id) FROM cobol_files;")
+    local run_id=$($SQLITE3_CMD "$db_path" "SELECT MAX(run_id) FROM cobol_files;")
     
     if [ -z "$run_id" ]; then
         echo -e "${RED}❌ No migration runs found in database${NC}"
@@ -925,7 +944,7 @@ generate_migration_report() {
         echo "## 📊 Migration Summary"
         echo ""
         
-        sqlite3 "$db_path" <<SQL
+        $SQLITE3_CMD "$db_path" <<SQL
 .mode markdown
 .headers off
 SELECT '- **Total COBOL Files:** ' || COUNT(DISTINCT file_name) FROM cobol_files WHERE run_id = $run_id;
@@ -935,7 +954,7 @@ SQL
         
         echo ""
         
-        sqlite3 "$db_path" <<SQL
+        $SQLITE3_CMD "$db_path" <<SQL
 .mode markdown
 .headers off
 SELECT '- **Total Dependencies:** ' || COUNT(*) FROM dependencies WHERE run_id = $run_id;
@@ -956,7 +975,7 @@ SQL
         echo "## 📁 File Inventory"
         echo ""
         
-        sqlite3 "$db_path" <<SQL
+        $SQLITE3_CMD "$db_path" <<SQL
 .mode markdown
 .headers on
 SELECT file_name AS 'File Name', file_path AS 'Path', is_copybook AS 'Is Copybook'
@@ -972,7 +991,7 @@ SQL
         echo "## 🔗 Dependency Relationships"
         echo ""
         
-        sqlite3 "$db_path" <<SQL
+        $SQLITE3_CMD "$db_path" <<SQL
 .mode markdown
 .headers on
 SELECT source_file AS 'Source', target_file AS 'Target', dependency_type AS 'Type', 
@@ -2068,9 +2087,10 @@ check_chunking_health() {
     if [[ -f "$db_path" ]]; then
         local tables=("chunk_metadata" "forward_references" "signatures" "type_mappings")
         for table in "${tables[@]}"; do
-            local exists=$(sqlite3 "$db_path" "SELECT name FROM sqlite_master WHERE type='table' AND name='$table';" 2>/dev/null)
+            resolve_sqlite3 2>/dev/null
+            local exists=$($SQLITE3_CMD "$db_path" "SELECT name FROM sqlite_master WHERE type='table' AND name='$table';" 2>/dev/null)
             if [[ -n "$exists" ]]; then
-                local count=$(sqlite3 "$db_path" "SELECT COUNT(*) FROM $table;" 2>/dev/null)
+                local count=$($SQLITE3_CMD "$db_path" "SELECT COUNT(*) FROM $table;" 2>/dev/null)
                 echo -e "   ${GREEN}✅ $table${NC} ($count rows)"
             else
                 echo -e "   ${YELLOW}⚠️  $table not found (created on first chunked run)${NC}"
@@ -2107,7 +2127,8 @@ check_chunking_health() {
     # Check 5: Recent chunk activity
     echo -e "${CYAN}5. Recent Chunk Activity${NC}"
     if [[ -f "$db_path" ]]; then
-        local recent=$(sqlite3 "$db_path" "
+        resolve_sqlite3 2>/dev/null
+        local recent=$($SQLITE3_CMD "$db_path" "
             SELECT run_id, source_file, 
                    COUNT(*) as chunks,
                    SUM(CASE WHEN status='Completed' THEN 1 ELSE 0 END) as completed,
