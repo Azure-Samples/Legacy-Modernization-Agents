@@ -5,6 +5,11 @@ All notable changes to this repository are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **README.md** — Added "Workers per Codex Run" section with a worker-pool flowchart and a per-worker sequence diagram illustrating semaphore acquisition, rate-limit gating, Responses API call, retry paths (429 / ReasoningExhaustion), and slot release. Added Table of Contents entry for the new section.
+
 ## [2.4.0] - 2026-02-16
 
 ### Added
