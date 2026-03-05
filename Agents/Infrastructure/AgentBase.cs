@@ -820,6 +820,14 @@ ADAPTIVE RE-CHUNK INSTRUCTIONS (PART 2 of 2):
     /// <returns>A formatted string describing the business logic context.</returns>
     protected static string FormatBusinessLogicContext(BusinessLogic businessLogic)
     {
+        if (string.IsNullOrWhiteSpace(businessLogic.BusinessPurpose)
+            && businessLogic.BusinessRules.Count == 0
+            && businessLogic.Features.Count == 0
+            && businessLogic.UserStories.Count == 0)
+        {
+            return string.Empty;
+        }
+
         var sb = new StringBuilder();
         if (!string.IsNullOrWhiteSpace(businessLogic.BusinessPurpose))
         {

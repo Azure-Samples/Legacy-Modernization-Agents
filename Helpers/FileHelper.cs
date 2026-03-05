@@ -433,9 +433,9 @@ public class FileHelper
     public async Task SaveDependencyOutputsAsync(DependencyMap dependencyMap, string outputFolder)
     {
         Directory.CreateDirectory(outputFolder);
-        await SaveDependencyMapAsync(dependencyMap, Path.Combine(outputFolder, "dependency-map.json"));
+        await SaveDependencyMapAsync(dependencyMap, Path.Join(outputFolder, "dependency-map.json"));
         await File.WriteAllTextAsync(
-            Path.Combine(outputFolder, "dependency-diagram.md"),
+            Path.Join(outputFolder, "dependency-diagram.md"),
             $"# COBOL Dependency Diagram\n\n```mermaid\n{dependencyMap.MermaidDiagram}\n```");
     }
 

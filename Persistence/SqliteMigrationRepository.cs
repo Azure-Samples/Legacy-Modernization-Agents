@@ -293,7 +293,7 @@ CREATE TABLE IF NOT EXISTS business_logic (
     features_json TEXT,
     business_rules_json TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(run_id) REFERENCES runs(id),
+    FOREIGN KEY(run_id) REFERENCES runs(id) ON DELETE CASCADE,
     UNIQUE(run_id, file_name)
 );
 CREATE INDEX IF NOT EXISTS idx_business_logic_run ON business_logic(run_id);";

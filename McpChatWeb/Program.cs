@@ -853,7 +853,7 @@ You can still access the data directly:
 											if (stories.Count > 5) reSection.AppendLine($"    ... and {stories.Count - 5} more");
 										}
 									}
-									catch { }
+									catch (System.Text.Json.JsonException ex) { Console.Error.WriteLine($"Failed to deserialize user stories JSON: {ex.Message}"); }
 								}
 
 								if (!string.IsNullOrWhiteSpace(featuresJson) && featuresJson != "[]")
@@ -869,7 +869,7 @@ You can still access the data directly:
 											if (features.Count > 5) reSection.AppendLine($"    ... and {features.Count - 5} more");
 										}
 									}
-									catch { }
+									catch (System.Text.Json.JsonException ex) { Console.Error.WriteLine($"Failed to deserialize features JSON: {ex.Message}"); }
 								}
 
 								if (!string.IsNullOrWhiteSpace(rulesJson) && rulesJson != "[]")
@@ -885,12 +885,12 @@ You can still access the data directly:
 											if (rules.Count > 5) reSection.AppendLine($"    ... and {rules.Count - 5} more");
 										}
 									}
-									catch { }
+									catch (System.Text.Json.JsonException ex) { Console.Error.WriteLine($"Failed to deserialize business rules JSON: {ex.Message}"); }
 								}
 							}
 						}
 
-						contextData += reSection.ToString();
+						contextData += reSection;
 					}
 				}
 			}
@@ -1354,9 +1354,9 @@ app.MapGet("/api/runs/{runId}/business-logic", async (string runId) =>
 		await using var cmd = connection.CreateCommand();
 		cmd.CommandText = @"
 SELECT file_name, is_copybook, business_purpose,
-       (SELECT COUNT(*) FROM json_each(user_stories_json))   AS story_count,
-       (SELECT COUNT(*) FROM json_each(features_json))       AS feature_count,
-       (SELECT COUNT(*) FROM json_each(business_rules_json)) AS rule_count,
+       COALESCE((SELECT COUNT(*) FROM json_each(user_stories_json)), 0)   AS story_count,
+       COALESCE((SELECT COUNT(*) FROM json_each(features_json)), 0)       AS feature_count,
+       COALESCE((SELECT COUNT(*) FROM json_each(business_rules_json)), 0) AS rule_count,
        created_at
 FROM business_logic WHERE run_id = $runId ORDER BY file_name";
 		cmd.Parameters.AddWithValue("$runId", parsedRunId.Value);

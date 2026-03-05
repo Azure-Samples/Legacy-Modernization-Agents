@@ -244,8 +244,8 @@ async function loadReDetails(runId) {
     const fileRows = data.files.map(f => `
       <tr>
         <td style="padding: 0.3rem 0.5rem;">
-          <div style="color: ${f.isCopybook ? '#f16667' : '#68bdf6'}; font-size: 0.78rem;">${f.fileName}</div>
-          ${f.businessPurpose ? `<div style="color: #64748b; font-size: 0.72rem; margin-top: 2px; line-height: 1.3;">${f.businessPurpose}</div>` : ''}
+          <div style="color: ${f.isCopybook ? '#f16667' : '#68bdf6'}; font-size: 0.78rem;">${escapeHtml(f.fileName)}</div>
+          ${f.businessPurpose ? `<div style="color: #64748b; font-size: 0.72rem; margin-top: 2px; line-height: 1.3;">${escapeHtml(f.businessPurpose)}</div>` : ''}
         </td>
         <td style="padding: 0.3rem 0.5rem; color: #94a3b8; text-align: center; vertical-align: top">${f.storyCount}</td>
         <td style="padding: 0.3rem 0.5rem; color: #94a3b8; text-align: center; vertical-align: top">${f.featureCount}</td>

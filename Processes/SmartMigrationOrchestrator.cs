@@ -89,8 +89,8 @@ public class SmartMigrationOrchestrator
         int? existingRunId = null,
         List<BusinessLogic>? businessLogicExtracts = null,
         DependencyMap? existingDependencyMap = null,
-        CancellationToken cancellationToken = default,
-        string? runType = null)
+        string? runType = null,
+        CancellationToken cancellationToken = default)
     {
         var stats = new MigrationStats();
         var targetName = _settings.ApplicationSettings.TargetLanguage == TargetLanguage.CSharp 
