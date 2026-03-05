@@ -791,12 +791,13 @@ sequenceDiagram
   BizLogic-->>RE: BusinessLogic[]
   RE->>Repo: persist analyses + documentation
   RE->>Repo: persist BusinessLogic[] to business_logic table
-  RE-->>CLI: ReverseEngineeringResult (with RunId)
+  RE-->>CLI: ReverseEngineeringResult (BusinessLogic[], RunId)
+  CLI->>Migration: SetBusinessLogicContext(BusinessLogic[])
   CLI->>Migration: start migration run with latest analyses
   Migration->>Analyzer: reuse or refresh CobolAnalysis
   Migration->>DepMap: build dependency graph (CALL/COPY/...)
   DepMap-->>Migration: DependencyMap
-  Migration->>Converter: convert to Java/C# (AI-limited concurrency)
+  Migration->>Converter: convert to Java/C# with business logic context
   Converter-->>Migration: CodeFile artifacts
   Migration->>Repo: persist run metadata, graph edges, code files
   Repo-->>Portal: expose MCP resources + REST APIs
@@ -838,6 +839,7 @@ sequenceDiagram
   - `CobolAnalysis` per file
   - Target language settings (Quarkus vs. .NET)
   - Migration run metadata (for logging & metrics)
+  - `BusinessLogic` records per file (user stories, features, business rules) — injected automatically from RE output in full-pipeline runs, or loaded from DB when `--reuse-re` is used
 - **Outputs:** `CodeFile` records saved under `output/java/` or `output/csharp/`.
 - **Interactions:**
   - Concurrency guards (pipeline slots vs. AI calls) ensure Azure OpenAI limits respected.
