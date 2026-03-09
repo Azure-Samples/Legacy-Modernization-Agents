@@ -150,12 +150,13 @@ async function loadAvailableRuns(silent = false, forceSelectLatest = false) {
 function normalizeRuns(rawRuns) {
   return (rawRuns || []).map(r => {
     if (typeof r === 'number') {
-      return { id: r, status: 'Unknown' };
+      return { id: r, status: 'Unknown', runType: null };
     }
     return { 
       id: r.id, 
       status: r.status || 'Unknown',
-      targetLanguage: r.targetLanguage || 'Unknown'
+      targetLanguage: r.targetLanguage || 'Unknown',
+      runType: r.runType || null
     };
   });
 }
@@ -253,7 +254,13 @@ function populateRunSelector(runs, selectedRunId) {
     if (run.targetLanguage === 'Java') langIcon = '☕ ';
     else if (run.targetLanguage === 'C#') langIcon = '⚙️ ';
     
-    option.textContent = `${langIcon}${isFailed ? '❌ ' : ''}Run ${run.id}${statusLabel}`;
+    // Run type label
+    let runTypeLabel = '';
+    if (run.runType === 'RE Only') runTypeLabel = ' [RE]';
+    else if (run.runType === 'Conversion Only') runTypeLabel = ' [Conv]';
+    else if (run.runType === 'Full Migration') runTypeLabel = ' [Full]';
+    
+    option.textContent = `${langIcon}${isFailed ? '❌ ' : ''}Run ${run.id}${runTypeLabel}${statusLabel}`;
     
     if (run.id === selectedRunId) {
       option.selected = true;

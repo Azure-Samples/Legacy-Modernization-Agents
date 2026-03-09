@@ -16,6 +16,7 @@ public class ReverseEngineeringProcess
 {
     private readonly ICobolAnalyzerAgent _cobolAnalyzerAgent;
     private readonly BusinessLogicExtractorAgent _businessLogicExtractorAgent;
+    private readonly IDependencyMapperAgent _dependencyMapperAgent;
     private readonly FileHelper _fileHelper;
     private readonly ILogger<ReverseEngineeringProcess> _logger;
     private readonly EnhancedLogger _enhancedLogger;
@@ -25,6 +26,7 @@ public class ReverseEngineeringProcess
     public ReverseEngineeringProcess(
         ICobolAnalyzerAgent cobolAnalyzerAgent,
         BusinessLogicExtractorAgent businessLogicExtractorAgent,
+        IDependencyMapperAgent dependencyMapperAgent,
         FileHelper fileHelper,
         ILogger<ReverseEngineeringProcess> logger,
         EnhancedLogger enhancedLogger,
@@ -32,6 +34,7 @@ public class ReverseEngineeringProcess
     {
         _cobolAnalyzerAgent = cobolAnalyzerAgent;
         _businessLogicExtractorAgent = businessLogicExtractorAgent;
+        _dependencyMapperAgent = dependencyMapperAgent;
         _fileHelper = fileHelper;
         _logger = logger;
         _enhancedLogger = enhancedLogger;
@@ -72,7 +75,7 @@ public class ReverseEngineeringProcess
             // Load glossary if available
             await LoadGlossaryAsync();
 
-            var totalSteps = 3; // Step 3 is final
+            var totalSteps = 4;
 
             // Step 1: Scan for COBOL files
             _enhancedLogger.ShowStep(1, totalSteps, "File Discovery", "Scanning for COBOL files");
@@ -88,6 +91,11 @@ public class ReverseEngineeringProcess
             {
                 _enhancedLogger.ShowWarning("No COBOL files found. Nothing to reverse engineer.");
                 return result;
+            }
+
+            if (_migrationRepository != null && runId > 0)
+            {
+                await _migrationRepository.SaveCobolFilesAsync(runId, cobolFiles);
             }
 
             // Step 2: Analyze COBOL structure
@@ -119,10 +127,30 @@ public class ReverseEngineeringProcess
             result.TotalFeatures = businessLogicList.Sum(bl => bl.Features.Count);
             result.TotalBusinessRules = businessLogicList.Sum(bl => bl.BusinessRules.Count);
 
+            // Persist for --reuse-re
+            if (_migrationRepository != null && runId > 0)
+            {
+                await _migrationRepository.SaveBusinessLogicAsync(runId, businessLogicList);
+                result.RunId = runId;
+            }
+
+            // Step 4: Map dependencies
+            _enhancedLogger.ShowStep(4, totalSteps, "Dependency Mapping", "Analyzing inter-program dependencies and copybook usage");
+            progressCallback?.Invoke("Mapping dependencies", 4, totalSteps);
+
+            var dependencyMap = await _dependencyMapperAgent.AnalyzeDependenciesAsync(cobolFiles, analyses);
+            _enhancedLogger.ShowSuccess($"Dependency analysis complete - {dependencyMap.Dependencies.Count} relationships found");
+            result.DependencyMap = dependencyMap;
+
+            if (_migrationRepository != null && runId > 0)
+            {
+                await _migrationRepository.SaveDependencyMapAsync(runId, dependencyMap);
+            }
+
             // Generate output files
             _logger.LogInformation("Generating documentation...");
             Console.WriteLine("📝 Generating documentation...");
-            await GenerateOutputAsync(outputFolder, result);
+            await GenerateOutputAsync(outputFolder, result, dependencyMap);
 
             _enhancedLogger.ShowSuccess("✓ Reverse engineering complete!");
             _logger.LogInformation("Output location: {OutputFolder}", outputFolder);
@@ -167,7 +195,7 @@ public class ReverseEngineeringProcess
         }
     }
 
-    private async Task GenerateOutputAsync(string outputFolder, ReverseEngineeringResult result)
+    private async Task GenerateOutputAsync(string outputFolder, ReverseEngineeringResult result, DependencyMap? dependencyMap = null)
     {
         Directory.CreateDirectory(outputFolder);
 
@@ -176,6 +204,12 @@ public class ReverseEngineeringProcess
         var outputPath = Path.Combine(outputFolder, "reverse-engineering-details.md");
         await File.WriteAllTextAsync(outputPath, content);
         _logger.LogInformation("Generated reverse engineering documentation: {Path}", outputPath);
+
+        if (dependencyMap != null)
+        {
+            await _fileHelper.SaveDependencyOutputsAsync(dependencyMap, outputFolder);
+            _logger.LogInformation("Generated dependency map in: {Folder}", outputFolder);
+        }
     }
 
     private string GenerateReverseEngineeringDetailsMarkdown(ReverseEngineeringResult result)
@@ -190,7 +224,7 @@ public class ReverseEngineeringProcess
         sb.AppendLine();
         sb.AppendLine($"**Generated**: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
         sb.AppendLine($"**Total Files Analyzed**: {result.TotalFilesAnalyzed} ({programCount} programs, {copybookCount} copybooks)");
-        sb.AppendLine($"**Total Feature Descriptions**: {result.TotalUserStories}");
+        sb.AppendLine($"**Total User Stories**: {result.TotalUserStories}");
         sb.AppendLine($"**Total Features**: {result.TotalFeatures}");
         sb.AppendLine($"**Total Business Rules**: {result.TotalBusinessRules}");
         sb.AppendLine();
@@ -369,6 +403,15 @@ public class ReverseEngineeringProcess
                 sb.AppendLine();
             }
 
+            // Fall back to raw AI response when structured fields were not parsed
+            bool hasStructuredData = analysis.DataDivisions.Any() || analysis.ProcedureDivisions.Any()
+                || analysis.CopybooksReferenced.Any() || analysis.Paragraphs.Any();
+            if (!hasStructuredData && !string.IsNullOrWhiteSpace(analysis.RawAnalysisData))
+            {
+                sb.AppendLine(analysis.RawAnalysisData);
+                sb.AppendLine();
+            }
+
             sb.AppendLine("---");
             sb.AppendLine();
         }
@@ -385,6 +428,7 @@ public class ReverseEngineeringResult
     public bool Success { get; set; }
     public string ErrorMessage { get; set; } = string.Empty;
     public string OutputFolder { get; set; } = string.Empty;
+    public int RunId { get; set; }
     public int TotalFilesAnalyzed { get; set; }
     public int TotalUserStories { get; set; }
     public int TotalFeatures { get; set; }
@@ -392,4 +436,5 @@ public class ReverseEngineeringResult
     public int TotalModernizationOpportunities { get; set; }
     public List<CobolAnalysis> TechnicalAnalyses { get; set; } = new List<CobolAnalysis>();
     public List<BusinessLogic> BusinessLogicExtracts { get; set; } = new List<BusinessLogic>();
+    public DependencyMap? DependencyMap { get; set; }
 }

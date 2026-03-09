@@ -127,6 +127,24 @@ public class ChunkedMigrationProcess
     }
 
     /// <summary>
+    /// Sets the business logic context extracted during reverse engineering so that
+    /// the chunk-aware converter can inject it into its conversion prompts.
+    /// Must be called after <see cref="InitializeAgents"/>.
+    /// </summary>
+    /// <param name="businessLogicExtracts">Per-file business logic from reverse engineering.</param>
+    public void SetDependencyMap(DependencyMap dependencyMap)
+    {
+        _existingDependencyMap = dependencyMap;
+    }
+
+    private DependencyMap? _existingDependencyMap;
+
+    public void SetBusinessLogicContext(List<BusinessLogic> businessLogicExtracts)
+    {
+        _chunkAwareConverter?.SetBusinessLogicContext(businessLogicExtracts);
+    }
+
+    /// <summary>
     /// Runs the chunked migration process.
     /// </summary>
     public async Task RunAsync(
@@ -134,7 +152,8 @@ public class ChunkedMigrationProcess
         string outputFolder,
         Action<string, int, int, double?>? progressCallback = null,
         int? existingRunId = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? runType = null)
     {
         var targetName = _settings.ApplicationSettings.TargetLanguage == TargetLanguage.CSharp 
             ? "C# .NET" : "Java Quarkus";
@@ -181,13 +200,24 @@ public class ChunkedMigrationProcess
                 "File categorization: {Small} small files, {Large} large files requiring chunking",
                 smallFiles.Count, largeFiles.Count);
 
-            // Step 2: Analyze dependencies
+            // Step 2: Dependency analysis (reused from RE when available)
             _enhancedLogger.ShowDashboardSummary(runId, targetName, "Running", "2/6: Dependency Analysis", 15);
             _enhancedLogger.ShowStep(2, 6, "Dependency Analysis", "Mapping file relationships");
             progressCallback?.Invoke("Analyzing dependencies", 2, 6, null);
 
-            var dependencyMap = await _dependencyMapperAgent!.AnalyzeDependenciesAsync(
-                cobolFiles, new List<CobolAnalysis>());
+            DependencyMap dependencyMap;
+            if (_existingDependencyMap != null)
+            {
+                dependencyMap = _existingDependencyMap;
+                _enhancedLogger.ShowSuccess($"Reusing dependency map from reverse engineering ({dependencyMap.Dependencies.Count} relationships)");
+            }
+            else
+            {
+                dependencyMap = await _dependencyMapperAgent!.AnalyzeDependenciesAsync(
+                    cobolFiles, new List<CobolAnalysis>());
+                _enhancedLogger.ShowSuccess($"Dependency analysis complete - {dependencyMap.Dependencies.Count} relationships found");
+            }
+            await _fileHelper.SaveDependencyOutputsAsync(dependencyMap, outputFolder);
             await _migrationRepository.SaveDependencyMapAsync(runId, dependencyMap);
 
             // Determine processing order based on dependencies
@@ -313,7 +343,7 @@ public class ChunkedMigrationProcess
             _logger.LogInformation("Full chat logs saved to Logs folder");
 
             _enhancedLogger.ShowDashboardSummary(runId, targetName, "Completed", "Done", 100);
-            await _migrationRepository.CompleteRunAsync(runId, "Completed");
+            await _migrationRepository.CompleteRunAsync(runId, "Completed", runType);
 
             _enhancedLogger.ShowSuccess(
                 $"Chunked migration completed: {allFiles.Count} files generated");

@@ -38,4 +38,12 @@ public interface ICodeConverterAgent
     /// Sets the Run ID for the current context.
     /// </summary>
     void SetRunId(int runId);
+
+    /// <summary>
+    /// Sets the business logic context extracted during reverse engineering.
+    /// When provided, this context is injected into conversion prompts to guide
+    /// the AI in producing semantically accurate target code.
+    /// </summary>
+    /// <param name="businessLogicExtracts">Per-file business logic extracted during reverse engineering.</param>
+    void SetBusinessLogicContext(List<BusinessLogic> businessLogicExtracts);
 }

@@ -103,6 +103,15 @@ public class HybridMigrationRepository : IMigrationRepository
         return _sqliteRepo.SearchCobolFilesAsync(runId, searchTerm, cancellationToken);
     }
 
+    public Task SaveBusinessLogicAsync(int runId, IEnumerable<BusinessLogic> businessLogicExtracts, CancellationToken cancellationToken = default)
+        => _sqliteRepo.SaveBusinessLogicAsync(runId, businessLogicExtracts, cancellationToken);
+
+    public Task<IReadOnlyList<BusinessLogic>> GetBusinessLogicAsync(int runId, CancellationToken cancellationToken = default)
+        => _sqliteRepo.GetBusinessLogicAsync(runId, cancellationToken);
+
+    public Task DeleteBusinessLogicAsync(int runId, CancellationToken cancellationToken = default)
+        => _sqliteRepo.DeleteBusinessLogicAsync(runId, cancellationToken);
+
     // Graph-specific methods (delegate to Neo4j if available)
 
     public async Task<IReadOnlyList<CircularDependency>> GetCircularDependenciesAsync(int runId)

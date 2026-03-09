@@ -5,6 +5,24 @@ All notable changes to this repository are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.0] - 2026-02-23
+
+### Added
+- **Business Logic Persistence** — `ReverseEngineeringProcess` and `ChunkedReverseEngineeringProcess` now persist extracted `BusinessLogic` records to a new `business_logic` SQLite table via `IMigrationRepository.SaveBusinessLogicAsync`. Added `GetBusinessLogicAsync` and `DeleteBusinessLogicAsync` to `IMigrationRepository`, `SqliteMigrationRepository`, and `HybridMigrationRepository`.
+- **Business Logic Injection into Conversion Prompts** — All four converter agents (`JavaConverterAgent`, `CSharpConverterAgent`, `ChunkAwareJavaConverter`, `ChunkAwareCSharpConverter`) now receive extracted `BusinessLogic` records via `SetBusinessLogicContext()` (new method on `ICodeConverterAgent`). In full-pipeline runs, `SmartMigrationOrchestrator` wires RE output directly into conversion; `--reuse-re` loads the same context from a previous persisted RE run. A shared `FormatBusinessLogicContext()` helper in `AgentBase` formats the context for all four converters.
+- **`--reuse-re` CLI flag** — When combined with `--skip-reverse-engineering`, loads business logic from the latest persisted RE run and injects it into conversion prompts. `doctor.sh convert-only` now prompts interactively for this choice.
+- **REST API: `GET/DELETE /api/runs/{runId}/business-logic`** — Returns per-file business logic summary (story/feature/rule counts); DELETE removes persisted results to allow re-running RE for that run.
+- **Portal: per-run `🔬 RE Results` button** — Shows the business logic summary table for a run and allows deletion of persisted results directly from the UI.
+- **RE Results in Portal Chat** — Chat endpoint injects business purpose, user stories, features, and business rules from the `business_logic` table into the AI prompt context. Updated AI system prompt accordingly.
+
+### Fixed
+- **Empty Technical Analysis in RE output** — `ReverseEngineeringProcess` and `ChunkedReverseEngineeringProcess` now fall back to rendering `RawAnalysisData` when structured `CobolAnalysis` fields are unpopulated.
+- **Total Features always 0** — `BusinessLogicExtractorAgent.ExtractFeatures()` now matches `### Use Case N:` and `### Operation` headings in addition to `### Feature:`, reflecting the actual AI prompt output.
+
+### Changed
+- **Dependency mapping runs once per full run** — RE processes (`ReverseEngineeringProcess`, `ChunkedReverseEngineeringProcess`) now include a dedicated dependency mapping step (step 4/5) and store the result on `ReverseEngineeringResult.DependencyMap`. `MigrationProcess` and `ChunkedMigrationProcess` accept a `SetDependencyMap()` call and skip `AnalyzeDependenciesAsync` when a map is already provided. `SmartMigrationOrchestrator.RunAsync` threads `existingDependencyMap` through to both migration paths. Dependency output files (`dependency-map.json`, `dependency-diagram.md`) are now generated in the RE output folder as well as the migration output folder.
+- **`doctor.sh`** — Updated `convert-only` to prompt for `--reuse-re`; corrected portal navigation references to match current UI (`'📄 Reverse Engineering Results'`).
+
 ## [2.4.0] - 2026-02-16
 
 ### Added

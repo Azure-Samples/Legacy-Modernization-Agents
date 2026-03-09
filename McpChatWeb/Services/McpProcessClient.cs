@@ -158,7 +158,7 @@ public sealed class McpProcessClient : IMcpClient, IDisposable
                 ["content"] = new JsonArray(new JsonObject
                 {
                     ["type"] = "text",
-                    ["text"] = "You are a helpful assistant that answers questions about COBOL migration runs."
+                    ["text"] = "You are a helpful assistant that answers questions about COBOL migration runs. You have access to reverse engineering results including business purpose, user stories, features, and business rules extracted from the COBOL source files. Use this context to give accurate, specific answers about what the programs do and how they work."
                 })
             },
             new JsonObject

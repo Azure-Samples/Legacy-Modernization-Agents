@@ -18,6 +18,7 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
 {
     private readonly ConversionSettings _conversionSettings;
     private int? _runId;
+    private List<BusinessLogic> _businessLogicExtracts = new();
 
     public string TargetLanguage => "Java";
     public string FileExtension => ".java";
@@ -29,6 +30,12 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
     public void SetRunId(int runId)
     {
         _runId = runId;
+    }
+
+    /// <inheritdoc/>
+    public void SetBusinessLogicContext(List<BusinessLogic> businessLogicExtracts)
+    {
+        _businessLogicExtracts = businessLogicExtracts ?? new();
     }
 
     /// <summary>
@@ -386,6 +393,16 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
                 sb.AppendLine($"  - {reference.TargetMethod}");
             }
             sb.AppendLine();
+        }
+
+        // Inject business logic context from reverse engineering when available
+        var businessLogic = _businessLogicExtracts
+            .FirstOrDefault(bl => string.Equals(bl.FileName, chunk.SourceFile, StringComparison.OrdinalIgnoreCase));
+        if (businessLogic != null)
+        {
+            sb.AppendLine("Business logic context from reverse engineering (use to ensure accurate conversion):");
+            sb.AppendLine();
+            sb.Append(FormatBusinessLogicContext(businessLogic));
         }
 
         sb.AppendLine("Return ONLY Java code. No markdown blocks. No explanations.");

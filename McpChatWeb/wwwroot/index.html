@@ -79,7 +79,7 @@
         <button id="refresh-resources" type="button" class="btn-small" title="Refresh resource list">⟳</button>
       </div>
       <button id="showAllRunsBtn" class="info-button">📊 View All Runs & Data Guide</button>
-      <button id="showArchitectureBtn" class="info-button">📄 Architecture Documentation</button>
+      <button id="showArchitectureBtn" class="info-button">📄 Reverse Engineering Results</button>
       <button id="showMigrationMonitorBtn" class="info-button migration-monitor-btn">🔄 Migration Monitor</button>
       <div id="resources-list" class="resource-list"></div>
     </section>
@@ -500,34 +500,15 @@ curl http://localhost:5028/api/data-retrieval-guide</code></pre>
     </div>
   </div>
 
-  <!-- Architecture Documentation Modal -->
+  <!-- Reverse Engineering Results Modal -->
   <div id="architectureModal" class="modal">
     <div class="modal-content modal-content-wide">
       <div class="modal-header">
-        <h2>📄 Documentation</h2>
+        <h2>🔬 Reverse Engineering Results</h2>
         <span class="close arch-close">&times;</span>
       </div>
       <div class="modal-body">
-        <!-- Tabs for Architecture and Report -->
-        <div class="doc-tabs">
-          <button class="doc-tab-btn active" data-doc-tab="architecture">🏗️ Architecture</button>
-          <button class="doc-tab-btn" data-doc-tab="report">📊 RE Report</button>
-        </div>
-        
-        <!-- Architecture Tab Content -->
-        <div id="architectureTab" class="doc-tab-content active">
-          <div class="doc-toolbar">
-            <button id="downloadMarkdownBtn" class="doc-button">⬇️ Download Markdown</button>
-            <button id="copyToClipboardBtn" class="doc-button">📋 Copy to Clipboard</button>
-            <span id="docLastModified" class="doc-meta"></span>
-          </div>
-          <div id="architectureContent" class="doc-content">
-            <p>Loading documentation...</p>
-          </div>
-        </div>
-        
-        <!-- Reverse Engineering Report Tab Content -->
-        <div id="reportTab" class="doc-tab-content" style="display: none;">
+        <div id="reportTab" class="doc-tab-content active">
           <div class="doc-toolbar">
             <button id="downloadReportBtn" class="doc-button">⬇️ Download Report</button>
             <button id="copyReportBtn" class="doc-button">📋 Copy to Clipboard</button>
