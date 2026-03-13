@@ -22,6 +22,25 @@ public class BusinessLogicExtractorAgent : AgentBase
     /// <inheritdoc/>
     protected override string AgentName => "BusinessLogicExtractorAgent";
 
+    /// <summary>
+    /// Creates a BusinessLogicExtractorAgent, routing to Responses API or Chat API based on availability.
+    /// </summary>
+    public static BusinessLogicExtractorAgent Create(
+        ResponsesApiClient? responsesClient,
+        IChatClient? chatClient,
+        ILogger<BusinessLogicExtractorAgent> logger,
+        string modelId,
+        EnhancedLogger? enhancedLogger = null,
+        ChatLogger? chatLogger = null,
+        RateLimiter? rateLimiter = null,
+        AppSettings? settings = null,
+        ChunkingOrchestrator? chunkingOrchestrator = null)
+    {
+        return responsesClient != null
+            ? new BusinessLogicExtractorAgent(responsesClient, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings, chunkingOrchestrator)
+            : new BusinessLogicExtractorAgent(chatClient!, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings, chunkingOrchestrator);
+    }
+
     public BusinessLogicExtractorAgent(
         IChatClient chatClient,
         ILogger<BusinessLogicExtractorAgent> logger,

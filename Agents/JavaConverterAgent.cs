@@ -21,6 +21,25 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
     public string TargetLanguage => "Java";
     public string FileExtension => ".java";
 
+    /// <summary>
+    /// Creates a JavaConverterAgent, routing to Responses API or Chat API based on availability.
+    /// </summary>
+    public static JavaConverterAgent Create(
+        ResponsesApiClient? responsesClient,
+        IChatClient? chatClient,
+        ILogger<JavaConverterAgent> logger,
+        string modelId,
+        EnhancedLogger? enhancedLogger = null,
+        ChatLogger? chatLogger = null,
+        RateLimiter? rateLimiter = null,
+        AppSettings? settings = null,
+        int? runId = null)
+    {
+        return responsesClient != null
+            ? new JavaConverterAgent(responsesClient, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings, runId)
+            : new JavaConverterAgent(chatClient!, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings, runId);
+    }
+
     private int? _runId;
     private List<BusinessLogic> _businessLogicExtracts = new();
 
@@ -52,6 +71,7 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
         int? runId = null)
         : base(responsesClient, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings)
     {
+        _runId = runId;
     }
 
     /// <summary>
@@ -68,6 +88,7 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
         int? runId = null)
         : base(chatClient, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings)
     {
+        _runId = runId;
     }
 
     /// <inheritdoc/>

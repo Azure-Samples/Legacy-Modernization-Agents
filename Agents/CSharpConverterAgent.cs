@@ -21,6 +21,25 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
     public string TargetLanguage => "CSharp";
     public string FileExtension => ".cs";
 
+    /// <summary>
+    /// Creates a CSharpConverterAgent, routing to Responses API or Chat API based on availability.
+    /// </summary>
+    public static CSharpConverterAgent Create(
+        ResponsesApiClient? responsesClient,
+        IChatClient? chatClient,
+        ILogger<CSharpConverterAgent> logger,
+        string modelId,
+        EnhancedLogger? enhancedLogger = null,
+        ChatLogger? chatLogger = null,
+        RateLimiter? rateLimiter = null,
+        AppSettings? settings = null,
+        int? runId = null)
+    {
+        return responsesClient != null
+            ? new CSharpConverterAgent(responsesClient, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings, runId)
+            : new CSharpConverterAgent(chatClient!, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings, runId);
+    }
+
     private int? _runId;
     private List<BusinessLogic> _businessLogicExtracts = new();
 

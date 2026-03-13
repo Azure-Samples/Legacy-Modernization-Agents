@@ -19,6 +19,24 @@ public class DependencyMapperAgent : AgentBase, IDependencyMapperAgent
     protected override string AgentName => "DependencyMapperAgent";
 
     /// <summary>
+    /// Creates a DependencyMapperAgent, routing to Responses API or Chat API based on availability.
+    /// </summary>
+    public static DependencyMapperAgent Create(
+        ResponsesApiClient? responsesClient,
+        IChatClient? chatClient,
+        ILogger<DependencyMapperAgent> logger,
+        string modelId,
+        EnhancedLogger? enhancedLogger = null,
+        ChatLogger? chatLogger = null,
+        RateLimiter? rateLimiter = null,
+        AppSettings? settings = null)
+    {
+        return responsesClient != null
+            ? new DependencyMapperAgent(responsesClient, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings)
+            : new DependencyMapperAgent(chatClient!, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings);
+    }
+
+    /// <summary>
     /// Initializes a new instance using Responses API (for codex models like gpt-5.1-codex-mini).
     /// </summary>
     public DependencyMapperAgent(

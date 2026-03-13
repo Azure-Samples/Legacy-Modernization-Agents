@@ -1,0 +1,73 @@
+{
+  "name": "legacy-modernization-portal",
+  "displayName": "Legacy Modernization Portal",
+  "description": "Hybrid portal/dashboard for Legacy Modernization Agents with doctor.sh controls and prompt browser.",
+  "version": "0.0.4",
+  "publisher": "internal",
+  "private": true,
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:legacyModernization.dashboard",
+    "onCommand:legacyModernization.openPortal",
+    "onCommand:legacyModernization.runDoctor",
+    "onCommand:legacyModernization.runDoctorPortal"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "legacyModernization.dashboard",
+        "title": "Legacy Modernization: Open Dashboard"
+      },
+      {
+        "command": "legacyModernization.openPortal",
+        "title": "Legacy Modernization: Open Portal Webview"
+      },
+      {
+        "command": "legacyModernization.runDoctor",
+        "title": "Legacy Modernization: Run doctor.sh run"
+      },
+      {
+        "command": "legacyModernization.runDoctorPortal",
+        "title": "Legacy Modernization: Run doctor.sh portal"
+      }
+    ],
+    "configuration": {
+      "title": "Legacy Modernization",
+      "properties": {
+        "legacyModernization.portalPort": {
+          "type": "number",
+          "default": 5028,
+          "description": "Port for the portal (McpChatWeb)."
+        },
+        "legacyModernization.portalBaseUrl": {
+          "type": "string",
+          "default": "http://localhost:5028",
+          "description": "Base URL for the portal embed."
+        },
+        "legacyModernization.doctorScriptPath": {
+          "type": "string",
+          "default": "${workspaceFolder}/doctor.sh",
+          "description": "Path to the doctor.sh script."
+        },
+        "legacyModernization.promptsFolder": {
+          "type": "string",
+          "default": "${workspaceFolder}/Agents/Prompts",
+          "description": "Folder containing agent prompt markdown files."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "lint": "echo \"No lint configured\"",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "vsce": "^1.97.0"
+  }
+}

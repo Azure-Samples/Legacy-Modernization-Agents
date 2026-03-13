@@ -1,7 +1,7 @@
 # Smart Chunking & Token Strategy Architecture
 
-> **Last updated**: 2025-02-17  
-> This document describes the token management and smart chunking architecture used by the Legacy Modernization Agents to process COBOL source files for migration to Java/C#.
+> **Last updated**: 2026-03-10  
+> This document describes the token management and smart chunking architecture used by the Legacy Modernization Agents to process COBOL source files for migration to Java/C#. The architecture supports multiple AI providers (Azure OpenAI, GitHub Copilot, GitHub Copilot SDK, OpenAI) with model-aware reasoning strategies.
 
 ---
 
@@ -74,15 +74,22 @@ flowchart TD
     end
 
     subgraph API_CALL["🤖 API CALL + ESCALATION"]
-        AD --> AE[Azure OpenAI Responses API]
-        AE --> AF{Response Status}
-        AF -->|"Complete"| AG[✅ Success]
+        AD --> AE{Provider Routing}
+        AE -->|"Azure Codex<br>(ResponsesApiClient)"| AE1[Responses API Call]
+        AE -->|"GitHub/Claude/Grok/GPT<br>(IChatClient)"| AE2["Chat Completions Call<br>+ ApplyModelSpecificOptions"]
+        AE1 --> AF{Response Status}
+        AE2 --> AF2{Truncation Check}
+        AF2 -->|"FinishReason=Stop<br>No truncation signals"| AG[✅ Success]
+        AF2 -->|"FinishReason=Length<br>or text signals<br>or unclosed code blocks"| AH2["OutputTruncationException<br>① Double maxTokens<br>② Promote effort<br>③ Thrash guard"]
+        AH2 -->|"Max 2 retries"| AE2
+        AH2 -->|"All retries failed"| AI["Adaptive Re-Chunking<br>Split at semantic midpoint<br>50-line overlap"]
+        AF -->|"Complete"| AG
         AF -->|"Reasoning Exhaustion<br>reasoning ≥ 90% of output"| AH["Escalation Loop<br>① Double maxTokens<br>② Promote effort<br>③ Thrash guard"]
-        AH -->|"Max 2 retries"| AE
-        AH -->|"All retries failed"| AI["Adaptive Re-Chunking<br>Split at semantic midpoint<br>50-line overlap"]
+        AH -->|"Max 2 retries"| AE1
+        AH -->|"All retries failed"| AI
         AI --> AE
         AF -->|"429 Rate Limited"| AJ["Exponential Backoff<br>5s → 60s max<br>up to 5 retries"]
-        AJ --> AE
+        AJ --> AE1
     end
 
     subgraph RECONCILE["🔗 RECONCILIATION"]
@@ -109,7 +116,7 @@ flowchart TD
     class J medium
     class K high
     class AA,AB,AC,AD rate
-    class AE,AF,AG,AH,AI,AJ process
+    class AE,AE1,AE2,AF,AF2,AG,AH,AH2,AI,AJ process
 ```
 
 ---
@@ -256,47 +263,53 @@ flowchart TD
                │
                ▼
 ┌─────────────────────────────────────────────────────────────────────────────────────┐
-│  🤖 API CALL + ESCALATION                                                          │
+│  🤖 API CALL + ESCALATION (Multi-Provider)                                         │
 │                                                                                     │
 │  ┌──────────────────────────────────────────────────────────────┐                   │
-│  │                Azure OpenAI Responses API                    │                   │
-│  │                (gpt-5.1-codex-mini)                          │                   │
+│  │              Provider Routing (AgentBase)                    │                   │
 │  └──────────────────────────┬───────────────────────────────────┘                   │
-│                             │                                                       │
-│                    ┌────────┴────────┬──────────────────┐                           │
-│                    │                 │                  │                            │
-│                    ▼                 ▼                  ▼                            │
-│               ✅ Complete    Reasoning Exhaustion   429 Rate Limited                │
-│                    │         (reason ≥ 90% output)      │                           │
-│                    │              │                      │                           │
-│                    │              ▼                      ▼                           │
-│                    │     ┌─────────────────┐    ┌─────────────────┐                 │
-│                    │     │ Escalation Loop │    │ Exp. Backoff    │                 │
-│                    │     │                 │    │ 5s → 60s max    │                 │
-│                    │     │ ① 2× tokens    │    │ up to 5 retries │                 │
-│                    │     │ ② ↑ effort     │    └────────┬────────┘                 │
-│                    │     │    low→med→high │             │                           │
-│                    │     │ ③ thrash guard  │             │                           │
-│                    │     │ max 2 retries   │        ┌────┘                          │
-│                    │     └───────┬─────────┘        │                               │
-│                    │             │                   │                               │
-│                    │        ┌────┴────┐              │                               │
-│                    │     Success?  All failed        │                               │
-│                    │        │         │              │                               │
-│                    │        │         ▼              │                               │
-│                    │        │  ┌──────────────┐      │                               │
-│                    │        │  │ Adaptive     │      │                               │
-│                    │        │  │ Re-Chunking  │      │                               │
-│                    │        │  │              │      │                               │
-│                    │        │  │ Split at     │      │                               │
-│                    │        │  │ semantic     │      │                               │
-│                    │        │  │ midpoint     │      │                               │
-│                    │        │  │ 50-line      │      │                               │
-│                    │        │  │ overlap      │      │                               │
-│                    │        │  └──────┬───────┘      │                               │
-│                    │        │         │              │                               │
-│                    ◄────────┴─────────┴──────────────┘                              │
-│                    │                                                                 │
+│                    ┌────────┴────────┐                                              │
+│                    │                 │                                              │
+│                    ▼                 ▼                                              │
+│  ┌────────────────────────┐  ┌─────────────────────────────────┐                   │
+│  │ Azure Codex            │  │ IChatClient Path                │                   │
+│  │ (ResponsesApiClient)   │  │ (GitHub/Claude/Grok/GPT/SDK)   │                   │
+│  │                        │  │                                 │                   │
+│  │ reasoning.effort param │  │ Model-Specific Options:         │                   │
+│  │ via Responses API      │  │  Claude → thinking.budget       │                   │
+│  └────────────┬───────────┘  │  Codex  → reasoning_effort      │                   │
+│               │              │  GPT    → temperature=0.1       │                   │
+│               │              │  Grok   → temperature=0.1       │                   │
+│               │              └──────────────┬──────────────────┘                   │
+│               │                             │                                       │
+│      ┌────────┴────────┐           ┌────────┴────────┐                             │
+│      │                 │           │                 │                              │
+│      ▼                 ▼           ▼                 ▼                              │
+│ ✅ Complete    Reasoning       ✅ Complete    Truncation                            │
+│      │         Exhaustion          │         Detected                               │
+│      │         (Responses)         │         (FinishReason=Length                   │
+│      │              │              │          or text signals                       │
+│      │              ▼              │          or unclosed ```)                      │
+│      │     ┌─────────────────┐     │              │                                │
+│      │     │ Escalation Loop │     │              ▼                                │
+│      │     │ ① 2× tokens    │     │     ┌─────────────────┐                       │
+│      │     │ ② ↑ effort     │     │     │ Escalation Loop │                       │
+│      │     │    low→med→high │     │     │ ① 2× tokens    │                       │
+│      │     │ ③ thrash guard  │     │     │ ② ↑ effort     │                       │
+│      │     │ max 2 retries   │     │     │ ③ thrash guard  │                       │
+│      │     └───────┬─────────┘     │     │ max 2 retries   │                       │
+│      │             │               │     └───────┬─────────┘                       │
+│      │        ┌────┴────┐          │             │                                 │
+│      │     Success?  All failed    │        ┌────┴────┐                            │
+│      │        │         │          │     Success?  All failed                      │
+│      │        │         ▼          │        │         │                             │
+│      │        │  Adaptive          │        │         ▼                             │
+│      │        │  Re-Chunking       │        │  Adaptive                            │
+│      │        │  (semantic split)  │        │  Re-Chunking                         │
+│      │        │  50-line overlap   │        │  (semantic split)                    │
+│      │        │                    │        │  50-line overlap                     │
+│      ◄────────┴────────────────────┴────────┴──────────┘                           │
+│                                                                                     │
 └────────────────────┼────────────────────────────────────────────────────────────────┘
                      │
                      ▼
@@ -352,21 +365,29 @@ flowchart TD
 | Parallel stagger delay | 2,000ms | `appsettings.json` |
 | Token budget per minute | 300,000 | `appsettings.json` |
 | Rate limit safety factor | 0.7 | `appsettings.json` |
-| LOW threshold | score < 5 | `appsettings.json` |
-| MEDIUM threshold | score ≥ 5 | `appsettings.json` |
-| HIGH threshold | score ≥ 15 | `appsettings.json` |
-| LOW multiplier | 1.5× | `appsettings.json` |
-| MEDIUM multiplier | 2.5× | `appsettings.json` |
-| HIGH multiplier | 3.5× | `appsettings.json` |
-| Codex min output tokens | 32,768 | `appsettings.json` |
-| Codex max output tokens | 100,000 | `appsettings.json` |
-| Codex timeout | 900s (15 min) | `appsettings.json` |
-| Escalation retries (Codex) | 2 | `appsettings.json` |
-| Escalation multiplier (Codex) | 2.0× | `appsettings.json` |
+| LOW threshold | score < 5 | `appsettings.json` ModelProfile |
+| MEDIUM threshold | score ≥ 5 | `appsettings.json` ModelProfile |
+| HIGH threshold | score ≥ 15 | `appsettings.json` ModelProfile |
+| LOW multiplier | 1.5× | `appsettings.json` ModelProfile |
+| MEDIUM multiplier | 2.5× | `appsettings.json` ModelProfile |
+| HIGH multiplier | 3.5× | `appsettings.json` ModelProfile |
+| ModelProfile min output tokens | 32,768 | `appsettings.json` ModelProfile |
+| ModelProfile max output tokens | 100,000 | `appsettings.json` ModelProfile |
+| ModelProfile timeout | 900s (15 min) | `appsettings.json` ModelProfile |
+| ChatProfile min output tokens | 16,384 | `appsettings.json` ChatProfile |
+| ChatProfile max output tokens | 65,536 | `appsettings.json` ChatProfile |
+| ChatProfile timeout | 600s (10 min) | `appsettings.json` ChatProfile |
+| Escalation retries | 2 | `appsettings.json` ModelProfile |
+| Escalation multiplier | 2.0× | `appsettings.json` ModelProfile |
 | Re-chunk overlap | 50 lines | `AgentBase.cs` |
 | Backoff base delay | 5,000ms | `RateLimiter.cs` |
 | Backoff max delay | 60,000ms | `RateLimiter.cs` |
 | Max 429 retries | 5 | `RateLimiter.cs` |
+| Claude thinking budget (low) | 30% of maxTokens | `AgentBase.cs` |
+| Claude thinking budget (med) | 50% of maxTokens | `AgentBase.cs` |
+| Claude thinking budget (high) | 70% of maxTokens | `AgentBase.cs` |
+| Truncation detection: text signals | 4 regex patterns | `AgentBase.cs` |
+| Truncation detection: code blocks | odd ` ``` ` count | `AgentBase.cs` |
 
 ---
 

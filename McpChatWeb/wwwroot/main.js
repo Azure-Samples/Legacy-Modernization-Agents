@@ -235,7 +235,10 @@ async function handleChatSubmit(event) {
         'Content-Type': 'application/json',
         'Accept': 'application/json'
       },
-      body: JSON.stringify({ prompt })
+      body: JSON.stringify({ 
+        prompt,
+        reportContext: typeof getChatReportContext === 'function' ? getChatReportContext() : null
+      })
     });
 
     // Move to stage 3: Building Response
@@ -243,7 +246,17 @@ async function handleChatSubmit(event) {
     updateStageStatus('response', 'Formatting results...');
 
     if (!res.ok) {
-      const message = await res.text();
+      // Try to extract detailed error from the response body
+      let message;
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('application/problem+json') || contentType.includes('application/json')) {
+        try {
+          const errBody = await res.json();
+          message = errBody.detail || errBody.title || errBody.message || JSON.stringify(errBody);
+        } catch { message = await res.text(); }
+      } else {
+        message = await res.text();
+      }
       throw new Error(message || `HTTP ${res.status}`);
     }
 
@@ -276,11 +289,13 @@ async function handleChatSubmit(event) {
       }
     }
   } catch (err) {
-    responseBody.textContent = `Error: ${err.message}`;
+    responseBody.textContent = `❌ Chat Error\n\n${err.message}`;
     responseCard.hidden = false;
+    responseCard.classList.add('error-response');
   } finally {
     setLoadingStage('done');
     toggleLoading(chatForm.querySelector('button'), false);
+    responseCard.classList.remove('error-response');
   }
 }
 

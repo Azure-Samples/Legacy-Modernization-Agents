@@ -16,7 +16,7 @@ namespace CobolToQuarkusMigration.Processes;
 /// </summary>
 public class SmartMigrationOrchestrator
 {
-    private readonly ResponsesApiClient _responsesClient;
+    private readonly ResponsesApiClient? _responsesClient;
     private readonly IChatClient _chatClient;
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<SmartMigrationOrchestrator> _logger;
@@ -56,7 +56,7 @@ public class SmartMigrationOrchestrator
     /// Initializes a new SmartMigrationOrchestrator.
     /// </summary>
     public SmartMigrationOrchestrator(
-        ResponsesApiClient responsesClient,
+        ResponsesApiClient? responsesClient,
         IChatClient chatClient,
         ILoggerFactory loggerFactory,
         FileHelper fileHelper,

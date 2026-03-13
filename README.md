@@ -1,7 +1,7 @@
 # Legacy Modernization Agents - COBOL to Java/C# Migration
 
 This open source migration framework was developed to demonstrate AI Agents capabilities for converting legacy code like COBOL to Java or C# .NET. Each Agent has a persona that can be edited depending on the desired outcome.
-The migration uses Microsoft Agent Framework with a dual-API architecture (Responses API + Chat Completions API) to analyze COBOL code and its dependencies, then convert to either Java Quarkus or C# .NET (user's choice).
+The migration uses Microsoft Agent Framework with a multi-provider architecture supporting **Azure OpenAI** (Responses API + Chat Completions), **GitHub Copilot** (PAT or CLI-based SDK), and **direct OpenAI** to analyze COBOL code and its dependencies, then convert to either Java Quarkus or C# .NET (user's choice).
 
 ## 🎬 Portal Demo
 
@@ -46,22 +46,31 @@ The migration uses Microsoft Agent Framework with a dual-API architecture (Respo
 |-------------|---------|-------|
 | **.NET SDK** | 10.0+ | [Download](https://dotnet.microsoft.com/download) |
 | **Docker Desktop** | Latest | Must be running for Neo4j |
-| **AI Endpoint** | — | Endpoint + API Key or via `az login` (see below) |
+| **AI Endpoint** | — | Azure endpoint + `az login`, or GitHub `gh auth login`, or API Key |
 
-### Supported LLMs
+### Supported AI Providers
 
-This project supports **two Azure OpenAI API types** with specific models:
+This project supports **four AI providers** with automatic model capability detection:
 
-| API Type | Model Example | Used For | Interface |
-|----------|---------------|----------|-----------|
-| **Responses API** | `gpt-5.1-codex-mini` | Code generation (agents) | `ResponsesApiClient` |
-| **Chat Completions API** | `gpt-5.1-chat` | Reports, portal chat | `IChatClient` |
+| Provider | ServiceType | Models | Auth | Interface |
+|----------|------------|--------|------|-----------|
+| **Azure OpenAI** | `AzureOpenAI` | `gpt-5.1-codex-mini`, `gpt-5.2-chat` | API Key or `az login` (Entra ID) | `ResponsesApiClient` (Codex) + `IChatClient` |
+| **GitHub Copilot** | `GitHubCopilot` | Claude Opus/Sonnet, Codex, GPT, Grok | GitHub PAT (`GITHUB_TOKEN`) | `IChatClient` via `models.github.ai` |
+| **GitHub Copilot SDK** | `GitHubCopilotSDK` | All Copilot models | `gh auth login` (CLI) | `CopilotChatClient` via stdio |
+| **OpenAI** | `OpenAI` | GPT-4o, o3, etc. | OpenAI API key | `IChatClient` |
 
-> ⚠️ **Want to use different models?** You can swap models, but you may need to update API calls:
-> - Codex models → Responses API (`ResponsesApiClient`)
-> - Chat models → Chat Completions API (`IChatClient`)
-> 
-> See [Agents/Infrastructure/](Agents/Infrastructure/) for API client implementations.
+**Model-Aware Reasoning** — The framework auto-detects model capabilities from the model ID and adapts its reasoning strategy:
+
+| Model Family | Detection | Reasoning Strategy | Applied Via |
+|-------------|-----------|-------------------|-------------|
+| **Codex/o-series** | `codex`, `o1`, `o3` in model ID | `reasoning.effort` (low/medium/high) | Responses API or `AdditionalProperties` |
+| **Claude** | `claude` in model ID | Extended thinking with `budget_tokens` | `AdditionalProperties["thinking"]` |
+| **GPT** | `gpt-4`, `gpt-5` in model ID | Standard (temperature=0.1) | `ChatOptions.Temperature` |
+| **Grok** | `grok` in model ID | Standard (temperature=0.1) | `ChatOptions.Temperature` |
+
+> **All models get the same three-tier content-aware complexity scoring** — COBOL source is analyzed for SQL, CICS, REDEFINES, etc. to determine LOW/MEDIUM/HIGH complexity. The complexity tier drives both `MaxOutputTokens` sizing and the model-specific reasoning parameter.
+
+> ⚠️ **Want to use different models?** Just change `AZURE_OPENAI_MODEL_ID` and `AZURE_OPENAI_SERVICE_TYPE`. The framework auto-detects capabilities — no code changes needed.
 
 > [!IMPORTANT]
 > **Azure OpenAI Quota Recommendation: 1M+ TPM**
@@ -686,15 +695,22 @@ flowchart TD
     end
 
     subgraph API_CALL["🤖 API CALL + ESCALATION"]
-        AD --> AE[Azure OpenAI Responses API]
-        AE --> AF{Response Status}
-        AF -->|"Complete"| AG[✅ Success]
+        AD --> AE{Provider Routing}
+        AE -->|"Azure Codex<br>(ResponsesApiClient)"| AE1[Responses API Call]
+        AE -->|"GitHub/Claude/Grok/GPT<br>(IChatClient)"| AE2["Chat Completions Call<br>+ ApplyModelSpecificOptions"]
+        AE1 --> AF{Response Status}
+        AE2 --> AF2{Truncation Check}
+        AF2 -->|"FinishReason=Stop<br>No truncation signals"| AG[✅ Success]
+        AF2 -->|"FinishReason=Length<br>or text signals<br>or unclosed code blocks"| AH2["OutputTruncationException<br>① Double maxTokens<br>② Promote effort<br>③ Thrash guard"]
+        AH2 -->|"Max 2 retries"| AE2
+        AH2 -->|"All retries failed"| AI["Adaptive Re-Chunking<br>Split at semantic midpoint<br>50-line overlap"]
+        AF -->|"Complete"| AG
         AF -->|"Reasoning Exhaustion<br>reasoning ≥ 90% of output"| AH["Escalation Loop<br>① Double maxTokens<br>② Promote effort<br>③ Thrash guard"]
-        AH -->|"Max 2 retries"| AE
-        AH -->|"All retries failed"| AI["Adaptive Re-Chunking<br>Split at semantic midpoint<br>50-line overlap"]
+        AH -->|"Max 2 retries"| AE1
+        AH -->|"All retries failed"| AI
         AI --> AE
         AF -->|"429 Rate Limited"| AJ["Exponential Backoff<br>5s → 60s max<br>up to 5 retries"]
-        AJ --> AE
+        AJ --> AE1
     end
 
     subgraph RECONCILE["🔗 RECONCILIATION"]

@@ -1,0 +1,30 @@
+{
+  "CobolAnalyzer": {
+    "score": 9,
+    "observations": "Regex missed domain rules around transfer ordering, Storm Drain handling, and the semantic meaning of COMM-FAIL-CODE and packed-decimal money fields."
+  },
+  "ChunkAwareJavaConverter": {
+    "score": 9,
+    "observations": "Prompt lacked awareness of deadlock retry loops, pseudo-conversational state, and the need to preserve CICS syncpoint semantics."
+  },
+  "DependencyMapper": {
+    "score": 8,
+    "observations": "Regex did not distinguish infrastructure programs (ABNDPROC) from business programs or identify CONTROL-table semantics."
+  },
+  "JavaConverter": {
+    "score": 9,
+    "observations": "The base prompt missed banking-specific semantics of ABENDs, packed decimals, and reference-number generation."
+  },
+  "ChunkAwareCSharpConverter": {
+    "score": 8,
+    "observations": "Prompt lacked explicit guidance on transactional retries, stateful UI mapping, and preservation of legacy error codes."
+  },
+  "CSharpConverter": {
+    "score": 8,
+    "observations": "Regex approach underestimated the importance of DISPLAY statements and string-based dates as business artifacts."
+  },
+  "BusinessLogicExtractor": {
+    "score": 9,
+    "observations": "Regex missed many implicit business rules embedded in control flow, especially around validation, account semantics, and synthetic data generation."
+  }
+}

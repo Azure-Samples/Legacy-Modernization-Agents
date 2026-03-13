@@ -1,29 +1,163 @@
 using Azure.AI.OpenAI;
 using Azure.Identity;
 using Azure.Core;
+using GitHub.Copilot.SDK;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using OpenAI;
+using CobolToQuarkusMigration.Models;
 using AzureOpenAIOptions = Azure.AI.OpenAI.AzureOpenAIClientOptions;
 using AzureServiceVersion = Azure.AI.OpenAI.AzureOpenAIClientOptions.ServiceVersion;
 
 namespace CobolToQuarkusMigration.Agents.Infrastructure;
 
 /// <summary>
-/// Factory for creating IChatClient instances for Azure OpenAI or OpenAI.
+/// Factory for creating IChatClient instances for multiple AI providers:
+///   - Azure OpenAI (existing)
+///   - GitHub Copilot / GitHub Models (new — access Claude, Codex, Grok, GPT, etc.)
+///   - Direct OpenAI API
+///
+/// All methods return Microsoft.Extensions.AI.IChatClient, keeping the rest
+/// of the application provider-agnostic.
 /// </summary>
 public static class ChatClientFactory
 {
     private static readonly AzureServiceVersion AzureApiVersion = AzureServiceVersion.V2024_06_01;
 
     /// <summary>
-    /// Creates an IChatClient for Azure OpenAI using API key authentication.
+    /// The GitHub Models inference endpoint.
+    /// All GitHub Copilot models (Claude, Codex, GPT, Grok, etc.) are accessible here.
     /// </summary>
-    /// <param name="endpoint">The Azure OpenAI endpoint.</param>
-    /// <param name="apiKey">The API key.</param>
-    /// <param name="modelId">The deployment/model name.</param>
+    public const string GitHubModelsEndpoint = "https://models.github.ai/inference";
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // PRIMARY FACTORY — Creates the right client based on AISettings
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Creates an IChatClient based on the configured service type in AISettings.
+    /// This is the recommended entry point — it auto-selects the right provider.
+    /// </summary>
+    /// <param name="settings">The AI settings with provider config.</param>
+    /// <param name="modelId">Model ID override (uses settings.ModelId if null).</param>
+    /// <param name="logger">Optional logger.</param>
+    /// <returns>An IChatClient instance for the configured provider.</returns>
+    public static IChatClient CreateFromSettings(
+        AISettings settings,
+        string? modelId = null,
+        ILogger? logger = null)
+    {
+        var model = modelId ?? settings.ModelId;
+        var serviceType = settings.ServiceType?.Trim() ?? "AzureOpenAI";
+
+        return serviceType.ToLowerInvariant() switch
+        {
+            // GitHubCopilotSDK: don't pass ApiKey — the SDK authenticates via the
+            // logged-in Copilot CLI user.  Passing an Azure placeholder key
+            // would set UseLoggedInUser=false and break auth silently.
+            "githubcopilotsdk" =>
+                CreateGitHubCopilotChatClient(model, logger: logger),
+
+            "githubcopilot" or "github" or "githubmodels" =>
+                CreateGitHubCopilotClient(settings.ApiKey, model, logger),
+
+            "openai" when string.IsNullOrEmpty(settings.Endpoint) =>
+                CreateOpenAIChatClient(settings.ApiKey, model, logger),
+
+            _ => // AzureOpenAI or anything with an endpoint
+                CreateAzureClient(settings, model, logger)
+        };
+    }
+
+    /// <summary>
+    /// Creates an IChatClient for the chat/report model (uses ChatEndpoint/ChatApiKey if set).
+    /// </summary>
+    public static IChatClient CreateChatClientFromSettings(
+        AISettings settings,
+        ILogger? logger = null)
+    {
+        var chatEndpoint = settings.ChatEndpoint ?? settings.Endpoint;
+        var chatApiKey = settings.ChatApiKey ?? settings.ApiKey;
+        var chatModel = settings.ChatModelId ?? settings.ChatDeploymentName ?? settings.ModelId;
+        var serviceType = settings.ServiceType?.Trim() ?? "AzureOpenAI";
+
+        // If service type is GitHub Copilot, use that for chat too
+        if (serviceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase) ||
+            serviceType.Equals("GitHub", StringComparison.OrdinalIgnoreCase) ||
+            serviceType.Equals("GitHubModels", StringComparison.OrdinalIgnoreCase))
+        {
+            return CreateGitHubCopilotClient(chatApiKey, chatModel, logger);
+        }
+
+        // Azure or OpenAI path
+        var chatSettings = new AISettings
+        {
+            ServiceType = serviceType,
+            Endpoint = chatEndpoint,
+            ApiKey = chatApiKey,
+            ModelId = chatModel,
+            DeploymentName = settings.ChatDeploymentName ?? settings.DeploymentName
+        };
+
+        return CreateFromSettings(chatSettings, chatModel, logger);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // GITHUB COPILOT / GITHUB MODELS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Creates an IChatClient for GitHub Copilot / GitHub Models.
+    /// Provides access to ALL models in the GitHub catalog:
+    ///   - claude-sonnet-4, claude-opus-4 (Anthropic)
+    ///   - gpt-4o, gpt-5 (OpenAI)
+    ///   - codex-mini-latest (OpenAI)
+    ///   - grok-3, grok-3-mini (xAI)
+    ///   - and many more
+    ///
+    /// Uses the OpenAI-compatible API at models.github.ai/inference,
+    /// authenticated with a GitHub Personal Access Token.
+    /// </summary>
+    /// <param name="githubToken">GitHub Personal Access Token (PAT) with copilot/models access.</param>
+    /// <param name="modelId">The model name from the GitHub Models catalog.</param>
     /// <param name="logger">Optional logger.</param>
     /// <returns>An IChatClient instance.</returns>
+    public static IChatClient CreateGitHubCopilotClient(
+        string githubToken,
+        string modelId,
+        ILogger? logger = null)
+    {
+        if (string.IsNullOrEmpty(githubToken))
+            throw new ArgumentException(
+                "GitHub token is required for GitHub Copilot. " +
+                "Set GITHUB_TOKEN env var or ApiKey in settings.", nameof(githubToken));
+        if (string.IsNullOrEmpty(modelId))
+            throw new ArgumentNullException(nameof(modelId));
+
+        logger?.LogInformation(
+            "Creating GitHub Copilot client for model: {Model} (endpoint: {Endpoint})",
+            modelId, GitHubModelsEndpoint);
+
+        // GitHub Models uses OpenAI-compatible API — use the OpenAI SDK pointed at their endpoint
+        var options = new OpenAIClientOptions
+        {
+            Endpoint = new Uri(GitHubModelsEndpoint)
+        };
+
+        var client = new OpenAIClient(
+            new System.ClientModel.ApiKeyCredential(githubToken),
+            options);
+
+        return client.GetChatClient(modelId).AsIChatClient();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // AZURE OPENAI
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Creates an IChatClient for Azure OpenAI using API key authentication.
+    /// </summary>
     public static IChatClient CreateAzureOpenAIChatClient(
         string endpoint,
         string apiKey,
@@ -43,7 +177,7 @@ public static class ChatClientFactory
         var client = new AzureOpenAIClient(
             new Uri(endpoint),
             new System.ClientModel.ApiKeyCredential(apiKey),
-            CreateOptions());
+            CreateAzureOptions());
 
         return client.GetChatClient(modelId).AsIChatClient();
     }
@@ -51,11 +185,6 @@ public static class ChatClientFactory
     /// <summary>
     /// Creates an IChatClient for Azure OpenAI using a TokenCredential (e.g. DefaultAzureCredential).
     /// </summary>
-    /// <param name="endpoint">The Azure OpenAI endpoint.</param>
-    /// <param name="credential">The token credential.</param>
-    /// <param name="modelId">The deployment/model name.</param>
-    /// <param name="logger">Optional logger.</param>
-    /// <returns>An IChatClient instance.</returns>
     public static IChatClient CreateAzureOpenAIChatClient(
         string endpoint,
         TokenCredential credential,
@@ -75,7 +204,7 @@ public static class ChatClientFactory
         var client = new AzureOpenAIClient(
             new Uri(endpoint),
             credential,
-            CreateOptions());
+            CreateAzureOptions());
 
         return client.GetChatClient(modelId).AsIChatClient();
     }
@@ -83,10 +212,6 @@ public static class ChatClientFactory
     /// <summary>
     /// Creates an IChatClient for Azure OpenAI using DefaultAzureCredential (managed identity, etc.).
     /// </summary>
-    /// <param name="endpoint">The Azure OpenAI endpoint.</param>
-    /// <param name="modelId">The deployment/model name.</param>
-    /// <param name="logger">Optional logger.</param>
-    /// <returns>An IChatClient instance.</returns>
     public static IChatClient CreateAzureOpenAIChatClientWithDefaultCredential(
         string endpoint,
         string modelId,
@@ -95,13 +220,13 @@ public static class ChatClientFactory
         return CreateAzureOpenAIChatClient(endpoint, new DefaultAzureCredential(), modelId, logger);
     }
 
+    // ═══════════════════════════════════════════════════════════════════════
+    // DIRECT OPENAI
+    // ═══════════════════════════════════════════════════════════════════════
+
     /// <summary>
     /// Creates an IChatClient for OpenAI (not Azure).
     /// </summary>
-    /// <param name="apiKey">The OpenAI API key.</param>
-    /// <param name="modelId">The model name (e.g., "gpt-4").</param>
-    /// <param name="logger">Optional logger.</param>
-    /// <returns>An IChatClient instance.</returns>
     public static IChatClient CreateOpenAIChatClient(
         string apiKey,
         string modelId,
@@ -115,40 +240,95 @@ public static class ChatClientFactory
         logger?.LogInformation("Creating OpenAI chat client for model: {Model}", modelId);
 
         var client = new OpenAIClient(apiKey);
-
         return client.GetChatClient(modelId).AsIChatClient();
     }
 
+    // ═══════════════════════════════════════════════════════════════════════
+    // GITHUB COPILOT SDK (Copilot CLI)
+    // ═══════════════════════════════════════════════════════════════════════
+
     /// <summary>
-    /// Creates an IChatClient based on configuration settings.
-    /// Automatically determines whether to use Azure OpenAI or OpenAI based on the presence of an endpoint.
+    /// Creates an IChatClient for GitHub Copilot SDK.
+    /// Requires the Copilot CLI in PATH.
     /// </summary>
-    /// <param name="endpoint">The Azure OpenAI endpoint (null/empty for OpenAI).</param>
-    /// <param name="apiKey">The API key.</param>
-    /// <param name="modelId">The model/deployment name.</param>
-    /// <param name="useDefaultCredential">Whether to use DefaultAzureCredential for Azure OpenAI.</param>
-    /// <param name="logger">Optional logger.</param>
-    /// <returns>An IChatClient instance.</returns>
+    public static IChatClient CreateGitHubCopilotChatClient(
+        string modelId,
+        string? githubToken = null,
+        ILogger? logger = null)
+    {
+        if (string.IsNullOrEmpty(modelId))
+            throw new ArgumentNullException(nameof(modelId));
+
+        logger?.LogInformation("Creating GitHub Copilot SDK chat client for model: {Model}", modelId);
+
+        var options = new CopilotClientOptions
+        {
+            UseStdio = true
+        };
+
+        if (!string.IsNullOrEmpty(githubToken))
+        {
+            options.GitHubToken = githubToken;
+        }
+
+        // Don't pass the app logger to the SDK — it produces very verbose
+        // internal JSON-RPC tracing that floods the console output.
+        return new CopilotChatClient(modelId, options);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // GENERIC / BACKWARD-COMPATIBLE
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Creates an IChatClient by routing to Azure OpenAI, OpenAI, or GitHub Copilot based on serviceType.
+    /// Kept for backward compatibility — prefer CreateFromSettings for new code.
+    /// </summary>
     public static IChatClient CreateChatClient(
         string? endpoint,
         string apiKey,
         string modelId,
         bool useDefaultCredential = false,
-        ILogger? logger = null)
+        ILogger? logger = null,
+        string? serviceType = null)
     {
-        // If endpoint is provided, use Azure OpenAI
+        if (string.Equals(serviceType, "GitHubCopilot", StringComparison.OrdinalIgnoreCase))
+        {
+            return CreateGitHubCopilotChatClient(modelId, githubToken: null, logger);
+        }
+
         if (!string.IsNullOrEmpty(endpoint))
         {
             if (useDefaultCredential)
-            {
                 return CreateAzureOpenAIChatClientWithDefaultCredential(endpoint, modelId, logger);
-            }
             return CreateAzureOpenAIChatClient(endpoint, apiKey, modelId, logger);
         }
 
-        // Otherwise, use OpenAI
         return CreateOpenAIChatClient(apiKey, modelId, logger);
     }
 
-    private static AzureOpenAIOptions CreateOptions() => new AzureOpenAIOptions(AzureApiVersion);
+    // ═══════════════════════════════════════════════════════════════════════
+    // HELPERS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    private static IChatClient CreateAzureClient(
+        AISettings settings,
+        string modelId,
+        ILogger? logger)
+    {
+        var endpoint = settings.Endpoint;
+        var apiKey = settings.ApiKey;
+        var deployment = !string.IsNullOrEmpty(settings.DeploymentName)
+            ? settings.DeploymentName
+            : modelId;
+
+        bool useEntraId = string.IsNullOrEmpty(apiKey) || apiKey.Contains("your-api-key") || apiKey.Contains("placeholder");
+
+        if (useEntraId)
+            return CreateAzureOpenAIChatClientWithDefaultCredential(endpoint, deployment, logger);
+        
+        return CreateAzureOpenAIChatClient(endpoint, apiKey, deployment, logger);
+    }
+
+    private static AzureOpenAIOptions CreateAzureOptions() => new AzureOpenAIOptions(AzureApiVersion);
 }

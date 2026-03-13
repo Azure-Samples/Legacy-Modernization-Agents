@@ -20,7 +20,7 @@ namespace CobolToQuarkusMigration.Processes;
 public class ChunkedMigrationProcess
 {
     private readonly IChatClient _chatClient;
-    private readonly ResponsesApiClient _responsesApiClient;
+    private readonly ResponsesApiClient? _responsesApiClient;
     private readonly ILogger<ChunkedMigrationProcess> _logger;
     private readonly FileHelper _fileHelper;
     private readonly AppSettings _settings;
@@ -38,7 +38,7 @@ public class ChunkedMigrationProcess
     /// </summary>
     public ChunkedMigrationProcess(
         IChatClient chatClient,
-        ResponsesApiClient responsesApiClient,
+        ResponsesApiClient? responsesApiClient,
         ILogger<ChunkedMigrationProcess> logger,
         FileHelper fileHelper,
         AppSettings settings,
@@ -50,7 +50,8 @@ public class ChunkedMigrationProcess
         _fileHelper = fileHelper;
         _settings = settings;
         _enhancedLogger = new EnhancedLogger(logger);
-        _chatLogger = new ChatLogger(LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger<ChatLogger>());
+        var providerName = chatClient is Agents.Infrastructure.CopilotChatClient ? "GitHub Copilot" : "Azure OpenAI";
+        _chatLogger = new ChatLogger(LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger<ChatLogger>(), providerName: providerName);
         _migrationRepository = migrationRepository;
     }
 
@@ -83,45 +84,37 @@ public class ChunkedMigrationProcess
         
         if (targetLang == TargetLanguage.CSharp)
         {
-            _chunkAwareConverter = new ChunkAwareCSharpConverter(
-                _responsesApiClient,
+            _chunkAwareConverter = ChunkAwareCSharpConverter.Create(
+                _responsesApiClient, _chatClient,
                 loggerFactory.CreateLogger<ChunkAwareCSharpConverter>(),
                 _settings.AISettings.JavaConverterModelId,
                 _settings.ConversionSettings,
-                _enhancedLogger,
-                _chatLogger,
-                settings: _settings);
+                _enhancedLogger, _chatLogger, settings: _settings);
         }
         else
         {
-            _chunkAwareConverter = new ChunkAwareJavaConverter(
-                _responsesApiClient,
+            _chunkAwareConverter = ChunkAwareJavaConverter.Create(
+                _responsesApiClient, _chatClient,
                 loggerFactory.CreateLogger<ChunkAwareJavaConverter>(),
                 _settings.AISettings.JavaConverterModelId,
                 _settings.ConversionSettings,
-                _enhancedLogger,
-                _chatLogger,
-                settings: _settings);
+                _enhancedLogger, _chatLogger, settings: _settings);
         }
 
         // Initialize standard agents
         _enhancedLogger.ShowStep(3, 4, "CobolAnalyzerAgent", "COBOL structure analysis");
-        _cobolAnalyzerAgent = new CobolAnalyzerAgent(
-            _responsesApiClient,
+        _cobolAnalyzerAgent = CobolAnalyzerAgent.Create(
+            _responsesApiClient, _chatClient,
             loggerFactory.CreateLogger<CobolAnalyzerAgent>(),
             _settings.AISettings.CobolAnalyzerModelId,
-            _enhancedLogger,
-            _chatLogger,
-            settings: _settings);
+            _enhancedLogger, _chatLogger, settings: _settings);
 
         _enhancedLogger.ShowStep(4, 4, "DependencyMapperAgent", "Cross-file dependency mapping");
-        _dependencyMapperAgent = new DependencyMapperAgent(
-            _responsesApiClient,
+        _dependencyMapperAgent = DependencyMapperAgent.Create(
+            _responsesApiClient, _chatClient,
             loggerFactory.CreateLogger<DependencyMapperAgent>(),
             _settings.AISettings.DependencyMapperModelId ?? _settings.AISettings.CobolAnalyzerModelId,
-            _enhancedLogger,
-            _chatLogger,
-            settings: _settings);
+            _enhancedLogger, _chatLogger, settings: _settings);
 
         _enhancedLogger.ShowSuccess("All chunked migration agents initialized");
     }

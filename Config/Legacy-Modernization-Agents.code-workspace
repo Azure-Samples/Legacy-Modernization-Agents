@@ -4,5 +4,9 @@
 			"path": ".."
 		}
 	],
-	"settings": {}
+	"settings": {
+		"github.copilot.chat.agent.instructions": [
+			{ "file": ".github/instructions/documentation.instructions.md" }
+		]
+	}
 }

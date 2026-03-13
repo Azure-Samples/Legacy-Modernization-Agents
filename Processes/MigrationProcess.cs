@@ -18,7 +18,7 @@ namespace CobolToQuarkusMigration.Processes;
 /// </summary>
 public class MigrationProcess
 {
-    private readonly ResponsesApiClient _responsesClient;
+    private readonly ResponsesApiClient? _responsesClient;
     private readonly IChatClient _chatClient;
     private readonly ILogger<MigrationProcess> _logger;
     private readonly FileHelper _fileHelper;
@@ -43,7 +43,7 @@ public class MigrationProcess
     /// <param name="settings">The application settings.</param>
     /// <param name="migrationRepository">The migration repository.</param>
     public MigrationProcess(
-        ResponsesApiClient responsesClient,
+        ResponsesApiClient? responsesClient,
         IChatClient chatClient,
         ILogger<MigrationProcess> logger,
         FileHelper fileHelper,
@@ -56,7 +56,8 @@ public class MigrationProcess
         _fileHelper = fileHelper;
         _settings = settings;
         _enhancedLogger = new EnhancedLogger(logger);
-        _chatLogger = new ChatLogger(LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger<ChatLogger>());
+        var providerName = chatClient is Agents.Infrastructure.CopilotChatClient ? "GitHub Copilot" : "Azure OpenAI";
+        _chatLogger = new ChatLogger(LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger<ChatLogger>(), providerName: providerName);
         _migrationRepository = migrationRepository;
     }
 
@@ -73,56 +74,48 @@ public class MigrationProcess
             builder.AddConsole();
         });
 
-        // CobolAnalyzerAgent uses Responses API client (codex for code analysis)
-        _enhancedLogger.ShowStep(1, 3, "CobolAnalyzerAgent", "Analyzing COBOL code structure and patterns (Responses API)");
-        _cobolAnalyzerAgent = new CobolAnalyzerAgent(
-            _responsesClient,
+        // CobolAnalyzerAgent uses Responses API if available, otherwise IChatClient
+        _enhancedLogger.ShowStep(1, 3, "CobolAnalyzerAgent", "Analyzing COBOL code structure and patterns");
+        _cobolAnalyzerAgent = CobolAnalyzerAgent.Create(
+            _responsesClient, _chatClient,
             loggerFactory.CreateLogger<CobolAnalyzerAgent>(),
             _settings.AISettings.CobolAnalyzerModelId,
-            _enhancedLogger,
-            _chatLogger,
-            settings: _settings);
+            _enhancedLogger, _chatLogger, settings: _settings);
 
         // Initialize converter based on target language - uses Responses API (codex for code generation)
         var targetLang = _settings.ApplicationSettings.TargetLanguage;
         var targetName = targetLang == TargetLanguage.CSharp ? "C#" : "Java Quarkus";
 
-        _enhancedLogger.ShowStep(2, 3, $"{targetName}ConverterAgent", $"Converting COBOL to {targetName} (Responses API)");
+        _enhancedLogger.ShowStep(2, 3, $"{targetName}ConverterAgent", $"Converting COBOL to {targetName}");
         if (targetLang == TargetLanguage.CSharp)
         {
-            _codeConverterAgent = new CSharpConverterAgent(
-                _responsesClient,
+            _codeConverterAgent = CSharpConverterAgent.Create(
+                _responsesClient, _chatClient,
                 loggerFactory.CreateLogger<CSharpConverterAgent>(),
                 _settings.AISettings.JavaConverterModelId,
-                _enhancedLogger,
-                _chatLogger,
-                settings: _settings);
+                _enhancedLogger, _chatLogger, settings: _settings);
         }
         else
         {
-            var javaAgent = new JavaConverterAgent(
-                _responsesClient,
+            var javaAgent = JavaConverterAgent.Create(
+                _responsesClient, _chatClient,
                 loggerFactory.CreateLogger<JavaConverterAgent>(),
                 _settings.AISettings.JavaConverterModelId,
-                _enhancedLogger,
-                _chatLogger,
-                settings: _settings);
+                _enhancedLogger, _chatLogger, settings: _settings);
             
             _javaConverterAgent = javaAgent;
             _codeConverterAgent = javaAgent;
         }
 
-        // DependencyMapperAgent uses Responses API client (codex for analysis)
-        _enhancedLogger.ShowStep(3, 3, "DependencyMapperAgent", "Mapping COBOL dependencies and generating diagrams (Responses API)");
-        _dependencyMapperAgent = new DependencyMapperAgent(
-            _responsesClient,
+        // DependencyMapperAgent
+        _enhancedLogger.ShowStep(3, 3, "DependencyMapperAgent", "Mapping COBOL dependencies and generating diagrams");
+        _dependencyMapperAgent = DependencyMapperAgent.Create(
+            _responsesClient, _chatClient,
             loggerFactory.CreateLogger<DependencyMapperAgent>(),
             _settings.AISettings.DependencyMapperModelId ?? _settings.AISettings.CobolAnalyzerModelId,
-            _enhancedLogger,
-            _chatLogger,
-            settings: _settings);
+            _enhancedLogger, _chatLogger, settings: _settings);
 
-        _enhancedLogger.ShowSuccess("All agents initialized with dual-API support (Responses API for codex, Chat API for reports)");
+        _enhancedLogger.ShowSuccess("All agents initialized (provider: " + (_responsesClient != null ? "Responses API" : "IChatClient") + ")");
     }
 
     /// <summary>

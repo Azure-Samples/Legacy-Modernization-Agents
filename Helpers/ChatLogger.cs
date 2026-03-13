@@ -5,7 +5,7 @@ using System.Text.Json;
 namespace CobolToQuarkusMigration.Helpers;
 
 /// <summary>
-/// Logger for capturing full-length conversations between agents and Azure OpenAI
+/// Logger for capturing full-length conversations between agents and AI
 /// </summary>
 public class ChatLogger
 {
@@ -14,20 +14,22 @@ public class ChatLogger
     private readonly List<ChatMessage> _messages;
     private readonly object _lockObject = new object();
     private readonly string _sessionId;
+    private readonly string _providerName;
 
-    public ChatLogger(ILogger<ChatLogger> logger, string logDirectory = "Logs")
+    public ChatLogger(ILogger<ChatLogger> logger, string logDirectory = "Logs", string providerName = "Azure OpenAI")
     {
         _logger = logger;
         _logDirectory = logDirectory;
         _messages = new List<ChatMessage>();
         _sessionId = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
+        _providerName = providerName;
         
         // Ensure log directory exists
         Directory.CreateDirectory(_logDirectory);
     }
 
     /// <summary>
-    /// Logs a message sent to Azure OpenAI
+    /// Logs a message sent to AI
     /// </summary>
     public void LogUserMessage(string agentName, string fileName, string prompt, string systemMessage = "")
     {
@@ -45,13 +47,13 @@ public class ChatLogger
             };
             
             _messages.Add(message);
-            _logger.LogInformation("Chat: {Agent} → Azure OpenAI for {File} ({Tokens} tokens)", 
-                agentName, fileName, message.TokenCount);
+            _logger.LogInformation("Chat: {Agent} → {Provider} for {File} ({Tokens} tokens)", 
+                agentName, _providerName, fileName, message.TokenCount);
         }
     }
 
     /// <summary>
-    /// Logs a response received from Azure OpenAI
+    /// Logs a response received from AI
     /// </summary>
     public void LogAIResponse(string agentName, string fileName, string response, int actualTokens = 0)
     {
@@ -68,8 +70,8 @@ public class ChatLogger
             };
             
             _messages.Add(message);
-            _logger.LogInformation("Chat: Azure OpenAI → {Agent} for {File} ({Tokens} tokens)", 
-                agentName, fileName, message.TokenCount);
+            _logger.LogInformation("Chat: {Provider} → {Agent} for {File} ({Tokens} tokens)", 
+                _providerName, agentName, fileName, message.TokenCount);
         }
     }
 
@@ -115,7 +117,7 @@ public class ChatLogger
         var sb = new StringBuilder();
         
         // Header
-        sb.AppendLine("# 🤖 Complete Azure OpenAI Chat Log");
+        sb.AppendLine($"# 🤖 Complete {_providerName} Chat Log");
         sb.AppendLine($"**Session ID:** {_sessionId}");
         sb.AppendLine($"**Generated:** {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC");
         sb.AppendLine($"**Total Messages:** {_messages.Count}");

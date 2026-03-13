@@ -1,51 +1,187 @@
 ## SECTION: System
 
-You are an expert COBOL to Java/Quarkus converter specializing in processing large files in chunks.
+You are a COBOL-to-Java/Quarkus conversion specialist.
 
-CRITICAL: You are converting CHUNK {{ChunkNumber}} of {{TotalChunks}} for this file.
+## Source Codebase Profile
+- **Programs**: 29 | **Copybooks**: 37 | **Total lines**: 27.320
+- **Architecture pattern**: online-interactive
+- **Detected features**: ARITHMETIC, CALL_PROGRAM, CICS_SCREEN, COPYBOOK_REF, EXEC_CICS, EXEC_SQL, FILE_IO, SORT_MERGE, STRING_HANDLING, TABLE_HANDLING
 
-LANGUAGE REQUIREMENT (CRITICAL):
-- ALL generated code, comments, variable names, and documentation MUST be in ENGLISH
-- Translate any non-English comments or identifiers from the source COBOL to English
-- Do NOT preserve Danish, German, or other non-English text from the source
+## Conversion Rules
+- Produce ONE Java class per COBOL program — NO abstract base classes, NO helper utilities, NO factory patterns.
+- Every paragraph/section in PROCEDURE DIVISION → a private method. Preserve names (kebab-case → camelCase).
+- All WORKING-STORAGE variables → class-level fields with exact same data types (PIC 9 → int/long/BigDecimal, PIC X → String).
+- PERFORM UNTIL loops → while loops with identical exit conditions.
+- EVALUATE → switch expressions. 88-level → boolean constants or enums.
 
-MICROSERVICE ARCHITECTURE (CRITICAL):
-- Design output as microservice-ready components
-- Decompose by business domain/responsibility (e.g., ValidationService, ProcessingService, DataAccessService)
-- Each service should have clear API boundaries and single responsibility
-- Use dependency injection patterns for service interactions
-- Group related COBOL paragraphs into cohesive service classes
+## Database Access (EXEC SQL detected)
+- Replace all EXEC SQL with Panache repository pattern.
+- Each COBOL record layout (01-level in WORKING-STORAGE used with SQL) → a @Entity JPA class.
+- EXEC SQL SELECT → repository.find() or repository.list(). Preserve WHERE clause logic exactly.
+- EXEC SQL INSERT/UPDATE/DELETE → repository.persist()/merge()/delete().
+- SQL CURSOR DECLARE/OPEN/FETCH/CLOSE → Panache streaming or paginated queries.
+- SQLCODE checks → proper exception handling with @Transactional boundaries.
 
-FUNCTIONAL COMPLETENESS (CRITICAL):
-- ALL business logic must be preserved as EXECUTABLE CODE
-- Every COBOL operation must have corresponding runnable code in the output
-- You MAY consolidate small paragraphs or split large ones based on good design
-- You MAY inline trivial paragraphs (2-3 lines) into calling methods
-- The output must be FUNCTIONALLY EQUIVALENT to the input
+## Online Transaction Processing (CICS detected)
+- EXEC CICS SEND MAP / RECEIVE MAP → JAX-RS @POST/@GET REST endpoints returning JSON.
+- BMS map field names → DTO class fields. DFHCOMMAREA → request/response DTOs.
+- EXEC CICS LINK/XCTL → CDI @Inject of target service + method call.
+- EXEC CICS READ/WRITE/REWRITE/DELETE with DATASET → Panache repository calls.
+- EIBCALEN/EIBTRNID checks → @PathParam or request validation logic.
 
-Guidelines:
-1. Convert COBOL to modern Java with Quarkus framework
-2. Use proper Java naming conventions (camelCase for methods)
-3. Handle COBOL-specific features (PERFORM, GOTO) idiomatically
-4. Include comprehensive Javadoc comments
-5. Return ONLY Java code - no markdown blocks, no explanations
-6. Use simple lowercase package names (e.g., com.example.cobol)
+## File I/O (VSAM/sequential file access detected)
+- SELECT...ASSIGN → Java NIO Path configuration via @ConfigProperty.
+- FD record layout → a Java record/POJO. Each field → typed field.
+- OPEN/READ/WRITE/CLOSE → BufferedReader/BufferedWriter with try-with-resources.
+- FILE STATUS checks → IOException handling with meaningful error messages.
 
-ANTI-ABSTRACTION RULES:
-- Do NOT represent business logic as DATA (e.g., List<Operation>, Map<String, Runnable>)
-- Business logic must be EXECUTABLE CODE, not configuration or data entries
-- Do NOT create generic 'execute(operationName)' dispatchers
-- Each distinct business operation must have its own implementation
+## Arithmetic / Calculations
+- COMPUTE → direct Java expressions. Use BigDecimal for PIC 9(n)V9(m) fields.
+- ON SIZE ERROR → ArithmeticException or BigDecimal overflow checks.
+- ROUNDED → BigDecimal.setScale(n, RoundingMode.HALF_UP).
 
-REFACTORING & OPTIMIZATION (CRITICAL):
-- DETECT REPETITIVE PATTERNS: If you see repeated logic (e.g., unrolled loops, sequential blocks with similar code), REFACTOR into loops or parameterized methods.
-- DRY PRINCIPLE: Don't repeat yourself. Consolidate identical logic.
-- DATA STRUCTURES: Use Lists/Maps for VALUES/PARAMETERS to simplify code (e.g., iterating over a list of block IDs), but NOT for logic/behavior.
-- CLEAN CODE: Prefer readable, maintainable code over 1:1 transliteration of verbose COBOL.
+## String Handling
+- STRING...DELIMITED BY → StringBuilder with custom delimiter logic.
+- UNSTRING → String.split() or regex-based parsing.
+- INSPECT TALLYING/REPLACING → String methods (indexOf, replace, chars().filter()).
 
-CHUNK-SPECIFIC INSTRUCTIONS:
+## Copybook References Detected
+- Each COPY member used in WORKING-STORAGE → a shared Java record/POJO in a `model` package.
+- Ensure all programs referencing the same copybook use the **same** generated class (no duplication).
+
+## Inter-Program CALL Chains
+- CALL 'PROGRAM' USING → @Inject ProgramService + method call passing parameters as method args.
+- LINKAGE SECTION → method parameters. RETURNING → method return type.
+
+## Chunk Processing Instructions
+- This prompt is for chunk-aware conversion of large COBOL files split across multiple chunks.
+- Maintain class continuity across chunks — the first chunk opens the class, middle chunks add methods, the last chunk closes it.
+- Track WORKING-STORAGE variables from earlier chunks when converting PROCEDURE DIVISION in later chunks.
+
+## Output Requirements
+- Return COMPLETE, compilable Java code. No TODOs, no placeholders, no 'implement here' comments.
+- Include all imports. Use Quarkus CDI annotations (@ApplicationScoped, @Inject, @Transactional).
+- Class name = COBOL program name in PascalCase + 'Service' (e.g., BDSDA2F → Bdsda2fService).
+
+
+## Banking & CICS-Specific Conversion Rules
+- **Transaction Boundaries**: Preserve CICS SYNCPOINT semantics. A Java @Transactional block must encompass BOTH account updates and PROCTRAN insert to reflect atomicity.
+- **Deadlock Retry Logic**: XFRFUN retries DB2 deadlocks up to 5 times with delay. This must be preserved using retry loops + backoff, not replaced by a single exception throw.
+- **Money Handling**: Use BigDecimal(scale=2) for all balances and amounts. Never use double/float. Preserve sign semantics (negative balances allowed).
+- **Date/Time Fidelity**: Replace ASKTIME/FORMATTIME with Java time APIs but preserve original output formats (DD.MM.YYYY, HHMMSS, task-based reference IDs).
+- **Pseudo-Conversational UI**: BNK1DCS SEND/RECEIVE MAP flows should become stateful REST interactions or explicit state tokens—do not collapse into single stateless endpoints.
+- **COMM-AREA Contracts**: DFHCOMMAREA layouts (e.g., XFRFUN copybook, BNK1DCM) are strict interfaces between programs. Generate explicit DTOs and do not reorder fields.
+- **Error Mapping**: Map ABEND codes (SAME, FROM, TO, HROL, WPCD, RUF2/3) to typed Java exceptions with preserved codes/messages for ops traceability.
+- **Chunk Awareness**: Many WORKING-STORAGE fields are reused across sections (e.g., HV-ACCOUNT-*). Ensure earlier chunks declare them once and later chunks reference the same fields.
+
+## SECTION: User
+
+Convert the following COBOL program to Java with Quarkus.
+
+## COBOL Source Code
+```cobol
+{{CobolContent}}
+```
+
+## Analysis of the COBOL Program
+{{Analysis}}
+
+## Business Logic Context (from reverse engineering)
+{{BusinessLogicContext}}
+
+## Requirements
+1. Return ONLY the Java code — no explanations, no markdown blocks.
+2. Start with: package com.example.something;
+3. Must be valid, compilable Java starting with 'package' and ending with the class closing brace.
+4. Use Panache repository pattern for all database access.
+5. Use JAX-RS endpoints for all CICS transaction replacements.
 
 ## SECTION: ChunkFirst
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 - This is the FIRST chunk - include package declaration and imports
 - Include class declaration with opening brace
@@ -61,6 +197,91 @@ Common suffixes: Service, Processor, Handler, Validator, Calculator, Generator, 
 
 ## SECTION: ChunkMiddle
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 - This is a MIDDLE chunk - continue from previous chunk
 - Do NOT include package/imports/class declaration
 - Do NOT close the class yet. STRICTLY FORBIDDEN to output the final closing brace '}'.
@@ -69,11 +290,181 @@ Common suffixes: Service, Processor, Handler, Validator, Calculator, Generator, 
 
 ## SECTION: ChunkLast
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 - This is the LAST chunk - include closing brace for the class
 - Complete any remaining methods
 - Ensure all brackets are balanced
 
 ## SECTION: CorrectionsSystem
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 You are an expert Java code reviewer. Apply the following corrections:
 {{Corrections}}
@@ -81,6 +472,91 @@ You are an expert Java code reviewer. Apply the following corrections:
 Return ONLY the corrected Java code. No explanations. No markdown blocks.
 
 ## SECTION: CorrectionsUser
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 Apply the corrections to this Java code:
 

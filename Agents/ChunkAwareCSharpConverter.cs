@@ -25,6 +25,26 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
     protected override string AgentName => "ChunkAwareCSharpConverter";
 
     /// <summary>
+    /// Creates a ChunkAwareCSharpConverter, routing to Responses API or Chat API based on availability.
+    /// </summary>
+    public static ChunkAwareCSharpConverter Create(
+        ResponsesApiClient? responsesClient,
+        IChatClient? chatClient,
+        ILogger<ChunkAwareCSharpConverter> logger,
+        string modelId,
+        ConversionSettings conversionSettings,
+        EnhancedLogger? enhancedLogger = null,
+        ChatLogger? chatLogger = null,
+        RateLimiter? rateLimiter = null,
+        AppSettings? settings = null,
+        int? runId = null)
+    {
+        return responsesClient != null
+            ? new ChunkAwareCSharpConverter(responsesClient, logger, modelId, conversionSettings, enhancedLogger, chatLogger, rateLimiter, settings, runId)
+            : new ChunkAwareCSharpConverter(chatClient!, logger, modelId, conversionSettings, enhancedLogger, chatLogger, rateLimiter, settings, runId);
+    }
+
+    /// <summary>
     /// Sets the Run ID for the current context.
     /// </summary>
     public void SetRunId(int runId)
@@ -54,6 +74,7 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
         : base(responsesClient, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings)
     {
         _conversionSettings = conversionSettings;
+        _runId = runId;
     }
 
     /// <summary>
@@ -72,6 +93,7 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
         : base(chatClient, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings)
     {
         _conversionSettings = conversionSettings;
+        _runId = runId;
     }
 
     private int MaxContentChars => Settings?.ChunkingSettings?.AutoChunkCharThreshold ?? 150_000;
