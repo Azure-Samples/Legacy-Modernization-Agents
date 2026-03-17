@@ -68,6 +68,49 @@ public sealed class McpProcessClient : IMcpClient, IDisposable
         _sendLock.Dispose();
     }
 
+    public async Task RestartAsync(CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        await _mutex.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_process is not null)
+            {
+                try
+                {
+                    _stdin?.Dispose();
+                    _stdout?.Dispose();
+                }
+                catch { }
+
+                try
+                {
+                    if (!_process.HasExited)
+                    {
+                        _process.Kill(entireProcessTree: true);
+                        _process.WaitForExit(2000);
+                    }
+                    _process.Dispose();
+                }
+                catch { }
+
+                _process = null;
+                _stdin = null;
+                _stdout = null;
+                _stderrDrainer = null;
+                _initialized = false;
+            }
+
+            await StartProcessAsync(cancellationToken).ConfigureAwait(false);
+            await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _mutex.Release();
+        }
+    }
+
     public async Task EnsureReadyAsync(CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -328,11 +371,15 @@ public sealed class McpProcessClient : IMcpClient, IDisposable
             CreateNoWindow = true
         };
 
-        // Copy Azure OpenAI environment variables to the subprocess
+        // Copy AI-related environment variables to the subprocess
         foreach (var key in Environment.GetEnvironmentVariables().Keys)
         {
             var keyStr = key?.ToString();
-            if (!string.IsNullOrEmpty(keyStr) && keyStr.StartsWith("AZURE_OPENAI", StringComparison.OrdinalIgnoreCase))
+            if (string.IsNullOrEmpty(keyStr)) continue;
+
+            // Forward Azure OpenAI vars, GITHUB_TOKEN, and service type
+            if (keyStr.StartsWith("AZURE_OPENAI", StringComparison.OrdinalIgnoreCase) ||
+                keyStr.Equals("GITHUB_TOKEN", StringComparison.OrdinalIgnoreCase))
             {
                 var value = Environment.GetEnvironmentVariable(keyStr);
                 if (!string.IsNullOrEmpty(value))

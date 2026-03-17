@@ -9,8 +9,6 @@ This dev container provides a fully automated development environment with all d
 - ✅ **Java 17 JDK + Maven** - For Quarkus development
 - ✅ **Docker-in-Docker** - Run Docker containers inside the dev container
 - ✅ **Azure CLI** - Manage Azure resources
-- ✅ **GitHub CLI** (`gh`) — GitHub command-line tool
-- ✅ **GitHub Copilot CLI** (`@github/copilot@latest`) — Required for GitHub Copilot SDK provider
 - ✅ **Node.js LTS** - For frontend development
 
 ### Databases
@@ -84,8 +82,6 @@ This checks:
 
 ### 4. Configure AI Endpoint (Required)
 
-#### Option A: Azure OpenAI
-
 ```bash
 # Copy the template
 cp Config/ai-config.local.env.example Config/ai-config.local.env
@@ -98,21 +94,6 @@ Required values:
 - `AZURE_OPENAI_ENDPOINT` - Your AI endpoint URL
 - `AZURE_OPENAI_DEPLOYMENT_NAME` - Your deployment name (e.g., "gpt-5-mini-2" or "gpt-4o")
 - `AZURE_OPENAI_API_KEY` - Your API key (optional if using `az login`)
-
-#### Option B: GitHub Copilot SDK
-
-```bash
-./doctor.sh setup  # Select "GitHub Copilot SDK" when prompted
-```
-
-Or manually create `Config/ai-config.local.env`:
-```bash
-AZURE_OPENAI_SERVICE_TYPE="GitHubCopilot"
-_CHAT_MODEL="claude-sonnet-4"
-_CODE_MODEL="claude-sonnet-4"
-```
-
-Requires Copilot CLI to be authenticated: `copilot login`
 
 ### 5. Run Demo
 

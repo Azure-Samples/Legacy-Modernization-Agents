@@ -126,7 +126,258 @@ migration_backup*.sql
 # All log files (May contain API calls, credentials, business data)
 Logs/*
 !Logs/.gitkeep
-logs/
+╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
+║                                    COBOL SOURCE FILES (.cbl, .cpy)                                        ║
+╚════════════════════════════════════════════╤═════════════════════════════════════════════════════════════════╝
+                                             │
+                                             ▼
+                              ┌──────────────────────────────┐
+                              │   FileHelper.ScanDirectory   │
+                              │   Discover all COBOL files   │
+                              └──────────────┬───────────────┘
+                                             │
+                              ┌──────────────┴───────────────┐
+                              ▼                              ▼
+                   ┌───────────────────┐          ┌────────────────────┐
+                   │   SMALL FILES     │          │    LARGE FILES     │
+                   │  < MaxChunkSize   │          │  > MaxChunkSize    │
+                   │  (direct process) │          │  (needs chunking)  │
+                   └────────┬──────────┘          └─────────┬──────────┘
+                            │                               │
+                            │                               ▼
+                            │              ┌─────────────────────────────────────────┐
+                            │              │        SMART CHUNKING ENGINE            │
+                            │              │                                         │
+                            │              │  1. LanguageAdapter                     │
+                            │              │     • Identify semantic units           │
+                            │              │       (paragraphs, sections, divisions) │
+                            │              │     • Extract variables & types         │
+                            │              │     • Map call dependencies             │
+                            │              │     • Find external references (COPY)   │
+                            │              │                                         │
+                            │              │  2. SmartChunker                        │
+                            │              │     • Split at semantic boundaries      │
+                            │              │     • Each chunk ≤ MaxChunkSize         │
+                            │              │     • Preserve paragraph integrity      │
+                            │              │                                         │
+                            │              │  3. ChunkingPlan                        │
+                            │              │     ┌─────┬─────┬─────┬─────┐          │
+                            │              │     │ C1  │ C2  │ C3  │ C4  │ ...      │
+                            │              │     │est: │est: │est: │est: │          │
+                            │              │     │8K   │12K  │9K   │15K  │ tokens   │
+                            │              │     └─────┴─────┴─────┴─────┘          │
+                            │              └──────────────────┬──────────────────────┘
+                            │                                 │
+                            ▼                                 ▼
+               ┌──────────────────────────────────────────────────────────────┐
+               │              TOKEN ESTIMATION (per file or chunk)            │
+               │                                                              │
+               │   TokenHelper.EstimateTokens()                               │
+               │   ┌──────────────────────────────────────────────────────┐   │
+               │   │  COBOL code:   chars ÷ 3.0 = estimated tokens      │   │
+               │   │  General text: chars ÷ 3.5 = estimated tokens      │   │
+               │   └──────────────────────────────────────────────────────┘   │
+               └──────────────────────────┬───────────────────────────────────┘
+                                          │
+                                          ▼
+               ┌──────────────────────────────────────────────────────────────┐
+               │          THREE-TIER COMPLEXITY SCORING                       │
+               │                                                              │
+               │   Regex patterns scan file content, each adds weight:        │
+               │   ┌─────────────────────────────────────────────────────┐   │
+               │   │  EXEC SQL / EXEC CICS  ─────────── weight: 3-5    │   │
+               │   │  EVALUATE / PERFORM VARYING ────── weight: 2      │   │
+               │   │  REDEFINES / OCCURS ────────────── weight: 2      │   │
+               │   │  STRING / UNSTRING / INSPECT ───── weight: 1-2    │   │
+               │   └─────────────────────────────────────────────────────┘   │
+               │                          │                                   │
+               │        ┌─────────────────┼─────────────────┐                │
+               │        ▼                 ▼                 ▼                │
+               │   ┌─────────┐     ┌───────────┐     ┌──────────┐          │
+               │   │   LOW   │     │  MEDIUM   │     │   HIGH   │          │
+               │   │score < 5│     │ 5 ≤ s < 15│     │score ≥ 15│          │
+               │   │         │     │           │     │          │          │
+               │   │effort:  │     │effort:    │     │effort:   │          │
+               │   │ "low"   │     │ "medium"  │     │ "high"   │          │
+               │   │         │     │           │     │          │          │
+               │   │tokens:  │     │tokens:    │     │tokens:   │          │
+               │   │base×1.5 │     │base×2.5   │     │base×3.5  │          │
+               │   │ ~32K    │     │ ~65K      │     │ ~100K    │          │
+               │   └─────────┘     └───────────┘     └──────────┘          │
+               └──────────────────────────┬───────────────────────────────────┘
+                                          │
+          ┌───────────────────────────────┤
+          │                               │
+          ▼                               ▼
+┌─────────────────────────┐   ┌──────────────────────────────────────────────┐
+│   CONTEXT MANAGEMENT    │   │         PARALLEL PROCESSING                  │
+│   (chunked files only)  │   │                                              │
+│                         │   │  FILE-LEVEL                CHUNK-LEVEL       │
+│  ┌───────────────────┐  │   │  ┌─────────────────────┐  ┌──────────────┐  │
+│  │ Full Detail Window│  │   │  │ Concurrent files:   │  │ Per large    │  │
+│  │ (last 3 chunks)   │  │   │  │                     │  │ file:        │  │
+│  │ 100% context      │  │   │  │ TURBO:    4 workers │  │              │  │
+│  ├───────────────────┤  │   │  │ FAST:     3 workers │  │ MaxParallel  │  │
+│  │ Compressed History│  │   │  │ BALANCED: 2 workers │  │ Chunks: 3    │  │
+│  │ (older chunks)    │  │   │  │ THOROUGH: 2 workers │  │              │  │
+│  │ 30% of original   │  │   │  ├─────────────────────┤  │ Stagger:     │  │
+│  ├───────────────────┤  │   │  │ Stagger Delays:     │  │ 2000ms       │  │
+│  │ Signature Registry│  │   │  │                     │  │              │  │
+│  │ • Method sigs     │  │   │  │ TURBO:     200ms    │  └──────────────┘  │
+│  │ • Type mappings   │  │   │  │ FAST:      500ms    │                    │
+│  │ • Cross-chunk refs│  │   │  │ BALANCED: 1000ms    │                    │
+│  └───────────────────┘  │   │  │ THOROUGH: 1500ms    │                    │
+│                         │   │  └─────────────────────┘                    │
+└────────────┬────────────┘   └──────────────────┬───────────────────────────┘
+             │                                   │
+             └──────────────┬────────────────────┘
+                            │
+                            ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                     DUAL RATE LIMITING                                       │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │  RateLimitTracker — 1-Minute Sliding Window                        │    │
+│  │                                                                     │    │
+│  │  Budget: 300K TPM × safety factor (0.70 - 0.85)                    │    │
+│  │        = 210K - 255K effective tokens/min                          │    │
+│  │                                                                     │    │
+│  │  Token History Queue:                                               │    │
+│  │  ┌──────────┬──────────┬──────────┬──────────┬──────────┐          │    │
+│  │  │ t=0:00   │ t=0:12   │ t=0:25   │ t=0:38   │ t=0:51   │         │    │
+│  │  │ 45K tok  │ 38K tok  │ 52K tok  │ 41K tok  │ ???      │         │    │
+│  │  └──────────┴──────────┴──────────┴──────────┴──────────┘         │    │
+│  │  ◄────────────── 1 minute window ──────────────►                   │    │
+│  │                                                                     │    │
+│  │  Sum(window) = 176K    Estimated next = 40K                        │    │
+│  │  176K + 40K = 216K  ≤  255K budget?  ──► YES ──► ✅ PROCEED       │    │
+│  │                                          NO  ──► ⏸️ WAIT for       │    │
+│  │                                                   oldest entry     │    │
+│  │                                                   to expire        │    │
+│  ├─────────────────────────────────────────────────────────────────────┤    │
+│  │  RPM Tracking: request count/min (same sliding window approach)    │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │  RateLimiter — Concurrency + Delay Control                         │    │
+│  │                                                                     │    │
+│  │  SemaphoreSlim(maxParallelRequests)                                │    │
+│  │  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐                 │    │
+│  │  │Worker 1 │ │Worker 2 │ │Worker 3 │ │Worker 4 │ (TURBO)         │    │
+│  │  │ ACTIVE  │ │ ACTIVE  │ │ WAITING │ │ WAITING │                 │    │
+│  │  └─────────┘ └─────────┘ └─────────┘ └─────────┘                 │    │
+│  │                                                                     │    │
+│  │  Token Bucket: tokens_used_this_minute / effective_budget          │    │
+│  │  If exhausted → wait until next minute boundary                    │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+└──────────────────────────────┬───────────────────────────────────────────────┘
+                               │
+                               ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                 AZURE OPENAI RESPONSES API (gpt-5.1-codex-mini)             │
+│                                                                              │
+│  ┌────────────┐   ┌───────────────┐   ┌────────────┐   ┌───────────────┐   │
+│  │ 1. Estimate│──▶│ 2. WaitFor    │──▶│ 3. Send    │──▶│ 4. Record     │   │
+│  │ tokens for │   │ Capacity()    │   │ request w/ │   │ Usage() into  │   │
+│  │ request    │   │ (check TPM    │   │ reasoning  │   │ sliding       │   │
+│  │            │   │  + RPM)       │   │ effort     │   │ window        │   │
+│  └────────────┘   └───────────────┘   └─────┬──────┘   └───────────────┘   │
+│                                              │                              │
+│                                              ▼                              │
+│                                    ┌──────────────────┐                     │
+│                                    │ Response received │                     │
+│                                    └────────┬─────────┘                     │
+│                                             │                               │
+│                              ┌──────────────┴──────────────┐                │
+│                              ▼                             ▼                │
+│                     ┌──────────────┐             ┌──────────────────┐       │
+│                     │  ✅ SUCCESS  │             │  ⚠️ REASONING    │       │
+│                     │  Output OK   │             │  EXHAUSTED       │       │
+│                     └──────┬───────┘             │  (truncated)     │       │
+│                            │                     └────────┬─────────┘       │
+│                            │                              │                 │
+│                            │                              ▼                 │
+│                            │              ┌───────────────────────────┐     │
+│                            │              │  ESCALATION LOOP          │     │
+│                            │              │                           │     │
+│                            │              │  Retry 1:                 │     │
+│                            │              │   tokens × 2.0            │     │
+│                            │              │   effort: low → medium    │     │
+│                            │              │                           │     │
+│                            │              │  Retry 2:                 │     │
+│                            │              │   tokens × 2.0 (again)    │     │
+│                            │              │   effort: medium → high   │     │
+│                            │              │                           │     │
+│                            │              │  ┌─────────────────────┐  │     │
+│                            │              │  │ THRASH GUARD        │  │     │
+│                            │              │  │ At max tokens AND   │  │     │
+│                            │              │  │ max effort?         │  │     │
+│                            │              │  │ YES → ❌ STOP       │  │     │
+│                            │              │  │ NO  → retry API call│  │     │
+│                            │              │  └─────────────────────┘  │     │
+│                            │              └───────────────────────────┘     │
+│                            │                                                │
+└────────────────────────────┼────────────────────────────────────────────────┘
+                             │
+                             ▼
+               ┌──────────────────────────────────────┐
+               │         RECONCILIATION               │
+               │                                      │
+               │  ConversionValidator                 │
+               │  • Cross-chunk type consistency      │
+               │  • Signature completeness check      │
+               │  • Naming convention enforcement     │
+               │  • Missing reference detection       │
+               │                                      │
+               │  Resumability                        │
+               │  • Track last successful chunk       │
+               │  • On failure: restart from          │
+               │    last checkpoint, not beginning    │
+               └──────────────────┬───────────────────┘
+                                  │
+                                  ▼
+               ╔══════════════════════════════════════╗
+               ║     📦 FINAL OUTPUT                  ║
+               ║     Java Quarkus / C# .NET Code      ║
+               ╚══════════════════════════════════════╝
+
+
+═══════════════════════════════════════════════════════════════
+ TOKEN FLOW EXAMPLE: 4,600-line COBOL program (TURBO profile)
+═══════════════════════════════════════════════════════════════
+
+ File: 4600LoC.cbl  │  ~150K chars  │  ~50K estimated tokens
+                     │
+ ① Triage:           LARGE (> MaxChunkSize)
+                     │
+ ② Smart Chunk:      Split into 4 chunks at paragraph boundaries
+                     │
+                     ├── Chunk 1: IDENTIFICATION + DATA DIVISION    ~12K tokens
+                     ├── Chunk 2: PROCEDURE (paragraphs A-M)        ~15K tokens
+                     ├── Chunk 3: PROCEDURE (paragraphs N-Z)        ~13K tokens
+                     └── Chunk 4: ERROR HANDLING + CLEANUP          ~10K tokens
+                     │
+ ③ Complexity:       Score = 18 (EXEC SQL + EXEC CICS + REDEFINES)
+                     → HIGH tier → reasoning: "high", output: 100K
+                     │
+ ④ Parallel:         3 chunk workers, 2000ms stagger
+                     │
+                     │  t=0.0s  Chunk 1 starts ──► WaitForCapacity(12K) ──► ✅
+                     │  t=2.0s  Chunk 2 starts ──► WaitForCapacity(15K) ──► ✅
+                     │  t=4.0s  Chunk 3 starts ──► WaitForCapacity(13K) ──► ✅
+                     │  t=6.0s  Chunk 4 waits  ──► semaphore (max 3)
+                     │  t=35s   Chunk 1 done   ──► RecordUsage(48K actual)
+                     │          Chunk 4 starts ──► WaitForCapacity(10K) ──► ✅
+                     │
+ ⑤ Sliding Window:   At t=35s window shows:
+                     │  Chunk 1: 48K + Chunk 2: ~55K (in-flight) = ~103K
+                     │  103K < 210K budget ──► still has capacity
+                     │
+ ⑥ Reconcile:        All 4 chunks done → validate cross-references
+                     → type mappings consistent ✅
+                     → all signatures resolved ✅
+                     │
+ ⑦ Output:           Single coherent Java/C# filelogs/
 *.log
 Log/
 LogFiles/

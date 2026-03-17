@@ -1,0 +1,30 @@
+{
+  "CobolAnalyzer": {
+    "score": 9,
+    "observations": "Identified complete banking domain model including 3 DB2 tables (ACCOUNT, PROCTRAN, CONTROL), 1 VSAM file (CUSTOMER), deadlock retry logic with specific SQLERRD codes, storm drain pattern for CICS workload management, consistent abend handler pattern via ABNDPROC, account-ordering deadlock avoidance strategy, and eyecatcher record-type verification convention. Regex missed the deadlock retry mechanism, storm drain pattern, account ordering strategy, and the COPY...REPLACING idiom."
+  },
+  "ChunkAwareJavaConverter": {
+    "score": 9,
+    "observations": "Identified cross-section variable dependencies critical for chunked conversion (HOST-ACCOUNT-ROW shared across 3 sections, DB2-DEADLOCK-RETRY used across retry GOTOs, ABNDINFO-REC pattern repeated 15\u002B times). Found GO TO label jumps used for deadlock retry that cross section boundaries. COPY...REPLACING idiom creates aliased copies of the same record structure. LE runtime calls (CEEGMT, CEEDATM) need java.time replacements."
+  },
+  "DependencyMapper": {
+    "score": 9,
+    "observations": "Discovered layered architecture: BMS screen programs (BNK1xxx) LINK to service programs which access DB2/VSAM. ABNDPROC is a universal cross-cutting dependency. SORTCODE copybook acts as a global configuration constant. RESPSTR.cpy is an inline procedure copybook (not a data structure). Found 88-level condition names in copybooks that control record type identification and transaction type classification. BANKDATA batch program uses LE runtime CALL (CEEGMT/CEEDATM) rather than CICS services."
+  },
+  "JavaConverter": {
+    "score": 9,
+    "observations": "Identified deadlock avoidance by account-number ordering, specific DB2 table schemas with COMP-3 fields, storm drain pattern for resilience, COMMAREA structures for all service programs, eyecatcher validation pattern, batch program with random data generation using name/address arrays, LOAN/MORTGAGE negative balance rule, 5-retry deadlock loop with 1-second delays, and sentinel control record pattern (sortcode 000000, number 9999999999)."
+  },
+  "ChunkAwareCSharpConverter": {
+    "score": 9,
+    "observations": "Chunk-specific additions focus on cross-section variable tracking needed for split-file conversion. XFRFUN\u0027s GO TO retry pattern crosses section boundaries requiring structural refactoring. The abend handler block repeats 15\u002B times \u2014 key deduplication opportunity during chunked conversion. COPY...REPLACING idiom needs special handling."
+  },
+  "CSharpConverter": {
+    "score": 9,
+    "observations": "Same domain insights as Java converter but mapped to C#/.NET idioms. Polly replaces MicroProfile fault tolerance. EF Core composite keys configured in OnModelCreating. DateOnly used instead of LocalDate. Record types used for DTOs. LOAN/MORTGAGE negative balance rule identified. Sentinel control record pattern found."
+  },
+  "BusinessLogicExtractor": {
+    "score": 9,
+    "observations": "Extracted 8 transfer rules including deadlock avoidance ordering (not just retry), explicit \u0027no overdraft checking\u0027 business decision from comments, dual balance semantics (available = actual for transfers), case sensitivity preservation as a business requirement (UCTRAN handling), delete-cascade implication from user messages, two-step update workflow with pseudo-conversational state management, sentinel record pattern for control data, and European date format convention. The storm drain pattern encodes a resilience business rule, not just an implementation detail."
+  }
+}

@@ -1,7 +1,7 @@
 # Legacy Modernization Agents - COBOL to Java/C# Migration
 
 This open source migration framework was developed to demonstrate AI Agents capabilities for converting legacy code like COBOL to Java or C# .NET. Each Agent has a persona that can be edited depending on the desired outcome.
-The migration uses Microsoft Agent Framework with a dual-API architecture (Responses API + Chat Completions API) to analyze COBOL code and its dependencies, then convert to either Java Quarkus or C# .NET (user's choice).
+The migration uses Microsoft Agent Framework with a multi-provider architecture supporting **Azure OpenAI** (Responses API + Chat Completions), **GitHub Copilot** (PAT or CLI-based SDK), and **direct OpenAI** to analyze COBOL code and its dependencies, then convert to either Java Quarkus or C# .NET (user's choice).
 
 ## 🎬 Portal Demo
 
@@ -46,24 +46,31 @@ The migration uses Microsoft Agent Framework with a dual-API architecture (Respo
 |-------------|---------|-------|
 | **.NET SDK** | 10.0+ | [Download](https://dotnet.microsoft.com/download) |
 | **Docker Desktop** | Latest | Must be running for Neo4j |
-| **AI Provider** | — | Azure OpenAI (endpoint + key or `az login`) **or** GitHub Copilot SDK (Copilot CLI) |
+| **AI Endpoint** | — | Azure endpoint + `az login`, or GitHub `gh auth login`, or API Key |
 
 ### Supported AI Providers
 
-The framework supports two provider backends. All agents use the `IChatClient` abstraction; Azure OpenAI additionally supports the Responses API for codex models.
+This project supports **four AI providers** with automatic model capability detection:
 
-| Provider | API Types | Model Examples | Requirements |
-|----------|-----------|----------------|--------------------|
-| **Azure OpenAI** | Responses API + Chat Completions | `gpt-5.1-codex-mini`, `gpt-5.1-chat` | Endpoint + API key or `az login` |
-| **GitHub Copilot SDK** | Chat Completions (`CopilotChatClient`) | `claude-sonnet-4`, `gpt-5`, any Copilot-available model | Copilot CLI in PATH, `copilot login` |
+| Provider | ServiceType | Models | Auth | Interface |
+|----------|------------|--------|------|-----------|
+| **Azure OpenAI** | `AzureOpenAI` | `gpt-5.1-codex-mini`, `gpt-5.2-chat` | API Key or `az login` (Entra ID) | `ResponsesApiClient` (Codex) + `IChatClient` |
+| **GitHub Copilot** | `GitHubCopilot` | Claude Opus/Sonnet, Codex, GPT, Grok | GitHub PAT (`GITHUB_TOKEN`) | `IChatClient` via `models.github.ai` |
+| **GitHub Copilot SDK** | `GitHubCopilotSDK` | All Copilot models | `gh auth login` (CLI) | `CopilotChatClient` via stdio |
+| **OpenAI** | `OpenAI` | GPT-4o, o3, etc. | OpenAI API key | `IChatClient` |
 
-When using GitHub Copilot SDK, the `ResponsesApiClient` is not available — all agents fall back to `IChatClient` via `CopilotChatClient`. Set `AZURE_OPENAI_SERVICE_TYPE="GitHubCopilot"` in your config (or select it via `./doctor.sh setup`).
+**Model-Aware Reasoning** — The framework auto-detects model capabilities from the model ID and adapts its reasoning strategy:
 
-> ⚠️ **Want to use different models?** You can swap models, but you may need to update API calls:
-> - Codex models → Responses API (`ResponsesApiClient`) — Azure OpenAI only
-> - Chat models → Chat Completions API (`IChatClient`) — both providers
-> 
-> See [Agents/Infrastructure/](Agents/Infrastructure/) for API client implementations.
+| Model Family | Detection | Reasoning Strategy | Applied Via |
+|-------------|-----------|-------------------|-------------|
+| **Codex/o-series** | `codex`, `o1`, `o3` in model ID | `reasoning.effort` (low/medium/high) | Responses API or `AdditionalProperties` |
+| **Claude** | `claude` in model ID | Extended thinking with `budget_tokens` | `AdditionalProperties["thinking"]` |
+| **GPT** | `gpt-4`, `gpt-5` in model ID | Standard (temperature=0.1) | `ChatOptions.Temperature` |
+| **Grok** | `grok` in model ID | Standard (temperature=0.1) | `ChatOptions.Temperature` |
+
+> **All models get the same three-tier content-aware complexity scoring** — COBOL source is analyzed for SQL, CICS, REDEFINES, etc. to determine LOW/MEDIUM/HIGH complexity. The complexity tier drives both `MaxOutputTokens` sizing and the model-specific reasoning parameter.
+
+> ⚠️ **Want to use different models?** Just change `AZURE_OPENAI_MODEL_ID` and `AZURE_OPENAI_SERVICE_TYPE`. The framework auto-detects capabilities — no code changes needed.
 
 > [!IMPORTANT]
 > **Azure OpenAI Quota Recommendation: 1M+ TPM**
@@ -154,8 +161,6 @@ This project uses **Microsoft Agent Framework** (`Microsoft.Agents.AI.*`), **not
 
 ### Setup (2 minutes)
 
-#### Option A: Azure OpenAI
-
 ```bash
 # 1. Clone and enter
 git clone https://github.com/Azure-Samples/Legacy-Modernization-Agents.git
@@ -170,42 +175,12 @@ cp Config/ai-config.local.env.example Config/ai-config.local.env
 # 3. Start Neo4j (dependency graph storage)
 docker-compose up -d neo4j
 
-# 4. Build & run
+# 4. Build
 dotnet build
+
+# 5. Run migration but we recommend using the next section with doctor.sh run or portal for just loading the portal
 ./doctor.sh run
 ```
-
-#### Option B: GitHub Copilot SDK
-
-```bash
-# 1. Clone and enter
-git clone https://github.com/Azure-Samples/Legacy-Modernization-Agents.git
-cd Legacy-Modernization-Agents
-
-# 2. Interactive setup — select "GitHub Copilot SDK" when prompted
-./doctor.sh setup
-# Verifies Copilot CLI, authenticates, lets you pick chat & code models, writes config
-
-# 3. Start Neo4j (dependency graph storage)
-docker-compose up -d neo4j
-
-# 4. Build & run
-dotnet build
-./doctor.sh run
-```
-
-The setup wizard walks you through the following steps:
-
-1. **Provider selection** — choose "GitHub Copilot SDK"
-2. **Authentication** — pick one of two methods:
-   | Method | How it works |
-   |--------|-------------|
-   | **GitHub CLI** (default) | Runs `copilot login` interactively — no token to manage |
-   | **Personal Access Token (PAT)** | Provide a classic PAT with the `copilot` scope. Create one at [github.com/settings/tokens](https://github.com/settings/tokens). Fine-grained PATs do **not** support Copilot. |
-3. **Chat model** — select the model used for analysis, reasoning, and reverse engineering
-4. **Code model** — optionally pick a different model optimized for code generation, or reuse the chat model
-
-The wizard writes `Config/ai-config.local.env` with `AZURE_OPENAI_SERVICE_TYPE="GitHubCopilot"` and your chosen models.
 
 ---
 
@@ -287,7 +262,7 @@ The speed profile works by setting environment variables that override the three
 ```bash
 ./doctor.sh               # Health check - verify configuration
 ./doctor.sh test          # Run system tests
-./doctor.sh setup         # Interactive setup wizard (Azure OpenAI or GitHub Copilot SDK)
+./doctor.sh setup         # Interactive setup wizard
 ./doctor.sh chunking-health  # Check smart chunking configuration
 ```
 
@@ -531,6 +506,18 @@ flowchart TB
         COBOL["COBOL Files<br/>source/*.cbl, *.cpy"]
     end
     
+    subgraph CONFIG["🔧 Configuration"]
+        SETUP_CLI["./doctor.sh setup<br/>(CLI)"]
+        SETUP_PORTAL["Portal Setup Modal<br/>(Browser)"]
+        SETUP_CLI --> CONFIG_FILE["Config/ai-config.local.env"]
+        SETUP_PORTAL --> CONFIG_FILE
+        CONFIG_FILE --> PROVIDERS
+        subgraph PROVIDERS["AI Providers"]
+            AZURE["☁️ Azure OpenAI<br/>(API Key / Entra ID)"]
+            COPILOT["🤖 GitHub Copilot SDK<br/>(CLI / PAT)"]
+        end
+    end
+
     subgraph PROCESS["⚙️ Processing Pipeline"]
         REGEX["Regex / Syntax Parsing<br/>(Deep SQL/Variable Extraction)"]
         AGENTS["🤖 AI Agents<br/>(MS Agent Framework)"]
@@ -547,11 +534,12 @@ flowchart TB
     
     subgraph OUTPUT["📦 Output"]
         CODE["Java/C# Code<br/>output/java or output/csharp"]
-        PORTAL["Web Portal & MCP Server<br/>localhost:5028"]
+        PORTAL["Web Portal<br/>localhost:5028<br/><br/>• Model Setup &amp; Discovery<br/>• Mission Control<br/>• Prompt Studio<br/>• Chat &amp; Graph"]
     end
     
     COBOL --> REGEX
     REGEX --> AGENTS
+    PROVIDERS --> AGENTS
     
     AGENTS --> ANALYZER
     AGENTS --> EXTRACTOR
@@ -648,6 +636,9 @@ sequenceDiagram
 - ✅ Edge type filtering with color-coded visualization
 - ✅ Line number context for all dependencies
 - ✅ Per-run **🔬 RE Results** button — view persisted business logic extracts and delete unsatisfactory results
+- ✅ **AI Provider Setup Modal** — connect to Azure OpenAI or GitHub Copilot SDK from the browser, discover all available models/deployments, and save config
+- ✅ **Mission Control** — start/stop/pause migrations, select provider and model, upload source files
+- ✅ **Prompt Studio** — generate, AI-enhance, and score agent prompts (works with both Azure and Copilot SDK)
 
 ### Smart Chunking & Token Strategy
 
@@ -720,15 +711,22 @@ flowchart TD
     end
 
     subgraph API_CALL["🤖 API CALL + ESCALATION"]
-        AD --> AE[Azure OpenAI Responses API]
-        AE --> AF{Response Status}
-        AF -->|"Complete"| AG[✅ Success]
+        AD --> AE{Provider Routing}
+        AE -->|"Azure Codex<br>(ResponsesApiClient)"| AE1[Responses API Call]
+        AE -->|"GitHub/Claude/Grok/GPT<br>(IChatClient)"| AE2["Chat Completions Call<br>+ ApplyModelSpecificOptions"]
+        AE1 --> AF{Response Status}
+        AE2 --> AF2{Truncation Check}
+        AF2 -->|"FinishReason=Stop<br>No truncation signals"| AG[✅ Success]
+        AF2 -->|"FinishReason=Length<br>or text signals<br>or unclosed code blocks"| AH2["OutputTruncationException<br>① Double maxTokens<br>② Promote effort<br>③ Thrash guard"]
+        AH2 -->|"Max 2 retries"| AE2
+        AH2 -->|"All retries failed"| AI["Adaptive Re-Chunking<br>Split at semantic midpoint<br>50-line overlap"]
+        AF -->|"Complete"| AG
         AF -->|"Reasoning Exhaustion<br>reasoning ≥ 90% of output"| AH["Escalation Loop<br>① Double maxTokens<br>② Promote effort<br>③ Thrash guard"]
-        AH -->|"Max 2 retries"| AE
-        AH -->|"All retries failed"| AI["Adaptive Re-Chunking<br>Split at semantic midpoint<br>50-line overlap"]
+        AH -->|"Max 2 retries"| AE1
+        AH -->|"All retries failed"| AI
         AI --> AE
         AF -->|"429 Rate Limited"| AJ["Exponential Backoff<br>5s → 60s max<br>up to 5 retries"]
-        AJ --> AE
+        AJ --> AE1
     end
 
     subgraph RECONCILE["🔗 RECONCILIATION"]
@@ -767,6 +765,7 @@ flowchart TD
 ```mermaid
 flowchart TD
   CLI[["CLI / doctor.sh\n- Loads AI config\n- Selects target language"]]
+  PORTAL_SETUP[["Portal Setup Modal\n- Connect to Azure / Copilot\n- Discover & select models\n- Save config"]]
   
   subgraph ANALYZE_PHASE["PHASE 1: Deep Analysis"]
       REGEX["Regex Parsing\n(Fast SQL/Variable Extraction)"]
@@ -786,6 +785,7 @@ flowchart TD
   end
 
   CLI --> REGEX
+  PORTAL_SETUP -.->|configures| CLI
   REGEX --> SQLITE
   REGEX --> ANALYZE_PHASE
   
@@ -807,6 +807,7 @@ flowchart TD
 ```mermaid
 sequenceDiagram
   participant User as 🧑 User / doctor.sh
+  participant Portal as 🌐 Portal (McpChatWeb)
   participant CLI as CLI Runner
   participant RE as ReverseEngineeringProcess
   participant Analyzer as CobolAnalyzerAgent
@@ -815,7 +816,22 @@ sequenceDiagram
   participant DepMap as DependencyMapperAgent
   participant Converter as CodeConverterAgent (Java/C#)
   participant Repo as HybridMigrationRepository
-  participant Portal as MCP Server & McpChatWeb
+  participant AI as AI Provider (Azure / Copilot SDK)
+
+  rect rgb(245, 240, 255)
+      Note over User, AI: 0. Configuration (CLI or Portal)
+      alt CLI Setup
+          User->>CLI: ./doctor.sh setup
+          CLI->>CLI: Select provider, enter credentials
+          CLI->>CLI: Write Config/ai-config.local.env
+      else Portal Setup
+          User->>Portal: Open Setup Modal (🔧)
+          Portal->>AI: Connect & discover models
+          AI-->>Portal: Available deployments/models
+          User->>Portal: Select chat + code models
+          Portal->>Portal: Write Config/ai-config.local.env
+      end
+  end
 
   User->>CLI: select target language, concurrency flags
   CLI->>RE: start reverse engineering
@@ -969,8 +985,13 @@ flowchart LR
     B --> C["3. ai-config.local.env<br/>(your overrides)"]
     C --> D["4. Environment vars<br/>(highest priority)"]
     
+    E["./doctor.sh setup<br/>(CLI)"] -.->|writes| C
+    F["Portal Setup Modal<br/>(Browser)"] -.->|writes| C
+    
     style C fill:#90EE90
     style D fill:#FFD700
+    style E fill:#4B8BBE
+    style F fill:#7C3AED
 ```
 
 **Later values override earlier ones.** This means:
@@ -995,7 +1016,6 @@ The `load-config.sh` script:
 
 | Setting | appsettings.json Location | .env Override |
 |---------|---------------------------|---------------|
-| Service type | `AISettings.ServiceType` | `AZURE_OPENAI_SERVICE_TYPE` |
 | Codex model | `AISettings.ModelId` | `_CODE_MODEL` |
 | Chat model | `AISettings.ChatModelId` | `_CHAT_MODEL` |
 | API endpoint | `AISettings.Endpoint` | `_MAIN_ENDPOINT` |
@@ -1007,7 +1027,7 @@ The `load-config.sh` script:
 
 ---
 
-### Provider: Azure OpenAI
+### Required: Azure OpenAI
 
 In `Config/ai-config.local.env`:
 ```bash
@@ -1023,26 +1043,6 @@ _CODE_MODEL="gpt-5.1-codex-mini"     # For Code Conversion
 > 💡 **Prefer keyless auth?** Run `az login` and leave `_MAIN_API_KEY` empty.
 > You need the **"Cognitive Services OpenAI User"** role on your Azure OpenAI resource.
 > See [Azure AD / Entra ID Authentication Guide](azlogin-auth-guide.md) for full instructions.
-
-### Provider: GitHub Copilot SDK
-
-Run `./doctor.sh setup` and select **GitHub Copilot SDK**, or create `Config/ai-config.local.env` manually:
-
-```bash
-AZURE_OPENAI_SERVICE_TYPE="GitHubCopilot"
-_CHAT_MODEL="claude-sonnet-4"    # Any model available to your Copilot plan
-_CODE_MODEL="claude-sonnet-4"
-```
-
-To list models available to your Copilot account:
-```bash
-dotnet run -- list-models
-```
-
-Requirements:
-- **Copilot CLI** installed and in `PATH` (`npm install -g @github/copilot@latest`)
-- Authenticated via `copilot login`
-- Endpoint and API key settings are ignored in this mode
 
 ### Neo4j (Dependency Graphs)
 

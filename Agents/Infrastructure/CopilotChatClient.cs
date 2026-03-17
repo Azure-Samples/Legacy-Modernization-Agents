@@ -23,6 +23,12 @@ public sealed class CopilotChatClient : IChatClient, IAsyncDisposable
     private bool _disposed;
 
     /// <summary>
+    /// Per-request timeout. Prevents infinite hangs if the SDK never fires
+    /// SessionIdleEvent (e.g. auth failure, network issues).
+    /// </summary>
+    private static readonly TimeSpan RequestTimeout = TimeSpan.FromMinutes(5);
+
+    /// <summary>
     /// Creates a new CopilotChatClient.
     /// </summary>
     /// <param name="model">Model name (e.g. "gpt-5", "claude-sonnet-4.5").</param>
@@ -82,15 +88,24 @@ public sealed class CopilotChatClient : IChatClient, IAsyncDisposable
 
         foreach (var msg in messages)
         {
+            var text = msg.Text;
+            if (string.IsNullOrWhiteSpace(text)) continue;
+
             if (msg.Role == ChatRole.System)
             {
-                systemMessage = msg.Text;
+                systemMessage = text;
             }
             else
             {
                 if (userPromptBuilder.Length > 0) userPromptBuilder.AppendLine();
-                userPromptBuilder.Append(msg.Text);
+                userPromptBuilder.Append(text);
             }
+        }
+
+        // Guard: Copilot SDK requires non-whitespace content
+        if (userPromptBuilder.Length == 0)
+        {
+            throw new InvalidOperationException("Cannot send empty prompt to Copilot SDK");
         }
 
         // Create a session per request (stateless adapter pattern)
@@ -133,14 +148,39 @@ public sealed class CopilotChatClient : IChatClient, IAsyncDisposable
                 case SessionIdleEvent:
                     if (!done.Task.IsCompleted) done.TrySetResult();
                     break;
+                default:
+                    _logger?.LogDebug("CopilotChatClient: unhandled event {EventType}", evt.GetType().Name);
+                    break;
             }
         });
 
         await session.SendAsync(new MessageOptions { Prompt = userPromptBuilder.ToString() });
 
-        // Wait for completion or cancellation
-        using var ctsReg = cancellationToken.Register(() => done.TrySetCanceled());
-        await done.Task;
+        // Wait for completion, cancellation, or timeout
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(RequestTimeout);
+        using var ctsReg = timeoutCts.Token.Register(() =>
+        {
+            if (!done.Task.IsCompleted)
+            {
+                if (cancellationToken.IsCancellationRequested)
+                    done.TrySetCanceled(cancellationToken);
+                else
+                    done.TrySetException(new TimeoutException(
+                        $"Copilot SDK did not respond within {RequestTimeout.TotalMinutes} minutes. " +
+                        "This usually indicates an authentication issue — ensure you are logged in via 'gh auth login'."));
+            }
+        });
+
+        try
+        {
+            await done.Task;
+        }
+        catch (TimeoutException)
+        {
+            _logger?.LogError("CopilotChatClient: request timed out after {Minutes}m for model {Model}", RequestTimeout.TotalMinutes, model);
+            throw;
+        }
 
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -237,13 +277,11 @@ public sealed class CopilotChatClient : IChatClient, IAsyncDisposable
     public object? GetService(Type serviceType, object? serviceKey = null) => null;
 
     /// <inheritdoc />
-    /// <remarks>
-    /// Synchronous disposal is not supported. Use <c>await using</c> to call <see cref="DisposeAsync"/> instead.
-    /// </remarks>
     public void Dispose()
     {
-        throw new NotSupportedException(
-            "CopilotChatClient requires async disposal. Use 'await using' or call DisposeAsync() directly.");
+        if (_disposed) return;
+        _disposed = true;
+        try { _client.ForceStopAsync().GetAwaiter().GetResult(); } catch { /* best-effort */ }
     }
 
     /// <inheritdoc />

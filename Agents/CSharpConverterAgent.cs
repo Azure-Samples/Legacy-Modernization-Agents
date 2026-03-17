@@ -21,23 +21,6 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
     public string TargetLanguage => "CSharp";
     public string FileExtension => ".cs";
 
-    private int? _runId;
-    private List<BusinessLogic> _businessLogicExtracts = new();
-
-    /// <summary>
-    /// Sets the Run ID for the current context.
-    /// </summary>
-    public void SetRunId(int runId)
-    {
-        _runId = runId;
-    }
-
-    /// <inheritdoc/>
-    public void SetBusinessLogicContext(List<BusinessLogic> businessLogicExtracts)
-    {
-        _businessLogicExtracts = businessLogicExtracts ?? new();
-    }
-
     /// <summary>
     /// Creates a CSharpConverterAgent, routing to Responses API or Chat API based on availability.
     /// </summary>
@@ -55,6 +38,23 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
         return responsesClient != null
             ? new CSharpConverterAgent(responsesClient, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings, runId)
             : new CSharpConverterAgent(chatClient!, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings, runId);
+    }
+
+    private int? _runId;
+    private List<BusinessLogic> _businessLogicExtracts = new();
+
+    /// <summary>
+    /// Sets the Run ID for the current context.
+    /// </summary>
+    public void SetRunId(int runId)
+    {
+        _runId = runId;
+    }
+
+    /// <inheritdoc/>
+    public void SetBusinessLogicContext(List<BusinessLogic> businessLogicExtracts)
+    {
+        _businessLogicExtracts = businessLogicExtracts ?? new();
     }
 
     /// <summary>

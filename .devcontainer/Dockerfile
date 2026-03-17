@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/devcontainers/dotnet:10.0
+FROM mcr.microsoft.com/devcontainers/dotnet:9.0
 
 # Install system dependencies (including ICU for .NET globalization)
 RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
@@ -41,9 +41,7 @@ RUN echo 'alias neo4j-status="docker ps | grep neo4j"' >> /home/vscode/.bashrc &
     echo 'alias demo="cd /workspaces/Legacy-Modernization-Agents/helper-scripts && ./demo.sh"' >> /home/vscode/.bashrc && \
     echo 'alias verify-setup="echo \"🔍 Checking setup...\" && docker ps | grep neo4j > /dev/null && echo \"✅ Neo4j running\" || echo \"❌ Neo4j not running (run: docker-compose up -d neo4j)\" && dotnet --version > /dev/null && echo \"✅ .NET SDK installed\" && ls /workspaces/Legacy-Modernization-Agents/Data/migration.db > /dev/null 2>&1 && echo \"✅ Database exists\" || echo \"⚠️  No migration data yet (run: demo or ./helper-scripts/demo.sh)\""' >> /home/vscode/.bashrc
 
-# Install GitHub Copilot CLI
-RUN npm install -g @github/copilot@latest
-
+# Environment variables
 ENV ASPNETCORE_ENVIRONMENT=Development
 ENV DOTNET_CLI_TELEMETRY_OPTOUT=1
 ENV DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1

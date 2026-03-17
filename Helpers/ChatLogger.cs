@@ -5,7 +5,7 @@ using System.Text.Json;
 namespace CobolToQuarkusMigration.Helpers;
 
 /// <summary>
-/// Logger for capturing full-length conversations between agents and Azure OpenAI
+/// Logger for capturing full-length conversations between agents and AI
 /// </summary>
 public class ChatLogger
 {
@@ -29,7 +29,7 @@ public class ChatLogger
     }
 
     /// <summary>
-    /// Logs a message sent to Azure OpenAI
+    /// Logs a message sent to AI
     /// </summary>
     public void LogUserMessage(string agentName, string fileName, string prompt, string systemMessage = "")
     {
@@ -53,7 +53,7 @@ public class ChatLogger
     }
 
     /// <summary>
-    /// Logs a response received from Azure OpenAI
+    /// Logs a response received from AI
     /// </summary>
     public void LogAIResponse(string agentName, string fileName, string response, int actualTokens = 0)
     {
@@ -219,7 +219,8 @@ public class ChatLogger
     {
         if (string.IsNullOrEmpty(text)) return 0;
         
-        // ~4 chars per token (rough estimate)
+        // Rough estimate: 1 token ≈ 4 characters for English text
+        // This is a simplified calculation - actual tokenization is more complex
         return text.Length / 4;
     }
 
