@@ -92,6 +92,9 @@ public sealed class WebAppFactory : WebApplicationFactory<Program>
             return Task.FromResult(result);
         }
 
+        public Task RestartAsync(CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 }

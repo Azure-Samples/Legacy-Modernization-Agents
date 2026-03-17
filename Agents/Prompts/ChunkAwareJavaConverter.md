@@ -63,17 +63,6 @@ You are a COBOL-to-Java/Quarkus conversion specialist.
 - Include all imports. Use Quarkus CDI annotations (@ApplicationScoped, @Inject, @Transactional).
 - Class name = COBOL program name in PascalCase + 'Service' (e.g., BDSDA2F → Bdsda2fService).
 
-
-## Banking & CICS-Specific Conversion Rules
-- **Transaction Boundaries**: Preserve CICS SYNCPOINT semantics. A Java @Transactional block must encompass BOTH account updates and PROCTRAN insert to reflect atomicity.
-- **Deadlock Retry Logic**: XFRFUN retries DB2 deadlocks up to 5 times with delay. This must be preserved using retry loops + backoff, not replaced by a single exception throw.
-- **Money Handling**: Use BigDecimal(scale=2) for all balances and amounts. Never use double/float. Preserve sign semantics (negative balances allowed).
-- **Date/Time Fidelity**: Replace ASKTIME/FORMATTIME with Java time APIs but preserve original output formats (DD.MM.YYYY, HHMMSS, task-based reference IDs).
-- **Pseudo-Conversational UI**: BNK1DCS SEND/RECEIVE MAP flows should become stateful REST interactions or explicit state tokens—do not collapse into single stateless endpoints.
-- **COMM-AREA Contracts**: DFHCOMMAREA layouts (e.g., XFRFUN copybook, BNK1DCM) are strict interfaces between programs. Generate explicit DTOs and do not reorder fields.
-- **Error Mapping**: Map ABEND codes (SAME, FROM, TO, HROL, WPCD, RUF2/3) to typed Java exceptions with preserved codes/messages for ops traceability.
-- **Chunk Awareness**: Many WORKING-STORAGE fields are reused across sections (e.g., HV-ACCOUNT-*). Ensure earlier chunks declare them once and later chunks reference the same fields.
-
 ## SECTION: User
 
 Convert the following COBOL program to Java with Quarkus.
@@ -97,6 +86,13 @@ Convert the following COBOL program to Java with Quarkus.
 5. Use JAX-RS endpoints for all CICS transaction replacements.
 
 ## SECTION: ChunkFirst
+
+
+
+
+
+
+
 
 
 
@@ -282,6 +278,13 @@ Common suffixes: Service, Processor, Handler, Validator, Calculator, Generator, 
 
 
 
+
+
+
+
+
+
+
 - This is a MIDDLE chunk - continue from previous chunk
 - Do NOT include package/imports/class declaration
 - Do NOT close the class yet. STRICTLY FORBIDDEN to output the final closing brace '}'.
@@ -289,6 +292,13 @@ Common suffixes: Service, Processor, Handler, Validator, Calculator, Generator, 
 - CRITICAL: ALL executable logic MUST be inside methods. If a paragraph spans chunks, continue the method body.
 
 ## SECTION: ChunkLast
+
+
+
+
+
+
+
 
 
 
@@ -466,12 +476,26 @@ Common suffixes: Service, Processor, Handler, Validator, Calculator, Generator, 
 
 
 
+
+
+
+
+
+
+
 You are an expert Java code reviewer. Apply the following corrections:
 {{Corrections}}
 
 Return ONLY the corrected Java code. No explanations. No markdown blocks.
 
 ## SECTION: CorrectionsUser
+
+
+
+
+
+
+
 
 
 

@@ -1304,6 +1304,20 @@ static int? ParseRunIdOrNull(string runIdText)
 	return null;
 }
 
+// Classify a model ID into a family category
+static string ClassifyModelFamily(string modelId)
+{
+	var m = modelId.ToLowerInvariant();
+	if (m.Contains("codex")) return "Codex";
+	if (m.Contains("gpt-5")) return "GPT-5";
+	if (m.Contains("gpt-4")) return "GPT-4";
+	if (m.Contains("o1") || m.Contains("o3-") || m.Contains("o4-")) return "Reasoning";
+	if (m.Contains("embedding") || m.Contains("text-embedding")) return "Embedding";
+	if (m.Contains("dall-e") || m.Contains("dall_e")) return "Image";
+	if (m.Contains("whisper") || m.Contains("tts")) return "Audio";
+	return "Other";
+}
+
 // Check if a SQLite table has a given column (case-insensitive)
 static async Task<bool> TableHasColumnAsync(SqliteConnection connection, string tableName, string columnName, CancellationToken ct)
 {
@@ -3898,154 +3912,63 @@ app.MapFallbackToFile("index.html");
 // In-memory active model state (persists for portal session)
 string? _activeModelId = null;
 
-// Cached GitHub token from `gh auth token`
-string? _cachedGhToken = null;
+// In-memory discovered models from connect (persists for portal session)
+var _discoveredModels = new List<McpChatWeb.Models.ModelInfo>();
+string? _connectedServiceType = null;
+string? _connectedEndpoint = null;
+bool _connectedViaDefaultCredential = false;
 
-string? GetGitHubToken()
-{
-	// 1. Explicit env var
-	var envToken = Environment.GetEnvironmentVariable("GITHUB_TOKEN");
-	if (!string.IsNullOrWhiteSpace(envToken) && !envToken.Contains("placeholder"))
-		return envToken;
-
-	// 2. Cached from previous `gh auth token` call
-	if (!string.IsNullOrWhiteSpace(_cachedGhToken))
-		return _cachedGhToken;
-
-	// 3. Try `gh auth token` (GitHub CLI)
-	try
-	{
-		var psi = new System.Diagnostics.ProcessStartInfo("gh", "auth token")
-		{
-			RedirectStandardOutput = true,
-			RedirectStandardError = true,
-			UseShellExecute = false,
-			CreateNoWindow = true
-		};
-		using var proc = System.Diagnostics.Process.Start(psi);
-		if (proc != null)
-		{
-			var output = proc.StandardOutput.ReadToEnd().Trim();
-			proc.WaitForExit(5000);
-			if (proc.ExitCode == 0 && !string.IsNullOrWhiteSpace(output))
-			{
-				_cachedGhToken = output;
-				return output;
-			}
-		}
-	}
-	catch { /* gh CLI not installed or not authed */ }
-
-	return null;
-}
-
-app.MapGet("/api/models/available", async () =>
+app.MapGet("/api/models/available", () =>
 {
 	var models = new List<McpChatWeb.Models.ModelInfo>();
-	var ghToken = GetGitHubToken();
-	bool copilotFetched = false;
+	var serviceType = _connectedServiceType
+		?? Environment.GetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE") ?? "AzureOpenAI";
+	var isCopilotSdk = serviceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase) ||
+	                   serviceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase);
+	var provider = isCopilotSdk ? "GitHub Copilot SDK" : "Azure OpenAI";
 
-	// ── Fetch LIVE models from GitHub Copilot API ──────────────────────────
-	if (!string.IsNullOrWhiteSpace(ghToken))
+	// If we have discovered models from the connect flow, use those
+	if (_discoveredModels.Count > 0)
 	{
-		try
-		{
-			using var httpClient = new HttpClient();
-			httpClient.Timeout = TimeSpan.FromSeconds(10);
-			httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {ghToken}");
-			httpClient.DefaultRequestHeaders.Add("Copilot-Integration-Id", "vscode-chat");
-			httpClient.DefaultRequestHeaders.Add("Editor-Version", "vscode/1.96.0");
-
-			var response = await httpClient.GetAsync("https://api.githubcopilot.com/models");
-			if (response.IsSuccessStatusCode)
-			{
-				var json = await response.Content.ReadAsStringAsync();
-				var parsed = JsonNode.Parse(json);
-				var dataArray = parsed?["data"]?.AsArray();
-
-				if (dataArray != null)
-				{
-					foreach (var m in dataArray)
-					{
-						var id = m?["id"]?.GetValue<string>() ?? "";
-						var name = m?["name"]?.GetValue<string>() ?? id;
-						var vendor = m?["vendor"]?.GetValue<string>() ?? "Unknown";
-						var family = m?["capabilities"]?["family"]?.GetValue<string>() ?? "";
-						var ctx = m?["capabilities"]?["limits"]?["max_context_window_tokens"]?.GetValue<int>() ?? 0;
-						var category = m?["model_picker_category"]?.GetValue<string>() ?? "";
-						var pickerEnabled = m?["model_picker_enabled"]?.GetValue<bool>() ?? false;
-						var task = m?["capabilities"]?["type"]?.GetValue<string>() ?? "";
-
-						// Only show chat-capable models that are picker-enabled (user-selectable)
-						if (task != "chat" && !string.IsNullOrEmpty(task)) continue;
-
-						var description = category switch
-						{
-							"powerful" => "Powerful — best for complex tasks",
-							"versatile" => "Versatile — balanced performance",
-							"lightweight" => "Lightweight — fast & efficient",
-							_ => pickerEnabled ? "Available" : "Internal"
-						};
-
-						models.Add(new McpChatWeb.Models.ModelInfo(
-							id, name, vendor, family, description, ctx > 0 ? ctx : null
-						));
-					}
-
-					copilotFetched = true;
-					Console.WriteLine($"✅ Fetched {models.Count} models from GitHub Copilot API");
-				}
-			}
-			else
-			{
-				Console.WriteLine($"⚠️ Copilot API returned {response.StatusCode}, falling back to catalog");
-			}
-		}
-		catch (Exception ex)
-		{
-			Console.WriteLine($"⚠️ Failed to fetch Copilot models: {ex.Message}");
-		}
+		models.AddRange(_discoveredModels);
 	}
-
-	// ── Fallback: also add Azure-specific models if configured ─────────────
-	var serviceType = Environment.GetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE") ?? "AzureOpenAI";
-	var azureModelId = Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL_ID") ?? "";
-	var azureDeployment = Environment.GetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT_NAME") ?? "";
-
-	// Add configured Azure models that aren't already in the Copilot list
-	if (serviceType.Equals("AzureOpenAI", StringComparison.OrdinalIgnoreCase))
+	else
 	{
-		var azureIds = new HashSet<string>(new[] { azureModelId, azureDeployment }
-			.Where(s => !string.IsNullOrWhiteSpace(s)));
-		foreach (var id in azureIds)
-		{
-			if (!models.Any(m => m.Id.Equals(id, StringComparison.OrdinalIgnoreCase)))
-			{
-				models.Add(new McpChatWeb.Models.ModelInfo(
-					id, id, "Azure OpenAI", "Azure", "Azure-deployed model", null
-				));
-			}
-		}
-
+		// Fallback: show models configured via ./doctor.sh setup (from env vars)
+		var codeModel = Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL_ID") ?? "";
 		var chatModel = Environment.GetEnvironmentVariable("AZURE_OPENAI_CHAT_MODEL_ID") ?? "";
-		if (!string.IsNullOrEmpty(chatModel) && !models.Any(m => m.Id.Equals(chatModel, StringComparison.OrdinalIgnoreCase)))
+
+		foreach (var id in new[] { codeModel, chatModel }.Where(s => !string.IsNullOrWhiteSpace(s)).Distinct())
 		{
+			var role = id == chatModel ? "Chat model (portal Q&A)" : "Code model (migration)";
 			models.Add(new McpChatWeb.Models.ModelInfo(
-				chatModel, chatModel, "Azure OpenAI", "Azure", "Azure-deployed chat model", null
+				id, id, provider, "Configured", role, null
 			));
 		}
 	}
 
-	// Determine current active model
-	var currentModelId = _activeModelId ?? azureModelId;
+	var currentModelId = _activeModelId
+		?? Environment.GetEnvironmentVariable("AZURE_OPENAI_CHAT_MODEL_ID")
+		?? Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL_ID")
+		?? "";
+
+	// Determine if setup is needed (no models configured at all)
+	var hasEndpoint = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT"))
+		&& !Environment.GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT")!.Contains("your-endpoint")
+		&& !Environment.GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT")!.Contains("placeholder");
+	var hasModelId = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL_ID"));
+	var needsSetup = !hasEndpoint && !isCopilotSdk && !hasModelId && _discoveredModels.Count == 0;
 
 	return Results.Ok(new
 	{
 		serviceType,
 		activeModelId = currentModelId,
-		models = models.OrderBy(m => m.Publisher).ThenBy(m => m.Name).ToList(),
-		copilotConnected = copilotFetched,
-		hasGitHubAuth = !string.IsNullOrWhiteSpace(ghToken)
+		models = models.OrderBy(m => m.Name).ToList(),
+		copilotConnected = isCopilotSdk,
+		hasGitHubAuth = isCopilotSdk,
+		needsSetup,
+		isConnected = _discoveredModels.Count > 0,
+		connectedEndpoint = _connectedEndpoint
 	});
 });
 
@@ -4060,102 +3983,23 @@ app.MapPost("/api/models/active", async (McpChatWeb.Models.SetActiveModelRequest
 	Environment.SetEnvironmentVariable("AZURE_OPENAI_CHAT_MODEL_ID", request.ModelId);
 	Environment.SetEnvironmentVariable("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME", request.ModelId);
 
-	// Auto-detect service type from model name
-	var modelLower = request.ModelId.ToLowerInvariant();
+	// Auto-detect service type from the configured provider
+	var currentServiceType = Environment.GetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE") ?? "AzureOpenAI";
 
-	// Models with vendor/ prefix → GitHub Models REST API
-	if (request.ModelId.Contains('/'))
+	if (currentServiceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase) ||
+	    currentServiceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase))
 	{
-		Environment.SetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE", "GitHubCopilot");
-		Environment.SetEnvironmentVariable("AZURE_OPENAI_ENDPOINT", "https://models.github.ai/inference");
-
-		var ghToken = Environment.GetEnvironmentVariable("GITHUB_TOKEN");
-		if (string.IsNullOrEmpty(ghToken))
-		{
-			try
-			{
-				var psi = new System.Diagnostics.ProcessStartInfo("gh", "auth token")
-					{ RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
-				using var proc = System.Diagnostics.Process.Start(psi);
-				if (proc != null)
-				{
-					ghToken = proc.StandardOutput.ReadToEnd().Trim();
-					proc.WaitForExit(5000);
-					if (proc.ExitCode == 0 && !string.IsNullOrEmpty(ghToken))
-					{
-						Environment.SetEnvironmentVariable("GITHUB_TOKEN", ghToken);
-					}
-				}
-			}
-			catch { }
-		}
-		if (!string.IsNullOrEmpty(ghToken))
-		{
-			Environment.SetEnvironmentVariable("AZURE_OPENAI_API_KEY", ghToken);
-			Environment.SetEnvironmentVariable("AZURE_OPENAI_CHAT_API_KEY", ghToken);
-		}
-		Console.WriteLine($"✅ Switched to GitHub Models (REST API) for {request.ModelId}");
+		// Copilot SDK — just update the model IDs, auth is handled by CLI
+		Environment.SetEnvironmentVariable("AZURE_OPENAI_MODEL_ID", request.ModelId);
+		Environment.SetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT_NAME", request.ModelId);
+		Environment.SetEnvironmentVariable("AISETTINGS__MODELID", request.ModelId);
+		Environment.SetEnvironmentVariable("AISETTINGS__DEPLOYMENTNAME", request.ModelId);
+		Console.WriteLine($"✅ Model set to {request.ModelId} (GitHub Copilot SDK)");
 	}
-	// Claude, non-prefixed grok → Copilot SDK (only way to access these)
-	else if (modelLower.Contains("claude") || (modelLower.Contains("grok") && !request.ModelId.Contains('/')))
-	{
-		Environment.SetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE", "GitHubCopilotSDK");
-
-		// Resolve GitHub token so Prompt Studio can fall back to GitHub Models REST API
-		var ghToken = GetGitHubToken();
-		if (!string.IsNullOrEmpty(ghToken))
-		{
-			Environment.SetEnvironmentVariable("AZURE_OPENAI_API_KEY", ghToken);
-			Environment.SetEnvironmentVariable("AZURE_OPENAI_CHAT_API_KEY", ghToken);
-			Environment.SetEnvironmentVariable("GITHUB_TOKEN", ghToken);
-		}
-		Console.WriteLine($"✅ Switched to Copilot SDK for {request.ModelId}");
-	}
-	// Everything else (gpt-5.1-codex-mini, gpt-5.2-chat, etc.) → Azure OpenAI
 	else
 	{
-		// Reset service type to AzureOpenAI — previous selection may have set it to GitHubCopilotSDK
-		Environment.SetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE", "AzureOpenAI");
-
-		// ALWAYS restore Azure endpoint from config — previous GitHub model switch
-		// may have overwritten AZURE_OPENAI_ENDPOINT with models.github.ai
-		var configEndpoint = "";
-		try
-		{
-			var settingsPath = Path.Combine(Directory.GetCurrentDirectory(), "..", "Config", "appsettings.json");
-			if (!File.Exists(settingsPath))
-				settingsPath = Path.Combine(Directory.GetCurrentDirectory(), "Config", "appsettings.json");
-			if (File.Exists(settingsPath))
-			{
-				using var doc = JsonDocument.Parse(File.ReadAllText(settingsPath));
-				configEndpoint = doc.RootElement
-					.GetProperty("AISettings")
-					.GetProperty("Endpoint")
-					.GetString() ?? "";
-			}
-		}
-		catch { /* ignore parse errors */ }
-
-		if (!string.IsNullOrWhiteSpace(configEndpoint))
-		{
-			Environment.SetEnvironmentVariable("AZURE_OPENAI_ENDPOINT", configEndpoint);
-			Console.WriteLine($"📌 Restored Azure endpoint: {configEndpoint}");
-		}
-
-		// Clear GitHub token from API key — Azure uses Entra ID (DefaultAzureCredential)
-		// unless a real Azure API key was configured
-		var currentKey = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_KEY") ?? "";
-		if (currentKey.StartsWith("gho_") || currentKey.StartsWith("ghp_") || currentKey.StartsWith("ghu_") || currentKey.StartsWith("ghs_"))
-		{
-			Environment.SetEnvironmentVariable("AZURE_OPENAI_API_KEY", "");
-			Console.WriteLine("🔑 Cleared GitHub token from API key — will use Entra ID auth");
-		}
-
-		// Also set deployment name for the model
-		Environment.SetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT_NAME", request.ModelId);
-		Environment.SetEnvironmentVariable("AZURE_OPENAI_MODEL_ID", request.ModelId);
-
-		Console.WriteLine($"✅ Switched to Azure OpenAI for {request.ModelId}");
+		// Azure OpenAI — keep the configured endpoint and auth
+		Console.WriteLine($"✅ Model set to {request.ModelId} (Azure OpenAI)");
 	}
 
 	Console.WriteLine($"🔄 Active model changed to: {request.ModelId} (all agents updated)");
@@ -4181,6 +4025,654 @@ app.MapGet("/api/models/active", () =>
 	               ?? "unknown";
 	var serviceType = Environment.GetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE") ?? "";
 	return Results.Ok(new { activeModelId = activeModel, serviceType });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MODEL DISCOVERY — Connect to Azure OpenAI or GitHub Copilot SDK and list models
+// ═══════════════════════════════════════════════════════════════════════════════
+
+app.MapPost("/api/models/connect", async (McpChatWeb.Models.ConnectProviderRequest request) =>
+{
+	try
+	{
+		var models = new List<McpChatWeb.Models.ModelInfo>();
+
+		if (request.ServiceType.Equals("AzureOpenAI", StringComparison.OrdinalIgnoreCase))
+		{
+			// ── Azure OpenAI: list actual deployments via ARM management API ──
+			if (string.IsNullOrWhiteSpace(request.Endpoint))
+				return Results.BadRequest(new { error = "Endpoint is required for Azure OpenAI" });
+
+			// Validate endpoint URL format
+			if (!Uri.TryCreate(request.Endpoint, UriKind.Absolute, out var endpointUri) ||
+			    (endpointUri.Scheme != "https" && endpointUri.Scheme != "http"))
+			{
+				return Results.BadRequest(new { error = "Invalid endpoint URL. Must be a valid HTTPS URL." });
+			}
+			var endpoint = request.Endpoint.TrimEnd('/');
+
+			// Extract the account name from the endpoint URL
+			// e.g. "https://g-openai.cognitiveservices.azure.com" → "g-openai"
+			string accountName;
+			try
+			{
+				var uri = new Uri(endpoint);
+				accountName = uri.Host.Split('.')[0];
+			}
+			catch
+			{
+				return Results.BadRequest(new { error = "Invalid endpoint URL format" });
+			}
+
+			// First, verify the data-plane endpoint is reachable and auth works
+			using var dataPlaneHttp = new HttpClient();
+			dataPlaneHttp.Timeout = TimeSpan.FromSeconds(10);
+
+			if (!string.IsNullOrWhiteSpace(request.ApiKey))
+			{
+				dataPlaneHttp.DefaultRequestHeaders.Add("api-key", request.ApiKey);
+			}
+			else if (request.UseDefaultCredential)
+			{
+				try
+				{
+					var credential = new Azure.Identity.DefaultAzureCredential();
+					var tokenContext = new Azure.Core.TokenRequestContext(
+						new[] { "https://cognitiveservices.azure.com/.default" });
+					var token = await credential.GetTokenAsync(tokenContext);
+					dataPlaneHttp.DefaultRequestHeaders.Authorization =
+						new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token.Token);
+				}
+				catch (Exception ex)
+				{
+					return Results.Ok(new { 
+						error = $"Azure credential failed: {ex.Message}. Run 'az login' first.",
+						authenticated = false
+					});
+				}
+			}
+			else
+			{
+				return Results.BadRequest(new { error = "Provide an API key or enable UseDefaultCredential (az login)" });
+			}
+
+			// Quick connectivity check with data-plane
+			try
+			{
+				var checkUrl = $"{endpoint}/openai/models?api-version=2024-06-01";
+				var checkResponse = await dataPlaneHttp.GetAsync(checkUrl);
+				if (checkResponse.StatusCode == System.Net.HttpStatusCode.Unauthorized ||
+				    checkResponse.StatusCode == System.Net.HttpStatusCode.Forbidden)
+				{
+					return Results.Ok(new { 
+						error = "Authentication failed. Check your API key or RBAC role (needs 'Cognitive Services OpenAI User').",
+						authenticated = false, httpStatus = (int)checkResponse.StatusCode
+					});
+				}
+			}
+			catch (Exception ex)
+			{
+				return Results.Ok(new { error = $"Cannot reach endpoint: {ex.Message}", authenticated = false });
+			}
+
+			// Use ARM management API to list actual deployments
+			// This requires DefaultAzureCredential (az login) — API key users get a filtered data-plane list
+			var deploymentsFound = false;
+
+			if (request.UseDefaultCredential)
+			{
+				try
+				{
+					var armCredential = new Azure.Identity.DefaultAzureCredential();
+					var armTokenContext = new Azure.Core.TokenRequestContext(
+						new[] { "https://management.azure.com/.default" });
+					var armToken = await armCredential.GetTokenAsync(armTokenContext);
+
+					using var armHttp = new HttpClient();
+					armHttp.Timeout = TimeSpan.FromSeconds(15);
+					armHttp.DefaultRequestHeaders.Authorization =
+						new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", armToken.Token);
+
+					// Step 1: Find the resource by listing subscriptions and searching for the account
+					var subsUrl = "https://management.azure.com/subscriptions?api-version=2022-01-01";
+					var subsResponse = await armHttp.GetAsync(subsUrl);
+					if (subsResponse.IsSuccessStatusCode)
+					{
+						var subsJson = await subsResponse.Content.ReadAsStringAsync();
+						using var subsDoc = JsonDocument.Parse(subsJson);
+
+						if (subsDoc.RootElement.TryGetProperty("value", out var subsArray))
+						{
+							foreach (var sub in subsArray.EnumerateArray())
+							{
+								if (deploymentsFound) break;
+
+								var subId = sub.TryGetProperty("subscriptionId", out var sid) ? sid.GetString() ?? "" : "";
+								if (string.IsNullOrEmpty(subId)) continue;
+
+								// Step 2: Search for the OpenAI account in this subscription
+								var accountsUrl = $"https://management.azure.com/subscriptions/{subId}/providers/Microsoft.CognitiveServices/accounts?api-version=2024-10-01";
+								try
+								{
+									var accountsResponse = await armHttp.GetAsync(accountsUrl);
+									if (!accountsResponse.IsSuccessStatusCode) continue;
+
+									var accountsJson = await accountsResponse.Content.ReadAsStringAsync();
+									using var accountsDoc = JsonDocument.Parse(accountsJson);
+
+									if (!accountsDoc.RootElement.TryGetProperty("value", out var accountsArray)) continue;
+
+									foreach (var account in accountsArray.EnumerateArray())
+									{
+										// Match by account name from endpoint
+										var accName = account.TryGetProperty("name", out var nameProp) ? nameProp.GetString() ?? "" : "";
+										if (!accName.Equals(accountName, StringComparison.OrdinalIgnoreCase)) continue;
+
+										var resourceId = account.TryGetProperty("id", out var idProp) ? idProp.GetString() ?? "" : "";
+										if (string.IsNullOrEmpty(resourceId)) continue;
+
+										// Step 3: List deployments for this account
+										var deploymentsUrl = $"https://management.azure.com{resourceId}/deployments?api-version=2024-10-01";
+										var deploymentsResponse = await armHttp.GetAsync(deploymentsUrl);
+
+										if (!deploymentsResponse.IsSuccessStatusCode)
+										{
+											Console.WriteLine($"⚠️ ARM deployments list returned {(int)deploymentsResponse.StatusCode}");
+											continue;
+										}
+
+										var deploymentsJson = await deploymentsResponse.Content.ReadAsStringAsync();
+										using var deploymentsDoc = JsonDocument.Parse(deploymentsJson);
+
+										if (deploymentsDoc.RootElement.TryGetProperty("value", out var deploymentsArray))
+										{
+											foreach (var dep in deploymentsArray.EnumerateArray())
+											{
+												var depName = dep.TryGetProperty("name", out var dn) ? dn.GetString() ?? "" : "";
+												if (string.IsNullOrEmpty(depName)) continue;
+
+												// Get model info from properties.model
+												var baseModel = depName;
+												var modelVersion = "";
+												var skuCapacity = "";
+
+												if (dep.TryGetProperty("properties", out var props))
+												{
+													if (props.TryGetProperty("model", out var modelObj))
+													{
+														if (modelObj.TryGetProperty("name", out var mn))
+															baseModel = mn.GetString() ?? depName;
+														if (modelObj.TryGetProperty("version", out var mv))
+															modelVersion = mv.GetString() ?? "";
+													}
+
+													// Get provisioning state — skip if not succeeded
+													if (props.TryGetProperty("provisioningState", out var ps))
+													{
+														var state = ps.GetString() ?? "";
+														if (!state.Equals("Succeeded", StringComparison.OrdinalIgnoreCase))
+															continue;
+													}
+												}
+
+												// Get SKU info for display
+												if (dep.TryGetProperty("sku", out var sku))
+												{
+													var skuName = sku.TryGetProperty("name", out var sn) ? sn.GetString() ?? "" : "";
+													var capacity = sku.TryGetProperty("capacity", out var sc) ? sc.GetInt32().ToString() : "";
+													if (!string.IsNullOrEmpty(capacity))
+														skuCapacity = $"{skuName} ({capacity}K TPM)";
+												}
+
+												var family = ClassifyModelFamily(baseModel);
+												if (family is "Embedding" or "Image" or "Audio")
+													continue;
+
+												var displayName = modelVersion != ""
+													? $"{depName} ({baseModel} v{modelVersion})"
+													: $"{depName} ({baseModel})";
+
+												var description = !string.IsNullOrEmpty(skuCapacity)
+													? $"Deployment: {depName}, Model: {baseModel}, SKU: {skuCapacity}"
+													: $"Deployment: {depName}, Model: {baseModel}";
+
+												models.Add(new McpChatWeb.Models.ModelInfo(
+													depName, displayName, "Azure OpenAI", family,
+													description, null
+												));
+											}
+											deploymentsFound = models.Count > 0;
+										}
+										break; // Found the account, no need to check more
+									}
+								}
+								catch (Exception ex)
+								{
+									Console.WriteLine($"⚠️ Error searching subscription {subId}: {ex.Message}");
+								}
+							}
+						}
+					}
+				}
+				catch (Exception ex)
+				{
+					Console.WriteLine($"⚠️ ARM API failed, will fall back to data-plane: {ex.Message}");
+				}
+			}
+
+			// Fallback for API key auth or if ARM didn't work: probe known deployment names
+			// by sending minimal requests to the data-plane inference endpoint
+			if (!deploymentsFound)
+			{
+				Console.WriteLine($"📋 Using data-plane model probing for {endpoint}");
+
+				// Get the models list to know what's available, then probe each as a deployment
+				try
+				{
+					var modelsUrl = $"{endpoint}/openai/models?api-version=2024-06-01";
+					var modelsResponse = await dataPlaneHttp.GetAsync(modelsUrl);
+
+					if (modelsResponse.IsSuccessStatusCode)
+					{
+						var modelsJson = await modelsResponse.Content.ReadAsStringAsync();
+						using var modelsDoc = JsonDocument.Parse(modelsJson);
+
+						if (modelsDoc.RootElement.TryGetProperty("data", out var modelsArray))
+						{
+							// Collect candidate model IDs
+							var candidateIds = new List<string>();
+							foreach (var modelEntry in modelsArray.EnumerateArray())
+							{
+								var id = modelEntry.TryGetProperty("id", out var idProp) ? idProp.GetString() ?? "" : "";
+								if (string.IsNullOrEmpty(id)) continue;
+
+								var family = ClassifyModelFamily(id);
+								if (family is "Embedding" or "Image" or "Audio") continue;
+
+								// Check if it has chat capability
+								if (modelEntry.TryGetProperty("capabilities", out var caps))
+								{
+									var isChatCompletion = caps.TryGetProperty("chat_completion", out var chatCap) && chatCap.GetBoolean();
+									var isCompletion = caps.TryGetProperty("completion", out var compCap) && compCap.GetBoolean();
+									if (!isChatCompletion && !isCompletion) continue;
+								}
+
+								candidateIds.Add(id);
+							}
+
+							// Probe each candidate as a deployment (parallel, max 10 concurrent)
+							var probeResults = new System.Collections.Concurrent.ConcurrentBag<McpChatWeb.Models.ModelInfo>();
+							var semaphore = new SemaphoreSlim(10);
+
+							var probeTasks = candidateIds.Select(async candidateId =>
+							{
+								await semaphore.WaitAsync();
+								try
+								{
+									var probeUrl = $"{endpoint}/openai/deployments/{candidateId}/chat/completions?api-version=2024-06-01";
+									var probeRequest = new HttpRequestMessage(HttpMethod.Post, probeUrl);
+									probeRequest.Content = new StringContent("{\"messages\":[],\"max_tokens\":1}", 
+										System.Text.Encoding.UTF8, "application/json");
+
+									// Copy auth headers
+									foreach (var header in dataPlaneHttp.DefaultRequestHeaders)
+									{
+										probeRequest.Headers.TryAddWithoutValidation(header.Key, header.Value);
+									}
+
+									using var probeHttp = new HttpClient();
+									probeHttp.Timeout = TimeSpan.FromSeconds(5);
+									var probeResponse = await probeHttp.SendAsync(probeRequest);
+									var probeStatus = (int)probeResponse.StatusCode;
+
+									// 400 = deployment exists (our request is intentionally invalid)
+									// 200 = deployment exists and responded
+									// 429 = rate limited but exists
+									if (probeStatus is 400 or 200 or 429)
+									{
+										var family = ClassifyModelFamily(candidateId);
+										probeResults.Add(new McpChatWeb.Models.ModelInfo(
+											candidateId, candidateId, "Azure OpenAI", family,
+											$"Deployment: {candidateId} (verified)", null
+										));
+									}
+								}
+								catch { /* probe failed — not deployed */ }
+								finally { semaphore.Release(); }
+							});
+
+							await Task.WhenAll(probeTasks);
+
+							if (probeResults.Count > 0)
+							{
+								models.AddRange(probeResults);
+								deploymentsFound = true;
+								Console.WriteLine($"✅ Found {probeResults.Count} active deployment(s) via probing");
+							}
+							else
+							{
+								Console.WriteLine($"⚠️ No active deployments found via probing {candidateIds.Count} candidates");
+							}
+						}
+					}
+				}
+				catch (Exception ex)
+				{
+					Console.WriteLine($"⚠️ Data-plane probe failed: {ex.Message}");
+				}
+
+				// If probing found nothing, surface a helpful error
+				if (!deploymentsFound)
+				{
+					return Results.Ok(new
+					{
+						authenticated = true,
+						error = "Connected to Azure OpenAI but no active deployments found. Deploy a model in the Azure Portal first.",
+						models = Array.Empty<object>(),
+						modelCount = 0
+					});
+				}
+			}
+
+			_connectedServiceType = "AzureOpenAI";
+			_connectedEndpoint = request.Endpoint;
+			_connectedViaDefaultCredential = request.UseDefaultCredential;
+
+			Console.WriteLine($"🔌 Connected to Azure OpenAI: {models.Count} deployments found at {request.Endpoint}");
+		}
+		else if (request.ServiceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase) ||
+		         request.ServiceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase))
+		{
+			// ── GitHub Copilot SDK: list models via CopilotClient ──
+			try
+			{
+				var options = new GitHub.Copilot.SDK.CopilotClientOptions { UseStdio = true };
+				if (!string.IsNullOrWhiteSpace(request.ApiKey))
+				{
+					options.GitHubToken = request.ApiKey;
+				}
+
+				var client = new GitHub.Copilot.SDK.CopilotClient(options);
+				var copilotModels = await client.ListModelsAsync();
+
+				foreach (var m in copilotModels.OrderBy(m => m.Name))
+				{
+					var id = m.Id ?? m.Name ?? "unknown";
+					var publisher = "GitHub Copilot";
+
+					// Try to extract publisher from model name patterns
+					var nameLower = (m.Name ?? "").ToLowerInvariant();
+					if (nameLower.Contains("claude")) publisher = "Anthropic";
+					else if (nameLower.Contains("gpt") || nameLower.Contains("o1") || nameLower.Contains("o3") || nameLower.Contains("o4") || nameLower.Contains("codex")) publisher = "OpenAI";
+					else if (nameLower.Contains("grok")) publisher = "xAI";
+					else if (nameLower.Contains("gemini")) publisher = "Google";
+					else if (nameLower.Contains("llama") || nameLower.Contains("meta")) publisher = "Meta";
+					else if (nameLower.Contains("mistral")) publisher = "Mistral";
+
+					var family = nameLower switch
+					{
+						var n when n.Contains("codex") => "Codex",
+						var n when n.Contains("claude") && n.Contains("opus") => "Claude Opus",
+						var n when n.Contains("claude") && n.Contains("sonnet") => "Claude Sonnet",
+						var n when n.Contains("claude") => "Claude",
+						var n when n.Contains("gpt-5") => "GPT-5",
+						var n when n.Contains("gpt-4") => "GPT-4",
+						var n when n.Contains("o1") || n.Contains("o3") || n.Contains("o4") => "Reasoning",
+						var n when n.Contains("grok") => "Grok",
+						var n when n.Contains("gemini") => "Gemini",
+						_ => "Other"
+					};
+
+					models.Add(new McpChatWeb.Models.ModelInfo(
+						id, m.Name ?? id, publisher, family,
+						null, null
+					));
+				}
+
+				_connectedServiceType = "GitHubCopilotSDK";
+				_connectedEndpoint = null;
+				_connectedViaDefaultCredential = true;
+
+				Console.WriteLine($"🔌 Connected to GitHub Copilot SDK: {models.Count} models found");
+			}
+			catch (Exception ex)
+			{
+				var hint = ex.Message.Contains("copilot") || ex.Message.Contains("not found")
+					? " Ensure the Copilot CLI is installed and you are logged in (gh auth login)."
+					: "";
+				return Results.Ok(new { 
+					error = $"GitHub Copilot SDK error: {ex.Message}.{hint}",
+					authenticated = false
+				});
+			}
+		}
+		else
+		{
+			return Results.BadRequest(new { error = $"Unknown service type: {request.ServiceType}" });
+		}
+
+		// Store discovered models in memory
+		_discoveredModels.Clear();
+		_discoveredModels.AddRange(models);
+
+		return Results.Ok(new
+		{
+			authenticated = true,
+			serviceType = request.ServiceType,
+			models = models.OrderBy(m => m.Publisher).ThenBy(m => m.Name).ToList(),
+			modelCount = models.Count
+		});
+	}
+	catch (Exception ex)
+	{
+		Console.WriteLine($"❌ Model connect error: {ex.Message}");
+		return Results.Ok(new { error = $"Connection failed: {ex.Message}", authenticated = false });
+	}
+});
+
+app.MapPost("/api/models/save-config", async (McpChatWeb.Models.SaveModelConfigRequest request, IMcpClient client) =>
+{
+	try
+	{
+		// Update environment variables for the current process
+		Environment.SetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE", 
+			request.ServiceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase) ||
+			request.ServiceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase) 
+				? "GitHubCopilot" : "AzureOpenAI");
+
+		if (!string.IsNullOrWhiteSpace(request.Endpoint))
+		{
+			Environment.SetEnvironmentVariable("AZURE_OPENAI_ENDPOINT", request.Endpoint);
+			Environment.SetEnvironmentVariable("AISETTINGS__ENDPOINT", request.Endpoint);
+			Environment.SetEnvironmentVariable("AISETTINGS__CHATENDPOINT", request.Endpoint);
+		}
+
+		if (!string.IsNullOrWhiteSpace(request.ApiKey))
+		{
+			Environment.SetEnvironmentVariable("AZURE_OPENAI_API_KEY", request.ApiKey);
+			Environment.SetEnvironmentVariable("AISETTINGS__APIKEY", request.ApiKey);
+			Environment.SetEnvironmentVariable("AISETTINGS__CHATAPIKEY", request.ApiKey);
+		}
+
+		if (!string.IsNullOrWhiteSpace(request.CodeModelId))
+		{
+			Environment.SetEnvironmentVariable("AZURE_OPENAI_MODEL_ID", request.CodeModelId);
+			Environment.SetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT_NAME", request.CodeModelId);
+			Environment.SetEnvironmentVariable("AISETTINGS__MODELID", request.CodeModelId);
+			Environment.SetEnvironmentVariable("AISETTINGS__DEPLOYMENTNAME", request.CodeModelId);
+		}
+
+		if (!string.IsNullOrWhiteSpace(request.ChatModelId))
+		{
+			Environment.SetEnvironmentVariable("AZURE_OPENAI_CHAT_MODEL_ID", request.ChatModelId);
+			Environment.SetEnvironmentVariable("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME", request.ChatModelId);
+			Environment.SetEnvironmentVariable("AISETTINGS__CHATMODELID", request.ChatModelId);
+			Environment.SetEnvironmentVariable("AISETTINGS__CHATDEPLOYMENTNAME", request.ChatModelId);
+			_activeModelId = request.ChatModelId;
+		}
+
+		// Persist to Config/ai-config.local.env so settings survive restarts
+		var configSaved = false;
+		try
+		{
+			var contentRoot = app.Environment.ContentRootPath;
+			var repoRoot = Path.GetFullPath("..", contentRoot);
+			if (!File.Exists(Path.Combine(repoRoot, "doctor.sh")))
+				repoRoot = contentRoot;
+
+			var configPath = Path.Combine(repoRoot, "Config", "ai-config.local.env");
+			Directory.CreateDirectory(Path.GetDirectoryName(configPath)!);
+
+			var isGitHubCopilot = request.ServiceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase) ||
+			                      request.ServiceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase);
+
+			var sb = new System.Text.StringBuilder();
+			sb.AppendLine("# =============================================================================");
+			sb.AppendLine("# AI Configuration — Generated by Portal Setup");
+			sb.AppendLine($"# Generated: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+			sb.AppendLine("# =============================================================================");
+			sb.AppendLine();
+
+			if (isGitHubCopilot)
+			{
+				sb.AppendLine("# Provider: GitHub Copilot SDK");
+				sb.AppendLine("AZURE_OPENAI_SERVICE_TYPE=\"GitHubCopilot\"");
+				sb.AppendLine();
+				sb.AppendLine("# Model Selection");
+				sb.AppendLine($"_CHAT_MODEL=\"{request.ChatModelId ?? request.CodeModelId ?? ""}\"");
+				sb.AppendLine($"_CODE_MODEL=\"{request.CodeModelId ?? request.ChatModelId ?? ""}\"");
+				sb.AppendLine();
+				sb.AppendLine("# System mapping (model IDs for the application)");
+				sb.AppendLine("AZURE_OPENAI_MODEL_ID=\"$_CODE_MODEL\"");
+				sb.AppendLine("AZURE_OPENAI_DEPLOYMENT_NAME=\"$_CODE_MODEL\"");
+				sb.AppendLine("AISETTINGS__MODELID=\"$_CODE_MODEL\"");
+				sb.AppendLine("AISETTINGS__DEPLOYMENTNAME=\"$_CODE_MODEL\"");
+				sb.AppendLine("AISETTINGS__CHATMODELID=\"$_CHAT_MODEL\"");
+				sb.AppendLine("AISETTINGS__CHATDEPLOYMENTNAME=\"$_CHAT_MODEL\"");
+				sb.AppendLine();
+				sb.AppendLine("# Specialized Agent Models (defaults to Code Model)");
+				sb.AppendLine("AZURE_OPENAI_COBOL_ANALYZER_MODEL=\"$_CODE_MODEL\"");
+				sb.AppendLine("AZURE_OPENAI_JAVA_CONVERTER_MODEL=\"$_CODE_MODEL\"");
+				sb.AppendLine("AZURE_OPENAI_DEPENDENCY_MAPPER_MODEL=\"$_CODE_MODEL\"");
+				sb.AppendLine("AZURE_OPENAI_UNIT_TEST_MODEL=\"$_CODE_MODEL\"");
+				sb.AppendLine("AISETTINGS__COBOLANALYZERMODELID=\"$_CODE_MODEL\"");
+				sb.AppendLine("AISETTINGS__JAVACONVERTERMODELID=\"$_CODE_MODEL\"");
+				sb.AppendLine("AISETTINGS__UNITTESTMODELID=\"$_CODE_MODEL\"");
+				sb.AppendLine("AISETTINGS__DEPENDENCYMAPPERMODELID=\"$_CODE_MODEL\"");
+				sb.AppendLine();
+				sb.AppendLine("# Not needed for Copilot SDK but set to avoid validation errors");
+				sb.AppendLine("AZURE_OPENAI_ENDPOINT=\"https://copilot-sdk-placeholder\"");
+				sb.AppendLine("AISETTINGS__ENDPOINT=\"https://copilot-sdk-placeholder\"");
+				sb.AppendLine("AISETTINGS__CHATENDPOINT=\"https://copilot-sdk-placeholder\"");
+				sb.AppendLine();
+				sb.AppendLine("# Application Settings");
+				sb.AppendLine("COBOL_SOURCE_FOLDER=\"source\"");
+				sb.AppendLine("JAVA_OUTPUT_FOLDER=\"output/java\"");
+				sb.AppendLine("CSHARP_OUTPUT_FOLDER=\"output/csharp\"");
+
+				if (!string.IsNullOrWhiteSpace(request.ApiKey))
+				{
+					sb.AppendLine();
+					sb.AppendLine("# GitHub Copilot PAT Authentication");
+					sb.AppendLine($"GITHUB_COPILOT_TOKEN=\"{request.ApiKey}\"");
+				}
+			}
+			else
+			{
+				sb.AppendLine("# Provider: Azure OpenAI");
+				sb.AppendLine("AZURE_OPENAI_SERVICE_TYPE=\"AzureOpenAI\"");
+				sb.AppendLine();
+				sb.AppendLine("# Service Credentials");
+				sb.AppendLine($"_MAIN_ENDPOINT=\"{request.Endpoint ?? ""}\"");
+				if (!string.IsNullOrWhiteSpace(request.ApiKey) && !request.UseDefaultCredential)
+				{
+					sb.AppendLine($"_MAIN_API_KEY=\"{request.ApiKey}\"");
+				}
+				else
+				{
+					sb.AppendLine("_MAIN_API_KEY=\"\"");
+					sb.AppendLine("# Using Azure AD (Entra ID) authentication via 'az login'");
+				}
+				sb.AppendLine();
+				sb.AppendLine("# Model Selection");
+				sb.AppendLine($"_CHAT_MODEL=\"{request.ChatModelId ?? request.CodeModelId ?? ""}\"");
+				sb.AppendLine($"_CODE_MODEL=\"{request.CodeModelId ?? request.ChatModelId ?? ""}\"");
+				sb.AppendLine();
+				sb.AppendLine("# AI Service Configuration");
+				sb.AppendLine("AZURE_OPENAI_ENDPOINT=\"$_MAIN_ENDPOINT\"");
+				sb.AppendLine("AZURE_OPENAI_API_KEY=\"$_MAIN_API_KEY\"");
+				sb.AppendLine("AZURE_OPENAI_MAX_TOKENS=\"16384\"");
+				sb.AppendLine();
+				sb.AppendLine("# Default Deployment");
+				sb.AppendLine("AZURE_OPENAI_DEPLOYMENT_NAME=\"$_CHAT_MODEL\"");
+				sb.AppendLine("AZURE_OPENAI_MODEL_ID=\"$_CHAT_MODEL\"");
+				sb.AppendLine();
+				sb.AppendLine("# Specialized Agent Models (Mapped to Code Model)");
+				sb.AppendLine("AZURE_OPENAI_COBOL_ANALYZER_MODEL=\"$_CODE_MODEL\"");
+				sb.AppendLine("AZURE_OPENAI_JAVA_CONVERTER_MODEL=\"$_CODE_MODEL\"");
+				sb.AppendLine("AZURE_OPENAI_DEPENDENCY_MAPPER_MODEL=\"$_CODE_MODEL\"");
+				sb.AppendLine("AZURE_OPENAI_UNIT_TEST_MODEL=\"$_CODE_MODEL\"");
+				sb.AppendLine();
+				sb.AppendLine("# Portal & Reporting Configuration (Mapped to Chat Model)");
+				sb.AppendLine("AISETTINGS__CHATENDPOINT=\"$_MAIN_ENDPOINT\"");
+				sb.AppendLine("AISETTINGS__CHATAPIKEY=\"$_MAIN_API_KEY\"");
+				sb.AppendLine("AISETTINGS__CHATMODELID=\"$_CHAT_MODEL\"");
+				sb.AppendLine("AISETTINGS__CHATDEPLOYMENTNAME=\"$_CHAT_MODEL\"");
+				sb.AppendLine();
+				sb.AppendLine("# Code Agents Configuration (Mapped to Code Model)");
+				sb.AppendLine("AISETTINGS__ENDPOINT=\"$_MAIN_ENDPOINT\"");
+				sb.AppendLine("AISETTINGS__APIKEY=\"$_MAIN_API_KEY\"");
+				sb.AppendLine("AISETTINGS__MODELID=\"$_CODE_MODEL\"");
+				sb.AppendLine("AISETTINGS__DEPLOYMENTNAME=\"$_CODE_MODEL\"");
+				sb.AppendLine();
+				sb.AppendLine("# Individual Agent Overrides (defaults to Code Model)");
+				sb.AppendLine("AISETTINGS__COBOLANALYZERMODELID=\"$_CODE_MODEL\"");
+				sb.AppendLine("AISETTINGS__JAVACONVERTERMODELID=\"$_CODE_MODEL\"");
+				sb.AppendLine("AISETTINGS__UNITTESTMODELID=\"$_CODE_MODEL\"");
+				sb.AppendLine("AISETTINGS__DEPENDENCYMAPPERMODELID=\"$_CODE_MODEL\"");
+				sb.AppendLine();
+				sb.AppendLine("# Application Settings");
+				sb.AppendLine("COBOL_SOURCE_FOLDER=\"source\"");
+				sb.AppendLine("JAVA_OUTPUT_FOLDER=\"output/java\"");
+				sb.AppendLine("CSHARP_OUTPUT_FOLDER=\"output/csharp\"");
+				sb.AppendLine("TEST_OUTPUT_FOLDER=\"TestOutput\"");
+			}
+
+			await File.WriteAllTextAsync(configPath, sb.ToString());
+			configSaved = true;
+			Console.WriteLine($"💾 Config saved to {configPath}");
+		}
+		catch (Exception ex)
+		{
+			Console.WriteLine($"⚠️ Failed to save config file: {ex.Message}");
+		}
+
+		// Restart MCP subprocess to pick up new settings
+		try
+		{
+			await client.RestartAsync();
+			Console.WriteLine("🔄 MCP subprocess restarted with new settings");
+		}
+		catch (Exception ex)
+		{
+			Console.WriteLine($"⚠️ Failed to restart MCP: {ex.Message}");
+		}
+
+		Console.WriteLine($"✅ Config saved: serviceType={request.ServiceType}, chat={request.ChatModelId}, code={request.CodeModelId}");
+
+		return Results.Ok(new
+		{
+			success = true,
+			configSaved,
+			activeModelId = _activeModelId ?? request.ChatModelId ?? request.CodeModelId,
+			serviceType = Environment.GetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE")
+		});
+	}
+	catch (Exception ex)
+	{
+		Console.WriteLine($"❌ Save config error: {ex.Message}");
+		return Results.Problem($"Failed to save configuration: {ex.Message}");
+	}
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════

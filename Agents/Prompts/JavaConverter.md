@@ -58,16 +58,6 @@ You are a COBOL-to-Java/Quarkus conversion specialist.
 - Include all imports. Use Quarkus CDI annotations (@ApplicationScoped, @Inject, @Transactional).
 - Class name = COBOL program name in PascalCase + 'Service' (e.g., BDSDA2F → Bdsda2fService).
 
-
-## Domain-Specific Java Conversion Constraints
-- **Do Not Over-Normalize**: COBOL programs often duplicate SQL SELECT + UPDATE logic intentionally for clarity and auditability. Preserve structure rather than refactor aggressively.
-- **Account Update Ordering**: Maintain the FROM/TO ordering rule exactly as coded; do not rely solely on database isolation levels.
-- **Packed Decimal Mapping**: COMP-3 fields must map to BigDecimal constructed from string/BCD semantics, not binary integers.
-- **Reference IDs**: PROCTRAN.PROCTRAN_REF derives from EIBTASKN. Preserve this deterministic reference generation.
-- **ABEND Semantics**: An EXEC CICS ABEND is not just an exception—it often implies transaction termination with rollback and ops alerts. Map to fatal exceptions that mark the transaction for rollback.
-- **Storm Drain Awareness**: Certain exceptions should be logged and rethrown without retries to allow platform-level throttling (simulating CPSM behavior).
-- **Screen Logic**: BNK1DCS has extensive field-level attributes (color, protect/unprotect, cursor positioning). Preserve intent in DTO metadata or comments; do not discard as cosmetic.
-
 ## SECTION: User
 
 Convert the following COBOL program to Java with Quarkus.

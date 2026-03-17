@@ -5,6 +5,40 @@ All notable changes to this repository are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.0] - 2026-03-17
+
+### Added
+- **Portal AI Provider Setup Modal** — Browser-based setup replaces the need to run `./doctor.sh setup` for initial configuration. Users connect to their AI provider directly from the portal UI:
+  - **Azure OpenAI**: Authenticate with API key or Azure CLI (`az login`). Auto-discovers actual deployed models via ARM management API (not the full catalog). Shows deployment name, base model, version, and SKU capacity.
+  - **GitHub Copilot SDK**: Authenticate with CLI login (`gh auth login`) or Personal Access Token. Lists all available models via `CopilotClient.ListModelsAsync()` grouped by publisher (Anthropic, OpenAI, xAI, Google, etc.).
+  - Assign separate **Chat** and **Code** models from the discovered list
+  - Saves configuration to `Config/ai-config.local.env` — fully compatible with `./doctor.sh` CLI flow
+  - Auto-opens on first visit when no models are configured (`needsSetup` detection)
+  - 🔧 Setup button in the Model & Prompts config panel for reconfiguration
+- **Prompt Studio Multi-Provider Support** — AI Enhance and Re-Score now work with both Azure OpenAI and GitHub Copilot SDK (previously Azure-only)
+  - New `CopilotChatClient` adapter in `McpChatWeb/Services/` for Copilot SDK `IChatClient` support
+  - `PromptStudioAI.CreateClient()` auto-detects provider and creates the right client
+- **Model Discovery API Endpoints**:
+  - `POST /api/models/connect` — Authenticate and list models from Azure OpenAI or Copilot SDK
+  - `POST /api/models/save-config` — Persist model selection to env vars and config file, restart MCP
+  - `GET /api/models/available` — Enhanced with `needsSetup`, `isConnected`, `connectedEndpoint` fields
+
+### Changed
+- **`/api/models/available`** — Now returns discovered models from the connect flow (not just env var configured ones). Falls back to env vars when no connect has been done.
+- **Portal config output** — Includes all per-agent model overrides (`AZURE_OPENAI_COBOL_ANALYZER_MODEL`, `AISETTINGS__COBOLANALYZERMODELID`, etc.) and application settings, matching the full `ai-config.env.example` template
+- **Mission Control provider dropdown** — Changing provider now opens the Setup Modal instead of showing a console message
+- **Architecture Mermaid diagrams** — Updated all diagrams (architecture, sequence, config flow, process flow, legacy-modernization-flow) to reflect portal setup, dual provider paths, and expanded portal features
+
+### Fixed
+- **`FakeMcpClient`** in `McpChatWeb.Tests` — Added missing `RestartAsync` method for `IMcpClient` interface
+- **Temperature not written to portal config** — Removed hardcoded `AZURE_OPENAI_TEMPERATURE` from portal-generated config (respects per-model auto-detection via `ModelCapabilities`)
+- **XSS protection** — HTML-escapes all API-supplied model names/IDs before DOM insertion in the setup modal
+- **URL validation** — Client-side (HTTPS check) and server-side (`Uri.TryCreate`) validation for Azure endpoints
+
+### Security
+- API keys entered in the setup modal are only stored server-side (env vars + gitignored config file), never persisted in browser storage
+- Azure ARM API calls use separate `management.azure.com` token scope (not the data-plane token)
+
 ## [3.1.0] - 2026-03-10
 
 ### Added

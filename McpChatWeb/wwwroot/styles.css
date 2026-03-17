@@ -7259,3 +7259,299 @@ main.three-panel-layout {
   background: rgba(0, 0, 0, 0.6);
   z-index: 10000;
 }
+
+/* ═════════════════════════════════════════════════════════════════════════════
+   MODEL SETUP MODAL
+   ═════════════════════════════════════════════════════════════════════════════ */
+
+#modelSetupModal .modal-content {
+  max-width: 720px;
+  min-height: 400px;
+}
+
+#modelSetupModal .modal-header {
+  background: linear-gradient(135deg, #7c3aed, #4f46e5);
+}
+
+/* Tabs */
+.setup-tabs {
+  display: flex;
+  border-bottom: 2px solid #334155;
+  margin-bottom: 16px;
+}
+
+.setup-tab {
+  flex: 1;
+  padding: 12px 16px;
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  font-size: 0.95em;
+  cursor: pointer;
+  font-weight: 600;
+  border-bottom: 3px solid transparent;
+  transition: all 0.2s;
+}
+
+.setup-tab:hover {
+  color: #e2e8f0;
+  background: #1e293b;
+}
+
+.setup-tab-active {
+  color: #818cf8;
+  border-bottom-color: #818cf8;
+  background: #1e293b;
+}
+
+.setup-tab-content {
+  display: none;
+  padding: 4px 0;
+}
+
+/* Form fields */
+.setup-field {
+  margin-bottom: 14px;
+}
+
+.setup-field label {
+  display: block;
+  font-size: 0.82em;
+  color: #94a3b8;
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+
+.setup-field input[type="text"],
+.setup-field input[type="password"] {
+  width: 100%;
+  padding: 8px 12px;
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  color: #e2e8f0;
+  font-size: 0.9em;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  box-sizing: border-box;
+}
+
+.setup-field input:focus {
+  border-color: #818cf8;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(129, 140, 248, 0.2);
+}
+
+.setup-field input::placeholder {
+  color: #475569;
+}
+
+/* Radio auth options */
+.setup-auth-options {
+  display: flex;
+  gap: 16px;
+  margin: 8px 0 12px;
+}
+
+.setup-auth-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 0.88em;
+  color: #cbd5e1;
+}
+
+.setup-auth-option input[type="radio"] {
+  accent-color: #818cf8;
+}
+
+/* Connect button */
+.setup-connect-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 20px;
+  background: #4f46e5;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.9em;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.setup-connect-btn:hover { background: #4338ca; }
+.setup-connect-btn:disabled { opacity: 0.5; cursor: wait; }
+
+/* Status message */
+.setup-status {
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 0.85em;
+  margin: 12px 0;
+  background: #1e293b;
+  border: 1px solid #334155;
+  color: #94a3b8;
+  display: none;
+}
+
+.setup-status-error {
+  background: #1c1017;
+  border-color: #7f1d1d;
+  color: #fca5a5;
+}
+
+/* Model list area */
+.setup-no-models {
+  text-align: center;
+  color: #64748b;
+  padding: 24px;
+  font-size: 0.9em;
+}
+
+.setup-model-roles {
+  margin-bottom: 14px;
+  padding: 12px;
+  background: #0f172a;
+  border-radius: 8px;
+  border: 1px solid #334155;
+}
+
+.setup-role-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.setup-role-row:last-child { margin-bottom: 0; }
+
+.setup-role-label {
+  flex: 0 0 auto;
+  width: 280px;
+  font-size: 0.85em;
+  color: #94a3b8;
+  font-weight: 600;
+}
+
+.setup-model-select {
+  flex: 1;
+  padding: 6px 10px;
+  background: #1e293b;
+  border: 1px solid #475569;
+  border-radius: 6px;
+  color: #e2e8f0;
+  font-size: 0.85em;
+}
+
+/* Model grid */
+.setup-model-grid {
+  display: grid;
+  gap: 8px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.setup-publisher-group { margin-bottom: 6px; }
+
+.setup-publisher-name {
+  font-size: 0.78em;
+  color: #818cf8;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 4px;
+  padding: 2px 0;
+  border-bottom: 1px solid #1e293b;
+}
+
+.setup-model-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: #1e293b;
+  border-radius: 5px;
+  font-size: 0.82em;
+  border: 1px solid transparent;
+  transition: border-color 0.15s;
+}
+
+.setup-model-item:hover {
+  border-color: #475569;
+}
+
+.setup-model-name {
+  color: #e2e8f0;
+  font-weight: 500;
+}
+
+.setup-model-family {
+  color: #64748b;
+  font-size: 0.9em;
+}
+
+.setup-model-desc {
+  color: #475569;
+  font-size: 0.85em;
+  margin-left: auto;
+}
+
+/* Save button */
+.setup-save-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 28px;
+  background: #10b981;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.95em;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.2s;
+  margin-top: 8px;
+}
+
+.setup-save-btn:hover { background: #059669; }
+.setup-save-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Modal footer */
+.setup-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-top: 1px solid #334155;
+  background: #0f172a;
+  border-radius: 0 0 8px 8px;
+}
+
+.setup-footer-hint {
+  font-size: 0.78em;
+  color: #64748b;
+}
+
+/* Re-configure button (in config panel) */
+.btn-reconfigure {
+  padding: 4px 10px;
+  background: #4f46e5;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 0.75em;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.btn-reconfigure:hover { background: #4338ca; }
+
+/* Helper text */
+.setup-help {
+  font-size: 0.78em;
+  color: #64748b;
+  margin-top: 4px;
+}

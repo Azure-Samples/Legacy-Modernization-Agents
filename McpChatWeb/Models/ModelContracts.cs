@@ -11,6 +11,24 @@ public sealed record ModelInfo(
 
 public sealed record SetActiveModelRequest(string ModelId);
 
+// ── Model Discovery & Setup Contracts ────────────────────────────────────────
+
+public sealed record ConnectProviderRequest(
+    string ServiceType,            // "AzureOpenAI" | "GitHubCopilotSDK"
+    string? Endpoint = null,       // Azure OpenAI endpoint URL
+    string? ApiKey = null,         // Azure API key or GitHub PAT
+    bool UseDefaultCredential = false  // true = use az login / gh auth login
+);
+
+public sealed record SaveModelConfigRequest(
+    string ServiceType,            // "AzureOpenAI" | "GitHubCopilotSDK"
+    string? Endpoint = null,
+    string? ApiKey = null,
+    bool UseDefaultCredential = false,
+    string? ChatModelId = null,
+    string? CodeModelId = null
+);
+
 public sealed record PromptInfo(
     string Id,
     string Name,

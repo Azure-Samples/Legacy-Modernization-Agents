@@ -5,14 +5,14 @@
 # This script consolidates all functionality for setup, testing, running, and diagnostics
 
 # Colors for output
-RED=$'\033[0;31m'
-GREEN=$'\033[0;32m'
-YELLOW=$'\033[1;33m'
-BLUE=$'\033[0;34m'
-CYAN=$'\033[0;36m'
-MAGENTA=$'\033[0;35m'
-BOLD=$'\033[1m'
-NC=$'\033[0m' # No Color
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
+BOLD='\033[1m'
+NC='\033[0m' # No Color
 
 # Resolve the sqlite3 command, handling Windows (Git Bash / MSYS2) paths
 SQLITE3_CMD=""
@@ -391,17 +391,6 @@ check_model_deployments() {
     echo -e "${BLUE}🤖 Verifying Model Deployments${NC}"
     echo "================================="
 
-    # GitHub Models: model was already verified in check_ai_connectivity
-    local service_type="${AZURE_OPENAI_SERVICE_TYPE:-AzureOpenAI}"
-    local service_type_lower
-    service_type_lower=$(echo "$service_type" | tr '[:upper:]' '[:lower:]')
-    if [[ "$service_type_lower" == "githubcopilot" ]] || [[ "$service_type_lower" == "github" ]] || [[ "$service_type_lower" == "githubmodels" ]] || [[ "$service_type_lower" == "githubcopilotsdk" ]]; then
-        local model_id="${AZURE_OPENAI_MODEL_ID}"
-        echo -e "  ${GREEN}✅ Model '${model_id}' verified via GitHub Models${NC}"
-        echo ""
-        return 0
-    fi
-
     local endpoint="${AZURE_OPENAI_ENDPOINT}"
     local api_key="${AZURE_OPENAI_API_KEY}"
     local has_api_key=false
@@ -524,481 +513,22 @@ check_model_deployments() {
     return 0
 }
 
-# ═══════════════════════════════════════════════════════════════════════
-# AI PROVIDER & MODEL SELECTION
-# ═══════════════════════════════════════════════════════════════════════
-
-# Resolve a GitHub token from environment or gh CLI
-resolve_github_token() {
-    # 1. Explicit GITHUB_TOKEN env var
-    if [[ -n "$GITHUB_TOKEN" ]]; then
-        echo "$GITHUB_TOKEN"
-        return 0
-    fi
-
-    # 2. gh auth token CLI
-    if command -v gh >/dev/null 2>&1; then
-        local token
-        token=$(gh auth token 2>/dev/null)
-        if [[ -n "$token" ]]; then
-            echo "$token"
-            return 0
-        fi
-    fi
-
-    return 1
-}
-
-# ── Heartbeat monitor: shows progress while migration runs ──
-# Polls the DB every 30s and prints status so the user knows it's alive.
-# Usage: start_heartbeat <db_path> <dotnet_pid>
-#        stop_heartbeat
-HEARTBEAT_PID=""
-start_heartbeat() {
-    local db_path="$1"
-    local target_pid="$2"
-    local interval=30
-
-    (
-        local elapsed=0
-        local last_analyses=0
-        local last_bl=0
-        local last_deps=0
-        local spinner_chars='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
-        local spin_idx=0
-
-        while kill -0 "$target_pid" 2>/dev/null; do
-            sleep "$interval"
-            elapsed=$((elapsed + interval))
-
-            # Check if process is still alive
-            if ! kill -0 "$target_pid" 2>/dev/null; then
-                break
-            fi
-
-            # Query progress from DB
-            local run_id
-            run_id=$(sqlite3 "$db_path" "SELECT id FROM runs WHERE status='Running' ORDER BY id DESC LIMIT 1;" 2>/dev/null)
-
-            if [[ -z "$run_id" ]]; then
-                continue
-            fi
-
-            local files
-            files=$(sqlite3 "$db_path" "SELECT COUNT(*) FROM cobol_files WHERE run_id=$run_id;" 2>/dev/null)
-            local analyses
-            analyses=$(sqlite3 "$db_path" "SELECT COUNT(*) FROM analyses a JOIN cobol_files cf ON a.cobol_file_id=cf.id WHERE cf.run_id=$run_id;" 2>/dev/null)
-            local bl
-            bl=$(sqlite3 "$db_path" "SELECT COUNT(*) FROM business_logic WHERE run_id=$run_id;" 2>/dev/null)
-            local deps
-            deps=$(sqlite3 "$db_path" "SELECT COUNT(*) FROM dependencies WHERE run_id=$run_id;" 2>/dev/null)
-
-            local mins=$((elapsed / 60))
-            local secs=$((elapsed % 60))
-
-            # Detect phase
-            local phase="Initializing"
-            if [[ "$deps" -gt 0 ]]; then
-                phase="Code Conversion"
-            elif [[ "$bl" -gt 0 ]] && [[ "$bl" -ge "$files" ]]; then
-                phase="Dependency Mapping"
-            elif [[ "$bl" -gt 0 ]]; then
-                phase="Business Logic ($bl/$files)"
-            elif [[ "$analyses" -gt 0 ]] && [[ "$analyses" -ge "$files" ]]; then
-                phase="Business Logic Extraction"
-            elif [[ "$analyses" -gt 0 ]]; then
-                phase="COBOL Analysis ($analyses/$files)"
-            elif [[ "$files" -gt 0 ]]; then
-                phase="COBOL Analysis (waiting for AI...)"
-            fi
-
-            # Spinner
-            local s="${spinner_chars:$spin_idx:1}"
-            spin_idx=$(( (spin_idx + 1) % ${#spinner_chars} ))
-
-            # Print status line (overwrite previous)
-            printf "\r\033[K  %s \033[0;36m[%dm%02ds]\033[0m Phase: \033[1m%s\033[0m | Files: %s | Analyses: %s | BL: %s | Deps: %s" \
-                "$s" "$mins" "$secs" "$phase" "$files" "$analyses" "$bl" "$deps"
-
-        done
-        echo "" # newline after heartbeat ends
-    ) &
-    HEARTBEAT_PID=$!
-}
-
-stop_heartbeat() {
-    if [[ -n "$HEARTBEAT_PID" ]] && kill -0 "$HEARTBEAT_PID" 2>/dev/null; then
-        kill "$HEARTBEAT_PID" 2>/dev/null
-        wait "$HEARTBEAT_PID" 2>/dev/null
-        HEARTBEAT_PID=""
-        echo "" # clean newline
-    fi
-}
-
-# Interactive provider + model selection menu.
-# Sets env vars so that Program.cs OverrideSettingsFromEnvironment() picks them up.
-# Returns 0 on success, 1 on failure.
-select_ai_provider() {
-    while true; do
-    echo ""
-    echo -e "${BOLD}🔌 Select AI Provider${NC}"
-    echo "========================================"
-    echo -e "  1) Azure OpenAI    (uses your Azure deployment: ${GREEN}${AZURE_OPENAI_DEPLOYMENT_NAME:-gpt-5.1-codex-mini}${NC})"
-    echo -e "  2) GitHub Models   (OpenAI, Grok via models.github.ai REST API)"
-    echo -e "  3) Copilot SDK     (Claude, GPT, Grok — ${YELLOW}⚠️  slow for batch, best for single files${NC})"
-    echo "  0) Back / Cancel"
-    echo ""
-    read -p "Enter choice (0-3) [default: 1]: " provider_choice
-    provider_choice=$(echo "$provider_choice" | tr -d '[:space:]')
-
-    # Cancel
-    if [[ "$provider_choice" == "0" ]]; then
-        echo -e "${YELLOW}↩ Cancelled. Returning to menu.${NC}"
-        return 1
-    fi
-
-    case "$provider_choice" in
-        3)
-            # ── GitHub Copilot SDK path ──
-            # Uses CopilotChatClient (stdio) — same auth as VS Code Copilot.
-            # Gives access to ALL models including Claude.
-            # Model names are simple (no vendor prefix).
-            echo ""
-            echo -e "${BOLD}🤖 Select Model (Copilot SDK)${NC}"
-            echo "========================================"
-            echo ""
-            echo -e "  ${MAGENTA}── Anthropic Claude ──${NC}"
-            echo "  1) claude-opus-4          Best quality, deepest reasoning"
-            echo "  2) claude-sonnet-4        Balanced quality and speed"
-            echo ""
-            echo -e "  ${MAGENTA}── OpenAI Codex ──${NC}"
-            echo "  3) gpt-5.3-codex          Code-optimized, fast reasoning"
-            echo ""
-            echo -e "  ${MAGENTA}── OpenAI GPT ──${NC}"
-            echo "  4) gpt-5.4                Latest GPT, highest capability"
-            echo "  5) gpt-5                  GPT-5"
-            echo "  6) gpt-4.1                General purpose"
-            echo "  7) gpt-4o                 Multimodal, fast"
-            echo ""
-            echo -e "  ${MAGENTA}── xAI Grok ──${NC}"
-            echo "  8) grok-3                 Fast reasoning"
-            echo "  9) grok-3-mini            Fastest, lightweight"
-            echo ""
-            echo " 10) Custom (enter model name)"
-            echo "  0) Back"
-            echo ""
-            read -p "Enter choice (0-10) [default: 3]: " model_choice
-            model_choice=$(echo "$model_choice" | tr -d '[:space:]')
-
-            if [[ "$model_choice" == "0" ]]; then continue; fi
-
-            local selected_model=""
-            case "$model_choice" in
-                1)    selected_model="claude-opus-4" ;;
-                2)    selected_model="claude-sonnet-4" ;;
-                3|"") selected_model="gpt-5.3-codex" ;;
-                4)    selected_model="gpt-5.4" ;;
-                5)    selected_model="gpt-5" ;;
-                6)    selected_model="gpt-4.1" ;;
-                7)    selected_model="gpt-4o" ;;
-                8)    selected_model="grok-3" ;;
-                9)    selected_model="grok-3-mini" ;;
-                10)
-                    read -p "Enter model name (e.g. claude-opus-4, gpt-4o): " custom_model
-                    custom_model=$(echo "$custom_model" | tr -d '[:space:]')
-                    if [[ -z "$custom_model" ]]; then
-                        echo -e "${YELLOW}No model entered, going back...${NC}"
-                        continue
-                    fi
-                    selected_model="$custom_model"
-                    ;;
-                *)
-                    echo -e "${YELLOW}Invalid choice, try again${NC}"
-                    continue
-                    ;;
-            esac
-
-            # Set env vars for Program.cs — CopilotSDK needs ServiceType + ModelId
-            export AZURE_OPENAI_SERVICE_TYPE="GitHubCopilotSDK"
-            export AZURE_OPENAI_MODEL_ID="$selected_model"
-            export AZURE_OPENAI_DEPLOYMENT_NAME="$selected_model"
-            export AISETTINGS__MODELID="$selected_model"
-            export AISETTINGS__DEPLOYMENTNAME="$selected_model"
-
-            # Per-agent model overrides — must set BOTH naming conventions
-            # (AZURE_OPENAI_* read by OverrideSettingsFromEnvironment, AISETTINGS__* by .NET config binding)
-            export AZURE_OPENAI_COBOL_ANALYZER_MODEL="$selected_model"
-            export AZURE_OPENAI_JAVA_CONVERTER_MODEL="$selected_model"
-            export AZURE_OPENAI_UNIT_TEST_MODEL="$selected_model"
-            export AZURE_OPENAI_DEPENDENCY_MAPPER_MODEL="$selected_model"
-            export AISETTINGS__COBOLANALYZERMODELID="$selected_model"
-            export AISETTINGS__JAVACONVERTERMODELID="$selected_model"
-            export AISETTINGS__UNITTESTMODELID="$selected_model"
-            export AISETTINGS__DEPENDENCYMAPPERMODELID="$selected_model"
-
-            # Chat model also needs to use Copilot SDK
-            export AZURE_OPENAI_CHAT_MODEL_ID="$selected_model"
-            export AZURE_OPENAI_CHAT_DEPLOYMENT_NAME="$selected_model"
-            export AISETTINGS__CHATMODELID="$selected_model"
-            export AISETTINGS__CHATDEPLOYMENTNAME="$selected_model"
-
-            # ── Force sequential processing for Copilot SDK ──
-            # The stdio pipe deadlocks with concurrent sessions.
-            # Sequential is slower but actually completes.
-            export AI_MAX_PARALLEL_CONVERSION="1"
-            export AI_MAX_PARALLEL_ANALYSIS="1"
-            export AI_MAX_PARALLEL_CHUNKS="1"
-
-            echo ""
-            echo -e "${GREEN}✅ Provider: GitHub Copilot SDK (CLI)${NC}"
-            echo -e "${GREEN}✅ Model: ${BOLD}$selected_model${NC}"
-            echo -e "${GREEN}✅ Auth: Copilot CLI (same as VS Code)${NC}"
-            echo -e "${YELLOW}ℹ️  Sequential processing enabled (Copilot SDK requires 1 request at a time)${NC}"
-            ;;
-
-        2)
-            # ── GitHub Models path ──
-            # IMPORTANT: GitHub Models requires vendor-prefixed model names (e.g. openai/gpt-4o)
-            echo ""
-            echo -e "${BOLD}🤖 Select GitHub Model${NC}"
-            echo "========================================"
-            echo ""
-            echo -e "  ${MAGENTA}── OpenAI GPT ──${NC}"
-            echo "  1) openai/gpt-5           Latest GPT-5, highest capability"
-            echo "  2) openai/gpt-4.1         GPT 4.1, general purpose"
-            echo "  3) openai/gpt-4o          Multimodal, fast"
-            echo "  4) openai/gpt-4o-mini     Lightweight, fastest GPT"
-            echo ""
-            echo -e "  ${MAGENTA}── xAI Grok ──${NC}"
-            echo "  5) xai/grok-3             Fast reasoning"
-            echo "  6) xai/grok-3-mini        Fastest, lightweight"
-            echo ""
-            echo "  7) Custom (enter exact vendor/model name)"
-            echo "  0) Back"
-            echo ""
-            read -p "Enter choice (0-7) [default: 1]: " model_choice
-            model_choice=$(echo "$model_choice" | tr -d '[:space:]')
-
-            if [[ "$model_choice" == "0" ]]; then continue; fi
-
-            local selected_model=""
-            case "$model_choice" in
-                1|"") selected_model="openai/gpt-5" ;;
-                2)    selected_model="openai/gpt-4.1" ;;
-                3)    selected_model="openai/gpt-4o" ;;
-                4)    selected_model="openai/gpt-4o-mini" ;;
-                5)    selected_model="xai/grok-3" ;;
-                6)    selected_model="xai/grok-3-mini" ;;
-                7)
-                    echo -e "  ${CYAN}Format: vendor/model (e.g. openai/gpt-4o, xai/grok-3)${NC}"
-                    read -p "Enter exact model name from GitHub Models catalog: " custom_model
-                    custom_model=$(echo "$custom_model" | tr -d '[:space:]')
-                    if [[ -z "$custom_model" ]]; then
-                        echo -e "${YELLOW}No model entered, going back...${NC}"
-                        continue
-                    fi
-                    selected_model="$custom_model"
-                    ;;
-                *)
-                    echo -e "${YELLOW}Invalid choice, try again${NC}"
-                    continue
-                    ;;
-            esac
-
-            # Resolve GitHub token
-            local gh_token
-            gh_token=$(resolve_github_token)
-            if [[ -z "$gh_token" ]]; then
-                echo ""
-                echo -e "${RED}❌ No GitHub token found!${NC}"
-                echo "  Set GITHUB_TOKEN env var or run: gh auth login"
-                return 1
-            fi
-
-            # Set env vars for Program.cs
-            export AZURE_OPENAI_SERVICE_TYPE="GitHubCopilot"
-            export AZURE_OPENAI_ENDPOINT="https://models.github.ai/inference"
-            export AZURE_OPENAI_API_KEY="$gh_token"
-            export AZURE_OPENAI_DEPLOYMENT_NAME="$selected_model"
-            export AZURE_OPENAI_MODEL_ID="$selected_model"
-            export AISETTINGS__ENDPOINT="https://models.github.ai/inference"
-            export AISETTINGS__APIKEY="$gh_token"
-            export AISETTINGS__DEPLOYMENTNAME="$selected_model"
-            export AISETTINGS__MODELID="$selected_model"
-            export GITHUB_TOKEN="$gh_token"
-
-            # Per-agent model overrides — must set BOTH naming conventions
-            export AZURE_OPENAI_COBOL_ANALYZER_MODEL="$selected_model"
-            export AZURE_OPENAI_JAVA_CONVERTER_MODEL="$selected_model"
-            export AZURE_OPENAI_UNIT_TEST_MODEL="$selected_model"
-            export AZURE_OPENAI_DEPENDENCY_MAPPER_MODEL="$selected_model"
-            export AISETTINGS__COBOLANALYZERMODELID="$selected_model"
-            export AISETTINGS__JAVACONVERTERMODELID="$selected_model"
-            export AISETTINGS__UNITTESTMODELID="$selected_model"
-            export AISETTINGS__DEPENDENCYMAPPERMODELID="$selected_model"
-
-            # Chat model also uses same provider
-            export AZURE_OPENAI_CHAT_MODEL_ID="$selected_model"
-            export AZURE_OPENAI_CHAT_DEPLOYMENT_NAME="$selected_model"
-            export AZURE_OPENAI_CHAT_API_KEY="$gh_token"
-            export AISETTINGS__CHATMODELID="$selected_model"
-            export AISETTINGS__CHATDEPLOYMENTNAME="$selected_model"
-            export AISETTINGS__CHATAPIKEY="$gh_token"
-
-            local masked_token="${gh_token:0:4}...${gh_token: -4}"
-            echo ""
-            echo -e "${GREEN}✅ Provider: GitHub Models${NC}"
-            echo -e "${GREEN}✅ Model: ${BOLD}$selected_model${NC}"
-            echo -e "${GREEN}✅ Token: $masked_token${NC}"
-            echo -e "${GREEN}✅ Endpoint: https://models.github.ai/inference${NC}"
-            ;;
-
-        1|"")
-            # ── Azure OpenAI path — keep existing configuration ──
-            echo -e "${GREEN}✅ Provider: Azure OpenAI${NC}"
-            echo -e "${GREEN}✅ Deployment: ${AZURE_OPENAI_DEPLOYMENT_NAME:-gpt-5.1-codex-mini}${NC}"
-            echo -e "${GREEN}✅ Endpoint: ${AZURE_OPENAI_ENDPOINT}${NC}"
-            ;;
-
-        *)
-            echo -e "${YELLOW}Invalid choice, try again${NC}"
-            continue
-            ;;
-    esac
-
-    echo ""
-    return 0
-    done
-}
-
 # Pre-check: verify AI connectivity via API key or Azure AD (Entra ID) auth
 check_ai_connectivity() {
     echo ""
     echo -e "${BLUE}🔌 Pre-Check: AI Service Connectivity${NC}"
     echo "======================================="
 
-    local service_type="${AZURE_OPENAI_SERVICE_TYPE:-AzureOpenAI}"
-    local service_type_lower
-    service_type_lower=$(echo "$service_type" | tr '[:upper:]' '[:lower:]')
-
-    # GitHub Copilot SDK: authentication handled by CLI, no REST endpoint needed
-    if [[ "$service_type_lower" == "githubcopilotsdk" ]]; then
-        echo -e "  Provider: ${GREEN}GitHub Copilot SDK (CLI)${NC}"
-
-        if command -v github-copilot-cli >/dev/null 2>&1; then
-            echo -e "  github-copilot-cli: ${GREEN}✅ found$(NC)"
-        elif command -v gh >/dev/null 2>&1 && gh copilot --help >/dev/null 2>&1; then
-            echo -e "  gh copilot extension: ${GREEN}✅ found${NC}"
+    # GitHub Copilot SDK uses the Copilot CLI, not Azure endpoints
+    if [[ "${AZURE_OPENAI_SERVICE_TYPE}" == "GitHubCopilot" ]]; then
+        echo -e "  Provider: ${GREEN}GitHub Copilot SDK${NC}"
+        if command -v copilot >/dev/null 2>&1; then
+            echo -e "  Copilot CLI: ${GREEN}✅ found${NC}"
         else
-            echo -e "  ${YELLOW}⚠️  github-copilot-cli not found in PATH. The SDK will try to locate it automatically.${NC}"
-        fi
-
-        local model_id="${AZURE_OPENAI_MODEL_ID}"
-        if [[ -n "$model_id" ]]; then
-            echo -e "  Model ID: ${GREEN}$model_id${NC}"
-        else
-            echo -e "  ${RED}❌ AZURE_OPENAI_MODEL_ID is not set. Required for Copilot SDK.${NC}"
+            echo -e "  Copilot CLI: ${RED}❌ not found in PATH${NC}"
             return 1
         fi
-
-        echo -e "  ${GREEN}✅ GitHub Copilot SDK configuration OK${NC}"
-        echo ""
-        return 0
-    fi
-
-    # GitHub Models (GitHubCopilot / GitHub / GitHubModels): test models.github.ai
-    if [[ "$service_type_lower" == "githubcopilot" ]] || [[ "$service_type_lower" == "github" ]] || [[ "$service_type_lower" == "githubmodels" ]]; then
-        echo -e "  Provider: ${GREEN}GitHub Models (models.github.ai)${NC}"
-
-        local gh_token="${AZURE_OPENAI_API_KEY}"
-        local model_id="${AZURE_OPENAI_MODEL_ID}"
-
-        if [[ -z "$gh_token" ]]; then
-            echo -e "  ${RED}❌ No GitHub token set. Run 'gh auth login' or set GITHUB_TOKEN.${NC}"
-            return 1
-        fi
-
-        local masked="${gh_token:0:4}...${gh_token: -4}"
-        echo -e "  Token: ${GREEN}$masked${NC}"
-        echo -e "  Model: ${GREEN}$model_id${NC}"
-
-        # Test connectivity with a minimal chat completion request
-        local test_url="https://models.github.ai/inference/chat/completions"
-        local post_body="{\"model\":\"$model_id\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}"
-        local tmp_resp
-        tmp_resp=$(mktemp)
-        local http_status
-        http_status=$(curl -s -o "$tmp_resp" -w "%{http_code}" --connect-timeout 10 --max-time 15 \
-            -X POST \
-            -H "Authorization: Bearer $gh_token" \
-            -H "Content-Type: application/json" \
-            -d "$post_body" \
-            "$test_url" 2>/dev/null)
-
-        local body
-        body=$(cat "$tmp_resp" 2>/dev/null)
-        rm -f "$tmp_resp"
-
-        echo -ne "  Connection: "
-        if [[ "$http_status" == "200" ]]; then
-            echo -e "${GREEN}✅ OK (HTTP 200)${NC}"
-        elif [[ "$http_status" == "400" ]]; then
-            # 400 = model exists but test request params are invalid (expected for reasoning models)
-            echo -e "${GREEN}✅ OK (model exists, HTTP 400 on test request)${NC}"
-        elif [[ "$http_status" == "429" ]]; then
-            echo -e "${GREEN}✅ OK (rate limited, model exists)${NC}"
-        elif [[ "$http_status" == "401" ]] || [[ "$http_status" == "403" ]]; then
-            echo -e "${RED}❌ Authentication failed (HTTP $http_status)${NC}"
-            echo -e "  ${YELLOW}Your GitHub token may be invalid. Run: gh auth login${NC}"
-            return 1
-        elif [[ "$http_status" == "404" ]]; then
-            local error_msg=""
-            if command -v jq >/dev/null 2>&1; then
-                error_msg=$(echo "$body" | jq -r '(.error.message // .error // empty)' 2>/dev/null)
-            fi
-            echo -e "${RED}❌ Model not found (HTTP 404)${NC}"
-            if [[ -n "$error_msg" ]]; then
-                echo -e "  ${YELLOW}Error: $error_msg${NC}"
-            fi
-            echo -e "  ${YELLOW}Model '$model_id' is not available with your token.${NC}"
-            echo -e "  ${YELLOW}GitHub Models requires vendor-prefixed names (e.g. openai/gpt-4o, xai/grok-3).${NC}"
-            echo ""
-
-            # Probe a few known models to show what's available
-            echo -e "  ${BLUE}Probing known models to check availability...${NC}"
-            local probe_models=("openai/gpt-5" "openai/gpt-4.1" "openai/gpt-4o" "openai/gpt-4o-mini" "xai/grok-3" "xai/grok-3-mini")
-            local available_models=""
-            for probe_model in "${probe_models[@]}"; do
-                local probe_body="{\"model\":\"$probe_model\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}"
-                local probe_status
-                probe_status=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 10 \
-                    -X POST \
-                    -H "Authorization: Bearer $gh_token" \
-                    -H "Content-Type: application/json" \
-                    -d "$probe_body" \
-                    "$test_url" 2>/dev/null)
-                if [[ "$probe_status" == "200" ]] || [[ "$probe_status" == "400" ]] || [[ "$probe_status" == "429" ]]; then
-                    echo -e "    ${GREEN}✅${NC} $probe_model"
-                    available_models="$available_models $probe_model"
-                fi
-            done
-
-            if [[ -n "$available_models" ]]; then
-                echo ""
-                echo -e "  ${YELLOW}Re-run and pick one of the above models, or use 'Custom' with the correct vendor/model name.${NC}"
-            else
-                echo -e "  ${YELLOW}No models responded. Your token may lack GitHub Models access.${NC}"
-                echo -e "  ${YELLOW}Check: https://github.com/marketplace/models${NC}"
-            fi
-            return 1
-        else
-            echo -e "${RED}❌ FAILED (HTTP $http_status)${NC}"
-            if [[ -n "$body" ]]; then
-                echo -e "  ${YELLOW}Response: $(echo "$body" | head -c 200)${NC}"
-            fi
-            return 1
-        fi
-
+        echo -e "  Model: ${GREEN}${AISETTINGS__MODELID:-not set}${NC}"
         echo ""
         return 0
     fi
@@ -1261,69 +791,74 @@ run_doctor() {
         # Source the configuration loader
         if load_configuration && load_ai_config 2>/dev/null; then
             
-            local service_type="${AZURE_OPENAI_SERVICE_TYPE:-AzureOpenAI}"
-            local service_type_lower
-            service_type_lower=$(echo "$service_type" | tr '[:upper:]' '[:lower:]')
-
-            # ── GitHub Copilot SDK path: only need MODEL_ID ──
-            if [[ "$service_type_lower" == "githubcopilotsdk" ]]; then
-                echo -e "${CYAN}Provider: GitHub Copilot SDK (CLI)${NC}"
-                echo
-                config_valid=true
-
-                model_id_val="${AZURE_OPENAI_MODEL_ID}"
-                if [[ -z "$model_id_val" ]]; then
-                    echo -e "  ${RED}❌ AZURE_OPENAI_MODEL_ID is not set${NC}"
-                    config_valid=false
-                else
-                    echo -e "  ${GREEN}✅ AZURE_OPENAI_MODEL_ID: $model_id_val${NC}"
-                fi
-
-                if command -v github-copilot-cli >/dev/null 2>&1; then
-                    echo -e "  ${GREEN}✅ github-copilot-cli found${NC}"
-                else
-                    echo -e "  ${YELLOW}⚠️  github-copilot-cli not in PATH (SDK will try to locate it)${NC}"
-                fi
-
-                echo
-                if [[ "$config_valid" == true ]]; then
-                    echo -e "${GREEN}🎉 GitHub Copilot SDK configuration valid!${NC}"
-                else
-                    echo -e "${YELLOW}⚠️  Configuration needs attention${NC}"
-                fi
-            else
-            # ── Standard provider path (AzureOpenAI / GitHubCopilot / OpenAI) ──
-            
             # Check required variables
             config_valid=true
 
-            # --- Core: Endpoint (required) ---
-            echo -e "${CYAN}Endpoint:${NC}"
-            endpoint_val="${AZURE_OPENAI_ENDPOINT}"
-            if [[ -z "$endpoint_val" ]]; then
-                echo -e "  ${RED}❌ AZURE_OPENAI_ENDPOINT is not set${NC}"
-                config_valid=false
-            elif [[ "$endpoint_val" == *"your-"* ]] || [[ "$endpoint_val" == *"placeholder"* ]]; then
-                echo -e "  ${YELLOW}⚠️  AZURE_OPENAI_ENDPOINT contains placeholder: $endpoint_val${NC}"
-                config_valid=false
-            else
-                echo -e "  ${GREEN}✅ AZURE_OPENAI_ENDPOINT: $endpoint_val${NC}"
-            fi
-            echo
+            # Detect provider
+            local service_type="${AZURE_OPENAI_SERVICE_TYPE}"
+            echo -e "${CYAN}Provider:${NC}"
+            if [[ "$service_type" == "GitHubCopilot" ]]; then
+                echo -e "  ${GREEN}✅ GitHub Copilot SDK${NC}"
 
-            # --- Authentication ---
-            echo -e "${CYAN}Authentication:${NC}"
-            api_key_val="${AZURE_OPENAI_API_KEY}"
-            if [[ -n "$api_key_val" ]] && [[ "$api_key_val" != *"your-"* ]] && [[ "$api_key_val" != *"placeholder"* ]] && [[ "$api_key_val" != *"key-placeholder"* ]]; then
-                masked_key="${api_key_val:0:4}...${api_key_val: -4}"
-                echo -e "  ${GREEN}✅ API Key: $masked_key${NC}"
-            elif command -v az >/dev/null 2>&1 && az account show >/dev/null 2>&1; then
-                local az_user
-                az_user=$(az account show --query "user.name" -o tsv 2>/dev/null)
-                echo -e "  ${GREEN}✅ Azure AD (Entra ID): $az_user${NC}"
+                # Check copilot CLI
+                if command -v copilot >/dev/null 2>&1; then
+                    echo -e "  ${GREEN}✅ Copilot CLI found in PATH${NC}"
+                else
+                    echo -e "  ${RED}❌ 'copilot' CLI not found in PATH${NC}"
+                    echo -e "  ${YELLOW}   Install: https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli${NC}"
+                    config_valid=false
+                fi
+
+                # Check model IDs
+                echo ""
+                echo -e "${CYAN}Models:${NC}"
+                local model_id="${AISETTINGS__MODELID}"
+                if [[ -n "$model_id" ]]; then
+                    echo -e "  ${GREEN}✅ Code Model: $model_id${NC}"
+                else
+                    echo -e "  ${RED}❌ AISETTINGS__MODELID is not set${NC}"
+                    config_valid=false
+                fi
+
+                local chat_model="${AISETTINGS__CHATMODELID}"
+                if [[ -n "$chat_model" ]]; then
+                    echo -e "  ${GREEN}✅ Chat Model: $chat_model${NC}"
+                else
+                    echo -e "  ${YELLOW}⚠️  AISETTINGS__CHATMODELID not set (will use code model)${NC}"
+                fi
+
             else
-                echo -e "  ${RED}❌ No valid auth: set API key in ai-config.local.env or run 'az login'${NC}"
-                config_valid=false
+                echo -e "  ${GREEN}✅ ${service_type:-AzureOpenAI}${NC}"
+
+                # --- Core: Endpoint (required for Azure OpenAI) ---
+                echo ""
+                echo -e "${CYAN}Endpoint:${NC}"
+                endpoint_val="${AZURE_OPENAI_ENDPOINT}"
+                if [[ -z "$endpoint_val" ]]; then
+                    echo -e "  ${RED}❌ AZURE_OPENAI_ENDPOINT is not set${NC}"
+                    config_valid=false
+                elif [[ "$endpoint_val" == *"your-"* ]] || [[ "$endpoint_val" == *"placeholder"* ]]; then
+                    echo -e "  ${YELLOW}⚠️  AZURE_OPENAI_ENDPOINT contains placeholder: $endpoint_val${NC}"
+                    config_valid=false
+                else
+                    echo -e "  ${GREEN}✅ AZURE_OPENAI_ENDPOINT: $endpoint_val${NC}"
+                fi
+                echo
+
+                # --- Authentication ---
+                echo -e "${CYAN}Authentication:${NC}"
+                api_key_val="${AZURE_OPENAI_API_KEY}"
+                if [[ -n "$api_key_val" ]] && [[ "$api_key_val" != *"your-"* ]] && [[ "$api_key_val" != *"placeholder"* ]] && [[ "$api_key_val" != *"key-placeholder"* ]]; then
+                    masked_key="${api_key_val:0:4}...${api_key_val: -4}"
+                    echo -e "  ${GREEN}✅ API Key: $masked_key${NC}"
+                elif command -v az >/dev/null 2>&1 && az account show >/dev/null 2>&1; then
+                    local az_user
+                    az_user=$(az account show --query "user.name" -o tsv 2>/dev/null)
+                    echo -e "  ${GREEN}✅ Azure AD (Entra ID): $az_user${NC}"
+                else
+                    echo -e "  ${RED}❌ No valid auth: set API key in ai-config.local.env or run 'az login'${NC}"
+                    config_valid=false
+                fi
             fi
             echo
 
@@ -1388,7 +923,6 @@ run_doctor() {
                 echo
                 echo "Need help? Run: ./doctor.sh setup"
             fi
-            fi  # end standard provider path
         else
             echo -e "${RED}❌ Failed to load configuration${NC}"
         fi
@@ -1469,7 +1003,7 @@ generate_migration_report() {
         echo ""
         
         $SQLITE3_CMD "$db_path" <<SQL
-.mode markdown
+.mode list
 .headers off
 SELECT '- **Total COBOL Files:** ' || COUNT(DISTINCT file_name) FROM cobol_files WHERE run_id = $run_id;
 SELECT '- **Programs (.cbl):** ' || COUNT(DISTINCT file_name) FROM cobol_files WHERE run_id = $run_id AND file_name LIKE '%.cbl';
@@ -1479,7 +1013,7 @@ SQL
         echo ""
         
         $SQLITE3_CMD "$db_path" <<SQL
-.mode markdown
+.mode list
 .headers off
 SELECT '- **Total Dependencies:** ' || COUNT(*) FROM dependencies WHERE run_id = $run_id;
 SELECT '  - CALL: ' || COUNT(*) FROM dependencies WHERE run_id = $run_id AND dependency_type = 'CALL';
@@ -1534,18 +1068,6 @@ SQL
     
     echo -e "${GREEN}✅ Report generated successfully!${NC}"
     echo -e "${CYAN}📄 Location: $report_file${NC}"
-    
-    # Ask if user wants to view the report
-    echo ""
-    read -p "View the report now? (Y/n): " -n 1 -r
-    echo ""
-    if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
-        if command -v less >/dev/null 2>&1; then
-            less "$report_file"
-        else
-            cat "$report_file"
-        fi
-    fi
 }
 
 # Function for interactive setup
@@ -1559,7 +1081,7 @@ run_setup() {
     if [ -f "$LOCAL_CONFIG" ]; then
         echo -e "${YELLOW}⚠️  Local configuration already exists:${NC} $LOCAL_CONFIG"
         echo ""
-        read -p "Do you want to overwrite it? (y/N): " -n 1 -r
+        read -p "Do you want to overwrite it? (y/N): " -r
         echo ""
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
             echo -e "${BLUE}ℹ️  Setup cancelled. Your existing configuration is preserved.${NC}"
@@ -1584,6 +1106,239 @@ run_setup() {
     echo -e "${BLUE}🔧 Interactive Configuration Setup${NC}"
     echo "=================================="
     echo ""
+
+    # Provider selection
+    echo "Select your AI provider:"
+    echo -e "  ${GREEN}1)${NC} Azure OpenAI / Azure AI Foundry (default)"
+    echo -e "  ${GREEN}2)${NC} GitHub Copilot SDK (requires Copilot CLI in PATH)"
+    echo ""
+    read -p "Choice [1]: " provider_choice
+    provider_choice=${provider_choice:-1}
+    echo ""
+
+    if [[ "$provider_choice" == "2" ]]; then
+        # --- GitHub Copilot SDK setup ---
+        echo -e "${BLUE}🐙 GitHub Copilot SDK Configuration${NC}"
+        echo ""
+
+        # Verify copilot CLI is available
+        if ! command -v copilot >/dev/null 2>&1; then
+            echo -e "${RED}❌ 'copilot' CLI not found in PATH.${NC}"
+            echo -e "${YELLOW}   Install it: https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli${NC}"
+            return 1
+        fi
+        echo -e "${GREEN}✅ Copilot CLI found in PATH${NC}"
+        echo ""
+
+        # Check CLI version and update if needed (before auth, to avoid interrupted login)
+        local cli_version
+        cli_version=$(copilot --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+        local min_version="0.0.394"
+        if [[ -n "$cli_version" ]]; then
+            echo -e "${BLUE}ℹ️  Copilot CLI version: $cli_version${NC}"
+            # Compare versions: sort -V puts the lower version first
+            local lower
+            lower=$(printf '%s\n%s' "$cli_version" "$min_version" | sort -V | head -1)
+            if [[ "$lower" == "$cli_version" && "$cli_version" != "$min_version" ]]; then
+                echo -e "${YELLOW}⚠️  Version $cli_version is below minimum $min_version. Updating...${NC}"
+                npm install -g @github/copilot@latest 2>&1 | tail -3
+                echo ""
+                echo -e "${GREEN}✅ Copilot CLI updated${NC}"
+            fi
+        fi
+        echo ""
+
+        # Authentication method selection
+        echo -e "${BLUE}🔐 How do you want to authenticate?${NC}"
+        echo -e "  ${GREEN}1)${NC} GitHub CLI (copilot login) (default)"
+        echo -e "  ${GREEN}2)${NC} Personal Access Token (PAT)"
+        echo ""
+        read -p "Choice [1]: " auth_choice
+        auth_choice=${auth_choice:-1}
+        echo ""
+
+        local ghcp_token=""
+
+        if [[ "$auth_choice" == "2" ]]; then
+            # --- PAT authentication ---
+            echo -e "${BLUE}🔑 Personal Access Token Authentication${NC}"
+            echo ""
+            echo -e "${YELLOW}Your PAT needs the following permission:${NC}"
+            echo ""
+            echo -e "  ${BLUE}Classic PAT (fine-grained PATs do not currently support Copilot):${NC}"
+            echo "    • copilot"
+            echo ""
+            echo -e "${YELLOW}Create one at: https://github.com/settings/tokens${NC}"
+            echo ""
+            # Read from /dev/tty explicitly to ensure correct capture in all terminal environments
+            echo -n "Please provide the PAT and press Enter: "
+            read -s ghcp_token < /dev/tty
+            echo ""
+
+            if [[ -z "$ghcp_token" ]]; then
+                echo -e "${RED}❌ No PAT provided. Aborting.${NC}"
+                return 1
+            fi
+
+            echo -e "${GREEN}✅ PAT received: ${ghcp_token:0:4}...${ghcp_token: -4}${NC}"
+        else
+            # --- CLI authentication (existing flow) ---
+            echo -e "${BLUE}🔐 Authenticating with GitHub Copilot...${NC}"
+            echo ""
+            if ! copilot login; then
+                echo ""
+                echo -e "${RED}❌ Authentication failed. Please try again.${NC}"
+                return 1
+            fi
+            echo ""
+            echo -e "${GREEN}✅ Authentication successful!${NC}"
+        fi
+        echo ""
+
+        # Get available models from GitHub Copilot (user-specific)
+        echo -e "${BLUE}📋 Fetching available models for your account...${NC}"
+        echo ""
+        local models_raw
+        # Run list-models and extract only "  • model-id" lines
+        models_raw=$("$DOTNET_CMD" run --project "$REPO_ROOT/CobolToQuarkusMigration.csproj" -- list-models 2>/dev/null | grep '•' | sed 's/.*•[[:space:]]*//')
+        
+        # Fallback to copilot CLI static list if SDK call fails
+        if [[ -z "$models_raw" ]]; then
+            echo -e "${YELLOW}⚠️  Could not fetch user-specific models, falling back to CLI model list${NC}"
+            models_raw=$(copilot --model invalid 2>&1 | grep -o 'Allowed choices are .*' | sed 's/Allowed choices are //' | tr ',' '\n' | sed 's/[[:space:]]*//g' | sed 's/\.$//')
+        fi
+
+        local models=()
+        while IFS= read -r model; do
+            [[ -n "$model" ]] && models+=("$model")
+        done <<< "$models_raw"
+
+        # --- Step 1: Chat Model Selection ---
+        echo -e "${BOLD}${BLUE}Step 1: Chat Model${NC}"
+        echo -e "${CYAN}The chat model handles analysis, reasoning, and conversation tasks —${NC}"
+        echo -e "${CYAN}reverse engineering COBOL logic, extracting business rules, and planning${NC}"
+        echo -e "${CYAN}the migration strategy. A strong reasoning model works best here.${NC}"
+        echo ""
+
+        if [[ ${#models[@]} -gt 0 ]]; then
+            local i=1
+            for m in "${models[@]}"; do
+                echo "  $i) $m"
+                ((i++))
+            done
+            echo ""
+            echo -e "${YELLOW}Note: Model availability depends on your GitHub Copilot plan.${NC}"
+            echo ""
+            read -p "Select chat model [1-${#models[@]}] (default: 1): " chat_choice
+            chat_choice=${chat_choice:-1}
+
+            if [[ "$chat_choice" =~ ^[0-9]+$ ]] && (( chat_choice >= 1 && chat_choice <= ${#models[@]} )); then
+                ghcp_chat_model="${models[$((chat_choice - 1))]}"
+            else
+                echo -e "${RED}Invalid selection, using default: ${models[0]}${NC}"
+                ghcp_chat_model="${models[0]}"
+            fi
+        else
+            read -p "Chat model name (default: claude-sonnet-4): " ghcp_chat_model
+            ghcp_chat_model=${ghcp_chat_model:-claude-sonnet-4}
+        fi
+
+        echo ""
+        echo -e "${GREEN}✅ Chat model: $ghcp_chat_model${NC}"
+        echo ""
+
+        # --- Step 2: Code Model Selection ---
+        echo -e "${BOLD}${BLUE}Step 2: Code Model${NC}"
+        echo -e "${CYAN}The code model generates the actual Java/C# source code from COBOL.${NC}"
+        echo -e "${CYAN}It writes classes, methods, and tests. A model optimized for code${NC}"
+        echo -e "${CYAN}generation can improve output quality and compilation success rates.${NC}"
+        echo ""
+        read -p "Use a different model for code generation? (y/N): " -r
+        echo ""
+
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            echo ""
+            if [[ ${#models[@]} -gt 0 ]]; then
+                local j=1
+                for m in "${models[@]}"; do
+                    echo "  $j) $m"
+                    ((j++))
+                done
+                echo ""
+                read -p "Select code model [1-${#models[@]}] (default: 1): " code_choice
+                code_choice=${code_choice:-1}
+
+                if [[ "$code_choice" =~ ^[0-9]+$ ]] && (( code_choice >= 1 && code_choice <= ${#models[@]} )); then
+                    ghcp_code_model="${models[$((code_choice - 1))]}"
+                else
+                    echo -e "${RED}Invalid selection, using default: ${models[0]}${NC}"
+                    ghcp_code_model="${models[0]}"
+                fi
+            else
+                read -p "Code model name (default: claude-sonnet-4): " ghcp_code_model
+                ghcp_code_model=${ghcp_code_model:-claude-sonnet-4}
+            fi
+        else
+            ghcp_code_model="$ghcp_chat_model"
+            echo -e "${CYAN}⏭️  Skipped — using chat model ${BOLD}$ghcp_chat_model${NC}${CYAN} for code generation too${NC}"
+        fi
+
+        echo ""
+        echo -e "${GREEN}✅ Chat model: $ghcp_chat_model${NC}"
+        echo -e "${GREEN}✅ Code model: $ghcp_code_model${NC}"
+
+        # Write local config for GitHub Copilot
+        cat > "$LOCAL_CONFIG" <<EOF
+# =============================================================================
+# GitHub Copilot SDK Configuration
+# =============================================================================
+# This configuration uses the GitHub Copilot SDK instead of Azure OpenAI.
+# Requires: Copilot CLI installed.
+# Auth: either 'copilot login' or a Personal Access Token (PAT).
+# =============================================================================
+
+# Provider
+AZURE_OPENAI_SERVICE_TYPE="GitHubCopilot"
+
+# Model Selection
+_CHAT_MODEL="$ghcp_chat_model"
+_CODE_MODEL="$ghcp_code_model"
+
+# System mapping (model IDs for the application)
+AZURE_OPENAI_MODEL_ID="\$_CODE_MODEL"
+AZURE_OPENAI_DEPLOYMENT_NAME="\$_CODE_MODEL"
+AISETTINGS__MODELID="\$_CODE_MODEL"
+AISETTINGS__DEPLOYMENTNAME="\$_CODE_MODEL"
+AISETTINGS__CHATMODELID="\$_CHAT_MODEL"
+AISETTINGS__CHATDEPLOYMENTNAME="\$_CHAT_MODEL"
+
+# Not needed for Copilot SDK but set to avoid validation errors
+AZURE_OPENAI_ENDPOINT="https://copilot-sdk-placeholder"
+AISETTINGS__ENDPOINT="https://copilot-sdk-placeholder"
+AISETTINGS__CHATENDPOINT="https://copilot-sdk-placeholder"
+EOF
+
+        # Append PAT to config if provided
+        if [[ -n "$ghcp_token" ]]; then
+            cat >> "$LOCAL_CONFIG" <<EOF
+
+# GitHub Copilot PAT Authentication
+# Classic PAT with 'copilot' scope (fine-grained PATs do not currently support Copilot)
+GITHUB_COPILOT_TOKEN="$ghcp_token"
+EOF
+        fi
+
+        echo ""
+        echo -e "${GREEN}✅ GitHub Copilot SDK configuration written!${NC}"
+        echo -e "   Config file: ${BLUE}$LOCAL_CONFIG${NC}"
+        echo ""
+        echo -e "${BLUE}Next steps:${NC}"
+        echo "1. Run: ./doctor.sh test"
+        echo "2. Run: ./doctor.sh run"
+        return 0
+    fi
+
+    # --- Azure OpenAI setup (original flow) ---
     echo "Please provide your AI service configuration details:"
     echo ""
 
@@ -1686,16 +1441,6 @@ run_test() {
     else
         echo -e "${RED}❌ .NET is not installed or not in PATH${NC}"
         return 1
-    fi
-
-    # Check Microsoft Agent Framework dependencies
-    echo ""
-    echo "Checking Microsoft Agent Framework dependencies..."
-    if "$DOTNET_CMD" list package | grep -q "Microsoft.Agents.AI"; then
-        af_version=$("$DOTNET_CMD" list package | grep "Microsoft.Agents.AI" | awk '{print $3}' | head -1)
-        echo -e "${GREEN}✅ Microsoft Agent Framework dependencies resolved (version: $af_version)${NC}"
-    else
-        echo -e "${YELLOW}⚠️  Microsoft Agent Framework packages not found, checking project file...${NC}"
     fi
 
     # Build project
@@ -1821,7 +1566,12 @@ run_test() {
     echo ""
     echo "Checking model deployments..."
     if load_configuration >/dev/null 2>&1 && load_ai_config >/dev/null 2>&1; then
-        check_model_deployments
+        if [[ "${AZURE_OPENAI_SERVICE_TYPE}" == "GitHubCopilot" ]]; then
+            echo -e "${GREEN}✅ Using GitHub Copilot SDK — no Azure deployment check needed${NC}"
+            echo -e "  Model: ${AISETTINGS__MODELID:-not set}"
+        else
+            check_model_deployments
+        fi
     else
         echo -e "${YELLOW}⚠️  Could not load config to verify deployments${NC}"
     fi
@@ -1890,50 +1640,50 @@ select_speed_profile() {
     case "$speed_choice" in
         1)
             echo -e "${GREEN}Selected: TURBO${NC}"
-            export AI_LOW_REASONING_EFFORT="low"
-            export AI_MEDIUM_REASONING_EFFORT="low"
-            export AI_HIGH_REASONING_EFFORT="low"
-            export AI_MAX_OUTPUT_TOKENS="65536"
-            export AI_MIN_OUTPUT_TOKENS="8192"
-            export AI_LOW_MULTIPLIER="1.0"
-            export AI_MEDIUM_MULTIPLIER="1.0"
-            export AI_HIGH_MULTIPLIER="1.5"
-            export AI_STAGGER_DELAY_MS="200"
-            export AI_MAX_PARALLEL_CONVERSION="4"
-            export AI_RATE_LIMIT_SAFETY_FACTOR="0.85"
+            export CODEX_LOW_REASONING_EFFORT="low"
+            export CODEX_MEDIUM_REASONING_EFFORT="low"
+            export CODEX_HIGH_REASONING_EFFORT="low"
+            export CODEX_MAX_OUTPUT_TOKENS="65536"
+            export CODEX_MIN_OUTPUT_TOKENS="8192"
+            export CODEX_LOW_MULTIPLIER="1.0"
+            export CODEX_MEDIUM_MULTIPLIER="1.0"
+            export CODEX_HIGH_MULTIPLIER="1.5"
+            export CODEX_STAGGER_DELAY_MS="200"
+            export CODEX_MAX_PARALLEL_CONVERSION="4"
+            export CODEX_RATE_LIMIT_SAFETY_FACTOR="0.85"
             ;;
         2)
             echo -e "${GREEN}Selected: FAST${NC}"
-            export AI_LOW_REASONING_EFFORT="low"
-            export AI_MEDIUM_REASONING_EFFORT="low"
-            export AI_HIGH_REASONING_EFFORT="medium"
-            export AI_MAX_OUTPUT_TOKENS="32768"
-            export AI_MIN_OUTPUT_TOKENS="16384"
-            export AI_LOW_MULTIPLIER="1.0"
-            export AI_MEDIUM_MULTIPLIER="1.5"
-            export AI_HIGH_MULTIPLIER="2.0"
-            export AI_STAGGER_DELAY_MS="500"
-            export AI_MAX_PARALLEL_CONVERSION="3"
+            export CODEX_LOW_REASONING_EFFORT="low"
+            export CODEX_MEDIUM_REASONING_EFFORT="low"
+            export CODEX_HIGH_REASONING_EFFORT="medium"
+            export CODEX_MAX_OUTPUT_TOKENS="32768"
+            export CODEX_MIN_OUTPUT_TOKENS="16384"
+            export CODEX_LOW_MULTIPLIER="1.0"
+            export CODEX_MEDIUM_MULTIPLIER="1.5"
+            export CODEX_HIGH_MULTIPLIER="2.0"
+            export CODEX_STAGGER_DELAY_MS="500"
+            export CODEX_MAX_PARALLEL_CONVERSION="3"
             ;;
         4)
             echo -e "${GREEN}Selected: THOROUGH${NC}"
-            export AI_LOW_REASONING_EFFORT="medium"
-            export AI_MEDIUM_REASONING_EFFORT="high"
-            export AI_HIGH_REASONING_EFFORT="high"
-            export AI_MAX_OUTPUT_TOKENS="100000"
-            export AI_MIN_OUTPUT_TOKENS="32768"
-            export AI_LOW_MULTIPLIER="2.0"
-            export AI_MEDIUM_MULTIPLIER="3.0"
-            export AI_HIGH_MULTIPLIER="3.5"
-            export AI_STAGGER_DELAY_MS="1500"
-            export AI_MAX_PARALLEL_CONVERSION="2"
+            export CODEX_LOW_REASONING_EFFORT="medium"
+            export CODEX_MEDIUM_REASONING_EFFORT="high"
+            export CODEX_HIGH_REASONING_EFFORT="high"
+            export CODEX_MAX_OUTPUT_TOKENS="100000"
+            export CODEX_MIN_OUTPUT_TOKENS="32768"
+            export CODEX_LOW_MULTIPLIER="2.0"
+            export CODEX_MEDIUM_MULTIPLIER="3.0"
+            export CODEX_HIGH_MULTIPLIER="3.5"
+            export CODEX_STAGGER_DELAY_MS="1500"
+            export CODEX_MAX_PARALLEL_CONVERSION="2"
             ;;
         3|"")
             echo -e "${GREEN}Selected: BALANCED (default)${NC}"
             # Multipliers intentionally not overridden — uses appsettings.json defaults
             # (1.5/2.5/3.5 with 100K max) for the full three-tier content-aware system.
-            export AI_STAGGER_DELAY_MS="1000"
-            export AI_MAX_PARALLEL_CONVERSION="2"
+            export CODEX_STAGGER_DELAY_MS="1000"
+            export CODEX_MAX_PARALLEL_CONVERSION="2"
             ;;
         *)
             echo -e "${YELLOW}Invalid choice, using BALANCED${NC}"
@@ -1959,11 +1709,6 @@ run_migration() {
     # Load and validate configuration
     if ! load_ai_config; then
         echo -e "${RED}❌ Configuration loading failed. Please check your ai-config.local.env file.${NC}"
-        return 1
-    fi
-
-    # Select AI provider and model
-    if ! select_ai_provider; then
         return 1
     fi
 
@@ -2005,7 +1750,7 @@ run_migration() {
         echo ""
         echo -e "${GREEN}✅ Selected: Reverse Engineering Report Only${NC}"
         echo ""
-        run_reverse_engineering --skip-setup
+        run_reverse_engineering
         return $?
     fi
 
@@ -2097,21 +1842,9 @@ run_migration() {
     
     echo -e "${CYAN}🎯 Target: ${TARGET_LANGUAGE}${NC}"
     echo -e "${CYAN}💾 Database: $MIGRATION_DB_PATH${NC}"
-    echo ""
-    echo -e "${CYAN}💓 Progress heartbeat active (updates every 30s)${NC}"
     
-    "$DOTNET_CMD" run -- --source ./source $skip_reverse_eng &
-    local dotnet_pid=$!
-    
-    # Start heartbeat monitor
-    start_heartbeat "$MIGRATION_DB_PATH" "$dotnet_pid"
-    
-    # Wait for dotnet to finish
-    wait "$dotnet_pid"
+    "$DOTNET_CMD" run -- --source ./source $skip_reverse_eng
     local migration_exit=$?
-    
-    # Stop heartbeat
-    stop_heartbeat
 
     if [[ $migration_exit -ne 0 ]]; then
         echo ""
@@ -2124,7 +1857,7 @@ run_migration() {
     echo ""
     echo -e "${BLUE}📄 Generate Migration Report?${NC}"
     echo "========================================"
-    read -p "Generate a detailed migration report for this run? (Y/n): " -n 1 -r
+    read -p "Generate a detailed migration report for this run? (Y/n): " -r
     echo ""
     if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
         generate_migration_report
@@ -2146,7 +1879,7 @@ run_migration() {
 
 # Function to resume migration
 run_resume() {
-    echo -e "${BLUE}🔄 Resuming COBOL Migration...${NC}"
+    echo -e "${BLUE}🔄 Resuming COBOL to Java Migration...${NC}"
     echo "======================================"
 
     echo -e "${BLUE}Using dotnet CLI:${NC} $DOTNET_CMD"
@@ -2156,37 +1889,6 @@ run_resume() {
         echo -e "${RED}❌ Configuration loading failed. Please check your setup.${NC}"
         return 1
     fi
-
-    # Select AI provider and model
-    if ! select_ai_provider; then
-        return 1
-    fi
-
-    # Pre-check: verify AI connectivity
-    if ! check_ai_connectivity; then
-        echo -e "${RED}❌ Please fix connection issues first.${NC}"
-        return 1
-    fi
-
-    echo ""
-    echo "🎯 Select Target Language for Resume"
-    echo "========================================"
-    echo "  1) Java (Quarkus)"
-    echo "  2) C# (.NET)"
-    echo ""
-    read -p "Enter choice (1 or 2) [default: 1]: " lang_choice
-    lang_choice=$(echo "$lang_choice" | tr -d '[:space:]')
-
-    if [[ "$lang_choice" == "2" ]]; then
-        export TARGET_LANGUAGE="CSharp"
-        echo -e "${GREEN}✅ Selected: C# (.NET)${NC}"
-    else
-        export TARGET_LANGUAGE="Java"
-        echo -e "${GREEN}✅ Selected: Java (Quarkus)${NC}"
-    fi
-
-    # Select speed profile
-    select_speed_profile
 
     echo ""
     echo "Checking for resumable migration state..."
@@ -2201,14 +1903,7 @@ run_resume() {
     fi
 
     # Run with resume logic
-    export TARGET_LANGUAGE
     export MIGRATION_DB_PATH="$REPO_ROOT/Data/migration.db"
-    if [[ "$TARGET_LANGUAGE" == "Java" ]]; then
-        export JAVA_OUTPUT_FOLDER="output/java"
-    else
-        export CSHARP_OUTPUT_FOLDER="output/csharp"
-    fi
-
     "$DOTNET_CMD" run -- --source ./source --resume
 }
 
@@ -2343,31 +2038,23 @@ run_reverse_engineering() {
 
     echo -e "${BLUE}Using dotnet CLI:${NC} $DOTNET_CMD"
 
-    # Skip setup if already done (e.g. called from run_migration)
-    if [[ "$1" != "--skip-setup" ]]; then
-        # Load configuration
-        echo "🔧 Loading AI configuration..."
-        if ! load_configuration; then
-            echo -e "${RED}❌ Configuration loading failed. Please run: ./doctor.sh setup${NC}"
-            return 1
-        fi
+    # Load configuration
+    echo "🔧 Loading AI configuration..."
+    if ! load_configuration; then
+        echo -e "${RED}❌ Configuration loading failed. Please run: ./doctor.sh setup${NC}"
+        return 1
+    fi
 
-        # Load and validate configuration
-        if ! load_ai_config; then
-            echo -e "${RED}❌ Configuration loading failed. Please check your ai-config.local.env file.${NC}"
-            return 1
-        fi
+    # Load and validate configuration
+    if ! load_ai_config; then
+        echo -e "${RED}❌ Configuration loading failed. Please check your ai-config.local.env file.${NC}"
+        return 1
+    fi
 
-        # Select AI provider and model
-        if ! select_ai_provider; then
-            return 1
-        fi
-
-        # Pre-check: verify AI connectivity
-        if ! check_ai_connectivity; then
-            echo -e "${RED}❌ Please fix connection issues first.${NC}"
-            return 1
-        fi
+    # Pre-check: verify AI connectivity
+    if ! check_ai_connectivity; then
+        echo -e "${RED}❌ Please fix connection issues first.${NC}"
+        return 1
     fi
 
     # Check if reverse engineering components are present
@@ -2496,11 +2183,6 @@ run_conversion_only() {
         return 1
     fi
 
-    # Select AI provider and model
-    if ! select_ai_provider; then
-        return 1
-    fi
-
     # Pre-check: verify AI connectivity
     if ! check_ai_connectivity; then
         echo -e "${RED}❌ Please fix connection issues first.${NC}"
@@ -2526,7 +2208,7 @@ run_conversion_only() {
     echo "  the database and can be injected into conversion prompts for"
     echo "  higher-quality output."
     echo ""
-    read -p "Reuse business logic from last RE run? (y/N): " -n 1 -r
+    read -p "Reuse business logic from last RE run? (y/N): " -r
     echo ""
     local reuse_re_flag=""
     if [[ $REPLY =~ ^[Yy]$ ]]; then

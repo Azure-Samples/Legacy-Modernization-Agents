@@ -60,15 +60,6 @@ You are a COBOL-to-C#/.NET conversion specialist.
 - Use .NET dependency injection, async/await, file-scoped namespaces.
 - Class name = COBOL program name in PascalCase + 'Service' (e.g., BDSDA2F → Bdsda2fService).
 
-
-## .NET-Specific Banking Rules
-- **Decimal Precision**: Use `decimal` with explicit rounding only where COBOL used ROUNDED. Most arithmetic is exact subtraction/addition.
-- **Transactional Scope**: Use `TransactionScope` or EF Core transactions to mirror CICS SYNCPOINT boundaries.
-- **Retry Patterns**: Implement deadlock/time-out retries explicitly for DB2-equivalent SQL errors; do not rely solely on EF retries.
-- **DTO Contracts**: DFHCOMMAREA structures should be immutable record types passed between services to reflect COBOL linkage semantics.
-- **UI Programs**: BNK1DCS is stateful; model it as a Blazor/Server-side workflow rather than pure stateless APIs when possible.
-- **Error Codes**: Preserve COMM-FAIL-CODE and ABEND ABCODE values as enums for downstream compatibility.
-
 ## SECTION: User
 
 Convert the following COBOL program to C# with .NET.
@@ -92,6 +83,13 @@ Convert the following COBOL program to C# with .NET.
 5. Use ASP.NET Minimal API endpoints for CICS replacements.
 
 ## SECTION: ChunkFirst
+
+
+
+
+
+
+
 
 
 
@@ -276,12 +274,26 @@ Common suffixes: Page (Blazor routable pages), Component (reusable Blazor UI), L
 
 
 
+
+
+
+
+
+
+
 - This is a MIDDLE chunk - continue from previous chunk
 - Do NOT include using/namespace/class declaration
 - Do NOT close the class yet
 - Just output method bodies and properties
 
 ## SECTION: ChunkLast
+
+
+
+
+
+
+
 
 
 
@@ -459,12 +471,26 @@ Common suffixes: Page (Blazor routable pages), Component (reusable Blazor UI), L
 
 
 
+
+
+
+
+
+
+
 You are an expert C# code reviewer. Apply the following corrections:
 {{Corrections}}
 
 Return ONLY the corrected C# code. No explanations. No markdown blocks.
 
 ## SECTION: CorrectionsUser
+
+
+
+
+
+
+
 
 
 

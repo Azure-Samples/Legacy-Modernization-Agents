@@ -24,12 +24,6 @@ public static class ChatClientFactory
 {
     private static readonly AzureServiceVersion AzureApiVersion = AzureServiceVersion.V2024_06_01;
 
-    /// <summary>
-    /// The GitHub Models inference endpoint.
-    /// All GitHub Copilot models (Claude, Codex, GPT, Grok, etc.) are accessible here.
-    /// </summary>
-    public const string GitHubModelsEndpoint = "https://models.github.ai/inference";
-
     // ═══════════════════════════════════════════════════════════════════════
     // PRIMARY FACTORY — Creates the right client based on AISettings
     // ═══════════════════════════════════════════════════════════════════════
@@ -52,17 +46,9 @@ public static class ChatClientFactory
 
         return serviceType.ToLowerInvariant() switch
         {
-            // GitHubCopilotSDK: don't pass ApiKey — the SDK authenticates via the
-            // logged-in Copilot CLI user.  Passing an Azure placeholder key
-            // would set UseLoggedInUser=false and break auth silently.
-            "githubcopilotsdk" =>
+            // GitHub Copilot SDK: authenticates via logged-in Copilot CLI user
+            "githubcopilotsdk" or "githubcopilot" =>
                 CreateGitHubCopilotChatClient(model, logger: logger),
-
-            "githubcopilot" or "github" or "githubmodels" =>
-                CreateGitHubCopilotClient(settings.ApiKey, model, logger),
-
-            "openai" when string.IsNullOrEmpty(settings.Endpoint) =>
-                CreateOpenAIChatClient(settings.ApiKey, model, logger),
 
             _ => // AzureOpenAI or anything with an endpoint
                 CreateAzureClient(settings, model, logger)
@@ -81,15 +67,7 @@ public static class ChatClientFactory
         var chatModel = settings.ChatModelId ?? settings.ChatDeploymentName ?? settings.ModelId;
         var serviceType = settings.ServiceType?.Trim() ?? "AzureOpenAI";
 
-        // If service type is GitHub Copilot, use that for chat too
-        if (serviceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase) ||
-            serviceType.Equals("GitHub", StringComparison.OrdinalIgnoreCase) ||
-            serviceType.Equals("GitHubModels", StringComparison.OrdinalIgnoreCase))
-        {
-            return CreateGitHubCopilotClient(chatApiKey, chatModel, logger);
-        }
-
-        // Azure or OpenAI path
+        // Route through CreateFromSettings which handles AzureOpenAI and CopilotSDK
         var chatSettings = new AISettings
         {
             ServiceType = serviceType,
@@ -100,55 +78,6 @@ public static class ChatClientFactory
         };
 
         return CreateFromSettings(chatSettings, chatModel, logger);
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // GITHUB COPILOT / GITHUB MODELS
-    // ═══════════════════════════════════════════════════════════════════════
-
-    /// <summary>
-    /// Creates an IChatClient for GitHub Copilot / GitHub Models.
-    /// Provides access to ALL models in the GitHub catalog:
-    ///   - claude-sonnet-4, claude-opus-4 (Anthropic)
-    ///   - gpt-4o, gpt-5 (OpenAI)
-    ///   - codex-mini-latest (OpenAI)
-    ///   - grok-3, grok-3-mini (xAI)
-    ///   - and many more
-    ///
-    /// Uses the OpenAI-compatible API at models.github.ai/inference,
-    /// authenticated with a GitHub Personal Access Token.
-    /// </summary>
-    /// <param name="githubToken">GitHub Personal Access Token (PAT) with copilot/models access.</param>
-    /// <param name="modelId">The model name from the GitHub Models catalog.</param>
-    /// <param name="logger">Optional logger.</param>
-    /// <returns>An IChatClient instance.</returns>
-    public static IChatClient CreateGitHubCopilotClient(
-        string githubToken,
-        string modelId,
-        ILogger? logger = null)
-    {
-        if (string.IsNullOrEmpty(githubToken))
-            throw new ArgumentException(
-                "GitHub token is required for GitHub Copilot. " +
-                "Set GITHUB_TOKEN env var or ApiKey in settings.", nameof(githubToken));
-        if (string.IsNullOrEmpty(modelId))
-            throw new ArgumentNullException(nameof(modelId));
-
-        logger?.LogInformation(
-            "Creating GitHub Copilot client for model: {Model} (endpoint: {Endpoint})",
-            modelId, GitHubModelsEndpoint);
-
-        // GitHub Models uses OpenAI-compatible API — use the OpenAI SDK pointed at their endpoint
-        var options = new OpenAIClientOptions
-        {
-            Endpoint = new Uri(GitHubModelsEndpoint)
-        };
-
-        var client = new OpenAIClient(
-            new System.ClientModel.ApiKeyCredential(githubToken),
-            options);
-
-        return client.GetChatClient(modelId).AsIChatClient();
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -281,7 +210,7 @@ public static class ChatClientFactory
     // ═══════════════════════════════════════════════════════════════════════
 
     /// <summary>
-    /// Creates an IChatClient by routing to Azure OpenAI, OpenAI, or GitHub Copilot based on serviceType.
+    /// Creates an IChatClient by routing to Azure OpenAI or GitHub Copilot SDK based on serviceType.
     /// Kept for backward compatibility — prefer CreateFromSettings for new code.
     /// </summary>
     public static IChatClient CreateChatClient(
@@ -292,7 +221,8 @@ public static class ChatClientFactory
         ILogger? logger = null,
         string? serviceType = null)
     {
-        if (string.Equals(serviceType, "GitHubCopilot", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(serviceType, "GitHubCopilot", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(serviceType, "GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase))
         {
             return CreateGitHubCopilotChatClient(modelId, githubToken: null, logger);
         }

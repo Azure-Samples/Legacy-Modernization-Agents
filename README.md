@@ -506,6 +506,18 @@ flowchart TB
         COBOL["COBOL Files<br/>source/*.cbl, *.cpy"]
     end
     
+    subgraph CONFIG["🔧 Configuration"]
+        SETUP_CLI["./doctor.sh setup<br/>(CLI)"]
+        SETUP_PORTAL["Portal Setup Modal<br/>(Browser)"]
+        SETUP_CLI --> CONFIG_FILE["Config/ai-config.local.env"]
+        SETUP_PORTAL --> CONFIG_FILE
+        CONFIG_FILE --> PROVIDERS
+        subgraph PROVIDERS["AI Providers"]
+            AZURE["☁️ Azure OpenAI<br/>(API Key / Entra ID)"]
+            COPILOT["🤖 GitHub Copilot SDK<br/>(CLI / PAT)"]
+        end
+    end
+
     subgraph PROCESS["⚙️ Processing Pipeline"]
         REGEX["Regex / Syntax Parsing<br/>(Deep SQL/Variable Extraction)"]
         AGENTS["🤖 AI Agents<br/>(MS Agent Framework)"]
@@ -522,11 +534,12 @@ flowchart TB
     
     subgraph OUTPUT["📦 Output"]
         CODE["Java/C# Code<br/>output/java or output/csharp"]
-        PORTAL["Web Portal & MCP Server<br/>localhost:5028"]
+        PORTAL["Web Portal<br/>localhost:5028<br/><br/>• Model Setup &amp; Discovery<br/>• Mission Control<br/>• Prompt Studio<br/>• Chat &amp; Graph"]
     end
     
     COBOL --> REGEX
     REGEX --> AGENTS
+    PROVIDERS --> AGENTS
     
     AGENTS --> ANALYZER
     AGENTS --> EXTRACTOR
@@ -623,6 +636,9 @@ sequenceDiagram
 - ✅ Edge type filtering with color-coded visualization
 - ✅ Line number context for all dependencies
 - ✅ Per-run **🔬 RE Results** button — view persisted business logic extracts and delete unsatisfactory results
+- ✅ **AI Provider Setup Modal** — connect to Azure OpenAI or GitHub Copilot SDK from the browser, discover all available models/deployments, and save config
+- ✅ **Mission Control** — start/stop/pause migrations, select provider and model, upload source files
+- ✅ **Prompt Studio** — generate, AI-enhance, and score agent prompts (works with both Azure and Copilot SDK)
 
 ### Smart Chunking & Token Strategy
 
@@ -749,6 +765,7 @@ flowchart TD
 ```mermaid
 flowchart TD
   CLI[["CLI / doctor.sh\n- Loads AI config\n- Selects target language"]]
+  PORTAL_SETUP[["Portal Setup Modal\n- Connect to Azure / Copilot\n- Discover & select models\n- Save config"]]
   
   subgraph ANALYZE_PHASE["PHASE 1: Deep Analysis"]
       REGEX["Regex Parsing\n(Fast SQL/Variable Extraction)"]
@@ -768,6 +785,7 @@ flowchart TD
   end
 
   CLI --> REGEX
+  PORTAL_SETUP -.->|configures| CLI
   REGEX --> SQLITE
   REGEX --> ANALYZE_PHASE
   
@@ -789,6 +807,7 @@ flowchart TD
 ```mermaid
 sequenceDiagram
   participant User as 🧑 User / doctor.sh
+  participant Portal as 🌐 Portal (McpChatWeb)
   participant CLI as CLI Runner
   participant RE as ReverseEngineeringProcess
   participant Analyzer as CobolAnalyzerAgent
@@ -797,7 +816,22 @@ sequenceDiagram
   participant DepMap as DependencyMapperAgent
   participant Converter as CodeConverterAgent (Java/C#)
   participant Repo as HybridMigrationRepository
-  participant Portal as MCP Server & McpChatWeb
+  participant AI as AI Provider (Azure / Copilot SDK)
+
+  rect rgb(245, 240, 255)
+      Note over User, AI: 0. Configuration (CLI or Portal)
+      alt CLI Setup
+          User->>CLI: ./doctor.sh setup
+          CLI->>CLI: Select provider, enter credentials
+          CLI->>CLI: Write Config/ai-config.local.env
+      else Portal Setup
+          User->>Portal: Open Setup Modal (🔧)
+          Portal->>AI: Connect & discover models
+          AI-->>Portal: Available deployments/models
+          User->>Portal: Select chat + code models
+          Portal->>Portal: Write Config/ai-config.local.env
+      end
+  end
 
   User->>CLI: select target language, concurrency flags
   CLI->>RE: start reverse engineering
@@ -951,8 +985,13 @@ flowchart LR
     B --> C["3. ai-config.local.env<br/>(your overrides)"]
     C --> D["4. Environment vars<br/>(highest priority)"]
     
+    E["./doctor.sh setup<br/>(CLI)"] -.->|writes| C
+    F["Portal Setup Modal<br/>(Browser)"] -.->|writes| C
+    
     style C fill:#90EE90
     style D fill:#FFD700
+    style E fill:#4B8BBE
+    style F fill:#7C3AED
 ```
 
 **Later values override earlier ones.** This means:

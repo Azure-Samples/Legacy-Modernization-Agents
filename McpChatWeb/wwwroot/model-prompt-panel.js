@@ -63,26 +63,54 @@ function toggleConfigPanel() {
 // ── Models ───────────────────────────────────────────────────────────────────
 
 async function loadModels() {
-  // The model dropdown is now a static list in index.html (all providers combined).
-  // We just fetch the active model to highlight it.
+  // Fetch configured models from /api/models/available (set by ./doctor.sh setup)
   try {
-    const res = await fetch('/api/models/active');
+    const res = await fetch('/api/models/available');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    updateActiveModelBadge(data.activeModelId);
 
-    // Select the active model in the static dropdown if present
     const select = document.getElementById('model-selector');
-    if (select && data.activeModelId) {
-      for (const opt of select.options) {
-        if (opt.value === data.activeModelId) {
-          opt.selected = true;
-          break;
+    if (select) {
+      select.innerHTML = '';
+
+      if (data.models && data.models.length > 0) {
+        const provider = data.serviceType === 'GitHubCopilot' ? '🤖 GitHub Copilot SDK' : '☁️ Azure OpenAI';
+        const group = document.createElement('optgroup');
+        group.label = provider;
+
+        for (const m of data.models) {
+          const opt = document.createElement('option');
+          opt.value = m.id;
+          const ctxLabel = m.contextWindow ? ` · ${formatContextWindow(m.contextWindow)} ctx` : '';
+          opt.textContent = m.contextWindow ? `🧠 ${m.id}${ctxLabel}` : `🧠 ${m.id}`;
+          if (m.id === data.activeModelId) opt.selected = true;
+          group.appendChild(opt);
+        }
+        select.appendChild(group);
+      } else {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = '⚠️ No models configured — click 🔧 Setup';
+        select.appendChild(opt);
+
+        // Auto-open the setup modal if no models are configured
+        if (data.needsSetup && typeof openSetupModal === 'function') {
+          setTimeout(() => openSetupModal(), 500);
         }
       }
     }
+
+    // Also set the Mission Control provider dropdown to match
+    const mcProvider = document.getElementById('mc-provider-select');
+    if (mcProvider) {
+      const providerValue = (data.serviceType === 'GitHubCopilot' || data.serviceType === 'GitHubCopilotSDK')
+        ? 'GitHubCopilot' : 'AzureOpenAI';
+      mcProvider.value = providerValue;
+    }
+
+    updateActiveModelBadge(data.activeModelId);
   } catch (err) {
-    console.error('Failed to load active model:', err);
+    console.error('Failed to load models:', err);
   }
 }
 

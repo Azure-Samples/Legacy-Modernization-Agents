@@ -1,15 +1,15 @@
 using Azure.AI.OpenAI;
 using Azure.Identity;
+using GitHub.Copilot.SDK;
 using Microsoft.Extensions.AI;
-using OpenAI;
 using System.Text.Json;
 
 namespace McpChatWeb.Services;
 
 /// <summary>
 /// Creates IChatClient instances for Prompt Studio.
-/// Uses the same SDK clients as mission control — handles Azure OpenAI,
-/// GitHub Models, and Copilot SDK (falls back to GitHub Models REST API).
+/// Supports Azure OpenAI (API key or Entra ID) and GitHub Copilot SDK.
+/// Uses the active model selected in the portal setup modal.
 /// </summary>
 public static class PromptStudioAI
 {
@@ -19,10 +19,50 @@ public static class PromptStudioAI
     /// </summary>
     public static (IChatClient? Client, string ModelUsed, string Error) CreateClient()
     {
-        var activeModel = Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL_ID") ?? "";
+        var activeModel = Environment.GetEnvironmentVariable("AZURE_OPENAI_CHAT_MODEL_ID")
+            ?? Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL_ID") ?? "";
         var serviceType = (Environment.GetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE") ?? "AzureOpenAI").ToLowerInvariant();
         var apiKey = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_KEY") ?? "";
         var azureEndpoint = Environment.GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT") ?? "";
+
+        if (string.IsNullOrWhiteSpace(activeModel))
+            return (null, "", "No AI model selected. Use 🔧 Setup in the portal to connect a provider.");
+
+        // ── GitHub Copilot SDK ──────────────────────────────────────────────
+        if (serviceType is "githubcopilotsdk" or "githubcopilot")
+        {
+            // Codex models don't support Chat Completions — swap to chat model
+            if (activeModel.Contains("codex", StringComparison.OrdinalIgnoreCase))
+            {
+                var chatModel = ReadChatModelFromConfig();
+                if (!string.IsNullOrWhiteSpace(chatModel) && !chatModel.Contains("codex", StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.WriteLine($"🔄 Codex model '{activeModel}' → using chat model '{chatModel}' for Prompt Studio");
+                    activeModel = chatModel;
+                }
+            }
+
+            Console.WriteLine($"🔌 Prompt Studio AI: model='{activeModel}', provider='GitHubCopilotSDK'");
+
+            try
+            {
+                var options = new CopilotClientOptions { UseStdio = true };
+
+                // Use PAT if configured
+                var copilotToken = Environment.GetEnvironmentVariable("GITHUB_COPILOT_TOKEN") ?? "";
+                if (!string.IsNullOrWhiteSpace(copilotToken))
+                    options.GitHubToken = copilotToken;
+
+                var client = new CopilotChatClient(activeModel, options);
+                return (client, activeModel, "");
+            }
+            catch (Exception ex)
+            {
+                return (null, activeModel, $"Failed to create Copilot SDK client: {ex.Message}. Ensure 'gh auth login' or a PAT is configured.");
+            }
+        }
+
+        // ── Azure OpenAI ────────────────────────────────────────────────────
 
         // Codex models don't support Chat Completions — swap to chat model
         if (serviceType == "azureopenai" && activeModel.Contains("codex", StringComparison.OrdinalIgnoreCase))
@@ -35,99 +75,37 @@ public static class PromptStudioAI
             }
         }
 
-        // Copilot SDK → fall back to GitHub Models REST API
-        if (serviceType == "githubcopilotsdk")
-        {
-            var ghToken = ResolveGitHubToken();
-            if (!string.IsNullOrWhiteSpace(ghToken))
-            {
-                serviceType = "githubcopilot";
-                apiKey = ghToken;
-            }
-            else
-            {
-                return (null, activeModel, "Copilot SDK — no GitHub token found. Run 'gh auth login'.");
-            }
-        }
-
-        // No API key and no Azure Entra ID? Try GitHub token
-        if (IsGitHubToken(apiKey) || string.IsNullOrWhiteSpace(apiKey) || apiKey.Contains("placeholder"))
-        {
-            if (serviceType == "azureopenai" && !string.IsNullOrWhiteSpace(azureEndpoint))
-            {
-                // Azure with Entra ID — clear the GitHub token, we'll use DefaultAzureCredential
-                apiKey = "";
-            }
-            else
-            {
-                var ghToken = ResolveGitHubToken();
-                if (!string.IsNullOrWhiteSpace(ghToken))
-                {
-                    serviceType = "githubcopilot";
-                    apiKey = ghToken;
-                }
-            }
-        }
-
-        // Azure endpoint missing? Load from config
-        if (serviceType == "azureopenai" && string.IsNullOrWhiteSpace(azureEndpoint))
-        {
+        // Resolve endpoint from env or config
+        if (string.IsNullOrWhiteSpace(azureEndpoint))
             azureEndpoint = ReadEndpointFromConfig();
-            if (string.IsNullOrWhiteSpace(azureEndpoint))
-            {
-                // Last resort: try GitHub Models
-                var ghToken = ResolveGitHubToken();
-                if (!string.IsNullOrWhiteSpace(ghToken))
-                {
-                    serviceType = "githubcopilot";
-                    apiKey = ghToken;
-                }
-                else
-                {
-                    return (null, activeModel, "No Azure endpoint configured and no GitHub token available.");
-                }
-            }
-        }
 
-        if (string.IsNullOrWhiteSpace(activeModel))
-            return (null, "", "No AI model selected.");
+        if (string.IsNullOrWhiteSpace(azureEndpoint) || azureEndpoint.Contains("placeholder"))
+            return (null, activeModel, "No Azure endpoint configured. Use 🔧 Setup in the portal to connect Azure OpenAI.");
 
-        Console.WriteLine($"🔌 Prompt Studio AI: model='{activeModel}', provider='{serviceType}'");
+        // Clear GitHub/placeholder tokens — use Entra ID for Azure
+        if (IsGitHubToken(apiKey) || string.IsNullOrWhiteSpace(apiKey) || apiKey.Contains("placeholder"))
+            apiKey = "";
+
+        Console.WriteLine($"🔌 Prompt Studio AI: model='{activeModel}', provider='AzureOpenAI'");
 
         try
         {
-            IChatClient client;
-
-            if (serviceType is "githubcopilot" or "github" or "githubmodels")
+            AzureOpenAIClient azureClient;
+            if (!string.IsNullOrWhiteSpace(apiKey))
             {
-                // GitHub Models — OpenAI SDK pointed at models.github.ai
-                var options = new OpenAIClientOptions
-                {
-                    Endpoint = new Uri("https://models.github.ai/inference")
-                };
-                var openaiClient = new OpenAIClient(
-                    new System.ClientModel.ApiKeyCredential(apiKey), options);
-                client = openaiClient.GetChatClient(activeModel).AsIChatClient();
+                azureClient = new AzureOpenAIClient(
+                    new Uri(azureEndpoint),
+                    new System.ClientModel.ApiKeyCredential(apiKey));
             }
             else
             {
-                // Azure OpenAI
-                AzureOpenAIClient azureClient;
-                if (!string.IsNullOrWhiteSpace(apiKey) && !IsGitHubToken(apiKey))
-                {
-                    azureClient = new AzureOpenAIClient(
-                        new Uri(azureEndpoint),
-                        new System.ClientModel.ApiKeyCredential(apiKey));
-                }
-                else
-                {
-                    // Entra ID auth
-                    azureClient = new AzureOpenAIClient(
-                        new Uri(azureEndpoint),
-                        new DefaultAzureCredential());
-                }
-                client = azureClient.GetChatClient(activeModel).AsIChatClient();
+                // Entra ID auth
+                azureClient = new AzureOpenAIClient(
+                    new Uri(azureEndpoint),
+                    new DefaultAzureCredential());
             }
+
+            var client = azureClient.GetChatClient(activeModel).AsIChatClient();
 
             return (client, activeModel, "");
         }
@@ -139,35 +117,6 @@ public static class PromptStudioAI
 
     private static bool IsGitHubToken(string key) =>
         key.StartsWith("gho_") || key.StartsWith("ghp_") || key.StartsWith("ghu_") || key.StartsWith("ghs_");
-
-    private static string ResolveGitHubToken()
-    {
-        var envToken = Environment.GetEnvironmentVariable("GITHUB_TOKEN");
-        if (!string.IsNullOrWhiteSpace(envToken) && !envToken.Contains("placeholder"))
-            return envToken;
-
-        try
-        {
-            var psi = new System.Diagnostics.ProcessStartInfo("gh", "auth token")
-            {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-            using var proc = System.Diagnostics.Process.Start(psi);
-            if (proc != null)
-            {
-                var output = proc.StandardOutput.ReadToEnd().Trim();
-                proc.WaitForExit(5000);
-                if (proc.ExitCode == 0 && !string.IsNullOrWhiteSpace(output))
-                    return output;
-            }
-        }
-        catch { }
-
-        return "";
-    }
 
     private static string ReadChatModelFromConfig()
     {

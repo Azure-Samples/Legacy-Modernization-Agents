@@ -88,8 +88,8 @@
           <div class="mc-provider-info" id="mc-provider-info" style="display: none;">
             <div class="mc-info-close" onclick="document.getElementById('mc-provider-info').style.display='none'">✕</div>
             <p><strong>☁️ Azure OpenAI</strong> — Your own Azure deployment. Fastest for batch processing. Uses Codex Responses API with built-in reasoning. Supports parallel processing.</p>
-            <p><strong>🐙 GitHub Models</strong> — REST API at models.github.ai. Fast, supports parallel. Uses your <code>gh auth</code> token. Models need <code>vendor/name</code> format (e.g. <code>openai/gpt-4o</code>).</p>
-            <p><strong>🤖 Copilot SDK</strong> — Same models as VS Code Copilot (including Claude). Uses stdio pipe, so runs <strong>sequentially</strong> (1 request at a time). Slower for batch but gives access to premium models.</p>
+            <p><strong>🤖 GitHub Copilot SDK</strong> — Same models as VS Code Copilot (including Claude). Uses stdio pipe.</p>
+            <p style="font-size:0.8em;color:#94a3b8">Click <strong>🔧 Setup</strong> in the Model panel (or change the provider dropdown) to connect and discover all available models.</p>
           </div>
 
           <!-- Run Name + Options -->
@@ -99,8 +99,7 @@
           <div class="mc-options-row">
             <select id="mc-provider-select" class="mc-select">
               <option value="AzureOpenAI">☁️ Azure OpenAI</option>
-              <option value="GitHubModels">🐙 GitHub Models</option>
-              <option value="CopilotSDK">🤖 Copilot SDK</option>
+              <option value="GitHubCopilot">🤖 GitHub Copilot SDK</option>
             </select>
             <select id="mc-model-select" class="mc-select">
               <!-- Populated dynamically by JS based on provider -->
@@ -220,30 +219,14 @@
 
           <!-- Model Selector — used for Chat & Prompt Studio -->
           <div class="config-section">
-            <div class="config-section-header">💬 Chat &amp; Prompt Studio Model</div>
-            <div style="font-size: 0.7em; color: #64748b; margin-bottom: 6px;">Used for portal Q&amp;A and Prompt Studio. Migration uses the model in Mission Control.</div>
+            <div class="config-section-header">💬 Chat &amp; Prompt Studio Model
+              <button id="open-setup-modal-btn" class="btn-reconfigure" title="Open AI Provider Setup to discover and configure models">🔧 Setup</button>
+            </div>
+            <div style="font-size: 0.7em; color: #64748b; margin-bottom: 6px;">Select your AI provider and models, or use <code>./doctor.sh setup</code>.</div>
             <div class="model-selector-row">
               <select id="model-selector" class="model-dropdown">
-                <optgroup label="☁️ Azure OpenAI">
-                  <option value="gpt-5.1-codex-mini">🧠 gpt-5.1-codex-mini</option>
-                  <option value="gpt-5.2-chat">💬 gpt-5.2-chat</option>
-                </optgroup>
-                <optgroup label="🐙 GitHub Models">
-                  <option value="openai/gpt-5">🧠 openai/gpt-5</option>
-                  <option value="openai/gpt-4.1">🧠 openai/gpt-4.1</option>
-                  <option value="openai/gpt-4o">⚡ openai/gpt-4o</option>
-                  <option value="openai/gpt-4o-mini">⚡ openai/gpt-4o-mini</option>
-                  <option value="xai/grok-3">🦊 xai/grok-3</option>
-                  <option value="xai/grok-3-mini">🦊 xai/grok-3-mini</option>
-                </optgroup>
-                <optgroup label="🤖 Copilot SDK">
-                  <option value="gpt-5.3-codex">🧠 gpt-5.3-codex (code-optimized)</option>
-                  <option value="gpt-5.4">🧠 gpt-5.4 (latest GPT)</option>
-                  <option value="claude-opus-4">🟣 claude-opus-4 (best quality)</option>
-                  <option value="claude-sonnet-4">🟣 claude-sonnet-4 (balanced)</option>
-                  <option value="gpt-4o">⚡ gpt-4o</option>
-                  <option value="grok-3">🦊 grok-3</option>
-                </optgroup>
+                <!-- Populated dynamically from /api/models/available -->
+                <option value="">Loading models...</option>
               </select>
               <button id="apply-model-btn" class="btn-apply" title="Apply model for chat &amp; prompts">✓</button>
             </div>
@@ -1151,6 +1134,94 @@ curl http://localhost:5028/api/data-retrieval-guide</code></pre>
     </div>
   </div>
 
+  <!-- ═══ Model Setup Modal ═══ -->
+  <div id="modelSetupModal" class="modal" style="display: none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>🔑 AI Provider Setup</h2>
+        <span class="modal-close" id="setup-modal-close">&times;</span>
+      </div>
+      <div class="modal-body" style="padding: 20px;">
+
+        <!-- Tabs -->
+        <div class="setup-tabs">
+          <button class="setup-tab setup-tab-active" data-provider="AzureOpenAI">☁️ Azure OpenAI</button>
+          <button class="setup-tab" data-provider="GitHubCopilotSDK">🤖 GitHub Copilot SDK</button>
+        </div>
+
+        <!-- Azure OpenAI Tab -->
+        <div id="setup-AzureOpenAI" class="setup-tab-content" style="display: block;">
+          <div class="setup-field">
+            <label>Endpoint URL</label>
+            <input type="text" id="azure-endpoint" placeholder="https://your-resource.openai.azure.com/">
+            <div class="setup-help">Find this in Azure Portal → Your OpenAI Resource → Keys and Endpoint</div>
+          </div>
+
+          <div class="setup-field">
+            <label>Authentication</label>
+            <div class="setup-auth-options">
+              <label class="setup-auth-option">
+                <input type="radio" name="azure-auth" value="apikey" checked>
+                🔑 API Key
+              </label>
+              <label class="setup-auth-option">
+                <input type="radio" name="azure-auth" value="azlogin">
+                🔐 Azure CLI (az login)
+              </label>
+            </div>
+          </div>
+
+          <div class="setup-field" id="azure-apikey-group">
+            <label>API Key</label>
+            <input type="password" id="azure-apikey" placeholder="Enter your Azure OpenAI API key">
+          </div>
+
+          <button class="setup-connect-btn" id="azure-connect-btn">🔌 Connect</button>
+        </div>
+
+        <!-- GitHub Copilot SDK Tab -->
+        <div id="setup-GitHubCopilotSDK" class="setup-tab-content">
+          <div class="setup-field">
+            <label>Authentication</label>
+            <div class="setup-auth-options">
+              <label class="setup-auth-option">
+                <input type="radio" name="copilot-auth" value="cli" checked>
+                💻 GitHub CLI (gh auth login)
+              </label>
+              <label class="setup-auth-option">
+                <input type="radio" name="copilot-auth" value="pat">
+                🔑 Personal Access Token
+              </label>
+            </div>
+            <div class="setup-help">CLI auth uses your existing <code>gh auth login</code> session on the server.</div>
+          </div>
+
+          <div class="setup-field" id="copilot-pat-group" style="display: none;">
+            <label>Personal Access Token</label>
+            <input type="password" id="copilot-pat" placeholder="ghp_...">
+            <div class="setup-help">Classic PAT with <code>copilot</code> scope. Create at github.com/settings/tokens</div>
+          </div>
+
+          <button class="setup-connect-btn" id="copilot-connect-btn">🔌 Connect</button>
+        </div>
+
+        <!-- Status -->
+        <div id="setup-status" class="setup-status"></div>
+
+        <!-- Discovered Models -->
+        <div id="setup-model-list">
+          <div class="setup-no-models">Connect to a provider to discover available models.</div>
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <div class="setup-footer">
+        <span class="setup-footer-hint">Configuration is saved to Config/ai-config.local.env</span>
+        <button class="setup-save-btn" id="setup-save-btn" disabled>💾 Save & Apply</button>
+      </div>
+    </div>
+  </div>
+
   <script src="run-selector.js"></script>
   <script src="graph.js"></script>
   <script src="main.js"></script>
@@ -1158,6 +1229,7 @@ curl http://localhost:5028/api/data-retrieval-guide</code></pre>
   <script src="activity-dashboard.js"></script>
   <script src="migration-monitor.js"></script>
   <script src="model-prompt-panel.js"></script>
+  <script src="model-setup-modal.js"></script>
   <script src="mission-control.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script>

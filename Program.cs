@@ -248,32 +248,27 @@ internal static class Program
         listModelsCommand.SetHandler(async () =>
         {
             var logger = loggerFactory.CreateLogger("ListModels");
-            LoadEnvironmentVariables();
 
-            if (IsGitHubCopilotSdkMode())
+            // list-models always uses Copilot SDK — it's only called during
+            // './doctor.sh setup' before config is written, so don't check
+            // AZURE_OPENAI_SERVICE_TYPE (it will be AzureOpenAI at this point).
+            Console.WriteLine("Querying models via GitHub Copilot SDK (CLI)...");
+            try
             {
-                Console.WriteLine("Querying models via GitHub Copilot SDK (CLI)...");
-                try
+                var client = new CopilotClient(new CopilotClientOptions { UseStdio = true });
+                var models = await client.ListModelsAsync();
+                Console.WriteLine($"Available models ({models.Count}):");
+                foreach (var model in models.OrderBy(m => m.Name))
                 {
-                    var client = new CopilotClient(new CopilotClientOptions { UseStdio = true });
-                    var models = await client.ListModelsAsync();
-                    Console.WriteLine($"Available models ({models.Count}):");
-                    foreach (var model in models.OrderBy(m => m.Name))
-                    {
-                        Console.WriteLine($"  • {model.Name}");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    logger.LogError(ex, "Failed to list models via Copilot SDK");
-                    Console.WriteLine($"Error: {ex.Message}");
-                    Console.WriteLine("Make sure GitHub Copilot CLI is installed: gh extension install github/gh-copilot");
+                    var id = model.Id ?? model.Name;
+                    Console.WriteLine($"  • {id}");
                 }
             }
-            else
+            catch (Exception ex)
             {
-                Console.WriteLine("list-models is currently only supported for GitHubCopilotSDK provider.");
-                Console.WriteLine("Set AZURE_OPENAI_SERVICE_TYPE=GitHubCopilotSDK to use the Copilot SDK.");
+                logger.LogError(ex, "Failed to list models via Copilot SDK");
+                Console.WriteLine($"Error: {ex.Message}");
+                Console.WriteLine("Make sure GitHub Copilot CLI is installed and you are logged in (copilot login).");
             }
         });
 

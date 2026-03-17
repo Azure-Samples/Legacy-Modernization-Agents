@@ -12,48 +12,52 @@ document.addEventListener('DOMContentLoaded', () => {
   initMissionControl();
 });
 
-// ── Provider → Model catalog ─────────────────────────────────────────────────
-const MODEL_CATALOG = {
-  AzureOpenAI: [
-    { id: 'gpt-5.1-codex-mini', label: '🧠 gpt-5.1-codex-mini (default)' },
-    { id: 'gpt-5.2-chat', label: '💬 gpt-5.2-chat' },
-  ],
-  GitHubModels: [
-    { id: 'openai/gpt-5', label: '🧠 openai/gpt-5' },
-    { id: 'openai/gpt-4.1', label: '🧠 openai/gpt-4.1' },
-    { id: 'openai/gpt-4o', label: '⚡ openai/gpt-4o' },
-    { id: 'openai/gpt-4o-mini', label: '⚡ openai/gpt-4o-mini' },
-    { id: 'xai/grok-3', label: '🦊 xai/grok-3' },
-    { id: 'xai/grok-3-mini', label: '🦊 xai/grok-3-mini' },
-  ],
-  CopilotSDK: [
-    { id: 'gpt-5.3-codex', label: '🧠 gpt-5.3-codex (code-optimized)' },
-    { id: 'gpt-5.4', label: '🧠 gpt-5.4 (latest GPT)' },
-    { id: 'claude-opus-4', label: '🟣 claude-opus-4 (best quality)' },
-    { id: 'claude-sonnet-4', label: '🟣 claude-sonnet-4 (balanced)' },
-    { id: 'gpt-5', label: '🧠 gpt-5' },
-    { id: 'gpt-4.1', label: '🧠 gpt-4.1' },
-    { id: 'gpt-4o', label: '⚡ gpt-4o' },
-    { id: 'grok-3', label: '🦊 grok-3' },
-    { id: 'grok-3-mini', label: '🦊 grok-3-mini' },
-  ]
-};
+// ── Model catalog — loaded from configured provider (./doctor.sh setup) ───────
+let _modelCatalog = [];
 
-function populateModelDropdown(provider) {
+async function fetchModelCatalog() {
+  try {
+    const res = await fetch('/api/models/available');
+    if (!res.ok) return;
+    const data = await res.json();
+    _modelCatalog = (data.models || []).map(m => ({
+      id: m.id, label: `🧠 ${m.id}`
+    }));
+
+    // Set provider dropdown to match configured provider
+    const providerSelect = document.getElementById('mc-provider-select');
+    if (providerSelect && data.serviceType) {
+      const val = (data.serviceType === 'GitHubCopilot' || data.serviceType === 'GitHubCopilotSDK')
+        ? 'GitHubCopilot' : 'AzureOpenAI';
+      providerSelect.value = val;
+    }
+
+    populateModelDropdown();
+  } catch (err) {
+    console.error('Failed to fetch model catalog:', err);
+  }
+}
+
+function populateModelDropdown() {
   const modelSelect = document.getElementById('mc-model-select');
   if (!modelSelect) return;
-  const models = MODEL_CATALOG[provider] || [];
+  const models = _modelCatalog.length > 0 ? _modelCatalog : [{ id: '', label: '⚠️ Run ./doctor.sh setup first' }];
   modelSelect.innerHTML = models.map(m =>
     `<option value="${m.id}">${m.label}</option>`
   ).join('');
 }
 
 function initMissionControl() {
-  // Provider → Model cascade
+  // Fetch models from configured provider (set by ./doctor.sh setup)
+  fetchModelCatalog();
+
+  // Provider change triggers re-connect via the setup modal
   const providerSelect = document.getElementById('mc-provider-select');
   if (providerSelect) {
-    providerSelect.addEventListener('change', () => populateModelDropdown(providerSelect.value));
-    populateModelDropdown(providerSelect.value); // initial populate
+    providerSelect.addEventListener('change', () => {
+      // Open the setup modal so user can connect to the new provider
+      if (typeof openSetupModal === 'function') openSetupModal();
+    });
   }
 
   // Provider info toggle

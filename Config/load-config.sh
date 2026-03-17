@@ -94,8 +94,25 @@ validate_config() {
     local errors=0
     
     log_info "Validating configuration..."
+
+    # GitHub Copilot SDK mode: only model IDs are required, no endpoint/key
+    if [[ "${AZURE_OPENAI_SERVICE_TYPE}" == "GitHubCopilot" ]]; then
+        log_success "✓ Provider: GitHub Copilot SDK"
+
+        local copilot_required=("AISETTINGS__MODELID")
+        for var in "${copilot_required[@]}"; do
+            if [ -z "${!var}" ]; then
+                log_error "Required variable $var is not set"
+                ((errors++))
+            else
+                log_success "✓ $var is configured: ${!var}"
+            fi
+        done
+
+        return $errors
+    fi
     
-    # Core: Endpoint is always required
+    # Core: Endpoint is always required (Azure OpenAI / OpenAI)
     local required_vars=(
         "AZURE_OPENAI_ENDPOINT"
     )

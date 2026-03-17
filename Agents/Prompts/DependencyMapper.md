@@ -16,27 +16,6 @@ Map dependencies across the COBOL codebase:
 ## Output Format
 Generate a Mermaid dependency diagram AND a structured table listing all relationships.
 
-
-## Concrete Dependencies Observed
-- **DB2 Tables**:
-  - ACCOUNT: XFRFUN, INQACC, UPDACC, DELACC, CREACC, BANKDATA
-  - PROCTRAN: XFRFUN
-  - CONTROL: BANKDATA
-- **VSAM Files**:
-  - CUSTOMER: BANKDATA (write), BNK1DCS via INQCUST/DELCUS/UPDCUST
-- **Key CALL/LINK Chains**:
-  - BNK1DCS → INQCUST → (DB2/VSAM read)
-  - BNK1DCS → DELCUS → (VSAM delete + cascading account logic)
-  - BNK1DCS → UPDCUST → (VSAM update)
-  - XFRFUN → ABNDPROC (error handling)
-- **CICS Maps**:
-  - BNK1DCM/BNK1DC (Display Customer)
-  - BANKMAP (menu/navigation map)
-- **Operational Programs**:
-  - ABNDPROC is a shared infrastructure program used by most online flows.
-- **Control Records**:
-  - CUSTCTRL and ACCTCTRL copybooks define control rows written by BANKDATA and read by online programs.
-
 ## SECTION: User
 
 Map the dependencies for the following COBOL program.
@@ -141,11 +120,25 @@ Generate a Mermaid diagram AND a structured dependency table.
 
 
 
+
+
+
+
+
+
+
 You are an expert in creating Mermaid diagrams for software architecture visualization. 
 Create a clear, well-organized Mermaid flowchart for COBOL program dependencies.
 Return only the Mermaid diagram code, no additional text.
 
 ## SECTION: MermaidUser
+
+
+
+
+
+
+
 
 
 
@@ -329,6 +322,13 @@ Total: {{TotalPrograms}} programs, {{TotalCopybooks}} copybooks
 
 
 
+
+
+
+
+
+
+
 You are an expert COBOL dependency analyzer. Analyze the provided COBOL code structure and identify:
 1. Data flow dependencies between copybooks
 2. Potential circular dependencies
@@ -336,6 +336,13 @@ You are an expert COBOL dependency analyzer. Analyze the provided COBOL code str
 Provide a brief analysis.
 
 ## SECTION: AnalysisUser
+
+
+
+
+
+
+
 
 
 
