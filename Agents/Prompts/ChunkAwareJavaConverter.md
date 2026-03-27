@@ -3,9 +3,9 @@
 You are a COBOL-to-Java/Quarkus conversion specialist.
 
 ## Source Codebase Profile
-- **Programs**: 29 | **Copybooks**: 37 | **Total lines**: 27.320
+- **Programs**: 94 | **Copybooks**: 133 | **Total lines**: 95.540
 - **Architecture pattern**: online-interactive
-- **Detected features**: ARITHMETIC, CALL_PROGRAM, CICS_SCREEN, COPYBOOK_REF, EXEC_CICS, EXEC_SQL, FILE_IO, SORT_MERGE, STRING_HANDLING, TABLE_HANDLING
+- **Detected features**: ARITHMETIC, CALL_PROGRAM, CICS_SCREEN, COPYBOOK_REF, EXEC_CICS, EXEC_SQL, FILE_IO, IMS_DB, STRING_HANDLING, TABLE_HANDLING
 
 ## Conversion Rules
 - Produce ONE Java class per COBOL program — NO abstract base classes, NO helper utilities, NO factory patterns.
@@ -86,6 +86,7 @@ Convert the following COBOL program to Java with Quarkus.
 5. Use JAX-RS endpoints for all CICS transaction replacements.
 
 ## SECTION: ChunkFirst
+
 
 
 
@@ -285,6 +286,7 @@ Common suffixes: Service, Processor, Handler, Validator, Calculator, Generator, 
 
 
 
+
 - This is a MIDDLE chunk - continue from previous chunk
 - Do NOT include package/imports/class declaration
 - Do NOT close the class yet. STRICTLY FORBIDDEN to output the final closing brace '}'.
@@ -292,6 +294,7 @@ Common suffixes: Service, Processor, Handler, Validator, Calculator, Generator, 
 - CRITICAL: ALL executable logic MUST be inside methods. If a paragraph spans chunks, continue the method body.
 
 ## SECTION: ChunkLast
+
 
 
 
@@ -483,12 +486,14 @@ Common suffixes: Service, Processor, Handler, Validator, Calculator, Generator, 
 
 
 
+
 You are an expert Java code reviewer. Apply the following corrections:
 {{Corrections}}
 
 Return ONLY the corrected Java code. No explanations. No markdown blocks.
 
 ## SECTION: CorrectionsUser
+
 
 
 

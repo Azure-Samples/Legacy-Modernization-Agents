@@ -382,6 +382,11 @@ Logs/*
 Log/
 LogFiles/
 
+# Python virtual environments
+.venv/
+__pycache__/
+*.pyc
+
 # Temporary and cache files
 *.tmp
 *.temp
@@ -442,3 +447,5 @@ Temporary Items
 # Database files (auto-created on first run)
 Data/*.db
 Data/*.db-*
+McpChatWeb/wwwroot/node_modules/
+McpChatWeb/wwwroot/forceatlas2-entry.js

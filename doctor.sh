@@ -244,11 +244,9 @@ launch_mcp_web_ui() {
     local port="${MCP_WEB_PORT:-$DEFAULT_MCP_PORT}"
     local url="http://$host:$port"
 
-    # Ensure AI env is loaded (chat vs responses) before launching portal/MCP
-    if ! load_configuration || ! load_ai_config; then
-        echo -e "${RED}❌ Failed to load AI configuration. Portal launch aborted.${NC}"
-        return 1
-    fi
+    # Load configuration — AI config is optional for portal (only Neo4j/graph views need it)
+    load_configuration 2>/dev/null || true
+    load_ai_config 2>/dev/null || echo -e "${YELLOW}⚠️  AI configuration incomplete (portal graph views will still work)${NC}"
 
     echo ""
     echo -e "${BLUE}🌐 Launching MCP Web UI...${NC}"
@@ -2285,6 +2283,281 @@ run_conversion_only() {
     launch_mcp_web_ui "$db_path"
 }
 
+# ═══════════════════════════════════════════════════════════════════════
+# Cobol-REKT Integration
+# ═══════════════════════════════════════════════════════════════════════
+
+REKT_NEO4J_CONTAINER="cobol-rekt-neo4j"
+REKT_NEO4J_HTTP_PORT=7475
+REKT_NEO4J_BOLT_PORT=7688
+REKT_CONTAINER="cobol-rekt"
+REKT_POPULATOR_CONTAINER="cobol-graph-populator"
+
+# Auto-detect docker API version for macOS compatibility
+detect_docker_api_version() {
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        export DOCKER_API_VERSION="${DOCKER_API_VERSION:-1.43}"
+    fi
+}
+
+ensure_rekt_containers() {
+    detect_docker_api_version
+    echo -e "${BLUE}🔧 Ensuring rekt containers are running...${NC}"
+
+    # Start only the rekt services (leave existing neo4j untouched)
+    docker-compose up -d "$REKT_NEO4J_CONTAINER" "$REKT_CONTAINER" 2>/dev/null
+
+    # Wait for rekt Neo4j to be healthy
+    local max_wait=60
+    local waited=0
+    echo -ne "  Waiting for $REKT_NEO4J_CONTAINER"
+    while ! docker exec "$REKT_NEO4J_CONTAINER" cypher-shell -u neo4j -p cobol-rekt-2026 'RETURN 1' >/dev/null 2>&1; do
+        sleep 2
+        waited=$((waited + 2))
+        echo -ne "."
+        if [[ $waited -ge $max_wait ]]; then
+            echo -e "\n${RED}❌ $REKT_NEO4J_CONTAINER did not become healthy in ${max_wait}s${NC}"
+            return 1
+        fi
+    done
+    echo -e " ${GREEN}✅${NC}"
+
+    # Verify rekt CLI is available
+    if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar --version >/dev/null 2>&1; then
+        echo -e "  ${GREEN}✅ Cobol-REKT CLI available${NC}"
+    else
+        echo -e "  ${YELLOW}⚠️  Cobol-REKT CLI not responding (container may still be building)${NC}"
+    fi
+}
+
+run_rekt_parse() {
+    echo -e "${CYAN}╔══════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║   Cobol-REKT: Parse COBOL → AST/CFG/Data JSON              ║${NC}"
+    echo -e "${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
+
+    detect_docker_api_version
+    ensure_rekt_containers || return 1
+
+    local cobol_count
+    cobol_count=$(find "$REPO_ROOT/source" -name "*.cbl" -o -name "*.CBL" 2>/dev/null | wc -l | tr -d ' ')
+    local copy_count
+    copy_count=$(find "$REPO_ROOT/source" -name "*.cpy" -o -name "*.CPY" 2>/dev/null | wc -l | tr -d ' ')
+
+    echo -e "${BLUE}  Found: ${cobol_count} programs, ${copy_count} copybooks${NC}"
+
+    if [[ "$cobol_count" -eq 0 ]]; then
+        echo -e "${RED}❌ No .cbl files found in source/. Drop COBOL files there first.${NC}"
+        return 1
+    fi
+
+    # Preprocess files that need IMS/DLI or dialect compatibility transformations
+    echo -e "${BLUE}  Running preprocessor for IMS/DLI and dialect compatibility...${NC}"
+    if [[ -x "$REPO_ROOT/tools/preprocess-for-rekt.sh" ]]; then
+        "$REPO_ROOT/tools/preprocess-for-rekt.sh" "$REPO_ROOT/source" 2>/dev/null
+        # Copy preprocessed files back into source (overwrite originals with compatible versions)
+        if [[ -d "$REPO_ROOT/source/.preprocessed" ]]; then
+            local preproc_count=0
+            if ls "$REPO_ROOT/source/.preprocessed"/*.cbl >/dev/null 2>&1; then
+                cp "$REPO_ROOT/source/.preprocessed"/*.cbl "$REPO_ROOT/source/" 2>/dev/null
+                preproc_count=$(ls "$REPO_ROOT/source/.preprocessed"/*.cbl 2>/dev/null | wc -l | tr -d ' ')
+            fi
+            if ls "$REPO_ROOT/source/.preprocessed"/*.cpy >/dev/null 2>&1; then
+                cp "$REPO_ROOT/source/.preprocessed"/*.cpy "$REPO_ROOT/source/" 2>/dev/null
+                local cpy_count
+                cpy_count=$(ls "$REPO_ROOT/source/.preprocessed"/*.cpy 2>/dev/null | wc -l | tr -d ' ')
+                preproc_count=$((preproc_count + cpy_count))
+            fi
+            if [[ "$preproc_count" -gt 0 ]]; then
+                echo -e "  ${GREEN}✅ Preprocessed ${preproc_count} file(s) for rekt compatibility${NC}"
+            fi
+        fi
+    fi
+
+    # Parse each file via rekt container
+    # Try with standard dialect first; on failure, retry with alternative options
+    # for IMS/DL/I programs that use EXEC DLI or non-standard column formats
+    local succeeded=0
+    local failed=0
+    local failed_files=""
+    mkdir -p "$REPO_ROOT/output/rekt"
+
+    for cbl_file in "$REPO_ROOT/source"/*.cbl "$REPO_ROOT/source"/*.CBL; do
+        [[ -e "$cbl_file" ]] || continue
+        local fname
+        fname=$(basename "$cbl_file")
+
+        echo -ne "  Parsing $fname..."
+
+        # Attempt 1: Standard dialect (handles CICS, SQL, standard COBOL)
+        if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
+            --commands="BUILD_BASE_ANALYSIS WRITE_FLOW_AST WRITE_CFG WRITE_DATA_STRUCTURES" \
+            --srcDir=/source --copyBooksDir=/source \
+            --dialectJarPath=/app/dialect-idms.jar \
+            --reportDir=/output \
+            --generation=PROGRAM >/dev/null 2>&1; then
+            echo -e " ${GREEN}✅${NC}"
+            succeeded=$((succeeded + 1))
+        else
+            # Attempt 2: Retry without dialect JAR (for IMS/DL/I and other dialects)
+            if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
+                --commands="BUILD_BASE_ANALYSIS WRITE_FLOW_AST WRITE_CFG WRITE_DATA_STRUCTURES" \
+                --srcDir=/source --copyBooksDir=/source \
+                --reportDir=/output \
+                --generation=PROGRAM >/dev/null 2>&1; then
+                echo -e " ${GREEN}✅${NC} (no-dialect mode)"
+                succeeded=$((succeeded + 1))
+            else
+                # Attempt 3: Raw AST only (tolerates more parse errors)
+                if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
+                    --commands="WRITE_RAW_AST" \
+                    --srcDir=/source --copyBooksDir=/source \
+                    --reportDir=/output \
+                    --generation=PROGRAM >/dev/null 2>&1; then
+                    echo -e " ${YELLOW}⚠️${NC} (raw AST only — complex copybooks)"
+                    succeeded=$((succeeded + 1))
+                else
+                    # Attempt 4: validate + dependency (bypasses AST-writer NPE bugs)
+                    # Even if validate reports minor issues, dependency extraction
+                    # can still succeed and produce useful output
+                    local dep_ok=false
+                    if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar dependency "$fname" \
+                        --srcDir=/source --copyBooksDir=/source \
+                        --dialectJarPath=/app/dialect-idms.jar \
+                        --export=/output/"${fname%.cbl}"-deps.json >/dev/null 2>&1; then
+                        dep_ok=true
+                    fi
+                    # Also try validate (may report warnings but still useful)
+                    docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar validate "$fname" \
+                        --srcDir=/source --copyBooksDir=/source \
+                        --dialectJarPath=/app/dialect-idms.jar >/dev/null 2>&1 || true
+
+                    if [[ "$dep_ok" == true ]]; then
+                        echo -e " ${YELLOW}⚠️${NC} (deps only — AST writer bug)"
+                        succeeded=$((succeeded + 1))
+                    else
+                        echo -e " ${RED}❌${NC}"
+                        failed=$((failed + 1))
+                        failed_files="${failed_files} ${fname}"
+                    fi
+                fi
+            fi
+        fi
+    done
+
+    echo -e "\n${GREEN}  Parsed: $succeeded succeeded, $failed failed${NC}"
+    if [[ -n "$failed_files" ]]; then
+        echo -e "${YELLOW}  Failed files:${failed_files}${NC}"
+        echo -e "${YELLOW}  These may use IMS/DL/I EXEC DLI, non-standard column formats,${NC}"
+        echo -e "${YELLOW}  or reference missing copybooks. Check with: grep 'EXEC DLI' source/<file>${NC}"
+    fi
+    echo -e "${BLUE}  Output: output/rekt/${NC}"
+}
+
+run_rekt_ingest() {
+    echo -e "${CYAN}╔══════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║   Graph Populator: Ingest into Neo4j                        ║${NC}"
+    echo -e "${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
+
+    detect_docker_api_version
+    ensure_rekt_containers || return 1
+
+    local db_path
+    db_path="$(get_migration_db_path)"
+    local sqlite_flag=""
+    if [[ -f "$db_path" ]]; then
+        echo -e "${BLUE}  SQLite DB found: $db_path — will migrate existing data${NC}"
+        sqlite_flag="--sqlite-db /data/$(basename "$db_path")"
+    fi
+
+    # Use timestamp-based run ID so each scan is trackable
+    local run_id
+    run_id=$(date +%s)
+    run_id=$((run_id % 100000)) # Keep it reasonable
+    echo -e "${BLUE}  Scan Run ID: ${GREEN}${run_id}${NC}"
+
+    echo -e "${BLUE}  Ingesting into $REKT_NEO4J_CONTAINER (bolt://localhost:$REKT_NEO4J_BOLT_PORT)${NC}"
+
+    # Use local Python venv for populator (container may not exist)
+    local populator_dir="$REPO_ROOT/tools/graph-populator"
+    if [[ -f "$populator_dir/populator.py" ]] && [[ -d "$populator_dir/.venv" ]]; then
+        (cd "$populator_dir" && source .venv/bin/activate && python populator.py ingest \
+            --source-dir "$REPO_ROOT/source" \
+            --rekt-output "$REPO_ROOT/output/rekt" \
+            --run-id "$run_id" \
+            $sqlite_flag)
+    else
+        echo -e "${RED}❌ Graph populator not found at $populator_dir${NC}"
+        echo -e "${YELLOW}   Run: cd tools/graph-populator && python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt${NC}"
+        return 1
+    fi
+
+    echo -e "\n${GREEN}  Neo4j Browser: http://localhost:$REKT_NEO4J_HTTP_PORT${NC}"
+    echo -e "${GREEN}  Scan Run ID: ${run_id} — select this run in the portal to view results${NC}"
+}
+
+run_rekt_full() {
+    echo -e "${CYAN}╔══════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║   Cobol-REKT Full Pipeline: Parse → Ingest → Portal         ║${NC}"
+    echo -e "${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
+
+    run_rekt_parse || return 1
+    run_rekt_ingest || return 1
+
+    echo -e "\n${GREEN}✅ rekt pipeline complete.${NC}"
+    echo -e "${BLUE}  Neo4j Browser: http://localhost:$REKT_NEO4J_HTTP_PORT${NC}"
+
+    # Offer to launch portal
+    echo ""
+    read -rp "Launch web portal? (Y/n): " launch_portal
+    if [[ "${launch_portal:-Y}" =~ ^[Yy]$ ]]; then
+        run_portal
+    fi
+}
+
+run_rekt_status() {
+    echo -e "${CYAN}╔══════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║   Cobol-REKT Status                                         ║${NC}"
+    echo -e "${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
+
+    # Check containers
+    local containers=("$REKT_NEO4J_CONTAINER" "$REKT_CONTAINER" "$REKT_POPULATOR_CONTAINER")
+    for c in "${containers[@]}"; do
+        local state
+        state=$(docker inspect --format='{{.State.Status}}' "$c" 2>/dev/null || echo "not found")
+        if [[ "$state" == "running" ]]; then
+            echo -e "  ${GREEN}✅ $c: running${NC}"
+        else
+            echo -e "  ${RED}❌ $c: $state${NC}"
+        fi
+    done
+
+    # Check existing MMA Neo4j
+    local mma_state
+    mma_state=$(docker inspect --format='{{.State.Status}}' "cobol-migration-neo4j" 2>/dev/null || echo "not found")
+    echo -e "  ${BLUE}ℹ️  cobol-migration-neo4j (existing): $mma_state${NC}"
+
+    # Neo4j node count
+    if docker exec "$REKT_NEO4J_CONTAINER" cypher-shell -u neo4j -p cobol-rekt-2026 \
+        'MATCH (n) RETURN count(n) AS nodes' 2>/dev/null | grep -q "[0-9]"; then
+        local node_count
+        node_count=$(docker exec "$REKT_NEO4J_CONTAINER" cypher-shell -u neo4j -p cobol-rekt-2026 \
+            'MATCH (n) RETURN count(n) AS nodes' 2>/dev/null | tail -1 | tr -d ' "')
+        local rel_count
+        rel_count=$(docker exec "$REKT_NEO4J_CONTAINER" cypher-shell -u neo4j -p cobol-rekt-2026 \
+            'MATCH ()-[r]->() RETURN count(r) AS rels' 2>/dev/null | tail -1 | tr -d ' "')
+        echo -e "\n  ${BLUE}Graph: ${node_count} nodes, ${rel_count} relationships${NC}"
+    fi
+
+    # rekt output files
+    local json_count
+    json_count=$(find "$REPO_ROOT/output/rekt" -name "*.json" 2>/dev/null | wc -l | tr -d ' ')
+    echo -e "  ${BLUE}Rekt JSON exports: ${json_count} files in output/rekt/${NC}"
+
+    echo -e "\n  ${BLUE}Ports:${NC}"
+    echo -e "    Existing Neo4j: http://localhost:7474 (bolt://localhost:7687)"
+    echo -e "    Rekt Neo4j:     http://localhost:$REKT_NEO4J_HTTP_PORT (bolt://localhost:$REKT_NEO4J_BOLT_PORT)"
+}
+
 # Main command routing
 main() {
     # Create required directories if they don't exist
@@ -2327,6 +2600,18 @@ main() {
             ;;
         "validate")
             run_validate
+            ;;
+        "rekt"|"rekt-parse")
+            run_rekt_parse
+            ;;
+        "rekt-ingest")
+            run_rekt_ingest
+            ;;
+        "rekt-full")
+            run_rekt_full
+            ;;
+        "rekt-status")
+            run_rekt_status
             ;;
         "help"|"-h"|"--help")
             show_usage

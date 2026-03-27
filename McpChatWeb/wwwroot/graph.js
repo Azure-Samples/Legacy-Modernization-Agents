@@ -680,6 +680,17 @@ class DependencyGraph {
       }
     });
 
+    // Double-click to drill into AST/CFG Explorer
+    this.network.on('doubleClick', (params) => {
+      if (params.nodes.length > 0) {
+        const nodeId = params.nodes[0];
+        const node = nodes.get(nodeId);
+        if (node && typeof astExplorer !== 'undefined' && astExplorer) {
+          astExplorer.drillIntoProgram(node.label || nodeId);
+        }
+      }
+    });
+
     // Fit to view
     setTimeout(() => {
       this.network.fit();
@@ -743,6 +754,11 @@ class DependencyGraph {
       }
     }
     
+    // Drill-through to AST/CFG Explorer
+    html += `<tr><td colspan="2" style="padding-top: 10px; text-align: center;">
+      <button class="btn-small drill-btn" onclick="astExplorer?.drillIntoProgram('${(node.label || '').replace(/'/g, "\\'")}')">🔍 Drill into Structure</button>
+    </td></tr>`;
+
     html += '</table>';
     
     detailsContent.innerHTML = html;

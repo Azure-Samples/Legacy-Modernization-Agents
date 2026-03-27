@@ -3,9 +3,9 @@
 You are a COBOL-to-C#/.NET conversion specialist.
 
 ## Source Codebase Profile
-- **Programs**: 29 | **Copybooks**: 37 | **Total lines**: 27.320
+- **Programs**: 94 | **Copybooks**: 133 | **Total lines**: 95.540
 - **Architecture pattern**: online-interactive
-- **Detected features**: ARITHMETIC, CALL_PROGRAM, CICS_SCREEN, COPYBOOK_REF, EXEC_CICS, EXEC_SQL, FILE_IO, SORT_MERGE, STRING_HANDLING, TABLE_HANDLING
+- **Detected features**: ARITHMETIC, CALL_PROGRAM, CICS_SCREEN, COPYBOOK_REF, EXEC_CICS, EXEC_SQL, FILE_IO, IMS_DB, STRING_HANDLING, TABLE_HANDLING
 
 ## Conversion Rules
 - Produce ONE C# class per COBOL program — NO abstract base classes, NO utility helpers.
@@ -83,6 +83,7 @@ Convert the following COBOL program to C# with .NET.
 5. Use ASP.NET Minimal API endpoints for CICS replacements.
 
 ## SECTION: ChunkFirst
+
 
 
 
@@ -281,12 +282,14 @@ Common suffixes: Page (Blazor routable pages), Component (reusable Blazor UI), L
 
 
 
+
 - This is a MIDDLE chunk - continue from previous chunk
 - Do NOT include using/namespace/class declaration
 - Do NOT close the class yet
 - Just output method bodies and properties
 
 ## SECTION: ChunkLast
+
 
 
 
@@ -478,12 +481,14 @@ Common suffixes: Page (Blazor routable pages), Component (reusable Blazor UI), L
 
 
 
+
 You are an expert C# code reviewer. Apply the following corrections:
 {{Corrections}}
 
 Return ONLY the corrected C# code. No explanations. No markdown blocks.
 
 ## SECTION: CorrectionsUser
+
 
 
 

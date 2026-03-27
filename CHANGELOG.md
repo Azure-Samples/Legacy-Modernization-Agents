@@ -5,6 +5,19 @@ All notable changes to this repository are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.0] - 2026-03-27
+
+### Added
+- **Cobol-REKT Integration** — New `docker-compose.yml` services for static COBOL analysis:
+  - `cobol-rekt` — Java CLI sidecar (smojol-cli, pinned to v0.1.0-RC6) that parses COBOL source into AST, CFG, and Data flow JSON exports
+  - `cobol-rekt-neo4j` — Dedicated Neo4j 5.15 instance (bolt://localhost:7688, HTTP: localhost:7475) with APOC + Graph Data Science plugins for the unified analysis graph
+  - `graph-populator` — Python ingester that loads REKT JSON + MMA metadata into the REKT Neo4j instance
+- **REKT output directory** — `output/rekt/<program>.cbl.report/` contains per-program `ast/`, `cfg/`, and `data/` JSON exports
+
+### Changed
+- **README.md** — Updated Quick Start with full service installation table, `docker-compose` commands for all services, local development instructions for the graph populator, folder structure showing `tools/` and `output/rekt/`, and architecture diagram now includes REKT pipeline and second Neo4j instance
+- **`.gitignore`** — Added Python virtual environment patterns (`.venv/`, `__pycache__/`, `*.pyc`)
+
 ## [3.2.0] - 2026-03-17
 
 ### Added

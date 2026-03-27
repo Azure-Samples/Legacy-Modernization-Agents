@@ -6,6 +6,9 @@
   <title>COBOL Migration MCP Chat</title>
   <link rel="stylesheet" href="styles.css">
   <script type="text/javascript" src="https://unpkg.com/vis-network@9.1.2/standalone/umd/vis-network.min.js"></script>
+  <script src="graphology.umd.min.js"></script>
+  <script src="sigma.min.js"></script>
+  <script src="forceatlas2.bundle.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@11.1.0/marked.min.js"></script>
   <script type="module">
     import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
@@ -321,6 +324,24 @@
         <h2>Dependency Graph <span class="run-id-badge" id="graph-run-badge" style="display: none;">| Run <span id="current-run-id">...</span></span></h2>
         <button id="expand-graph-btn" class="btn-small" title="Expand View" style="background: 334155; color: white; border: 1px solid #475569;">⛶ Expand</button>
       </div>
+
+      <!-- Dashboard Tabs — drill-down: Architecture → Dependencies → Control Flow → AST -->
+      <div class="dashboard-tabs" id="dashboard-tabs">
+        <button class="dashboard-tab" data-tab="services" onclick="switchDashboard('services')">🏗️ Architecture</button>
+        <button class="dashboard-tab active" data-tab="dependency" onclick="switchDashboard('dependency')">🔗 Dependencies</button>
+        <button class="dashboard-tab" data-tab="controlflow" onclick="switchDashboard('controlflow')">⚡ Control Flow</button>
+        <button class="dashboard-tab" data-tab="mermaid" onclick="switchDashboard('mermaid')">📐 Diagrams</button>
+        <button class="dashboard-tab" data-tab="ast" onclick="switchDashboard('ast')">🔬 AST Explorer</button>
+        <button class="dashboard-tab" data-tab="portfolio" onclick="switchDashboard('portfolio')">Portfolio</button>
+        <button class="dashboard-tab" data-tab="complexity" onclick="switchDashboard('complexity')">Readiness</button>
+        <span style="margin-left:auto; display:flex; align-items:center; gap:6px;">
+          <label style="color:#94a3b8; font-size:11px;">Scan:</label>
+          <select id="rekt-scan-select" style="padding:4px 8px; background:#1e293b; color:#e2e8f0; border:1px solid #475569; border-radius:4px; font-size:12px;" onchange="window._onScanRunChange && window._onScanRunChange(this.value)">
+            <option value="latest">Latest scan</option>
+            <option value="all">All scans</option>
+          </select>
+        </span>
+      </div>
       
       <div class="graph-toolbar">
         <!-- Controls Section -->
@@ -500,6 +521,135 @@
       </div>
 
       <div id="dependency-graph"></div>
+
+      <!-- Architecture & Services — unified Sigma.js view (hidden by default) -->
+      <div id="services-container" class="dashboard-panel" style="display: none;">
+        <div id="services-controls" style="padding: 8px; display: flex; gap: 8px; align-items: center; background: rgba(15,23,42,0.8); border-bottom: 1px solid #334155;">
+          <span style="color: #60a5fa; font-weight: 600;">🏗️ Architecture</span>
+          <div class="arch-view-toggle" style="display:flex;gap:2px;background:#0f172a;border-radius:6px;padding:2px;border:1px solid #334155;">
+            <button class="arch-mode-btn active" data-mode="layers" onclick="servicesView?.setViewMode('layers')">Layers</button>
+            <button class="arch-mode-btn" data-mode="components" onclick="servicesView?.setViewMode('components')">Components</button>
+            <button class="arch-mode-btn" data-mode="techmap" onclick="servicesView?.setViewMode('techmap')">Tech Map</button>
+            <button class="arch-mode-btn" data-mode="dependencies" onclick="servicesView?.setViewMode('dependencies')">Dependencies</button>
+            <button class="arch-mode-btn" data-mode="modules" onclick="servicesView?.setViewMode('modules')">Modules</button>
+            <button class="arch-mode-btn" data-mode="deadcode" onclick="servicesView?.setViewMode('deadcode')">Reachability</button>
+          </div>
+          <input type="text" id="services-search" placeholder="Search programs..." oninput="servicesView?.searchNode(this.value)" style="flex: 1; padding: 6px 10px; background: #1e293b; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; font-size: 13px;">
+          <span id="services-stats" style="color: #94a3b8; font-size: 12px; margin-left: auto;">Loading...</span>
+          <button onclick="servicesView?.zoomToFit()" class="btn-small">Fit</button>
+          <button onclick="servicesView?.refresh()" class="btn-small">Refresh</button>
+        </div>
+        <div style="display: flex; height: calc(100% - 42px);">
+          <div id="services-content" style="flex: 1; min-width: 0; position: relative; height: 100%;"></div>
+          <div id="services-legend" style="width: 220px; background: #0f172a; border-left: 1px solid #334155; padding: 12px; overflow-y: auto; font-size: 12px; color: #cbd5e1;">
+            <div id="services-legend-content">
+              <h4 style="margin: 0 0 10px; color: #60a5fa;">Legend</h4>
+              <div style="color:#64748b;font-size:11px;">Select a view mode</div>
+            </div>
+            <div id="services-detail" style="margin-top: 16px; border-top: 1px solid #334155; padding-top: 10px;"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Mermaid Diagrams — system and per-file flowcharts (hidden by default) -->
+      <div id="mermaid-container" class="dashboard-panel" style="display: none;">
+        <div id="mermaid-controls" style="padding: 8px; display: flex; gap: 8px; align-items: center; background: rgba(15,23,42,0.8); border-bottom: 1px solid #334155;">
+          <select id="mermaid-file-select" style="flex: 1; padding: 6px; background: #1e293b; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; font-size: 13px;">
+            <option value="">System Overview (all programs)</option>
+          </select>
+          <button id="mermaid-dir-btn" onclick="mermaidView?.toggleDirection()" class="btn-small">↔ Horizontal</button>
+          <button onclick="mermaidView?.refresh()" class="btn-small">Refresh</button>
+          <button id="mermaid-copy-btn" onclick="mermaidView?.copySource()" class="btn-small">Copy Mermaid</button>
+          <span id="mermaid-stats" style="color: #94a3b8; font-size: 12px;"></span>
+        </div>
+        <div id="mermaid-content" style="width: 100%; height: calc(100% - 42px); overflow: auto; padding: 16px; background: #0c1222;"></div>
+      </div>
+
+      <!-- AST Explorer — deep single-file view (hidden by default) -->
+      <div id="ast-explorer-container" class="dashboard-panel" style="display: none;">
+        <div id="ast-controls" style="padding: 8px; display: flex; gap: 8px; align-items: center; background: rgba(15,23,42,0.8); border-bottom: 1px solid #334155;">
+          <select id="ast-file-select" style="flex: 1; padding: 6px; background: #1e293b; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; font-size: 13px;">
+            <option value="">Select file to explore...</option>
+          </select>
+          <select id="ast-view-mode" style="padding: 6px; background: #1e293b; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; font-size: 13px;">
+            <option value="structure">Structure</option>
+            <option value="ast">Raw AST</option>
+          </select>
+          <button onclick="astExplorer?.refresh()" class="btn-small">Refresh</button>
+        </div>
+        <div id="ast-stats-bar" style="padding: 4px 12px; background: rgba(15,23,42,0.6); border-bottom: 1px solid #1e293b; font-size: 12px; color: #94a3b8; display: flex; gap: 12px; align-items: center;"></div>
+        <div style="display: flex; height: calc(100% - 78px);">
+          <div id="ast-graph" style="flex: 3; min-width: 0; overflow-y: auto; border-right: 1px solid #334155;"></div>
+          <div id="ast-source-panel" style="flex: 4; min-width: 0; overflow: hidden; background: #0c1222; border-right: 1px solid #334155;">
+            <div class="source-placeholder">Select a section or paragraph to view source</div>
+          </div>
+          <div id="ast-node-inspector" style="flex: 2; min-width: 180px; max-width: 300px; background: #0f172a; padding: 12px; overflow-y: auto; font-size: 13px; color: #cbd5e1;">
+            <h4 style="margin: 0 0 8px; color: #60a5fa;">Inspector</h4>
+            <div id="ast-inspector-content">Select a paragraph to inspect statements</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Control Flow — expandable program-level view (hidden by default) -->
+      <div id="controlflow-container" class="dashboard-panel" style="display: none;">
+        <div id="cf-controls" style="padding: 8px; display: flex; gap: 8px; align-items: center; background: rgba(15,23,42,0.8); border-bottom: 1px solid #334155;">
+          <select id="cf-file-select" style="flex: 1; padding: 6px; background: #1e293b; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; font-size: 13px;">
+            <option value="">Select program for control flow...</option>
+          </select>
+          <button onclick="controlFlowView?.refresh()" class="btn-small">Refresh</button>
+          <span id="cf-stats" style="color: #94a3b8; font-size: 12px;"></span>
+        </div>
+        <div style="display: flex; height: calc(100% - 42px);">
+          <div id="cf-graph" style="flex: 3; min-width: 0; overflow: hidden;"></div>
+          <div id="cf-detail-panel" style="width: 280px; min-width: 220px; background: #0f172a; border-left: 1px solid #334155; overflow-y: auto; padding: 12px; font-size: 13px; color: #cbd5e1;">
+            <h4 style="margin: 0 0 10px; color: #60a5fa;">Legend</h4>
+            <div class="cf-legend">
+              <div class="cf-legend-section">Nodes</div>
+              <div class="legend-item"><span class="legend-dot" style="background:#8b5cf6;"></span> SECTION (major block)</div>
+              <div class="legend-item"><span class="legend-dot" style="background:#10b981;"></span> PARAGRAPH (subroutine)</div>
+              <div class="legend-item"><span class="legend-dot" style="background:#3b82f6;"></span> ENTRY POINT</div>
+              <div class="legend-item"><span class="legend-dot" style="background:#64748b;"></span> Other statements</div>
+              <div class="cf-legend-section" style="margin-top:8px;">Edges</div>
+              <div class="legend-item"><span style="display:inline-block;width:24px;height:2px;background:#3b82f6;margin-right:8px;"></span> FOLLOWED_BY (sequential)</div>
+              <div class="legend-item"><span style="display:inline-block;width:24px;height:2px;background:#ef4444;border-top:2px dashed #ef4444;margin-right:8px;"></span> JUMPS_TO (branch/GO TO)</div>
+            </div>
+            <h4 style="margin: 16px 0 8px; color: #60a5fa;">Flow Detail</h4>
+            <div id="cf-detail-content" style="font-size:12px;">Click a node to see block details, connections, and source code location</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Portfolio Overview (hidden by default) -->
+      <div id="portfolio-container" class="dashboard-panel" style="display: none;">
+        <div style="padding: 16px; overflow-y: auto; height: 100%;">
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px;">
+            <div class="stat-card" id="portfolio-programs"><div class="stat-value">-</div><div class="stat-label">Programs</div></div>
+            <div class="stat-card" id="portfolio-copybooks"><div class="stat-value">-</div><div class="stat-label">Copybooks</div></div>
+            <div class="stat-card" id="portfolio-loc"><div class="stat-value">-</div><div class="stat-label">Total LOC</div></div>
+            <div class="stat-card" id="portfolio-dependencies"><div class="stat-value">-</div><div class="stat-label">Dependencies</div></div>
+            <div class="stat-card" id="portfolio-ast-nodes"><div class="stat-value">-</div><div class="stat-label">AST Nodes</div></div>
+            <div class="stat-card" id="portfolio-circular"><div class="stat-value">-</div><div class="stat-label">Circular Deps</div></div>
+          </div>
+          <h4 style="color: #60a5fa; margin: 8px 0;">Critical Files (by connection count)</h4>
+          <div id="portfolio-critical-files" style="font-size: 13px; color: #cbd5e1;"></div>
+        </div>
+      </div>
+
+      <!-- Complexity / Readiness (hidden by default) -->
+      <div id="complexity-container" class="dashboard-panel" style="display: none;">
+        <div style="padding: 16px; overflow-y: auto; height: 100%;">
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px;">
+            <div class="stat-card" id="readiness-reducible"><div class="stat-value">-</div><div class="stat-label">Reducible Files</div></div>
+            <div class="stat-card" id="readiness-gotos"><div class="stat-value">-</div><div class="stat-label">Files with GO TO</div></div>
+            <div class="stat-card" id="readiness-sql"><div class="stat-value">-</div><div class="stat-label">Files with SQL</div></div>
+            <div class="stat-card" id="readiness-cics"><div class="stat-value">-</div><div class="stat-label">Files with CICS</div></div>
+          </div>
+          <h4 style="color: #60a5fa; margin: 8px 0;">Complexity Distribution</h4>
+          <div id="complexity-chart" style="height: 200px; display: flex; align-items: flex-end; gap: 4px; padding: 0 8px;"></div>
+          <h4 style="color: #60a5fa; margin: 16px 0 8px;">Migration Readiness by File</h4>
+          <div id="readiness-table" style="font-size: 13px; color: #cbd5e1;"></div>
+        </div>
+      </div>
       <div id="graph-info" class="graph-info"></div>
       <div id="node-details" class="node-details" hidden>
         <h3>Node Details</h3>
@@ -1224,6 +1374,11 @@ curl http://localhost:5028/api/data-retrieval-guide</code></pre>
 
   <script src="run-selector.js"></script>
   <script src="graph.js"></script>
+  <script src="ast-explorer.js"></script>
+  <script src="services-view.js"></script>
+  <script src="controlflow-view.js"></script>
+  <script src="mermaid-view.js"></script>
+  <script src="dashboard-tabs.js"></script>
   <script src="main.js"></script>
   <script src="runs-viewer.js"></script>
   <script src="activity-dashboard.js"></script>

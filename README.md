@@ -19,6 +19,7 @@ The migration uses Microsoft Agent Framework with a multi-provider architecture 
 > | `./doctor.sh run` | **Run a full migration** — analyze COBOL, convert to Java/C#, generate reports, and launch the portal |
 > | `./doctor.sh reverse-eng` | **Extract business logic only** — runs RE analysis, persists results to DB, launches the portal |
 > | `./doctor.sh convert-only` | **Convert only** — skips RE; prompts whether to inject persisted RE results from a previous run |
+> | `./doctor.sh rekt-full` | **Static analysis pipeline** — parse COBOL into AST/CFG/Data, ingest into Neo4j, launch portal |
 > | `./doctor.sh portal` | **Open the portal only** — browse previous migration results, dependency graphs, and chat with your codebase at http://localhost:5028 |
 >
 > Both commands handle all configuration, dependency checks, and service startup automatically.
@@ -166,20 +167,58 @@ This project uses **Microsoft Agent Framework** (`Microsoft.Agents.AI.*`), **not
 git clone https://github.com/Azure-Samples/Legacy-Modernization-Agents.git
 cd Legacy-Modernization-Agents
 
-# 2. Configure Azure OpenAI
+# 2. Configure AI provider
 cp Config/ai-config.local.env.example Config/ai-config.local.env
 # Edit: _MAIN_ENDPOINT (required), _CODE_MODEL / _CHAT_MODEL (optional)
 # Auth: use 'az login' (recommended) OR set _MAIN_API_KEY
 # See azlogin-auth-guide.md for Entra ID setup details
 
-# 3. Start Neo4j (dependency graph storage)
+# 3. Start services (Neo4j for dependency graphs)
 docker-compose up -d neo4j
 
 # 4. Build
 dotnet build
 
-# 5. Run migration but we recommend using the next section with doctor.sh run or portal for just loading the portal
+# 5. Run migration (recommended entry point)
 ./doctor.sh run
+```
+
+### Service Installation
+
+All backend services are defined in `docker-compose.yml` and managed via Docker Compose. Start them individually or all at once:
+
+```bash
+# Core services (migration + portal)
+docker-compose up -d neo4j            # Dependency graph DB (bolt://localhost:7687, HTTP: localhost:7474)
+docker-compose up -d portal           # Web portal at http://localhost:5028
+
+# Cobol-REKT services (static analysis — AST, CFG, data flow)
+docker-compose up -d cobol-rekt-neo4j # Separate Neo4j for REKT graphs (bolt://localhost:7688, HTTP: localhost:7475)
+docker-compose up -d cobol-rekt       # Java CLI — parses COBOL into AST/CFG/Data JSON
+docker-compose up -d graph-populator  # Python — ingests REKT JSON + MMA metadata into Neo4j
+
+# Start everything
+docker-compose up -d
+```
+
+| Service | Container | Ports | Purpose |
+|---------|-----------|-------|---------|
+| `neo4j` | `cobol-migration-neo4j` | 7474 (HTTP), 7687 (Bolt) | Dependency graph storage for migration |
+| `portal` | `cobol-migration-portal` | 5028 | Web UI — chat, graphs, reports, prompt studio |
+| `cobol-rekt-neo4j` | `cobol-rekt-neo4j` | 7475 (HTTP), 7688 (Bolt) | Unified graph for AST/CFG/Data flow |
+| `cobol-rekt` | `cobol-rekt` | — | Java CLI sidecar for COBOL parsing |
+| `graph-populator` | `cobol-graph-populator` | — | Python ingester for REKT JSON into Neo4j |
+
+#### Local Development (Graph Populator)
+
+To run the graph populator outside Docker:
+
+```bash
+cd tools/graph-populator
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python orchestrate.py --help
 ```
 
 ---
@@ -265,6 +304,50 @@ The speed profile works by setting environment variables that override the three
 ./doctor.sh setup         # Interactive setup wizard
 ./doctor.sh chunking-health  # Check smart chunking configuration
 ```
+
+### Cobol-REKT: Static Analysis Pipeline
+
+Cobol-REKT provides deep structural analysis — AST, control flow graphs (CFG), and data flow extraction — independent of the AI-driven migration. It uses a Java-based COBOL parser ([smojol-cli](https://github.com/avishek-sen-gupta/cobol-rekt)) and ingests results into a dedicated Neo4j instance.
+
+#### REKT Commands
+
+```bash
+./doctor.sh rekt          # Parse all COBOL files → AST/CFG/Data JSON in output/rekt/
+./doctor.sh rekt-ingest   # Ingest parsed JSON into the REKT Neo4j graph
+./doctor.sh rekt-full     # Full pipeline: parse → ingest → launch portal
+./doctor.sh rekt-status   # Show container status, graph node counts, output file counts
+```
+
+#### Typical Workflow
+
+```bash
+# 1. Drop COBOL files into source/
+cp *.cbl source/
+
+# 2. Run the full REKT pipeline (parse + ingest + portal)
+./doctor.sh rekt-full
+```
+
+This will:
+1. Start the `cobol-rekt` and `cobol-rekt-neo4j` containers automatically
+2. Preprocess source files for IMS/DLI compatibility if needed
+3. Parse each `.cbl` file with up to 4 fallback strategies (standard → no-dialect → raw AST → dependency-only)
+4. Ingest the resulting JSON into Neo4j at `bolt://localhost:7688`
+5. Offer to launch the web portal
+
+#### REKT Output
+
+Parsed results land in `output/rekt/<program>.cbl.report/`:
+
+```
+output/rekt/
+└── CUSTOMER.cbl.report/
+    ├── ast/        # Abstract Syntax Tree (full parse tree)
+    ├── cfg/        # Control Flow Graph (paragraph-level flow)
+    └── data/       # Data structures (WORKING-STORAGE, LINKAGE)
+```
+
+Browse the graph at http://localhost:7475 (Neo4j Browser for the REKT instance).
 
 ---
 
@@ -364,13 +447,23 @@ Legacy-Modernization-Agents/
 ├── output/                    # ⬅️ GENERATED CODE APPEARS HERE
 │   ├── java/                  # Java Quarkus output
 │   │   └── com/example/generated/
-│   └── csharp/                # C# .NET output
-│       └── Generated/
+│   ├── csharp/                # C# .NET output
+│   │   └── Generated/
+│   └── rekt/                  # Cobol-REKT static analysis output
+│       └── <program>.cbl.report/
+│           ├── ast/           # Abstract Syntax Tree JSON
+│           ├── cfg/           # Control Flow Graph JSON
+│           └── data/          # Data flow JSON
 │
 ├── Agents/                    # AI agent implementations
-├── Config/                    # Configuration files
+├── Config/                    # Configuration files (gitignored secrets)
 ├── Data/                      # SQLite database (migration.db)
-└── Logs/                      # Execution logs
+├── Logs/                      # Execution logs (gitignored)
+├── Mcp/                       # MCP server implementation
+├── McpChatWeb/                # Web portal (Razor Pages + REST API)
+└── tools/                     # External tooling
+    ├── cobol-rekt/            # Java CLI for COBOL parsing (Dockerized)
+    └── graph-populator/       # Python Neo4j ingester (Dockerized)
 ```
 
 **Workflow:**
@@ -526,18 +619,26 @@ flowchart TB
         CONVERTER["Java/C# Converter"]
         MAPPER["DependencyMapper"]
     end
+
+    subgraph REKT["🔬 Cobol-REKT Static Analysis"]
+        REKT_CLI["cobol-rekt<br/>(Java CLI — AST/CFG/Data)"]
+        REKT_POP["graph-populator<br/>(Python — Neo4j ingester)"]
+    end
     
     subgraph STORAGE["💾 Hybrid Storage"]
         SQLITE[("SQLite<br/>Data/migration.db<br/><br/>• Run metadata<br/>• File content<br/>• Raw AI analysis<br/>• Generated code")]
         NEO4J[("Neo4j<br/>bolt://localhost:7687<br/><br/>• Dependencies<br/>• Relationship Graph<br/>• Impact Analysis")]
+        REKT_NEO4J[("Neo4j (REKT)<br/>bolt://localhost:7688<br/><br/>• AST nodes<br/>• CFG edges<br/>• Data flow")]
     end
     
     subgraph OUTPUT["📦 Output"]
         CODE["Java/C# Code<br/>output/java or output/csharp"]
+        REKT_JSON["REKT JSON<br/>output/rekt/"]
         PORTAL["Web Portal<br/>localhost:5028<br/><br/>• Model Setup &amp; Discovery<br/>• Mission Control<br/>• Prompt Studio<br/>• Chat &amp; Graph"]
     end
     
     COBOL --> REGEX
+    COBOL --> REKT_CLI
     REGEX --> AGENTS
     PROVIDERS --> AGENTS
     
@@ -551,21 +652,27 @@ flowchart TB
     CONVERTER --> SQLITE
     CONVERTER --> CODE
     MAPPER --> NEO4J
+
+    REKT_CLI --> REKT_JSON
+    REKT_JSON --> REKT_POP
+    REKT_POP --> REKT_NEO4J
     
     SQLITE --> PORTAL
     NEO4J --> PORTAL
+    REKT_NEO4J --> PORTAL
 ```
 
 #### Why Two Databases?
 
-| Aspect | SQLite | Neo4j |
-|--------|--------|-------|
-| **Purpose** | Document storage | Relationship mapping |
-| **Strength** | Fast queries, simple setup | Graph traversal, visualization |
-| **Use Case** | "What's in this file?" | "What depends on this file?" |
-| **Query Style** | SQL SELECT | Cypher graph queries |
+| Aspect | SQLite | Neo4j (Migration) | Neo4j (REKT) |
+|--------|--------|--------------------|--------------|
+| **Purpose** | Document storage | Relationship mapping | Static analysis graphs |
+| **Strength** | Fast queries, simple setup | Graph traversal, visualization | AST/CFG/Data flow traversal |
+| **Use Case** | "What's in this file?" | "What depends on this file?" | "What does the control flow look like?" |
+| **Query Style** | SQL SELECT | Cypher graph queries | Cypher graph queries |
+| **Port** | — | bolt://localhost:7687 | bolt://localhost:7688 |
 
-**Together:** Fast metadata access + Powerful dependency insights 🚀
+**Together:** Fast metadata access + Dependency insights + Deep structural analysis
 
 #### Why Dependency Graphs Matter
 

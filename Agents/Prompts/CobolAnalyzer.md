@@ -1,6 +1,6 @@
 ## SECTION: System
 
-Analyze the following COBOL codebase: 29 program(s), 37 copybook(s), 27.320 total lines.
+Analyze the following COBOL codebase: 94 program(s), 133 copybook(s), 95.540 total lines.
 
 ## Detected Features to Investigate
 - **Embedded SQL**: Map all database tables, queries, cursors. Document SQLCODE error handling paths.
@@ -9,7 +9,6 @@ Analyze the following COBOL codebase: 29 program(s), 37 copybook(s), 27.320 tota
 - **File I/O**: Identify all file definitions (FD/SELECT), access modes, record structures.
 - **Program CALLs**: Trace CALL chains and shared LINKAGE SECTION parameters.
 - **Copybook Dependencies**: Map which copybooks are used by which programs. Flag shared data structures.
-- **SORT/MERGE operations**: Document sort keys, input/output procedures.
 - **Calculations**: Identify precision-sensitive arithmetic, rounding rules, size error handling.
 
 ## Required Output Structure

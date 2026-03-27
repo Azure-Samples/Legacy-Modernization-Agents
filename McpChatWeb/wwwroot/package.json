@@ -1,0 +1,20 @@
+{
+  "name": "wwwroot",
+  "version": "1.0.0",
+  "main": "main.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "graphology": "^0.26.0",
+    "graphology-layout-forceatlas2": "^0.10.1",
+    "sigma": "^2.4.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.27.4"
+  }
+}

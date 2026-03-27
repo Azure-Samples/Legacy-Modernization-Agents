@@ -1,10 +1,10 @@
 ## SECTION: System
 
 Map dependencies across the COBOL codebase:
-- **29** programs: BNK1CRA.cbl, INQCUST.cbl, UPDACC.cbl, BNK1TFN.cbl, BNK1DAC.cbl, ABNDPROC.cbl, BNK1CAC.cbl, DELCUS.cbl, XFRFUN.cbl, INQACC.cbl, CREACC.cbl, DBCRFUN.cbl, DELACC.cbl, UPDCUST.cbl, BNK1CCA.cbl
-  ... and 14 more
-- **37** copybooks: PROCISRT.cpy, ACCDB2.cpy, PROCTRAN.cpy, SORTCODE.cpy, INQCUST.cpy, RESPSTR.cpy, UPDACC.cpy, INQACCCZ.cpy, PAYDBCR.cpy, ACCTCTRL.cpy, NEWACCNO.cpy, INQCUSTZ.cpy, INQACC.cpy, XFRFUN.cpy, CUSTCTRL.cpy
-  ... and 22 more
+- **94** programs: COBTUPDT.cbl, COCRDLIC.cbl, COCRDUPC.cbl, COACCT01.cbl, COACTUPC.cbl, COUSR00C.cbl, CBACT04C.cbl, COUSR01C.cbl, COPAUS2C.cbl, COSGN00C.cbl, COACTVWC.cbl, COTRN00C.cbl, COMEN01C.cbl, CBACT02C.cbl, COBSWAIT.cbl
+  ... and 79 more
+- **133** copybooks: COCRDSL.CPY, COMEN01.CPY, CVCUS01Y.cpy, CVTRA07Y.cpy, CVCRD01Y.cpy, CVTRA06Y.cpy, COTTL01Y.cpy, COADM01.CPY, CVACT01Y.cpy, CCPAURLY.cpy, COACTVW.CPY, COTRN01.CPY, COPAU01.cpy, COSGN00.CPY, COPAU00.cpy
+  ... and 118 more
 
 ## Dependency Types to Map
 1. **COPY dependencies** — which programs include which copybooks (COPY statements).
@@ -127,11 +127,13 @@ Generate a Mermaid diagram AND a structured dependency table.
 
 
 
+
 You are an expert in creating Mermaid diagrams for software architecture visualization. 
 Create a clear, well-organized Mermaid flowchart for COBOL program dependencies.
 Return only the Mermaid diagram code, no additional text.
 
 ## SECTION: MermaidUser
+
 
 
 
@@ -329,6 +331,7 @@ Total: {{TotalPrograms}} programs, {{TotalCopybooks}} copybooks
 
 
 
+
 You are an expert COBOL dependency analyzer. Analyze the provided COBOL code structure and identify:
 1. Data flow dependencies between copybooks
 2. Potential circular dependencies
@@ -336,6 +339,7 @@ You are an expert COBOL dependency analyzer. Analyze the provided COBOL code str
 Provide a brief analysis.
 
 ## SECTION: AnalysisUser
+
 
 
 

@@ -1191,6 +1191,1274 @@ try
 	return await BuildGraphFromSqliteAsync(runId, includeInferred.GetValueOrDefault(false));
 });
 
+// ── Rekt Integration API Endpoints ──────────────────────────────────
+// These endpoints query the rekt Neo4j instance (bolt://localhost:7688)
+// for AST/CFG/Data structure graph data and portfolio aggregation.
+
+app.MapGet("/api/graph/stats", async (CancellationToken cancellationToken) =>
+{
+	// Try rekt Neo4j first, fall back to SQLite aggregation
+	try
+	{
+		var rektUri = Environment.GetEnvironmentVariable("REKT_NEO4J_URI") ?? "bolt://localhost:7688";
+		var rektUser = Environment.GetEnvironmentVariable("REKT_NEO4J_USER") ?? "neo4j";
+		var rektPassword = Environment.GetEnvironmentVariable("REKT_NEO4J_PASSWORD") ?? "cobol-rekt-2026";
+
+		using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
+		await using var session = driver.AsyncSession();
+
+		var result = await session.RunAsync(@"
+			MATCH (f:CobolFile)
+			WITH count(f) AS totalFiles,
+			     sum(CASE WHEN f.isCopybook = false OR f.isCopybook IS NULL THEN 1 ELSE 0 END) AS programs,
+			     sum(CASE WHEN f.isCopybook = true THEN 1 ELSE 0 END) AS copybooks,
+			     sum(COALESCE(f.lineCount, 0)) AS totalLoc
+			OPTIONAL MATCH ()-[d:DEPENDS_ON]->()
+			WITH totalFiles, programs, copybooks, totalLoc, count(d) AS deps
+			OPTIONAL MATCH (a:ASTNode)
+			WITH totalFiles, programs, copybooks, totalLoc, deps, count(a) AS astNodes
+			RETURN programs, copybooks, totalLoc, deps, astNodes");
+		var record = await result.SingleAsync();
+
+		// Critical files by degree
+		var critResult = await session.RunAsync(@"
+			MATCH (f:CobolFile)
+			WITH f, size([(f)-[]-() | 1]) AS degree
+			ORDER BY degree DESC LIMIT 20
+			RETURN f.fileName AS name, degree AS connections, f.lineCount AS lineCount");
+		var critFiles = new List<object>();
+		await critResult.ForEachAsync(r => critFiles.Add(new
+		{
+			name = r["name"].As<string>(),
+			connections = r["connections"].As<int>(),
+			lineCount = r["lineCount"].As<int?>() ?? 0
+		}));
+
+		return Results.Ok(new
+		{
+			programs = record["programs"].As<int>(),
+			copybooks = record["copybooks"].As<int>(),
+			totalLoc = record["totalLoc"].As<long>(),
+			dependencies = record["deps"].As<int>(),
+			astNodes = record["astNodes"].As<int>(),
+			circularDependencies = 0,
+			criticalFiles = critFiles,
+			source = "rekt-neo4j"
+		});
+	}
+	catch (Exception ex)
+	{
+		Console.WriteLine($"⚠️ Rekt Neo4j stats unavailable ({ex.Message}), falling back to SQLite");
+
+		// SQLite fallback
+		try
+		{
+			var dbPath = GetMigrationDbPath();
+			if (!File.Exists(dbPath)) return Results.Ok(new { error = "No data" });
+
+			await using var conn = new SqliteConnection($"Data Source={dbPath};Cache=Shared");
+			await conn.OpenAsync(cancellationToken);
+
+			var latestRun = await new SqliteCommand("SELECT id FROM runs ORDER BY id DESC LIMIT 1", conn).ExecuteScalarAsync(cancellationToken);
+			var rid = latestRun == null ? 0 : Convert.ToInt32(latestRun);
+
+			var programs = Convert.ToInt32(await new SqliteCommand($"SELECT COUNT(*) FROM cobol_files WHERE run_id={rid} AND is_copybook=0", conn).ExecuteScalarAsync(cancellationToken));
+			var copybooks = Convert.ToInt32(await new SqliteCommand($"SELECT COUNT(*) FROM cobol_files WHERE run_id={rid} AND is_copybook=1", conn).ExecuteScalarAsync(cancellationToken));
+			var deps = Convert.ToInt32(await new SqliteCommand($"SELECT COUNT(*) FROM dependencies WHERE run_id={rid}", conn).ExecuteScalarAsync(cancellationToken));
+
+			return Results.Ok(new
+			{
+				programs,
+				copybooks,
+				totalLoc = 0,
+				dependencies = deps,
+				astNodes = 0,
+				circularDependencies = 0,
+				criticalFiles = Array.Empty<object>(),
+				source = "sqlite"
+			});
+		}
+		catch { return Results.Ok(new { error = "No data available" }); }
+	}
+});
+
+app.MapGet("/api/graph/complexity", async (CancellationToken cancellationToken) =>
+{
+	try
+	{
+		var rektUri = Environment.GetEnvironmentVariable("REKT_NEO4J_URI") ?? "bolt://localhost:7688";
+		var rektUser = Environment.GetEnvironmentVariable("REKT_NEO4J_USER") ?? "neo4j";
+		var rektPassword = Environment.GetEnvironmentVariable("REKT_NEO4J_PASSWORD") ?? "cobol-rekt-2026";
+
+		using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
+		await using var session = driver.AsyncSession();
+
+		// Get per-file complexity based on dependency count and line count
+		var result = await session.RunAsync(@"
+			MATCH (f:CobolFile)
+			WHERE f.isCopybook IS NULL OR f.isCopybook = false
+			WITH f, size([(f)-[]-() | 1]) AS degree, COALESCE(f.lineCount, 0) AS loc
+			RETURN f.fileName AS name,
+			       loc,
+			       degree,
+			       CASE WHEN loc > 3000 OR degree > 10 THEN 'complex'
+			            WHEN loc > 1000 OR degree > 5 THEN 'medium'
+			            ELSE 'simple' END AS complexity
+			ORDER BY loc DESC");
+
+		var files = new List<object>();
+		var distribution = new Dictionary<string, int> { ["simple"] = 0, ["medium"] = 0, ["complex"] = 0 };
+
+		await result.ForEachAsync(r =>
+		{
+			var complexity = r["complexity"].As<string>();
+			distribution[complexity]++;
+			files.Add(new
+			{
+				name = r["name"].As<string>(),
+				lineCount = r["loc"].As<int>(),
+				connections = r["degree"].As<int>(),
+				complexity,
+				isReducible = true,
+				hasGoTo = false,
+				hasSql = false
+			});
+		});
+
+		return Results.Ok(new
+		{
+			distribution,
+			files,
+			reducibleFiles = files.Count,
+			filesWithGoTo = 0,
+			filesWithSql = 0,
+			filesWithCics = 0,
+			source = "rekt-neo4j"
+		});
+	}
+	catch (Exception ex)
+	{
+		Console.WriteLine($"⚠️ Complexity endpoint: {ex.Message}");
+		return Results.Ok(new { error = ex.Message });
+	}
+});
+
+// ── Rekt Scan Runs — list available scan runs for the run selector ────
+app.MapGet("/api/graph/rekt/runs", async (CancellationToken cancellationToken) =>
+{
+	try
+	{
+		var rektUri = Environment.GetEnvironmentVariable("REKT_NEO4J_URI") ?? "bolt://localhost:7688";
+		var rektUser = Environment.GetEnvironmentVariable("REKT_NEO4J_USER") ?? "neo4j";
+		var rektPassword = Environment.GetEnvironmentVariable("REKT_NEO4J_PASSWORD") ?? "cobol-rekt-2026";
+
+		using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
+		await using var session = driver.AsyncSession();
+
+		var result = await session.RunAsync(@"
+			MATCH (f:CobolFile)
+			WITH f.runId AS runId, count(DISTINCT f.fileName) AS fileCount,
+			     max(COALESCE(f.lineCount, 0)) AS maxLines
+			RETURN runId, fileCount, maxLines
+			ORDER BY runId DESC");
+
+		var runs = new List<object>();
+		await result.ForEachAsync(r => runs.Add(new
+		{
+			runId = r["runId"].As<int>(),
+			fileCount = r["fileCount"].As<int>(),
+			maxLines = r["maxLines"].As<int>()
+		}));
+
+		return Results.Ok(runs);
+	}
+	catch (Exception ex)
+	{
+		Console.WriteLine($"⚠️ Rekt runs endpoint: {ex.Message}");
+		return Results.Ok(Array.Empty<object>());
+	}
+});
+
+app.MapGet("/api/graph/rekt/files", async (CancellationToken cancellationToken) =>
+{
+	try
+	{
+		var rektUri = Environment.GetEnvironmentVariable("REKT_NEO4J_URI") ?? "bolt://localhost:7688";
+		var rektUser = Environment.GetEnvironmentVariable("REKT_NEO4J_USER") ?? "neo4j";
+		var rektPassword = Environment.GetEnvironmentVariable("REKT_NEO4J_PASSWORD") ?? "cobol-rekt-2026";
+
+		using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
+		await using var session = driver.AsyncSession();
+
+		// Return files with AST data + flag which ones have CFG edges
+		var result = await session.RunAsync(@"
+			MATCH (a:ASTNode)
+			WITH DISTINCT a.program AS program
+			OPTIONAL MATCH (cfg:ASTNode {program: program})-[:FOLLOWED_BY|JUMPS_TO]->()
+			WITH program, count(cfg) > 0 AS hasCfg
+			RETURN program AS name, hasCfg
+			ORDER BY program");
+
+		var files = new List<object>();
+		await result.ForEachAsync(r => files.Add(new
+		{
+			name = r["name"].As<string>(),
+			hasAst = true,
+			hasCfg = r["hasCfg"].As<bool>()
+		}));
+
+		return Results.Ok(files);
+	}
+	catch (Exception ex)
+	{
+		Console.WriteLine($"⚠️ Rekt files endpoint: {ex.Message}");
+		return Results.Ok(Array.Empty<object>());
+	}
+});
+
+// ── Mermaid Diagram Generation — system-level and per-file diagrams ───
+app.MapGet("/api/graph/rekt/mermaid", async (string? file, CancellationToken cancellationToken) =>
+{
+	try
+	{
+		var rektUri = Environment.GetEnvironmentVariable("REKT_NEO4J_URI") ?? "bolt://localhost:7688";
+		var rektUser = Environment.GetEnvironmentVariable("REKT_NEO4J_USER") ?? "neo4j";
+		var rektPassword = Environment.GetEnvironmentVariable("REKT_NEO4J_PASSWORD") ?? "cobol-rekt-2026";
+
+		using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
+		await using var session = driver.AsyncSession();
+
+		var mermaid = new System.Text.StringBuilder();
+
+		if (string.IsNullOrWhiteSpace(file))
+		{
+			// System-level diagram: programs → dependencies
+			mermaid.AppendLine("graph LR");
+			mermaid.AppendLine("  classDef prog fill:#1e40af,stroke:#3b82f6,color:#e2e8f0,rx:8,ry:8");
+			mermaid.AppendLine("  classDef cpy fill:#7c2d12,stroke:#f97316,color:#e2e8f0,rx:4,ry:4");
+			mermaid.AppendLine("  classDef db fill:#581c87,stroke:#a855f7,color:#e2e8f0");
+
+			var seenNodes = new HashSet<string>();
+			var depResult = await session.RunAsync(@"
+				MATCH (a:CobolFile)-[d:DEPENDS_ON]->(b:CobolFile)
+				WHERE a.runId IS NOT NULL
+				WITH a.fileName AS src, b.fileName AS tgt, d.type AS depType,
+				     max(a.runId) AS latestRun
+				RETURN DISTINCT src, tgt, depType
+				ORDER BY src, depType");
+
+			await depResult.ForEachAsync(r =>
+			{
+				var src = r["src"].As<string>();
+				var tgt = r["tgt"].As<string>();
+				var depType = r["depType"].As<string?>() ?? "DEPENDS_ON";
+
+				var srcId = src.Replace(".", "_").Replace("-", "_");
+				var tgtId = tgt.Replace(".", "_").Replace("-", "_");
+				var srcLabel = src.Replace(".cbl", "").Replace(".cpy", "");
+				var tgtLabel = tgt.Replace(".cbl", "").Replace(".cpy", "");
+
+				if (seenNodes.Add(src))
+				{
+					var cls = src.EndsWith(".cpy") || src.EndsWith(".CPY") ? "cpy" : "prog";
+					mermaid.AppendLine($"  {srcId}[{srcLabel}]:::{cls}");
+				}
+				if (seenNodes.Add(tgt))
+				{
+					var cls = tgt.EndsWith(".cpy") || tgt.EndsWith(".CPY") ? "cpy" : "prog";
+					mermaid.AppendLine($"  {tgtId}[{tgtLabel}]:::{cls}");
+				}
+
+				var arrow = depType == "CALL" ? "-->|CALL|" : "-.->|COPY|";
+				mermaid.AppendLine($"  {srcId} {arrow} {tgtId}");
+			});
+
+			return Results.Ok(new { type = "system", mermaid = mermaid.ToString() });
+		}
+		else
+		{
+			// Per-file flowchart: section → paragraph control flow
+			var candidates = new[] { file, $"flow-ast-{file}", file.Replace("flow-ast-", "") };
+			string? matchedProgram = null;
+
+			foreach (var candidate in candidates)
+			{
+				var checkResult = await session.RunAsync(
+					"MATCH (a:ASTNode {program: $file}) RETURN count(a) AS cnt",
+					new { file = candidate });
+				var rec = await checkResult.SingleAsync();
+				if (rec["cnt"].As<int>() > 0) { matchedProgram = candidate; break; }
+			}
+
+			if (matchedProgram == null)
+				return Results.NotFound(new { error = $"No data for {file}" });
+
+			var progName = matchedProgram.Replace("flow-ast-", "").Replace(".cbl", "");
+			mermaid.AppendLine("flowchart TD");
+			mermaid.AppendLine("  classDef section fill:#7c3aed,stroke:#a78bfa,color:#e2e8f0,rx:8,ry:8");
+			mermaid.AppendLine("  classDef para fill:#059669,stroke:#34d399,color:#e2e8f0,rx:4,ry:4");
+			mermaid.AppendLine("  classDef flow fill:#1e40af,stroke:#60a5fa,color:#e2e8f0");
+
+			// Get sections and paragraphs
+			var structResult = await session.RunAsync(@"
+				MATCH (root:ASTNode {program: $file})-[:CONTAINS*1..2]->(sec:ASTNode)
+				WHERE sec.nodeType IN ['SECTION', 'PARAGRAPH']
+				RETURN sec.id AS id, sec.nodeType AS nodeType, sec.name AS name
+				ORDER BY sec.nodeType, sec.name",
+				new { file = matchedProgram });
+
+			var nodeIds = new Dictionary<string, string>();
+
+			await structResult.ForEachAsync(r =>
+			{
+				var id = r["id"].As<string>();
+				var nodeType = r["nodeType"].As<string>();
+				var name = (r["name"].As<string?>() ?? "UNNAMED").Replace("/", "_").Replace("\"", "");
+
+				var mId = name.Replace("-", "_").Replace(" ", "_");
+				if (mId.Length > 30) mId = mId[..30];
+				if (nodeIds.ContainsKey(mId)) mId += "_" + nodeIds.Count;
+				nodeIds[id] = mId;
+
+				var cls = nodeType == "SECTION" ? "section" : "para";
+				mermaid.AppendLine($"  {mId}[{name}]:::{cls}");
+			});
+
+			// Get FOLLOWED_BY edges between these nodes
+			var flowResult = await session.RunAsync(@"
+				MATCH (a:ASTNode {program: $file})-[r:FOLLOWED_BY]->(b:ASTNode {program: $file})
+				WHERE a.nodeType IN ['SECTION','PARAGRAPH'] AND b.nodeType IN ['SECTION','PARAGRAPH']
+				RETURN a.id AS fromId, b.id AS toId, type(r) AS relType",
+				new { file = matchedProgram });
+
+			await flowResult.ForEachAsync(r =>
+			{
+				var fromId = r["fromId"].As<string>();
+				var toId = r["toId"].As<string>();
+				if (nodeIds.TryGetValue(fromId, out var fromMId) && nodeIds.TryGetValue(toId, out var toMId))
+				{
+					mermaid.AppendLine($"  {fromMId} --> {toMId}");
+				}
+			});
+
+			// Get JUMPS_TO edges
+			var jumpResult = await session.RunAsync(@"
+				MATCH (a:ASTNode {program: $file})-[r:JUMPS_TO]->(b:ASTNode {program: $file})
+				WHERE a.nodeType IN ['SECTION','PARAGRAPH'] AND b.nodeType IN ['SECTION','PARAGRAPH']
+				RETURN a.id AS fromId, b.id AS toId",
+				new { file = matchedProgram });
+
+			await jumpResult.ForEachAsync(r =>
+			{
+				var fromId = r["fromId"].As<string>();
+				var toId = r["toId"].As<string>();
+				if (nodeIds.TryGetValue(fromId, out var fromMId) && nodeIds.TryGetValue(toId, out var toMId))
+				{
+					mermaid.AppendLine($"  {fromMId} -.->|JUMP| {toMId}");
+				}
+			});
+
+			return Results.Ok(new { type = "file", file = matchedProgram, program = progName, mermaid = mermaid.ToString() });
+		}
+	}
+	catch (Exception ex)
+	{
+		Console.WriteLine($"⚠️ Mermaid endpoint: {ex.Message}");
+		return Results.Problem(ex.Message);
+	}
+});
+
+// ── Architect Overview — programs clustered by capabilities ───────────
+app.MapGet("/api/graph/rekt/architect", async (int? scanRunId, CancellationToken cancellationToken) =>
+{
+	try
+	{
+		var rektUri = Environment.GetEnvironmentVariable("REKT_NEO4J_URI") ?? "bolt://localhost:7688";
+		var rektUser = Environment.GetEnvironmentVariable("REKT_NEO4J_USER") ?? "neo4j";
+		var rektPassword = Environment.GetEnvironmentVariable("REKT_NEO4J_PASSWORD") ?? "cobol-rekt-2026";
+
+		using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
+		await using var session = driver.AsyncSession();
+
+		// Step 1: Get AST program names (fast — indexed by program)
+		var astPrograms = new HashSet<string>();
+		var astResult = await session.RunAsync("MATCH (n:ASTNode) RETURN DISTINCT n.program AS prog");
+		await astResult.ForEachAsync(r => { var p = r["prog"].As<string?>(); if (p != null) astPrograms.Add(p); });
+
+		// Step 2: Get all files (deduplicated by latest runId)
+		var programs = new List<object>();
+		var seenFiles = new HashSet<string>();
+		var runFilter = scanRunId.HasValue ? "AND f.runId = $scanRunId" : "";
+		var progResult = await session.RunAsync($@"
+			MATCH (f:CobolFile)
+			WHERE f.runId IS NOT NULL {runFilter}
+			WITH f.fileName AS fileName, max(f.runId) AS latestRun, collect(f) AS files
+			WITH fileName, latestRun, [x IN files WHERE x.runId = latestRun][0] AS f
+			RETURN DISTINCT fileName, f.isCopybook AS isCopybook, f.lineCount AS lineCount",
+			scanRunId.HasValue ? new { scanRunId = scanRunId.Value } : null);
+
+		await progResult.ForEachAsync(r =>
+		{
+			var fileName = r["fileName"].As<string>();
+			if (!seenFiles.Add(fileName)) return;
+			var hasAst = astPrograms.Contains($"flow-ast-{fileName}");
+			programs.Add(new
+			{
+				fileName,
+				isCopybook = r["isCopybook"].As<bool?>() ?? false,
+				lineCount = r["lineCount"].As<int?>() ?? 0,
+				hasAst,
+				sqlCount = 0, performCount = 0, callCount = 0, moveCount = 0,
+				displayCount = 0, branchCount = 0, sectionCount = 0, paraCount = 0, totalNodes = 0
+			});
+		});
+
+		// Get dependency edges
+		var deps = new List<object>();
+		var depResult = await session.RunAsync(@"
+			MATCH (a:CobolFile)-[d:DEPENDS_ON]->(b:CobolFile)
+			RETURN DISTINCT a.fileName AS source, b.fileName AS target, d.type AS type");
+		await depResult.ForEachAsync(r => deps.Add(new
+		{
+			source = r["source"].As<string>(),
+			target = r["target"].As<string>(),
+			type = r["type"].As<string?>() ?? "DEPENDS_ON"
+		}));
+
+		return Results.Ok(new { programs, dependencies = deps });
+	}
+	catch (Exception ex)
+	{
+		Console.WriteLine($"⚠️ Architect endpoint: {ex.Message}");
+		return Results.Problem(ex.Message);
+	}
+});
+
+// ── Services Map — deduplicated program graph for WebGL rendering ─────
+app.MapGet("/api/graph/rekt/services", async (int? scanRunId, CancellationToken cancellationToken) =>
+{
+	try
+	{
+		var rektUri = Environment.GetEnvironmentVariable("REKT_NEO4J_URI") ?? "bolt://localhost:7688";
+		var rektUser = Environment.GetEnvironmentVariable("REKT_NEO4J_USER") ?? "neo4j";
+		var rektPassword = Environment.GetEnvironmentVariable("REKT_NEO4J_PASSWORD") ?? "cobol-rekt-2026";
+
+		using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
+		await using var session = driver.AsyncSession();
+
+		// Deduplicated programs — pick latest runId per file
+		var serviceNodes = new List<object>();
+		var seenFiles = new HashSet<string>();
+		// Filter by scanRunId if provided
+		var runFilter = scanRunId.HasValue ? "AND f.runId = $scanRunId" : "";
+		var queryParams = scanRunId.HasValue
+			? (object)new { scanRunId = scanRunId.Value }
+			: new { scanRunId = 0 };
+
+		var progResult = await session.RunAsync($@"
+			MATCH (f:CobolFile)
+			WHERE f.runId IS NOT NULL {runFilter}
+			WITH f.fileName AS fileName, max(f.runId) AS latestRun, collect(f) AS files
+			WITH fileName, latestRun, [x IN files WHERE x.runId = latestRun][0] AS f
+			OPTIONAL MATCH (f)-[:HAS_AST]->(root:ASTNode)
+			OPTIONAL MATCH (root)-[:CONTAINS*1..3]->(n:ASTNode)
+			WITH f, fileName, root IS NOT NULL AS hasAst,
+				count(DISTINCT CASE WHEN n.nodeType IN ['DIALECT','DIALECT_CONTAINER'] THEN n END) AS sqlCount,
+				count(DISTINCT CASE WHEN n.nodeType = 'CALL' THEN n END) AS callCount,
+				count(DISTINCT CASE WHEN n.nodeType = 'PERFORM' THEN n END) AS performCount,
+				count(DISTINCT CASE WHEN n.nodeType = 'DISPLAY' THEN n END) AS displayCount
+			RETURN DISTINCT fileName, f.isCopybook AS isCopybook,
+				f.lineCount AS lineCount, hasAst, sqlCount, callCount, performCount, displayCount",
+			scanRunId.HasValue ? new { scanRunId = scanRunId.Value } : null);
+
+		await progResult.ForEachAsync(r =>
+		{
+			var fn = r["fileName"].As<string>();
+			if (!seenFiles.Add(fn)) return;
+			serviceNodes.Add(new
+			{
+				id = fn,
+				type = r["isCopybook"].As<bool?>() == true ? "copybook" : "program",
+				lineCount = r["lineCount"].As<int?>() ?? 0,
+				hasAst = r["hasAst"].As<bool>(),
+				sqlCount = r["sqlCount"].As<int>(),
+				callCount = r["callCount"].As<int>(),
+				performCount = r["performCount"].As<int>(),
+				displayCount = r["displayCount"].As<int>()
+			});
+		});
+
+		// Deduplicated edges
+		var serviceEdges = new List<object>();
+		var seenEdges = new HashSet<string>();
+		var depResult = await session.RunAsync(@"
+			MATCH (a:CobolFile)-[d:DEPENDS_ON]->(b:CobolFile)
+			RETURN DISTINCT a.fileName AS source, b.fileName AS target, d.type AS type");
+
+		await depResult.ForEachAsync(r =>
+		{
+			var key = $"{r["source"].As<string>()}->{r["target"].As<string>()}:{r["type"].As<string?>()}";
+			if (!seenEdges.Add(key)) return;
+			serviceEdges.Add(new
+			{
+				source = r["source"].As<string>(),
+				target = r["target"].As<string>(),
+				type = r["type"].As<string?>() ?? "DEPENDS_ON"
+			});
+		});
+
+		return Results.Ok(new { nodes = serviceNodes, edges = serviceEdges });
+	}
+	catch (Exception ex)
+	{
+		Console.WriteLine($"⚠️ Services endpoint: {ex.Message}");
+		return Results.Problem(ex.Message);
+	}
+});
+
+// ── Program Structure (collapsed AST for dev drill-down) ──────────────
+app.MapGet("/api/graph/rekt/structure", async (string file, CancellationToken cancellationToken) =>
+{
+	try
+	{
+		var rektUri = Environment.GetEnvironmentVariable("REKT_NEO4J_URI") ?? "bolt://localhost:7688";
+		var rektUser = Environment.GetEnvironmentVariable("REKT_NEO4J_USER") ?? "neo4j";
+		var rektPassword = Environment.GetEnvironmentVariable("REKT_NEO4J_PASSWORD") ?? "cobol-rekt-2026";
+
+		using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
+		await using var session = driver.AsyncSession();
+
+		// Resolve file name (exact, flow-ast- prefix, stripped)
+		var candidates = new[] { file, $"flow-ast-{file}", file.Replace("flow-ast-", "") };
+		string? matchedProgram = null;
+		var sections = new List<object>();
+
+		foreach (var candidate in candidates)
+		{
+			// Get sections with paragraph children and aggregated statement stats
+			var result = await session.RunAsync(@"
+				MATCH (root:ASTNode {program: $file})-[:CONTAINS*1..2]->(sec:ASTNode)
+				WHERE sec.nodeType IN ['SECTION', 'PARAGRAPHS']
+				OPTIONAL MATCH (sec)-[:CONTAINS*1..2]->(para:ASTNode)
+				WHERE para.nodeType IN ['PARAGRAPH', 'PARAGRAPH_NAME']
+				OPTIONAL MATCH (para)-[:CONTAINS*]->(stmt:ASTNode)
+				WITH sec, para,
+				     count(stmt) AS stmtCount,
+				     count(CASE WHEN stmt.nodeType IN ['DIALECT', 'DIALECT_CONTAINER'] THEN 1 END) AS sqlCount,
+				     count(CASE WHEN stmt.nodeType = 'PERFORM' THEN 1 END) AS performCount,
+				     count(CASE WHEN stmt.nodeType = 'MOVE' THEN 1 END) AS moveCount,
+				     count(CASE WHEN stmt.nodeType IN ['IF_BRANCH', 'EVALUATE'] THEN 1 END) AS branchCount,
+				     count(CASE WHEN stmt.nodeType IN ['CALL', 'CallStatement'] THEN 1 END) AS callCount
+				RETURN sec.id AS sectionId, sec.name AS sectionName, sec.nodeType AS sectionType,
+				       sec.startLine AS secStart, sec.endLine AS secEnd,
+				       para.id AS paraId, para.name AS paraName, para.nodeType AS paraType,
+				       para.startLine AS paraStart, para.endLine AS paraEnd,
+				       stmtCount, sqlCount, performCount, moveCount, branchCount, callCount
+				ORDER BY sec.name, para.name",
+				new { file = candidate });
+
+			await result.ForEachAsync(r => sections.Add(new
+			{
+				sectionId = r["sectionId"].As<string?>() ?? "",
+				sectionName = r["sectionName"].As<string?>() ?? "UNNAMED",
+				sectionType = r["sectionType"].As<string?>() ?? "",
+				secStart = r["secStart"].As<int?>() ?? -1,
+				secEnd = r["secEnd"].As<int?>() ?? -1,
+				paraId = r["paraId"].As<string?>() ?? "",
+				paraName = r["paraName"].As<string?>() ?? "",
+				paraType = r["paraType"].As<string?>() ?? "",
+				paraStart = r["paraStart"].As<int?>() ?? -1,
+				paraEnd = r["paraEnd"].As<int?>() ?? -1,
+				stmtCount = r["stmtCount"].As<int?>() ?? 0,
+				sqlCount = r["sqlCount"].As<int?>() ?? 0,
+				performCount = r["performCount"].As<int?>() ?? 0,
+				moveCount = r["moveCount"].As<int?>() ?? 0,
+				branchCount = r["branchCount"].As<int?>() ?? 0,
+				callCount = r["callCount"].As<int?>() ?? 0
+			}));
+
+			if (sections.Count > 0) { matchedProgram = candidate; break; }
+		}
+
+		if (matchedProgram == null)
+			return Results.NotFound(new { error = $"No structure data for {file}" });
+
+		// Get PERFORM edges between paragraphs (control flow)
+		var performEdges = new List<object>();
+		var cfgResult = await session.RunAsync(@"
+			MATCH (a:ASTNode {program: $file})-[:CONTAINS*]->(p:ASTNode {nodeType: 'PERFORM'})
+			WHERE p.name IS NOT NULL AND p.name <> ''
+			OPTIONAL MATCH (caller:ASTNode {program: $file})
+			WHERE caller.nodeType = 'PARAGRAPH' AND
+			      (a)-[:CONTAINS*]->(caller)-[:CONTAINS*]->(p)
+			RETURN DISTINCT caller.name AS caller, p.name AS target, p.label AS label
+			ORDER BY caller.name",
+			new { file = matchedProgram });
+
+		await cfgResult.ForEachAsync(r => performEdges.Add(new
+		{
+			from = r["caller"].As<string?>() ?? "MAIN",
+			to = r["target"].As<string?>() ?? "",
+			label = r["label"].As<string?>() ?? "PERFORM"
+		}));
+
+		return Results.Ok(new { program = matchedProgram, sections, performEdges });
+	}
+	catch (Exception ex)
+	{
+		Console.WriteLine($"⚠️ Structure endpoint: {ex.Message}");
+		return Results.Problem(ex.Message);
+	}
+});
+
+// ── Source Content (serves COBOL source with optional line range) ─────
+app.MapGet("/api/source/content", async (string file, int? startLine, int? endLine) =>
+{
+	try
+	{
+		var sourceDir = Path.Combine(Directory.GetCurrentDirectory(), "source");
+		if (!Directory.Exists(sourceDir))
+		{
+			var parent = Directory.GetParent(Directory.GetCurrentDirectory())?.FullName ?? "";
+			if (Directory.Exists(Path.Combine(parent, "source")))
+				sourceDir = Path.Combine(parent, "source");
+		}
+
+		// Try exact name, then strip flow-ast- prefix
+		var baseName = file.Replace("flow-ast-", "");
+		var candidates = new[] { file, baseName, Path.GetFileNameWithoutExtension(baseName) + ".cbl",
+		                         Path.GetFileNameWithoutExtension(baseName) + ".cpy" };
+
+		string? foundPath = null;
+		foreach (var c in candidates)
+		{
+			var p = Path.Combine(sourceDir, c);
+			if (System.IO.File.Exists(p)) { foundPath = p; break; }
+		}
+
+		if (foundPath != null)
+		{
+			// Security: ensure path is within sourceDir
+			var fullPath = Path.GetFullPath(foundPath);
+			if (!fullPath.StartsWith(Path.GetFullPath(sourceDir)))
+				return Results.BadRequest(new { error = "Invalid file path" });
+
+			var allLines = System.IO.File.ReadAllLines(fullPath);
+			var start = Math.Max(0, (startLine ?? 1) - 1);
+			var end = Math.Min(allLines.Length, endLine ?? allLines.Length);
+			var lines = allLines.Skip(start).Take(end - start).ToArray();
+
+			return Results.Ok(new
+			{
+				file = Path.GetFileName(foundPath),
+				totalLines = allLines.Length,
+				startLine = start + 1,
+				endLine = end,
+				content = string.Join("\n", lines),
+				lines = lines.Select((l, i) => new { lineNumber = start + i + 1, text = l }),
+				source = "file"
+			});
+		}
+
+		// Fallback: load from Neo4j SourceBlock nodes (persisted during ingest)
+		try
+		{
+			var rektUri = Environment.GetEnvironmentVariable("REKT_NEO4J_URI") ?? "bolt://localhost:7688";
+			var rektUser = Environment.GetEnvironmentVariable("REKT_NEO4J_USER") ?? "neo4j";
+			var rektPassword = Environment.GetEnvironmentVariable("REKT_NEO4J_PASSWORD") ?? "cobol-rekt-2026";
+
+			using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
+			await using var session = driver.AsyncSession();
+
+			// Try multiple name patterns
+			var nameCandidates = new[] { baseName, file, baseName.Replace(".cbl", "").Replace(".cpy", "") };
+			var allContent = new System.Text.StringBuilder();
+			int totalLineCount = 0;
+
+			foreach (var nameCandidate in nameCandidates)
+			{
+				var blockResult = await session.RunAsync(@"
+					MATCH (sb:SourceBlock)
+					WHERE sb.program = $name OR sb.program CONTAINS $name
+					RETURN sb.content AS content, sb.startLine AS startLine, sb.endLine AS endLine
+					ORDER BY sb.blockIndex",
+					new { name = nameCandidate });
+
+				await blockResult.ForEachAsync(r =>
+				{
+					var content = r["content"].As<string?>() ?? "";
+					allContent.AppendLine(content);
+					var eLine = r["endLine"].As<int>();
+					if (eLine > totalLineCount) totalLineCount = eLine;
+				});
+
+				if (allContent.Length > 0) break;
+			}
+
+			if (allContent.Length > 0)
+			{
+				var allLines = allContent.ToString().Split('\n');
+				totalLineCount = Math.Max(totalLineCount, allLines.Length);
+				var start = Math.Max(0, (startLine ?? 1) - 1);
+				var end = Math.Min(allLines.Length, endLine ?? allLines.Length);
+				var lines = allLines.Skip(start).Take(end - start).ToArray();
+
+				return Results.Ok(new
+				{
+					file = baseName,
+					totalLines = totalLineCount,
+					startLine = start + 1,
+					endLine = end,
+					content = string.Join("\n", lines),
+					lines = lines.Select((l, i) => new { lineNumber = start + i + 1, text = l }),
+					source = "neo4j"
+				});
+			}
+		}
+		catch (Exception ex)
+		{
+			Console.WriteLine($"⚠️ Neo4j source fallback failed: {ex.Message}");
+		}
+
+		return Results.NotFound(new { error = $"Source file not found: {file}" });
+	}
+	catch (Exception ex)
+	{
+		Console.WriteLine($"⚠️ Source content endpoint: {ex.Message}");
+		return Results.Problem(ex.Message);
+	}
+});
+
+// ── Reachability Analysis — classify paragraph/section reachability ────
+app.MapGet("/api/graph/rekt/deadcode", async (string? file, int? scanRunId, CancellationToken cancellationToken) =>
+{
+	try
+	{
+		var rektUri = Environment.GetEnvironmentVariable("REKT_NEO4J_URI") ?? "bolt://localhost:7688";
+		var rektUser = Environment.GetEnvironmentVariable("REKT_NEO4J_USER") ?? "neo4j";
+		var rektPassword = Environment.GetEnvironmentVariable("REKT_NEO4J_PASSWORD") ?? "cobol-rekt-2026";
+
+		using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
+		await using var session = driver.AsyncSession();
+
+		var runFilter = scanRunId.HasValue ? "AND n.runId = $scanRunId" : "";
+		var fileFilter = !string.IsNullOrEmpty(file) ? "AND n.program = $file" : "";
+		var queryParams = new Dictionary<string, object>();
+		if (scanRunId.HasValue) queryParams["scanRunId"] = scanRunId.Value;
+		if (!string.IsNullOrEmpty(file)) queryParams["file"] = $"flow-ast-{file}";
+
+		// Step 1: Get all paragraphs and sections per program (latest runId), ordered by startLine
+		var paragraphs = new Dictionary<string, List<Dictionary<string, object>>>();
+		var paraResult = await session.RunAsync($@"
+			MATCH (n:ASTNode)
+			WHERE n.nodeType IN ['PARAGRAPH', 'SECTION']
+			{runFilter} {fileFilter}
+			WITH n.program AS prog, max(n.runId) AS latestRun
+			MATCH (p:ASTNode)
+			WHERE p.nodeType IN ['PARAGRAPH', 'SECTION']
+			AND p.program = prog AND p.runId = latestRun
+			RETURN DISTINCT p.program AS program, p.name AS name, p.nodeType AS nodeType,
+				p.startLine AS startLine, p.endLine AS endLine
+			ORDER BY p.program, p.startLine",
+			queryParams.Count > 0 ? queryParams : null);
+
+		await paraResult.ForEachAsync(r =>
+		{
+			var prog = r["program"].As<string>() ?? "";
+			var para = new Dictionary<string, object>
+			{
+				["name"] = r["name"].As<string>() ?? "",
+				["nodeType"] = r["nodeType"].As<string>() ?? "",
+				["startLine"] = r["startLine"].As<int?>() ?? 0,
+				["endLine"] = r["endLine"].As<int?>() ?? 0,
+				["lineCount"] = Math.Max(1, (r["endLine"].As<int?>() ?? 0) - (r["startLine"].As<int?>() ?? 0) + 1)
+			};
+			if (!paragraphs.ContainsKey(prog)) paragraphs[prog] = new List<Dictionary<string, object>>();
+			paragraphs[prog].Add(para);
+		});
+
+		// Step 2: Get all PERFORM targets per program (latest runId)
+		var performTargets = new Dictionary<string, HashSet<string>>();
+		var perfResult = await session.RunAsync($@"
+			MATCH (n:ASTNode {{nodeType: 'PERFORM'}})
+			{runFilter.Replace("n.", "n.")} {fileFilter.Replace("n.", "n.")}
+			WITH n.program AS prog, max(n.runId) AS latestRun
+			MATCH (p:ASTNode {{nodeType: 'PERFORM'}})
+			WHERE p.program = prog AND p.runId = latestRun
+			RETURN DISTINCT p.program AS program, p.name AS performName",
+			queryParams.Count > 0 ? queryParams : null);
+
+		await perfResult.ForEachAsync(r =>
+		{
+			var prog = r["program"].As<string>() ?? "";
+			var perfName = r["performName"].As<string>() ?? "";
+			if (!performTargets.ContainsKey(prog)) performTargets[prog] = new HashSet<string>();
+			performTargets[prog].Add(perfName);
+		});
+
+		// ── Classification model ──────────────────────────────────────
+		// Categories:
+		//   "called"       — Explicitly invoked via PERFORM (like a function call)
+		//   "sequential"   — Reachable via fall-through from an entry point or called paragraph
+		//   "entry"        — External entry point (MAIN, CICS handler, ENTRY verb, batch JCL)
+		//   "unreachable"  — Not reachable by any known path (candidate for removal)
+
+		var entryPatterns = new[] { "MAIN", "PREMIERE", "MAIN-PARA", "MAIN-LOGIC", "PROGRAM-START", "PROCESS" };
+		var cicsPatterns = new[] { "COSGN", "COMEN", "COADM", "COUSR", "COTRN", "COCRD", "COBIL", "CORPT", "COACTU", "COACTV" };
+
+		var results = new List<object>();
+		int totalParas = 0;
+		var categoryCounts = new Dictionary<string, int> { ["called"] = 0, ["sequential"] = 0, ["entry"] = 0, ["unreachable"] = 0 };
+		var categoryLoc = new Dictionary<string, int> { ["called"] = 0, ["sequential"] = 0, ["entry"] = 0, ["unreachable"] = 0 };
+
+		foreach (var (prog, paras) in paragraphs)
+		{
+			var perfs = performTargets.ContainsKey(prog) ? performTargets[prog] : new HashSet<string>();
+			var perfTargetPrefixes = perfs.Select(p =>
+			{
+				var stripped = p;
+				if (stripped.StartsWith("PERFORM", StringComparison.OrdinalIgnoreCase))
+					stripped = stripped.Substring(7);
+				if (stripped.StartsWith("UNTIL", StringComparison.OrdinalIgnoreCase) ||
+					stripped.StartsWith("VARYING", StringComparison.OrdinalIgnoreCase) ||
+					stripped.StartsWith("TEST", StringComparison.OrdinalIgnoreCase))
+					return null;
+				return stripped;
+			}).Where(p => p != null).ToList();
+
+			var fileName = prog.Replace("flow-ast-", "");
+			var programName = fileName.Replace(".cbl", "").Replace(".CBL", "").ToUpper();
+			var isCicsProgram = cicsPatterns.Any(cp => programName.StartsWith(cp, StringComparison.OrdinalIgnoreCase));
+
+			// Deduplicate paragraphs by name (keep first occurrence for ordering)
+			var seenNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+			var orderedParas = new List<Dictionary<string, object>>();
+			foreach (var p in paras)
+			{
+				var n = p["name"]?.ToString() ?? "";
+				if (seenNames.Add(n)) orderedParas.Add(p);
+			}
+
+			// Pass 1: Classify each paragraph
+			var classified = new List<(Dictionary<string, object> para, string category, string reason)>();
+			var calledNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+			for (int i = 0; i < orderedParas.Count; i++)
+			{
+				var para = orderedParas[i];
+				var name = para["name"]?.ToString() ?? "";
+				var loc = (int)(para["lineCount"] ?? 1);
+				totalParas++;
+
+				// Rule 1: Is it explicitly PERFORMed? (= function call)
+				var matchingPerform = perfTargetPrefixes.FirstOrDefault(prefix =>
+					name.StartsWith(prefix!, StringComparison.OrdinalIgnoreCase) ||
+					prefix!.StartsWith(name, StringComparison.OrdinalIgnoreCase));
+
+				if (matchingPerform != null)
+				{
+					var reason = $"Called via PERFORM (like a function call)";
+					classified.Add((para, "called", reason));
+					calledNames.Add(name);
+					continue;
+				}
+
+				// Rule 2: Is it an entry point?
+				var isEntry = i == 0; // First paragraph is always the program entry
+				var isNamedEntry = entryPatterns.Any(ep => name.Contains(ep, StringComparison.OrdinalIgnoreCase))
+					|| name.StartsWith("0000-", StringComparison.OrdinalIgnoreCase);
+				var isCicsEntry = isCicsProgram && i == 0;
+
+				if (isEntry || isNamedEntry)
+				{
+					var why = isEntry ? "Program entry point — first paragraph, executed when program starts"
+						: isCicsEntry ? "CICS transaction entry point — invoked by terminal user"
+						: $"Named entry point (matches pattern: {name})";
+					classified.Add((para, "entry", why));
+					calledNames.Add(name);
+					continue;
+				}
+
+				// Rule 3: EXIT paragraphs paired with a performed parent
+				if (name.EndsWith("-EXIT", StringComparison.OrdinalIgnoreCase) ||
+					name.Equals("COMMON-RETURN", StringComparison.OrdinalIgnoreCase))
+				{
+					var parentName = name.EndsWith("-EXIT", StringComparison.OrdinalIgnoreCase)
+						? name.Substring(0, name.Length - 5) : name;
+					var parentCalled = perfTargetPrefixes.Any(prefix =>
+						parentName.StartsWith(prefix!, StringComparison.OrdinalIgnoreCase) ||
+						prefix!.StartsWith(parentName, StringComparison.OrdinalIgnoreCase));
+					if (parentCalled)
+					{
+						classified.Add((para, "called", $"Exit label for {parentName} — reached at end of PERFORM range"));
+						calledNames.Add(name);
+						continue;
+					}
+				}
+
+				// Temporarily mark as unknown — will resolve in pass 2
+				classified.Add((para, "__unknown", ""));
+			}
+
+			// Pass 2: Sequential reachability (fall-through analysis)
+			// COBOL executes paragraphs top-to-bottom. If paragraph N is reachable,
+			// paragraph N+1 is also reachable via fall-through UNLESS N ends with
+			// STOP RUN, GOBACK, or an unconditional GO TO.
+			// Since we don't have statement-level analysis, we conservatively mark
+			// paragraphs immediately following a reachable paragraph as "sequential".
+			for (int i = 0; i < classified.Count; i++)
+			{
+				if (classified[i].category != "__unknown") continue;
+
+				// Check if the previous paragraph is reachable
+				if (i > 0 && classified[i - 1].category is "called" or "entry" or "sequential")
+				{
+					var prevName = orderedParas[i > 0 ? i - 1 : 0]["name"]?.ToString() ?? "";
+					var name = classified[i].para["name"]?.ToString() ?? "";
+					classified[i] = (classified[i].para, "sequential",
+						$"Sequentially reachable — falls through from {prevName} (like the next line in main())");
+					calledNames.Add(name);
+				}
+			}
+
+			// Pass 3: Any remaining __unknown → unreachable
+			for (int i = 0; i < classified.Count; i++)
+			{
+				if (classified[i].category == "__unknown")
+				{
+					var name = classified[i].para["name"]?.ToString() ?? "";
+					classified[i] = (classified[i].para, "unreachable",
+						$"No incoming PERFORM, not reachable via sequential flow, and not an entry point. May be invoked externally (JCL, CICS, or another program via CALL).");
+				}
+			}
+
+			// Build result per program
+			var paraResults = classified.Select(c => new
+			{
+				name = c.para["name"]?.ToString() ?? "",
+				nodeType = c.para["nodeType"]?.ToString() ?? "",
+				startLine = c.para["startLine"],
+				endLine = c.para["endLine"],
+				lineCount = c.para["lineCount"],
+				category = c.category,
+				reason = c.reason
+			}).ToList();
+
+			foreach (var pr in paraResults)
+			{
+				categoryCounts[pr.category]++;
+				categoryLoc[pr.category] += (int)(pr.lineCount ?? 1);
+			}
+
+			results.Add(new
+			{
+				program = fileName,
+				totalParagraphs = orderedParas.Count,
+				paragraphs = paraResults,
+				calledCount = paraResults.Count(p => p.category == "called"),
+				sequentialCount = paraResults.Count(p => p.category == "sequential"),
+				entryCount = paraResults.Count(p => p.category == "entry"),
+				unreachableCount = paraResults.Count(p => p.category == "unreachable"),
+				unreachableLoc = paraResults.Where(p => p.category == "unreachable").Sum(p => (int)(p.lineCount ?? 1)),
+			});
+		}
+
+		// Object type summary
+		var objectSummary = new List<object>();
+		var fileCountResult = await session.RunAsync(@"
+			MATCH (f:CobolFile)
+			WITH f.fileName AS fn, max(f.runId) AS lr
+			MATCH (f2:CobolFile {fileName: fn, runId: lr})
+			RETURN CASE WHEN f2.isCopybook = true THEN 'Copybook' ELSE 'COBOL Program' END AS objectType,
+				count(*) AS cnt, sum(f2.lineCount) AS loc");
+		await fileCountResult.ForEachAsync(r =>
+		{
+			objectSummary.Add(new
+			{
+				objectType = r["objectType"].As<string>(),
+				objectCount = r["cnt"].As<int>(),
+				loc = r["loc"].As<int?>() ?? 0
+			});
+		});
+
+		objectSummary.Add(new { objectType = "Paragraph (function)", objectCount = totalParas, loc = categoryCounts.Values.Sum() > 0 ? categoryLoc.Values.Sum() : 0 });
+		objectSummary.Add(new { objectType = "→ Called (via PERFORM)", objectCount = categoryCounts["called"], loc = categoryLoc["called"] });
+		objectSummary.Add(new { objectType = "→ Sequential (fall-through)", objectCount = categoryCounts["sequential"], loc = categoryLoc["sequential"] });
+		objectSummary.Add(new { objectType = "→ Entry point", objectCount = categoryCounts["entry"], loc = categoryLoc["entry"] });
+		objectSummary.Add(new { objectType = "→ Unreachable (candidate)", objectCount = categoryCounts["unreachable"], loc = categoryLoc["unreachable"] });
+
+		var totalLoc = categoryLoc.Values.Sum();
+		return Results.Ok(new
+		{
+			programs = results.OrderByDescending(r => ((dynamic)r).unreachableCount),
+			summary = new
+			{
+				totalPrograms = paragraphs.Count,
+				totalParagraphs = totalParas,
+				called = categoryCounts["called"],
+				sequential = categoryCounts["sequential"],
+				entry = categoryCounts["entry"],
+				unreachable = categoryCounts["unreachable"],
+				unreachableLoc = categoryLoc["unreachable"],
+				totalLoc,
+				unreachablePercentage = totalParas > 0 ? Math.Round((double)categoryCounts["unreachable"] / totalParas * 100, 1) : 0
+			},
+			objectList = objectSummary
+		});
+	}
+	catch (Exception ex)
+	{
+		Console.WriteLine($"⚠️ Reachability endpoint: {ex.Message}");
+		return Results.Problem(ex.Message);
+	}
+});
+
+// ── CFG (Control Flow Graph) endpoint ─────────────────────────────────
+app.MapGet("/api/graph/rekt/cfg", async (string file, CancellationToken cancellationToken) =>
+{
+	try
+	{
+		var rektUri = Environment.GetEnvironmentVariable("REKT_NEO4J_URI") ?? "bolt://localhost:7688";
+		var rektUser = Environment.GetEnvironmentVariable("REKT_NEO4J_USER") ?? "neo4j";
+		var rektPassword = Environment.GetEnvironmentVariable("REKT_NEO4J_PASSWORD") ?? "cobol-rekt-2026";
+
+		using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
+		await using var session = driver.AsyncSession();
+
+		var candidates = new[] { file, $"flow-ast-{file}", file.Replace("flow-ast-", "") };
+		var nodes = new List<object>();
+		var edges = new List<object>();
+		var nodeIds = new HashSet<string>();
+		int followedByCount = 0, jumpsToCount = 0, containsCount = 0;
+
+		foreach (var candidate in candidates)
+		{
+			// 1. Get flow nodes (nodes connected by FOLLOWED_BY / JUMPS_TO)
+			var flowNodeResult = await session.RunAsync(@"
+				MATCH (a:ASTNode {program: $file})-[:FOLLOWED_BY|JUMPS_TO]-(b:ASTNode {program: $file})
+				WITH collect(DISTINCT a) + collect(DISTINCT b) AS allNodes
+				UNWIND allNodes AS n
+				WITH DISTINCT n
+				RETURN n.id AS id, n.nodeType AS nodeType, n.name AS name,
+				       n.startLine AS startLine, n.endLine AS endLine,
+				       n.originalText AS originalText",
+				new { file = candidate });
+
+			await flowNodeResult.ForEachAsync(r =>
+			{
+				var id = r["id"].As<string>();
+				if (nodeIds.Add(id))
+				{
+					nodes.Add(new
+					{
+						id,
+						nodeType = r["nodeType"].As<string?>() ?? "",
+						name = r["name"].As<string?>() ?? "",
+						startLine = r["startLine"].As<int?>() ?? 0,
+						endLine = r["endLine"].As<int?>() ?? 0,
+						originalText = r["originalText"].As<string?>() ?? "",
+						isFlowNode = true
+					});
+				}
+			});
+
+			if (nodes.Count == 0) continue;
+
+			// 2. Get children of flow nodes (statements inside sections/paragraphs)
+			var childResult = await session.RunAsync(@"
+				MATCH (parent:ASTNode {program: $file})-[:FOLLOWED_BY|JUMPS_TO]-(:ASTNode {program: $file})
+				WITH DISTINCT parent
+				MATCH (parent)-[:CONTAINS]->(child:ASTNode {program: $file})
+				WHERE NOT child.nodeType IN ['SENTENCE', 'PARAGRAPHS', 'PARAGRAPH_NAME', 'SECTION_HEADER']
+				RETURN child.id AS id, child.nodeType AS nodeType, child.name AS name,
+				       child.startLine AS startLine, child.endLine AS endLine,
+				       child.originalText AS originalText,
+				       parent.id AS parentId",
+				new { file = candidate });
+
+			await childResult.ForEachAsync(r =>
+			{
+				var id = r["id"].As<string>();
+				var parentId = r["parentId"].As<string>();
+				if (nodeIds.Add(id))
+				{
+					nodes.Add(new
+					{
+						id,
+						nodeType = r["nodeType"].As<string?>() ?? "",
+						name = r["name"].As<string?>() ?? "",
+						startLine = r["startLine"].As<int?>() ?? 0,
+						endLine = r["endLine"].As<int?>() ?? 0,
+						originalText = r["originalText"].As<string?>() ?? "",
+						isFlowNode = false
+					});
+				}
+				edges.Add(new { source = parentId, target = id, type = "CONTAINS" });
+				containsCount++;
+			});
+
+			// 3. Get all flow edges
+			var edgeResult = await session.RunAsync(@"
+				MATCH (a:ASTNode {program: $file})-[r:FOLLOWED_BY|JUMPS_TO]->(b:ASTNode {program: $file})
+				RETURN a.id AS source, b.id AS target, type(r) AS type",
+				new { file = candidate });
+
+			await edgeResult.ForEachAsync(r =>
+			{
+				var edgeType = r["type"].As<string>();
+				if (edgeType == "FOLLOWED_BY") followedByCount++;
+				else if (edgeType == "JUMPS_TO") jumpsToCount++;
+				edges.Add(new
+				{
+					source = r["source"].As<string>(),
+					target = r["target"].As<string>(),
+					type = edgeType
+				});
+			});
+			break;
+		}
+
+		if (nodes.Count == 0)
+			return Results.NotFound(new { error = $"No CFG data for {file}. Run: ./doctor.sh rekt-cfg" });
+
+		return Results.Ok(new { nodes, edges, stats = new {
+			totalNodes = nodes.Count,
+			totalEdges = edges.Count,
+			followedBy = followedByCount,
+			jumpsTo = jumpsToCount,
+			contains = containsCount
+		}});
+	}
+	catch (Exception ex)
+	{
+		Console.WriteLine($"⚠️ CFG endpoint: {ex.Message}");
+		return Results.Problem(ex.Message);
+	}
+});
+
+app.MapGet("/api/graph/rekt/ast", async (string file, CancellationToken cancellationToken) =>
+{
+	try
+	{
+		var rektUri = Environment.GetEnvironmentVariable("REKT_NEO4J_URI") ?? "bolt://localhost:7688";
+		var rektUser = Environment.GetEnvironmentVariable("REKT_NEO4J_USER") ?? "neo4j";
+		var rektPassword = Environment.GetEnvironmentVariable("REKT_NEO4J_PASSWORD") ?? "cobol-rekt-2026";
+
+		using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
+		await using var session = driver.AsyncSession();
+
+		// Try exact match first, then with flow-ast- prefix (rekt naming convention)
+		var candidates = new[] { file, $"flow-ast-{file}", file.Replace("flow-ast-", "") };
+		var nodes = new List<object>();
+		var edges = new List<object>();
+		string? matchedProgram = null;
+
+		foreach (var candidate in candidates)
+		{
+			var nodeResult = await session.RunAsync(@"
+				MATCH (a:ASTNode {program: $file})
+				RETURN a.id AS id, a.nodeType AS nodeType, a.label AS label,
+				       a.originalText AS originalText, a.startLine AS startLine,
+				       a.endLine AS endLine, a.name AS name,
+				       a.section AS section, a.paragraph AS paragraph",
+				new { file = candidate });
+
+			await nodeResult.ForEachAsync(r => nodes.Add(new
+			{
+				id = r["id"].As<string>(),
+				nodeType = r["nodeType"].As<string?>() ?? "",
+				label = r["label"].As<string?>() ?? r["nodeType"].As<string?>() ?? "",
+				originalText = r["originalText"].As<string?>() ?? "",
+				startLine = r["startLine"].As<int?>() ?? 0,
+				endLine = r["endLine"].As<int?>() ?? 0,
+				name = r["name"].As<string?>() ?? "",
+				section = r["section"].As<string?>() ?? "",
+				paragraph = r["paragraph"].As<string?>() ?? ""
+			}));
+
+			if (nodes.Count > 0) { matchedProgram = candidate; break; }
+		}
+
+		if (matchedProgram != null)
+		{
+			var edgeResult = await session.RunAsync(@"
+				MATCH (a:ASTNode {program: $file})-[r:CONTAINS|FOLLOWED_BY|JUMPS_TO]->(b:ASTNode {program: $file})
+				RETURN a.id AS source, b.id AS target, type(r) AS type",
+				new { file = matchedProgram });
+
+			await edgeResult.ForEachAsync(r => edges.Add(new
+			{
+				source = r["source"].As<string>(),
+				target = r["target"].As<string>(),
+				type = r["type"].As<string>()
+			}));
+		}
+
+		if (nodes.Count == 0)
+			return Results.NotFound(new { error = $"No AST data for {file}. Run: ./doctor.sh rekt" });
+
+		return Results.Ok(new { nodes, edges });
+	}
+	catch (Exception ex)
+	{
+		Console.WriteLine($"⚠️ AST endpoint: {ex.Message}");
+		return Results.Problem(ex.Message);
+	}
+});
+
+app.MapGet("/api/graph/rekt", async (int? runId, CancellationToken cancellationToken) =>
+{
+	try
+	{
+		var rektUri = Environment.GetEnvironmentVariable("REKT_NEO4J_URI") ?? "bolt://localhost:7688";
+		var rektUser = Environment.GetEnvironmentVariable("REKT_NEO4J_USER") ?? "neo4j";
+		var rektPassword = Environment.GetEnvironmentVariable("REKT_NEO4J_PASSWORD") ?? "cobol-rekt-2026";
+
+		using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
+		await using var session = driver.AsyncSession();
+
+		var nodeResult = await session.RunAsync(@"
+			MATCH (f:CobolFile)
+			WITH f, size([(f)-[]-() | 1]) AS connections
+			RETURN f.uid AS id, f.fileName AS fileName, f.isCopybook AS isCopybook,
+			       f.lineCount AS lineCount, connections
+			ORDER BY connections DESC");
+
+		var nodes = new List<object>();
+		await nodeResult.ForEachAsync(r => nodes.Add(new
+		{
+			id = r["fileName"].As<string>(),
+			label = r["fileName"].As<string>(),
+			fileName = r["fileName"].As<string>(),
+			isCopybook = r["isCopybook"].As<bool?>() ?? false,
+			lineCount = r["lineCount"].As<int?>() ?? 0,
+			connections = r["connections"].As<int>(),
+			isInferred = false
+		}));
+
+		var edgeResult = await session.RunAsync(@"
+			MATCH (a:CobolFile)-[r:DEPENDS_ON]->(b:CobolFile)
+			RETURN a.fileName AS source, b.fileName AS target, r.type AS type,
+			       r.lineNumber AS lineNumber");
+
+		var edges = new List<object>();
+		await edgeResult.ForEachAsync(r => edges.Add(new
+		{
+			source = r["source"].As<string>(),
+			target = r["target"].As<string>(),
+			type = r["type"].As<string?>() ?? "DEPENDS_ON",
+			lineNumber = r["lineNumber"].As<int?>()
+		}));
+
+		return Results.Ok(new { nodes, edges, source = "rekt-neo4j" });
+	}
+	catch (Exception ex)
+	{
+		Console.WriteLine($"⚠️ Rekt graph endpoint: {ex.Message}");
+		return Results.Ok(new { nodes = Array.Empty<object>(), edges = Array.Empty<object>(), error = ex.Message });
+	}
+});
+
 app.MapGet("/api/runinfo", async () =>
 {
 	// Prefer explicit run selection from environment (set by /api/switch-run)

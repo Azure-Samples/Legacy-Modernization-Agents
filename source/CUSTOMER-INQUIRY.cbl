@@ -12,10 +12,10 @@
        DATA DIVISION.
        FILE SECTION.
        FD  CUSTOMER-FILE.
-       COPY CUSTOMER-DATA.
+       COPY CUSTOMER.
        
        WORKING-STORAGE SECTION.
-       COPY ERROR-CODES.
+       COPY ERROR-CO.
        
        01  WS-SEARCH-ID        PIC 9(8).
        01  WS-EOF-FLAG         PIC X VALUE 'N'.
