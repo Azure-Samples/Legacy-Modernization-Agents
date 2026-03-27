@@ -13,7 +13,7 @@ using System.Text.Json;
 namespace CobolToQuarkusMigration.Agents;
 
 /// <summary>
-/// Agent that extracts business logic from COBOL code using Microsoft Agent Framework (IChatClient).
+/// Agent that extracts business logic from COBOL code using Microsoft.Extensions.AI (IChatClient).
 /// </summary>
 public class BusinessLogicExtractorAgent : AgentBase
 {

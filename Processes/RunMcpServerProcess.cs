@@ -740,7 +740,7 @@ public sealed class RunMcpServerProcess
             }
         }
 
-        // Build a direct chat-completions request (Semantic Kernel currently sends max_tokens which gpt-5.1-chat rejects)
+        // Build a direct chat-completions request (avoids max_tokens which gpt-5.1-chat rejects)
         var endpoint = !string.IsNullOrWhiteSpace(_aiSettings?.ChatEndpoint) ? _aiSettings!.ChatEndpoint : _aiSettings?.Endpoint;
         var apiKey = !string.IsNullOrWhiteSpace(_aiSettings?.ChatApiKey) ? _aiSettings!.ChatApiKey : _aiSettings?.ApiKey;
         var deployment = !string.IsNullOrWhiteSpace(_aiSettings?.ChatDeploymentName) ? _aiSettings!.ChatDeploymentName : _aiSettings?.ChatModelId;

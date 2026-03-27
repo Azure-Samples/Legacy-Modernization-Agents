@@ -15,7 +15,7 @@ namespace CobolToQuarkusMigration.Processes;
 
 /// <summary>
 /// Enhanced migration process with smart chunking support for large files.
-/// Uses Microsoft Agent Framework (IChatClient) for AI operations.
+/// Uses Microsoft.Extensions.AI (IChatClient) for AI operations.
 /// </summary>
 public class ChunkedMigrationProcess
 {

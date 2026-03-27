@@ -25,7 +25,6 @@ This dev container provides a fully automated development environment with all d
 ### VS Code Extensions
 - ✅ **C# Dev Kit** - .NET development support
 - ✅ **Java Extension Pack** - Java and Quarkus support
-- ✅ **Semantic Kernel** - AI orchestration support
 - ✅ **GitHub Copilot** - AI pair programming
 - ✅ **Neo4j Extension** - Query graph database from VS Code
 - ✅ **SQLite Extension** - Browse SQLite databases in VS Code

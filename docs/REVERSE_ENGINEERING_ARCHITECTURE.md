@@ -80,7 +80,7 @@ graph TB
     end
     
     subgraph "AI Service Layer"
-        SK[Semantic Kernel]
+        MEAI[Microsoft.Extensions.AI]
         Azure[Azure OpenAI<br/>gpt-5.1-codex-mini]
     end
     
@@ -113,9 +113,9 @@ graph TB
     ChunkedRE --> CobolAnalyzer
     ChunkedRE --> SigRegistry
     
-    CobolAnalyzer --> SK
-    BusinessLogic --> SK
-    SK --> Azure
+    CobolAnalyzer --> MEAI
+    BusinessLogic --> MEAI
+    MEAI --> Azure
     
     CobolAnalyzer --> CobolAnalysis
     BusinessLogic --> BusinessLogicModel
