@@ -1,7 +1,7 @@
 # Legacy Modernization Agents - COBOL to Java/C# Migration
 
 This open source migration framework was developed to demonstrate AI Agents capabilities for converting legacy code like COBOL to Java or C# .NET. Each Agent has a persona that can be edited depending on the desired outcome.
-The migration uses Microsoft Agent Framework with a multi-provider architecture supporting **Azure OpenAI** (Responses API + Chat Completions), **GitHub Copilot** (PAT or CLI-based SDK), and **direct OpenAI** to analyze COBOL code and its dependencies, then convert to either Java Quarkus or C# .NET (user's choice).
+The migration uses Microsoft.Extensions.AI with a multi-provider architecture supporting **Azure OpenAI** (Responses API + Chat Completions), **GitHub Copilot** (PAT or CLI-based SDK), and **direct OpenAI** to analyze COBOL code and its dependencies, then convert to either Java Quarkus or C# .NET (user's choice).
 
 ## 🎬 Portal Demo
 
@@ -143,22 +143,21 @@ The SafetyFactor reserves headroom below your quota limit to handle:
 
 > 💡 **Rule of thumb:** With 1M TPM, use `MaxParallelChunks: 6` for safe operation. Scale proportionally with your quota.
 
-### Framework: Microsoft Agent Framework
+### Framework: Microsoft.Extensions.AI
 
-This project uses **Microsoft Agent Framework** (`Microsoft.Agents.AI.*`), **not** Semantic Kernel.
+This project uses **Microsoft.Extensions.AI** — the standard .NET AI abstraction layer.
 
 ```xml
 <!-- From CobolToQuarkusMigration.csproj -->
-<PackageReference Include="Microsoft.Agents.AI.AzureAI" Version="1.0.0-preview.*" />
-<PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.0.0-preview.*" />
 <PackageReference Include="Microsoft.Extensions.AI" Version="10.0.1" />
+<PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.3.0" />
 ```
 
-**Why Agent Framework over Semantic Kernel?**
-- Simpler `IChatClient` abstraction
-- Native support for both Responses API and Chat Completions API which is key for being future proof for LLM Api's
-- Better streaming and async patterns
-- Lighter dependency footprint
+**Why Microsoft.Extensions.AI?**
+- Standard `IChatClient` abstraction built into the .NET platform
+- Provider-agnostic — works with Azure OpenAI, GitHub Copilot SDK, and OpenAI
+- Native support for both Responses API and Chat Completions API
+- Lightweight with no framework lock-in
 
 ### Setup (2 minutes)
 
@@ -613,7 +612,7 @@ flowchart TB
 
     subgraph PROCESS["⚙️ Processing Pipeline"]
         REGEX["Regex / Syntax Parsing<br/>(Deep SQL/Variable Extraction)"]
-        AGENTS["🤖 AI Agents<br/>(MS Agent Framework)"]
+        AGENTS["🤖 AI Agents<br/>(Microsoft.Extensions.AI)"]
         ANALYZER["CobolAnalyzerAgent"]
         EXTRACTOR["BusinessLogicExtractor"]
         CONVERTER["Java/C# Converter"]
