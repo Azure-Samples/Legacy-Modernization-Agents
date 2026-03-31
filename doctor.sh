@@ -13,6 +13,9 @@ CYAN='\033[0;36m'
 MAGENTA='\033[0;35m'
 BOLD='\033[1m'
 NC='\033[0m' # No Color
+#Variable for the GitHub host, defaults to 'github.com
+GITHUB_HOST="${GITHUB_HOST:-github.com}"
+
 
 # Resolve the sqlite3 command, handling Windows (Git Bash / MSYS2) paths
 SQLITE3_CMD=""
@@ -1185,7 +1188,7 @@ run_setup() {
             # --- CLI authentication (existing flow) ---
             echo -e "${BLUE}🔐 Authenticating with GitHub Copilot...${NC}"
             echo ""
-            if ! copilot login; then
+            if ! copilot login --host "https://${GITHUB_HOST}"; then
                 echo ""
                 echo -e "${RED}❌ Authentication failed. Please try again.${NC}"
                 return 1
