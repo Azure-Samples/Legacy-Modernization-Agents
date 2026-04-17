@@ -238,12 +238,14 @@ public sealed class CopilotChatClient : IChatClient, IAsyncDisposable
 
     /// <inheritdoc />
     /// <remarks>
-    /// Synchronous disposal is not supported. Use <c>await using</c> to call <see cref="DisposeAsync"/> instead.
+    /// Marks the instance as disposed so subsequent API calls throw
+    /// <see cref="ObjectDisposedException"/>. For a graceful shutdown of
+    /// the underlying Copilot CLI process, prefer <c>await using</c> or
+    /// call <see cref="DisposeAsync"/> directly.
     /// </remarks>
     public void Dispose()
     {
-        throw new NotSupportedException(
-            "CopilotChatClient requires async disposal. Use 'await using' or call DisposeAsync() directly.");
+        _disposed = true;
     }
 
     /// <inheritdoc />
