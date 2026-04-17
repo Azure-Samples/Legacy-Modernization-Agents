@@ -13,9 +13,10 @@ CYAN='\033[0;36m'
 MAGENTA='\033[0;35m'
 BOLD='\033[1m'
 NC='\033[0m' # No Color
-#Variable for the GitHub host, defaults to 'github.com
+# Variable for the GitHub host, defaults to 'github.com'
 GITHUB_HOST="${GITHUB_HOST:-github.com}"
-
+GITHUB_HOST="${GITHUB_HOST#https://}"
+GITHUB_HOST="${GITHUB_HOST#http://}"
 
 # Resolve the sqlite3 command, handling Windows (Git Bash / MSYS2) paths
 SQLITE3_CMD=""
@@ -1171,7 +1172,7 @@ run_setup() {
             echo -e "  ${BLUE}Classic PAT (fine-grained PATs do not currently support Copilot):${NC}"
             echo "    • copilot"
             echo ""
-            echo -e "${YELLOW}Create one at: https://github.com/settings/tokens${NC}"
+            echo -e "${YELLOW}Create one at: https://${GITHUB_HOST}/settings/tokens${NC}"
             echo ""
             # Read from /dev/tty explicitly to ensure correct capture in all terminal environments
             echo -n "Please provide the PAT and press Enter: "
