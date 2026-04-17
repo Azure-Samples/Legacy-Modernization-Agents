@@ -36,18 +36,6 @@ public abstract class AgentBase
     /// <summary>The model profile controlling reasoning effort tiers and token limits.</summary>
     protected ModelProfileSettings Profile { get; }
 
-    // Pre-compiled structural regexes for complexity scoring
-    private static readonly Regex PicRegex = new(@"\bPIC\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
-    private static readonly Regex LevelRegex = new(@"^\s*\d{2}\s+", RegexOptions.Compiled | RegexOptions.Multiline);
-    private static readonly Regex CopyNearStorageRegex = new(
-        @"(WORKING-STORAGE|LINKAGE)\s+SECTION[\s\S]{0,500}COPY\b",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase);
-    private static readonly Regex ExecSqlDliRegex = new(
-        @"EXEC\s+(SQL|DLI)\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
-    private static readonly Regex NoiseLineRegex = new(
-        @"^\s*$|^.{6}\*|^.{0,5}\*>|^.{7}\s*(CBL|PROCESS|EJECT|SKIP1|SKIP2|SKIP3)\b",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase);
-
     // Pre-compiled config-driven indicator regexes (built at construction)
     private readonly List<(Regex regex, int weight)> _compiledIndicators;
 
@@ -73,17 +61,8 @@ public abstract class AgentBase
         UseResponsesApi = false;
         Capabilities = ModelCapabilities.Detect(modelId);
         Profile = settings?.ModelProfile ?? new ModelProfileSettings();
-
-        // ── Clamp profile token limits to model's actual capabilities ──
-        // This prevents HTTP 400 "max_tokens too large" errors for models
-        // with lower output limits (e.g. gpt-4o = 16384, grok = 32768).
-        if (Capabilities.DefaultMaxOutputTokens > 0)
-        {
-            Profile.MaxOutputTokens = Math.Min(Profile.MaxOutputTokens, Capabilities.DefaultMaxOutputTokens);
-            Profile.MinOutputTokens = Math.Min(Profile.MinOutputTokens, Capabilities.DefaultMaxOutputTokens);
-        }
-
-        _compiledIndicators = CompileIndicators(Profile);
+        ContentAwareReasoning.ClampProfileToModel(Profile, Capabilities);
+        _compiledIndicators = ContentAwareReasoning.CompileIndicators(Profile);
 
         logger.LogInformation(
             "[{Agent}] IChatClient path: model={Model}, family={Family}, reasoning={Reasoning}",
@@ -112,7 +91,7 @@ public abstract class AgentBase
         UseResponsesApi = true;
         Capabilities = ModelCapabilities.Detect(modelId);
         Profile = responsesClient.Profile;
-        _compiledIndicators = CompileIndicators(Profile);
+        _compiledIndicators = ContentAwareReasoning.CompileIndicators(Profile);
     }
 
     /// <summary>
@@ -1016,59 +995,22 @@ ADAPTIVE RE-CHUNK INSTRUCTIONS (PART 2 of 2):
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // THREE-TIER CONTENT-AWARE REASONING — works for ALL model families
+    // THREE-TIER CONTENT-AWARE REASONING — delegates to ContentAwareReasoning
     // ═══════════════════════════════════════════════════════════════════════
 
     /// <summary>
     /// Calculates optimal max_output_tokens and reasoning effort based on content complexity.
-    /// Uses three-tier system: low / medium / high based on complexity score.
-    /// Works the same regardless of model family — only the API call mechanics differ.
     /// </summary>
     protected (int maxOutputTokens, string reasoningEffort) CalculateTokenSettings(
         string systemPrompt,
         string userPrompt)
     {
-        var inputTokens = EstimateTokens(systemPrompt) + EstimateTokens(userPrompt);
+        var (maxOutputTokens, reasoningEffort) = ContentAwareReasoning.CalculateTokenSettings(
+            systemPrompt, userPrompt, Profile, Capabilities, _compiledIndicators);
 
-        var cobolSource = ExtractCobolSourceFromPrompt(userPrompt);
-        var complexityScore = CalculateComplexityScore(cobolSource);
-
-        string reasoningEffort;
-        double multiplier;
-
-        if (complexityScore >= Profile.HighThreshold)
-        {
-            reasoningEffort = Profile.HighReasoningEffort;
-            multiplier = Profile.HighMultiplier;
-        }
-        else if (complexityScore >= Profile.MediumThreshold)
-        {
-            reasoningEffort = Profile.MediumReasoningEffort;
-            multiplier = Profile.MediumMultiplier;
-        }
-        else
-        {
-            reasoningEffort = Profile.LowReasoningEffort;
-            multiplier = Profile.LowMultiplier;
-        }
-
-        var estimatedOutputNeeded = (int)(inputTokens * multiplier);
-
-        // Conditional MinOutputTokens floor — only enforce for medium+ complexity
-        // or large inputs. For low-complexity small inputs, allow smaller allocations.
-        int effectiveMinTokens =
-            (complexityScore >= Profile.MediumThreshold || inputTokens >= Profile.MinOutputTokens / 2)
-                ? Profile.MinOutputTokens
-                : Math.Max(4096, estimatedOutputNeeded);
-
-        var maxOutputTokens = Math.Clamp(estimatedOutputNeeded, effectiveMinTokens, Profile.MaxOutputTokens);
-
-        // Also clamp to the model's actual max output limit (e.g. gpt-4o = 16384)
-        // to avoid HTTP 400 "max_tokens is too large" errors
-        if (Capabilities.DefaultMaxOutputTokens > 0)
-        {
-            maxOutputTokens = Math.Min(maxOutputTokens, Capabilities.DefaultMaxOutputTokens);
-        }
+        var cobolSource = ContentAwareReasoning.ExtractCobolSourceFromPrompt(userPrompt);
+        var complexityScore = ContentAwareReasoning.CalculateComplexityScore(cobolSource, Profile, _compiledIndicators);
+        var inputTokens = ContentAwareReasoning.EstimateTokens(systemPrompt) + ContentAwareReasoning.EstimateTokens(userPrompt);
 
         Logger.LogInformation(
             "[{Agent}] Token settings ({Model}/{Family}): Input ~{Input}, complexity={Score} → {Tier} " +
@@ -1076,183 +1018,38 @@ ADAPTIVE RE-CHUNK INSTRUCTIONS (PART 2 of 2):
             AgentName, ModelId, Capabilities.Family, inputTokens, complexityScore,
             complexityScore >= Profile.HighThreshold ? "HIGH" :
             complexityScore >= Profile.MediumThreshold ? "MEDIUM" : "LOW",
-            reasoningEffort, multiplier, maxOutputTokens);
+            reasoningEffort,
+            complexityScore >= Profile.HighThreshold ? Profile.HighMultiplier :
+            complexityScore >= Profile.MediumThreshold ? Profile.MediumMultiplier : Profile.LowMultiplier,
+            maxOutputTokens);
 
         return (maxOutputTokens, reasoningEffort);
     }
 
     /// <summary>
     /// Applies model-specific reasoning options to ChatOptions based on detected capabilities.
-    /// Claude → extended thinking budget, Codex/o-series → reasoning_effort, standard → temperature.
     /// </summary>
     private void ApplyModelSpecificOptions(ChatOptions options, string reasoningEffort, int maxOutputTokens)
     {
-        switch (Capabilities.Reasoning)
+        ContentAwareReasoning.ApplyModelSpecificOptions(options, reasoningEffort, maxOutputTokens, Capabilities);
+
+        if (Capabilities.Reasoning == ReasoningStrategy.ThinkingBudget)
         {
-            case ReasoningStrategy.ThinkingBudget:
-                // Claude extended thinking
-                options.AdditionalProperties ??= new AdditionalPropertiesDictionary();
-                var thinkingBudget = CalculateThinkingBudget(maxOutputTokens, reasoningEffort);
-                options.AdditionalProperties["thinking"] = new Dictionary<string, object>
-                {
-                    ["type"] = "enabled",
-                    ["budget_tokens"] = thinkingBudget
-                };
-                Logger.LogInformation(
-                    "[{Agent}] Claude thinking budget: {Budget} tokens (effort: {Effort})",
-                    AgentName, thinkingBudget, reasoningEffort);
-                break;
-
-            case ReasoningStrategy.EffortBased:
-                // Codex/o-series reasoning effort via IChatClient
-                options.AdditionalProperties ??= new AdditionalPropertiesDictionary();
-                options.AdditionalProperties["reasoning_effort"] = reasoningEffort;
-                Logger.LogInformation(
-                    "[{Agent}] Reasoning effort: '{Effort}' for {Model}",
-                    AgentName, reasoningEffort, ModelId);
-                break;
-
-            case ReasoningStrategy.None:
-            default:
-                // Standard model — use temperature for deterministic output
-                if (Capabilities.SupportsTemperature)
-                {
-                    options.Temperature = 0.1f;
-                }
-                break;
+            Logger.LogInformation(
+                "[{Agent}] Claude thinking budget: {Budget} tokens (effort: {Effort})",
+                AgentName, ContentAwareReasoning.CalculateThinkingBudget(maxOutputTokens, reasoningEffort), reasoningEffort);
         }
-    }
-
-    /// <summary>
-    /// Calculates the thinking budget for Claude models based on reasoning effort tier.
-    /// Higher effort = more thinking budget.
-    /// </summary>
-    private static int CalculateThinkingBudget(int maxOutputTokens, string reasoningEffort)
-    {
-        var ratio = reasoningEffort.ToLowerInvariant() switch
+        else if (Capabilities.Reasoning == ReasoningStrategy.EffortBased)
         {
-            "high" => 0.7,
-            "medium" => 0.5,
-            "low" => 0.3,
-            _ => 0.5
-        };
-        return (int)(maxOutputTokens * ratio);
-    }
-
-    /// <summary>
-    /// Calculates a complexity score for COBOL source using config-driven regex indicators
-    /// plus structural baselines.
-    /// </summary>
-    private int CalculateComplexityScore(string cobolSource)
-    {
-        if (string.IsNullOrWhiteSpace(cobolSource)) return 0;
-
-        int score = 0;
-
-        foreach (var (regex, weight) in _compiledIndicators)
-        {
-            var matches = regex.Matches(cobolSource);
-            if (matches.Count > 0)
-                score += weight * matches.Count;
+            Logger.LogInformation(
+                "[{Agent}] Reasoning effort: '{Effort}' for {Model}",
+                AgentName, reasoningEffort, ModelId);
         }
-
-        var lines = cobolSource.Split('\n');
-        var meaningfulLines = Math.Max(CountMeaningfulLines(lines), 1);
-
-        var picDensity = (double)PicRegex.Matches(cobolSource).Count / meaningfulLines;
-        if (picDensity > Profile.PicDensityFloor) score += 3;
-
-        var levelDensity = (double)LevelRegex.Matches(cobolSource).Count / meaningfulLines;
-        if (levelDensity > Profile.LevelDensityFloor) score += 2;
-
-        if (Profile.EnableAmplifiers)
-        {
-            if (CopyNearStorageRegex.IsMatch(cobolSource)) score += Profile.CopyNearStorageBonus;
-            if (ExecSqlDliRegex.IsMatch(cobolSource)) score += Profile.ExecSqlDliBonus;
-        }
-
-        return score;
-    }
-
-    /// <summary>
-    /// Extracts COBOL source code from a user prompt that may contain instructions and markdown markers.
-    /// </summary>
-    private static string ExtractCobolSourceFromPrompt(string userPrompt)
-    {
-        if (string.IsNullOrWhiteSpace(userPrompt))
-            return string.Empty;
-
-        var cobolStart = userPrompt.IndexOf("```cobol", StringComparison.OrdinalIgnoreCase);
-        if (cobolStart >= 0)
-        {
-            var contentStart = userPrompt.IndexOf('\n', cobolStart);
-            if (contentStart < 0) contentStart = cobolStart + 8;
-            else contentStart++;
-
-            var contentEnd = userPrompt.IndexOf("```", contentStart, StringComparison.Ordinal);
-            if (contentEnd < 0) contentEnd = userPrompt.Length;
-
-            return userPrompt[contentStart..contentEnd].Trim();
-        }
-
-        var genericStart = userPrompt.IndexOf("```", StringComparison.Ordinal);
-        if (genericStart >= 0)
-        {
-            var contentStart = userPrompt.IndexOf('\n', genericStart);
-            if (contentStart < 0) contentStart = genericStart + 3;
-            else contentStart++;
-
-            var contentEnd = userPrompt.IndexOf("```", contentStart, StringComparison.Ordinal);
-            if (contentEnd < 0) contentEnd = userPrompt.Length;
-
-            return userPrompt[contentStart..contentEnd].Trim();
-        }
-
-        return userPrompt;
-    }
-
-    /// <summary>Estimates the number of tokens in a text string (~3.5 chars/token for code).</summary>
-    private static int EstimateTokens(string text)
-    {
-        if (string.IsNullOrEmpty(text)) return 0;
-        return (int)Math.Ceiling(text.Length / 3.5);
-    }
-
-    private static int CountMeaningfulLines(string[] lines)
-    {
-        return lines.Count(line => !NoiseLineRegex.IsMatch(line));
-    }
-
-    private static List<(Regex, int)> CompileIndicators(ModelProfileSettings profile)
-    {
-        var compiled = new List<(Regex, int)>();
-        foreach (var indicator in profile.ComplexityIndicators
-            .Where(i => !string.IsNullOrWhiteSpace(i.Pattern)))
-        {
-            try
-            {
-                var regex = new Regex(indicator.Pattern, RegexOptions.Compiled | RegexOptions.IgnoreCase);
-                compiled.Add((regex, indicator.Weight));
-            }
-            catch (ArgumentException) { /* invalid regex — skip */ }
-        }
-        return compiled;
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // OUTPUT TRUNCATION DETECTION — works for ALL IChatClient providers
+    // OUTPUT TRUNCATION DETECTION — delegates to ContentAwareReasoning
     // ═══════════════════════════════════════════════════════════════════════
-
-    /// <summary>
-    /// Regex patterns that signal truncated output (trailing ellipsis, TODO stubs, etc.).
-    /// </summary>
-    private static readonly Regex[] TruncationPatterns = new[]
-    {
-        new Regex(@"//\s*\.\.\.\s*(remaining|rest|continue|more|etc)", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-        new Regex(@"//\s*TODO:?\s*(implement|add|complete|remaining)", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-        new Regex(@"//\s*(omitted|truncated|abbreviated|skipped)", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-        new Regex(@"\.\.\.\s*$", RegexOptions.Multiline | RegexOptions.Compiled),
-    };
 
     /// <summary>
     /// Checks a ChatResponse for truncation via FinishReason and text-based signals.
@@ -1265,63 +1062,16 @@ ADAPTIVE RE-CHUNK INSTRUCTIONS (PART 2 of 2):
         string reasoningEffort,
         string contextIdentifier)
     {
-        // 1. Check FinishReason — most reliable signal
-        if (response.FinishReason == ChatFinishReason.Length)
+        try
+        {
+            ContentAwareReasoning.DetectTruncation(response, responseText, maxOutputTokens, reasoningEffort, contextIdentifier);
+        }
+        catch (OutputTruncationException otex)
         {
             Logger.LogWarning(
-                "[{Agent}] FinishReason=Length for {Context} — output was truncated at {Tokens} max_output_tokens",
-                AgentName, contextIdentifier, maxOutputTokens);
-
-            throw new OutputTruncationException(
-                maxOutputTokens, responseText.Length, reasoningEffort, "FinishReason=Length");
+                "[{Agent}] {Signal} for {Context} — output truncated at {Tokens} max_output_tokens",
+                AgentName, otex.TruncationSignal, contextIdentifier, maxOutputTokens);
+            throw;
         }
-
-        // 2. Check for text-based truncation signals (models sometimes truncate without setting Length)
-        if (responseText.Length > 500) // only check substantial responses
-        {
-            // Check the last ~500 chars for truncation patterns
-            var tail = responseText.Length > 500
-                ? responseText[^500..]
-                : responseText;
-
-            foreach (var pattern in TruncationPatterns)
-            {
-                var match = pattern.Match(tail);
-                if (match.Success)
-                {
-                    Logger.LogWarning(
-                        "[{Agent}] Text-based truncation signal for {Context}: '{Signal}'",
-                        AgentName, contextIdentifier, match.Value.Trim());
-
-                    throw new OutputTruncationException(
-                        maxOutputTokens, responseText.Length, reasoningEffort,
-                        $"Text signal: {match.Value.Trim()}");
-                }
-            }
-        }
-
-        // 3. Check for unclosed code blocks (model cut off mid-output)
-        var openBlocks = CountOccurrences(responseText, "```");
-        if (openBlocks % 2 != 0)
-        {
-            Logger.LogWarning(
-                "[{Agent}] Unclosed code block for {Context} — likely truncated output",
-                AgentName, contextIdentifier);
-
-            throw new OutputTruncationException(
-                maxOutputTokens, responseText.Length, reasoningEffort, "Unclosed code block (odd ``` count)");
-        }
-    }
-
-    private static int CountOccurrences(string text, string pattern)
-    {
-        int count = 0;
-        int idx = 0;
-        while ((idx = text.IndexOf(pattern, idx, StringComparison.Ordinal)) >= 0)
-        {
-            count++;
-            idx += pattern.Length;
-        }
-        return count;
     }
 }
