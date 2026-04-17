@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace McpChatWeb.Services;
 
@@ -59,10 +60,13 @@ public class ProcessManager : IDisposable
     private readonly string _repoRoot;
     private readonly string _doctorShPath;
 
+    private static readonly string[] AllowedCommands = { "migrate", "run", "full", "reverse-engineer", "reverse", "re", "convert-only", "convert", "resume" };
+    private static readonly Regex SafePathPattern = new(@"^[a-zA-Z0-9_\-./]+$", RegexOptions.Compiled);
+
     public ProcessManager(string repoRoot)
     {
-        _repoRoot = repoRoot;
-        _doctorShPath = Path.Combine(repoRoot, "doctor.sh");
+        _repoRoot = Path.GetFullPath(repoRoot);
+        _doctorShPath = Path.Combine(_repoRoot, "doctor.sh");
     }
 
     /// <summary>
@@ -78,6 +82,25 @@ public class ProcessManager : IDisposable
         string? modelId = null,
         Dictionary<string, string>? extraEnv = null)
     {
+        // Validate command against allowlist
+        if (!AllowedCommands.Contains(command.ToLowerInvariant()))
+            throw new ArgumentException($"Invalid command: '{command}'. Allowed: {string.Join(", ", AllowedCommands)}");
+
+        // Validate sourceFolder to prevent path traversal and argument injection
+        if (sourceFolder != null)
+        {
+            if (sourceFolder.Contains('\0'))
+                throw new ArgumentException("Source folder contains invalid characters.");
+            if (sourceFolder.Contains(".."))
+                throw new ArgumentException("Source folder must not contain path traversal sequences.");
+            if (!SafePathPattern.IsMatch(sourceFolder))
+                throw new ArgumentException("Source folder contains disallowed characters. Only alphanumeric, dash, underscore, dot, and forward slash are permitted.");
+
+            var resolvedPath = Path.GetFullPath(Path.Combine(_repoRoot, sourceFolder));
+            if (!resolvedPath.StartsWith(_repoRoot + Path.DirectorySeparatorChar) && resolvedPath != _repoRoot)
+                throw new ArgumentException("Source folder must resolve to a path within the repository root.");
+        }
+
         var run = new ManagedRun
         {
             Command = command,

@@ -6050,14 +6050,22 @@ app.MapPost("/api/runs/start", (McpChatWeb.Models.StartRunRequest request, McpCh
 	if (string.IsNullOrWhiteSpace(request.Command))
 		return Results.BadRequest("Command is required (migrate, reverse-engineer, convert-only, resume)");
 
-	var run = pm.StartRun(
-		request.Command,
-		request.Name ?? "",
-		request.TargetLanguage,
-		request.SpeedProfile,
-		request.SourceFolder,
-		request.Provider,
-		request.ModelId);
+	McpChatWeb.Services.ManagedRun run;
+	try
+	{
+		run = pm.StartRun(
+			request.Command,
+			request.Name ?? "",
+			request.TargetLanguage,
+			request.SpeedProfile,
+			request.SourceFolder,
+			request.Provider,
+			request.ModelId);
+	}
+	catch (ArgumentException ex)
+	{
+		return Results.BadRequest(ex.Message);
+	}
 
 	return Results.Ok(new McpChatWeb.Models.RunStatusDto(
 		run.RunId, run.Name, run.Command, run.TargetLanguage, run.SpeedProfile,
