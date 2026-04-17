@@ -1,6 +1,8 @@
 ## SECTION: System
 
-Analyze the following COBOL codebase: 29 program(s), 37 copybook(s), 27.320 total lines.
+Analyze the following COBOL codebase.
+
+{{CodebaseProfile}}
 
 ## Detected Features to Investigate
 - **Embedded SQL**: Map all database tables, queries, cursors. Document SQLCODE error handling paths.

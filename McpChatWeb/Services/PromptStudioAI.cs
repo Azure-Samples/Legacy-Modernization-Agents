@@ -1,15 +1,14 @@
-using Azure.AI.OpenAI;
-using Azure.Identity;
-using GitHub.Copilot.SDK;
+using CobolToQuarkusMigration.Agents.Infrastructure;
+using CobolToQuarkusMigration.Models;
 using Microsoft.Extensions.AI;
 using System.Text.Json;
 
 namespace McpChatWeb.Services;
 
 /// <summary>
-/// Creates IChatClient instances for Prompt Studio.
-/// Supports Azure OpenAI (API key or Entra ID) and GitHub Copilot SDK.
-/// Uses the active model selected in the portal setup modal.
+/// Creates IChatClient instances for Prompt Studio by delegating to
+/// <see cref="ChatClientFactory"/>. Resolves provider, endpoint, and model
+/// from environment variables and config files.
 /// </summary>
 public static class PromptStudioAI
 {
@@ -21,51 +20,15 @@ public static class PromptStudioAI
     {
         var activeModel = Environment.GetEnvironmentVariable("AZURE_OPENAI_CHAT_MODEL_ID")
             ?? Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL_ID") ?? "";
-        var serviceType = (Environment.GetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE") ?? "AzureOpenAI").ToLowerInvariant();
+        var serviceType = Environment.GetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE") ?? "AzureOpenAI";
         var apiKey = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_KEY") ?? "";
-        var azureEndpoint = Environment.GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT") ?? "";
+        var endpoint = Environment.GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT") ?? "";
 
         if (string.IsNullOrWhiteSpace(activeModel))
             return (null, "", "No AI model selected. Use 🔧 Setup in the portal to connect a provider.");
 
-        // ── GitHub Copilot SDK ──────────────────────────────────────────────
-        if (serviceType is "githubcopilotsdk" or "githubcopilot")
-        {
-            // Codex models don't support Chat Completions — swap to chat model
-            if (activeModel.Contains("codex", StringComparison.OrdinalIgnoreCase))
-            {
-                var chatModel = ReadChatModelFromConfig();
-                if (!string.IsNullOrWhiteSpace(chatModel) && !chatModel.Contains("codex", StringComparison.OrdinalIgnoreCase))
-                {
-                    Console.WriteLine($"🔄 Codex model '{activeModel}' → using chat model '{chatModel}' for Prompt Studio");
-                    activeModel = chatModel;
-                }
-            }
-
-            Console.WriteLine($"🔌 Prompt Studio AI: model='{activeModel}', provider='GitHubCopilotSDK'");
-
-            try
-            {
-                var options = new CopilotClientOptions { UseStdio = true };
-
-                // Use PAT if configured
-                var copilotToken = Environment.GetEnvironmentVariable("GITHUB_COPILOT_TOKEN") ?? "";
-                if (!string.IsNullOrWhiteSpace(copilotToken))
-                    options.GitHubToken = copilotToken;
-
-                var client = new CopilotChatClient(activeModel, options);
-                return (client, activeModel, "");
-            }
-            catch (Exception ex)
-            {
-                return (null, activeModel, $"Failed to create Copilot SDK client: {ex.Message}. Ensure 'gh auth login' or a PAT is configured.");
-            }
-        }
-
-        // ── Azure OpenAI ────────────────────────────────────────────────────
-
         // Codex models don't support Chat Completions — swap to chat model
-        if (serviceType == "azureopenai" && activeModel.Contains("codex", StringComparison.OrdinalIgnoreCase))
+        if (activeModel.Contains("codex", StringComparison.OrdinalIgnoreCase))
         {
             var chatModel = ReadChatModelFromConfig();
             if (!string.IsNullOrWhiteSpace(chatModel) && !chatModel.Contains("codex", StringComparison.OrdinalIgnoreCase))
@@ -75,38 +38,29 @@ public static class PromptStudioAI
             }
         }
 
-        // Resolve endpoint from env or config
-        if (string.IsNullOrWhiteSpace(azureEndpoint))
-            azureEndpoint = ReadEndpointFromConfig();
+        // Resolve endpoint from config if not in env
+        if (string.IsNullOrWhiteSpace(endpoint))
+            endpoint = ReadEndpointFromConfig();
 
-        if (string.IsNullOrWhiteSpace(azureEndpoint) || azureEndpoint.Contains("placeholder"))
-            return (null, activeModel, "No Azure endpoint configured. Use 🔧 Setup in the portal to connect Azure OpenAI.");
-
-        // Clear GitHub/placeholder tokens — use Entra ID for Azure
-        if (IsGitHubToken(apiKey) || string.IsNullOrWhiteSpace(apiKey) || apiKey.Contains("placeholder"))
+        // Clear GitHub/placeholder tokens for Azure — Entra ID handles auth
+        if (serviceType.Equals("AzureOpenAI", StringComparison.OrdinalIgnoreCase) &&
+            (IsGitHubToken(apiKey) || apiKey.Contains("placeholder")))
             apiKey = "";
 
-        Console.WriteLine($"🔌 Prompt Studio AI: model='{activeModel}', provider='AzureOpenAI'");
+        Console.WriteLine($"🔌 Prompt Studio AI: model='{activeModel}', provider='{serviceType}'");
+
+        var settings = new AISettings
+        {
+            ServiceType = serviceType,
+            Endpoint = endpoint,
+            ApiKey = apiKey,
+            ModelId = activeModel,
+            DeploymentName = activeModel
+        };
 
         try
         {
-            AzureOpenAIClient azureClient;
-            if (!string.IsNullOrWhiteSpace(apiKey))
-            {
-                azureClient = new AzureOpenAIClient(
-                    new Uri(azureEndpoint),
-                    new System.ClientModel.ApiKeyCredential(apiKey));
-            }
-            else
-            {
-                // Entra ID auth
-                azureClient = new AzureOpenAIClient(
-                    new Uri(azureEndpoint),
-                    new DefaultAzureCredential());
-            }
-
-            var client = azureClient.GetChatClient(activeModel).AsIChatClient();
-
+            var client = ChatClientFactory.CreateFromSettings(settings, activeModel);
             return (client, activeModel, "");
         }
         catch (Exception ex)
@@ -120,10 +74,8 @@ public static class PromptStudioAI
 
     private static string ReadChatModelFromConfig()
     {
-        // Try env var first
         var envChat = Environment.GetEnvironmentVariable("AZURE_OPENAI_CHAT_MODEL_ID") ?? "";
-        
-        // Read from appsettings.json
+
         try
         {
             var settingsPath = FindSettingsPath();
@@ -137,7 +89,6 @@ public static class PromptStudioAI
         }
         catch { }
 
-        // Fall back to env var if it's not a codex model
         if (!string.IsNullOrWhiteSpace(envChat) && !envChat.Contains("codex", StringComparison.OrdinalIgnoreCase))
             return envChat;
 

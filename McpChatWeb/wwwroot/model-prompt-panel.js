@@ -322,10 +322,10 @@ async function loadSourceAnalysis() {
     listEl.innerHTML = data.files.map(f => `
       <div class="source-file-item">
         <span class="source-file-icon">${f.fileType === 'Program' ? '📄' : f.fileType === 'Copybook' ? '📋' : '📎'}</span>
-        <span class="source-file-name">${f.fileName}</span>
-        <span class="source-file-meta">${f.lineCount} lines · ${f.complexity}</span>
+        <span class="source-file-name">${escapeHtml(f.fileName)}</span>
+        <span class="source-file-meta">${f.lineCount} lines · ${escapeHtml(f.complexity)}</span>
         ${f.features && f.features.length > 0
-          ? `<div class="source-file-features">${f.features.map(ft => `<span class="analysis-feature-tag">${ft.replace(/_/g, ' ')}</span>`).join('')}</div>`
+          ? `<div class="source-file-features">${f.features.map(ft => `<span class="analysis-feature-tag">${escapeHtml(ft.replace(/_/g, ' '))}</span>`).join('')}</div>`
           : ''}
       </div>
     `).join('');
@@ -335,7 +335,7 @@ async function loadSourceAnalysis() {
       const summaryDiv = document.createElement('div');
       summaryDiv.className = 'source-analysis-summary';
       summaryDiv.innerHTML =
-        `<span style="font-size:11px;color:#60a5fa;">Architecture: ${data.architecturePattern}</span> · ` +
+        `<span style="font-size:11px;color:#60a5fa;">Architecture: ${escapeHtml(data.architecturePattern)}</span> · ` +
         `<span style="font-size:11px;color:#64748b;">${data.totalLines?.toLocaleString()} total lines</span>`;
       listEl.parentElement.appendChild(summaryDiv);
     }
@@ -375,21 +375,21 @@ function renderPromptList(prompts) {
     const score = p.qualityScore || 0;
     const scoreClass = score >= 8 ? 'high' : score >= 5 ? 'medium' : score > 0 ? 'low' : 'none';
     const scoreBadge = score > 0
-      ? `<span class="quality-score ${scoreClass}" title="${(p.observations || '').replace(/"/g, '&quot;')}">${score}/10</span>`
+      ? `<span class="quality-score ${scoreClass}" title="${escapeHtml(p.observations || '')}">${score}/10</span>`
       : '';
     return `
-    <div class="prompt-item ${p.enabled ? '' : 'prompt-disabled'}" data-prompt-id="${p.id}">
+    <div class="prompt-item ${p.enabled ? '' : 'prompt-disabled'}" data-prompt-id="${escapeHtml(p.id)}">
       <div class="prompt-item-header">
         <label class="prompt-toggle" title="${p.enabled ? 'Enabled — click to disable' : 'Disabled — click to enable'}">
-          <input type="checkbox" ${p.enabled ? 'checked' : ''} onchange="togglePrompt('${p.id}', this.checked)">
+          <input type="checkbox" ${p.enabled ? 'checked' : ''} onchange="togglePrompt('${escapeHtml(p.id)}', this.checked)">
           <span class="prompt-toggle-slider"></span>
         </label>
-        <span class="prompt-name">${p.name}</span>
+        <span class="prompt-name">${escapeHtml(p.name)}</span>
         ${scoreBadge}
         <div class="prompt-actions">
-          <button class="btn-prompt-action" onclick="openPromptEditor('${p.id}')" title="Edit current prompt">✏️</button>
-          <button class="btn-prompt-action btn-prompt-rescore" onclick="rescorePrompt('${p.id}', this)" title="Re-evaluate quality score with AI">🔍 Score</button>
-          <button class="btn-prompt-action btn-prompt-generate" onclick="autoGenerateForPrompt('${p.id}')" title="Analyze source files and generate optimized prompt">⚡ Generate</button>
+          <button class="btn-prompt-action" onclick="openPromptEditor('${escapeHtml(p.id)}')" title="Edit current prompt">✏️</button>
+          <button class="btn-prompt-action btn-prompt-rescore" onclick="rescorePrompt('${escapeHtml(p.id)}', this)" title="Re-evaluate quality score with AI">🔍 Score</button>
+          <button class="btn-prompt-action btn-prompt-generate" onclick="autoGenerateForPrompt('${escapeHtml(p.id)}')" title="Analyze source files and generate optimized prompt">⚡ Generate</button>
         </div>
       </div>
       ${p.observations ? `<div class="prompt-obs">${escapeHtml(p.observations)}</div>` : ''}

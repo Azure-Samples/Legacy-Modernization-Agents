@@ -82,6 +82,7 @@ public class ReverseEngineeringProcess
             progressCallback?.Invoke("Scanning for COBOL files", 1, totalSteps);
 
             var cobolFiles = await _fileHelper.ScanDirectoryForCobolFilesAsync(cobolSourceFolder);
+            PromptLoader.CodebaseProfile = PromptLoader.GenerateCodebaseProfile(cobolFiles);
             _enhancedLogger.ShowSuccess($"Found {cobolFiles.Count} COBOL files");
             _logger.LogInformation("Found {Count} COBOL files", cobolFiles.Count);
 

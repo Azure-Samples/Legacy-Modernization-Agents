@@ -8,6 +8,9 @@ let _runPollInterval = null;
 let _reportsList = [];
 let _chatWithReport = null; // path of report being used as chat context
 
+// HTML-escape to prevent XSS from API-supplied strings
+const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+
 document.addEventListener('DOMContentLoaded', () => {
   initMissionControl();
 });
@@ -43,7 +46,7 @@ function populateModelDropdown() {
   if (!modelSelect) return;
   const models = _modelCatalog.length > 0 ? _modelCatalog : [{ id: '', label: '⚠️ Run ./doctor.sh setup first' }];
   modelSelect.innerHTML = models.map(m =>
-    `<option value="${m.id}">${m.label}</option>`
+    `<option value="${esc(m.id)}">${esc(m.label)}</option>`
   ).join('');
 }
 
@@ -341,7 +344,7 @@ async function browseFolderTab(folder) {
     const data = await res.json();
     renderFolderContents(listEl, data, folder);
   } catch (err) {
-    listEl.innerHTML = `<div class="mc-error">Failed: ${err.message}</div>`;
+    listEl.innerHTML = `<div class="mc-error">Failed: ${esc(err.message)}</div>`;
   }
 }
 
@@ -358,9 +361,9 @@ function renderFolderContents(container, data, folder) {
     ${data.items.map(item => `
       <div class="mc-folder-item ${item.type}">
         <span class="mc-fi-icon">${item.type === 'directory' ? '📁' : fileIcon(item.name)}</span>
-        <span class="mc-fi-name" ${item.type === 'file' ? `title="${item.relativePath}"` : ''}>${item.name}</span>
+        <span class="mc-fi-name" ${item.type === 'file' ? `title="${esc(item.relativePath)}"` : ''}>${esc(item.name)}</span>
         <span class="mc-fi-meta">${item.lineCount ? `${item.lineCount} lines` : item.type === 'directory' ? '' : formatSize(item.sizeBytes)}</span>
-        ${folder === 'source' && item.type === 'file' ? `<button class="mc-fi-delete" onclick="deleteSourceFile('${item.name}')" title="Remove">✕</button>` : ''}
+        ${folder === 'source' && item.type === 'file' ? `<button class="mc-fi-delete" onclick="deleteSourceFile('${esc(item.name)}')" title="Remove">✕</button>` : ''}
       </div>
     `).join('')}
   `;

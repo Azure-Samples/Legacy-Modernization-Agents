@@ -176,6 +176,7 @@ public class ChunkedMigrationProcess
             progressCallback?.Invoke("Scanning for COBOL files", 1, 6, null);
 
             var cobolFiles = await _fileHelper.ScanDirectoryForCobolFilesAsync(cobolSourceFolder);
+            PromptLoader.CodebaseProfile = PromptLoader.GenerateCodebaseProfile(cobolFiles);
             await _migrationRepository.SaveCobolFilesAsync(runId, cobolFiles);
 
             if (cobolFiles.Count == 0)

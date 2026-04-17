@@ -46,12 +46,19 @@ public static class ChatClientFactory
 
         return serviceType.ToLowerInvariant() switch
         {
-            // GitHub Copilot SDK: authenticates via logged-in Copilot CLI user
+            "azureopenai" =>
+                CreateAzureClient(settings, model, logger),
+
             "githubcopilotsdk" or "githubcopilot" =>
                 CreateGitHubCopilotChatClient(model, logger: logger),
 
-            _ => // AzureOpenAI or anything with an endpoint
-                CreateAzureClient(settings, model, logger)
+            "openai" =>
+                CreateOpenAIChatClient(settings.ApiKey, model, logger),
+
+            _ => throw new ArgumentException(
+                $"Unsupported AI service type: '{settings.ServiceType}'. " +
+                "Supported values: AzureOpenAI, GitHubCopilotSDK, OpenAI.",
+                nameof(settings))
         };
     }
 
@@ -252,7 +259,8 @@ public static class ChatClientFactory
             ? settings.DeploymentName
             : modelId;
 
-        bool useEntraId = string.IsNullOrEmpty(apiKey) || apiKey.Contains("your-api-key") || apiKey.Contains("placeholder");
+        // Empty or whitespace API key → use Entra ID (DefaultAzureCredential)
+        bool useEntraId = string.IsNullOrWhiteSpace(apiKey);
 
         if (useEntraId)
             return CreateAzureOpenAIChatClientWithDefaultCredential(endpoint, deployment, logger);

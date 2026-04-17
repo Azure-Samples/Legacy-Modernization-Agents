@@ -56,7 +56,11 @@ public class MigrationProcess
         _fileHelper = fileHelper;
         _settings = settings;
         _enhancedLogger = new EnhancedLogger(logger);
-        var providerName = chatClient is Agents.Infrastructure.CopilotChatClient ? "GitHub Copilot" : "Azure OpenAI";
+        var providerName = chatClient is Agents.Infrastructure.CopilotChatClient
+            ? "GitHub Copilot"
+            : settings.AISettings.ServiceType?.Equals("OpenAI", StringComparison.OrdinalIgnoreCase) == true
+                ? "OpenAI"
+                : "Azure OpenAI";
         _chatLogger = new ChatLogger(LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger<ChatLogger>(), providerName: providerName);
         _migrationRepository = migrationRepository;
     }
@@ -208,6 +212,7 @@ public class MigrationProcess
             progressCallback?.Invoke("Scanning for COBOL files", 1, totalSteps);
 
             var cobolFiles = await _fileHelper.ScanDirectoryForCobolFilesAsync(cobolSourceFolder);
+            PromptLoader.CodebaseProfile = PromptLoader.GenerateCodebaseProfile(cobolFiles);
             await _migrationRepository.SaveCobolFilesAsync(runId, cobolFiles);
 
             if (cobolFiles.Count == 0)
@@ -393,10 +398,10 @@ public class MigrationProcess
 
             _enhancedLogger.ShowConversationSummary();
 
-            // Export chat logs for Azure OpenAI conversations
+            // Export chat logs for AI conversations
             try
             {
-                _enhancedLogger.ShowStep(99, 100, "Exporting Chat Logs", "Generating readable Azure OpenAI conversation logs");
+                _enhancedLogger.ShowStep(99, 100, "Exporting Chat Logs", "Generating readable AI conversation logs");
                 await _chatLogger.SaveChatLogAsync();
                 await _chatLogger.SaveChatLogJsonAsync();
 

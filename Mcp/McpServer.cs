@@ -70,12 +70,13 @@ public sealed class McpServer
             if (string.IsNullOrWhiteSpace(chatDeployment)) chatDeployment = _aiSettings?.DeploymentName;
             if (string.IsNullOrWhiteSpace(chatDeployment)) chatDeployment = _aiSettings?.ModelId;
 
-            if (!string.IsNullOrEmpty(chatApiKey) && !string.IsNullOrEmpty(chatDeployment))
+            if (!string.IsNullOrEmpty(chatDeployment))
             {
                 try
                 {
                     // Build a chat-specific AISettings so CreateChatClientFromSettings
-                    // picks the right provider (Azure OpenAI vs GitHub Copilot vs OpenAI)
+                    // picks the right provider (Azure OpenAI vs GitHub Copilot vs OpenAI).
+                    // Note: chatApiKey may be null/empty for Entra ID (DefaultAzureCredential) auth.
                     var chatSettings = new AISettings
                     {
                         ServiceType = _aiSettings?.ServiceType ?? "AzureOpenAI",

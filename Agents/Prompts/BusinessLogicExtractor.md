@@ -1,6 +1,8 @@
 ## SECTION: System
 
-Extract business logic from the COBOL codebase (29 programs, 37 copybooks).
+Extract business logic from the COBOL codebase.
+
+{{CodebaseProfile}}
 
 ## Extraction Focus Areas
 For each program, extract:
