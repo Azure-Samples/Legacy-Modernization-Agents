@@ -5,6 +5,17 @@ All notable changes to this repository are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **External Prompt Templates** — All agent system prompts are now loaded from Markdown files in `Agents/Prompts/` (`CobolAnalyzer.md`, `BusinessLogicExtractor.md`, `JavaConverter.md`, `CSharpConverter.md`, `DependencyMapper.md`, `ChunkAwareJavaConverter.md`, `ChunkAwareCSharpConverter.md`). Prompts are no longer embedded as inline strings in `.cs` agent files.
+- **`{{CodebaseProfile}}` auto-injection** — Prompt templates may include the `{{CodebaseProfile}}` placeholder, which is replaced at runtime with a codebase summary (detected features, file stats, SQL usage). See `## SECTION: Name` delimiter syntax in prompt files.
+
+### Fixed
+- **`ChatClientFactory` `InvalidOperationException`** — `CreateFromSettings()` now throws a descriptive `InvalidOperationException` when called with an unrecognised `ServiceType`, instead of returning `null` and causing a downstream null-reference crash.
+- **Provider label display** — AI provider labels in the portal header now correctly reflect the active provider (was showing `AzureOpenAI` for all providers).
+- **XSS hardening** — API-supplied model names are HTML-escaped before DOM insertion in the portal setup modal.
+
 ## [3.0.0] - 2026-03-17
 
 ### Added
@@ -56,7 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - API keys in setup modal stored server-side only (env vars + gitignored config), never in browser storage
 - Azure ARM API calls use separate `management.azure.com` token scope
 
-## [2.5.0] - 2026-02-23
+## [2.5.0] - 2026-03-05
 
 ### Added
 - **Business Logic Persistence** — `ReverseEngineeringProcess` and `ChunkedReverseEngineeringProcess` now persist extracted `BusinessLogic` records to a new `business_logic` SQLite table via `IMigrationRepository.SaveBusinessLogicAsync`. Added `GetBusinessLogicAsync` and `DeleteBusinessLogicAsync` to `IMigrationRepository`, `SqliteMigrationRepository`, and `HybridMigrationRepository`.

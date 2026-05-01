@@ -1,7 +1,6 @@
-# Reverse Engineering Process Architecture
+**Last updated**: 2026-02-23
 
-> **Version:** 0.2 (Smart Chunking)  
-> **Last Updated:** 2026-02-23
+# Reverse Engineering Process Architecture
 
 ## Overview
 
