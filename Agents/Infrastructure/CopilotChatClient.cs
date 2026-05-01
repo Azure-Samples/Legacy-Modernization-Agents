@@ -277,6 +277,15 @@ public sealed class CopilotChatClient : IChatClient, IAsyncDisposable
     public object? GetService(Type serviceType, object? serviceKey = null) => null;
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Marks the instance as disposed so subsequent API calls throw
+    /// <see cref="ObjectDisposedException"/>. For a graceful shutdown of
+    /// the underlying Copilot CLI process, prefer <c>await using</c> or
+    /// call <see cref="DisposeAsync"/> directly.
+    /// </remarks>
+    public void Dispose()
+    {
+        _disposed = true;
     public void Dispose()
     {
         if (_disposed) return;
