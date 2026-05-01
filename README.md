@@ -170,7 +170,7 @@ cd Legacy-Modernization-Agents
 cp Config/ai-config.local.env.example Config/ai-config.local.env
 # Edit: _MAIN_ENDPOINT (required), _CODE_MODEL / _CHAT_MODEL (optional)
 # Auth: use 'az login' (recommended) OR set _MAIN_API_KEY
-# See azlogin-auth-guide.md for Entra ID setup details
+# See docs/az-login-auth-guide.md for Entra ID setup details
 
 # 3. Start Neo4j (dependency graph storage)
 docker-compose up -d neo4j
@@ -383,27 +383,37 @@ Legacy-Modernization-Agents/
 
 ## 🛠️ Customizing Agent Behavior
 
-Each agent has a **system prompt** that defines its behavior. To customize output (e.g., DDD patterns, specific frameworks), edit these files:
+Each agent has a **system prompt** loaded from an external Markdown template. To customize output (e.g., DDD patterns, specific frameworks), edit the corresponding file in `Agents/Prompts/`:
+
+### Prompt Template System
+
+Prompt files use two conventions:
+
+- **`## SECTION: Name`** delimiters split the file into `System` and `User` message parts. Sections not prefixed with `## SECTION:` are treated as the system prompt.
+- **`{{CodebaseProfile}}`** is an auto-injected variable replaced at runtime with a summary of the COBOL codebase being processed (detected features, file stats, SQL usage, etc.). Do not remove this placeholder.
 
 ### Agent Prompt Locations
 
-| Agent | File | Line | What It Does |
-|-------|------|------|--------------|
-| **CobolAnalyzerAgent** | `Agents/CobolAnalyzerAgent.cs` | ~116 | Extracts structure, variables, paragraphs, SQL |
-| **BusinessLogicExtractorAgent** | `Agents/BusinessLogicExtractorAgent.cs` | ~44 | Extracts user stories, features, business rules |
-| **JavaConverterAgent** | `Agents/JavaConverterAgent.cs` | ~66 | Converts to Java Quarkus |
-| **CSharpConverterAgent** | `Agents/CSharpConverterAgent.cs` | ~64 | Converts to C# .NET |
-| **DependencyMapperAgent** | `Agents/DependencyMapperAgent.cs` | ~129 | Maps CALL/COPY/PERFORM relationships |
-| **ChunkAwareJavaConverter** | `Agents/ChunkAwareJavaConverter.cs` | ~268 | Large file chunked conversion (Java) |
-| **ChunkAwareCSharpConverter** | `Agents/ChunkAwareCSharpConverter.cs` | ~269 | Large file chunked conversion (C#) |
+| Agent | Prompt File | What It Does |
+|-------|-------------|--------------|
+| **CobolAnalyzerAgent** | `Agents/Prompts/CobolAnalyzer.md` | Extracts structure, variables, paragraphs, SQL |
+| **BusinessLogicExtractorAgent** | `Agents/Prompts/BusinessLogicExtractor.md` | Extracts user stories, features, business rules |
+| **JavaConverterAgent** | `Agents/Prompts/JavaConverter.md` | Converts to Java Quarkus |
+| **CSharpConverterAgent** | `Agents/Prompts/CSharpConverter.md` | Converts to C# .NET |
+| **DependencyMapperAgent** | `Agents/Prompts/DependencyMapper.md` | Maps CALL/COPY/PERFORM relationships |
+| **ChunkAwareJavaConverter** | `Agents/Prompts/ChunkAwareJavaConverter.md` | Large file chunked conversion (Java) |
+| **ChunkAwareCSharpConverter** | `Agents/Prompts/ChunkAwareCSharpConverter.md` | Large file chunked conversion (C#) |
 
 ### Example: Adding DDD Patterns
 
-To make the Java converter generate Domain-Driven Design code, edit `Agents/JavaConverterAgent.cs` around line 66:
+To make the Java converter generate Domain-Driven Design code, edit `Agents/Prompts/JavaConverter.md`:
 
-```csharp
-var systemPrompt = @"
+```markdown
+## SECTION: System
+
 You are an expert in converting COBOL programs to Java with Quarkus framework.
+
+{{CodebaseProfile}}
 
 DOMAIN-DRIVEN DESIGN REQUIREMENTS:
 - Identify bounded contexts from COBOL program sections
@@ -420,10 +430,9 @@ OUTPUT STRUCTURE:
 - ports/         → Interfaces (Ports & Adapters)
 
 ...existing prompt content...
-";
 ```
 
-Similarly for C#, edit `Agents/CSharpConverterAgent.cs`.
+Similarly for C#, edit `Agents/Prompts/CSharpConverter.md`.
 
 ---
 
@@ -1042,7 +1051,7 @@ _CODE_MODEL="gpt-5.1-codex-mini"     # For Code Conversion
 
 > 💡 **Prefer keyless auth?** Run `az login` and leave `_MAIN_API_KEY` empty.
 > You need the **"Cognitive Services OpenAI User"** role on your Azure OpenAI resource.
-> See [Azure AD / Entra ID Authentication Guide](azlogin-auth-guide.md) for full instructions.
+> See [Azure AD / Entra ID Authentication Guide](docs/az-login-auth-guide.md) for full instructions.
 
 ### Neo4j (Dependency Graphs)
 
@@ -1099,8 +1108,10 @@ See [Parallel Jobs Formula](#parallel-jobs-formula) for chunking configuration d
 ## 📚 Further Reading
 
 - [Smart Chunking & Token Architecture](docs/smart-chunking-architecture.md) - Full diagrams, constants reference, and complexity scoring details
-- [Smart Chunking Guide](Smart-chuncking-how%20it-works.md) - Deep technical details
-- [Architecture Documentation](REVERSE_ENGINEERING_ARCHITECTURE.md) - System design
+- [Smart Chunking Guide](docs/smart-chunking-deep-dive.md) - Deep technical details
+- [Architecture Documentation](docs/REVERSE_ENGINEERING_ARCHITECTURE.md) - System design
+- [Speed Profiles](docs/speed-profiles.md) - TURBO/FAST/BALANCED/THOROUGH env var overrides and complexity scoring
+- [Azure AD / Entra ID Authentication Guide](docs/az-login-auth-guide.md) - Keyless auth setup
 - [Changelog](CHANGELOG.md) - Version history
 
 ---
@@ -1112,7 +1123,7 @@ See [Parallel Jobs Formula](#parallel-jobs-formula) for chunking configuration d
 | [Documentation Updater](.github/workflows/documentation-updater.lock.yml) | Push / PR to `main` | Checks documentation completeness and reports gaps via issues or PR comments |
 | [Documentation Audit](.github/workflows/documentation-audit.lock.yml) | Weekly schedule | Performs a full audit of project documentation for accuracy and completeness |
 | [Test Enhancer](.github/workflows/test-enhancer.lock.yml) | On demand | Agentic workflow that analyzes the codebase and proposes improvements to test coverage |
-| [Branch Reviewer](.github/agents/branch-reviewer.agent.md) | On demand (Copilot CLI) | Reviews branch changes, summarizes commits, and detects breaking changes vs. `main` |
+| [Branch Reviewer](.github/agents/pr-review.agent.md) | On demand (Copilot CLI) | Reviews branch changes, summarizes commits, and detects breaking changes vs. `main` |
 
 ---
 

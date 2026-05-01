@@ -1,5 +1,12 @@
 # Spec-Driven Code Generation: Implementation Plan
 
+> ⚠️ **Status: Deferred / Not Implemented**
+> This document describes a proposal that was evaluated and deferred. The `ConversionPlannerAgent`, `IConversionPlannerAgent`, Constitution loader, and Clarify step described here do **not** exist in the codebase. The "Spec-Driven Migration" workflow was explicitly removed in v2.3.0 (see CHANGELOG). This file is retained for historical reference only.
+
+**Last updated**: 2026-04-28
+
+---
+
 ## Pipeline
 
 ```

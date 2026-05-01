@@ -1,4 +1,6 @@
-# Smart Chunking v0.2: Deep Technical Documentation
+# Smart Chunking: Deep Technical Documentation
+
+**Last updated**: 2026-04-28
 
 ## Overview
 

@@ -1362,7 +1362,7 @@ EOF
     else
         echo -e "${BLUE}ℹ️  No API key set — will use Azure AD (Entra ID) via 'az login'.${NC}"
         echo -e "${BLUE}   Make sure you have the 'Cognitive Services OpenAI User' role.${NC}"
-        echo -e "${BLUE}   See: azlogin-auth-guide.md for details.${NC}"
+        echo -e "${BLUE}   See: docs/az-login-auth-guide.md for details.${NC}"
     fi
 
     # Get Code Model Deployment Name
