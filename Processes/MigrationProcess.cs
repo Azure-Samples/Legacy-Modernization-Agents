@@ -364,14 +364,16 @@ public class MigrationProcess
                 }
                 else
                 {
-                    // Fallback shouldn't happen, but handle gracefully
-                    _logger.LogWarning("Unexpected file type: {Type} for {FileName}", javaFile.GetType().Name, javaFile.FileName);
-                    await _fileHelper.SaveCodeFileAsync((CodeFile)javaFile, javaOutputFolder, fileExtension);
+                    // javaFile is null — skip safely
+                    _logger.LogWarning("Skipping file save because entry at index {Index} is null.", i);
                 }
 
                 _enhancedLogger.ShowProgressBar(i + 1, javaFiles.Count, $"Saving {saveLangName} files");
+                var logFileType = javaFile?.GetType().Name ?? "<null>";
+                var logFileName = javaFile?.FileName ?? "<null>";
+                var logContentLen = javaFile?.Content?.Length ?? 0;
                 _enhancedLogger.LogBehindTheScenes("FILE_OUTPUT", "CODE_FILE_SAVED",
-                    $"Saved {javaFile.FileName} ({javaFile.Content.Length} chars)");
+                    $"Saved {logFileName} ({logContentLen} chars)");
                 progressCallback?.Invoke($"Saving {saveLangName} files ({i + 1}/{javaFiles.Count})", 5, totalSteps);
             }            // Step 6: Generate migration report
             _enhancedLogger.ShowStep(6, totalSteps, "Report Generation", "Creating migration summary and metrics");
