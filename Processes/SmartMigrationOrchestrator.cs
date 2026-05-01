@@ -110,6 +110,7 @@ public class SmartMigrationOrchestrator
         progressCallback?.Invoke("Analyzing files for chunking requirements", 1, 4);
 
         var cobolFiles = await _fileHelper.ScanDirectoryForCobolFilesAsync(cobolSourceFolder);
+        PromptLoader.CodebaseProfile = PromptLoader.GenerateCodebaseProfile(cobolFiles);
         
         if (cobolFiles.Count == 0)
         {

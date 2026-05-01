@@ -25,20 +25,6 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
     protected override string AgentName => "ChunkAwareJavaConverter";
 
     /// <summary>
-    /// Sets the Run ID for the current context.
-    /// </summary>
-    public void SetRunId(int runId)
-    {
-        _runId = runId;
-    }
-
-    /// <inheritdoc/>
-    public void SetBusinessLogicContext(List<BusinessLogic> businessLogicExtracts)
-    {
-        _businessLogicExtracts = businessLogicExtracts ?? new();
-    }
-
-    /// <summary>
     /// Creates a ChunkAwareJavaConverter, routing to Responses API or Chat API based on availability.
     /// </summary>
     public static ChunkAwareJavaConverter Create(
@@ -56,6 +42,20 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
         return responsesClient != null
             ? new ChunkAwareJavaConverter(responsesClient, logger, modelId, conversionSettings, enhancedLogger, chatLogger, rateLimiter, settings, runId)
             : new ChunkAwareJavaConverter(chatClient!, logger, modelId, conversionSettings, enhancedLogger, chatLogger, rateLimiter, settings, runId);
+    }
+
+    /// <summary>
+    /// Sets the Run ID for the current context.
+    /// </summary>
+    public void SetRunId(int runId)
+    {
+        _runId = runId;
+    }
+
+    /// <inheritdoc/>
+    public void SetBusinessLogicContext(List<BusinessLogic> businessLogicExtracts)
+    {
+        _businessLogicExtracts = businessLogicExtracts ?? new();
     }
 
     /// <summary>
@@ -93,6 +93,7 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
         : base(chatClient, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings)
     {
         _conversionSettings = conversionSettings;
+        _runId = runId;
     }
 
     private int MaxContentChars => Settings?.ChunkingSettings?.AutoChunkCharThreshold ?? 150_000;

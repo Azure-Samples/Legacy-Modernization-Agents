@@ -5,6 +5,8 @@ using CobolToQuarkusMigration.Agents.Interfaces;
 using CobolToQuarkusMigration.Models;
 using CobolToQuarkusMigration.Helpers;
 using System.Diagnostics;
+using System.Text;
+using System.Text.RegularExpressions;
 
 namespace CobolToQuarkusMigration.Agents;
 
@@ -25,10 +27,19 @@ public class CobolAnalyzerAgent : ICobolAnalyzerAgent
     private readonly AppSettings? _settings;
     private readonly bool _useResponsesApi;
 
+    /// <summary>Detected capabilities of the configured model.</summary>
+    private ModelCapabilities Capabilities { get; }
+
+    /// <summary>The model profile controlling reasoning effort tiers and token limits.</summary>
+    private ModelProfileSettings Profile { get; }
+
+    // Pre-compiled config-driven indicator regexes (built at construction)
+    private readonly List<(Regex regex, int weight)> _compiledIndicators;
+
     private string AgentName => "CobolAnalyzerAgent";
 
     private string ProviderName =>
-        _chatClient is CopilotChatClient ? "GitHub Copilot" : "Azure OpenAI";
+        _chatClient is Infrastructure.CopilotChatClient ? "GitHub Copilot" : "Azure OpenAI";
 
     /// <summary>
     /// Creates a CobolAnalyzerAgent, routing to Responses API or Chat API based on availability.
@@ -68,11 +79,11 @@ public class CobolAnalyzerAgent : ICobolAnalyzerAgent
         _rateLimiter = rateLimiter;
         _settings = settings;
         _useResponsesApi = true;
+        Capabilities = ModelCapabilities.Detect(modelId);
+        Profile = responsesClient.Profile;
+        ContentAwareReasoning.ClampProfileToModel(Profile, Capabilities);
+        _compiledIndicators = ContentAwareReasoning.CompileIndicators(Profile);
     }
-
-    /// <summary>
-    /// Initializes a new instance using Chat Completions API (for chat models).
-    /// </summary>
     public CobolAnalyzerAgent(
         IChatClient chatClient,
         ILogger<CobolAnalyzerAgent> logger,
@@ -90,6 +101,14 @@ public class CobolAnalyzerAgent : ICobolAnalyzerAgent
         _rateLimiter = rateLimiter;
         _settings = settings;
         _useResponsesApi = false;
+        Capabilities = ModelCapabilities.Detect(modelId);
+        Profile = settings?.ModelProfile ?? new ModelProfileSettings();
+        ContentAwareReasoning.ClampProfileToModel(Profile, Capabilities);
+        _compiledIndicators = ContentAwareReasoning.CompileIndicators(Profile);
+
+        logger.LogInformation(
+            "[CobolAnalyzerAgent] IChatClient path: model={Model}, family={Family}, reasoning={Reasoning}",
+            modelId, Capabilities.Family, Capabilities.Reasoning);
     }
 
     /// <inheritdoc/>
@@ -306,6 +325,8 @@ public class CobolAnalyzerAgent : ICobolAnalyzerAgent
                     _enhancedLogger?.LogBehindTheScenes("API_CALL", "ChatCompletion",
                         $"Calling {ProviderName} Chat API for {contextIdentifier}", AgentName);
                     
+                    var (maxTokens, reasoningEffort) = CalculateTokenSettings(systemPrompt, userPrompt);
+
                     var messages = new List<Microsoft.Extensions.AI.ChatMessage>
                     {
                         new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.System, systemPrompt),
@@ -315,12 +336,16 @@ public class CobolAnalyzerAgent : ICobolAnalyzerAgent
                     var options = new Microsoft.Extensions.AI.ChatOptions
                     {
                         ModelId = _modelId,
-                        // NOTE: gpt-5.1-chat does NOT support custom temperature, only default (1.0)
-                        MaxOutputTokens = 16384
+                        MaxOutputTokens = maxTokens
                     };
+
+                    ApplyModelSpecificOptions(options, reasoningEffort, maxTokens);
                     
                     var chatResponse = await _chatClient.GetResponseAsync(messages, options);
                     response = ExtractResponseText(chatResponse);
+
+                    // ── Truncation detection ──
+                    DetectTruncation(chatResponse, response, maxTokens, reasoningEffort, contextIdentifier);
                 }
                 else
                 {
@@ -335,6 +360,80 @@ public class CobolAnalyzerAgent : ICobolAnalyzerAgent
                 _rateLimiter?.ReleaseSlot();
                 return (response, false, null);
             }
+            // ── Output truncation catch ──
+            catch (OutputTruncationException otex)
+            {
+                _logger.LogWarning(
+                    "[CobolAnalyzerAgent] Output truncated for {Context}: {Message}",
+                    contextIdentifier, otex.Message);
+
+                _enhancedLogger?.LogBehindTheScenes("OUTPUT_TRUNCATION", "DETECTED",
+                    $"max_output_tokens={otex.MaxOutputTokens}, output={otex.OutputCharCount} chars, " +
+                    $"effort='{otex.ReasoningEffort}', signal='{otex.TruncationSignal}'", AgentName);
+
+                var currentMaxTokens = otex.MaxOutputTokens;
+                var currentEffort = otex.ReasoningEffort;
+                var maxTruncRetries = Profile.ReasoningExhaustionMaxRetries;
+
+                for (int truncRetry = 0; truncRetry < maxTruncRetries; truncRetry++)
+                {
+                    currentMaxTokens = (int)(currentMaxTokens * Profile.ReasoningExhaustionRetryMultiplier);
+                    currentMaxTokens = Math.Min(currentMaxTokens, Profile.MaxOutputTokens);
+
+                    if (currentEffort == Profile.LowReasoningEffort && currentEffort != Profile.MediumReasoningEffort)
+                        currentEffort = Profile.MediumReasoningEffort;
+                    else if (currentEffort == Profile.MediumReasoningEffort && currentEffort != Profile.HighReasoningEffort)
+                        currentEffort = Profile.HighReasoningEffort;
+
+                    if (currentMaxTokens >= Profile.MaxOutputTokens && currentEffort == Profile.HighReasoningEffort)
+                    {
+                        _logger.LogError(
+                            "[CobolAnalyzerAgent] Thrash guard: max tokens ({Tokens}) and max effort ('{Effort}') for {Context}.",
+                            currentMaxTokens, currentEffort, contextIdentifier);
+                        break;
+                    }
+
+                    _logger.LogInformation(
+                        "[CobolAnalyzerAgent] Truncation retry {Retry}/{Max} for {Context}: tokens={Tokens}, effort='{Effort}'",
+                        truncRetry + 1, maxTruncRetries, contextIdentifier, currentMaxTokens, currentEffort);
+
+                    try
+                    {
+                        var retryMessages = new List<Microsoft.Extensions.AI.ChatMessage>
+                        {
+                            new(Microsoft.Extensions.AI.ChatRole.System, systemPrompt),
+                            new(Microsoft.Extensions.AI.ChatRole.User, userPrompt)
+                        };
+                        var retryOptions = new Microsoft.Extensions.AI.ChatOptions
+                        {
+                            ModelId = _modelId,
+                            MaxOutputTokens = currentMaxTokens
+                        };
+                        ApplyModelSpecificOptions(retryOptions, currentEffort, currentMaxTokens);
+
+                        var retryResponse = await _chatClient!.GetResponseAsync(retryMessages, retryOptions);
+                        var retryText = ExtractResponseText(retryResponse);
+                        DetectTruncation(retryResponse, retryText, currentMaxTokens, currentEffort, contextIdentifier);
+
+                        _enhancedLogger?.LogBehindTheScenes("OUTPUT_TRUNCATION_RECOVERED", "SUCCESS",
+                            $"Recovered on retry {truncRetry + 1} with tokens={currentMaxTokens}", AgentName);
+
+                        _chatLogger?.LogAIResponse(AgentName, contextIdentifier, retryText);
+                        _rateLimiter?.ReleaseSlot();
+                        return (retryText, false, null);
+                    }
+                    catch (OutputTruncationException)
+                    {
+                        _logger.LogWarning("[CobolAnalyzerAgent] Still truncated after retry {Retry} with tokens={Tokens}",
+                            truncRetry + 1, currentMaxTokens);
+                    }
+                }
+
+                _rateLimiter?.ReleaseSlot();
+                return (string.Empty, true,
+                    $"Output truncation: all {maxTruncRetries} escalation retries failed");
+            }
+            // ── END Output truncation ──
             catch (Exception ex) when (IsTransientError(ex) && attempt < maxRetries)
             {
                 lastException = ex;
@@ -438,5 +537,68 @@ public class CobolAnalyzerAgent : ICobolAnalyzerAgent
                 }
             }
         };
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // THREE-TIER CONTENT-AWARE REASONING — delegates to ContentAwareReasoning
+    // ═══════════════════════════════════════════════════════════════════════
+
+    private (int maxOutputTokens, string reasoningEffort) CalculateTokenSettings(
+        string systemPrompt, string userPrompt)
+    {
+        var (maxOutputTokens, reasoningEffort) = ContentAwareReasoning.CalculateTokenSettings(
+            systemPrompt, userPrompt, Profile, Capabilities, _compiledIndicators);
+
+        var cobolSource = ContentAwareReasoning.ExtractCobolSourceFromPrompt(userPrompt);
+        var complexityScore = ContentAwareReasoning.CalculateComplexityScore(cobolSource, Profile, _compiledIndicators);
+        var inputTokens = ContentAwareReasoning.EstimateTokens(systemPrompt) + ContentAwareReasoning.EstimateTokens(userPrompt);
+
+        _logger.LogInformation(
+            "[CobolAnalyzerAgent] Token settings ({Model}/{Family}): Input ~{Input}, complexity={Score} → {Tier} " +
+            "(effort='{Effort}', multiplier={Mult:F1}×), max_output_tokens={MaxOutput}",
+            _modelId, Capabilities.Family, inputTokens, complexityScore,
+            complexityScore >= Profile.HighThreshold ? "HIGH" :
+            complexityScore >= Profile.MediumThreshold ? "MEDIUM" : "LOW",
+            reasoningEffort,
+            complexityScore >= Profile.HighThreshold ? Profile.HighMultiplier :
+            complexityScore >= Profile.MediumThreshold ? Profile.MediumMultiplier : Profile.LowMultiplier,
+            maxOutputTokens);
+
+        return (maxOutputTokens, reasoningEffort);
+    }
+
+    private void ApplyModelSpecificOptions(ChatOptions options, string reasoningEffort, int maxOutputTokens)
+    {
+        ContentAwareReasoning.ApplyModelSpecificOptions(options, reasoningEffort, maxOutputTokens, Capabilities);
+
+        if (Capabilities.Reasoning == ReasoningStrategy.ThinkingBudget)
+        {
+            _logger.LogInformation("[CobolAnalyzerAgent] Claude thinking budget: {Budget} tokens (effort: {Effort})",
+                ContentAwareReasoning.CalculateThinkingBudget(maxOutputTokens, reasoningEffort), reasoningEffort);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // OUTPUT TRUNCATION DETECTION — delegates to ContentAwareReasoning
+    // ═══════════════════════════════════════════════════════════════════════
+
+    private void DetectTruncation(
+        Microsoft.Extensions.AI.ChatResponse response,
+        string responseText,
+        int maxOutputTokens,
+        string reasoningEffort,
+        string contextIdentifier)
+    {
+        try
+        {
+            ContentAwareReasoning.DetectTruncation(response, responseText, maxOutputTokens, reasoningEffort, contextIdentifier);
+        }
+        catch (OutputTruncationException otex)
+        {
+            _logger.LogWarning(
+                "[CobolAnalyzerAgent] {Signal} for {Context} — output truncated at {Tokens} max_output_tokens",
+                otex.TruncationSignal, contextIdentifier, maxOutputTokens);
+            throw;
+        }
     }
 }

@@ -83,6 +83,17 @@ builder.Services.PostConfigure<McpOptions>(options =>
 });
 builder.Services.AddSingleton<IMcpClient, McpProcessClient>();
 
+// Register ProcessManager for run management from the portal
+builder.Services.AddSingleton<McpChatWeb.Services.ProcessManager>(sp =>
+{
+	var contentRoot = builder.Environment.ContentRootPath;
+	var repoRoot = Path.GetFullPath("..", contentRoot);
+	if (!File.Exists(Path.Combine(repoRoot, "doctor.sh")))
+		repoRoot = contentRoot; // fallback
+	return new McpChatWeb.Services.ProcessManager(repoRoot);
+});
+
+builder.Services.AddSingleton<PortalState>();
 builder.Services.AddOpenApi();
 
 var app = builder.Build();
@@ -313,6 +324,43 @@ app.MapPost("/api/chat", async (ChatRequest request, IMcpClient client, Cancella
 	if (string.IsNullOrWhiteSpace(request.Prompt))
 	{
 		return Results.BadRequest("Prompt cannot be empty.");
+	}
+
+	// If the user toggled "Chat with Report", load the report content and prepend as context
+	var effectivePrompt = request.Prompt;
+	if (!string.IsNullOrWhiteSpace(request.ReportContext))
+	{
+		try
+		{
+			var currentDir = Directory.GetCurrentDirectory();
+			var repoRoot = currentDir;
+			if (!Directory.Exists(Path.Combine(repoRoot, "output")))
+			{
+				var parent = Directory.GetParent(currentDir)?.FullName;
+				if (parent != null && Directory.Exists(Path.Combine(parent, "output")))
+					repoRoot = parent;
+				else
+					repoRoot = Path.GetFullPath("..");
+			}
+
+			var reportPath = Path.GetFullPath(Path.Combine(repoRoot, request.ReportContext));
+			var reportRoot = Path.GetFullPath(repoRoot);
+			// Security: ensure path stays within repo
+			if (reportPath.StartsWith(reportRoot) && File.Exists(reportPath))
+			{
+				var reportContent = await File.ReadAllTextAsync(reportPath, cancellationToken);
+				// Truncate if very large (keep first 50K chars)
+				if (reportContent.Length > 50000)
+					reportContent = reportContent[..50000] + "\n\n[... report truncated for context ...]";
+
+				effectivePrompt = $"CONTEXT: The following reverse engineering report is available for reference:\n\n{reportContent}\n\n---\n\nUSER QUESTION: {request.Prompt}";
+				Console.WriteLine($"📊 Chat with report context: {Path.GetFileName(reportPath)} ({reportContent.Length} chars)");
+			}
+		}
+		catch (Exception ex)
+		{
+			Console.WriteLine($"⚠️ Failed to load report context: {ex.Message}");
+		}
 	}
 
 	// Check if user is asking about a specific file's content/analysis
@@ -911,8 +959,26 @@ You can still access the data directly:
 	{
 		Console.WriteLine($"Error augmenting chat with SQLite context: {ex.Message}");
 		// Fallback to MCP only
-		var normalResponse = await client.SendChatAsync(request.Prompt, cancellationToken);
-		return Results.Ok(new ChatResponse(normalResponse, null));
+		try
+		{
+			var normalResponse = await client.SendChatAsync(request.Prompt, cancellationToken);
+			return Results.Ok(new ChatResponse(normalResponse, null));
+		}
+		catch (Exception innerEx)
+		{
+			var serviceType = Environment.GetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE") ?? "AzureOpenAI";
+			var modelId = Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL_ID") ?? "unknown";
+			var detail = $"AI call failed (provider: {serviceType}, model: {modelId}).\n\n" +
+			             $"Error: {innerEx.Message}\n\n" +
+			             (innerEx.InnerException != null ? $"Inner: {innerEx.InnerException.Message}\n\n" : "") +
+			             "Possible causes:\n" +
+			             "• If using GitHubCopilot: ensure 'gh auth login' has been run and GITHUB_TOKEN is set\n" +
+			             "• If using AzureOpenAI: check endpoint URL and API key in Config/ai-config.env\n" +
+			             "• The model selected in the portal may not match the configured AI backend\n" +
+			             "• Try restarting the portal after changing models";
+			Console.WriteLine($"❌ Chat completely failed: {innerEx.Message}");
+			return Results.Problem(detail, statusCode: 502);
+		}
 	}
 });
 
@@ -1237,6 +1303,20 @@ static int? ParseRunIdOrNull(string runIdText)
 	if (int.TryParse(runIdText, out var id)) return id;
 	Console.WriteLine($"⚠️ Invalid runId '{runIdText}'");
 	return null;
+}
+
+// Classify a model ID into a family category
+static string ClassifyModelFamily(string modelId)
+{
+	var m = modelId.ToLowerInvariant();
+	if (m.Contains("codex")) return "Codex";
+	if (m.Contains("gpt-5")) return "GPT-5";
+	if (m.Contains("gpt-4")) return "GPT-4";
+	if (m.Contains("o1") || m.Contains("o3-") || m.Contains("o4-")) return "Reasoning";
+	if (m.Contains("embedding") || m.Contains("text-embedding")) return "Embedding";
+	if (m.Contains("dall-e") || m.Contains("dall_e")) return "Image";
+	if (m.Contains("whisper") || m.Contains("tts")) return "Audio";
+	return "Other";
 }
 
 // Check if a SQLite table has a given column (case-insensitive)
@@ -3825,5 +3905,2490 @@ app.MapGet("/api/files/local", async (string path) =>
 });
 
 app.MapFallbackToFile("index.html");
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MODEL CATALOG & SELECTION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Portal session state (registered as DI singleton)
+var portalState = app.Services.GetRequiredService<PortalState>();
+
+app.MapGet("/api/models/available", () =>
+{
+	var models = new List<McpChatWeb.Models.ModelInfo>();
+	var serviceType = portalState.ConnectedServiceType
+		?? Environment.GetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE") ?? "AzureOpenAI";
+	var isCopilotSdk = serviceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase) ||
+	                   serviceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase);
+	var provider = isCopilotSdk ? "GitHub Copilot SDK" : "Azure OpenAI";
+
+	// If we have discovered models from the connect flow, use those
+	if (portalState.DiscoveredModels.Count > 0)
+	{
+		models.AddRange(portalState.DiscoveredModels);
+	}
+	else
+	{
+		// Fallback: show models configured via ./doctor.sh setup (from env vars)
+		var codeModel = Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL_ID") ?? "";
+		var chatModel = Environment.GetEnvironmentVariable("AZURE_OPENAI_CHAT_MODEL_ID") ?? "";
+
+		foreach (var id in new[] { codeModel, chatModel }.Where(s => !string.IsNullOrWhiteSpace(s)).Distinct())
+		{
+			var role = id == chatModel ? "Chat model (portal Q&A)" : "Code model (migration)";
+			models.Add(new McpChatWeb.Models.ModelInfo(
+				id, id, provider, "Configured", role, null
+			));
+		}
+	}
+
+	var currentModelId = portalState.ActiveModelId
+		?? Environment.GetEnvironmentVariable("AZURE_OPENAI_CHAT_MODEL_ID")
+		?? Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL_ID")
+		?? "";
+
+	// Determine if setup is needed (no models configured at all)
+	var hasEndpoint = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT"))
+		&& !Environment.GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT")!.Contains("your-endpoint")
+		&& !Environment.GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT")!.Contains("placeholder");
+	var hasModelId = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL_ID"));
+	var needsSetup = !hasEndpoint && !isCopilotSdk && !hasModelId && portalState.DiscoveredModels.Count == 0;
+
+	return Results.Ok(new
+	{
+		serviceType,
+		activeModelId = currentModelId,
+		models = models.OrderBy(m => m.Name).ToList(),
+		copilotConnected = isCopilotSdk,
+		hasGitHubAuth = isCopilotSdk,
+		needsSetup,
+		isConnected = portalState.DiscoveredModels.Count > 0,
+		connectedEndpoint = portalState.ConnectedEndpoint
+	});
+});
+
+app.MapPost("/api/models/active", async (McpChatWeb.Models.SetActiveModelRequest request, IMcpClient client) =>
+{
+	if (string.IsNullOrWhiteSpace(request.ModelId))
+		return Results.BadRequest("ModelId is required");
+
+	portalState.ActiveModelId = request.ModelId;
+
+	// Only set CHAT model env vars — migration model is controlled by Mission Control provider/model selection
+	Environment.SetEnvironmentVariable("AZURE_OPENAI_CHAT_MODEL_ID", request.ModelId);
+	Environment.SetEnvironmentVariable("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME", request.ModelId);
+
+	// Auto-detect service type from the configured provider
+	var currentServiceType = Environment.GetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE") ?? "AzureOpenAI";
+
+	if (currentServiceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase) ||
+	    currentServiceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase))
+	{
+		// Copilot SDK — just update the model IDs, auth is handled by CLI
+		Environment.SetEnvironmentVariable("AZURE_OPENAI_MODEL_ID", request.ModelId);
+		Environment.SetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT_NAME", request.ModelId);
+		Environment.SetEnvironmentVariable("AISETTINGS__MODELID", request.ModelId);
+		Environment.SetEnvironmentVariable("AISETTINGS__DEPLOYMENTNAME", request.ModelId);
+		Console.WriteLine($"✅ Model set to {request.ModelId} (GitHub Copilot SDK)");
+	}
+	else
+	{
+		// Azure OpenAI — keep the configured endpoint and auth
+		Console.WriteLine($"✅ Model set to {request.ModelId} (Azure OpenAI)");
+	}
+
+	Console.WriteLine($"🔄 Active model changed to: {request.ModelId} (all agents updated)");
+
+	// Restart MCP subprocess so it picks up the new env vars and creates a fresh chat client
+	try
+	{
+		await client.RestartAsync();
+		Console.WriteLine("🔄 MCP subprocess restarted with new model settings");
+	}
+	catch (Exception ex)
+	{
+		Console.WriteLine($"⚠️ Failed to restart MCP subprocess: {ex.Message}");
+	}
+
+	return Results.Ok(new { activeModelId = portalState.ActiveModelId, serviceType = Environment.GetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE") });
+});
+
+app.MapGet("/api/models/active", () =>
+{
+	var activeModel = portalState.ActiveModelId
+	               ?? Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL_ID")
+	               ?? "unknown";
+	var serviceType = Environment.GetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE") ?? "";
+	return Results.Ok(new { activeModelId = activeModel, serviceType });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MODEL DISCOVERY — Connect to Azure OpenAI or GitHub Copilot SDK and list models
+// ═══════════════════════════════════════════════════════════════════════════════
+
+app.MapPost("/api/models/connect", async (McpChatWeb.Models.ConnectProviderRequest request) =>
+{
+	try
+	{
+		var models = new List<McpChatWeb.Models.ModelInfo>();
+
+		if (request.ServiceType.Equals("AzureOpenAI", StringComparison.OrdinalIgnoreCase))
+		{
+			// ── Azure OpenAI: list actual deployments via ARM management API ──
+			if (string.IsNullOrWhiteSpace(request.Endpoint))
+				return Results.BadRequest(new { error = "Endpoint is required for Azure OpenAI" });
+
+			// Validate endpoint URL format
+			if (!Uri.TryCreate(request.Endpoint, UriKind.Absolute, out var endpointUri) ||
+			    (endpointUri.Scheme != "https" && endpointUri.Scheme != "http"))
+			{
+				return Results.BadRequest(new { error = "Invalid endpoint URL. Must be a valid HTTPS URL." });
+			}
+			var endpoint = request.Endpoint.TrimEnd('/');
+
+			// Extract the account name from the endpoint URL
+			// e.g. "https://g-openai.cognitiveservices.azure.com" → "g-openai"
+			string accountName;
+			try
+			{
+				var uri = new Uri(endpoint);
+				accountName = uri.Host.Split('.')[0];
+			}
+			catch
+			{
+				return Results.BadRequest(new { error = "Invalid endpoint URL format" });
+			}
+
+			// First, verify the data-plane endpoint is reachable and auth works
+			using var dataPlaneHttp = new HttpClient();
+			dataPlaneHttp.Timeout = TimeSpan.FromSeconds(10);
+
+			if (!string.IsNullOrWhiteSpace(request.ApiKey))
+			{
+				dataPlaneHttp.DefaultRequestHeaders.Add("api-key", request.ApiKey);
+			}
+			else if (request.UseDefaultCredential)
+			{
+				try
+				{
+					var credential = new Azure.Identity.DefaultAzureCredential();
+					var tokenContext = new Azure.Core.TokenRequestContext(
+						new[] { "https://cognitiveservices.azure.com/.default" });
+					var token = await credential.GetTokenAsync(tokenContext);
+					dataPlaneHttp.DefaultRequestHeaders.Authorization =
+						new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token.Token);
+				}
+				catch (Exception ex)
+				{
+					return Results.Ok(new { 
+						error = $"Azure credential failed: {ex.Message}. Run 'az login' first.",
+						authenticated = false
+					});
+				}
+			}
+			else
+			{
+				return Results.BadRequest(new { error = "Provide an API key or enable UseDefaultCredential (az login)" });
+			}
+
+			// Quick connectivity check with data-plane
+			try
+			{
+				var checkUrl = $"{endpoint}/openai/models?api-version=2024-06-01";
+				var checkResponse = await dataPlaneHttp.GetAsync(checkUrl);
+				if (checkResponse.StatusCode == System.Net.HttpStatusCode.Unauthorized ||
+				    checkResponse.StatusCode == System.Net.HttpStatusCode.Forbidden)
+				{
+					return Results.Ok(new { 
+						error = "Authentication failed. Check your API key or RBAC role (needs 'Cognitive Services OpenAI User').",
+						authenticated = false, httpStatus = (int)checkResponse.StatusCode
+					});
+				}
+			}
+			catch (Exception ex)
+			{
+				return Results.Ok(new { error = $"Cannot reach endpoint: {ex.Message}", authenticated = false });
+			}
+
+			// Use ARM management API to list actual deployments
+			// This requires DefaultAzureCredential (az login) — API key users get a filtered data-plane list
+			var deploymentsFound = false;
+
+			if (request.UseDefaultCredential)
+			{
+				try
+				{
+					var armCredential = new Azure.Identity.DefaultAzureCredential();
+					var armTokenContext = new Azure.Core.TokenRequestContext(
+						new[] { "https://management.azure.com/.default" });
+					var armToken = await armCredential.GetTokenAsync(armTokenContext);
+
+					using var armHttp = new HttpClient();
+					armHttp.Timeout = TimeSpan.FromSeconds(15);
+					armHttp.DefaultRequestHeaders.Authorization =
+						new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", armToken.Token);
+
+					// Step 1: Find the resource by listing subscriptions and searching for the account
+					var subsUrl = "https://management.azure.com/subscriptions?api-version=2022-01-01";
+					var subsResponse = await armHttp.GetAsync(subsUrl);
+					if (subsResponse.IsSuccessStatusCode)
+					{
+						var subsJson = await subsResponse.Content.ReadAsStringAsync();
+						using var subsDoc = JsonDocument.Parse(subsJson);
+
+						if (subsDoc.RootElement.TryGetProperty("value", out var subsArray))
+						{
+							foreach (var sub in subsArray.EnumerateArray())
+							{
+								if (deploymentsFound) break;
+
+								var subId = sub.TryGetProperty("subscriptionId", out var sid) ? sid.GetString() ?? "" : "";
+								if (string.IsNullOrEmpty(subId)) continue;
+
+								// Step 2: Search for the OpenAI account in this subscription
+								var accountsUrl = $"https://management.azure.com/subscriptions/{subId}/providers/Microsoft.CognitiveServices/accounts?api-version=2024-10-01";
+								try
+								{
+									var accountsResponse = await armHttp.GetAsync(accountsUrl);
+									if (!accountsResponse.IsSuccessStatusCode) continue;
+
+									var accountsJson = await accountsResponse.Content.ReadAsStringAsync();
+									using var accountsDoc = JsonDocument.Parse(accountsJson);
+
+									if (!accountsDoc.RootElement.TryGetProperty("value", out var accountsArray)) continue;
+
+									foreach (var account in accountsArray.EnumerateArray())
+									{
+										// Match by account name from endpoint
+										var accName = account.TryGetProperty("name", out var nameProp) ? nameProp.GetString() ?? "" : "";
+										if (!accName.Equals(accountName, StringComparison.OrdinalIgnoreCase)) continue;
+
+										var resourceId = account.TryGetProperty("id", out var idProp) ? idProp.GetString() ?? "" : "";
+										if (string.IsNullOrEmpty(resourceId)) continue;
+
+										// Step 3: List deployments for this account
+										var deploymentsUrl = $"https://management.azure.com{resourceId}/deployments?api-version=2024-10-01";
+										var deploymentsResponse = await armHttp.GetAsync(deploymentsUrl);
+
+										if (!deploymentsResponse.IsSuccessStatusCode)
+										{
+											Console.WriteLine($"⚠️ ARM deployments list returned {(int)deploymentsResponse.StatusCode}");
+											continue;
+										}
+
+										var deploymentsJson = await deploymentsResponse.Content.ReadAsStringAsync();
+										using var deploymentsDoc = JsonDocument.Parse(deploymentsJson);
+
+										if (deploymentsDoc.RootElement.TryGetProperty("value", out var deploymentsArray))
+										{
+											foreach (var dep in deploymentsArray.EnumerateArray())
+											{
+												var depName = dep.TryGetProperty("name", out var dn) ? dn.GetString() ?? "" : "";
+												if (string.IsNullOrEmpty(depName)) continue;
+
+												// Get model info from properties.model
+												var baseModel = depName;
+												var modelVersion = "";
+												var skuCapacity = "";
+
+												if (dep.TryGetProperty("properties", out var props))
+												{
+													if (props.TryGetProperty("model", out var modelObj))
+													{
+														if (modelObj.TryGetProperty("name", out var mn))
+															baseModel = mn.GetString() ?? depName;
+														if (modelObj.TryGetProperty("version", out var mv))
+															modelVersion = mv.GetString() ?? "";
+													}
+
+													// Get provisioning state — skip if not succeeded
+													if (props.TryGetProperty("provisioningState", out var ps))
+													{
+														var state = ps.GetString() ?? "";
+														if (!state.Equals("Succeeded", StringComparison.OrdinalIgnoreCase))
+															continue;
+													}
+												}
+
+												// Get SKU info for display
+												if (dep.TryGetProperty("sku", out var sku))
+												{
+													var skuName = sku.TryGetProperty("name", out var sn) ? sn.GetString() ?? "" : "";
+													var capacity = sku.TryGetProperty("capacity", out var sc) ? sc.GetInt32().ToString() : "";
+													if (!string.IsNullOrEmpty(capacity))
+														skuCapacity = $"{skuName} ({capacity}K TPM)";
+												}
+
+												var family = ClassifyModelFamily(baseModel);
+												if (family is "Embedding" or "Image" or "Audio")
+													continue;
+
+												var displayName = modelVersion != ""
+													? $"{depName} ({baseModel} v{modelVersion})"
+													: $"{depName} ({baseModel})";
+
+												var description = !string.IsNullOrEmpty(skuCapacity)
+													? $"Deployment: {depName}, Model: {baseModel}, SKU: {skuCapacity}"
+													: $"Deployment: {depName}, Model: {baseModel}";
+
+												models.Add(new McpChatWeb.Models.ModelInfo(
+													depName, displayName, "Azure OpenAI", family,
+													description, null
+												));
+											}
+											deploymentsFound = models.Count > 0;
+										}
+										break; // Found the account, no need to check more
+									}
+								}
+								catch (Exception ex)
+								{
+									Console.WriteLine($"⚠️ Error searching subscription {subId}: {ex.Message}");
+								}
+							}
+						}
+					}
+				}
+				catch (Exception ex)
+				{
+					Console.WriteLine($"⚠️ ARM API failed, will fall back to data-plane: {ex.Message}");
+				}
+			}
+
+			// Fallback for API key auth or if ARM didn't work: probe known deployment names
+			// by sending minimal requests to the data-plane inference endpoint
+			if (!deploymentsFound)
+			{
+				Console.WriteLine($"📋 Using data-plane model probing for {endpoint}");
+
+				// Get the models list to know what's available, then probe each as a deployment
+				try
+				{
+					var modelsUrl = $"{endpoint}/openai/models?api-version=2024-06-01";
+					var modelsResponse = await dataPlaneHttp.GetAsync(modelsUrl);
+
+					if (modelsResponse.IsSuccessStatusCode)
+					{
+						var modelsJson = await modelsResponse.Content.ReadAsStringAsync();
+						using var modelsDoc = JsonDocument.Parse(modelsJson);
+
+						if (modelsDoc.RootElement.TryGetProperty("data", out var modelsArray))
+						{
+							// Collect candidate model IDs
+							var candidateIds = new List<string>();
+							foreach (var modelEntry in modelsArray.EnumerateArray())
+							{
+								var id = modelEntry.TryGetProperty("id", out var idProp) ? idProp.GetString() ?? "" : "";
+								if (string.IsNullOrEmpty(id)) continue;
+
+								var family = ClassifyModelFamily(id);
+								if (family is "Embedding" or "Image" or "Audio") continue;
+
+								// Check if it has chat capability
+								if (modelEntry.TryGetProperty("capabilities", out var caps))
+								{
+									var isChatCompletion = caps.TryGetProperty("chat_completion", out var chatCap) && chatCap.GetBoolean();
+									var isCompletion = caps.TryGetProperty("completion", out var compCap) && compCap.GetBoolean();
+									if (!isChatCompletion && !isCompletion) continue;
+								}
+
+								candidateIds.Add(id);
+							}
+
+							// Probe each candidate as a deployment (parallel, max 10 concurrent)
+							var probeResults = new System.Collections.Concurrent.ConcurrentBag<McpChatWeb.Models.ModelInfo>();
+							var semaphore = new SemaphoreSlim(10);
+
+							var probeTasks = candidateIds.Select(async candidateId =>
+							{
+								await semaphore.WaitAsync();
+								try
+								{
+									var probeUrl = $"{endpoint}/openai/deployments/{candidateId}/chat/completions?api-version=2024-06-01";
+									var probeRequest = new HttpRequestMessage(HttpMethod.Post, probeUrl);
+									probeRequest.Content = new StringContent("{\"messages\":[],\"max_tokens\":1}", 
+										System.Text.Encoding.UTF8, "application/json");
+
+									// Copy auth headers
+									foreach (var header in dataPlaneHttp.DefaultRequestHeaders)
+									{
+										probeRequest.Headers.TryAddWithoutValidation(header.Key, header.Value);
+									}
+
+									using var probeHttp = new HttpClient();
+									probeHttp.Timeout = TimeSpan.FromSeconds(5);
+									var probeResponse = await probeHttp.SendAsync(probeRequest);
+									var probeStatus = (int)probeResponse.StatusCode;
+
+									// 400 = deployment exists (our request is intentionally invalid)
+									// 200 = deployment exists and responded
+									// 429 = rate limited but exists
+									if (probeStatus is 400 or 200 or 429)
+									{
+										var family = ClassifyModelFamily(candidateId);
+										probeResults.Add(new McpChatWeb.Models.ModelInfo(
+											candidateId, candidateId, "Azure OpenAI", family,
+											$"Deployment: {candidateId} (verified)", null
+										));
+									}
+								}
+								catch { /* probe failed — not deployed */ }
+								finally { semaphore.Release(); }
+							});
+
+							await Task.WhenAll(probeTasks);
+
+							if (probeResults.Count > 0)
+							{
+								models.AddRange(probeResults);
+								deploymentsFound = true;
+								Console.WriteLine($"✅ Found {probeResults.Count} active deployment(s) via probing");
+							}
+							else
+							{
+								Console.WriteLine($"⚠️ No active deployments found via probing {candidateIds.Count} candidates");
+							}
+						}
+					}
+				}
+				catch (Exception ex)
+				{
+					Console.WriteLine($"⚠️ Data-plane probe failed: {ex.Message}");
+				}
+
+				// If probing found nothing, surface a helpful error
+				if (!deploymentsFound)
+				{
+					return Results.Ok(new
+					{
+						authenticated = true,
+						error = "Connected to Azure OpenAI but no active deployments found. Deploy a model in the Azure Portal first.",
+						models = Array.Empty<object>(),
+						modelCount = 0
+					});
+				}
+			}
+
+			portalState.ConnectedServiceType = "AzureOpenAI";
+			portalState.ConnectedEndpoint = request.Endpoint;
+			portalState.ConnectedViaDefaultCredential = request.UseDefaultCredential;
+
+			Console.WriteLine($"🔌 Connected to Azure OpenAI: {models.Count} deployments found at {request.Endpoint}");
+		}
+		else if (request.ServiceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase) ||
+		         request.ServiceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase))
+		{
+			// ── GitHub Copilot SDK: list models via CopilotClient ──
+			try
+			{
+				var options = new GitHub.Copilot.SDK.CopilotClientOptions { UseStdio = true };
+				if (!string.IsNullOrWhiteSpace(request.ApiKey))
+				{
+					options.GitHubToken = request.ApiKey;
+				}
+
+				var client = new GitHub.Copilot.SDK.CopilotClient(options);
+				var copilotModels = await client.ListModelsAsync();
+
+				foreach (var m in copilotModels.OrderBy(m => m.Name))
+				{
+					var id = m.Id ?? m.Name ?? "unknown";
+					var publisher = "GitHub Copilot";
+
+					// Try to extract publisher from model name patterns
+					var nameLower = (m.Name ?? "").ToLowerInvariant();
+					if (nameLower.Contains("claude")) publisher = "Anthropic";
+					else if (nameLower.Contains("gpt") || nameLower.Contains("o1") || nameLower.Contains("o3") || nameLower.Contains("o4") || nameLower.Contains("codex")) publisher = "OpenAI";
+					else if (nameLower.Contains("grok")) publisher = "xAI";
+					else if (nameLower.Contains("gemini")) publisher = "Google";
+					else if (nameLower.Contains("llama") || nameLower.Contains("meta")) publisher = "Meta";
+					else if (nameLower.Contains("mistral")) publisher = "Mistral";
+
+					var family = nameLower switch
+					{
+						var n when n.Contains("codex") => "Codex",
+						var n when n.Contains("claude") && n.Contains("opus") => "Claude Opus",
+						var n when n.Contains("claude") && n.Contains("sonnet") => "Claude Sonnet",
+						var n when n.Contains("claude") => "Claude",
+						var n when n.Contains("gpt-5") => "GPT-5",
+						var n when n.Contains("gpt-4") => "GPT-4",
+						var n when n.Contains("o1") || n.Contains("o3") || n.Contains("o4") => "Reasoning",
+						var n when n.Contains("grok") => "Grok",
+						var n when n.Contains("gemini") => "Gemini",
+						_ => "Other"
+					};
+
+					models.Add(new McpChatWeb.Models.ModelInfo(
+						id, m.Name ?? id, publisher, family,
+						null, null
+					));
+				}
+
+				portalState.ConnectedServiceType = "GitHubCopilotSDK";
+				portalState.ConnectedEndpoint = null;
+				portalState.ConnectedViaDefaultCredential = true;
+
+				Console.WriteLine($"🔌 Connected to GitHub Copilot SDK: {models.Count} models found");
+			}
+			catch (Exception ex)
+			{
+				var hint = ex.Message.Contains("copilot") || ex.Message.Contains("not found")
+					? " Ensure the Copilot CLI is installed and you are logged in (gh auth login)."
+					: "";
+				return Results.Ok(new { 
+					error = $"GitHub Copilot SDK error: {ex.Message}.{hint}",
+					authenticated = false
+				});
+			}
+		}
+		else
+		{
+			return Results.BadRequest(new { error = $"Unknown service type: {request.ServiceType}" });
+		}
+
+		// Store discovered models in memory
+		portalState.DiscoveredModels.Clear();
+		portalState.DiscoveredModels.AddRange(models);
+
+		return Results.Ok(new
+		{
+			authenticated = true,
+			serviceType = request.ServiceType,
+			models = models.OrderBy(m => m.Publisher).ThenBy(m => m.Name).ToList(),
+			modelCount = models.Count
+		});
+	}
+	catch (Exception ex)
+	{
+		Console.WriteLine($"❌ Model connect error: {ex.Message}");
+		return Results.Ok(new { error = $"Connection failed: {ex.Message}", authenticated = false });
+	}
+});
+
+app.MapPost("/api/models/save-config", async (McpChatWeb.Models.SaveModelConfigRequest request, IMcpClient client) =>
+{
+	try
+	{
+		// Update environment variables for the current process
+		Environment.SetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE", 
+			request.ServiceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase) ||
+			request.ServiceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase) 
+				? "GitHubCopilot" : "AzureOpenAI");
+
+		if (!string.IsNullOrWhiteSpace(request.Endpoint))
+		{
+			Environment.SetEnvironmentVariable("AZURE_OPENAI_ENDPOINT", request.Endpoint);
+			Environment.SetEnvironmentVariable("AISETTINGS__ENDPOINT", request.Endpoint);
+			Environment.SetEnvironmentVariable("AISETTINGS__CHATENDPOINT", request.Endpoint);
+		}
+
+		if (!string.IsNullOrWhiteSpace(request.ApiKey))
+		{
+			Environment.SetEnvironmentVariable("AZURE_OPENAI_API_KEY", request.ApiKey);
+			Environment.SetEnvironmentVariable("AISETTINGS__APIKEY", request.ApiKey);
+			Environment.SetEnvironmentVariable("AISETTINGS__CHATAPIKEY", request.ApiKey);
+		}
+
+		if (!string.IsNullOrWhiteSpace(request.CodeModelId))
+		{
+			Environment.SetEnvironmentVariable("AZURE_OPENAI_MODEL_ID", request.CodeModelId);
+			Environment.SetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT_NAME", request.CodeModelId);
+			Environment.SetEnvironmentVariable("AISETTINGS__MODELID", request.CodeModelId);
+			Environment.SetEnvironmentVariable("AISETTINGS__DEPLOYMENTNAME", request.CodeModelId);
+		}
+
+		if (!string.IsNullOrWhiteSpace(request.ChatModelId))
+		{
+			Environment.SetEnvironmentVariable("AZURE_OPENAI_CHAT_MODEL_ID", request.ChatModelId);
+			Environment.SetEnvironmentVariable("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME", request.ChatModelId);
+			Environment.SetEnvironmentVariable("AISETTINGS__CHATMODELID", request.ChatModelId);
+			Environment.SetEnvironmentVariable("AISETTINGS__CHATDEPLOYMENTNAME", request.ChatModelId);
+			portalState.ActiveModelId = request.ChatModelId;
+		}
+
+		// Persist to Config/ai-config.local.env so settings survive restarts
+		var configSaved = false;
+		try
+		{
+			var contentRoot = app.Environment.ContentRootPath;
+			var repoRoot = Path.GetFullPath("..", contentRoot);
+			if (!File.Exists(Path.Combine(repoRoot, "doctor.sh")))
+				repoRoot = contentRoot;
+
+			var configPath = Path.Combine(repoRoot, "Config", "ai-config.local.env");
+			Directory.CreateDirectory(Path.GetDirectoryName(configPath)!);
+
+			var isGitHubCopilot = request.ServiceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase) ||
+			                      request.ServiceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase);
+
+			var sb = new System.Text.StringBuilder();
+			sb.AppendLine("# =============================================================================");
+			sb.AppendLine("# AI Configuration — Generated by Portal Setup");
+			sb.AppendLine($"# Generated: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+			sb.AppendLine("# =============================================================================");
+			sb.AppendLine();
+
+			if (isGitHubCopilot)
+			{
+				sb.AppendLine("# Provider: GitHub Copilot SDK");
+				sb.AppendLine("AZURE_OPENAI_SERVICE_TYPE=\"GitHubCopilot\"");
+				sb.AppendLine();
+				sb.AppendLine("# Model Selection");
+				sb.AppendLine($"_CHAT_MODEL=\"{request.ChatModelId ?? request.CodeModelId ?? ""}\"");
+				sb.AppendLine($"_CODE_MODEL=\"{request.CodeModelId ?? request.ChatModelId ?? ""}\"");
+				sb.AppendLine();
+				sb.AppendLine("# System mapping (model IDs for the application)");
+				sb.AppendLine("AZURE_OPENAI_MODEL_ID=\"$_CODE_MODEL\"");
+				sb.AppendLine("AZURE_OPENAI_DEPLOYMENT_NAME=\"$_CODE_MODEL\"");
+				sb.AppendLine("AISETTINGS__MODELID=\"$_CODE_MODEL\"");
+				sb.AppendLine("AISETTINGS__DEPLOYMENTNAME=\"$_CODE_MODEL\"");
+				sb.AppendLine("AISETTINGS__CHATMODELID=\"$_CHAT_MODEL\"");
+				sb.AppendLine("AISETTINGS__CHATDEPLOYMENTNAME=\"$_CHAT_MODEL\"");
+				sb.AppendLine();
+				sb.AppendLine("# Specialized Agent Models (defaults to Code Model)");
+				sb.AppendLine("AZURE_OPENAI_COBOL_ANALYZER_MODEL=\"$_CODE_MODEL\"");
+				sb.AppendLine("AZURE_OPENAI_JAVA_CONVERTER_MODEL=\"$_CODE_MODEL\"");
+				sb.AppendLine("AZURE_OPENAI_DEPENDENCY_MAPPER_MODEL=\"$_CODE_MODEL\"");
+				sb.AppendLine("AZURE_OPENAI_UNIT_TEST_MODEL=\"$_CODE_MODEL\"");
+				sb.AppendLine("AISETTINGS__COBOLANALYZERMODELID=\"$_CODE_MODEL\"");
+				sb.AppendLine("AISETTINGS__JAVACONVERTERMODELID=\"$_CODE_MODEL\"");
+				sb.AppendLine("AISETTINGS__UNITTESTMODELID=\"$_CODE_MODEL\"");
+				sb.AppendLine("AISETTINGS__DEPENDENCYMAPPERMODELID=\"$_CODE_MODEL\"");
+				sb.AppendLine();
+				sb.AppendLine("# Not needed for Copilot SDK but set to avoid validation errors");
+				sb.AppendLine("AZURE_OPENAI_ENDPOINT=\"https://copilot-sdk-placeholder\"");
+				sb.AppendLine("AISETTINGS__ENDPOINT=\"https://copilot-sdk-placeholder\"");
+				sb.AppendLine("AISETTINGS__CHATENDPOINT=\"https://copilot-sdk-placeholder\"");
+				sb.AppendLine();
+				sb.AppendLine("# Application Settings");
+				sb.AppendLine("COBOL_SOURCE_FOLDER=\"source\"");
+				sb.AppendLine("JAVA_OUTPUT_FOLDER=\"output/java\"");
+				sb.AppendLine("CSHARP_OUTPUT_FOLDER=\"output/csharp\"");
+
+				if (!string.IsNullOrWhiteSpace(request.ApiKey))
+				{
+					sb.AppendLine();
+					sb.AppendLine("# GitHub Copilot PAT Authentication");
+					sb.AppendLine($"GITHUB_COPILOT_TOKEN=\"{request.ApiKey}\"");
+				}
+			}
+			else
+			{
+				sb.AppendLine("# Provider: Azure OpenAI");
+				sb.AppendLine("AZURE_OPENAI_SERVICE_TYPE=\"AzureOpenAI\"");
+				sb.AppendLine();
+				sb.AppendLine("# Service Credentials");
+				sb.AppendLine($"_MAIN_ENDPOINT=\"{request.Endpoint ?? ""}\"");
+				if (!string.IsNullOrWhiteSpace(request.ApiKey) && !request.UseDefaultCredential)
+				{
+					sb.AppendLine($"_MAIN_API_KEY=\"{request.ApiKey}\"");
+				}
+				else
+				{
+					sb.AppendLine("_MAIN_API_KEY=\"\"");
+					sb.AppendLine("# Using Azure AD (Entra ID) authentication via 'az login'");
+				}
+				sb.AppendLine();
+				sb.AppendLine("# Model Selection");
+				sb.AppendLine($"_CHAT_MODEL=\"{request.ChatModelId ?? request.CodeModelId ?? ""}\"");
+				sb.AppendLine($"_CODE_MODEL=\"{request.CodeModelId ?? request.ChatModelId ?? ""}\"");
+				sb.AppendLine();
+				sb.AppendLine("# AI Service Configuration");
+				sb.AppendLine("AZURE_OPENAI_ENDPOINT=\"$_MAIN_ENDPOINT\"");
+				sb.AppendLine("AZURE_OPENAI_API_KEY=\"$_MAIN_API_KEY\"");
+				sb.AppendLine("AZURE_OPENAI_MAX_TOKENS=\"16384\"");
+				sb.AppendLine();
+				sb.AppendLine("# Default Deployment");
+				sb.AppendLine("AZURE_OPENAI_DEPLOYMENT_NAME=\"$_CHAT_MODEL\"");
+				sb.AppendLine("AZURE_OPENAI_MODEL_ID=\"$_CHAT_MODEL\"");
+				sb.AppendLine();
+				sb.AppendLine("# Specialized Agent Models (Mapped to Code Model)");
+				sb.AppendLine("AZURE_OPENAI_COBOL_ANALYZER_MODEL=\"$_CODE_MODEL\"");
+				sb.AppendLine("AZURE_OPENAI_JAVA_CONVERTER_MODEL=\"$_CODE_MODEL\"");
+				sb.AppendLine("AZURE_OPENAI_DEPENDENCY_MAPPER_MODEL=\"$_CODE_MODEL\"");
+				sb.AppendLine("AZURE_OPENAI_UNIT_TEST_MODEL=\"$_CODE_MODEL\"");
+				sb.AppendLine();
+				sb.AppendLine("# Portal & Reporting Configuration (Mapped to Chat Model)");
+				sb.AppendLine("AISETTINGS__CHATENDPOINT=\"$_MAIN_ENDPOINT\"");
+				sb.AppendLine("AISETTINGS__CHATAPIKEY=\"$_MAIN_API_KEY\"");
+				sb.AppendLine("AISETTINGS__CHATMODELID=\"$_CHAT_MODEL\"");
+				sb.AppendLine("AISETTINGS__CHATDEPLOYMENTNAME=\"$_CHAT_MODEL\"");
+				sb.AppendLine();
+				sb.AppendLine("# Code Agents Configuration (Mapped to Code Model)");
+				sb.AppendLine("AISETTINGS__ENDPOINT=\"$_MAIN_ENDPOINT\"");
+				sb.AppendLine("AISETTINGS__APIKEY=\"$_MAIN_API_KEY\"");
+				sb.AppendLine("AISETTINGS__MODELID=\"$_CODE_MODEL\"");
+				sb.AppendLine("AISETTINGS__DEPLOYMENTNAME=\"$_CODE_MODEL\"");
+				sb.AppendLine();
+				sb.AppendLine("# Individual Agent Overrides (defaults to Code Model)");
+				sb.AppendLine("AISETTINGS__COBOLANALYZERMODELID=\"$_CODE_MODEL\"");
+				sb.AppendLine("AISETTINGS__JAVACONVERTERMODELID=\"$_CODE_MODEL\"");
+				sb.AppendLine("AISETTINGS__UNITTESTMODELID=\"$_CODE_MODEL\"");
+				sb.AppendLine("AISETTINGS__DEPENDENCYMAPPERMODELID=\"$_CODE_MODEL\"");
+				sb.AppendLine();
+				sb.AppendLine("# Application Settings");
+				sb.AppendLine("COBOL_SOURCE_FOLDER=\"source\"");
+				sb.AppendLine("JAVA_OUTPUT_FOLDER=\"output/java\"");
+				sb.AppendLine("CSHARP_OUTPUT_FOLDER=\"output/csharp\"");
+				sb.AppendLine("TEST_OUTPUT_FOLDER=\"TestOutput\"");
+			}
+
+			await File.WriteAllTextAsync(configPath, sb.ToString());
+			configSaved = true;
+			Console.WriteLine($"💾 Config saved to {configPath}");
+		}
+		catch (Exception ex)
+		{
+			Console.WriteLine($"⚠️ Failed to save config file: {ex.Message}");
+		}
+
+		// Restart MCP subprocess to pick up new settings
+		try
+		{
+			await client.RestartAsync();
+			Console.WriteLine("🔄 MCP subprocess restarted with new settings");
+		}
+		catch (Exception ex)
+		{
+			Console.WriteLine($"⚠️ Failed to restart MCP: {ex.Message}");
+		}
+
+		Console.WriteLine($"✅ Config saved: serviceType={request.ServiceType}, chat={request.ChatModelId}, code={request.CodeModelId}");
+
+		return Results.Ok(new
+		{
+			success = true,
+			configSaved,
+			activeModelId = portalState.ActiveModelId ?? request.ChatModelId ?? request.CodeModelId,
+			serviceType = Environment.GetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE")
+		});
+	}
+	catch (Exception ex)
+	{
+		Console.WriteLine($"❌ Save config error: {ex.Message}");
+		return Results.Problem($"Failed to save configuration: {ex.Message}");
+	}
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SOURCE FILES SCANNING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+app.MapGet("/api/source/files", () =>
+{
+	try
+	{
+		var currentDir = Directory.GetCurrentDirectory();
+		var repoRoot = currentDir;
+
+		// Find the repo root containing "source" folder
+		if (!Directory.Exists(Path.Combine(repoRoot, "source")))
+		{
+			var parent = Directory.GetParent(currentDir)?.FullName;
+			if (parent != null && Directory.Exists(Path.Combine(parent, "source")))
+				repoRoot = parent;
+			else
+			{
+				var grandParent = Directory.GetParent(parent ?? "")?.FullName;
+				if (grandParent != null && Directory.Exists(Path.Combine(grandParent, "source")))
+					repoRoot = grandParent;
+				else
+					repoRoot = Path.GetFullPath("..");
+			}
+		}
+
+		var sourceDir = Path.Combine(repoRoot, "source");
+		if (!Directory.Exists(sourceDir))
+		{
+			return Results.Ok(new
+			{
+				isEmpty = true,
+				warning = "Source folder not found. Place your COBOL files in the 'source/' directory.",
+				sourcePath = sourceDir,
+				files = Array.Empty<McpChatWeb.Models.SourceFileInfo>(),
+				summary = new { total = 0, programs = 0, copybooks = 0, other = 0 }
+			});
+		}
+
+		var cobolExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+			{ ".cbl", ".cob", ".cpy", ".pco", ".sqb", ".copy" };
+
+		var files = Directory.GetFiles(sourceDir, "*", SearchOption.AllDirectories)
+			.Where(f => cobolExtensions.Contains(Path.GetExtension(f)))
+			.Select(f =>
+			{
+				var info = new FileInfo(f);
+				var ext = info.Extension.ToLowerInvariant();
+				var fileType = ext switch
+				{
+					".cbl" or ".cob" => "Program",
+					".cpy" or ".copy" => "Copybook",
+					".pco" or ".sqb" => "SQL/Embedded",
+					_ => "Other"
+				};
+				return new McpChatWeb.Models.SourceFileInfo(
+					info.Name,
+					fileType,
+					File.ReadLines(f).Count(),
+					info.Length,
+					Path.GetRelativePath(repoRoot, f)
+				);
+			})
+			.OrderBy(f => f.FileType)
+			.ThenBy(f => f.FileName)
+			.ToList();
+
+		var programs = files.Count(f => f.FileType == "Program");
+		var copybooks = files.Count(f => f.FileType == "Copybook");
+		var other = files.Count - programs - copybooks;
+
+		return Results.Ok(new
+		{
+			isEmpty = files.Count == 0,
+			warning = files.Count == 0
+				? "No COBOL files found in source folder. Place .cbl/.cpy files in 'source/'."
+				: (string?)null,
+			sourcePath = sourceDir,
+			files,
+			summary = new { total = files.Count, programs, copybooks, other }
+		});
+	}
+	catch (Exception ex)
+	{
+		return Results.Problem($"Failed to scan source folder: {ex.Message}");
+	}
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PROMPT TEMPLATES — read/edit/toggle agent prompts
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// In-memory prompt state (overrides on top of file-based prompts)
+var _promptOverrides = new Dictionary<string, (string? SystemPrompt, string? UserPrompt, bool Enabled)>();
+
+// Prompt quality scores — persisted to .prompt-scores.json
+var _promptScores = new Dictionary<string, (int Score, string Observations)>();
+
+static string GetScoresFilePath(string repoRoot) => Path.Combine(repoRoot, "Agents", "Prompts", ".prompt-scores.json");
+
+static void LoadPromptScores(string repoRoot, Dictionary<string, (int Score, string Observations)> scores)
+{
+	try
+	{
+		var path = GetScoresFilePath(repoRoot);
+		if (File.Exists(path))
+		{
+			var json = File.ReadAllText(path);
+			using var doc = JsonDocument.Parse(json);
+			foreach (var prop in doc.RootElement.EnumerateObject())
+			{
+				var score = prop.Value.TryGetProperty("score", out var s) ? s.GetInt32() : 0;
+				var obs = prop.Value.TryGetProperty("observations", out var o) ? o.GetString() ?? "" : "";
+				scores[prop.Name] = (score, obs);
+			}
+			Console.WriteLine($"📊 Loaded {scores.Count} prompt scores from {path}");
+		}
+	}
+	catch (Exception ex)
+	{
+		Console.WriteLine($"⚠️ Failed to load prompt scores: {ex.Message}");
+	}
+}
+
+static void SavePromptScores(string repoRoot, Dictionary<string, (int Score, string Observations)> scores)
+{
+	try
+	{
+		var path = GetScoresFilePath(repoRoot);
+		var dict = scores.ToDictionary(kv => kv.Key, kv => new { score = kv.Value.Score, observations = kv.Value.Observations });
+		var json = JsonSerializer.Serialize(dict, new JsonSerializerOptions { WriteIndented = true });
+		File.WriteAllText(path, json);
+		Console.WriteLine($"💾 Saved {scores.Count} prompt scores to {path}");
+	}
+	catch (Exception ex)
+	{
+		Console.WriteLine($"⚠️ Failed to save prompt scores: {ex.Message}");
+	}
+}
+
+app.MapGet("/api/prompts", () =>
+{
+	try
+	{
+		var currentDir = Directory.GetCurrentDirectory();
+		var repoRoot = currentDir;
+		if (!Directory.Exists(Path.Combine(repoRoot, "Agents")))
+		{
+			var parent = Directory.GetParent(currentDir)?.FullName;
+			if (parent != null && Directory.Exists(Path.Combine(parent, "Agents")))
+				repoRoot = parent;
+			else
+				repoRoot = Path.GetFullPath("..");
+		}
+
+		var promptsDir = Path.Combine(repoRoot, "Agents", "Prompts");
+		if (!Directory.Exists(promptsDir))
+			return Results.Ok(Array.Empty<McpChatWeb.Models.PromptInfo>());
+
+		var prompts = new List<McpChatWeb.Models.PromptInfo>();
+
+		foreach (var file in Directory.GetFiles(promptsDir, "*.md"))
+		{
+			var id = Path.GetFileNameWithoutExtension(file);
+			var friendlyName = System.Text.RegularExpressions.Regex.Replace(id, "([a-z])([A-Z])", "$1 $2");
+			var content = File.ReadAllText(file);
+
+			// Parse ## SECTION: System and ## SECTION: User
+			var systemPrompt = "";
+			var userPrompt = "";
+
+			var sections = System.Text.RegularExpressions.Regex.Split(content, @"^##\s+SECTION:\s*", System.Text.RegularExpressions.RegexOptions.Multiline);
+			foreach (var section in sections)
+			{
+				if (section.StartsWith("System", StringComparison.OrdinalIgnoreCase))
+				{
+					systemPrompt = section.Substring(section.IndexOf('\n') + 1).Trim();
+				}
+				else if (section.StartsWith("User", StringComparison.OrdinalIgnoreCase))
+				{
+					userPrompt = section.Substring(section.IndexOf('\n') + 1).Trim();
+				}
+			}
+
+			// Apply overrides if any
+			var enabled = true;
+			if (_promptOverrides.TryGetValue(id, out var overrides))
+			{
+				if (overrides.SystemPrompt != null) systemPrompt = overrides.SystemPrompt;
+				if (overrides.UserPrompt != null) userPrompt = overrides.UserPrompt;
+				enabled = overrides.Enabled;
+			}
+
+			var qualityScore = 0;
+			var observations = "";
+			if (_promptScores.TryGetValue(id, out var scoreData))
+			{
+				qualityScore = scoreData.Score;
+				observations = scoreData.Observations;
+			}
+			else
+			{
+				// Try loading from disk on first access
+				LoadPromptScores(repoRoot, _promptScores);
+				if (_promptScores.TryGetValue(id, out var diskScore))
+				{
+					qualityScore = diskScore.Score;
+					observations = diskScore.Observations;
+				}
+			}
+
+			prompts.Add(new McpChatWeb.Models.PromptInfo(id, friendlyName, systemPrompt, userPrompt, enabled, qualityScore, observations));
+		}
+
+		return Results.Ok(prompts);
+	}
+	catch (Exception ex)
+	{
+		return Results.Problem($"Failed to load prompts: {ex.Message}");
+	}
+});
+
+app.MapPost("/api/prompts/update", (McpChatWeb.Models.UpdatePromptRequest request) =>
+{
+	if (string.IsNullOrWhiteSpace(request.Id))
+		return Results.BadRequest("Prompt ID is required");
+
+	var existing = _promptOverrides.TryGetValue(request.Id, out var current)
+		? current
+		: (SystemPrompt: (string?)null, UserPrompt: (string?)null, Enabled: true);
+
+	_promptOverrides[request.Id] = (
+		request.SystemPrompt ?? existing.SystemPrompt,
+		request.UserPromptTemplate ?? existing.UserPrompt,
+		request.Enabled ?? existing.Enabled
+	);
+
+	// Persist to disk if system or user prompt was provided
+	if (request.SystemPrompt != null || request.UserPromptTemplate != null)
+	{
+		try
+		{
+			var currentDir = Directory.GetCurrentDirectory();
+			var repoRoot = currentDir;
+			if (!Directory.Exists(Path.Combine(repoRoot, "Agents")))
+			{
+				var parent = Directory.GetParent(currentDir)?.FullName;
+				if (parent != null && Directory.Exists(Path.Combine(parent, "Agents")))
+					repoRoot = parent;
+				else
+					repoRoot = Path.GetFullPath("..");
+			}
+
+			var promptFile = Path.Combine(repoRoot, "Agents", "Prompts", $"{request.Id}.md");
+			if (File.Exists(promptFile))
+			{
+				var content = File.ReadAllText(promptFile);
+				var sections = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+				var otherSections = new List<(string Name, string Content)>();
+
+				// Parse all sections
+				var parts = System.Text.RegularExpressions.Regex.Split(content, @"^(##\s+SECTION:\s*.+)$", System.Text.RegularExpressions.RegexOptions.Multiline);
+				string? currentSectionHeader = null;
+				foreach (var part in parts)
+				{
+					if (System.Text.RegularExpressions.Regex.IsMatch(part, @"^##\s+SECTION:\s*"))
+					{
+						currentSectionHeader = part.Trim();
+					}
+					else if (currentSectionHeader != null)
+					{
+						var sectionName = currentSectionHeader.Replace("## SECTION:", "").Trim();
+						if (sectionName.Equals("System", StringComparison.OrdinalIgnoreCase) ||
+						    sectionName.Equals("User", StringComparison.OrdinalIgnoreCase))
+						{
+							sections[sectionName] = part.TrimStart('\n', '\r');
+						}
+						else
+						{
+							otherSections.Add((currentSectionHeader, part));
+						}
+						currentSectionHeader = null;
+					}
+				}
+
+				// Rebuild file with updated sections
+				var sb = new System.Text.StringBuilder();
+				sb.AppendLine("## SECTION: System");
+				sb.AppendLine();
+				sb.AppendLine((request.SystemPrompt ?? sections.GetValueOrDefault("System", "")).TrimEnd());
+				sb.AppendLine();
+
+				// Write User section if it existed or was provided
+				if (request.UserPromptTemplate != null || sections.ContainsKey("User"))
+				{
+					sb.AppendLine("## SECTION: User");
+					sb.AppendLine();
+					sb.AppendLine((request.UserPromptTemplate ?? sections.GetValueOrDefault("User", "")).TrimEnd());
+					sb.AppendLine();
+				}
+
+				// Preserve all other sections (ChunkFirst, ChunkMiddle, ChunkLast, Corrections, etc.)
+				foreach (var (header, body) in otherSections)
+				{
+					sb.AppendLine(header);
+					sb.Append(body);
+				}
+
+				File.WriteAllText(promptFile, sb.ToString());
+				Console.WriteLine($"💾 Prompt '{request.Id}' saved to disk: {promptFile}");
+			}
+		}
+		catch (Exception ex)
+		{
+			Console.WriteLine($"⚠️ Failed to persist prompt '{request.Id}' to disk: {ex.Message}");
+			// Don't fail the request — in-memory override still works
+		}
+	}
+
+	Console.WriteLine($"📝 Prompt '{request.Id}' updated (enabled={request.Enabled ?? existing.Enabled})");
+
+	return Results.Ok(new { updated = request.Id, savedToDisk = request.SystemPrompt != null || request.UserPromptTemplate != null });
+});
+
+// ── Generate All Prompts endpoint ────────────────────────────────────────────
+
+app.MapPost("/api/prompts/generate-all", () =>
+{
+	try
+	{
+		var totalSw = System.Diagnostics.Stopwatch.StartNew();
+		var currentDir = Directory.GetCurrentDirectory();
+		var repoRoot = currentDir;
+		if (!Directory.Exists(Path.Combine(repoRoot, "source")))
+		{
+			var parent = Directory.GetParent(currentDir)?.FullName;
+			if (parent != null && Directory.Exists(Path.Combine(parent, "source")))
+				repoRoot = parent;
+			else
+				repoRoot = Path.GetFullPath("..");
+		}
+
+		var sourceDir = Path.Combine(repoRoot, "source");
+		if (!Directory.Exists(sourceDir))
+			return Results.Ok(new { success = false, warning = "Source folder not found.", results = Array.Empty<object>() });
+
+		var cobolExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+			{ ".cbl", ".cob", ".cpy", ".pco", ".sqb", ".copy" };
+
+		var sourceFiles = Directory.GetFiles(sourceDir, "*", SearchOption.AllDirectories)
+			.Where(f => cobolExtensions.Contains(Path.GetExtension(f)))
+			.ToList();
+
+		if (sourceFiles.Count == 0)
+			return Results.Ok(new { success = false, warning = "No COBOL files found in source folder.", results = Array.Empty<object>() });
+
+		// ── PHASE 1: Regex analysis ───────────────────────────────────────────
+		var phaseTimings = new Dictionary<string, long>();
+		var sw = System.Diagnostics.Stopwatch.StartNew();
+
+		var globalFeatures = new HashSet<string>();
+		var programs = new List<string>();
+		var copybooks = new List<string>();
+		int totalLines = 0;
+
+		foreach (var file in sourceFiles)
+		{
+			var allLines = File.ReadAllLines(file);
+			totalLines += allLines.Length;
+			var text = string.Join("\n", allLines);
+			var ext = Path.GetExtension(file).ToLowerInvariant();
+
+			if (ext is ".cbl" or ".cob" or ".pco" or ".sqb") programs.Add(Path.GetFileName(file));
+			else copybooks.Add(Path.GetFileName(file));
+
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"EXEC\s+SQL", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("EXEC_SQL");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"EXEC\s+CICS", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("EXEC_CICS");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"EXEC\s+CICS\s+(SEND|RECEIVE)\s+MAP", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("CICS_SCREEN");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\bCALL\s+['\""]", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("CALL_PROGRAM");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\b(READ|WRITE|REWRITE|DELETE)\s+\w+", System.Text.RegularExpressions.RegexOptions.IgnoreCase) &&
+			    System.Text.RegularExpressions.Regex.IsMatch(text, @"\bFD\s+\w+|SELECT\s+\w+\s+ASSIGN", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("FILE_IO");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"PERFORM\s+\w+\s+UNTIL", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("BATCH_LOOP");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"COMPUTE|MULTIPLY|DIVIDE|ADD\s+\w+\s+TO", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("ARITHMETIC");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\bCOPY\s+\w+", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("COPYBOOK_REF");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"STRING\s+\w+|UNSTRING\s+\w+|INSPECT\s+\w+", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("STRING_HANDLING");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"SORT\s+\w+|MERGE\s+\w+", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("SORT_MERGE");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"OCCURS\s+\d+", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("TABLE_HANDLING");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"EXEC\s+DLI", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("IMS_DB");
+		}
+
+		var archPattern = globalFeatures.Contains("CICS_SCREEN") ? "online-interactive"
+			: globalFeatures.Contains("EXEC_CICS") ? "online-transaction"
+			: globalFeatures.Contains("BATCH_LOOP") && globalFeatures.Contains("FILE_IO") ? "batch-file-processing"
+			: globalFeatures.Contains("BATCH_LOOP") ? "batch-processing"
+			: globalFeatures.Contains("FILE_IO") ? "file-processing"
+			: "general";
+
+		phaseTimings["phase1_regex_ms"] = sw.ElapsedMilliseconds;
+
+		// ── PHASE 2: Generate base prompts ────────────────────────────────────
+		sw.Restart();
+
+		var promptsDir = Path.Combine(repoRoot, "Agents", "Prompts");
+		if (!Directory.Exists(promptsDir))
+			return Results.Ok(new { success = false, warning = "Agents/Prompts directory not found.", results = Array.Empty<object>() });
+
+		var promptFiles = Directory.GetFiles(promptsDir, "*.md");
+		var results = new List<object>();
+		int savedCount = 0;
+
+		phaseTimings["phase2_prompts_ms"] = sw.ElapsedMilliseconds;
+
+		// ── PHASE 3 (save — no AI in quick mode) ─────────────────────────────
+		sw.Restart();
+
+		foreach (var promptFile in promptFiles)
+		{
+			var id = Path.GetFileNameWithoutExtension(promptFile);
+			var pid = id.ToLowerInvariant();
+
+			string systemPrompt;
+			if (pid.Contains("java") && !pid.Contains("chunk"))
+				systemPrompt = PromptBuilders.BuildJavaPrompt(programs, copybooks, globalFeatures, archPattern, totalLines);
+			else if (pid.Contains("java") && pid.Contains("chunk"))
+				systemPrompt = PromptBuilders.BuildJavaPrompt(programs, copybooks, globalFeatures, archPattern, totalLines, chunked: true);
+			else if (pid.Contains("csharp") && !pid.Contains("chunk"))
+				systemPrompt = PromptBuilders.BuildCSharpPrompt(programs, copybooks, globalFeatures, archPattern, totalLines);
+			else if (pid.Contains("csharp") && pid.Contains("chunk"))
+				systemPrompt = PromptBuilders.BuildCSharpPrompt(programs, copybooks, globalFeatures, archPattern, totalLines, chunked: true);
+			else if (pid.Contains("analyzer") || pid.Contains("cobol"))
+				systemPrompt = PromptBuilders.BuildAnalyzerPrompt(programs, copybooks, globalFeatures, totalLines);
+			else if (pid.Contains("business") || pid.Contains("extractor"))
+				systemPrompt = PromptBuilders.BuildBusinessLogicPrompt(programs, copybooks, globalFeatures);
+			else if (pid.Contains("dependency") || pid.Contains("mapper"))
+				systemPrompt = PromptBuilders.BuildDependencyPrompt(programs, copybooks, globalFeatures);
+			else
+				systemPrompt = PromptBuilders.BuildGenericPrompt(programs, copybooks, globalFeatures, totalLines);
+
+			var userPrompt = PromptBuilders.BuildUserPromptTemplate(pid, globalFeatures, programs.Count, copybooks.Count);
+
+			_promptOverrides[id] = (systemPrompt, userPrompt, true);
+
+			var savedToDisk = false;
+			try
+			{
+				var content = File.ReadAllText(promptFile);
+				var otherSections = new List<(string Header, string Body)>();
+				var parts = System.Text.RegularExpressions.Regex.Split(content, @"^(##\s+SECTION:\s*.+)$", System.Text.RegularExpressions.RegexOptions.Multiline);
+				string? currentHeader = null;
+				foreach (var part in parts)
+				{
+					if (System.Text.RegularExpressions.Regex.IsMatch(part, @"^##\s+SECTION:\s*"))
+					{
+						currentHeader = part.Trim();
+					}
+					else if (currentHeader != null)
+					{
+						var sectionName = currentHeader.Replace("## SECTION:", "").Trim();
+						if (!sectionName.Equals("System", StringComparison.OrdinalIgnoreCase) &&
+						    !sectionName.Equals("User", StringComparison.OrdinalIgnoreCase))
+						{
+							otherSections.Add((currentHeader, part));
+						}
+						currentHeader = null;
+					}
+				}
+
+				var sb = new System.Text.StringBuilder();
+				sb.AppendLine("## SECTION: System");
+				sb.AppendLine();
+				sb.AppendLine(systemPrompt.TrimEnd());
+				sb.AppendLine();
+				sb.AppendLine("## SECTION: User");
+				sb.AppendLine();
+				sb.AppendLine(userPrompt.TrimEnd());
+				sb.AppendLine();
+
+				foreach (var (header, body) in otherSections)
+				{
+					sb.AppendLine(header);
+					sb.Append(body);
+				}
+
+				File.WriteAllText(promptFile, sb.ToString());
+				savedToDisk = true;
+				Console.WriteLine($"💾 Generated prompt for '{id}' saved to disk");
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"⚠️ Failed to save '{id}' to disk: {ex.Message}");
+			}
+
+			if (savedToDisk) savedCount++;
+			results.Add(new { promptId = id, savedToDisk, enhanced = false, qualityScore = 0, observations = "" });
+		}
+
+		phaseTimings["phase3_save_ms"] = sw.ElapsedMilliseconds;
+
+		Console.WriteLine($"⚡ Generated all prompts: {savedCount}/{promptFiles.Length} saved to disk");
+
+		return Results.Ok(new
+		{
+			success = true,
+			warning = (string?)null,
+			analysis = new
+			{
+				totalFiles = sourceFiles.Count,
+				totalLines,
+				programs = programs.Count,
+				copybooks = copybooks.Count,
+				architecturePattern = archPattern,
+				detectedFeatures = globalFeatures.OrderBy(f => f).ToList()
+			},
+			results,
+			savedCount,
+			totalAgents = promptFiles.Length,
+			aiEnhanced = false,
+			aiModelUsed = "(none)",
+			phaseTimings,
+			totalTimeMs = totalSw.ElapsedMilliseconds
+		});
+	}
+	catch (Exception ex)
+	{
+		return Results.Problem($"Failed to generate prompts: {ex.Message}");
+	}
+});
+
+// ── AI-Enhanced Generate All Prompts endpoint ────────────────────────────────
+
+app.MapPost("/api/prompts/enhance-all", async () =>
+{
+	try
+	{
+		var currentDir = Directory.GetCurrentDirectory();
+		var repoRoot = currentDir;
+		if (!Directory.Exists(Path.Combine(repoRoot, "source")))
+		{
+			var parent = Directory.GetParent(currentDir)?.FullName;
+			if (parent != null && Directory.Exists(Path.Combine(parent, "source")))
+				repoRoot = parent;
+			else
+				repoRoot = Path.GetFullPath("..");
+		}
+
+		var sourceDir = Path.Combine(repoRoot, "source");
+		if (!Directory.Exists(sourceDir))
+			return Results.Ok(new { success = false, phase = "error", warning = "Source folder not found." });
+
+		var cobolExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+			{ ".cbl", ".cob", ".cpy", ".pco", ".sqb", ".copy" };
+
+		var sourceFiles = Directory.GetFiles(sourceDir, "*", SearchOption.AllDirectories)
+			.Where(f => cobolExtensions.Contains(Path.GetExtension(f)))
+			.ToList();
+
+		if (sourceFiles.Count == 0)
+			return Results.Ok(new { success = false, phase = "error", warning = "No COBOL files found in source folder." });
+
+		// ── PHASE 1: Regex-based analysis (fast) ──────────────────────────────
+		Console.WriteLine("⚡ Phase 1: Regex-based source analysis...");
+		var phaseTimings = new Dictionary<string, long>();
+		var sw = System.Diagnostics.Stopwatch.StartNew();
+
+		var globalFeatures = new HashSet<string>();
+		var programs = new List<string>();
+		var copybooks = new List<string>();
+		int totalLines = 0;
+
+		foreach (var file in sourceFiles)
+		{
+			var allLines = File.ReadAllLines(file);
+			totalLines += allLines.Length;
+			var text = string.Join("\n", allLines);
+			var ext = Path.GetExtension(file).ToLowerInvariant();
+
+			if (ext is ".cbl" or ".cob" or ".pco" or ".sqb") programs.Add(Path.GetFileName(file));
+			else copybooks.Add(Path.GetFileName(file));
+
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"EXEC\s+SQL", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("EXEC_SQL");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"EXEC\s+CICS", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("EXEC_CICS");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"EXEC\s+CICS\s+(SEND|RECEIVE)\s+MAP", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("CICS_SCREEN");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\bCALL\s+['\""]", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("CALL_PROGRAM");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\b(READ|WRITE|REWRITE|DELETE)\s+\w+", System.Text.RegularExpressions.RegexOptions.IgnoreCase) &&
+			    System.Text.RegularExpressions.Regex.IsMatch(text, @"\bFD\s+\w+|SELECT\s+\w+\s+ASSIGN", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("FILE_IO");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"PERFORM\s+\w+\s+UNTIL", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("BATCH_LOOP");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"COMPUTE|MULTIPLY|DIVIDE|ADD\s+\w+\s+TO", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("ARITHMETIC");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\bCOPY\s+\w+", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("COPYBOOK_REF");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"STRING\s+\w+|UNSTRING\s+\w+|INSPECT\s+\w+", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("STRING_HANDLING");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"SORT\s+\w+|MERGE\s+\w+", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("SORT_MERGE");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"OCCURS\s+\d+", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("TABLE_HANDLING");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"EXEC\s+DLI", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("IMS_DB");
+		}
+
+		var archPattern = globalFeatures.Contains("CICS_SCREEN") ? "online-interactive"
+			: globalFeatures.Contains("EXEC_CICS") ? "online-transaction"
+			: globalFeatures.Contains("BATCH_LOOP") && globalFeatures.Contains("FILE_IO") ? "batch-file-processing"
+			: globalFeatures.Contains("BATCH_LOOP") ? "batch-processing"
+			: globalFeatures.Contains("FILE_IO") ? "file-processing"
+			: "general";
+
+		phaseTimings["phase1_regex_ms"] = sw.ElapsedMilliseconds;
+		Console.WriteLine($"✅ Phase 1 complete: {sw.ElapsedMilliseconds}ms — {globalFeatures.Count} features, {programs.Count} programs, {copybooks.Count} copybooks");
+
+		// ── PHASE 2: Generate base prompts (regex) ────────────────────────────
+		sw.Restart();
+		Console.WriteLine("📝 Phase 2: Generating base prompts from regex analysis...");
+
+		var promptsDir = Path.Combine(repoRoot, "Agents", "Prompts");
+		if (!Directory.Exists(promptsDir))
+			return Results.Ok(new { success = false, phase = "error", warning = "Agents/Prompts directory not found." });
+
+		var promptFiles = Directory.GetFiles(promptsDir, "*.md");
+		var agentPrompts = new Dictionary<string, (string SystemPrompt, string UserPrompt)>();
+
+		foreach (var promptFile in promptFiles)
+		{
+			var id = Path.GetFileNameWithoutExtension(promptFile);
+			var pid = id.ToLowerInvariant();
+
+			string systemPrompt;
+			if (pid.Contains("java") && !pid.Contains("chunk"))
+				systemPrompt = PromptBuilders.BuildJavaPrompt(programs, copybooks, globalFeatures, archPattern, totalLines);
+			else if (pid.Contains("java") && pid.Contains("chunk"))
+				systemPrompt = PromptBuilders.BuildJavaPrompt(programs, copybooks, globalFeatures, archPattern, totalLines, chunked: true);
+			else if (pid.Contains("csharp") && !pid.Contains("chunk"))
+				systemPrompt = PromptBuilders.BuildCSharpPrompt(programs, copybooks, globalFeatures, archPattern, totalLines);
+			else if (pid.Contains("csharp") && pid.Contains("chunk"))
+				systemPrompt = PromptBuilders.BuildCSharpPrompt(programs, copybooks, globalFeatures, archPattern, totalLines, chunked: true);
+			else if (pid.Contains("analyzer") || pid.Contains("cobol"))
+				systemPrompt = PromptBuilders.BuildAnalyzerPrompt(programs, copybooks, globalFeatures, totalLines);
+			else if (pid.Contains("business") || pid.Contains("extractor"))
+				systemPrompt = PromptBuilders.BuildBusinessLogicPrompt(programs, copybooks, globalFeatures);
+			else if (pid.Contains("dependency") || pid.Contains("mapper"))
+				systemPrompt = PromptBuilders.BuildDependencyPrompt(programs, copybooks, globalFeatures);
+			else
+				systemPrompt = PromptBuilders.BuildGenericPrompt(programs, copybooks, globalFeatures, totalLines);
+
+			var userPrompt = PromptBuilders.BuildUserPromptTemplate(pid, globalFeatures, programs.Count, copybooks.Count);
+			agentPrompts[id] = (systemPrompt, userPrompt);
+		}
+
+		phaseTimings["phase2_prompts_ms"] = sw.ElapsedMilliseconds;
+		Console.WriteLine($"✅ Phase 2 complete: {sw.ElapsedMilliseconds}ms — {agentPrompts.Count} base prompts generated");
+
+		// ── PHASE 3: AI Enhancement ───────────────────────────────────────────
+		sw.Restart();
+		Console.WriteLine("🧠 Phase 3: AI enhancement of prompts...");
+		var aiEnhanced = false;
+		var aiModelUsed = "(none)";
+		var enhancementDetails = new List<object>();
+
+		// Read token/timeout settings from appsettings.json (ChatProfile for this task)
+		var config = app.Configuration;
+		var configMaxOutputTokens = config.GetValue<int?>("ChatProfile:MaxOutputTokens")
+			?? config.GetValue<int?>("ModelProfile:MaxOutputTokens")
+			?? 65536;
+		var configTimeoutSeconds = config.GetValue<int?>("ChatProfile:TimeoutSeconds")
+			?? config.GetValue<int?>("ModelProfile:TimeoutSeconds")
+			?? 600;
+		Console.WriteLine($"🔧 Using max_tokens={configMaxOutputTokens}, timeout={configTimeoutSeconds}s (from appsettings.json)");
+
+		// Build COBOL sample from representative files — full content, no truncation
+		var samplePrograms = sourceFiles
+			.Where(f => new[] { ".cbl", ".cob", ".pco", ".sqb" }.Contains(Path.GetExtension(f).ToLowerInvariant()))
+			.OrderByDescending(f => new FileInfo(f).Length)
+			.Take(3)
+			.ToList();
+		var sampleCopybooks = sourceFiles
+			.Where(f => new[] { ".cpy", ".copy" }.Contains(Path.GetExtension(f).ToLowerInvariant()))
+			.OrderByDescending(f => new FileInfo(f).Length)
+			.Take(2)
+			.ToList();
+
+		var cobolSampleSb = new System.Text.StringBuilder();
+		foreach (var sf in samplePrograms.Concat(sampleCopybooks))
+		{
+			var lines = File.ReadAllLines(sf);
+			cobolSampleSb.AppendLine($"--- {Path.GetFileName(sf)} ({lines.Length} lines) ---");
+			cobolSampleSb.AppendLine(string.Join("\n", lines));
+			cobolSampleSb.AppendLine();
+		}
+		var cobolSample = cobolSampleSb.ToString();
+		Console.WriteLine($"📄 COBOL sample: {cobolSample.Length} chars from {samplePrograms.Count + sampleCopybooks.Count} files (full content, no truncation)");
+
+		// Build the AI enhancement request — ONE call for all agents
+		var aiRequestSb = new System.Text.StringBuilder();
+		aiRequestSb.AppendLine("You are a COBOL modernization expert. Review the following COBOL source code samples and the regex-generated prompt skeletons below. Your job is to enhance each prompt with domain-specific insights you observe in the actual code.");
+		aiRequestSb.AppendLine();
+		aiRequestSb.AppendLine("## COBOL Source Samples");
+		aiRequestSb.AppendLine("```cobol");
+		aiRequestSb.AppendLine(cobolSample);
+		aiRequestSb.AppendLine("```");
+		aiRequestSb.AppendLine();
+		aiRequestSb.AppendLine("## Current Regex-Generated Prompts");
+		foreach (var (id, (sys, usr)) in agentPrompts)
+		{
+			aiRequestSb.AppendLine($"### Agent: {id}");
+			aiRequestSb.AppendLine("**System Prompt (full):**");
+			aiRequestSb.AppendLine(sys);
+			aiRequestSb.AppendLine();
+		}
+		aiRequestSb.AppendLine();
+		aiRequestSb.AppendLine("## Your Task");
+		aiRequestSb.AppendLine("For EACH agent listed above, provide a JSON array with enhancement suggestions. Each entry must have:");
+		aiRequestSb.AppendLine("- `agent`: the agent id");
+		aiRequestSb.AppendLine("- `additions`: a string block to APPEND to the end of the system prompt (domain-specific rules, naming conventions, error patterns, data format observations from the actual code). Be thorough — include variable naming patterns, data structures, COBOL idioms, copybook relationships, screen maps, SQL table names, and anything else specific to this codebase.");
+		aiRequestSb.AppendLine("- `quality_score`: 1-10 rating of the FINAL prompt quality AFTER your additions are applied. Score 8-10 means the prompt is comprehensive and production-ready for code conversion. Score 5-7 means it covers the basics but may miss edge cases. Score 1-4 means the prompt is insufficient.");
+		aiRequestSb.AppendLine("- `observations`: brief note on what you found in the code that the regex missed");
+		aiRequestSb.AppendLine();
+		aiRequestSb.AppendLine("IMPORTANT: Your additions should be substantial enough to bring each agent's prompt to at least 8/10 quality. Include all domain-specific details you can extract from the actual COBOL source code.");
+		aiRequestSb.AppendLine();
+		aiRequestSb.AppendLine("Return ONLY a JSON array, no markdown fences. Example:");
+		aiRequestSb.AppendLine("[{\"agent\":\"JavaConverter\",\"additions\":\"## Domain-Specific Rules\\n- ...\",\"quality_score\":8,\"observations\":\"Found Danish-language variable names...\"}]");
+
+		// ── AI Enhancement via SDK client (same SDKs as mission control) ──
+		var (aiClient, studioModel, aiError) = McpChatWeb.Services.PromptStudioAI.CreateClient();
+		aiModelUsed = studioModel;
+		// Allow portalState.ActiveModelId override
+		if (!string.IsNullOrWhiteSpace(portalState.ActiveModelId))
+			aiModelUsed = portalState.ActiveModelId;
+
+		if (aiClient != null)
+		{
+			try
+			{
+				Console.WriteLine($"🧠 Calling {aiModelUsed} for prompt enhancement via SDK...");
+
+				var aiResponse = await aiClient.GetResponseAsync(
+					new[] { new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.User, aiRequestSb.ToString()) },
+					new Microsoft.Extensions.AI.ChatOptions { MaxOutputTokens = configMaxOutputTokens });
+
+				var content = aiResponse.Text ?? "";
+				Console.WriteLine($"🔍 AI response: {content.Length} chars");
+
+				// Strip markdown fences
+				content = content.Trim();
+				if (content.StartsWith("```"))
+				{
+					var firstNewline = content.IndexOf('\n');
+					if (firstNewline > 0) content = content[(firstNewline + 1)..];
+				}
+				if (content.EndsWith("```"))
+				{
+					var lastFence = content.LastIndexOf("```");
+					if (lastFence >= 0) content = content[..lastFence];
+				}
+				content = content.Trim();
+
+				// Extract JSON array
+				if (!content.StartsWith("["))
+				{
+					var arrayStart = content.IndexOf('[');
+					var arrayEnd = content.LastIndexOf(']');
+					if (arrayStart >= 0 && arrayEnd > arrayStart)
+						content = content[arrayStart..(arrayEnd + 1)];
+				}
+
+				// Parse; recover truncated JSON
+				JsonDocument? enhancementsDoc = null;
+				try { enhancementsDoc = JsonDocument.Parse(content); }
+				catch (JsonException)
+				{
+					Console.WriteLine("⚠️ AI response JSON truncated, recovering...");
+					var lastBrace = content.LastIndexOf('}');
+					if (lastBrace > 0)
+					{
+						try { enhancementsDoc = JsonDocument.Parse(content[..(lastBrace + 1)] + "]"); }
+						catch { Console.WriteLine("⚠️ Could not recover truncated JSON"); }
+					}
+				}
+
+				if (enhancementsDoc != null)
+				{
+					foreach (var item in enhancementsDoc.RootElement.EnumerateArray())
+					{
+						var agentId = item.TryGetProperty("agent", out var ag) ? ag.GetString() ?? "" : "";
+						var additions = item.TryGetProperty("additions", out var ad) ? ad.GetString() ?? "" : "";
+						var qualityScore = item.TryGetProperty("quality_score", out var qs) ? qs.GetInt32() : 0;
+						var observations = item.TryGetProperty("observations", out var obs) ? obs.GetString() : "";
+
+						if (agentPrompts.ContainsKey(agentId) && !string.IsNullOrWhiteSpace(additions))
+						{
+							var (existingSys, existingUsr) = agentPrompts[agentId];
+							agentPrompts[agentId] = (existingSys + "\n\n" + additions.TrimEnd(), existingUsr);
+							aiEnhanced = true;
+						}
+
+						enhancementDetails.Add(new { agent = agentId, qualityScore, observations, enhanced = !string.IsNullOrWhiteSpace(additions) });
+					}
+					enhancementsDoc.Dispose();
+				}
+				Console.WriteLine($"✅ AI enhancement returned {enhancementDetails.Count} agent improvements");
+			}
+			catch (Exception aiEx)
+			{
+				Console.WriteLine($"⚠️ AI enhancement error: {aiEx.Message}");
+				enhancementDetails.Add(new { agent = "(all)", qualityScore = 0, observations = $"AI error: {aiEx.Message}", enhanced = false });
+			}
+			finally
+			{
+				if (aiClient is IDisposable d) d.Dispose();
+			}
+		}
+		else
+		{
+			Console.WriteLine($"⚠️ {(string.IsNullOrWhiteSpace(aiError) ? "No AI model configured" : aiError)}");
+			enhancementDetails.Add(new { agent = "(all)", qualityScore = 0, observations = string.IsNullOrWhiteSpace(aiError) ? "No AI model selected" : aiError, enhanced = false });
+		}
+
+		phaseTimings["phase3_ai_ms"] = sw.ElapsedMilliseconds;
+		Console.WriteLine($"✅ Phase 3 complete: {sw.ElapsedMilliseconds}ms — AI enhanced: {aiEnhanced}");
+
+		// ── PHASE 4: Save to disk ─────────────────────────────────────────────
+		sw.Restart();
+		Console.WriteLine("💾 Phase 4: Saving enhanced prompts to disk...");
+		int savedCount = 0;
+		var results = new List<object>();
+
+		foreach (var promptFile in promptFiles)
+		{
+			var id = Path.GetFileNameWithoutExtension(promptFile);
+			if (!agentPrompts.ContainsKey(id)) continue;
+
+			var (systemPrompt, userPrompt) = agentPrompts[id];
+			_promptOverrides[id] = (systemPrompt, userPrompt, true);
+
+			var savedToDisk = false;
+			try
+			{
+				var content = File.ReadAllText(promptFile);
+				var otherSections = new List<(string Header, string Body)>();
+				var parts = System.Text.RegularExpressions.Regex.Split(content, @"^(##\s+SECTION:\s*.+)$", System.Text.RegularExpressions.RegexOptions.Multiline);
+				string? currentHeader = null;
+				foreach (var part in parts)
+				{
+					if (System.Text.RegularExpressions.Regex.IsMatch(part, @"^##\s+SECTION:\s*"))
+					{
+						currentHeader = part.Trim();
+					}
+					else if (currentHeader != null)
+					{
+						var sectionName = currentHeader.Replace("## SECTION:", "").Trim();
+						if (!sectionName.Equals("System", StringComparison.OrdinalIgnoreCase) &&
+						    !sectionName.Equals("User", StringComparison.OrdinalIgnoreCase))
+						{
+							otherSections.Add((currentHeader, part));
+						}
+						currentHeader = null;
+					}
+				}
+
+				var sb = new System.Text.StringBuilder();
+				sb.AppendLine("## SECTION: System");
+				sb.AppendLine();
+				sb.AppendLine(systemPrompt.TrimEnd());
+				sb.AppendLine();
+				sb.AppendLine("## SECTION: User");
+				sb.AppendLine();
+				sb.AppendLine(userPrompt.TrimEnd());
+				sb.AppendLine();
+
+				foreach (var (header, body) in otherSections)
+				{
+					sb.AppendLine(header);
+					sb.Append(body);
+				}
+
+				File.WriteAllText(promptFile, sb.ToString());
+				savedToDisk = true;
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"⚠️ Failed to save '{id}': {ex.Message}");
+			}
+
+			if (savedToDisk) savedCount++;
+
+			// Find enhancement detail for this agent
+			var detail = enhancementDetails.FirstOrDefault(d => ((dynamic)d).agent.ToString() == id);
+			results.Add(new
+			{
+				promptId = id,
+				savedToDisk,
+				qualityScore = detail != null ? ((dynamic)detail).qualityScore : 0,
+				observations = detail != null ? ((dynamic)detail).observations?.ToString() ?? "" : "",
+				enhanced = detail != null && ((dynamic)detail).enhanced
+			});
+		}
+
+		// Persist quality scores to disk
+		foreach (var detail in enhancementDetails)
+		{
+			var agentId = ((dynamic)detail).agent.ToString();
+			var qs = (int)((dynamic)detail).qualityScore;
+			string obs = ((dynamic)detail).observations?.ToString() ?? "";
+			if (qs > 0) _promptScores[agentId] = (qs, obs);
+		}
+		SavePromptScores(repoRoot, _promptScores);
+
+		phaseTimings["phase4_save_ms"] = sw.ElapsedMilliseconds;
+		var totalMs = phaseTimings.Values.Sum();
+		Console.WriteLine($"🏁 All phases complete in {totalMs}ms — {savedCount}/{promptFiles.Length} saved, AI enhanced: {aiEnhanced}");
+
+		return Results.Ok(new
+		{
+			success = true,
+			aiEnhanced,
+			aiModelUsed,
+			analysis = new
+			{
+				totalFiles = sourceFiles.Count,
+				totalLines,
+				programs = programs.Count,
+				copybooks = copybooks.Count,
+				architecturePattern = archPattern,
+				detectedFeatures = globalFeatures.OrderBy(f => f).ToList(),
+				sampledFiles = samplePrograms.Concat(sampleCopybooks).Select(Path.GetFileName).ToList()
+			},
+			results,
+			enhancementDetails,
+			savedCount,
+			totalAgents = promptFiles.Length,
+			phaseTimings,
+			totalTimeMs = totalMs
+		});
+	}
+	catch (Exception ex)
+	{
+		return Results.Problem($"Failed to enhance prompts: {ex.Message}");
+	}
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RE-SCORE — evaluate a single prompt's quality via AI
+// ═══════════════════════════════════════════════════════════════════════════════
+
+app.MapPost("/api/prompts/score/{promptId}", async (string promptId) =>
+{
+	try
+	{
+		var currentDir = Directory.GetCurrentDirectory();
+		var repoRoot = currentDir;
+		if (!Directory.Exists(Path.Combine(repoRoot, "Agents")))
+		{
+			var parent = Directory.GetParent(currentDir)?.FullName;
+			if (parent != null && Directory.Exists(Path.Combine(parent, "Agents")))
+				repoRoot = parent;
+			else
+				repoRoot = Path.GetFullPath("..");
+		}
+
+		var promptFile = Path.Combine(repoRoot, "Agents", "Prompts", $"{promptId}.md");
+		if (!File.Exists(promptFile))
+			return Results.NotFound(new { error = $"Prompt '{promptId}' not found" });
+
+		// Read prompt content
+		var content = File.ReadAllText(promptFile);
+		var systemPrompt = "";
+		var sections = System.Text.RegularExpressions.Regex.Split(content, @"^##\s+SECTION:\s*", System.Text.RegularExpressions.RegexOptions.Multiline);
+		foreach (var section in sections)
+		{
+			if (section.StartsWith("System", StringComparison.OrdinalIgnoreCase))
+				systemPrompt = section.Substring(section.IndexOf('\n') + 1).Trim();
+		}
+
+		// Apply overrides
+		if (_promptOverrides.TryGetValue(promptId, out var overrides) && overrides.SystemPrompt != null)
+			systemPrompt = overrides.SystemPrompt;
+
+		// Get COBOL samples for context
+		var sourceDir = Path.Combine(repoRoot, "source");
+		var cobolSample = "";
+		if (Directory.Exists(sourceDir))
+		{
+			var cobolExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ".cbl", ".cob", ".cpy", ".pco", ".sqb", ".copy" };
+			var sourceFiles = Directory.GetFiles(sourceDir, "*", SearchOption.AllDirectories)
+				.Where(f => cobolExtensions.Contains(Path.GetExtension(f)))
+				.OrderByDescending(f => new FileInfo(f).Length)
+				.Take(3)
+				.ToList();
+
+			var sb = new System.Text.StringBuilder();
+			foreach (var sf in sourceFiles)
+			{
+				var lines = File.ReadAllLines(sf);
+				sb.AppendLine($"--- {Path.GetFileName(sf)} ({lines.Length} lines) ---");
+				sb.AppendLine(string.Join("\n", lines));
+				sb.AppendLine();
+			}
+			cobolSample = sb.ToString();
+		}
+
+		// Determine active model & create SDK client
+		var (scoreClient, scoreModelUsed, scoreError) = McpChatWeb.Services.PromptStudioAI.CreateClient();
+
+		if (scoreClient == null)
+			return Results.Ok(new { promptId, qualityScore = 0, observations = string.IsNullOrWhiteSpace(scoreError) ? "No AI model configured" : scoreError, scored = false });
+
+		var scorePrompt = $@"You are a COBOL modernization expert evaluating prompt quality for code conversion agents.
+
+## Agent Prompt to Evaluate
+Agent: {promptId}
+
+{systemPrompt}
+
+## Representative COBOL Source Code
+```cobol
+{cobolSample}
+```
+
+## Scoring Criteria
+Rate this prompt on a 1-10 scale for its readiness to drive accurate COBOL-to-modern-language code conversion:
+
+- **8-10 (Production-ready)**: Comprehensive domain coverage — captures naming conventions, data structures, COBOL idioms, copybook relationships, screen maps, SQL tables, error handling patterns, and edge cases specific to this codebase.
+- **5-7 (Adequate)**: Covers the basics of COBOL conversion but misses codebase-specific patterns, domain terminology, or data format details.
+- **1-4 (Needs work)**: Generic or incomplete — significant gaps that would cause conversion errors.
+
+Return ONLY a JSON object (no markdown fences):
+{{""quality_score"": <1-10>, ""observations"": ""<what the prompt covers well and what it's missing>"", ""suggestions"": ""<specific improvements to raise the score>""}}";
+
+		Console.WriteLine($"🔍 Re-scoring prompt '{promptId}' with {scoreModelUsed}...");
+
+		try
+		{
+			var aiResponse = await scoreClient.GetResponseAsync(
+				new[] { new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.User, scorePrompt) },
+				new Microsoft.Extensions.AI.ChatOptions { MaxOutputTokens = 2000 });
+
+			var aiContent = aiResponse.Text ?? "";
+
+			// Strip markdown fences
+			aiContent = aiContent.Trim();
+			if (aiContent.StartsWith("```")) { var nl = aiContent.IndexOf('\n'); if (nl > 0) aiContent = aiContent[(nl + 1)..]; }
+			if (aiContent.EndsWith("```")) { var lf = aiContent.LastIndexOf("```"); if (lf >= 0) aiContent = aiContent[..lf]; }
+			aiContent = aiContent.Trim();
+
+			// Extract JSON object
+			if (!aiContent.StartsWith("{"))
+			{
+				var objStart = aiContent.IndexOf('{');
+				var objEnd = aiContent.LastIndexOf('}');
+				if (objStart >= 0 && objEnd > objStart)
+					aiContent = aiContent[objStart..(objEnd + 1)];
+			}
+
+			using var scoreDoc = JsonDocument.Parse(aiContent);
+			var qualityScore = scoreDoc.RootElement.TryGetProperty("quality_score", out var qs) ? qs.GetInt32() : 0;
+			var observations = scoreDoc.RootElement.TryGetProperty("observations", out var obs) ? obs.GetString() ?? "" : "";
+			var suggestions = scoreDoc.RootElement.TryGetProperty("suggestions", out var sug) ? sug.GetString() ?? "" : "";
+
+			// Persist score
+			_promptScores[promptId] = (qualityScore, observations);
+			SavePromptScores(repoRoot, _promptScores);
+
+			Console.WriteLine($"✅ Re-scored '{promptId}': {qualityScore}/10");
+			return Results.Ok(new { promptId, qualityScore, observations, suggestions, scored = true });
+		}
+		catch (Exception ex)
+		{
+			Console.WriteLine($"⚠️ Scoring AI call failed: {ex.Message}");
+			return Results.Ok(new { promptId, qualityScore = 0, observations = $"AI scoring failed: {ex.Message}", scored = false });
+		}
+		finally
+		{
+			if (scoreClient is IDisposable d) d.Dispose();
+		}
+	}
+	catch (Exception ex)
+	{
+		Console.WriteLine($"⚠️ Re-score failed for '{promptId}': {ex.Message}");
+		return Results.Ok(new { promptId, qualityScore = 0, observations = $"Scoring failed: {ex.Message}", scored = false });
+	}
+});
+
+app.MapPost("/api/prompts/generate", (McpChatWeb.Models.GeneratePromptRequest request) =>
+{
+	try
+	{
+		var currentDir = Directory.GetCurrentDirectory();
+		var repoRoot = currentDir;
+		if (!Directory.Exists(Path.Combine(repoRoot, "source")))
+		{
+			var parent = Directory.GetParent(currentDir)?.FullName;
+			if (parent != null && Directory.Exists(Path.Combine(parent, "source")))
+				repoRoot = parent;
+			else
+				repoRoot = Path.GetFullPath("..");
+		}
+
+		var sourceDir = Path.Combine(repoRoot, "source");
+		if (!Directory.Exists(sourceDir))
+			return Results.Ok(new { generatedPrompt = "", warning = "Source folder not found." });
+
+		var cobolExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+			{ ".cbl", ".cob", ".cpy", ".pco", ".sqb", ".copy" };
+
+		var sourceFiles = Directory.GetFiles(sourceDir, "*", SearchOption.AllDirectories)
+			.Where(f => cobolExtensions.Contains(Path.GetExtension(f)))
+			.ToList();
+
+		if (sourceFiles.Count == 0)
+			return Results.Ok(new { generatedPrompt = "", warning = "No COBOL files found in source folder." });
+
+		// Deep per-file analysis
+		var fileAnalyses = new List<object>();
+		var globalFeatures = new HashSet<string>();
+		int totalLines = 0;
+
+		foreach (var file in sourceFiles)
+		{
+			var allLines = File.ReadAllLines(file);
+			totalLines += allLines.Length;
+			var text = string.Join("\n", allLines);
+			var ext = Path.GetExtension(file).ToLowerInvariant();
+			var fileType = ext switch { ".cbl" or ".cob" => "Program", ".cpy" or ".copy" => "Copybook", ".pco" or ".sqb" => "SQL/Embedded", _ => "Other" };
+
+			var features = new List<string>();
+
+			// Detect COBOL features via pattern scanning
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"EXEC\s+SQL", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+				features.Add("EXEC_SQL");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"EXEC\s+CICS", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+				features.Add("EXEC_CICS");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"EXEC\s+CICS\s+SEND\s+MAP", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+				features.Add("CICS_SCREEN");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"EXEC\s+CICS\s+RECEIVE\s+MAP", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+				features.Add("CICS_SCREEN");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\bCOPY\s+\w+", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+				features.Add("COPYBOOK_REF");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\bCALL\s+['""]", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+				features.Add("CALL_PROGRAM");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\b(READ|WRITE|REWRITE|DELETE)\s+\w+", System.Text.RegularExpressions.RegexOptions.IgnoreCase) &&
+			    System.Text.RegularExpressions.Regex.IsMatch(text, @"\bFD\s+\w+|SELECT\s+\w+\s+ASSIGN", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+				features.Add("FILE_IO");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"PERFORM\s+\w+\s+UNTIL", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+				features.Add("BATCH_LOOP");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"SORT\s+\w+|MERGE\s+\w+", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+				features.Add("SORT_MERGE");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"COMPUTE|MULTIPLY|DIVIDE|ADD\s+\w+\s+TO", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+				features.Add("ARITHMETIC");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"EVALUATE\s+|EVALUATE\s+TRUE", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+				features.Add("EVALUATE_LOGIC");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\bSTRING\b|\bUNSTRING\b|\bINSPECT\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+				features.Add("STRING_HANDLING");
+
+			// Detect COBOL divisions present
+			var divisions = new List<string>();
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"DATA\s+DIVISION", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+				divisions.Add("DATA");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"PROCEDURE\s+DIVISION", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+				divisions.Add("PROCEDURE");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"ENVIRONMENT\s+DIVISION", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+				divisions.Add("ENVIRONMENT");
+
+			// Count paragraphs (rough estimate)
+			var paragraphCount = System.Text.RegularExpressions.Regex.Matches(text, @"^\s{7}\w[\w-]+\.\s*$", System.Text.RegularExpressions.RegexOptions.Multiline).Count;
+
+			// Classify complexity
+			var complexity = allLines.Length switch
+			{
+				< 100 => "low",
+				< 500 => "medium",
+				< 1500 => "high",
+				_ => "very-high"
+			};
+			if (features.Count >= 4) complexity = "high";
+			if (features.Count >= 6 || allLines.Length > 2000) complexity = "very-high";
+
+			features.ForEach(f => globalFeatures.Add(f));
+
+			fileAnalyses.Add(new
+			{
+				fileName = Path.GetFileName(file),
+				fileType,
+				lineCount = allLines.Length,
+				paragraphCount,
+				complexity,
+				features = features.Distinct().ToList(),
+				divisions
+			});
+		}
+
+		var programs = sourceFiles.Where(f => new[] { ".cbl", ".cob" }.Contains(Path.GetExtension(f).ToLower())).ToList();
+		var copybooks = sourceFiles.Where(f => new[] { ".cpy", ".copy" }.Contains(Path.GetExtension(f).ToLower())).ToList();
+
+		// Determine the dominant architecture pattern
+		var hasCicsScreens = globalFeatures.Contains("CICS_SCREEN");
+		var hasExecCics = globalFeatures.Contains("EXEC_CICS");
+		var hasExecSql = globalFeatures.Contains("EXEC_SQL");
+		var hasFileIo = globalFeatures.Contains("FILE_IO");
+		var hasBatch = globalFeatures.Contains("BATCH_LOOP");
+
+		var archPattern = hasCicsScreens ? "online-interactive"
+			: hasExecCics ? "online-transaction"
+			: hasBatch && hasFileIo ? "batch-file-processing"
+			: hasBatch ? "batch-processing"
+			: hasFileIo ? "file-processing"
+			: "general";
+
+		// Generate prompt based on agent type + detected patterns
+		var promptId = request.PromptId?.ToLowerInvariant() ?? "";
+		string generatedPrompt;
+
+		if (promptId.Contains("java") && !promptId.Contains("chunk"))
+		{
+			generatedPrompt = PromptBuilders.BuildJavaPrompt(programs, copybooks, globalFeatures, archPattern, totalLines);
+		}
+		else if (promptId.Contains("java") && promptId.Contains("chunk"))
+		{
+			generatedPrompt = PromptBuilders.BuildJavaPrompt(programs, copybooks, globalFeatures, archPattern, totalLines, chunked: true);
+		}
+		else if (promptId.Contains("csharp") && !promptId.Contains("chunk"))
+		{
+			generatedPrompt = PromptBuilders.BuildCSharpPrompt(programs, copybooks, globalFeatures, archPattern, totalLines);
+		}
+		else if (promptId.Contains("csharp") && promptId.Contains("chunk"))
+		{
+			generatedPrompt = PromptBuilders.BuildCSharpPrompt(programs, copybooks, globalFeatures, archPattern, totalLines, chunked: true);
+		}
+		else if (promptId.Contains("analyzer") || promptId.Contains("cobol"))
+		{
+			generatedPrompt = PromptBuilders.BuildAnalyzerPrompt(programs, copybooks, globalFeatures, totalLines);
+		}
+		else if (promptId.Contains("business") || promptId.Contains("extractor"))
+		{
+			generatedPrompt = PromptBuilders.BuildBusinessLogicPrompt(programs, copybooks, globalFeatures);
+		}
+		else if (promptId.Contains("dependency") || promptId.Contains("mapper"))
+		{
+			generatedPrompt = PromptBuilders.BuildDependencyPrompt(programs, copybooks, globalFeatures);
+		}
+		else
+		{
+			generatedPrompt = PromptBuilders.BuildGenericPrompt(programs, copybooks, globalFeatures, totalLines);
+		}
+
+		// Generate a user prompt template with placeholders
+		var generatedUserPrompt = PromptBuilders.BuildUserPromptTemplate(promptId, globalFeatures, programs.Count, copybooks.Count);
+
+		return Results.Ok(new
+		{
+			generatedPrompt,
+			generatedUserPrompt,
+			warning = (string?)null,
+			analysis = new
+			{
+				totalFiles = sourceFiles.Count,
+				totalLines,
+				programs = programs.Count,
+				copybooks = copybooks.Count,
+				architecturePattern = archPattern,
+				detectedFeatures = globalFeatures.OrderBy(f => f).ToList(),
+				files = fileAnalyses
+			}
+		});
+	}
+	catch (Exception ex)
+	{
+		return Results.Problem($"Failed to generate prompt: {ex.Message}");
+	}
+});
+
+// ── Source analysis endpoint (per-file fingerprint) ──────────────────────────
+
+app.MapGet("/api/source/analyze", () =>
+{
+	try
+	{
+		var currentDir = Directory.GetCurrentDirectory();
+		var repoRoot = currentDir;
+		if (!Directory.Exists(Path.Combine(repoRoot, "source")))
+		{
+			var parent = Directory.GetParent(currentDir)?.FullName;
+			if (parent != null && Directory.Exists(Path.Combine(parent, "source")))
+				repoRoot = parent;
+			else
+				repoRoot = Path.GetFullPath("..");
+		}
+
+		var sourceDir = Path.Combine(repoRoot, "source");
+		if (!Directory.Exists(sourceDir))
+			return Results.Ok(new { isEmpty = true, warning = "Source folder not found.", files = Array.Empty<object>() });
+
+		var cobolExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+			{ ".cbl", ".cob", ".cpy", ".pco", ".sqb", ".copy" };
+
+		var files = Directory.GetFiles(sourceDir, "*", SearchOption.AllDirectories)
+			.Where(f => cobolExtensions.Contains(Path.GetExtension(f)))
+			.Select(f =>
+			{
+				var allLines = File.ReadAllLines(f);
+				var text = string.Join("\n", allLines);
+				var ext = Path.GetExtension(f).ToLowerInvariant();
+				var features = new List<string>();
+
+				if (System.Text.RegularExpressions.Regex.IsMatch(text, @"EXEC\s+SQL", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+					features.Add("EXEC_SQL");
+				if (System.Text.RegularExpressions.Regex.IsMatch(text, @"EXEC\s+CICS", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+					features.Add("EXEC_CICS");
+				if (System.Text.RegularExpressions.Regex.IsMatch(text, @"EXEC\s+CICS\s+(SEND|RECEIVE)\s+MAP", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+					features.Add("CICS_SCREEN");
+				if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\bCALL\s+['""]", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+					features.Add("CALL_PROGRAM");
+				if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\b(READ|WRITE|REWRITE|DELETE)\s+\w+", System.Text.RegularExpressions.RegexOptions.IgnoreCase) &&
+				    System.Text.RegularExpressions.Regex.IsMatch(text, @"\bFD\s+\w+|SELECT\s+\w+\s+ASSIGN", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+					features.Add("FILE_IO");
+				if (System.Text.RegularExpressions.Regex.IsMatch(text, @"PERFORM\s+\w+\s+UNTIL", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+					features.Add("BATCH_LOOP");
+				if (System.Text.RegularExpressions.Regex.IsMatch(text, @"COMPUTE|MULTIPLY|DIVIDE|ADD\s+\w+\s+TO", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+					features.Add("ARITHMETIC");
+				if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\bCOPY\s+\w+", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+					features.Add("COPYBOOK_REF");
+
+				var complexity = allLines.Length switch
+				{
+					< 100 => "low",
+					< 500 => "medium",
+					< 1500 => "high",
+					_ => "very-high"
+				};
+				if (features.Count >= 4) complexity = "high";
+				if (features.Count >= 6 || allLines.Length > 2000) complexity = "very-high";
+
+				var suggestedTarget = features.Contains("CICS_SCREEN") ? "blazor-page"
+					: features.Contains("EXEC_CICS") ? "rest-endpoint"
+					: features.Contains("BATCH_LOOP") && features.Contains("FILE_IO") ? "background-service"
+					: features.Contains("FILE_IO") ? "repository-service"
+					: features.Contains("EXEC_SQL") ? "data-access-service"
+					: features.Contains("ARITHMETIC") ? "calculator-service"
+					: "service";
+
+				return new
+				{
+					fileName = Path.GetFileName(f),
+					fileType = ext switch { ".cbl" or ".cob" => "Program", ".cpy" or ".copy" => "Copybook", _ => "Other" },
+					lineCount = allLines.Length,
+					complexity,
+					features = features.Distinct().ToList(),
+					suggestedTarget
+				};
+			})
+			.OrderBy(f => f.fileType)
+			.ThenBy(f => f.fileName)
+			.ToList();
+
+		var allFeatures = files.SelectMany(f => f.features).Distinct().OrderBy(f => f).ToList();
+		var archPattern = allFeatures.Contains("CICS_SCREEN") ? "online-interactive"
+			: allFeatures.Contains("EXEC_CICS") ? "online-transaction"
+			: allFeatures.Contains("BATCH_LOOP") && allFeatures.Contains("FILE_IO") ? "batch-file-processing"
+			: allFeatures.Contains("BATCH_LOOP") ? "batch-processing"
+			: allFeatures.Contains("FILE_IO") ? "file-processing"
+			: "general";
+
+		return Results.Ok(new
+		{
+			isEmpty = files.Count == 0,
+			totalFiles = files.Count,
+			totalLines = files.Sum(f => f.lineCount),
+			architecturePattern = archPattern,
+			detectedFeatures = allFeatures,
+			files
+		});
+	}
+	catch (Exception ex)
+	{
+		return Results.Problem($"Failed to analyze source: {ex.Message}");
+	}
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RUN MANAGEMENT — Start/Stop/Pause migration runs from the portal
+// ═══════════════════════════════════════════════════════════════════════════════
+
+app.MapPost("/api/runs/start", (McpChatWeb.Models.StartRunRequest request, McpChatWeb.Services.ProcessManager pm) =>
+{
+	if (string.IsNullOrWhiteSpace(request.Command))
+		return Results.BadRequest("Command is required (migrate, reverse-engineer, convert-only, resume)");
+
+	McpChatWeb.Services.ManagedRun run;
+	try
+	{
+		run = pm.StartRun(
+			request.Command,
+			request.Name ?? "",
+			request.TargetLanguage,
+			request.SpeedProfile,
+			request.SourceFolder,
+			request.Provider,
+			request.ModelId);
+	}
+	catch (ArgumentException ex)
+	{
+		return Results.BadRequest(ex.Message);
+	}
+
+	return Results.Ok(new McpChatWeb.Models.RunStatusDto(
+		run.RunId, run.Name, run.Command, run.TargetLanguage, run.SpeedProfile,
+		run.Status, run.StartedAt, run.CompletedAt, run.ExitCode, run.ProcessId));
+});
+
+app.MapPost("/api/runs/stop", (McpChatWeb.Models.StopRunRequest request, McpChatWeb.Services.ProcessManager pm) =>
+{
+	if (string.IsNullOrWhiteSpace(request.RunId))
+		return Results.BadRequest("RunId is required");
+
+	var success = pm.StopRun(request.RunId);
+	var run = pm.GetRun(request.RunId);
+	if (run == null) return Results.NotFound("Run not found");
+
+	return Results.Ok(new McpChatWeb.Models.RunStatusDto(
+		run.RunId, run.Name, run.Command, run.TargetLanguage, run.SpeedProfile,
+		run.Status, run.StartedAt, run.CompletedAt, run.ExitCode, run.ProcessId));
+});
+
+app.MapPost("/api/runs/pause/{runId}", (string runId, McpChatWeb.Services.ProcessManager pm) =>
+{
+	var run = pm.GetRun(runId);
+	if (run == null) return Results.NotFound("Run not found");
+
+	if (run.Status == "paused")
+	{
+		pm.ResumeRun(runId);
+	}
+	else
+	{
+		pm.PauseRun(runId);
+	}
+
+	run = pm.GetRun(runId)!;
+	return Results.Ok(new McpChatWeb.Models.RunStatusDto(
+		run.RunId, run.Name, run.Command, run.TargetLanguage, run.SpeedProfile,
+		run.Status, run.StartedAt, run.CompletedAt, run.ExitCode, run.ProcessId));
+});
+
+app.MapGet("/api/runs/managed", (McpChatWeb.Services.ProcessManager pm) =>
+{
+	var runs = pm.GetAllRuns().Select(r => new McpChatWeb.Models.RunStatusDto(
+		r.RunId, r.Name, r.Command, r.TargetLanguage, r.SpeedProfile,
+		r.Status, r.StartedAt, r.CompletedAt, r.ExitCode, r.ProcessId));
+	return Results.Ok(runs);
+});
+
+app.MapGet("/api/runs/managed/{runId}", (string runId, McpChatWeb.Services.ProcessManager pm) =>
+{
+	var run = pm.GetRun(runId);
+	if (run == null) return Results.NotFound("Run not found");
+
+	return Results.Ok(new
+	{
+		info = new McpChatWeb.Models.RunStatusDto(
+			run.RunId, run.Name, run.Command, run.TargetLanguage, run.SpeedProfile,
+			run.Status, run.StartedAt, run.CompletedAt, run.ExitCode, run.ProcessId),
+		log = run.GetLogLines(200)
+	});
+});
+
+app.MapGet("/api/runs/managed/{runId}/log", (string runId, int? lines, McpChatWeb.Services.ProcessManager pm) =>
+{
+	var run = pm.GetRun(runId);
+	if (run == null) return Results.NotFound("Run not found");
+	return Results.Ok(new { lines = run.GetLogLines(lines ?? 100) });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FILE UPLOAD — Upload COBOL files to the source folder
+// ═══════════════════════════════════════════════════════════════════════════════
+
+app.MapPost("/api/source/upload", async (HttpRequest httpRequest) =>
+{
+	try
+	{
+		if (!httpRequest.HasFormContentType)
+			return Results.BadRequest("Expected multipart/form-data");
+
+		var form = await httpRequest.ReadFormAsync();
+		var files = form.Files;
+
+		if (files.Count == 0)
+			return Results.BadRequest("No files uploaded");
+
+		// Resolve source directory
+		var currentDir = Directory.GetCurrentDirectory();
+		var repoRoot = currentDir;
+		if (!Directory.Exists(Path.Combine(repoRoot, "source")))
+		{
+			var parent = Directory.GetParent(currentDir)?.FullName;
+			if (parent != null && Directory.Exists(Path.Combine(parent, "source")))
+				repoRoot = parent;
+			else
+				repoRoot = Path.GetFullPath("..");
+		}
+
+		var sourceDir = Path.Combine(repoRoot, "source");
+		Directory.CreateDirectory(sourceDir);
+
+		var uploaded = new List<object>();
+
+		foreach (var file in files)
+		{
+			if (file.Length == 0) continue;
+
+			// Sanitize filename
+			var fileName = Path.GetFileName(file.FileName);
+			if (string.IsNullOrWhiteSpace(fileName)) continue;
+
+			// Only allow COBOL-related extensions
+			var ext = Path.GetExtension(fileName).ToLowerInvariant();
+			var allowedExts = new HashSet<string> { ".cbl", ".cob", ".cpy", ".copy", ".pco", ".sqb", ".txt", ".dat" };
+			if (!allowedExts.Contains(ext) && !string.IsNullOrEmpty(ext))
+			{
+				uploaded.Add(new { fileName, status = "rejected", reason = $"Extension '{ext}' not allowed" });
+				continue;
+			}
+
+			var targetPath = Path.Combine(sourceDir, fileName);
+
+			// Ensure path stays inside source directory
+			var fullTarget = Path.GetFullPath(targetPath);
+			if (!fullTarget.StartsWith(Path.GetFullPath(sourceDir)))
+			{
+				uploaded.Add(new { fileName, status = "rejected", reason = "Invalid path" });
+				continue;
+			}
+
+			await using var stream = new FileStream(fullTarget, FileMode.Create);
+			await file.CopyToAsync(stream);
+
+			uploaded.Add(new { fileName, status = "uploaded", sizeBytes = file.Length });
+		}
+
+		Console.WriteLine($"📁 Uploaded {uploaded.Count} file(s) to source/");
+
+		return Results.Ok(new { uploaded, sourcePath = sourceDir });
+	}
+	catch (Exception ex)
+	{
+		return Results.Problem($"Upload failed: {ex.Message}");
+	}
+}).DisableAntiforgery();
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FOLDER BROWSER — Browse source and output directories
+// ═══════════════════════════════════════════════════════════════════════════════
+
+app.MapGet("/api/folders/browse", (string? folder) =>
+{
+	try
+	{
+		var currentDir = Directory.GetCurrentDirectory();
+		var repoRoot = currentDir;
+		if (!Directory.Exists(Path.Combine(repoRoot, "source")))
+		{
+			var parent = Directory.GetParent(currentDir)?.FullName;
+			if (parent != null && Directory.Exists(Path.Combine(parent, "source")))
+				repoRoot = parent;
+			else
+				repoRoot = Path.GetFullPath("..");
+		}
+
+		// Only allow browsing specific folders
+		var allowed = folder?.ToLowerInvariant() ?? "source";
+		var targetDir = allowed switch
+		{
+			"source" => Path.Combine(repoRoot, "source"),
+			"output" => Path.Combine(repoRoot, "output"),
+			"output/java" => Path.Combine(repoRoot, "output", "java"),
+			"output/csharp" => Path.Combine(repoRoot, "output", "csharp"),
+			"logs" => Path.Combine(repoRoot, "Logs"),
+			_ => Path.Combine(repoRoot, "source")
+		};
+
+		if (!Directory.Exists(targetDir))
+		{
+			return Results.Ok(new McpChatWeb.Models.FolderContentsDto(
+				allowed, new List<McpChatWeb.Models.FolderItemDto>(), 0, 0));
+		}
+
+		var items = new List<McpChatWeb.Models.FolderItemDto>();
+
+		// Directories
+		foreach (var dir in Directory.GetDirectories(targetDir))
+		{
+			var dirInfo = new DirectoryInfo(dir);
+			items.Add(new McpChatWeb.Models.FolderItemDto(
+				dirInfo.Name, "directory",
+				Path.GetRelativePath(repoRoot, dir),
+				0, null, dirInfo.LastWriteTimeUtc));
+		}
+
+		// Files
+		foreach (var file in Directory.GetFiles(targetDir))
+		{
+			var fileInfo = new FileInfo(file);
+			int? lineCount = null;
+			// Count lines for code files (not too large)
+			if (fileInfo.Length < 5_000_000)
+			{
+				try { lineCount = File.ReadLines(file).Count(); } catch { }
+			}
+			items.Add(new McpChatWeb.Models.FolderItemDto(
+				fileInfo.Name, "file",
+				Path.GetRelativePath(repoRoot, file),
+				fileInfo.Length, lineCount, fileInfo.LastWriteTimeUtc));
+		}
+
+		var totalFiles = items.Count(i => i.Type == "file");
+		var totalSize = items.Where(i => i.Type == "file").Sum(i => i.SizeBytes);
+
+		return Results.Ok(new McpChatWeb.Models.FolderContentsDto(
+			allowed, items.OrderBy(i => i.Type).ThenBy(i => i.Name).ToList(), totalFiles, totalSize));
+	}
+	catch (Exception ex)
+	{
+		return Results.Problem($"Failed to browse folder: {ex.Message}");
+	}
+});
+
+app.MapDelete("/api/source/files/{fileName}", (string fileName) =>
+{
+	try
+	{
+		var currentDir = Directory.GetCurrentDirectory();
+		var repoRoot = currentDir;
+		if (!Directory.Exists(Path.Combine(repoRoot, "source")))
+		{
+			var parent = Directory.GetParent(currentDir)?.FullName;
+			if (parent != null && Directory.Exists(Path.Combine(parent, "source")))
+				repoRoot = parent;
+			else
+				repoRoot = Path.GetFullPath("..");
+		}
+
+		var sanitized = Path.GetFileName(fileName);
+		var targetPath = Path.GetFullPath(Path.Combine(repoRoot, "source", sanitized));
+		var sourceDir = Path.GetFullPath(Path.Combine(repoRoot, "source"));
+
+		if (!targetPath.StartsWith(sourceDir))
+			return Results.BadRequest("Invalid path");
+
+		if (!File.Exists(targetPath))
+			return Results.NotFound("File not found");
+
+		File.Delete(targetPath);
+		return Results.Ok(new { deleted = sanitized });
+	}
+	catch (Exception ex)
+	{
+		return Results.Problem($"Failed to delete: {ex.Message}");
+	}
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CHAT REPORT CONTEXT — Toggle chatting with a specific run's RE report
+// ═══════════════════════════════════════════════════════════════════════════════
+
+app.MapGet("/api/reports/available", () =>
+{
+	try
+	{
+		var currentDir = Directory.GetCurrentDirectory();
+		var repoRoot = currentDir;
+		if (!Directory.Exists(Path.Combine(repoRoot, "output")))
+		{
+			var parent = Directory.GetParent(currentDir)?.FullName;
+			if (parent != null && Directory.Exists(Path.Combine(parent, "output")))
+				repoRoot = parent;
+			else
+				repoRoot = Path.GetFullPath("..");
+		}
+
+		var outputDir = Path.Combine(repoRoot, "output");
+		var reports = new List<object>();
+
+		// Search for RE reports in output directory
+		if (Directory.Exists(outputDir))
+		{
+			var reportFiles = Directory.GetFiles(outputDir, "*.md", SearchOption.AllDirectories)
+				.Where(f => f.Contains("reverse-engineering", StringComparison.OrdinalIgnoreCase)
+				         || f.Contains("re-report", StringComparison.OrdinalIgnoreCase)
+				         || f.Contains("migration-report", StringComparison.OrdinalIgnoreCase)
+				         || f.Contains("analysis", StringComparison.OrdinalIgnoreCase))
+				.OrderByDescending(f => File.GetLastWriteTimeUtc(f))
+				.ToList();
+
+			foreach (var reportFile in reportFiles)
+			{
+				var fi = new FileInfo(reportFile);
+				reports.Add(new
+				{
+					name = fi.Name,
+					path = Path.GetRelativePath(repoRoot, reportFile),
+					sizeBytes = fi.Length,
+					lastModified = fi.LastWriteTimeUtc
+				});
+			}
+		}
+
+		// Also check for the standard RE report location
+		var standardReport = Path.Combine(outputDir, "reverse-engineering-details.md");
+		if (File.Exists(standardReport) && !reports.Any(r => ((dynamic)r).name == "reverse-engineering-details.md"))
+		{
+			var fi = new FileInfo(standardReport);
+			reports.Insert(0, new
+			{
+				name = fi.Name,
+				path = Path.GetRelativePath(repoRoot, standardReport),
+				sizeBytes = fi.Length,
+				lastModified = fi.LastWriteTimeUtc
+			});
+		}
+
+		return Results.Ok(new { reports, totalReports = reports.Count });
+	}
+	catch (Exception ex)
+	{
+		return Results.Problem($"Failed to list reports: {ex.Message}");
+	}
+});
 
 app.Run();

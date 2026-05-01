@@ -903,8 +903,7 @@ public class EnhancedLogger
                         {
                             serializedData = ex.ToString();
                         }
-                        else if (data.GetType().FullName?.Contains("Microsoft.Extensions.AI") == true ||
-                                 data.GetType().FullName?.Contains("Microsoft.Agents") == true)
+                        else if (data.GetType().FullName?.Contains("Microsoft.Extensions.AI") == true)
                         {
                             serializedData = data.ToString();
                         }

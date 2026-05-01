@@ -1,6 +1,6 @@
 # Smart Chunking & Token Strategy Architecture
 
-> **Last updated**: 2025-02-17  
+> **Last updated**: 2026-04-28  
 > This document describes the token management and smart chunking architecture used by the Legacy Modernization Agents to process COBOL source files for migration to Java/C#.
 
 ---

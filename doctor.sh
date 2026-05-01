@@ -13,6 +13,10 @@ CYAN='\033[0;36m'
 MAGENTA='\033[0;35m'
 BOLD='\033[1m'
 NC='\033[0m' # No Color
+# Variable for the GitHub host, defaults to 'github.com'
+GITHUB_HOST="${GITHUB_HOST:-github.com}"
+GITHUB_HOST="${GITHUB_HOST#https://}"
+GITHUB_HOST="${GITHUB_HOST#http://}"
 
 # Resolve the sqlite3 command, handling Windows (Git Bash / MSYS2) paths
 SQLITE3_CMD=""
@@ -1168,7 +1172,7 @@ run_setup() {
             echo -e "  ${BLUE}Classic PAT (fine-grained PATs do not currently support Copilot):${NC}"
             echo "    • copilot"
             echo ""
-            echo -e "${YELLOW}Create one at: https://github.com/settings/tokens${NC}"
+            echo -e "${YELLOW}Create one at: https://${GITHUB_HOST}/settings/tokens${NC}"
             echo ""
             # Read from /dev/tty explicitly to ensure correct capture in all terminal environments
             echo -n "Please provide the PAT and press Enter: "
@@ -1185,7 +1189,7 @@ run_setup() {
             # --- CLI authentication (existing flow) ---
             echo -e "${BLUE}🔐 Authenticating with GitHub Copilot...${NC}"
             echo ""
-            if ! copilot login; then
+            if ! copilot login --host "https://${GITHUB_HOST}"; then
                 echo ""
                 echo -e "${RED}❌ Authentication failed. Please try again.${NC}"
                 return 1
@@ -1199,7 +1203,8 @@ run_setup() {
         echo -e "${BLUE}📋 Fetching available models for your account...${NC}"
         echo ""
         local models_raw
-        models_raw=$(dotnet run --project "$REPO_ROOT/CobolToQuarkusMigration.csproj" -- list-models 2>/dev/null)
+        # Run list-models and extract only "  • model-id" lines
+        models_raw=$("$DOTNET_CMD" run --project "$REPO_ROOT/CobolToQuarkusMigration.csproj" -- list-models 2>/dev/null | grep '•' | sed 's/.*•[[:space:]]*//')
         
         # Fallback to copilot CLI static list if SDK call fails
         if [[ -z "$models_raw" ]]; then
@@ -1357,7 +1362,7 @@ EOF
     else
         echo -e "${BLUE}ℹ️  No API key set — will use Azure AD (Entra ID) via 'az login'.${NC}"
         echo -e "${BLUE}   Make sure you have the 'Cognitive Services OpenAI User' role.${NC}"
-        echo -e "${BLUE}   See: azlogin-auth-guide.md for details.${NC}"
+        echo -e "${BLUE}   See: docs/az-login-auth-guide.md for details.${NC}"
     fi
 
     # Get Code Model Deployment Name
@@ -1440,16 +1445,6 @@ run_test() {
     else
         echo -e "${RED}❌ .NET is not installed or not in PATH${NC}"
         return 1
-    fi
-
-    # Check Microsoft Agent Framework dependencies
-    echo ""
-    echo "Checking Microsoft Agent Framework dependencies..."
-    if "$DOTNET_CMD" list package | grep -q "Microsoft.Agents.AI"; then
-        af_version=$("$DOTNET_CMD" list package | grep "Microsoft.Agents.AI" | awk '{print $3}' | head -1)
-        echo -e "${GREEN}✅ Microsoft Agent Framework dependencies resolved (version: $af_version)${NC}"
-    else
-        echo -e "${YELLOW}⚠️  Microsoft Agent Framework packages not found, checking project file...${NC}"
     fi
 
     # Build project

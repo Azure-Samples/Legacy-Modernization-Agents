@@ -62,10 +62,10 @@ public class AppSettings
     public AssemblySettings AssemblySettings { get; set; } = new AssemblySettings();
 
     /// <summary>
-    /// Gets or sets the model profile for Codex/Responses API models.
-    /// Loaded from appsettings.json "CodexProfile" section.
+    /// Gets or sets the model profile for code-conversion agents (all model families).
+    /// Loaded from appsettings.json "ModelProfile" section.
     /// </summary>
-    public ModelProfileSettings CodexProfile { get; set; } = new ModelProfileSettings();
+    public ModelProfileSettings ModelProfile { get; set; } = new ModelProfileSettings();
 
     /// <summary>
     /// Gets or sets the model profile for Chat Completions API models.
@@ -76,27 +76,37 @@ public class AppSettings
 
 /// <summary>
 /// Represents the AI-specific settings.
+/// Supports multiple providers: AzureOpenAI, GitHubCopilot, OpenAI.
 /// </summary>
 public class AISettings
 {
     /// <summary>
-    /// Gets or sets the service type (e.g., OpenAI, Azure OpenAI).
+    /// Gets or sets the service type. Supported values:
+    /// "AzureOpenAI"   — Azure OpenAI Service (existing)
+    /// "GitHubCopilot" — GitHub Models / Copilot endpoint (models.github.ai)
+    /// "OpenAI"        — Direct OpenAI API
     /// </summary>
-    public string ServiceType { get; set; } = "OpenAI";
+    public string ServiceType { get; set; } = "AzureOpenAI";
 
     /// <summary>
     /// Gets or sets the endpoint for the AI service.
+    /// For AzureOpenAI: https://your-resource.openai.azure.com/
+    /// For GitHubCopilot: https://models.github.ai/inference (auto-set when ServiceType=GitHubCopilot)
+    /// For OpenAI: https://api.openai.com/v1 (auto-set when ServiceType=OpenAI)
     /// </summary>
     public string Endpoint { get; set; } = string.Empty;
 
     /// <summary>
-    /// Gets or sets the API key for the AI service.
+    /// Gets or sets the API key / token for the AI service.
+    /// For AzureOpenAI: Azure API key (leave empty for Entra ID).
+    /// For GitHubCopilot: GitHub Personal Access Token (PAT).
+    /// For OpenAI: OpenAI API key.
     /// </summary>
     public string ApiKey { get; set; } = string.Empty;
 
     /// <summary>
-    /// Gets or sets the model ID for general use.
-    /// Must be configured in appsettings.json or env vars — no default model name.
+    /// Gets or sets the model ID for general use (code agents).
+    /// Examples: "gpt-5.1-codex-mini", "claude-sonnet-4", "grok-3", "codex-mini-latest"
     /// </summary>
     public string ModelId { get; set; } = string.Empty;
 
@@ -124,11 +134,11 @@ public class AISettings
 
     /// <summary>
     /// Gets or sets the deployment name for Azure OpenAI.
-    /// Must be configured in appsettings.json or env vars — no default deployment name.
+    /// Only used when ServiceType=AzureOpenAI. Ignored for other providers.
     /// </summary>
     public string DeploymentName { get; set; } = string.Empty;
 
-    // Optional chat-specific settings (used for portal/chat/report); falls back to DeploymentName/Endpoint/ApiKey when not set
+    // Optional chat-specific settings (used for portal/chat/report); falls back to main settings when not set
     public string ChatDeploymentName { get; set; } = string.Empty;
     public string ChatModelId { get; set; } = string.Empty;
     public string ChatEndpoint { get; set; } = string.Empty;
@@ -142,7 +152,7 @@ public class AISettings
     /// <summary>
     /// Optional: The estimated context window size of the model (e.g., 128000 for gpt-4o).
     /// Used to intelligently configure chunking thresholds.
-    /// If not present, the system will attempt to detect it from the model name.
+    /// If not present, the system will auto-detect from ModelCapabilities.
     /// </summary>
     public int? ContextWindowSize { get; set; }
 }
@@ -248,7 +258,7 @@ public class Neo4jSettings
 /// <summary>
 /// A single complexity indicator: a regex pattern with a weight.
 /// Matched against COBOL source to calculate a complexity score.
-/// Loaded from appsettings.json CodexProfile.ComplexityIndicators array.
+/// Loaded from appsettings.json ModelProfile.ComplexityIndicators array.
 /// </summary>
 public class ComplexityIndicator
 {

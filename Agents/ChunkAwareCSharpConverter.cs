@@ -25,20 +25,6 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
     protected override string AgentName => "ChunkAwareCSharpConverter";
 
     /// <summary>
-    /// Sets the Run ID for the current context.
-    /// </summary>
-    public void SetRunId(int runId)
-    {
-        _runId = runId;
-    }
-
-    /// <inheritdoc/>
-    public void SetBusinessLogicContext(List<BusinessLogic> businessLogicExtracts)
-    {
-        _businessLogicExtracts = businessLogicExtracts ?? new();
-    }
-
-    /// <summary>
     /// Creates a ChunkAwareCSharpConverter, routing to Responses API or Chat API based on availability.
     /// </summary>
     public static ChunkAwareCSharpConverter Create(
@@ -59,6 +45,20 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
     }
 
     /// <summary>
+    /// Sets the Run ID for the current context.
+    /// </summary>
+    public void SetRunId(int runId)
+    {
+        _runId = runId;
+    }
+
+    /// <inheritdoc/>
+    public void SetBusinessLogicContext(List<BusinessLogic> businessLogicExtracts)
+    {
+        _businessLogicExtracts = businessLogicExtracts ?? new();
+    }
+
+    /// <summary>
     /// Initializes a new instance using Responses API (for codex models like gpt-5.1-codex-mini).
     /// </summary>
     public ChunkAwareCSharpConverter(
@@ -74,6 +74,7 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
         : base(responsesClient, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings)
     {
         _conversionSettings = conversionSettings;
+        _runId = runId;
     }
 
     /// <summary>
@@ -92,6 +93,7 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
         : base(chatClient, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings)
     {
         _conversionSettings = conversionSettings;
+        _runId = runId;
     }
 
     private int MaxContentChars => Settings?.ChunkingSettings?.AutoChunkCharThreshold ?? 150_000;

@@ -1,3 +1,36 @@
+## SECTION: System
+
+Map dependencies across the COBOL codebase.
+
+{{CodebaseProfile}}
+
+## Dependency Types to Map
+1. **COPY dependencies** — which programs include which copybooks (COPY statements).
+2. **CALL chains** — which programs CALL which other programs. Include USING parameters.
+3. **Database tables** — which programs access which tables via EXEC SQL.
+4. **Files** — which programs read/write which files (SELECT...ASSIGN).
+5. **CICS resources** — MAP names, TRANSACTION ids, DATASET/FILE names.
+
+## Output Format
+Generate a Mermaid dependency diagram AND a structured table listing all relationships.
+
+## SECTION: User
+
+Map the dependencies for the following COBOL program.
+
+## COBOL Source Code
+```cobol
+{{CobolContent}}
+```
+
+## Required Output
+1. COPY dependencies (included copybooks)
+2. CALL chains (programs called with USING parameters)
+3. Database tables accessed via EXEC SQL
+4. File definitions (SELECT/ASSIGN/FD)
+
+Generate a Mermaid diagram AND a structured dependency table.
+
 ## SECTION: MermaidSystem
 
 You are an expert in creating Mermaid diagrams for software architecture visualization. 

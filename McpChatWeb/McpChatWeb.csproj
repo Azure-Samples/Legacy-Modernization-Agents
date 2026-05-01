@@ -8,8 +8,12 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.0" />
-    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.0" />
-    <PackageReference Include="Neo4j.Driver" Version="5.15.0" />
+    <!-- Microsoft.Data.Sqlite, Neo4j.Driver, Azure.*, GitHub.Copilot.SDK, and
+         Microsoft.Extensions.AI.* flow transitively from the project reference -->
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CobolToQuarkusMigration.csproj" />
   </ItemGroup>
 
 </Project>

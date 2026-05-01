@@ -36,7 +36,7 @@ public class MigrationProcess
     /// <summary>
     /// Initializes a new instance with dual-API support.
     /// </summary>
-    /// <param name="responsesClient">The Responses API client for code agents (codex models). Null when using GitHub Copilot SDK.</param>
+    /// <param name="responsesClient">The Responses API client for code agents (codex models).</param>
     /// <param name="chatClient">The Chat client for report/chat agents (chat models via Chat Completions API).</param>
     /// <param name="logger">The logger.</param>
     /// <param name="fileHelper">The file helper.</param>
@@ -56,7 +56,11 @@ public class MigrationProcess
         _fileHelper = fileHelper;
         _settings = settings;
         _enhancedLogger = new EnhancedLogger(logger);
-        var providerName = chatClient is Agents.Infrastructure.CopilotChatClient ? "GitHub Copilot" : "Azure OpenAI";
+        var providerName = chatClient is Agents.Infrastructure.CopilotChatClient
+            ? "GitHub Copilot"
+            : settings.AISettings.ServiceType?.Equals("OpenAI", StringComparison.OrdinalIgnoreCase) == true
+                ? "OpenAI"
+                : "Azure OpenAI";
         _chatLogger = new ChatLogger(LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger<ChatLogger>(), providerName: providerName);
         _migrationRepository = migrationRepository;
     }
@@ -74,7 +78,7 @@ public class MigrationProcess
             builder.AddConsole();
         });
 
-        // CobolAnalyzerAgent uses Responses API client (codex for code analysis)
+        // CobolAnalyzerAgent uses Responses API if available, otherwise IChatClient
         _enhancedLogger.ShowStep(1, 3, "CobolAnalyzerAgent", "Analyzing COBOL code structure and patterns");
         _cobolAnalyzerAgent = CobolAnalyzerAgent.Create(
             _responsesClient, _chatClient,
@@ -107,7 +111,7 @@ public class MigrationProcess
             _codeConverterAgent = javaAgent;
         }
 
-        // DependencyMapperAgent uses Responses API client (codex for analysis)
+        // DependencyMapperAgent
         _enhancedLogger.ShowStep(3, 3, "DependencyMapperAgent", "Mapping COBOL dependencies and generating diagrams");
         _dependencyMapperAgent = DependencyMapperAgent.Create(
             _responsesClient, _chatClient,
@@ -115,7 +119,7 @@ public class MigrationProcess
             _settings.AISettings.DependencyMapperModelId ?? _settings.AISettings.CobolAnalyzerModelId,
             _enhancedLogger, _chatLogger, settings: _settings);
 
-        _enhancedLogger.ShowSuccess("All agents initialized with dual-API support (Responses API for codex, Chat API for reports)");
+        _enhancedLogger.ShowSuccess("All agents initialized (provider: " + (_responsesClient != null ? "Responses API" : "IChatClient") + ")");
     }
 
     /// <summary>
@@ -208,6 +212,7 @@ public class MigrationProcess
             progressCallback?.Invoke("Scanning for COBOL files", 1, totalSteps);
 
             var cobolFiles = await _fileHelper.ScanDirectoryForCobolFilesAsync(cobolSourceFolder);
+            PromptLoader.CodebaseProfile = PromptLoader.GenerateCodebaseProfile(cobolFiles);
             await _migrationRepository.SaveCobolFilesAsync(runId, cobolFiles);
 
             if (cobolFiles.Count == 0)

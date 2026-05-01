@@ -38,6 +38,30 @@ public class ReasoningExhaustionException : Exception
 }
 
 /// <summary>
+/// Thrown when the model's output was truncated (FinishReason=Length or text-based truncation signals).
+/// Caught by AgentBase/CobolAnalyzerAgent for retry with escalated tokens and adaptive re-chunking.
+/// </summary>
+public class OutputTruncationException : Exception
+{
+    public int MaxOutputTokens { get; }
+    public int OutputCharCount { get; }
+    public string ReasoningEffort { get; }
+    public string TruncationSignal { get; }
+
+    public OutputTruncationException(
+        int maxOutputTokens, int outputCharCount, string reasoningEffort, string truncationSignal)
+        : base($"Model output truncated (max_output_tokens={maxOutputTokens}, " +
+               $"output={outputCharCount} chars). Signal: {truncationSignal}. " +
+               $"Reasoning effort was '{reasoningEffort}'.")
+    {
+        MaxOutputTokens = maxOutputTokens;
+        OutputCharCount = outputCharCount;
+        ReasoningEffort = reasoningEffort;
+        TruncationSignal = truncationSignal;
+    }
+}
+
+/// <summary>
 /// Client for Azure OpenAI Responses API (used by codex/reasoning models like gpt-5.1-codex-mini).
 /// This is separate from the Chat Completions API used by chat models.
 /// 

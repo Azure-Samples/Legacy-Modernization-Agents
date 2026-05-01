@@ -70,20 +70,32 @@ public sealed class McpServer
             if (string.IsNullOrWhiteSpace(chatDeployment)) chatDeployment = _aiSettings?.DeploymentName;
             if (string.IsNullOrWhiteSpace(chatDeployment)) chatDeployment = _aiSettings?.ModelId;
 
-            if (!string.IsNullOrEmpty(chatEndpoint) && !string.IsNullOrEmpty(chatApiKey) && !string.IsNullOrEmpty(chatDeployment))
+            if (!string.IsNullOrEmpty(chatDeployment))
             {
                 try
                 {
-                    _chatClient = ChatClientFactory.CreateAzureOpenAIChatClient(
-                        chatEndpoint,
-                        chatApiKey,
-                        chatDeployment);
+                    // Build a chat-specific AISettings so CreateChatClientFromSettings
+                    // picks the right provider (Azure OpenAI vs GitHub Copilot vs OpenAI).
+                    // Note: chatApiKey may be null/empty for Entra ID (DefaultAzureCredential) auth.
+                    var chatSettings = new AISettings
+                    {
+                        ServiceType = _aiSettings?.ServiceType ?? "AzureOpenAI",
+                        Endpoint = chatEndpoint ?? string.Empty,
+                        ApiKey = chatApiKey,
+                        ModelId = chatDeployment,
+                        DeploymentName = chatDeployment,
+                        ChatEndpoint = chatEndpoint ?? string.Empty,
+                        ChatApiKey = chatApiKey,
+                        ChatModelId = chatDeployment,
+                        ChatDeploymentName = chatDeployment
+                    };
+                    _chatClient = ChatClientFactory.CreateChatClientFromSettings(chatSettings, _logger);
                     _modelId = chatDeployment;
-                    _logger.LogInformation("IChatClient initialized for custom Q&A with model {ModelId}", _modelId);
+                    _logger.LogInformation("IChatClient initialized for custom Q&A with model {ModelId} (ServiceType={ServiceType})", _modelId, chatSettings.ServiceType);
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Failed to initialize IChatClient for custom Q&A");
+                    _logger.LogWarning(ex, "Failed to initialize IChatClient for custom Q&A (ServiceType={ServiceType})", _aiSettings?.ServiceType);
                 }
             }
         }

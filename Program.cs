@@ -8,16 +8,18 @@ using CobolToQuarkusMigration.Mcp;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using System.CommandLine;
-using GitHub.Copilot.SDK;
+using System.Globalization;
 using Microsoft.Extensions.Logging.Console;
+using GitHub.Copilot.SDK;
 
 namespace CobolToQuarkusMigration;
 
 /// <summary>
 /// Main entry point for the COBOL to Java/C# migration tool.
-/// Uses dual-API architecture:
-/// - ResponsesApiClient for code agents (gpt-5.1-codex-mini via Responses API)
-/// - IChatClient for chat/reports (gpt-5.1-chat via Chat Completions API)
+/// Supports multiple AI providers:
+/// - AzureOpenAI (ResponsesApiClient for Codex + IChatClient for chat)
+/// - GitHubCopilot (IChatClient for all models: Claude, Codex, GPT, Grok, etc.)
+/// - OpenAI (IChatClient for GPT models)
 /// </summary>
 internal static class Program
 {
@@ -27,8 +29,8 @@ internal static class Program
         var logsDirectory = Path.Combine(Directory.GetCurrentDirectory(), "Logs");
         Directory.CreateDirectory(logsDirectory);
         
-        // Only enable live logging for migration runs (not MCP server, conversation, or utility modes)
-        var isMigrationRun = !args.Contains("mcp") && !args.Contains("conversation") && !args.Contains("list-models");
+        // Only enable live logging for migration runs (not MCP server or conversation modes)
+        var isMigrationRun = !args.Contains("mcp") && !args.Contains("conversation");
         LiveLogWriter? liveLogWriter = null;
         
         if (isMigrationRun)
@@ -45,15 +47,14 @@ internal static class Program
                 {
                     options.LogToStandardErrorThreshold = LogLevel.Trace;
                 });
-                // Suppress verbose Copilot SDK internal tracing
+                // Suppress verbose JSON-RPC logging from GitHub Copilot SDK
                 builder.AddFilter("GitHub.Copilot.SDK", LogLevel.Warning);
             });
             var logger = loggerFactory.CreateLogger(nameof(Program));
             var fileHelper = new FileHelper(loggerFactory.CreateLogger<FileHelper>());
             var settingsHelper = new SettingsHelper(loggerFactory.CreateLogger<SettingsHelper>());
 
-            // list-models only needs the Copilot CLI, skip full config validation
-            if (!args.Contains("list-models") && !ValidateAndLoadConfiguration())
+            if (!ValidateAndLoadConfiguration())
             {
                 return 1;
             }
@@ -140,7 +141,7 @@ internal static class Program
         var reverseEngineerCommand = BuildReverseEngineerCommand(loggerFactory, fileHelper, settingsHelper);
         rootCommand.AddCommand(reverseEngineerCommand);
 
-        var listModelsCommand = BuildListModelsCommand();
+        var listModelsCommand = BuildListModelsCommand(loggerFactory);
         rootCommand.AddCommand(listModelsCommand);
 
         rootCommand.SetHandler(async (string cobolSource, string javaOutput, string reverseEngineerOutput, bool reverseEngineerOnly, bool skipReverseEngineering, bool reuseRe, string configPath, bool resume) =>
@@ -149,24 +150,6 @@ internal static class Program
         }, cobolSourceOption, javaOutputOption, reverseEngineerOutputOption, reverseEngineerOnlyOption, skipReverseEngineeringOption, reuseReOption, configOption, resumeOption);
 
         return rootCommand;
-    }
-
-    private static Command BuildListModelsCommand()
-    {
-        var listModelsCommand = new Command("list-models", "List available GitHub Copilot models for the authenticated user");
-
-        listModelsCommand.SetHandler(async () =>
-        {
-            await using var client = new CopilotClient();
-            await client.StartAsync();
-            var models = await client.ListModelsAsync();
-            foreach (var model in models)
-            {
-                Console.WriteLine(model.Id);
-            }
-        });
-
-        return listModelsCommand;
     }
 
     private static Command BuildConversationCommand(ILoggerFactory loggerFactory)
@@ -256,6 +239,40 @@ internal static class Program
         }, cobolSourceOption, outputOption, configOption);
 
         return reverseEngineerCommand;
+    }
+
+    private static Command BuildListModelsCommand(ILoggerFactory loggerFactory)
+    {
+        var listModelsCommand = new Command("list-models", "List available models from the configured AI provider");
+
+        listModelsCommand.SetHandler(async () =>
+        {
+            var logger = loggerFactory.CreateLogger("ListModels");
+
+            // list-models always uses Copilot SDK — it's only called during
+            // './doctor.sh setup' before config is written, so don't check
+            // AZURE_OPENAI_SERVICE_TYPE (it will be AzureOpenAI at this point).
+            Console.WriteLine("Querying models via GitHub Copilot SDK (CLI)...");
+            try
+            {
+                var client = new CopilotClient(new CopilotClientOptions { UseStdio = true });
+                var models = await client.ListModelsAsync();
+                Console.WriteLine($"Available models ({models.Count}):");
+                foreach (var model in models.OrderBy(m => m.Name))
+                {
+                    var id = model.Id ?? model.Name;
+                    Console.WriteLine($"  • {id}");
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Failed to list models via Copilot SDK");
+                Console.WriteLine($"Error: {ex.Message}");
+                Console.WriteLine("Make sure GitHub Copilot CLI is installed and you are logged in (copilot login).");
+            }
+        });
+
+        return listModelsCommand;
     }
 
     private static async Task GenerateConversationAsync(ILoggerFactory loggerFactory, string sessionId, string logDir, bool live)
@@ -376,55 +393,38 @@ internal static class Program
             // Get API version from environment or default
             var apiVersion = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_VERSION") ?? "2025-04-01-preview";
 
-            // Validate AI settings before using them
-            var aiSettings = settings.AISettings;
-            if (aiSettings is null)
-            {
-                Console.Error.WriteLine("AI settings are not configured. Cannot initialize ResponsesApiClient.");
-                return;
-            }
-
-            // Create ResponsesApiClient for code agents - Use same logic as RunMigrationAsync
+            // Create ResponsesApiClient for code agents (only for AzureOpenAI with Codex models)
             ResponsesApiClient? responsesApiClient = null;
-            if (!IsGitHubCopilotMode(aiSettings) &&
-                !string.IsNullOrEmpty(aiSettings.Endpoint) && !string.IsNullOrEmpty(aiSettings.DeploymentName))
+            var serviceType = settings.AISettings.ServiceType ?? "AzureOpenAI";
+            var codeModelCaps = CobolToQuarkusMigration.Models.ModelCapabilities.Detect(settings.AISettings.ModelId);
+
+            if (serviceType.Equals("AzureOpenAI", StringComparison.OrdinalIgnoreCase) &&
+                codeModelCaps.SupportsResponsesApi &&
+                !string.IsNullOrEmpty(settings.AISettings.Endpoint) &&
+                !string.IsNullOrEmpty(settings.AISettings.DeploymentName))
             {
-                // Force Entra ID (DefaultAzureCredential) by passing empty API Key as requested
                 responsesApiClient = new ResponsesApiClient(
-                    aiSettings.Endpoint,
-                    string.Empty, // Forces DefaultAzureCredential
-                    aiSettings.DeploymentName,
+                    settings.AISettings.Endpoint,
+                    string.Empty,
+                    settings.AISettings.DeploymentName,
                     loggerFactory.CreateLogger<ResponsesApiClient>(),
                     enhancedLogger,
-                    profile: settings.CodexProfile,
+                    profile: settings.ModelProfile,
                     apiVersion: apiVersion,
                     rateLimitSafetyFactor: settings.ChunkingSettings.RateLimitSafetyFactor);
-                mcpLogger.LogInformation("ResponsesApiClient initialized for codex model: {DeploymentName} (Entra ID)", aiSettings.DeploymentName);
+                mcpLogger.LogInformation("ResponsesApiClient initialized for {Model} (Entra ID)", settings.AISettings.DeploymentName);
             }
 
-            // Create IChatClient for MCP server
+            // Create IChatClient for MCP server — works with all providers
             IChatClient? chatClient = null;
-            var chatDeployment = aiSettings.ChatDeploymentName ?? aiSettings.ChatModelId ?? aiSettings.DeploymentName;
-
-            if (IsGitHubCopilotMode(aiSettings))
+            try
             {
-                chatClient = CreateChatClientFromSettings(aiSettings, mcpLogger, forChat: true);
+                chatClient = ChatClientFactory.CreateChatClientFromSettings(settings.AISettings, mcpLogger);
+                mcpLogger.LogInformation("IChatClient initialized for MCP server via {Provider}", serviceType);
             }
-            else if (!string.IsNullOrEmpty(aiSettings.ChatEndpoint ?? aiSettings.Endpoint) && !string.IsNullOrEmpty(chatDeployment))
+            catch (Exception chatEx)
             {
-                var chatEndpoint = aiSettings.ChatEndpoint ?? aiSettings.Endpoint;
-                var chatApiKey = aiSettings.ChatApiKey ?? aiSettings.ApiKey;
-                bool useEntraId = string.IsNullOrEmpty(chatApiKey) || chatApiKey.Contains("your-api-key");
-                if (useEntraId)
-                {
-                    chatClient = ChatClientFactory.CreateAzureOpenAIChatClientWithDefaultCredential(chatEndpoint!, chatDeployment);
-                    mcpLogger.LogInformation("IChatClient initialized for MCP server with deployment: {Deployment} (Entra ID)", chatDeployment);
-                }
-                else if (!string.IsNullOrEmpty(chatApiKey))
-                {
-                    chatClient = ChatClientFactory.CreateAzureOpenAIChatClient(chatEndpoint!, chatApiKey, chatDeployment);
-                    mcpLogger.LogInformation("IChatClient initialized for MCP server with deployment: {Deployment} (API Key)", chatDeployment);
-                }
+                mcpLogger.LogWarning(chatEx, "Could not create chat client for MCP server");
             }
 
             var serverLogger = loggerFactory.CreateLogger<McpServer>();
@@ -446,57 +446,14 @@ internal static class Program
         }
     }
 
-    private static bool IsGitHubCopilotMode(AISettings ai)
-        => string.Equals(ai.ServiceType, "GitHubCopilot", StringComparison.OrdinalIgnoreCase);
-
-    private static IChatClient CreateChatClientFromSettings(
-        AISettings ai,
-        ILogger logger,
-        bool forChat = true)
-    {
-        var endpoint  = forChat ? (ai.ChatEndpoint  ?? ai.Endpoint)        : ai.Endpoint;
-        var apiKey    = forChat ? (ai.ChatApiKey     ?? ai.ApiKey)          : ai.ApiKey;
-        var deployment = forChat ? (ai.ChatDeploymentName ?? ai.DeploymentName) : ai.DeploymentName;
-        var modelId   = forChat ? (ai.ChatModelId   ?? ai.ModelId)         : ai.ModelId;
-
-        if (IsGitHubCopilotMode(ai))
-        {
-            var ghToken = Environment.GetEnvironmentVariable("GITHUB_COPILOT_TOKEN");
-            var client = ChatClientFactory.CreateGitHubCopilotChatClient(
-                modelId ?? deployment,
-                githubToken: ghToken,
-                logger);
-            logger.LogInformation("IChatClient initialized via GitHub Copilot SDK for model: {Model}", modelId ?? deployment);
-            return client;
-        }
-
-        bool useEntraId = string.IsNullOrEmpty(apiKey) || apiKey.Contains("your-api-key");
-        if (useEntraId)
-        {
-            var client = ChatClientFactory.CreateAzureOpenAIChatClientWithDefaultCredential(endpoint, deployment);
-            logger.LogInformation("IChatClient initialized for model: {Deployment} (Entra ID)", deployment);
-            return client;
-        }
-        else
-        {
-            var client = ChatClientFactory.CreateAzureOpenAIChatClient(endpoint, apiKey, deployment);
-            logger.LogInformation("IChatClient initialized for model: {Deployment} (API Key)", deployment);
-            return client;
-        }
-    }
-
     private static void ConfigureSmartChunking(AppSettings settings, string chatDeployment, ILogger logger)
     {
         // 1. TRUST THE CONFIGURATION FIRST:
-        // If the user has explicitly set ContextWindowSize in appsettings.json, use that numeric value
-        // to determine if we can enable Whole-Program Analysis.
-        // This decouples the logic from "magic strings" and allows future models to work automatically.
         if (settings.AISettings.ContextWindowSize.HasValue) 
         {
              var size = settings.AISettings.ContextWindowSize.Value;
-             if (size >= 100_000) // 100k+ tokens (covers 128k, 200k, 1M models)
+             if (size >= 100_000)
              {
-                 // Apply high-context optimization
                 settings.ChunkingSettings.AutoChunkLineThreshold = 25_000; 
                 settings.ChunkingSettings.AutoChunkCharThreshold = 400_000; 
                 settings.ChunkingSettings.MaxTokensPerChunk = 90_000;
@@ -506,26 +463,21 @@ internal static class Program
              }
         }
 
-        // 2. FALLBACK TO DETECTION (Legacy/Convenience):
-        // If no explicit context size is provided, we try to detect known high-context models.
-        var targetModel = chatDeployment ?? settings.AISettings.ChatModelId ?? settings.AISettings.DeploymentName;
+        // 2. USE MODEL CAPABILITIES DETECTION (replaces magic string matching):
+        var targetModel = settings.AISettings.ModelId ?? chatDeployment ?? settings.AISettings.ChatModelId;
 
         if (!string.IsNullOrEmpty(targetModel))
         {
-            // Detect High-Context Models dynamically from config strings
-            if (targetModel.Contains("gpt-5", StringComparison.OrdinalIgnoreCase) || 
-                targetModel.Contains("codex", StringComparison.OrdinalIgnoreCase) ||
-                targetModel.Contains("gpt-4o", StringComparison.OrdinalIgnoreCase) ||
-                targetModel.Contains("o1-", StringComparison.OrdinalIgnoreCase) ||
-                targetModel.Contains("128k", StringComparison.OrdinalIgnoreCase))
+            var caps = CobolToQuarkusMigration.Models.ModelCapabilities.Detect(targetModel);
+            if (caps.ContextWindowSize >= 100_000)
             {
-                // Increase transparency for next-gen models:
                 settings.ChunkingSettings.AutoChunkLineThreshold = 25_000; 
                 settings.ChunkingSettings.AutoChunkCharThreshold = 400_000; 
                 settings.ChunkingSettings.MaxTokensPerChunk = 90_000;
                 
-                logger.LogInformation("🚀 Next-Gen Model Detected ({Model}). Optimized strategy: 'Whole-Program Analysis' enabled for files up to {NewLines} lines.", 
-                    targetModel, settings.ChunkingSettings.AutoChunkLineThreshold);
+                logger.LogInformation("🚀 High-context model detected ({Model}, family={Family}, context={Context}). " +
+                    "'Whole-Program Analysis' enabled for files up to {NewLines} lines.", 
+                    targetModel, caps.Family, caps.ContextWindowSize, settings.ChunkingSettings.AutoChunkLineThreshold);
             }
         }
     }
@@ -569,16 +521,14 @@ internal static class Program
                 }
             }
 
-            // Validate required AI configuration (relaxed for GitHub Copilot SDK)
-            if (!IsGitHubCopilotMode(settings.AISettings))
+            if (string.IsNullOrEmpty(settings.AISettings.Endpoint) &&
+                !settings.AISettings.ServiceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase) &&
+                !settings.AISettings.ServiceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase) &&
+                !settings.AISettings.ServiceType.Equals("OpenAI", StringComparison.OrdinalIgnoreCase))
             {
-                if (string.IsNullOrEmpty(settings.AISettings.Endpoint) ||
-                    string.IsNullOrEmpty(settings.AISettings.DeploymentName))
-                {
-                    logger.LogError("Azure OpenAI configuration incomplete. Please ensure endpoint and deployment name are configured.");
-                    logger.LogError("You can set them in Config/ai-config.local.env or as environment variables.");
-                    Environment.Exit(1);
-                }
+                logger.LogError("AI configuration incomplete. Set endpoint for AzureOpenAI, or change ServiceType to GitHubCopilot/GitHubCopilotSDK/OpenAI.");
+                logger.LogError("You can set them in Config/ai-config.local.env or as environment variables.");
+                Environment.Exit(1);
             }
 
             if (string.IsNullOrEmpty(settings.AISettings.ModelId))
@@ -589,31 +539,47 @@ internal static class Program
 
             // Create EnhancedLogger early so it can track ALL API calls
             var enhancedLogger = new EnhancedLogger(loggerFactory.CreateLogger<EnhancedLogger>());
-            var providerName = IsGitHubCopilotMode(settings.AISettings) ? "GitHub Copilot" : "Azure OpenAI";
-            var chatLogger = new ChatLogger(loggerFactory.CreateLogger<ChatLogger>(), providerName: providerName);
 
             // Get API version from environment or default
             var apiVersion = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_VERSION") ?? "2025-04-01-preview";
 
+            // Create AI clients based on provider
+            var serviceType = settings.AISettings.ServiceType ?? "AzureOpenAI";
+            var codeModelCaps = CobolToQuarkusMigration.Models.ModelCapabilities.Detect(settings.AISettings.ModelId);
+            
+            // ResponsesApiClient only for Azure OpenAI Codex models (not for GitHub Copilot SDK)
             ResponsesApiClient? responsesApiClient = null;
-            if (!IsGitHubCopilotMode(settings.AISettings))
+            if (!IsGitHubCopilotSdkMode() &&
+                serviceType.Equals("AzureOpenAI", StringComparison.OrdinalIgnoreCase) &&
+                codeModelCaps.SupportsResponsesApi)
             {
                 responsesApiClient = new ResponsesApiClient(
                     settings.AISettings.Endpoint,
-                    string.Empty, // Forces DefaultAzureCredential
+                    string.Empty,
                     settings.AISettings.DeploymentName,
                     loggerFactory.CreateLogger<ResponsesApiClient>(),
                     enhancedLogger,
-                    profile: settings.CodexProfile,
+                    profile: settings.ModelProfile,
                     apiVersion: apiVersion,
                     rateLimitSafetyFactor: settings.ChunkingSettings.RateLimitSafetyFactor);
 
-                logger.LogInformation("ResponsesApiClient initialized for codex model: {DeploymentName} (API: {ApiVersion}, Entra ID)", 
+                logger.LogInformation("ResponsesApiClient initialized for {Model} (API: {ApiVersion})", 
                     settings.AISettings.DeploymentName, apiVersion);
             }
 
+            // IChatClient for code agents — used when provider is GitHubCopilot/OpenAI or model doesn't support Responses API
+            IChatClient codeClient = ChatClientFactory.CreateFromSettings(settings.AISettings, logger: logger);
+            logger.LogInformation("Code IChatClient initialized via {Provider} for model: {Model}",
+                serviceType, settings.AISettings.ModelId);
+
+            // IChatClient for chat agents
             var chatDeployment = settings.AISettings.ChatDeploymentName ?? settings.AISettings.DeploymentName;
-            IChatClient chatClient = CreateChatClientFromSettings(settings.AISettings, logger, forChat: true);
+            IChatClient chatClient = ChatClientFactory.CreateChatClientFromSettings(settings.AISettings, logger);
+            logger.LogInformation("Chat IChatClient initialized via {Provider} for model: {ChatModel}",
+                serviceType, settings.AISettings.ChatModelId ?? chatDeployment);
+
+            var providerName = codeClient is Agents.Infrastructure.CopilotChatClient ? "GitHub Copilot" : "Azure OpenAI";
+            var chatLogger = new ChatLogger(loggerFactory.CreateLogger<ChatLogger>(), providerName: providerName);
 
             var databasePath = settings.ApplicationSettings.MigrationDatabasePath;
             if (!Path.IsPathRooted(databasePath))
@@ -677,8 +643,9 @@ internal static class Program
                     loggerFactory.CreateLogger<CobolToQuarkusMigration.Chunking.ChunkingOrchestrator>(),
                     targetLang);
 
+                // Create agents using factory methods — auto-route ResponsesApiClient vs IChatClient
                 var cobolAnalyzerAgent = CobolAnalyzerAgent.Create(
-                    responsesApiClient, chatClient,
+                    responsesApiClient, codeClient,
                     loggerFactory.CreateLogger<CobolAnalyzerAgent>(),
                     settings.AISettings.CobolAnalyzerModelId,
                     enhancedLogger, chatLogger, settings: settings);
@@ -686,12 +653,12 @@ internal static class Program
                 var businessLogicExtractorAgent = BusinessLogicExtractorAgent.Create(
                     responsesApiClient, chatClient,
                     loggerFactory.CreateLogger<BusinessLogicExtractorAgent>(),
-                    chatDeployment,
+                    settings.AISettings.ChatModelId ?? chatDeployment,
                     enhancedLogger, chatLogger,
                     chunkingOrchestrator: chunkingOrchestrator, settings: settings);
 
                 var dependencyMapperAgent = DependencyMapperAgent.Create(
-                    responsesApiClient, chatClient,
+                    responsesApiClient, codeClient,
                     loggerFactory.CreateLogger<DependencyMapperAgent>(),
                     settings.AISettings.DependencyMapperModelId ?? settings.AISettings.CobolAnalyzerModelId,
                     enhancedLogger, chatLogger, settings: settings);
@@ -1013,8 +980,49 @@ internal static class Program
     {
         var aiSettings = settings.AISettings ??= new AISettings();
         var applicationSettings = settings.ApplicationSettings ??= new ApplicationSettings();
+
+        // Service type (provider selection)
+        var serviceType = Environment.GetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE");
+        if (!string.IsNullOrEmpty(serviceType))
+        {
+            aiSettings.ServiceType = serviceType;
+        }
+
+        // GitHub token support — maps to ApiKey
+        var githubToken = Environment.GetEnvironmentVariable("GITHUB_TOKEN");
+        if (!string.IsNullOrEmpty(githubToken) && string.IsNullOrEmpty(aiSettings.ApiKey))
+        {
+            aiSettings.ApiKey = githubToken;
+        }
+
+        // Auto-set endpoint for GitHub Copilot
+        if (aiSettings.ServiceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase) ||
+            aiSettings.ServiceType.Equals("GitHub", StringComparison.OrdinalIgnoreCase) ||
+            aiSettings.ServiceType.Equals("GitHubModels", StringComparison.OrdinalIgnoreCase))
+        {
+            if (string.IsNullOrEmpty(aiSettings.Endpoint) || aiSettings.Endpoint.Contains("your-"))
+            {
+                aiSettings.Endpoint = "https://models.github.ai/inference";
+            }
+
+            // For GitHub Copilot, the GitHub token IS the API key for ALL clients
+            if (!string.IsNullOrEmpty(githubToken))
+            {
+                aiSettings.ApiKey = githubToken;
+                aiSettings.ChatApiKey = githubToken;
+            }
+        }
+
+        // GitHub Copilot SDK: authentication handled by CLI, no endpoint/key needed
+        if (aiSettings.ServiceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase))
+        {
+            if (string.IsNullOrEmpty(aiSettings.Endpoint))
+            {
+                aiSettings.Endpoint = "copilot-sdk://cli";
+            }
+        }
         
-        // Primary deployment (for codex models via Responses API)
+        // Primary deployment (for code models)
         var endpoint = Environment.GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT");
         if (!string.IsNullOrEmpty(endpoint))
         {
@@ -1089,12 +1097,6 @@ internal static class Program
             aiSettings.UnitTestModelId = testModel;
         }
 
-        var serviceType = Environment.GetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE");
-        if (!string.IsNullOrEmpty(serviceType))
-        {
-            aiSettings.ServiceType = serviceType;
-        }
-
         // Context Window Override (Explicitly set context size to avoid magic string detection)
         var contextWindowSize = Environment.GetEnvironmentVariable("AZURE_OPENAI_CONTEXT_WINDOW_SIZE");
         if (!string.IsNullOrEmpty(contextWindowSize) && int.TryParse(contextWindowSize, out int size))
@@ -1156,79 +1158,85 @@ internal static class Program
 
         // ── Model Profile Overrides (Three-Tier Reasoning) ──────────────────
 
-        // Codex Profile overrides
-        var codexProfile = settings.CodexProfile ??= new ModelProfileSettings();
+        // Model Profile overrides (applies to all model families)
+        var modelProfile = settings.ModelProfile ??= new ModelProfileSettings();
 
-        if (Environment.GetEnvironmentVariable("CODEX_LOW_REASONING_EFFORT") is { Length: > 0 } codexLowEffort)
-            codexProfile.LowReasoningEffort = codexLowEffort;
-        if (Environment.GetEnvironmentVariable("CODEX_MEDIUM_REASONING_EFFORT") is { Length: > 0 } codexMedEffort)
-            codexProfile.MediumReasoningEffort = codexMedEffort;
-        if (Environment.GetEnvironmentVariable("CODEX_HIGH_REASONING_EFFORT") is { Length: > 0 } codexHighEffort)
-            codexProfile.HighReasoningEffort = codexHighEffort;
+        if (Environment.GetEnvironmentVariable("AI_LOW_REASONING_EFFORT") is { Length: > 0 } aiLowEffort)
+            modelProfile.LowReasoningEffort = aiLowEffort;
+        if (Environment.GetEnvironmentVariable("AI_MEDIUM_REASONING_EFFORT") is { Length: > 0 } aiMedEffort)
+            modelProfile.MediumReasoningEffort = aiMedEffort;
+        if (Environment.GetEnvironmentVariable("AI_HIGH_REASONING_EFFORT") is { Length: > 0 } aiHighEffort)
+            modelProfile.HighReasoningEffort = aiHighEffort;
 
-        if (Environment.GetEnvironmentVariable("CODEX_MEDIUM_THRESHOLD") is { Length: > 0 } codexMedThresh
-            && int.TryParse(codexMedThresh, out var cmtVal))
-            codexProfile.MediumThreshold = cmtVal;
-        if (Environment.GetEnvironmentVariable("CODEX_HIGH_THRESHOLD") is { Length: > 0 } codexHighThresh
-            && int.TryParse(codexHighThresh, out var chtVal))
-            codexProfile.HighThreshold = chtVal;
+        if (Environment.GetEnvironmentVariable("AI_MEDIUM_THRESHOLD") is { Length: > 0 } aiMedThresh
+            && int.TryParse(aiMedThresh, out var cmtVal))
+            modelProfile.MediumThreshold = cmtVal;
+        if (Environment.GetEnvironmentVariable("AI_HIGH_THRESHOLD") is { Length: > 0 } aiHighThresh
+            && int.TryParse(aiHighThresh, out var chtVal))
+            modelProfile.HighThreshold = chtVal;
 
-        if (Environment.GetEnvironmentVariable("CODEX_LOW_MULTIPLIER") is { Length: > 0 } codexLowMult
-            && double.TryParse(codexLowMult, out var clmVal))
-            codexProfile.LowMultiplier = clmVal;
-        if (Environment.GetEnvironmentVariable("CODEX_MEDIUM_MULTIPLIER") is { Length: > 0 } codexMedMult
-            && double.TryParse(codexMedMult, out var cmmVal))
-            codexProfile.MediumMultiplier = cmmVal;
-        if (Environment.GetEnvironmentVariable("CODEX_HIGH_MULTIPLIER") is { Length: > 0 } codexHighMult
-            && double.TryParse(codexHighMult, out var chmVal))
-            codexProfile.HighMultiplier = chmVal;
+        if (Environment.GetEnvironmentVariable("AI_LOW_MULTIPLIER") is { Length: > 0 } aiLowMult
+            && double.TryParse(aiLowMult, NumberStyles.Float, CultureInfo.InvariantCulture, out var clmVal))
+            modelProfile.LowMultiplier = clmVal;
+        if (Environment.GetEnvironmentVariable("AI_MEDIUM_MULTIPLIER") is { Length: > 0 } aiMedMult
+            && double.TryParse(aiMedMult, NumberStyles.Float, CultureInfo.InvariantCulture, out var cmmVal))
+            modelProfile.MediumMultiplier = cmmVal;
+        if (Environment.GetEnvironmentVariable("AI_HIGH_MULTIPLIER") is { Length: > 0 } aiHighMult
+            && double.TryParse(aiHighMult, NumberStyles.Float, CultureInfo.InvariantCulture, out var chmVal))
+            modelProfile.HighMultiplier = chmVal;
 
-        if (Environment.GetEnvironmentVariable("CODEX_MIN_OUTPUT_TOKENS") is { Length: > 0 } codexMinTokens
-            && int.TryParse(codexMinTokens, out var cminVal))
-            codexProfile.MinOutputTokens = cminVal;
-        if (Environment.GetEnvironmentVariable("CODEX_MAX_OUTPUT_TOKENS") is { Length: > 0 } codexMaxTokens
-            && int.TryParse(codexMaxTokens, out var cmaxVal))
-            codexProfile.MaxOutputTokens = cmaxVal;
+        if (Environment.GetEnvironmentVariable("AI_MIN_OUTPUT_TOKENS") is { Length: > 0 } aiMinTokens
+            && int.TryParse(aiMinTokens, out var cminVal))
+            modelProfile.MinOutputTokens = cminVal;
+        if (Environment.GetEnvironmentVariable("AI_MAX_OUTPUT_TOKENS") is { Length: > 0 } aiMaxTokens
+            && int.TryParse(aiMaxTokens, out var cmaxVal))
+            modelProfile.MaxOutputTokens = cmaxVal;
 
-        if (Environment.GetEnvironmentVariable("CODEX_TIMEOUT_SECONDS") is { Length: > 0 } codexTimeout
-            && int.TryParse(codexTimeout, out var ctVal))
-            codexProfile.TimeoutSeconds = ctVal;
-        if (Environment.GetEnvironmentVariable("CODEX_TOKENS_PER_MINUTE") is { Length: > 0 } codexTpm
-            && int.TryParse(codexTpm, out var ctpmVal))
-            codexProfile.TokensPerMinute = ctpmVal;
-        if (Environment.GetEnvironmentVariable("CODEX_REQUESTS_PER_MINUTE") is { Length: > 0 } codexRpm
-            && int.TryParse(codexRpm, out var crpmVal))
-            codexProfile.RequestsPerMinute = crpmVal;
+        if (Environment.GetEnvironmentVariable("AI_TIMEOUT_SECONDS") is { Length: > 0 } aiTimeout
+            && int.TryParse(aiTimeout, out var ctVal))
+            modelProfile.TimeoutSeconds = ctVal;
+        if (Environment.GetEnvironmentVariable("AI_TOKENS_PER_MINUTE") is { Length: > 0 } aiTpm
+            && int.TryParse(aiTpm, out var ctpmVal))
+            modelProfile.TokensPerMinute = ctpmVal;
+        if (Environment.GetEnvironmentVariable("AI_REQUESTS_PER_MINUTE") is { Length: > 0 } aiRpm
+            && int.TryParse(aiRpm, out var crpmVal))
+            modelProfile.RequestsPerMinute = crpmVal;
 
-        if (Environment.GetEnvironmentVariable("CODEX_PIC_DENSITY_FLOOR") is { Length: > 0 } codexPicFloor
-            && double.TryParse(codexPicFloor, out var cpfVal))
-            codexProfile.PicDensityFloor = cpfVal;
-        if (Environment.GetEnvironmentVariable("CODEX_LEVEL_DENSITY_FLOOR") is { Length: > 0 } codexLevelFloor
-            && double.TryParse(codexLevelFloor, out var clfVal))
-            codexProfile.LevelDensityFloor = clfVal;
+        if (Environment.GetEnvironmentVariable("AI_PIC_DENSITY_FLOOR") is { Length: > 0 } aiPicFloor
+            && double.TryParse(aiPicFloor, NumberStyles.Float, CultureInfo.InvariantCulture, out var cpfVal))
+            modelProfile.PicDensityFloor = cpfVal;
+        if (Environment.GetEnvironmentVariable("AI_LEVEL_DENSITY_FLOOR") is { Length: > 0 } aiLevelFloor
+            && double.TryParse(aiLevelFloor, NumberStyles.Float, CultureInfo.InvariantCulture, out var clfVal))
+            modelProfile.LevelDensityFloor = clfVal;
 
-        if (Environment.GetEnvironmentVariable("CODEX_ENABLE_AMPLIFIERS") is { Length: > 0 } codexAmps
-            && bool.TryParse(codexAmps, out var caVal))
-            codexProfile.EnableAmplifiers = caVal;
+        if (Environment.GetEnvironmentVariable("AI_ENABLE_AMPLIFIERS") is { Length: > 0 } aiAmps
+            && bool.TryParse(aiAmps, out var caVal))
+            modelProfile.EnableAmplifiers = caVal;
 
-        if (Environment.GetEnvironmentVariable("CODEX_EXHAUSTION_MAX_RETRIES") is { Length: > 0 } codexExRetries
-            && int.TryParse(codexExRetries, out var cerVal))
-            codexProfile.ReasoningExhaustionMaxRetries = cerVal;
-        if (Environment.GetEnvironmentVariable("CODEX_EXHAUSTION_RETRY_MULTIPLIER") is { Length: > 0 } codexExMult
-            && double.TryParse(codexExMult, out var cemVal))
-            codexProfile.ReasoningExhaustionRetryMultiplier = cemVal;
+        if (Environment.GetEnvironmentVariable("AI_EXHAUSTION_MAX_RETRIES") is { Length: > 0 } aiExRetries
+            && int.TryParse(aiExRetries, out var cerVal))
+            modelProfile.ReasoningExhaustionMaxRetries = cerVal;
+        if (Environment.GetEnvironmentVariable("AI_EXHAUSTION_RETRY_MULTIPLIER") is { Length: > 0 } aiExMult
+            && double.TryParse(aiExMult, NumberStyles.Float, CultureInfo.InvariantCulture, out var cemVal))
+            modelProfile.ReasoningExhaustionRetryMultiplier = cemVal;
 
         // ── Speed-profile overrides for ChunkingSettings ────────────────────
         var chunkingSettings = settings.ChunkingSettings ??= new ChunkingSettings();
 
-        if (Environment.GetEnvironmentVariable("CODEX_STAGGER_DELAY_MS") is { Length: > 0 } staggerMs
+        if (Environment.GetEnvironmentVariable("AI_STAGGER_DELAY_MS") is { Length: > 0 } staggerMs
             && int.TryParse(staggerMs, out var sVal))
             chunkingSettings.ParallelStaggerDelayMs = sVal;
-        if (Environment.GetEnvironmentVariable("CODEX_MAX_PARALLEL_CONVERSION") is { Length: > 0 } maxParConv
+        if (Environment.GetEnvironmentVariable("AI_MAX_PARALLEL_CONVERSION") is { Length: > 0 } maxParConv
             && int.TryParse(maxParConv, out var mpcVal))
             chunkingSettings.MaxParallelConversion = mpcVal;
-        if (Environment.GetEnvironmentVariable("CODEX_RATE_LIMIT_SAFETY_FACTOR") is { Length: > 0 } safetyFactor
-            && double.TryParse(safetyFactor, out var sfVal))
+        if (Environment.GetEnvironmentVariable("AI_MAX_PARALLEL_ANALYSIS") is { Length: > 0 } maxParAna
+            && int.TryParse(maxParAna, out var mpaVal))
+            chunkingSettings.MaxParallelAnalysis = mpaVal;
+        if (Environment.GetEnvironmentVariable("AI_MAX_PARALLEL_CHUNKS") is { Length: > 0 } maxParChk
+            && int.TryParse(maxParChk, out var mpchVal))
+            chunkingSettings.MaxParallelChunks = mpchVal;
+        if (Environment.GetEnvironmentVariable("AI_RATE_LIMIT_SAFETY_FACTOR") is { Length: > 0 } safetyFactor
+            && double.TryParse(safetyFactor, NumberStyles.Float, CultureInfo.InvariantCulture, out var sfVal))
             chunkingSettings.RateLimitSafetyFactor = sfVal;
 
         // Chat Profile overrides (subset — chat profiles are simpler)
@@ -1254,23 +1262,55 @@ internal static class Program
         {
             LoadEnvironmentVariables();
 
-            var requiredSettings = new Dictionary<string, string?>
-            {
-                ["AZURE_OPENAI_ENDPOINT"] = Environment.GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT"),
-                ["AZURE_OPENAI_DEPLOYMENT_NAME"] = Environment.GetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT_NAME"),
-                ["AZURE_OPENAI_MODEL_ID"] = Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL_ID")
-            };
+            var serviceType = Environment.GetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE") ?? "AzureOpenAI";
+            var isGitHubCopilot = serviceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase) ||
+                                   serviceType.Equals("GitHub", StringComparison.OrdinalIgnoreCase) ||
+                                   serviceType.Equals("GitHubModels", StringComparison.OrdinalIgnoreCase);
+            var isGitHubCopilotSdk = serviceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase);
+            var isDirectOpenAI = serviceType.Equals("OpenAI", StringComparison.OrdinalIgnoreCase);
 
-            // API Key is optional if using Entra ID / DefaultAzureCredential
-            var apiKey = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_KEY");
-            if (!string.IsNullOrWhiteSpace(apiKey) && !apiKey.Contains("your-api-key"))
+            var requiredSettings = new Dictionary<string, string?>();
+
+            if (isGitHubCopilotSdk)
             {
-                 // Key provided and looks valid-ish
+                // GitHub Copilot SDK: only needs model ID, authentication handled by CLI
+                requiredSettings["AZURE_OPENAI_MODEL_ID"] = Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL_ID");
+            }
+            else if (isGitHubCopilot)
+            {
+                // GitHub Copilot: only needs token (GitHub PAT) and model
+                var token = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_KEY") ??
+                            Environment.GetEnvironmentVariable("GITHUB_TOKEN");
+                requiredSettings["GITHUB_TOKEN or AZURE_OPENAI_API_KEY"] = token;
+                requiredSettings["AZURE_OPENAI_MODEL_ID"] = Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL_ID");
+            }
+            else if (isDirectOpenAI)
+            {
+                // Direct OpenAI: needs API key and model
+                requiredSettings["AZURE_OPENAI_API_KEY"] = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_KEY");
+                requiredSettings["AZURE_OPENAI_MODEL_ID"] = Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL_ID");
             }
             else
             {
-                // No key or template key - assuming Entra ID
-                Console.WriteLine("ℹ️  No valid API Key found. Assuming Microsoft Entra ID (DefaultAzureCredential) authentication.");
+                // Azure OpenAI: needs endpoint, deployment, model
+                requiredSettings["AZURE_OPENAI_ENDPOINT"] = Environment.GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT");
+                requiredSettings["AZURE_OPENAI_DEPLOYMENT_NAME"] = Environment.GetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT_NAME");
+                requiredSettings["AZURE_OPENAI_MODEL_ID"] = Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL_ID");
+            }
+
+            // API Key is optional for Azure if using Entra ID
+            var apiKey = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_KEY") ??
+                         Environment.GetEnvironmentVariable("GITHUB_TOKEN");
+            if (!isGitHubCopilot && !isGitHubCopilotSdk && !isDirectOpenAI)
+            {
+                if (!string.IsNullOrWhiteSpace(apiKey) && !apiKey.Contains("your-api-key") && !apiKey.Contains("placeholder"))
+                {
+                    // Key provided and looks valid
+                }
+                else
+                {
+                    Console.WriteLine("ℹ️  No valid API Key found. Assuming Microsoft Entra ID (DefaultAzureCredential) authentication.");
+                }
             }
 
             var missingSettings = new List<string>();
@@ -1340,14 +1380,17 @@ internal static class Program
             var endpoint = Environment.GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT");
             var modelId = Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL_ID");
             var deployment = Environment.GetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT_NAME");
-            // apiKey retrieved above
 
-            Console.WriteLine("✅ Configuration Validation Successful (Agent Framework)");
+            Console.WriteLine($"✅ Configuration Validation Successful ({serviceType})");
             Console.WriteLine("=====================================");
-            Console.WriteLine($"Endpoint: {endpoint}");
+            Console.WriteLine($"Provider: {serviceType}");
+            if (!string.IsNullOrEmpty(endpoint))
+                Console.WriteLine($"Endpoint: {endpoint}");
             Console.WriteLine($"Model: {modelId}");
-            Console.WriteLine($"Deployment: {deployment}");
-            Console.WriteLine($"API Key: {apiKey?.Substring(0, Math.Min(8, apiKey.Length))}... ({apiKey?.Length} chars)");
+            if (!string.IsNullOrEmpty(deployment))
+                Console.WriteLine($"Deployment: {deployment}");
+            if (!string.IsNullOrEmpty(apiKey) && apiKey.Length > 8)
+                Console.WriteLine($"API Key: {apiKey.Substring(0, Math.Min(8, apiKey.Length))}... ({apiKey.Length} chars)");
             Console.WriteLine();
 
             return true;
@@ -1358,6 +1401,16 @@ internal static class Program
             Console.WriteLine("Please check your configuration files and try again.");
             return false;
         }
+    }
+
+    /// <summary>
+    /// Returns true when the AI provider is 'GitHubCopilotSDK', meaning we use the
+    /// GitHub Copilot SDK (CLI/stdio) instead of a REST API.
+    /// </summary>
+    private static bool IsGitHubCopilotSdkMode()
+    {
+        var serviceType = Environment.GetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE") ?? "AzureOpenAI";
+        return serviceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task RunReverseEngineeringAsync(ILoggerFactory loggerFactory, FileHelper fileHelper, SettingsHelper settingsHelper, string cobolSource, string output, string configPath)
@@ -1396,47 +1449,55 @@ internal static class Program
                 Environment.Exit(1);
             }
 
-            // Validate required AI configuration (relaxed for GitHub Copilot SDK)
-            if (!IsGitHubCopilotMode(settings.AISettings))
+            if (string.IsNullOrEmpty(settings.AISettings.Endpoint) &&
+                !settings.AISettings.ServiceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase) &&
+                !settings.AISettings.ServiceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase) &&
+                !settings.AISettings.ServiceType.Equals("OpenAI", StringComparison.OrdinalIgnoreCase))
             {
-                if (string.IsNullOrEmpty(settings.AISettings.Endpoint) ||
-                    string.IsNullOrEmpty(settings.AISettings.DeploymentName))
-                {
-                    logger.LogError("Azure OpenAI configuration incomplete. Please ensure endpoint and deployment name are configured.");
-                    Environment.Exit(1);
-                }
+                logger.LogError("AI configuration incomplete. Set endpoint for AzureOpenAI, or use ServiceType=GitHubCopilot/GitHubCopilotSDK.");
+                Environment.Exit(1);
             }
 
-            // Create EnhancedLogger and ChatLogger early for API tracking
+            // Create EnhancedLogger early for API tracking
             var enhancedLogger = new EnhancedLogger(
                 loggerFactory.CreateLogger<EnhancedLogger>());
-            var providerName = IsGitHubCopilotMode(settings.AISettings) ? "GitHub Copilot" : "Azure OpenAI";
-            var chatLogger = new ChatLogger(
-                loggerFactory.CreateLogger<ChatLogger>(), providerName: providerName);
 
             // Get API version from environment or default
             var apiVersion = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_VERSION") ?? "2025-04-01-preview";
 
-            // Create ResponsesApiClient for code agents (Azure-only, null in Copilot SDK mode)
+            // Create AI clients based on provider
+            var reServiceType = settings.AISettings.ServiceType ?? "AzureOpenAI";
+            var reCodeModelCaps = CobolToQuarkusMigration.Models.ModelCapabilities.Detect(settings.AISettings.ModelId);
+
             ResponsesApiClient? responsesApiClient = null;
-            if (!IsGitHubCopilotMode(settings.AISettings))
+            if (!IsGitHubCopilotSdkMode() &&
+                reServiceType.Equals("AzureOpenAI", StringComparison.OrdinalIgnoreCase) &&
+                reCodeModelCaps.SupportsResponsesApi &&
+                !string.IsNullOrEmpty(settings.AISettings.Endpoint) &&
+                !string.IsNullOrEmpty(settings.AISettings.DeploymentName))
             {
                 responsesApiClient = new ResponsesApiClient(
                     settings.AISettings.Endpoint,
-                    string.Empty, // Forces DefaultAzureCredential
+                    string.Empty,
                     settings.AISettings.DeploymentName,
                     loggerFactory.CreateLogger<ResponsesApiClient>(),
                     enhancedLogger,
-                    profile: settings.CodexProfile,
+                    profile: settings.ModelProfile,
                     apiVersion: apiVersion,
                     rateLimitSafetyFactor: settings.ChunkingSettings.RateLimitSafetyFactor);
 
-                logger.LogInformation("ResponsesApiClient initialized for codex model: {DeploymentName} (API: {ApiVersion}, Entra ID)", 
+                logger.LogInformation("ResponsesApiClient initialized for {Model} (API: {ApiVersion})",
                     settings.AISettings.DeploymentName, apiVersion);
             }
 
+            // Create IChatClient for all models
+            IChatClient codeClient = ChatClientFactory.CreateFromSettings(settings.AISettings, logger: logger);
             var chatDeployment = settings.AISettings.ChatDeploymentName ?? settings.AISettings.DeploymentName;
-            IChatClient chatClient = CreateChatClientFromSettings(settings.AISettings, logger, forChat: true);
+            IChatClient chatClient = ChatClientFactory.CreateChatClientFromSettings(settings.AISettings, logger);
+            logger.LogInformation("AI clients initialized via {Provider}", reServiceType);
+
+            var providerName = codeClient is Agents.Infrastructure.CopilotChatClient ? "GitHub Copilot" : "Azure OpenAI";
+            var chatLogger = new ChatLogger(loggerFactory.CreateLogger<ChatLogger>(), providerName: providerName);
 
             ConfigureSmartChunking(settings, chatDeployment, logger);
 
@@ -1449,8 +1510,9 @@ internal static class Program
                 loggerFactory.CreateLogger<CobolToQuarkusMigration.Chunking.ChunkingOrchestrator>(),
                 targetLang);
 
+            // Create agents using factory methods — auto-route ResponsesApiClient vs IChatClient
             var cobolAnalyzerAgent = CobolAnalyzerAgent.Create(
-                responsesApiClient, chatClient,
+                responsesApiClient, codeClient,
                 loggerFactory.CreateLogger<CobolAnalyzerAgent>(),
                 settings.AISettings.CobolAnalyzerModelId,
                 enhancedLogger, chatLogger, settings: settings);
@@ -1458,12 +1520,12 @@ internal static class Program
             var businessLogicExtractorAgent = BusinessLogicExtractorAgent.Create(
                 responsesApiClient, chatClient,
                 loggerFactory.CreateLogger<BusinessLogicExtractorAgent>(),
-                chatDeployment,
+                settings.AISettings.ChatModelId ?? chatDeployment,
                 enhancedLogger, chatLogger,
                 chunkingOrchestrator: chunkingOrchestrator, settings: settings);
 
             var dependencyMapperAgent = DependencyMapperAgent.Create(
-                responsesApiClient, chatClient,
+                responsesApiClient, codeClient,
                 loggerFactory.CreateLogger<DependencyMapperAgent>(),
                 settings.AISettings.DependencyMapperModelId ?? settings.AISettings.CobolAnalyzerModelId,
                 enhancedLogger, chatLogger, settings: settings);

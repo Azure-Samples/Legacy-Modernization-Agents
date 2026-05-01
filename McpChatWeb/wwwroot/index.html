@@ -78,6 +78,118 @@
         <h2>MCP Resources</h2>
         <button id="refresh-resources" type="button" class="btn-small" title="Refresh resource list">⟳</button>
       </div>
+      
+      <!-- ═══ Mission Control ═══ -->
+      <div class="mc-panel">
+        <div class="mc-section">
+          <div class="mc-section-title">🚀 Mission Control <button class="mc-info-btn" id="mc-provider-info-btn" title="Learn about AI providers">ℹ️</button></div>
+
+          <!-- Provider Info Panel -->
+          <div class="mc-provider-info" id="mc-provider-info" style="display: none;">
+            <div class="mc-info-close" onclick="document.getElementById('mc-provider-info').style.display='none'">✕</div>
+            <p><strong>☁️ Azure OpenAI</strong> — Your own Azure deployment. Fastest for batch processing. Uses Codex Responses API with built-in reasoning. Supports parallel processing.</p>
+            <p><strong>🤖 GitHub Copilot SDK</strong> — Same models as VS Code Copilot (including Claude). Uses stdio pipe.</p>
+            <p style="font-size:0.8em;color:#94a3b8">Click <strong>🔧 Setup</strong> in the Model panel (or change the provider dropdown) to connect and discover all available models.</p>
+          </div>
+
+          <!-- Run Name + Options -->
+          <div class="mc-options-row">
+            <input type="text" id="mc-run-name" class="mc-input" placeholder="Run name (optional)">
+          </div>
+          <div class="mc-options-row">
+            <select id="mc-provider-select" class="mc-select">
+              <option value="AzureOpenAI">☁️ Azure OpenAI</option>
+              <option value="GitHubCopilot">🤖 GitHub Copilot SDK</option>
+            </select>
+            <select id="mc-model-select" class="mc-select">
+              <!-- Populated dynamically by JS based on provider -->
+            </select>
+          </div>
+          <div class="mc-options-row">
+            <select id="mc-language-select" class="mc-select">
+              <option value="Java">☕ Java (Quarkus)</option>
+              <option value="CSharp">🟦 C# (.NET)</option>
+            </select>
+            <select id="mc-speed-select" class="mc-select">
+              <option value="balanced">⚖️ Balanced</option>
+              <option value="turbo">⚡ Turbo</option>
+              <option value="fast">🏃 Fast</option>
+              <option value="thorough">🔬 Thorough</option>
+            </select>
+          </div>
+
+          <!-- Command Buttons -->
+          <div class="mc-commands">
+            <button class="mc-cmd-btn mc-cmd-primary" data-run-command="migrate" title="Full migration: Analysis + Code Conversion">▶️ Full Migration</button>
+            <button class="mc-cmd-btn" data-run-command="reverse-engineer" title="Reverse engineering only">🔍 RE Only</button>
+            <button class="mc-cmd-btn" data-run-command="convert-only" title="Code conversion only (skip RE)">🔄 Convert Only</button>
+            <button class="mc-cmd-btn" data-run-command="resume" title="Resume interrupted migration">⏩ Resume</button>
+          </div>
+
+          <!-- Stop / Pause Controls -->
+          <div class="mc-controls-row">
+            <span class="mc-status mc-status-pending" id="mc-run-status">⏳ IDLE</span>
+            <button class="mc-ctrl-btn mc-ctrl-pause" id="mc-pause-btn" disabled>⏸️ Pause</button>
+            <button class="mc-ctrl-btn mc-ctrl-stop" id="mc-stop-btn" disabled>🛑 Stop</button>
+          </div>
+
+          <!-- Previous Runs Dropdown -->
+          <div class="mc-run-history">
+            <select id="mc-run-select" class="mc-select mc-run-dropdown">
+              <option value="">No runs yet</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- File Upload -->
+        <div class="mc-section">
+          <div class="mc-section-title">📤 Upload Source Files</div>
+          <div class="mc-upload-area" id="mc-upload-area">
+            <span class="mc-upload-icon">📁</span>
+            <span class="mc-upload-text">Drop .cbl/.cpy files here or click</span>
+            <input type="file" id="mc-file-input" multiple accept=".cbl,.cob,.cpy,.copy,.pco,.sqb" hidden>
+          </div>
+          <div class="mc-upload-status" id="mc-upload-status"></div>
+        </div>
+
+        <!-- Folder Browser -->
+        <div class="mc-section">
+          <div class="mc-section-title">📂 Files</div>
+          <div class="mc-folder-tabs">
+            <button class="mc-tab mc-tab-active" data-folder-tab="source">Source</button>
+            <button class="mc-tab" data-folder-tab="output">Output</button>
+            <button class="mc-tab" data-folder-tab="output/java">Java</button>
+            <button class="mc-tab" data-folder-tab="output/csharp">C#</button>
+          </div>
+          <div class="mc-folder-list" id="mc-folder-list"></div>
+        </div>
+
+        <!-- Report Chat Toggle -->
+        <div class="mc-section">
+          <div class="mc-section-title">💬 Chat Context</div>
+          <div class="mc-report-row">
+            <label class="prompt-toggle" title="Toggle chatting with a report">
+              <input type="checkbox" id="mc-report-toggle">
+              <span class="prompt-toggle-slider"></span>
+            </label>
+            <span class="mc-report-label">Chat with RE Report</span>
+            <span class="mc-report-indicator" id="mc-report-indicator" style="display: none;">📊</span>
+          </div>
+          <select id="mc-report-select" class="mc-select">
+            <option value="">No reports yet</option>
+          </select>
+        </div>
+
+        <!-- Run Log Output -->
+        <div class="mc-section">
+          <div class="mc-section-title" style="display:flex;align-items:center;justify-content:space-between;">
+            📜 Run Output
+            <button class="mc-expand-btn" id="mc-expand-log-btn" title="Expand log view">⛶</button>
+          </div>
+          <pre class="mc-run-log" id="mc-run-log">Waiting for a run to start...</pre>
+        </div>
+      </div>
+
       <button id="showAllRunsBtn" class="info-button">📊 View All Runs & Data Guide</button>
       <button id="showArchitectureBtn" class="info-button">📄 Reverse Engineering Results</button>
       <button id="showMigrationMonitorBtn" class="info-button migration-monitor-btn">🔄 Migration Monitor</button>
@@ -86,6 +198,59 @@
 
     <section class="panel chat-panel">
       <h2>Ask a Question</h2>
+
+      <!-- ═══ Model & Prompt Configuration Panel ═══ -->
+      <div class="config-panel" id="config-panel">
+        <div class="config-header" onclick="toggleConfigPanel()">
+          <span class="config-toggle-icon" id="config-toggle-icon">▼</span>
+          <strong>⚙️ Model &amp; Prompts</strong>
+          <span class="config-model-badge" id="config-active-model-badge">loading...</span>
+        </div>
+        <div class="config-body" id="config-body">
+
+          <!-- Source Files Summary -->
+          <div class="config-section" id="source-files-section">
+            <div class="config-section-header">📁 Source Files</div>
+            <div id="source-files-summary" class="source-summary">
+              <span class="source-loading">Scanning...</span>
+            </div>
+            <div id="source-files-warning" class="source-warning" style="display: none;"></div>
+          </div>
+
+          <!-- Model Selector — used for Chat & Prompt Studio -->
+          <div class="config-section">
+            <div class="config-section-header">💬 Chat &amp; Prompt Studio Model
+              <button id="open-setup-modal-btn" class="btn-reconfigure" title="Open AI Provider Setup to discover and configure models">🔧 Setup</button>
+            </div>
+            <div style="font-size: 0.7em; color: #64748b; margin-bottom: 6px;">Select your AI provider and models, or use <code>./doctor.sh setup</code>.</div>
+            <div class="model-selector-row">
+              <select id="model-selector" class="model-dropdown">
+                <!-- Populated dynamically from /api/models/available -->
+                <option value="">Loading models...</option>
+              </select>
+              <button id="apply-model-btn" class="btn-apply" title="Apply model for chat &amp; prompts">✓</button>
+            </div>
+            <div class="model-info-row" id="model-info-row" style="display: none;">
+              <span class="model-publisher" id="model-publisher"></span>
+              <span class="model-context" id="model-context"></span>
+            </div>
+          </div>
+
+          <!-- Prompt Templates -->
+          <div class="config-section">
+            <div class="config-section-header">
+              📝 Agent Prompts
+              <button id="btn-prompt-studio" class="btn-prompt-studio" onclick="openPromptStudio()" title="Open Prompt Studio to generate or AI-enhance all agent prompts">
+                🚀 Prompt Studio
+              </button>
+            </div>
+            <div id="generate-all-status" class="generate-all-status" style="display:none;"></div>
+            <div id="prompt-list" class="prompt-list">
+              <span class="source-loading">Loading prompts...</span>
+            </div>
+          </div>
+        </div>
+      </div>
       
       <!-- Suggested Prompts -->
       <div id="suggestions" class="suggestions">
@@ -126,7 +291,7 @@
               <div class="spinner-small"></div>
             </div>
             <div class="stage-info">
-              <div class="stage-title">Azure OpenAI</div>
+              <div class="stage-title">AI Model</div>
               <div class="stage-status">Processing with AI model...</div>
             </div>
           </div>
@@ -771,12 +936,301 @@ curl http://localhost:5028/api/data-retrieval-guide</code></pre>
     </div>
   </div>
   
+  <!-- Prompt Enhancement Dashboard Modal -->
+  <div id="enhanceDashboardModal" class="modal">
+    <div class="modal-content modal-content-wide enhance-dashboard">
+      <div class="modal-header enhance-dashboard-header">
+        <h2>🚀 Prompt Studio</h2>
+        <span class="close enhance-dashboard-close" onclick="closeEnhanceDashboard()">&times;</span>
+      </div>
+      <div class="modal-body enhance-dashboard-body">
+
+        <!-- ═══ MODE PICKER (shown before generation starts) ═══ -->
+        <div id="studio-mode-picker" class="studio-mode-picker">
+          <div class="studio-intro">Choose how to generate prompts for all 7 agents based on your COBOL source files.</div>
+
+          <!-- Quick Mode Card -->
+          <div class="studio-mode-card" id="mode-card-quick">
+            <div class="mode-card-icon">⚡</div>
+            <div class="mode-card-body">
+              <div class="mode-card-title">Quick Generate <span class="mode-card-tag tag-fast">Instant</span> <span class="mode-card-tag tag-free">Free</span></div>
+              <div class="mode-card-desc">
+                Scans your source files with <strong>regex pattern matching</strong> to detect COBOL features
+                (EXEC SQL, CICS screens, file I/O, copybooks, etc.) and builds tailored prompts from templates.
+              </div>
+              <ul class="mode-card-details">
+                <li>Detects architecture pattern (online-interactive, batch, file-processing)</li>
+                <li>Generates system + user prompts for all agents</li>
+                <li>No AI model needed — pure code analysis</li>
+                <li>Completes in under 1 second</li>
+              </ul>
+              <button class="btn-studio-go btn-studio-quick" onclick="runPromptStudio('quick')">⚡ Generate Now</button>
+            </div>
+          </div>
+
+          <!-- AI-Enhanced Mode Card -->
+          <div class="studio-mode-card mode-card-ai" id="mode-card-ai">
+            <div class="mode-card-icon">🧠</div>
+            <div class="mode-card-body">
+              <div class="mode-card-title">AI-Enhanced Generate <span class="mode-card-tag tag-ai">AI-Powered</span> <span class="mode-card-tag tag-deep">Deep Analysis</span></div>
+              <div class="mode-card-desc">
+                Runs the same regex analysis first, then sends <strong>actual COBOL code samples</strong>
+                to your selected AI model. The AI reviews your codebase and adds domain-specific
+                enhancements the regex can't detect (naming conventions, business logic patterns,
+                Danish-language variables, error handling idioms, etc.).
+              </div>
+              <ul class="mode-card-details">
+                <li>Everything from Quick Generate, plus:</li>
+                <li>Samples 3 largest programs + 2 largest copybooks</li>
+                <li>One AI call reviews all agents at once (~4K tokens)</li>
+                <li>AI assigns quality scores (1-10) per agent prompt</li>
+                <li>Takes 10-30 seconds depending on model speed</li>
+              </ul>
+              <div class="studio-ai-model-info" id="studio-ai-model-info">
+                <span class="studio-ai-label">AI Service:</span>
+                <span class="studio-ai-model" id="studio-ai-model-name">Loading...</span>
+                <span class="studio-ai-provider" id="studio-ai-provider"></span>
+              </div>
+              <button class="btn-studio-go btn-studio-ai" id="btn-studio-ai" onclick="runPromptStudio('ai')">🧠 Generate with AI Enhancement</button>
+            </div>
+          </div>
+
+          <div class="studio-hint">
+            💡 <strong>Tip:</strong> Start with Quick Generate to see what regex detects. Use AI-Enhanced when you want
+            the model to review your actual code and fine-tune the prompts with domain-specific intelligence.
+          </div>
+        </div>
+
+        <!-- ═══ PROGRESS VIEW (shown during generation) ═══ -->
+        <div id="studio-progress" class="studio-progress" style="display:none;">
+          <div class="studio-progress-mode" id="studio-progress-mode"></div>
+
+          <!-- Phase Progress -->
+          <div class="enhance-phases">
+            <div id="enhance-phase-1" class="enhance-phase">
+              <div class="phase-indicator pending"><span class="phase-number">1</span></div>
+              <div class="phase-info">
+                <div class="phase-title">Source Analysis</div>
+                <div class="phase-detail" id="phase-1-detail">Scanning COBOL files with regex patterns...</div>
+              </div>
+              <div class="phase-timing" id="phase-1-timing"></div>
+            </div>
+            <div id="enhance-phase-2" class="enhance-phase">
+              <div class="phase-indicator pending"><span class="phase-number">2</span></div>
+              <div class="phase-info">
+                <div class="phase-title">Base Prompt Generation</div>
+                <div class="phase-detail" id="phase-2-detail">Building prompts from detected features...</div>
+              </div>
+              <div class="phase-timing" id="phase-2-timing"></div>
+            </div>
+            <div id="enhance-phase-3" class="enhance-phase" style="display:none;">
+              <div class="phase-indicator pending"><span class="phase-number">3</span></div>
+              <div class="phase-info">
+                <div class="phase-title">AI Enhancement</div>
+                <div class="phase-detail" id="phase-3-detail">Sending code samples to AI for domain-specific insights...</div>
+              </div>
+              <div class="phase-timing" id="phase-3-timing"></div>
+            </div>
+            <div id="enhance-phase-4" class="enhance-phase">
+              <div class="phase-indicator pending"><span class="phase-number">4</span></div>
+              <div class="phase-info">
+                <div class="phase-title">Save to Disk</div>
+                <div class="phase-detail" id="phase-4-detail">Writing prompts to Agents/Prompts/*.md files...</div>
+              </div>
+              <div class="phase-timing" id="phase-4-timing"></div>
+            </div>
+          </div>
+
+          <!-- Analysis Summary -->
+          <div id="enhance-analysis-summary" class="enhance-analysis-summary" style="display:none;">
+            <div class="enhance-analysis-row">
+              <span class="enhance-stat" id="enhance-stat-files">—</span>
+              <span class="enhance-stat" id="enhance-stat-programs">—</span>
+              <span class="enhance-stat" id="enhance-stat-copybooks">—</span>
+              <span class="enhance-stat" id="enhance-stat-lines">—</span>
+              <span class="enhance-stat" id="enhance-stat-arch">—</span>
+            </div>
+            <div class="enhance-features" id="enhance-feature-tags"></div>
+          </div>
+
+          <!-- AI Model Badge -->
+          <div id="enhance-ai-badge" class="enhance-ai-badge" style="display:none;">
+            <span class="ai-badge-icon">🤖</span>
+            <span class="ai-badge-label">Model:</span>
+            <span id="enhance-ai-model-name">—</span>
+            <span id="enhance-ai-status" class="ai-badge-status">working...</span>
+          </div>
+
+          <!-- Quality Score Info Box -->
+          <div id="enhance-quality-info" class="quality-info-box" style="display:none;">
+            <div class="quality-info-header">
+              <span class="quality-info-icon">ℹ️</span>
+              <span class="quality-info-title">Quality Score Explained</span>
+              <button class="quality-info-close" onclick="this.parentElement.parentElement.style.display='none'">✕</button>
+            </div>
+            <div class="quality-info-body">
+              <p>The <strong>Quality Score (1–10)</strong> rates the <em>final</em> prompt quality after AI enhancement — how ready it is for accurate code conversion.</p>
+              <div class="quality-info-scale">
+                <div class="qi-tier high"><span class="qi-badge">8–10</span> <strong>Production-ready</strong> — comprehensive domain coverage, naming conventions, edge cases, and COBOL idioms captured.</div>
+                <div class="qi-tier medium"><span class="qi-badge">5–7</span> <strong>Adequate</strong> — covers basics but may miss codebase-specific patterns or data structures.</div>
+                <div class="qi-tier low"><span class="qi-badge">1–4</span> <strong>Needs work</strong> — significant domain gaps; consider adding more source files or re-running.</div>
+              </div>
+              <p class="quality-info-tip"><strong>How to improve scores:</strong> Ensure the <code>source/</code> folder contains representative COBOL programs and copybooks. The AI samples the largest files — include your most complex programs for best results. Re-running enhancement after adding more source files will improve coverage.</p>
+            </div>
+          </div>
+
+          <!-- Agent Quality Cards -->
+          <div id="enhance-agent-cards" class="enhance-agent-cards" style="display:none;"></div>
+
+          <!-- Sampled Files -->
+          <div id="enhance-sampled-files" class="enhance-sampled-files" style="display:none;"></div>
+
+          <!-- Final Summary -->
+          <div id="enhance-final-summary" class="enhance-final-summary" style="display:none;"></div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- Prompt Editor Modal -->
+  <div id="promptEditorModal" class="modal">
+    <div class="modal-content modal-content-wide">
+      <div class="modal-header">
+        <h2>📝 Edit Prompt: <span id="prompt-editor-title"></span></h2>
+        <span class="close prompt-editor-close">&times;</span>
+      </div>
+      <div class="modal-body">
+        <!-- Source analysis banner (shown after auto-generate) -->
+        <div id="prompt-analysis-banner" class="prompt-analysis-banner" style="display:none;">
+          <div class="analysis-header">
+            <span class="analysis-icon">🔍</span>
+            <strong>Source Analysis</strong>
+            <span id="analysis-arch-badge" class="analysis-badge"></span>
+          </div>
+          <div id="analysis-features" class="analysis-features"></div>
+          <div id="analysis-stats" class="analysis-stats"></div>
+        </div>
+
+        <div class="prompt-editor-layout">
+          <div class="prompt-editor-section">
+            <label class="prompt-editor-label">System Prompt</label>
+            <textarea id="prompt-editor-system" class="prompt-editor-textarea" rows="12" placeholder="System prompt..."></textarea>
+          </div>
+          <div class="prompt-editor-section">
+            <label class="prompt-editor-label">
+              User Prompt Template
+              <button id="prompt-auto-generate-btn" class="btn-auto-generate" title="Auto-generate optimized prompt based on source files">⚡ Auto-Generate</button>
+            </label>
+            <textarea id="prompt-editor-user" class="prompt-editor-textarea" rows="12" placeholder="User prompt template..."></textarea>
+          </div>
+          <div class="prompt-editor-actions">
+            <button id="prompt-editor-save" class="btn-save">💾 Save to File</button>
+            <button id="prompt-editor-cancel" class="btn-cancel">Cancel</button>
+            <span id="prompt-save-status" class="prompt-save-status"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ Model Setup Modal ═══ -->
+  <div id="modelSetupModal" class="modal" style="display: none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>🔑 AI Provider Setup</h2>
+        <span class="modal-close" id="setup-modal-close">&times;</span>
+      </div>
+      <div class="modal-body" style="padding: 20px;">
+
+        <!-- Tabs -->
+        <div class="setup-tabs">
+          <button class="setup-tab setup-tab-active" data-provider="AzureOpenAI">☁️ Azure OpenAI</button>
+          <button class="setup-tab" data-provider="GitHubCopilotSDK">🤖 GitHub Copilot SDK</button>
+        </div>
+
+        <!-- Azure OpenAI Tab -->
+        <div id="setup-AzureOpenAI" class="setup-tab-content" style="display: block;">
+          <div class="setup-field">
+            <label>Endpoint URL</label>
+            <input type="text" id="azure-endpoint" placeholder="https://your-resource.openai.azure.com/">
+            <div class="setup-help">Find this in Azure Portal → Your OpenAI Resource → Keys and Endpoint</div>
+          </div>
+
+          <div class="setup-field">
+            <label>Authentication</label>
+            <div class="setup-auth-options">
+              <label class="setup-auth-option">
+                <input type="radio" name="azure-auth" value="apikey" checked>
+                🔑 API Key
+              </label>
+              <label class="setup-auth-option">
+                <input type="radio" name="azure-auth" value="azlogin">
+                🔐 Azure CLI (az login)
+              </label>
+            </div>
+          </div>
+
+          <div class="setup-field" id="azure-apikey-group">
+            <label>API Key</label>
+            <input type="password" id="azure-apikey" placeholder="Enter your Azure OpenAI API key">
+          </div>
+
+          <button class="setup-connect-btn" id="azure-connect-btn">🔌 Connect</button>
+        </div>
+
+        <!-- GitHub Copilot SDK Tab -->
+        <div id="setup-GitHubCopilotSDK" class="setup-tab-content">
+          <div class="setup-field">
+            <label>Authentication</label>
+            <div class="setup-auth-options">
+              <label class="setup-auth-option">
+                <input type="radio" name="copilot-auth" value="cli" checked>
+                💻 GitHub CLI (gh auth login)
+              </label>
+              <label class="setup-auth-option">
+                <input type="radio" name="copilot-auth" value="pat">
+                🔑 Personal Access Token
+              </label>
+            </div>
+            <div class="setup-help">CLI auth uses your existing <code>gh auth login</code> session on the server.</div>
+          </div>
+
+          <div class="setup-field" id="copilot-pat-group" style="display: none;">
+            <label>Personal Access Token</label>
+            <input type="password" id="copilot-pat" placeholder="ghp_...">
+            <div class="setup-help">Classic PAT with <code>copilot</code> scope. Create at github.com/settings/tokens</div>
+          </div>
+
+          <button class="setup-connect-btn" id="copilot-connect-btn">🔌 Connect</button>
+        </div>
+
+        <!-- Status -->
+        <div id="setup-status" class="setup-status"></div>
+
+        <!-- Discovered Models -->
+        <div id="setup-model-list">
+          <div class="setup-no-models">Connect to a provider to discover available models.</div>
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <div class="setup-footer">
+        <span class="setup-footer-hint">Configuration is saved to Config/ai-config.local.env</span>
+        <button class="setup-save-btn" id="setup-save-btn" disabled>💾 Save & Apply</button>
+      </div>
+    </div>
+  </div>
+
   <script src="run-selector.js"></script>
   <script src="graph.js"></script>
   <script src="main.js"></script>
   <script src="runs-viewer.js"></script>
   <script src="activity-dashboard.js"></script>
   <script src="migration-monitor.js"></script>
+  <script src="model-prompt-panel.js"></script>
+  <script src="model-setup-modal.js"></script>
+  <script src="mission-control.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script>
     // Toggle collapsible sections

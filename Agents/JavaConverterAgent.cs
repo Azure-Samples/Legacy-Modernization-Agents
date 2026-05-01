@@ -21,23 +21,6 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
     public string TargetLanguage => "Java";
     public string FileExtension => ".java";
 
-    private int? _runId;
-    private List<BusinessLogic> _businessLogicExtracts = new();
-
-    /// <summary>
-    /// Sets the Run ID for the current context.
-    /// </summary>
-    public void SetRunId(int runId)
-    {
-        _runId = runId;
-    }
-
-    /// <inheritdoc/>
-    public void SetBusinessLogicContext(List<BusinessLogic> businessLogicExtracts)
-    {
-        _businessLogicExtracts = businessLogicExtracts ?? new();
-    }
-
     /// <summary>
     /// Creates a JavaConverterAgent, routing to Responses API or Chat API based on availability.
     /// </summary>
@@ -57,6 +40,23 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
             : new JavaConverterAgent(chatClient!, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings, runId);
     }
 
+    private int? _runId;
+    private List<BusinessLogic> _businessLogicExtracts = new();
+
+    /// <summary>
+    /// Sets the Run ID for the current context.
+    /// </summary>
+    public void SetRunId(int runId)
+    {
+        _runId = runId;
+    }
+
+    /// <inheritdoc/>
+    public void SetBusinessLogicContext(List<BusinessLogic> businessLogicExtracts)
+    {
+        _businessLogicExtracts = businessLogicExtracts ?? new();
+    }
+
     /// <summary>
     /// Initializes a new instance using Responses API (for codex models like gpt-5.1-codex-mini).
     /// </summary>
@@ -71,6 +71,7 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
         int? runId = null)
         : base(responsesClient, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings)
     {
+        _runId = runId;
     }
 
     /// <summary>
@@ -87,6 +88,7 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
         int? runId = null)
         : base(chatClient, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings)
     {
+        _runId = runId;
     }
 
     /// <inheritdoc/>

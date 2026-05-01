@@ -5,25 +5,69 @@ All notable changes to this repository are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.6.0] - 2026-03-10
+## [Unreleased]
 
 ### Added
-- **GitHub Copilot SDK Provider** — New `ServiceType=GitHubCopilot` option uses the `GitHub.Copilot.SDK` NuGet package and `CopilotChatClient` as an alternative to Azure OpenAI. All agents fall back to `IChatClient` when `ResponsesApiClient` is unavailable. Configuration requires only `AISETTINGS__MODELID`; endpoint and API key are ignored.
-- **`list-models` CLI Command** — `dotnet run -- list-models` enumerates models available to the authenticated GitHub Copilot user via the SDK.
-- **Interactive Provider Selection in `doctor.sh setup`** — Users choose between Azure OpenAI and GitHub Copilot SDK. The Copilot path verifies CLI presence, authenticates via `copilot login`, fetches available models, and writes `ai-config.local.env`.
-- **`CreateGitHubCopilotChatClient()` in `ChatClientFactory`** — Factory method for `CopilotChatClient`; `CreateChatClient()` accepts a `serviceType` parameter to route to the correct backend.
-
-### Changed
-- **`ResponsesApiClient` made nullable** — `MigrationProcess`, `ChunkedMigrationProcess`, and `SmartMigrationOrchestrator` accept `null` for the Responses API client. All agent construction is dual-pathed (Responses API vs `IChatClient`).
-- **Dynamic provider name in logging** — `AgentBase.ProviderName`, `CobolAnalyzerAgent.ProviderName`, and `ChatLogger` display "GitHub Copilot" or "Azure OpenAI" based on the active client type.
-- **`doctor.sh` diagnostics** — `check_ai_connectivity()`, `run_doctor()`, and `run_test()` detect `GitHubCopilot` service type, validate the Copilot CLI, and skip Azure-specific endpoint/deployment checks.
-- **`Config/load-config.sh`** — `validate_config()` short-circuits for `GitHubCopilot`, requiring only `AISETTINGS__MODELID`.
-- **Devcontainer** — Base image updated to `.NET 10.0`; installs `@github/copilot@latest` (Copilot CLI); adds `github-cli` feature; Node pinned to v22.
+- **External Prompt Templates** — All agent system prompts are now loaded from Markdown files in `Agents/Prompts/` (`CobolAnalyzer.md`, `BusinessLogicExtractor.md`, `JavaConverter.md`, `CSharpConverter.md`, `DependencyMapper.md`, `ChunkAwareJavaConverter.md`, `ChunkAwareCSharpConverter.md`). Prompts are no longer embedded as inline strings in `.cs` agent files.
+- **`{{CodebaseProfile}}` auto-injection** — Prompt templates may include the `{{CodebaseProfile}}` placeholder, which is replaced at runtime with a codebase summary (detected features, file stats, SQL usage). See `## SECTION: Name` delimiter syntax in prompt files.
 
 ### Fixed
-- **`generate_migration_report()` in `doctor.sh`** — Changed SQLite `.mode markdown` to `.mode list` to produce correct report output.
+- **`ChatClientFactory` `InvalidOperationException`** — `CreateFromSettings()` now throws a descriptive `InvalidOperationException` when called with an unrecognised `ServiceType`, instead of returning `null` and causing a downstream null-reference crash.
+- **Provider label display** — AI provider labels in the portal header now correctly reflect the active provider (was showing `AzureOpenAI` for all providers).
+- **XSS hardening** — API-supplied model names are HTML-escaped before DOM insertion in the portal setup modal.
 
-## [2.5.0] - 2026-02-23
+## [3.0.0] - 2026-03-17
+
+### Added
+- **Multi-Provider AI Support** — Three AI providers now supported:
+  - **AzureOpenAI** (existing) — Azure OpenAI deployments with Responses API for Codex models
+  - **GitHubCopilot** (new) — GitHub Models catalog via `models.github.ai` endpoint
+  - **OpenAI** (new) — Direct OpenAI API access
+  - **GitHubCopilotSDK** (new) — GitHub Copilot CLI (`github-copilot-cli`) for stdio-based AI communication, no API keys needed
+- **Portal AI Provider Setup Modal** — Browser-based setup for initial configuration:
+  - **Azure OpenAI**: API key or Azure CLI (`az login`) auth, auto-discovers deployed models via ARM API
+  - **GitHub Copilot SDK**: CLI login or PAT auth, lists models via `CopilotClient.ListModelsAsync()`
+  - Assign separate **Chat** and **Code** models; saves to `Config/ai-config.local.env`
+  - Auto-opens on first visit when no models are configured
+- **Model-Aware Reasoning for ALL Providers** — Three-tier content-aware reasoning adapts per model family:
+  - **Claude** → Extended thinking with `budget_tokens` (30%/50%/70% based on effort)
+  - **Codex/o-series** → `reasoning_effort` additional property
+  - **GPT/Grok/standard** → `temperature=0.1` for deterministic output
+  - `ModelCapabilities.Detect()` auto-classifies models from ID string
+- **Output Truncation Detection & Recovery** — Safety net for all IChatClient providers:
+  - `OutputTruncationException` on `FinishReason=Length`, text-based truncation signals, or unclosed code blocks
+  - Escalation loop: doubles `MaxOutputTokens` + promotes reasoning effort with thrash guard
+  - Falls back to adaptive re-chunking at COBOL DIVISION/SECTION boundary
+- **`ChatClientFactory.CreateFromSettings()`** — Single entry point that auto-selects provider based on `AISettings.ServiceType`
+- **`CopilotChatClient`** — `IChatClient` adapter wrapping `GitHub.Copilot.SDK.CopilotClient`
+- **`Create()` Static Factories** — All 7 agents now have `Create()` factory methods that auto-route to the correct constructor
+- **Model Discovery API Endpoints**: `POST /api/models/connect`, `POST /api/models/save-config`, enhanced `GET /api/models/available`
+- **Prompt Studio Multi-Provider Support** — AI Enhance and Re-Score work with both Azure OpenAI and GitHub Copilot SDK
+
+### Changed
+- **`CODEX_*` → `AI_*` Environment Variables** — All env vars renamed (e.g., `AI_SPEED_PROFILE`, `AI_LOW_REASONING_EFFORT`, `AI_MAX_OUTPUT_TOKENS`)
+- **`AgentBase` IChatClient Path** — Replaced hardcoded `MaxOutputTokens=16384` with content-aware `CalculateTokenSettings()` + `ApplyModelSpecificOptions()`
+- **All agent initialization** is now provider-aware — uses `ResponsesApiClient` when available, falls back to `IChatClient`
+- **`MigrationProcess`**, **`ChunkedMigrationProcess`**, **`SmartMigrationOrchestrator`** — Accept nullable `ResponsesApiClient?`
+- **Architecture diagrams** — Updated to reflect portal setup, dual provider paths, and expanded portal features
+
+### Removed
+- **`UnifiedAIClient`** — Deleted; model-aware reasoning is now built into `AgentBase` and `CobolAnalyzerAgent`
+
+### Fixed
+- **`_runId` Bug** — Three converter agents never assigned `_runId` in one or both constructors
+- **`ModelCapabilities` namespace collision** — Fully qualified to resolve collision with `GitHub.Copilot.SDK.ModelCapabilities`
+- **Missing `GitHubCopilotSDK` endpoint validation** — Valid SDK configs were being rejected
+- **Portal AI blocked by Entra ID** — Prompt Studio Phase 3 now supports `DefaultAzureCredential` and `gh auth token`
+- **Temperature not written to portal config** — Respects per-model auto-detection via `ModelCapabilities`
+- **XSS protection** — HTML-escapes API-supplied model names before DOM insertion
+- **URL validation** — Client-side (HTTPS) and server-side (`Uri.TryCreate`) for Azure endpoints
+
+### Security
+- API keys in setup modal stored server-side only (env vars + gitignored config), never in browser storage
+- Azure ARM API calls use separate `management.azure.com` token scope
+
+## [2.5.0] - 2026-03-05
 
 ### Added
 - **Business Logic Persistence** — `ReverseEngineeringProcess` and `ChunkedReverseEngineeringProcess` now persist extracted `BusinessLogic` records to a new `business_logic` SQLite table via `IMigrationRepository.SaveBusinessLogicAsync`. Added `GetBusinessLogicAsync` and `DeleteBusinessLogicAsync` to `IMigrationRepository`, `SqliteMigrationRepository`, and `HybridMigrationRepository`.

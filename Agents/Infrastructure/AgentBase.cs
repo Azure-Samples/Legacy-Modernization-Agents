@@ -30,6 +30,15 @@ public abstract class AgentBase
     protected string ProviderName =>
         ChatClient is CopilotChatClient ? "GitHub Copilot" : "Azure OpenAI";
 
+    /// <summary>Detected capabilities of the configured model (family, reasoning strategy, etc.).</summary>
+    protected ModelCapabilities Capabilities { get; }
+
+    /// <summary>The model profile controlling reasoning effort tiers and token limits.</summary>
+    protected ModelProfileSettings Profile { get; }
+
+    // Pre-compiled config-driven indicator regexes (built at construction)
+    private readonly List<(Regex regex, int weight)> _compiledIndicators;
+
     /// <summary>
     /// Initializes a new instance using Chat Completions API (for chat models like gpt-5.1-chat).
     /// </summary>
@@ -50,6 +59,14 @@ public abstract class AgentBase
         RateLimiter = rateLimiter;
         Settings = settings;
         UseResponsesApi = false;
+        Capabilities = ModelCapabilities.Detect(modelId);
+        Profile = settings?.ModelProfile ?? new ModelProfileSettings();
+        ContentAwareReasoning.ClampProfileToModel(Profile, Capabilities);
+        _compiledIndicators = ContentAwareReasoning.CompileIndicators(Profile);
+
+        logger.LogInformation(
+            "[{Agent}] IChatClient path: model={Model}, family={Family}, reasoning={Reasoning}",
+            GetType().Name, modelId, Capabilities.Family, Capabilities.Reasoning);
     }
 
     /// <summary>
@@ -72,6 +89,9 @@ public abstract class AgentBase
         RateLimiter = rateLimiter;
         Settings = settings;
         UseResponsesApi = true;
+        Capabilities = ModelCapabilities.Detect(modelId);
+        Profile = responsesClient.Profile;
+        _compiledIndicators = ContentAwareReasoning.CompileIndicators(Profile);
     }
 
     /// <summary>
@@ -108,7 +128,9 @@ public abstract class AgentBase
             }
             else if (ChatClient != null)
             {
-                // Use Chat Completions API for chat models
+                // Use Chat Completions API with content-aware token/reasoning optimization
+                var (maxTokens, reasoningEffort) = CalculateTokenSettings(systemPrompt, userPrompt);
+
                 var messages = new List<AIChatMessage>
                 {
                     new AIChatMessage(ChatRole.System, systemPrompt),
@@ -118,12 +140,17 @@ public abstract class AgentBase
                 var options = new ChatOptions
                 {
                     ModelId = ModelId,
-                    // NOTE: gpt-5.1-chat does NOT support custom temperature, only default (1.0)
-                    MaxOutputTokens = 16384
+                    MaxOutputTokens = maxTokens
                 };
+
+                // Apply model-specific reasoning options
+                ApplyModelSpecificOptions(options, reasoningEffort, maxTokens);
 
                 var response = await ChatClient.GetResponseAsync(messages, options);
                 responseText = ExtractResponseText(response);
+
+                // ── Truncation detection ──
+                DetectTruncation(response, responseText, maxTokens, reasoningEffort, contextIdentifier);
             }
             else
             {
@@ -268,6 +295,108 @@ public abstract class AgentBase
                     $"Reasoning exhaustion: all {maxExhaustionRetries} escalation retries AND adaptive re-chunking failed");
             }
             // ── END Reasoning exhaustion ──
+            // ── Output truncation catch (IChatClient path) ──
+            catch (OutputTruncationException otex)
+            {
+                Logger.LogWarning(
+                    "[{Agent}] Output truncated for {Context}: {Message}",
+                    AgentName, contextIdentifier, otex.Message);
+
+                EnhancedLogger?.LogBehindTheScenes("OUTPUT_TRUNCATION", "DETECTED",
+                    $"max_output_tokens={otex.MaxOutputTokens}, output={otex.OutputCharCount} chars, " +
+                    $"effort='{otex.ReasoningEffort}', signal='{otex.TruncationSignal}'", AgentName);
+
+                // Escalation loop: increase tokens and promote reasoning effort
+                var currentMaxTokens = otex.MaxOutputTokens;
+                var currentEffort = otex.ReasoningEffort;
+                var maxTruncRetries = Profile.ReasoningExhaustionMaxRetries;
+
+                for (int truncRetry = 0; truncRetry < maxTruncRetries; truncRetry++)
+                {
+                    currentMaxTokens = (int)(currentMaxTokens * Profile.ReasoningExhaustionRetryMultiplier);
+                    currentMaxTokens = Math.Min(currentMaxTokens, Profile.MaxOutputTokens);
+
+                    // Promote reasoning effort
+                    if (currentEffort == Profile.LowReasoningEffort && currentEffort != Profile.MediumReasoningEffort)
+                        currentEffort = Profile.MediumReasoningEffort;
+                    else if (currentEffort == Profile.MediumReasoningEffort && currentEffort != Profile.HighReasoningEffort)
+                        currentEffort = Profile.HighReasoningEffort;
+
+                    // Thrash guard
+                    if (currentMaxTokens >= Profile.MaxOutputTokens && currentEffort == Profile.HighReasoningEffort)
+                    {
+                        Logger.LogError(
+                            "[{Agent}] Thrash guard: already at max tokens ({Tokens}) and max effort ('{Effort}') " +
+                            "for {Context}. Moving to adaptive re-chunking.",
+                            AgentName, currentMaxTokens, currentEffort, contextIdentifier);
+                        break;
+                    }
+
+                    Logger.LogInformation(
+                        "[{Agent}] Truncation retry {Retry}/{MaxRetries} for {Context}: " +
+                        "max_output_tokens={Tokens}, effort='{Effort}'",
+                        AgentName, truncRetry + 1, maxTruncRetries,
+                        contextIdentifier, currentMaxTokens, currentEffort);
+
+                    try
+                    {
+                        var messages = new List<AIChatMessage>
+                        {
+                            new AIChatMessage(ChatRole.System, systemPrompt),
+                            new AIChatMessage(ChatRole.User, userPrompt)
+                        };
+                        var retryOptions = new ChatOptions
+                        {
+                            ModelId = ModelId,
+                            MaxOutputTokens = currentMaxTokens
+                        };
+                        ApplyModelSpecificOptions(retryOptions, currentEffort, currentMaxTokens);
+
+                        var retryResponse = await ChatClient!.GetResponseAsync(messages, retryOptions);
+                        var retryText = ExtractResponseText(retryResponse);
+
+                        // Re-check for truncation on the retry
+                        DetectTruncation(retryResponse, retryText, currentMaxTokens, currentEffort, contextIdentifier);
+
+                        EnhancedLogger?.LogBehindTheScenes("OUTPUT_TRUNCATION_RECOVERED", "SUCCESS",
+                            $"Recovered on retry {truncRetry + 1} with tokens={currentMaxTokens}, effort='{currentEffort}'",
+                            AgentName);
+
+                        ChatLogger?.LogAIResponse(AgentName, contextIdentifier, retryText);
+                        return (retryText, false, null);
+                    }
+                    catch (OutputTruncationException)
+                    {
+                        Logger.LogWarning(
+                            "[{Agent}] Still truncated after retry {Retry} with tokens={Tokens}",
+                            AgentName, truncRetry + 1, currentMaxTokens);
+                    }
+                }
+
+                // All truncation retries failed — try adaptive re-chunking
+                Logger.LogWarning(
+                    "[{Agent}] All {MaxRetries} truncation retries failed for {Context}. " +
+                    "Attempting adaptive re-chunking…",
+                    AgentName, maxTruncRetries, contextIdentifier);
+
+                EnhancedLogger?.LogBehindTheScenes("ADAPTIVE_RECHUNK", "TRIGGERED",
+                    $"Truncation retries exhausted for {contextIdentifier}. " +
+                    "Splitting input at semantic boundary and re-processing.", AgentName);
+
+                var rechunkResult = await TryAdaptiveRechunkAsync(
+                    systemPrompt, userPrompt, contextIdentifier, currentMaxTokens, currentEffort);
+
+                if (rechunkResult.HasValue)
+                    return rechunkResult.Value;
+
+                Logger.LogError(
+                    "[{Agent}] Adaptive re-chunking failed for {Context}. No further recovery possible.",
+                    AgentName, contextIdentifier);
+
+                return (string.Empty, true,
+                    $"Output truncation: all {maxTruncRetries} escalation retries AND adaptive re-chunking failed");
+            }
+            // ── END Output truncation ──
             catch (Exception ex) when (IsTransientError(ex) && attempt < maxRetries)
             {
                 lastException = ex;
@@ -863,5 +992,86 @@ ADAPTIVE RE-CHUNK INSTRUCTIONS (PART 2 of 2):
         }
         sb.AppendLine();
         return sb.ToString();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // THREE-TIER CONTENT-AWARE REASONING — delegates to ContentAwareReasoning
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Calculates optimal max_output_tokens and reasoning effort based on content complexity.
+    /// </summary>
+    protected (int maxOutputTokens, string reasoningEffort) CalculateTokenSettings(
+        string systemPrompt,
+        string userPrompt)
+    {
+        var (maxOutputTokens, reasoningEffort) = ContentAwareReasoning.CalculateTokenSettings(
+            systemPrompt, userPrompt, Profile, Capabilities, _compiledIndicators);
+
+        var cobolSource = ContentAwareReasoning.ExtractCobolSourceFromPrompt(userPrompt);
+        var complexityScore = ContentAwareReasoning.CalculateComplexityScore(cobolSource, Profile, _compiledIndicators);
+        var inputTokens = ContentAwareReasoning.EstimateTokens(systemPrompt) + ContentAwareReasoning.EstimateTokens(userPrompt);
+
+        Logger.LogInformation(
+            "[{Agent}] Token settings ({Model}/{Family}): Input ~{Input}, complexity={Score} → {Tier} " +
+            "(effort='{Effort}', multiplier={Mult:F1}×), max_output_tokens={MaxOutput}",
+            AgentName, ModelId, Capabilities.Family, inputTokens, complexityScore,
+            complexityScore >= Profile.HighThreshold ? "HIGH" :
+            complexityScore >= Profile.MediumThreshold ? "MEDIUM" : "LOW",
+            reasoningEffort,
+            complexityScore >= Profile.HighThreshold ? Profile.HighMultiplier :
+            complexityScore >= Profile.MediumThreshold ? Profile.MediumMultiplier : Profile.LowMultiplier,
+            maxOutputTokens);
+
+        return (maxOutputTokens, reasoningEffort);
+    }
+
+    /// <summary>
+    /// Applies model-specific reasoning options to ChatOptions based on detected capabilities.
+    /// </summary>
+    private void ApplyModelSpecificOptions(ChatOptions options, string reasoningEffort, int maxOutputTokens)
+    {
+        ContentAwareReasoning.ApplyModelSpecificOptions(options, reasoningEffort, maxOutputTokens, Capabilities);
+
+        if (Capabilities.Reasoning == ReasoningStrategy.ThinkingBudget)
+        {
+            Logger.LogInformation(
+                "[{Agent}] Claude thinking budget: {Budget} tokens (effort: {Effort})",
+                AgentName, ContentAwareReasoning.CalculateThinkingBudget(maxOutputTokens, reasoningEffort), reasoningEffort);
+        }
+        else if (Capabilities.Reasoning == ReasoningStrategy.EffortBased)
+        {
+            Logger.LogInformation(
+                "[{Agent}] Reasoning effort: '{Effort}' for {Model}",
+                AgentName, reasoningEffort, ModelId);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // OUTPUT TRUNCATION DETECTION — delegates to ContentAwareReasoning
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Checks a ChatResponse for truncation via FinishReason and text-based signals.
+    /// Throws <see cref="OutputTruncationException"/> if truncation is detected.
+    /// </summary>
+    private void DetectTruncation(
+        ChatResponse response,
+        string responseText,
+        int maxOutputTokens,
+        string reasoningEffort,
+        string contextIdentifier)
+    {
+        try
+        {
+            ContentAwareReasoning.DetectTruncation(response, responseText, maxOutputTokens, reasoningEffort, contextIdentifier);
+        }
+        catch (OutputTruncationException otex)
+        {
+            Logger.LogWarning(
+                "[{Agent}] {Signal} for {Context} — output truncated at {Tokens} max_output_tokens",
+                AgentName, otex.TruncationSignal, contextIdentifier, maxOutputTokens);
+            throw;
+        }
     }
 }

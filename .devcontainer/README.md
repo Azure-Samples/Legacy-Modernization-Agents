@@ -5,12 +5,10 @@ This dev container provides a fully automated development environment with all d
 ## 🚀 What's Included
 
 ### Development Tools
-- ✅ **.NET 9.0 SDK** - Latest .NET for running the migration framework
+- ✅ **.NET 10.0 SDK** - Latest .NET for running the migration framework
 - ✅ **Java 17 JDK + Maven** - For Quarkus development
 - ✅ **Docker-in-Docker** - Run Docker containers inside the dev container
 - ✅ **Azure CLI** - Manage Azure resources
-- ✅ **GitHub CLI** (`gh`) — GitHub command-line tool
-- ✅ **GitHub Copilot CLI** (`@github/copilot@latest`) — Required for GitHub Copilot SDK provider
 - ✅ **Node.js LTS** - For frontend development
 
 ### Databases
@@ -27,7 +25,6 @@ This dev container provides a fully automated development environment with all d
 ### VS Code Extensions
 - ✅ **C# Dev Kit** - .NET development support
 - ✅ **Java Extension Pack** - Java and Quarkus support
-- ✅ **Semantic Kernel** - AI orchestration support
 - ✅ **GitHub Copilot** - AI pair programming
 - ✅ **Neo4j Extension** - Query graph database from VS Code
 - ✅ **SQLite Extension** - Browse SQLite databases in VS Code
@@ -84,8 +81,6 @@ This checks:
 
 ### 4. Configure AI Endpoint (Required)
 
-#### Option A: Azure OpenAI
-
 ```bash
 # Copy the template
 cp Config/ai-config.local.env.example Config/ai-config.local.env
@@ -95,29 +90,14 @@ nano Config/ai-config.local.env
 ```
 
 Required values:
-- `AZURE_OPENAI_ENDPOINT` - Your AI endpoint URL
-- `AZURE_OPENAI_DEPLOYMENT_NAME` - Your deployment name (e.g., "gpt-5-mini-2" or "gpt-4o")
-- `AZURE_OPENAI_API_KEY` - Your API key (optional if using `az login`)
-
-#### Option B: GitHub Copilot SDK
-
-```bash
-./doctor.sh setup  # Select "GitHub Copilot SDK" when prompted
-```
-
-Or manually create `Config/ai-config.local.env`:
-```bash
-AZURE_OPENAI_SERVICE_TYPE="GitHubCopilot"
-_CHAT_MODEL="claude-sonnet-4"
-_CODE_MODEL="claude-sonnet-4"
-```
-
-Requires Copilot CLI to be authenticated: `copilot login`
+- `_MAIN_ENDPOINT` - Your Azure OpenAI endpoint URL
+- `_CODE_MODEL` / `_CHAT_MODEL` - Your deployment names (e.g., "gpt-5-mini-2" or "gpt-4o")
+- `_MAIN_API_KEY` - Your API key (optional if using `az login`)
 
 ### 5. Run Demo
 
 ```bash
-./demo.sh
+./helper-scripts/demo.sh
 ```
 
 This will:
@@ -224,7 +204,7 @@ dotnet build
 
 # Check .NET version
 dotnet --version
-# Should be 9.0.x
+# Should be 10.0.x
 ```
 
 ### Database Issues
@@ -266,7 +246,7 @@ docker-compose up -d
 
 Run `./.devcontainer/verify-setup.sh` or manually verify:
 
-- [ ] .NET 9.0 SDK installed: `dotnet --version`
+- [ ] .NET 10.0 SDK installed: `dotnet --version`
 - [ ] Java 17 installed: `java -version`
 - [ ] Docker accessible: `docker ps`
 - [ ] Neo4j running: `docker ps | grep neo4j`
@@ -305,14 +285,10 @@ When generating Java files on Windows:
 3. Add `output` folder to antivirus exclusions
 4. Monitor logs for path length warnings
 
-**See:** `/workspace/WINDOWS_COMPATIBILITY.md` for complete documentation
-
 ## 📚 Additional Resources
 
 - **Main README**: `/workspace/README.md`
 - **Architecture Docs**: See README for system diagrams
-- **Windows Compatibility**: `/workspace/WINDOWS_COMPATIBILITY.md`
-- **API Documentation**: `/workspace/McpChatWeb/README.md` (if exists)
 - **Change Log**: `/workspace/CHANGELOG.md`
 
 ## 🆘 Getting Help
