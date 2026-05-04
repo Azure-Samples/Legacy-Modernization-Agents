@@ -3,10 +3,12 @@
 
 let sigmaGraph = null;
 let astExplorer = null;
+let galaxyView = null;
 let servicesView = null;
 let architectView = null;
 let controlFlowView = null;
 let mermaidView = null;
+let migrationPlanner = null;
 
 // Rekt scan run selector
 let _currentScanRunId = 'latest';
@@ -57,7 +59,9 @@ function switchDashboard(tabName) {
     dependency: ['dependency-graph', 'graph-toolbar'],
     controlflow: ['controlflow-container'],
     mermaid: ['mermaid-container'],
+    galaxy: ['ast-galaxy-container'],
     ast: ['ast-explorer-container'],
+    migration: ['migration-planner-container'],
     portfolio: ['portfolio-container'],
     complexity: ['complexity-container'],
   };
@@ -105,12 +109,35 @@ function switchDashboard(tabName) {
   if (tabName === 'ast') {
     if (!astExplorer) {
       astExplorer = new ASTExplorer('ast-graph');
+      window.astExplorer = astExplorer;
     }
     astExplorer.loadFileList();
   }
 
+  if (tabName === 'galaxy') {
+    if (!galaxyView) {
+      galaxyView = new ASTGalaxyView('galaxy-graph');
+      window.galaxyView = galaxyView;
+    }
+    galaxyView.loadAndRender();
+  }
+
+  // Destroy galaxy when switching away to free resources
+  if (tabName !== 'galaxy' && galaxyView) {
+    galaxyView.destroy();
+    galaxyView = null;
+    window.galaxyView = null;
+  }
+
   if (tabName === 'portfolio') {
     loadPortfolioData();
+  }
+
+  if (tabName === 'migration') {
+    if (!migrationPlanner) {
+      migrationPlanner = new MigrationPlanner('mp-root');
+    }
+    migrationPlanner.loadAndRender();
   }
 
   if (tabName === 'complexity') {

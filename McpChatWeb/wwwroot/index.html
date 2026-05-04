@@ -6,6 +6,7 @@
   <title>COBOL Migration MCP Chat</title>
   <link rel="stylesheet" href="styles.css">
   <script type="text/javascript" src="https://unpkg.com/vis-network@9.1.2/standalone/umd/vis-network.min.js"></script>
+  <script src="https://unpkg.com/3d-force-graph@1.73.3/dist/3d-force-graph.min.js"></script>
   <script src="graphology.umd.min.js"></script>
   <script src="sigma.min.js"></script>
   <script src="forceatlas2.bundle.js"></script>
@@ -332,6 +333,8 @@
         <button class="dashboard-tab" data-tab="controlflow" onclick="switchDashboard('controlflow')">⚡ Control Flow</button>
         <button class="dashboard-tab" data-tab="mermaid" onclick="switchDashboard('mermaid')">📐 Diagrams</button>
         <button class="dashboard-tab" data-tab="ast" onclick="switchDashboard('ast')">🔬 AST Explorer</button>
+        <button class="dashboard-tab" data-tab="galaxy" onclick="switchDashboard('galaxy')">🌌 AST Galaxy</button>
+        <button class="dashboard-tab" data-tab="migration" onclick="switchDashboard('migration')">🎯 Migration Planner</button>
         <button class="dashboard-tab" data-tab="portfolio" onclick="switchDashboard('portfolio')">Portfolio</button>
         <button class="dashboard-tab" data-tab="complexity" onclick="switchDashboard('complexity')">Readiness</button>
         <span style="margin-left:auto; display:flex; align-items:center; gap:6px;">
@@ -565,6 +568,66 @@
         <div id="mermaid-content" style="width: 100%; height: calc(100% - 42px); overflow: auto; padding: 16px; background: #0c1222;"></div>
       </div>
 
+      <!-- AST Galaxy — multi-file RAW AST view for all programs (hidden by default) -->
+      <div id="ast-galaxy-container" class="dashboard-panel" style="display: none;">
+        <div id="galaxy-controls" style="padding: 8px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; background: rgba(15,23,42,0.8); border-bottom: 1px solid #334155;">
+          <select id="galaxy-file-filter" onchange="galaxyView?.setFilter(this.value)" style="flex: 1; max-width: 200px; padding: 6px; background: #1e293b; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; font-size: 13px;">
+            <option value="all">All files</option>
+          </select>
+          <select id="galaxy-view-mode" onchange="galaxyView?.setViewMode(this.value)" style="padding: 6px; background: #1e293b; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; font-size: 13px;">
+            <option value="clustered">📦 Technical</option>
+            <option value="expanded">📦 Technical (Expanded)</option>
+            <option value="expanded-v2">🔽 Technical (Expanded v2 — Top-Down)</option>
+            <option value="business">🏢 Business Domains</option>
+            <option value="business-expanded">🏢 Business Domains (Expanded)</option>
+            <option value="service-catalog">📋 Service Catalog</option>
+            <option value="service-catalog-expanded">📋 Service Catalog (Expanded)</option>
+            <option value="service-catalog-expanded-3d">🧊 Service Catalog (Expanded 3D)</option>
+            <option value="service-catalog-v2">🚀 Service Catalog v2</option>
+            <option value="service-catalog-v3">🎯 Modernization Radar</option>
+          </select>
+          <select id="galaxy-show-filter" onchange="galaxyView?.setShowFilter(this.value)" style="padding: 6px; background: #1e293b; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; font-size: 13px;">
+            <option value="all">Show: All</option>
+            <option value="programs">Programs Only</option>
+            <option value="copybooks">Copybooks Only</option>
+            <option value="sql-heavy">SQL-Heavy</option>
+            <option value="call-heavy">CALL-Heavy</option>
+            <option value="perform-heavy">PERFORM-Heavy</option>
+            <option value="complex">High Complexity</option>
+            <option value="simple">Low Complexity</option>
+          </select>
+          <select id="galaxy-sort-mode" onchange="galaxyView?.setSortMode(this.value)" style="padding: 6px; background: #1e293b; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; font-size: 13px;">
+            <option value="name">Sort: Name</option>
+            <option value="loc">Sort: LOC ↓</option>
+            <option value="complexity">Sort: Complexity ↓</option>
+            <option value="sql">Sort: SQL Count ↓</option>
+            <option value="calls">Sort: CALLs ↓</option>
+            <option value="sections">Sort: Sections ↓</option>
+            <option value="connections">Sort: Connections ↓</option>
+          </select>
+          <input type="text" id="galaxy-search" placeholder="Search..." oninput="galaxyView?.search(this.value)" style="width: 160px; padding: 6px 10px; background: #1e293b; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; font-size: 13px;">
+          <button id="galaxy-3d-btn" onclick="galaxyView?.toggle3D()" class="btn-small" title="Toggle 3D view">🧊 3D</button>
+          <button id="galaxy-fullscreen-btn" onclick="galaxyView?.toggleFullscreen()" class="btn-small" title="Toggle fullscreen">⛶ Full</button>
+          <button onclick="galaxyView?.refresh()" class="btn-small">↻</button>
+        </div>
+        <div id="galaxy-stats-bar" style="padding: 4px 12px; background: rgba(15,23,42,0.6); border-bottom: 1px solid #1e293b; font-size: 12px; color: #94a3b8; display: flex; gap: 12px; align-items: center;"></div>
+        <div id="galaxy-body" style="display: flex; height: calc(100% - 78px);">
+          <div id="galaxy-graph" style="flex: 5; min-width: 0; overflow: hidden; position: relative;"></div>
+          <div id="galaxy-3d-container" style="flex: 1; min-width: 0; overflow: hidden; position: relative; display: none; background: #0a0e1a;"></div>
+          <div id="galaxy-side" style="display:flex; width: 420px; min-width: 320px; max-width: 500px; flex-shrink: 0;">
+            <div id="galaxy-source-panel" style="flex: 1; min-width: 0; overflow-y: auto; background: #0c1222; border-left: 1px solid #334155; border-right: 1px solid #334155;">
+              <div class="source-placeholder"><span class="source-icon">🌌</span><span>Click a node to view details</span><span class="source-hint">Double-click a program to expand its AST</span></div>
+            </div>
+            <div id="galaxy-node-inspector" style="width: 220px; min-width: 180px; background: #0f172a; padding: 12px; overflow-y: auto; font-size: 13px; color: #cbd5e1;">
+              <h4 style="margin: 0 0 8px; color: #60a5fa;">Inspector</h4>
+              <div id="galaxy-inspector-content">
+                <div id="galaxy-legend"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- AST Explorer — deep single-file view (hidden by default) -->
       <div id="ast-explorer-container" class="dashboard-panel" style="display: none;">
         <div id="ast-controls" style="padding: 8px; display: flex; gap: 8px; align-items: center; background: rgba(15,23,42,0.8); border-bottom: 1px solid #334155;">
@@ -633,6 +696,11 @@
           <h4 style="color: #60a5fa; margin: 8px 0;">Critical Files (by connection count)</h4>
           <div id="portfolio-critical-files" style="font-size: 13px; color: #cbd5e1;"></div>
         </div>
+      </div>
+
+      <!-- Migration Planner — sortable, sliceable migration strategy report (hidden by default) -->
+      <div id="migration-planner-container" class="dashboard-panel" style="display: none;">
+        <div id="mp-root" style="height:100%; overflow:auto; display:flex; flex-direction:column; background:#0a0e1a;"></div>
       </div>
 
       <!-- Complexity / Readiness (hidden by default) -->
@@ -1375,10 +1443,13 @@ curl http://localhost:5028/api/data-retrieval-guide</code></pre>
   <script src="run-selector.js"></script>
   <script src="graph.js"></script>
   <script src="ast-explorer.js"></script>
+  <script src="ast-galaxy.js?v=20260504f"></script>
   <script src="services-view.js"></script>
   <script src="controlflow-view.js"></script>
   <script src="mermaid-view.js"></script>
-  <script src="dashboard-tabs.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="migration-planner.js?v=20260504h"></script>
+  <script src="dashboard-tabs.js?v=20260504f"></script>
   <script src="main.js"></script>
   <script src="runs-viewer.js"></script>
   <script src="activity-dashboard.js"></script>

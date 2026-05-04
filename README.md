@@ -1226,6 +1226,8 @@ See [Parallel Jobs Formula](#parallel-jobs-formula) for chunking configuration d
 
 Collaboration between Microsoft's Global Black Belt team and [Bankdata](https://www.bankdata.dk/). See [blog post](https://aka.ms/cobol-blog).
 
+Special thanks to [**avishek-sen-gupta/cobol-rekt**](https://github.com/avishek-sen-gupta/cobol-rekt) ([MIT-licensed](https://github.com/avishek-sen-gupta/cobol-rekt?tab=MIT-1-ov-file)) for inspiration on the static-analysis pipeline (AST, CFG, and data-flow extraction) that powers the AST Galaxy, AST Explorer, and Migration Planner views in this project.
+
 ## License
 
 MIT License - Copyright (c) Microsoft Corporation.

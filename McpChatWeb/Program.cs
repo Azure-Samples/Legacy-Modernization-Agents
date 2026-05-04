@@ -170,8 +170,19 @@ app.UseStaticFiles();
 
 app.MapGet("/api/resources", async (IMcpClient client, CancellationToken cancellationToken) =>
 {
-	var resources = await client.ListResourcesAsync(cancellationToken);
-	return Results.Ok(resources);
+	try
+	{
+		var resources = await client.ListResourcesAsync(cancellationToken);
+		return Results.Ok(resources);
+	}
+	catch (Exception ex)
+	{
+		// MCP subprocess can fail to launch in environments where the dotnet CLI or the MCP
+		// assembly path can't be resolved. Return an empty list instead of a 500 so the UI
+		// keeps working — the resources panel just shows nothing rather than spamming errors.
+		Console.WriteLine($"⚠️ /api/resources: MCP unavailable ({ex.Message}) — returning empty list");
+		return Results.Ok(new { resources = Array.Empty<object>(), error = ex.Message });
+	}
 });
 
 app.MapPost("/api/tools/call", async (ToolCallRequest request, IMcpClient client, CancellationToken cancellationToken) =>
@@ -1207,22 +1218,30 @@ app.MapGet("/api/graph/stats", async (CancellationToken cancellationToken) =>
 		using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
 		await using var session = driver.AsyncSession();
 
+		// Latest-run-per-file dedupe — each file appears once with its most recent scan data.
 		var result = await session.RunAsync(@"
-			MATCH (f:CobolFile)
+			MATCH (f0:CobolFile)
+			WITH f0.fileName AS fn, max(coalesce(f0.runId, 0)) AS _r
+			MATCH (f:CobolFile) WHERE f.fileName = fn AND coalesce(f.runId, 0) = _r
 			WITH count(f) AS totalFiles,
 			     sum(CASE WHEN f.isCopybook = false OR f.isCopybook IS NULL THEN 1 ELSE 0 END) AS programs,
 			     sum(CASE WHEN f.isCopybook = true THEN 1 ELSE 0 END) AS copybooks,
 			     sum(COALESCE(f.lineCount, 0)) AS totalLoc
 			OPTIONAL MATCH ()-[d:DEPENDS_ON]->()
-			WITH totalFiles, programs, copybooks, totalLoc, count(d) AS deps
-			OPTIONAL MATCH (a:ASTNode)
+			WITH totalFiles, programs, copybooks, totalLoc, count(DISTINCT d) AS deps
+			OPTIONAL MATCH (a0:ASTNode) WHERE a0.program IS NOT NULL
+			WITH totalFiles, programs, copybooks, totalLoc, deps,
+			     a0.program AS prog, max(coalesce(a0.runId, 0)) AS _ar
+			OPTIONAL MATCH (a:ASTNode) WHERE a.program = prog AND coalesce(a.runId, 0) = _ar
 			WITH totalFiles, programs, copybooks, totalLoc, deps, count(a) AS astNodes
 			RETURN programs, copybooks, totalLoc, deps, astNodes");
 		var record = await result.SingleAsync();
 
-		// Critical files by degree
+		// Critical files by degree — latest-run-per-file
 		var critResult = await session.RunAsync(@"
-			MATCH (f:CobolFile)
+			MATCH (f0:CobolFile)
+			WITH f0.fileName AS fn, max(coalesce(f0.runId, 0)) AS _r
+			MATCH (f:CobolFile) WHERE f.fileName = fn AND coalesce(f.runId, 0) = _r
 			WITH f, size([(f)-[]-() | 1]) AS degree
 			ORDER BY degree DESC LIMIT 20
 			RETURN f.fileName AS name, degree AS connections, f.lineCount AS lineCount");
@@ -1293,10 +1312,13 @@ app.MapGet("/api/graph/complexity", async (CancellationToken cancellationToken) 
 		using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
 		await using var session = driver.AsyncSession();
 
-		// Get per-file complexity based on dependency count and line count
+		// Per-file complexity — latest-run-per-file so every file is visible exactly once.
 		var result = await session.RunAsync(@"
+			MATCH (f0:CobolFile)
+			WITH f0.fileName AS fn, max(coalesce(f0.runId, 0)) AS _r
 			MATCH (f:CobolFile)
-			WHERE f.isCopybook IS NULL OR f.isCopybook = false
+			WHERE f.fileName = fn AND coalesce(f.runId, 0) = _r
+			  AND (f.isCopybook IS NULL OR f.isCopybook = false)
 			WITH f, size([(f)-[]-() | 1]) AS degree, COALESCE(f.lineCount, 0) AS loc
 			RETURN f.fileName AS name,
 			       loc,
@@ -1735,13 +1757,19 @@ app.MapGet("/api/graph/rekt/structure", async (string file, CancellationToken ca
 
 		foreach (var candidate in candidates)
 		{
-			// Get sections with paragraph children and aggregated statement stats
+			// Latest-run-per-program — picks the most recent scan that contains this file.
 			var result = await session.RunAsync(@"
+				MATCH (a0:ASTNode {program: $file})
+				WITH max(coalesce(a0.runId, 0)) AS _r
 				MATCH (root:ASTNode {program: $file})-[:CONTAINS*1..2]->(sec:ASTNode)
-				WHERE sec.nodeType IN ['SECTION', 'PARAGRAPHS']
+				WHERE coalesce(root.runId, 0) = _r
+				  AND coalesce(sec.runId, 0) = _r
+				  AND sec.nodeType IN ['SECTION', 'PARAGRAPHS']
 				OPTIONAL MATCH (sec)-[:CONTAINS*1..2]->(para:ASTNode)
 				WHERE para.nodeType IN ['PARAGRAPH', 'PARAGRAPH_NAME']
+				  AND coalesce(para.runId, 0) = _r
 				OPTIONAL MATCH (para)-[:CONTAINS*]->(stmt:ASTNode)
+				WHERE coalesce(stmt.runId, 0) = _r
 				WITH sec, para,
 				     count(stmt) AS stmtCount,
 				     count(CASE WHEN stmt.nodeType IN ['DIALECT', 'DIALECT_CONTAINER'] THEN 1 END) AS sqlCount,
@@ -1783,13 +1811,16 @@ app.MapGet("/api/graph/rekt/structure", async (string file, CancellationToken ca
 		if (matchedProgram == null)
 			return Results.NotFound(new { error = $"No structure data for {file}" });
 
-		// Get PERFORM edges between paragraphs (control flow)
+		// PERFORM edges between paragraphs (control flow) — latest-run-per-program
 		var performEdges = new List<object>();
 		var cfgResult = await session.RunAsync(@"
+			MATCH (a0:ASTNode {program: $file})
+			WITH max(coalesce(a0.runId, 0)) AS _r
 			MATCH (a:ASTNode {program: $file})-[:CONTAINS*]->(p:ASTNode {nodeType: 'PERFORM'})
-			WHERE p.name IS NOT NULL AND p.name <> ''
+			WHERE coalesce(a.runId, 0) = _r AND coalesce(p.runId, 0) = _r
+			  AND p.name IS NOT NULL AND p.name <> ''
 			OPTIONAL MATCH (caller:ASTNode {program: $file})
-			WHERE caller.nodeType = 'PARAGRAPH' AND
+			WHERE caller.nodeType = 'PARAGRAPH' AND coalesce(caller.runId, 0) = _r AND
 			      (a)-[:CONTAINS*]->(caller)-[:CONTAINS*]->(p)
 			RETURN DISTINCT caller.name AS caller, p.name AS target, p.label AS label
 			ORDER BY caller.name",
@@ -2233,9 +2264,12 @@ app.MapGet("/api/graph/rekt/cfg", async (string file, CancellationToken cancella
 
 		foreach (var candidate in candidates)
 		{
-			// 1. Get flow nodes (nodes connected by FOLLOWED_BY / JUMPS_TO)
+			// 1. Get flow nodes — latest-run-per-program for this file
 			var flowNodeResult = await session.RunAsync(@"
+				MATCH (a0:ASTNode {program: $file})
+				WITH max(coalesce(a0.runId, 0)) AS _r
 				MATCH (a:ASTNode {program: $file})-[:FOLLOWED_BY|JUMPS_TO]-(b:ASTNode {program: $file})
+				WHERE coalesce(a.runId, 0) = _r AND coalesce(b.runId, 0) = _r
 				WITH collect(DISTINCT a) + collect(DISTINCT b) AS allNodes
 				UNWIND allNodes AS n
 				WITH DISTINCT n
@@ -2264,12 +2298,16 @@ app.MapGet("/api/graph/rekt/cfg", async (string file, CancellationToken cancella
 
 			if (nodes.Count == 0) continue;
 
-			// 2. Get children of flow nodes (statements inside sections/paragraphs)
+			// 2. Get children of flow nodes — latest-run-per-program
 			var childResult = await session.RunAsync(@"
+				MATCH (a0:ASTNode {program: $file})
+				WITH max(coalesce(a0.runId, 0)) AS _r
 				MATCH (parent:ASTNode {program: $file})-[:FOLLOWED_BY|JUMPS_TO]-(:ASTNode {program: $file})
-				WITH DISTINCT parent
+				WHERE coalesce(parent.runId, 0) = _r
+				WITH DISTINCT parent, _r
 				MATCH (parent)-[:CONTAINS]->(child:ASTNode {program: $file})
-				WHERE NOT child.nodeType IN ['SENTENCE', 'PARAGRAPHS', 'PARAGRAPH_NAME', 'SECTION_HEADER']
+				WHERE coalesce(child.runId, 0) = _r
+				  AND NOT child.nodeType IN ['SENTENCE', 'PARAGRAPHS', 'PARAGRAPH_NAME', 'SECTION_HEADER']
 				RETURN child.id AS id, child.nodeType AS nodeType, child.name AS name,
 				       child.startLine AS startLine, child.endLine AS endLine,
 				       child.originalText AS originalText,
@@ -2336,6 +2374,176 @@ app.MapGet("/api/graph/rekt/cfg", async (string file, CancellationToken cancella
 	}
 });
 
+// ── AST Galaxy — batch multi-file overview for portfolio visualization ──
+app.MapGet("/api/graph/rekt/galaxy", async (int? scanRunId, CancellationToken cancellationToken) =>
+{
+	try
+	{
+		var rektUri = Environment.GetEnvironmentVariable("REKT_NEO4J_URI") ?? "bolt://localhost:7688";
+		var rektUser = Environment.GetEnvironmentVariable("REKT_NEO4J_USER") ?? "neo4j";
+		var rektPassword = Environment.GetEnvironmentVariable("REKT_NEO4J_PASSWORD") ?? "cobol-rekt-2026";
+
+		using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
+		await using var session = driver.AsyncSession();
+
+		// Single-pass aggregation: one scan of ASTNode with conditional counts.
+		// Latest-run-per-program for AST data so duplicate scan trees never inflate counts;
+		// latest-run-per-file for the CobolFile lookup so the join stays 1:1.
+		var progResult = await session.RunAsync(@"
+			MATCH (a0:ASTNode) WHERE a0.program IS NOT NULL
+			WITH a0.program AS program, max(coalesce(a0.runId, 0)) AS _astRun
+			MATCH (a:ASTNode) WHERE a.program = program AND coalesce(a.runId, 0) = _astRun
+			WITH program,
+			     count(a) AS nodeCount,
+			     count(CASE WHEN a.nodeType IN ['SECTION', 'PARAGRAPHS'] THEN 1 END) AS sectionCount,
+			     count(CASE WHEN a.nodeType = 'PARAGRAPH' THEN 1 END) AS paraCount,
+			     count(CASE WHEN a.nodeType IN ['DIALECT', 'DIALECT_CONTAINER'] THEN 1 END) AS sqlCount,
+			     count(CASE WHEN a.nodeType IN ['CALL', 'CallStatement'] THEN 1 END) AS callCount,
+			     count(CASE WHEN a.nodeType = 'PERFORM' THEN 1 END) AS performCount,
+			     count(CASE WHEN a.nodeType IN ['IF_BRANCH', 'EVALUATE'] THEN 1 END) AS branchCount
+			CALL {
+			    WITH program
+			    OPTIONAL MATCH (f0:CobolFile) WHERE f0.fileName = replace(program, 'flow-ast-', '')
+			    WITH max(coalesce(f0.runId, 0)) AS _fr, replace(program, 'flow-ast-', '') AS fn
+			    OPTIONAL MATCH (f:CobolFile) WHERE f.fileName = fn AND coalesce(f.runId, 0) = _fr
+			    RETURN coalesce(f.lineCount, 0) AS lineCount,
+			           coalesce(f.isCopybook, false) AS isCopybook
+			    LIMIT 1
+			}
+			RETURN program, nodeCount, sectionCount, paraCount, sqlCount, callCount,
+			       performCount, branchCount, lineCount, isCopybook
+			ORDER BY program");
+
+		var programs = new List<object>();
+		await progResult.ForEachAsync(r => programs.Add(new
+		{
+			program = r["program"].As<string>(),
+			nodeCount = r["nodeCount"].As<int>(),
+			sectionCount = r["sectionCount"].As<int>(),
+			paraCount = r["paraCount"].As<int>(),
+			sqlCount = r["sqlCount"].As<int>(),
+			callCount = r["callCount"].As<int>(),
+			performCount = r["performCount"].As<int>(),
+			branchCount = r["branchCount"].As<int>(),
+			lineCount = r["lineCount"].As<int>(),
+			isCopybook = r["isCopybook"].As<bool>()
+		}));
+
+		// Inter-program dependency edges
+		var edges = new List<object>();
+		try
+		{
+			var edgeResult = await session.RunAsync(@"
+				MATCH (a:CobolFile)-[d:DEPENDS_ON]->(b:CobolFile)
+				RETURN DISTINCT a.fileName AS source, b.fileName AS target,
+				       COALESCE(d.type, 'DEPENDS_ON') AS depType");
+			await edgeResult.ForEachAsync(r => edges.Add(new
+			{
+				source = r["source"].As<string>(),
+				target = r["target"].As<string>(),
+				type = r["depType"].As<string>()
+			}));
+		}
+		catch { /* edges are optional — CobolFile nodes may not exist */ }
+
+		return Results.Ok(new { programs, edges });
+	}
+	catch (Exception ex)
+	{
+		Console.WriteLine($"⚠️ Galaxy endpoint: {ex.Message}");
+		return Results.Ok(new { programs = Array.Empty<object>(), edges = Array.Empty<object>() });
+	}
+});
+
+// ── AST Galaxy batch — returns structural AST nodes for ALL programs at once ──
+app.MapGet("/api/graph/rekt/galaxy-ast", async (int? scanRunId, CancellationToken cancellationToken) =>
+{
+	try
+	{
+		var rektUri = Environment.GetEnvironmentVariable("REKT_NEO4J_URI") ?? "bolt://localhost:7688";
+		var rektUser = Environment.GetEnvironmentVariable("REKT_NEO4J_USER") ?? "neo4j";
+		var rektPassword = Environment.GetEnvironmentVariable("REKT_NEO4J_PASSWORD") ?? "cobol-rekt-2026";
+
+		using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
+		await using var session = driver.AsyncSession();
+
+		// Get key structural nodes across ALL programs (skip low-level SENTENCE/GENERIC nodes for performance).
+		// Latest-run-per-program so the same program isn't returned with multiple AST trees.
+		var nodeResult = await session.RunAsync(@"
+			MATCH (a0:ASTNode) WHERE a0.program IS NOT NULL
+			WITH a0.program AS program, max(coalesce(a0.runId, 0)) AS _r
+			MATCH (a:ASTNode)
+			WHERE a.program = program AND coalesce(a.runId, 0) = _r
+			  AND a.nodeType IN ['SECTION', 'PARAGRAPHS', 'PARAGRAPH', 'PARAGRAPH_NAME',
+			                     'PERFORM', 'CALL', 'CallStatement', 'IF_BRANCH', 'EVALUATE',
+			                     'DIALECT', 'DIALECT_CONTAINER', 'MOVE', 'COMPUTE', 'DISPLAY',
+			                     'EXIT', 'PROCEDURE_DIVISION_BODY']
+			RETURN a.id AS id, a.nodeType AS nodeType, a.name AS name,
+			       a.startLine AS startLine, a.endLine AS endLine,
+			       a.program AS program
+			ORDER BY a.program, a.startLine");
+
+		var nodes = new List<object>();
+		await nodeResult.ForEachAsync(r => nodes.Add(new
+		{
+			id = r["id"].As<string>(),
+			nodeType = r["nodeType"].As<string?>() ?? "",
+			name = r["name"].As<string?>() ?? "",
+			startLine = r["startLine"].As<int?>() ?? 0,
+			endLine = r["endLine"].As<int?>() ?? 0,
+			program = r["program"].As<string>()
+		}));
+
+		// Edges between latest-run nodes only (drop edges that would cross runs)
+		var edgeResult = await session.RunAsync(@"
+			MATCH (a0:ASTNode) WHERE a0.program IS NOT NULL
+			WITH a0.program AS program, max(coalesce(a0.runId, 0)) AS _r
+			MATCH (a:ASTNode)-[r:CONTAINS|FOLLOWED_BY|JUMPS_TO]->(b:ASTNode)
+			WHERE a.program = program AND b.program = program
+			  AND coalesce(a.runId, 0) = _r AND coalesce(b.runId, 0) = _r
+			  AND a.nodeType IN ['SECTION', 'PARAGRAPHS', 'PARAGRAPH', 'PARAGRAPH_NAME',
+			                     'PERFORM', 'CALL', 'CallStatement', 'IF_BRANCH', 'EVALUATE',
+			                     'DIALECT', 'DIALECT_CONTAINER', 'MOVE', 'COMPUTE', 'DISPLAY',
+			                     'EXIT', 'PROCEDURE_DIVISION_BODY']
+			  AND b.nodeType IN ['SECTION', 'PARAGRAPHS', 'PARAGRAPH', 'PARAGRAPH_NAME',
+			                     'PERFORM', 'CALL', 'CallStatement', 'IF_BRANCH', 'EVALUATE',
+			                     'DIALECT', 'DIALECT_CONTAINER', 'MOVE', 'COMPUTE', 'DISPLAY',
+			                     'EXIT', 'PROCEDURE_DIVISION_BODY']
+			RETURN a.id AS source, b.id AS target, type(r) AS type");
+
+		var edges = new List<object>();
+		await edgeResult.ForEachAsync(r => edges.Add(new
+		{
+			source = r["source"].As<string>(),
+			target = r["target"].As<string>(),
+			type = r["type"].As<string>()
+		}));
+
+		// Inter-program edges
+		try
+		{
+			var depResult = await session.RunAsync(@"
+				MATCH (a:CobolFile)-[d:DEPENDS_ON]->(b:CobolFile)
+				RETURN DISTINCT a.fileName AS source, b.fileName AS target,
+				       COALESCE(d.type, 'DEPENDS_ON') AS depType");
+			await depResult.ForEachAsync(r => edges.Add(new
+			{
+				source = "prog__" + r["source"].As<string>(),
+				target = "prog__" + r["target"].As<string>(),
+				type = r["depType"].As<string>()
+			}));
+		}
+		catch { }
+
+		return Results.Ok(new { nodes, edges, totalPrograms = nodes.Select(n => ((dynamic)n).program).Distinct().Count() });
+	}
+	catch (Exception ex)
+	{
+		Console.WriteLine($"⚠️ Galaxy-AST endpoint: {ex.Message}");
+		return Results.Ok(new { nodes = Array.Empty<object>(), edges = Array.Empty<object>(), totalPrograms = 0 });
+	}
+});
+
 app.MapGet("/api/graph/rekt/ast", async (string file, CancellationToken cancellationToken) =>
 {
 	try
@@ -2355,8 +2563,12 @@ app.MapGet("/api/graph/rekt/ast", async (string file, CancellationToken cancella
 
 		foreach (var candidate in candidates)
 		{
+			// Latest-run-per-program for this single file
 			var nodeResult = await session.RunAsync(@"
+				MATCH (a0:ASTNode {program: $file})
+				WITH max(coalesce(a0.runId, 0)) AS _r
 				MATCH (a:ASTNode {program: $file})
+				WHERE coalesce(a.runId, 0) = _r
 				RETURN a.id AS id, a.nodeType AS nodeType, a.label AS label,
 				       a.originalText AS originalText, a.startLine AS startLine,
 				       a.endLine AS endLine, a.name AS name,
@@ -2382,7 +2594,10 @@ app.MapGet("/api/graph/rekt/ast", async (string file, CancellationToken cancella
 		if (matchedProgram != null)
 		{
 			var edgeResult = await session.RunAsync(@"
+				MATCH (a0:ASTNode {program: $file})
+				WITH max(coalesce(a0.runId, 0)) AS _r
 				MATCH (a:ASTNode {program: $file})-[r:CONTAINS|FOLLOWED_BY|JUMPS_TO]->(b:ASTNode {program: $file})
+				WHERE coalesce(a.runId, 0) = _r AND coalesce(b.runId, 0) = _r
 				RETURN a.id AS source, b.id AS target, type(r) AS type",
 				new { file = matchedProgram });
 

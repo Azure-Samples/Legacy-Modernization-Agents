@@ -420,10 +420,20 @@ class ASTExplorer {
     const sourceEl = document.getElementById('ast-source-panel');
     if (sourceEl) sourceEl.innerHTML = '<div class="source-placeholder">Click a node to view its source code</div>';
 
+    // Whitelist of valid endpoint names — guards against unknown viewModes that
+    // would otherwise hit the SPA fallback (HTML 200) and break JSON.parse.
+    const validModes = new Set(['ast', 'cfg', 'structure']);
+    const mode = validModes.has(this.viewMode) ? this.viewMode : 'ast';
+
     try {
-      const endpoint = `/api/graph/rekt/${this.viewMode}?file=${encodeURIComponent(fileName)}`;
+      const endpoint = `/api/graph/rekt/${mode}?file=${encodeURIComponent(fileName)}`;
       const resp = await fetch(endpoint);
-      if (!resp.ok) { container.innerHTML = `<div class="ast-empty">No ${this.viewMode.toUpperCase()} data for ${this._escHtml(fileName)}</div>`; return; }
+      if (!resp.ok) { container.innerHTML = `<div class="ast-empty">No ${mode.toUpperCase()} data for ${this._escHtml(fileName)}</div>`; return; }
+      const ct = resp.headers.get('content-type') || '';
+      if (!ct.includes('application/json')) {
+        container.innerHTML = `<div class="ast-empty">Endpoint ${endpoint} returned non-JSON (${ct || 'unknown'}).</div>`;
+        return;
+      }
       const graphData = await resp.json();
       this.renderVisNetwork(graphData, container);
     } catch (e) { container.innerHTML = `<div class="ast-error">Error: ${e.message}</div>`; }
@@ -526,9 +536,12 @@ class ASTExplorer {
       }
     }
     this.currentFile = select?.value || fileName;
-    this.viewMode = 'structure';
+    // 'raw' is not a real endpoint — the dropdown only has 'structure' and 'ast'.
+    // Using 'raw' caused /api/graph/rekt/raw to fall through to the SPA index.html
+    // (HTTP 200, text/html), which then crashed JSON.parse with "Unexpected token '<'".
+    this.viewMode = 'ast';
     const modeSelect = document.getElementById('ast-view-mode');
-    if (modeSelect) modeSelect.value = 'structure';
+    if (modeSelect) modeSelect.value = 'ast';
     this.loadView(this.currentFile);
   }
 

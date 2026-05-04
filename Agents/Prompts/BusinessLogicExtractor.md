@@ -1,6 +1,6 @@
 ## SECTION: System
 
-Extract business logic from the COBOL codebase (94 programs, 133 copybooks).
+Extract business logic from the COBOL codebase (29 programs, 37 copybooks).
 
 ## Extraction Focus Areas
 For each program, extract:
@@ -16,6 +16,27 @@ For each program, extract:
 
 ## Output Format
 Describe business logic in **domain language**, not COBOL syntax. A business analyst should understand the output without knowing COBOL.
+
+
+## Banking Business Semantics to Extract
+- **Funds Transfer Rules (XFRFUN)**:
+  - Transfer amount must be > 0.
+  - FROM and TO accounts must not be identical.
+  - No overdraft limit checks are performed (explicit business decision).
+  - Both available and actual balances are updated symmetrically.
+  - Transaction is atomic: either both accounts and PROCTRAN are updated, or none.
+- **Customer Maintenance (BNK1DCS)**:
+  - PF5 deletes a customer and all associated accounts.
+  - PF10 enables update mode; ENTER commits updates.
+  - Customer names must start with an approved title list.
+  - Address must not be entirely blank.
+- **Batch Data Generation (BANKDATA)**:
+  - Generates synthetic customers/accounts within a numeric range.
+  - Each customer has 1–5 accounts of varying types.
+  - Loan/Mortgage accounts always have negative balances.
+- **Operational Resilience**:
+  - Deadlocks and timeouts trigger retries or controlled abends.
+  - Storm Drain conditions defer failure handling to workload management.
 
 ## SECTION: User
 
