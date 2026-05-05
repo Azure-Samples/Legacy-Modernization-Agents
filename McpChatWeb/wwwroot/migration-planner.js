@@ -35,6 +35,17 @@ class MigrationPlanner {
     // Wave sizes
     this.waveSizes = { w1: 8, w2: 12 }; // remaining → wave 3
 
+    // Replatform recommender — when refactor cost is too high, suggest
+    // hosting the COBOL on a managed runtime (e.g. Micro Focus / OpenText
+    // Enterprise Server, Heirloom, Raincode, GnuCOBOL on Linux, AWS
+    // Blu Insights) instead of rewriting in Java.
+    this.replatform = {
+      enabled: true,
+      easeThreshold: 25,        // ease ≤ this → flag as replatform candidate
+      locThreshold: 5000,       // OR loc ≥ this
+      criticalityThreshold: 30, // OR criticality ≥ this
+    };
+
     this._lastBuilt = null;
     this._workbookOpen = false;
     this._workbookActiveSheet = null;
@@ -48,18 +59,30 @@ class MigrationPlanner {
   async loadAndRender() {
     const root = document.getElementById(this.rootId);
     if (!root) return;
+    const scanId = (typeof _currentScanRunId !== 'undefined') ? _currentScanRunId : 'latest';
+    // If the active scan run changed since the last fetch, drop the cache.
+    if (this._scanRunIdAtFetch !== undefined && this._scanRunIdAtFetch !== scanId) {
+      this.programs = [];
+      this.edges = [];
+      this._allRowsForBounds = null;
+    }
     if (this.programs.length === 0) {
       root.innerHTML = '<div style="padding:24px;color:#94a3b8;">Loading migration data…</div>';
       try {
-        const scanId = (typeof _currentScanRunId !== 'undefined') ? _currentScanRunId : 'latest';
         const scanParam = (scanId && scanId !== 'latest' && scanId !== 'all') ? `?scanRunId=${scanId}` : '';
-        const resp = await fetch(`/api/graph/rekt/galaxy${scanParam}`);
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const url = `/api/graph/rekt/galaxy${scanParam}`;
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status} from ${url}`);
+        const ct = resp.headers.get('content-type') || '';
+        if (!ct.includes('application/json')) throw new Error(`Expected JSON from ${url}, got ${ct}`);
         const data = await resp.json();
         this.programs = (data.programs || []).filter(p => p.program);
         this.edges = data.edges || [];
+        this._scanRunIdAtFetch = scanId;
+        this._lastApiSummary = `${this.programs.length} progs · ${this.edges.length} deps · scan ${data.pinned ? `#${data.scanRunId}` : 'latest'}`;
       } catch (e) {
-        root.innerHTML = `<div style="padding:24px;color:#ef4444;">Failed to load data: ${e.message}<br><span style="color:#94a3b8;">Run <code>./doctor.sh rekt-full</code> to populate the graph.</span></div>`;
+        console.error('MigrationPlanner fetch error:', e);
+        root.innerHTML = `<div style="padding:24px;color:#ef4444;">Failed to load migration data: ${this._esc(e.message)}<br><span style="color:#94a3b8;">Verify the Rekt Neo4j is reachable on bolt://localhost:7688 and that scans exist (<code>./doctor.sh rekt-full</code>).</span></div>`;
         return;
       }
     }
@@ -217,6 +240,23 @@ class MigrationPlanner {
         w.criticality * (r.criticality / norms.criticality);
       r.difficulty = diff / wSum;            // 0 (easy) .. 1 (hard)
       r.ease = Math.round((1 - r.difficulty) * 100); // 0..100, higher = easier
+
+      // Recommendation — rewrite (default) vs replatform (if too hard).
+      // Triggers: low ease, OR very large LOC, OR high criticality.
+      const rp = this.replatform || { enabled: false };
+      const reasons = [];
+      if (rp.enabled) {
+        if (r.ease <= rp.easeThreshold)               reasons.push(`ease ${r.ease} ≤ ${rp.easeThreshold}`);
+        if (r.lineCount >= rp.locThreshold)           reasons.push(`LOC ${r.lineCount} ≥ ${rp.locThreshold}`);
+        if (r.criticality >= rp.criticalityThreshold) reasons.push(`criticality ${r.criticality} ≥ ${rp.criticalityThreshold}`);
+      }
+      if (reasons.length) {
+        r.recommendation = 'replatform';
+        r.recommendationReason = reasons.join(' · ');
+      } else {
+        r.recommendation = 'rewrite';
+        r.recommendationReason = '';
+      }
     }
 
     // Sort
@@ -328,6 +368,9 @@ class MigrationPlanner {
 
     const tableRows = rows.slice(0, 200).map(r => {
       const w = waveOf(r);
+      const recBadge = r.recommendation === 'replatform'
+        ? `<span title="Suggested replatform — ${this._escAttr(r.recommendationReason)}&#10;&#10;Replatform = host the existing COBOL on a managed runtime (Micro Focus / OpenText, Heirloom, Raincode, GnuCOBOL on Linux, AWS Blu Insights) instead of rewriting in Java." style="background:#7c2d12;color:#fed7aa;padding:1px 6px;border-radius:10px;font-weight:700;font-size:10px;cursor:help;">⇄ REPLATFORM</span>`
+        : `<span title="Suggested full rewrite to Java." style="background:#1e3a8a;color:#bfdbfe;padding:1px 6px;border-radius:10px;font-weight:700;font-size:10px;cursor:help;">↻ REWRITE</span>`;
       return `<tr style="border-bottom:1px solid #1e293b;">
         <td style="padding:5px 8px;">${waveBadge(w)}</td>
         <td style="padding:5px 8px;color:#e2e8f0;font-weight:600;">${r.displayName}</td>
@@ -345,6 +388,7 @@ class MigrationPlanner {
             <span style="color:${easeColor(r.ease)};font-weight:700;width:28px;text-align:right;">${r.ease}</span>
           </div>
         </td>
+        <td style="padding:5px 8px;text-align:center;">${recBadge}</td>
       </tr>`;
     }).join('');
 
@@ -353,7 +397,7 @@ class MigrationPlanner {
         <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
           <div>
             <strong style="color:#e2e8f0;font-size:14px;">🎯 Migration Planner</strong>
-            <span style="color:#94a3b8;font-size:11px;margin-left:8px;">${rows.length} of ${this._uniqueProgramCount || this.programs.length} programs · ${this.edges.length} dependencies</span>
+            <span style="color:#94a3b8;font-size:11px;margin-left:8px;">${rows.length} of ${this._uniqueProgramCount || this.programs.length} programs · ${this.edges.length} dependencies${this._lastApiSummary ? ` · <span style="color:#64748b;" title="Source: /api/graph/rekt/galaxy">${this._esc(this._lastApiSummary)}</span>` : ''}</span>
           </div>
           <div style="display:flex;gap:8px;align-items:center;">
             <input type="text" id="mp-search" placeholder="Search programs / domains…" value="${this._escAttr(this.search)}"
@@ -366,6 +410,7 @@ class MigrationPlanner {
                    title="Copybooks (.cpy) are shared COBOL files COPY-included into programs at compile time — they aren't migrated on their own.&#10;&#10;OFF (default): only programs (.cbl) — the actual migration units.&#10;&#10;ON: also list copybooks. They typically appear as Wave 3 'hubs' because many programs depend on them. Useful for auditing shared data structures or planning a copybook-first refactor.">
               <input type="checkbox" id="mp-cpy" ${this.filters.includeCopybooks?'checked':''}> include copybooks ⓘ
             </label>
+            <button id="mp-refresh" class="btn-small" title="Re-fetch /api/graph/rekt/galaxy with the active scan run">⟳ Refresh data</button>
             <button id="mp-export" class="btn-small" title="Download migration strategy as JSON">⬇ Strategy</button>
             <button id="mp-export-xlsx" class="btn-small" title="Download multi-sheet Excel workbook with timeline, waves, domains and per-program detail">⬇ Excel</button>
             <button id="mp-reset" class="btn-small" title="Reset all filters/weights">↻ Reset</button>
@@ -402,6 +447,34 @@ class MigrationPlanner {
         ${waveCard(3, 'Hubs / hard cases',     '#ef4444', waveAgg[3])}
       </div>
 
+      <!-- ── Replatform recommender ── -->
+      <div style="display:flex;gap:14px;align-items:center;padding:8px 14px;border-bottom:1px solid #1e293b;background:rgba(124,45,18,0.12);">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#fed7aa;font-weight:600;cursor:help;"
+               title="When ON, programs that are too costly to rewrite are flagged as REPLATFORM candidates — keep the COBOL and host it on a managed runtime (Micro Focus / OpenText, Heirloom, Raincode, GnuCOBOL on Linux, AWS Blu Insights). The flag is informational and additive: replatformed services still appear in the wave plan.">
+          <input type="checkbox" id="mp-rp-enabled" ${this.replatform.enabled?'checked':''} style="accent-color:#f97316;">
+          ⇄ Suggest replatform for hard cases
+        </label>
+        <div style="display:flex;gap:14px;align-items:center;font-size:11px;color:#94a3b8;${this.replatform.enabled?'':'opacity:0.4;pointer-events:none;'}">
+          <label style="display:flex;flex-direction:column;gap:2px;min-width:140px;">
+            <span style="display:flex;justify-content:space-between;"><span>Ease ≤</span><span style="color:#fed7aa;font-weight:600;" id="mp-val-rpEase">${this.replatform.easeThreshold}</span></span>
+            <input type="range" min="0" max="100" step="1" value="${this.replatform.easeThreshold}" id="mp-input-rpEase" style="accent-color:#f97316;">
+          </label>
+          <label style="display:flex;flex-direction:column;gap:2px;min-width:140px;">
+            <span style="display:flex;justify-content:space-between;"><span>OR LOC ≥</span><span style="color:#fed7aa;font-weight:600;" id="mp-val-rpLoc">${this.replatform.locThreshold.toLocaleString()}</span></span>
+            <input type="range" min="500" max="${Math.max(20000,maxLoc)}" step="500" value="${this.replatform.locThreshold}" id="mp-input-rpLoc" style="accent-color:#f97316;">
+          </label>
+          <label style="display:flex;flex-direction:column;gap:2px;min-width:140px;">
+            <span style="display:flex;justify-content:space-between;"><span>OR Criticality ≥</span><span style="color:#fed7aa;font-weight:600;" id="mp-val-rpCrit">${this.replatform.criticalityThreshold}</span></span>
+            <input type="range" min="0" max="${Math.max(50,maxCr)}" step="1" value="${this.replatform.criticalityThreshold}" id="mp-input-rpCrit" style="accent-color:#f97316;">
+          </label>
+        </div>
+        <div style="margin-left:auto;font-size:12px;color:#fed7aa;font-weight:700;">
+          ${this.replatform.enabled
+            ? `${rows.filter(r=>r.recommendation==='replatform').length} of ${rows.length} flagged as REPLATFORM`
+            : `<span style="color:#64748b;font-weight:400;">Replatform suggestions OFF — every program will be rewritten</span>`}
+        </div>
+      </div>
+
       <div style="flex:1;overflow:auto;">
         <table style="width:100%;border-collapse:collapse;font-size:12px;color:#cbd5e1;">
           <thead style="position:sticky;top:0;background:#0f172a;z-index:1;">
@@ -415,9 +488,10 @@ class MigrationPlanner {
               ${th('callCount','CALLs','right')}
               ${th('criticality','In↓ / Out↑ <span style="color:#64748b;cursor:help;" title="Dependency-edge counts from /api/graph/rekt/galaxy.edges.&#10;&#10;In↓ = inbound: how many other programs DEPEND ON this one (call it / copy from it). Higher = riskier to change.&#10;&#10;Out↑ = outbound: how many other programs THIS ONE depends on. Higher = more entanglement.&#10;&#10;Criticality score (used for ease/wave) = inbound × 2 + outbound — inbound counts double because being depended-on is harder to refactor.">ⓘ</span>','right')}
               ${th('ease','Ease','right')}
+              <th style="text-align:center;padding:5px 8px;color:#94a3b8;font-weight:500;font-size:11px;cursor:default;" title="Recommendation: REWRITE = port to Java; REPLATFORM = host as-is on a managed COBOL runtime">Recommendation</th>
             </tr>
           </thead>
-          <tbody>${tableRows || '<tr><td colspan="9" style="padding:24px;text-align:center;color:#64748b;">No programs match the current filters.</td></tr>'}</tbody>
+          <tbody>${tableRows || '<tr><td colspan="10" style="padding:24px;text-align:center;color:#64748b;">No programs match the current filters.</td></tr>'}</tbody>
         </table>
       </div>
 
@@ -696,9 +770,32 @@ class MigrationPlanner {
     root.querySelector('#mp-search')?.addEventListener('input', e => { this.search = e.target.value; this._render(); });
     root.querySelector('#mp-domain')?.addEventListener('change', e => { this.domainFilter = e.target.value; this._render(); });
     root.querySelector('#mp-cpy')?.addEventListener('change', e => { this.filters.includeCopybooks = e.target.checked; this._render(); });
+
+    // Replatform recommender controls
+    root.querySelector('#mp-rp-enabled')?.addEventListener('change', e => {
+      this.replatform.enabled = e.target.checked; this._render();
+    });
+    const rpSliders = [
+      ['rpEase', 'easeThreshold', String],
+      ['rpLoc',  'locThreshold',  v => Number(v).toLocaleString()],
+      ['rpCrit', 'criticalityThreshold', String],
+    ];
+    for (const [uiKey, fieldKey, fmt] of rpSliders) {
+      const inp = root.querySelector(`#mp-input-${uiKey}`);
+      const val = root.querySelector(`#mp-val-${uiKey}`);
+      if (!inp) continue;
+      inp.addEventListener('input', () => {
+        const v = Number(inp.value);
+        this.replatform[fieldKey] = v;
+        if (val) val.textContent = fmt(v);
+      });
+      inp.addEventListener('change', () => this._render());
+    }
+
     root.querySelector('#mp-export')?.addEventListener('click', () => this.exportStrategy());
     root.querySelector('#mp-export-xlsx')?.addEventListener('click', () => this.exportExcel());
     root.querySelector('#mp-reset')?.addEventListener('click', () => this.resetAll());
+    root.querySelector('#mp-refresh')?.addEventListener('click', () => this.refresh());
 
     root.querySelector('#mp-wb-toggle')?.addEventListener('click', () => {
       this._workbookOpen = !this._workbookOpen;
@@ -825,15 +922,21 @@ class MigrationPlanner {
         const left = (r.startWeek - 1) * trackPx;
         const width = Math.max(2, (r.endWeek - r.startWeek + 1) * trackPx);
         const cpyTag = r.isCopybook ? ' <span style="color:#f59e0b;font-size:9px;">CPY</span>' : '';
+        const isReplatform = r.recommendation === 'replatform';
+        // Replatform bars: orange diagonal-stripe pattern over the wave color
+        const barBg = isReplatform
+          ? `repeating-linear-gradient(45deg, #f97316 0, #f97316 5px, #7c2d12 5px, #7c2d12 10px)`
+          : waveColors[r.wave];
+        const recTag = isReplatform ? ' <span style="color:#fed7aa;font-size:9px;background:#7c2d12;padding:0 4px;border-radius:3px;">⇄ RP</span>' : '';
         waveSections += `<div style="display:flex;align-items:center;border-top:1px solid rgba(30,41,59,0.6);">
-          <div style="width:${labelColPx}px;padding:4px 12px 4px 32px;color:#cbd5e1;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${this._escAttr(r.displayName)} — ${this._escAttr(r.domain)}">
-            ${this._esc(r.displayName)}${cpyTag}
+          <div style="width:${labelColPx}px;padding:4px 12px 4px 32px;color:#cbd5e1;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${this._escAttr(r.displayName)} — ${this._escAttr(r.domain)}${isReplatform?'\nReplatform suggested: '+this._escAttr(r.recommendationReason):''}">
+            ${this._esc(r.displayName)}${cpyTag}${recTag}
             <span style="color:#64748b;font-size:10px;margin-left:6px;">${r.assignedDev || ''}</span>
           </div>
           <div style="position:relative;flex:1;height:${rowH-4}px;min-width:${minTrackPx}px;">
-            <div title="${this._escAttr(r.displayName)} — ${r.domain}\nWave ${r.wave} · ${r.assignedDev}\nWeeks ${r.startWeek}–${r.endWeek} (${r.endWeek-r.startWeek+1}w)\n${r.startDate} → ${r.endDate}\nLOC ${r.lineCount} · SQL ${r.sqlCount} · CALLs ${r.callCount} · ${r.devWeeks}dw"
-              style="position:absolute;left:${left}px;top:4px;width:${width}px;height:${rowH-12}px;background:${waveColors[r.wave]};border-radius:3px;display:flex;align-items:center;padding:0 6px;color:#0f172a;font-size:10px;font-weight:700;cursor:help;overflow:hidden;white-space:nowrap;">
-              ${r.devWeeks}dw
+            <div title="${this._escAttr(r.displayName)} — ${r.domain}\nRecommendation: ${(r.recommendation||'rewrite').toUpperCase()}${isReplatform?' ('+r.recommendationReason+')':''}\nWave ${r.wave} · ${r.assignedDev}\nWeeks ${r.startWeek}–${r.endWeek} (${r.endWeek-r.startWeek+1}w)\n${r.startDate} → ${r.endDate}\nLOC ${r.lineCount} · SQL ${r.sqlCount} · CALLs ${r.callCount} · ${r.devWeeks}dw"
+              style="position:absolute;left:${left}px;top:4px;width:${width}px;height:${rowH-12}px;background:${barBg};border-radius:3px;display:flex;align-items:center;padding:0 6px;color:${isReplatform?'#fff':'#0f172a'};font-size:10px;font-weight:700;cursor:help;overflow:hidden;white-space:nowrap;text-shadow:${isReplatform?'0 1px 2px rgba(0,0,0,0.6)':'none'};">
+              ${r.devWeeks}dw${isReplatform?' · ⇄':''}
             </div>
           </div>
         </div>`;
@@ -847,6 +950,7 @@ class MigrationPlanner {
       <span><span style="display:inline-block;width:10px;height:10px;background:${waveColors[1]};border-radius:2px;vertical-align:middle;margin-right:4px;"></span>Wave 1 — lowest-hanging fruit</span>
       <span><span style="display:inline-block;width:10px;height:10px;background:${waveColors[2]};border-radius:2px;vertical-align:middle;margin-right:4px;"></span>Wave 2 — medium effort</span>
       <span><span style="display:inline-block;width:10px;height:10px;background:${waveColors[3]};border-radius:2px;vertical-align:middle;margin-right:4px;"></span>Wave 3 — hubs / hard cases</span>
+      <span><span style="display:inline-block;width:14px;height:10px;background:repeating-linear-gradient(45deg,#f97316 0,#f97316 3px,#7c2d12 3px,#7c2d12 6px);border-radius:2px;vertical-align:middle;margin-right:4px;"></span>Replatform candidate</span>
       <span style="margin-left:auto;color:#64748b;">Bars = scheduled program window. Edit Wave / Start wk / End wk / Assigned to in the Strategy Workbook below to update bars.</span>
     </div>`;
 
@@ -874,6 +978,7 @@ class MigrationPlanner {
   resetAll() {
     this.filters = { maxLoc: 100000, maxComplexity: 10000, maxSql: 10000, maxCalls: 1000, maxCriticality: 1000, includeCopybooks: false };
     this.weights = { loc: 5, complexity: 7, sql: 4, calls: 5, criticality: 6 };
+    this.replatform = { enabled: true, easeThreshold: 25, locThreshold: 5000, criticalityThreshold: 30 };
     this.search = ''; this.domainFilter = 'all';
     this.sortKey = 'ease'; this.sortDir = 'desc';
     this._sliderMaxPrev = null; // re-snap to dataset maxes on next render
@@ -1059,10 +1164,12 @@ class MigrationPlanner {
       header: ['Wave', 'Start week', 'End week', 'Start date', 'End date', 'Assigned to',
                'Program', 'Domain', 'Type', 'LOC', 'Complexity score', 'SQL', 'CALLs',
                'Inbound deps', 'Outbound deps', 'Criticality', 'Ease (0–100)',
-               'Adjusted effort (LOC-equiv)', 'Dev-weeks'],
+               'Adjusted effort (LOC-equiv)', 'Dev-weeks',
+               'Recommendation', 'Replatform reason'],
       cols: [{wch:6},{wch:10},{wch:10},{wch:12},{wch:12},{wch:10},
              {wch:22},{wch:24},{wch:10},{wch:8},{wch:14},{wch:6},{wch:6},
-             {wch:12},{wch:12},{wch:11},{wch:12},{wch:18},{wch:10}],
+             {wch:12},{wch:12},{wch:11},{wch:12},{wch:18},{wch:10},
+             {wch:14},{wch:40}],
       freeze: { ySplit: 1 },
       rows: enriched
         .sort((a, b) => a.wave - b.wave || a.startWeek - b.startWeek || b.ease - a.ease)
@@ -1070,7 +1177,9 @@ class MigrationPlanner {
                    r.displayName, r.domain, r.isCopybook ? 'copybook' : 'program',
                    r.lineCount, r.complexity, r.sqlCount, r.callCount,
                    r.inbound, r.outbound, r.criticality, r.ease,
-                   r.adjustedEffortLoc, r.devWeeks]),
+                   r.adjustedEffortLoc, r.devWeeks,
+                   (r.recommendation || 'rewrite').toUpperCase(),
+                   r.recommendationReason || '']),
     });
 
     // 4. Domain Breakdown
@@ -1109,7 +1218,35 @@ class MigrationPlanner {
       rows: detail,
     });
 
-    // 6. Gantt — one row per program with a timeline column per calendar week
+    // 6. Replatform Candidates — programs flagged as too costly to rewrite
+    const rpRows = enriched.filter(r => r.recommendation === 'replatform')
+      .sort((a, b) => a.ease - b.ease)
+      .map(r => [r.displayName, r.domain, r.wave, r.lineCount, r.complexity, r.sqlCount,
+                 r.callCount, r.criticality, r.ease, r.devWeeks, r.recommendationReason]);
+    const rpEnabled = !!(this.replatform && this.replatform.enabled);
+    sheets.push({
+      name: 'Replatform Candidates',
+      header: ['Program', 'Domain', 'Wave', 'LOC', 'Complexity', 'SQL', 'CALLs', 'Criticality',
+               'Ease', 'Dev-weeks (rewrite estimate)', 'Trigger reason'],
+      cols: [{wch:22},{wch:24},{wch:6},{wch:8},{wch:12},{wch:6},{wch:6},{wch:11},{wch:6},{wch:24},{wch:50}],
+      freeze: { ySplit: 1 },
+      rows: rpRows.length ? [
+        ...rpRows,
+        [],
+        ['Suggestion: host these programs on a managed COBOL runtime instead of rewriting in Java.'],
+        ['Candidate runtimes', '', 'Micro Focus / OpenText Enterprise Server, Heirloom Computing, Raincode, GnuCOBOL on Linux, AWS Blu Insights'],
+        ['Why', '', 'Rewrite cost is dominated by long programs, high complexity, or high blast-radius (criticality). Replatforming preserves business logic, removes mainframe lock-in, and frees the team to rewrite the lower-cost programs first.'],
+        ['Trade-offs', '', 'Replatformed code remains COBOL — language modernization is deferred. Plan a follow-up rewrite or strangler-pattern migration once dependencies are reduced.'],
+      ] : [
+        [rpEnabled
+          ? 'No programs match the replatform thresholds — every program is recommended for rewrite.'
+          : 'Replatform suggestions are OFF — toggle the recommender on in the Migration Planner header to populate this sheet.'],
+      ],
+    });
+
+    // 7. Assumptions (free-form) — placed after Gantt so the workbook ends on the assumptions reference page.
+
+    // 8. Gantt — one row per program with a timeline column per calendar week
     //    The schedule columns use '█' (active week) / '·' (inactive) so the sheet
     //    renders as a readable horizontal bar chart in Excel/Numbers/Google Sheets.
     const ganttHeader = ['Wave', 'Program', 'Domain', 'Assigned to',
@@ -1188,6 +1325,17 @@ class MigrationPlanner {
         ['SQL weight',                     this.weights.sql],
         ['CALL weight',                    this.weights.calls],
         ['Criticality weight',             this.weights.criticality],
+        [],
+        ['Replatform recommender'],
+        ['Enabled',                        this.replatform?.enabled ? 'yes' : 'no'],
+        ['Trigger: ease ≤',                this.replatform?.easeThreshold,
+          'Below this ease score, the program is flagged as a replatform candidate.'],
+        ['Trigger: LOC ≥',                 this.replatform?.locThreshold,
+          'Programs at or above this LOC are flagged regardless of ease.'],
+        ['Trigger: criticality ≥',         this.replatform?.criticalityThreshold,
+          'High-blast-radius programs (many inbound deps) are flagged regardless of ease.'],
+        ['Replatform meaning',             '',
+          'Host the existing COBOL on a managed runtime (Micro Focus / OpenText, Heirloom, Raincode, GnuCOBOL on Linux, AWS Blu Insights) instead of rewriting in Java.'],
       ],
     });
 

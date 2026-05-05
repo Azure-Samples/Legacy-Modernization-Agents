@@ -191,52 +191,128 @@ public sealed class McpProcessClient : IMcpClient, IDisposable
 
     public async Task<string> SendChatAsync(string prompt, CancellationToken cancellationToken = default)
     {
-        await EnsureReadyAsync(cancellationToken).ConfigureAwait(false);
-
-        var messages = new JsonArray
+        // Try MCP first; on any failure, fall back to a direct AI call so chat
+        // keeps working even when the MCP subprocess can't launch in this env.
+        try
         {
-            new JsonObject
+            await EnsureReadyAsync(cancellationToken).ConfigureAwait(false);
+
+            var messages = new JsonArray
             {
-                ["role"] = "system",
-                ["content"] = new JsonArray(new JsonObject
+                new JsonObject
                 {
-                    ["type"] = "text",
-                    ["text"] = "You are a helpful assistant that answers questions about COBOL migration runs. You have access to reverse engineering results including business purpose, user stories, features, and business rules extracted from the COBOL source files. Use this context to give accurate, specific answers about what the programs do and how they work."
-                })
+                    ["role"] = "system",
+                    ["content"] = new JsonArray(new JsonObject
+                    {
+                        ["type"] = "text",
+                        ["text"] = "You are a helpful assistant that answers questions about COBOL migration runs. You have access to reverse engineering results including business purpose, user stories, features, and business rules extracted from the COBOL source files. Use this context to give accurate, specific answers about what the programs do and how they work."
+                    })
+                },
+                new JsonObject
+                {
+                    ["role"] = "user",
+                    ["content"] = new JsonArray(new JsonObject
+                    {
+                        ["type"] = "text",
+                        ["text"] = prompt
+                    })
+                }
+            };
+
+            var parameters = new JsonObject
+            {
+                ["model"] = "cobol-migration-insights",
+                ["messages"] = messages
+            };
+
+            var response = await SendRequestAsync("messages/create", parameters, cancellationToken).ConfigureAwait(false);
+            var contentNode = response["content"] as JsonArray;
+            if (contentNode is null || contentNode.Count == 0)
+            {
+                return "No response from MCP server.";
+            }
+
+            foreach (var item in contentNode)
+            {
+                if (item is JsonObject obj && obj["type"]?.GetValue<string>() == "text")
+                {
+                    return obj["text"]?.GetValue<string>() ?? string.Empty;
+                }
+            }
+
+            return contentNode[0]?.ToJsonString() ?? string.Empty;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            Console.WriteLine($"⚠️ MCP chat failed ({ex.Message}); falling back to direct AI client.");
+            return await SendChatDirectAsync(prompt, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Direct fallback path: bypass the MCP subprocess and call the Copilot SDK
+    /// (or Azure OpenAI when configured) directly. This keeps the chat panel
+    /// functional in environments where the MCP subprocess can't start.
+    /// </summary>
+    private async Task<string> SendChatDirectAsync(string prompt, CancellationToken cancellationToken)
+    {
+        var serviceType = Environment.GetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE")
+                          ?? Environment.GetEnvironmentVariable("AISETTINGS__SERVICETYPE")
+                          ?? "GitHubCopilot";
+        var modelId = Environment.GetEnvironmentVariable("AISETTINGS__CHATMODELID")
+                      ?? Environment.GetEnvironmentVariable("AZURE_OPENAI_CHAT_DEPLOYMENT")
+                      ?? Environment.GetEnvironmentVariable("AISETTINGS__MODELID")
+                      ?? Environment.GetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT_NAME")
+                      ?? "claude-opus-4.6";
+
+        var systemPrompt = "You are a helpful assistant that answers questions about COBOL migration runs. " +
+                           "You have access to reverse engineering results including business purpose, user " +
+                           "stories, features, and business rules. Be concise, technical, and accurate.";
+
+        if (serviceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase) ||
+            serviceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase))
+        {
+            var token = Environment.GetEnvironmentVariable("GITHUB_COPILOT_TOKEN");
+            var options = CopilotCliResolver.BuildOptions(useStdio: true,
+                githubToken: string.IsNullOrWhiteSpace(token) ? null : token);
+            await using var client = new CopilotChatClient(modelId, options);
+            var msgs = new List<Microsoft.Extensions.AI.ChatMessage>
+            {
+                new(Microsoft.Extensions.AI.ChatRole.System, systemPrompt),
+                new(Microsoft.Extensions.AI.ChatRole.User, prompt),
+            };
+            var resp = await client.GetResponseAsync(msgs, cancellationToken: cancellationToken).ConfigureAwait(false);
+            return resp.Text ?? "(empty response)";
+        }
+
+        // Azure OpenAI fallback — keep simple HTTP call to /chat/completions.
+        var endpoint = (Environment.GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT")
+                        ?? Environment.GetEnvironmentVariable("AISETTINGS__ENDPOINT")
+                        ?? "").TrimEnd('/');
+        var apiKey = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_KEY")
+                     ?? Environment.GetEnvironmentVariable("AISETTINGS__APIKEY");
+        var apiVersion = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_VERSION") ?? "2024-08-01-preview";
+        if (string.IsNullOrWhiteSpace(endpoint) || endpoint.Contains("placeholder"))
+            throw new InvalidOperationException("Azure OpenAI endpoint not configured.");
+
+        var url = $"{endpoint}/openai/deployments/{modelId}/chat/completions?api-version={apiVersion}";
+        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
+        if (!string.IsNullOrEmpty(apiKey)) http.DefaultRequestHeaders.Add("api-key", apiKey);
+        var body = new
+        {
+            messages = new object[]
+            {
+                new { role = "system", content = systemPrompt },
+                new { role = "user", content = prompt },
             },
-            new JsonObject
-            {
-                ["role"] = "user",
-                ["content"] = new JsonArray(new JsonObject
-                {
-                    ["type"] = "text",
-                    ["text"] = prompt
-                })
-            }
+            temperature = 0.2,
         };
-
-        var parameters = new JsonObject
-        {
-            ["model"] = "cobol-migration-insights",
-            ["messages"] = messages
-        };
-
-        var response = await SendRequestAsync("messages/create", parameters, cancellationToken).ConfigureAwait(false);
-        var contentNode = response["content"] as JsonArray;
-        if (contentNode is null || contentNode.Count == 0)
-        {
-            return "No response from MCP server.";
-        }
-
-        foreach (var item in contentNode)
-        {
-            if (item is JsonObject obj && obj["type"]?.GetValue<string>() == "text")
-            {
-                return obj["text"]?.GetValue<string>() ?? string.Empty;
-            }
-        }
-
-        return contentNode[0]?.ToJsonString() ?? string.Empty;
+        using var content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
+        var resp2 = await http.PostAsync(url, content, cancellationToken).ConfigureAwait(false);
+        var text = await resp2.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        if (!resp2.IsSuccessStatusCode) throw new InvalidOperationException($"Azure OpenAI {(int)resp2.StatusCode}: {text}");
+        var parsed = JsonNode.Parse(text);
+        return parsed?["choices"]?[0]?["message"]?["content"]?.GetValue<string>() ?? "(empty response)";
     }
 
     public async Task<JsonObject> CallToolAsync(string name, Dictionary<string, object> arguments, CancellationToken cancellationToken = default)
@@ -351,6 +427,19 @@ public sealed class McpProcessClient : IMcpClient, IDisposable
             ? _options.ConfigPath
             : Path.GetFullPath(_options.ConfigPath, baseDirectory);
 
+        // Fail fast with an actionable error before attempting to launch.
+        if (!File.Exists(assemblyPath))
+        {
+            throw new FileNotFoundException(
+                $"MCP assembly not found at '{assemblyPath}'. Build the migrator with `dotnet build` " +
+                $"in the repo root, or set Mcp:AssemblyPath in appsettings.json.", assemblyPath);
+        }
+        if (!File.Exists(configPath))
+        {
+            throw new FileNotFoundException(
+                $"MCP config not found at '{configPath}'. Set Mcp:ConfigPath in appsettings.json.", configPath);
+        }
+
         arguments.Append('"').Append(assemblyPath).Append('"');
         arguments.Append(" mcp");
         arguments.Append(" --config ").Append('"').Append(configPath).Append('"');
@@ -358,6 +447,8 @@ public sealed class McpProcessClient : IMcpClient, IDisposable
         {
             arguments.Append(" --run-id ").Append(_options.RunId.Value);
         }
+
+        Console.WriteLine($"📦 MCP launch: {_options.DotnetExecutable} {arguments} (cwd: {baseDirectory})");
 
         var psi = new ProcessStartInfo
         {

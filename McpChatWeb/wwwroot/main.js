@@ -33,8 +33,16 @@ async function fetchResources() {
     if (!res.ok) {
       throw new Error(`HTTP ${res.status}`);
     }
-    const resources = await res.json();
-    renderResources(resources);
+    const payload = await res.json();
+    // Backend may return either an array of resources or an envelope:
+    //   { resources: [...], error?: "..." } when the MCP subprocess fails.
+    let resources = payload;
+    let error = null;
+    if (payload && !Array.isArray(payload) && typeof payload === 'object') {
+      resources = Array.isArray(payload.resources) ? payload.resources : [];
+      if (payload.error) error = payload.error;
+    }
+    renderResources(resources, error);
   } catch (err) {
     renderResources([], `Failed to load resources: ${err.message}`);
   } finally {
@@ -50,8 +58,15 @@ function renderResources(resources, errorMessage) {
   resourcesList.innerHTML = '';
   if (errorMessage) {
     const errorItem = document.createElement('li');
-    errorItem.textContent = errorMessage;
     errorItem.classList.add('error');
+    // Friendlier copy when the error is the well-known MCP-subprocess failure
+    if (/MCP process|MCP subprocess|specified command or file/i.test(errorMessage)) {
+      errorItem.innerHTML = `MCP resource server unavailable.<br>
+        <span style="font-size:11px;color:#94a3b8;">The MCP subprocess could not start. The dashboards (AST Explorer, AST Galaxy, Migration Planner) keep working — they read directly from Neo4j / SQLite and don't need MCP.</span><br>
+        <span style="font-size:10px;color:#64748b;">Detail: ${errorMessage}</span>`;
+    } else {
+      errorItem.textContent = errorMessage;
+    }
     resourcesList.appendChild(errorItem);
     return;
   }
@@ -214,39 +229,53 @@ async function handleChatSubmit(event) {
     return;
   }
 
-  // Hide previous response and show stage 1: Database Query
+  // Append the user's prompt to the transcript immediately, then a pending
+  // assistant placeholder. This is what makes it feel ChatGPT-fast.
+  const reportContext = typeof getChatReportContext === 'function' ? getChatReportContext() : null;
+  const scope = reportContext ? 'report' : 'database';
+  const scopeLabel = reportContext ? (String(reportContext).split('/').pop() || 'Report') : null;
+  if (window.ChatHistory) {
+    window.ChatHistory.appendMessage('user', prompt, { scope, scopeLabel });
+    window.ChatHistory.appendMessage('assistant', '', { pending: true, scope, scopeLabel });
+  }
+  promptInput.value = '';
+  // Hide the legacy single-response card; the transcript replaces it.
   responseCard.hidden = true;
+  // Keep the multi-stage strip but skip the artificial 300ms delays — show
+  // each stage flip as soon as the work moves on.
   setLoadingStage('db');
-  updateStageStatus('db', 'Fetching migration data...');
+  updateStageStatus('db', 'Querying migration data…');
   toggleLoading(chatForm.querySelector('button'), true);
   setRunSummary('');
   renderMcpVisual(null, false);
-  
+
+  // Move to the AI stage on the next tick instead of after a 300ms timeout.
+  queueMicrotask(() => {
+    setLoadingStage('ai');
+    updateStageStatus('ai', 'Streaming AI response…');
+  });
+
   try {
-    // Move to stage 2: Azure OpenAI
-    setTimeout(() => {
-      setLoadingStage('ai');
-      updateStageStatus('ai', 'Processing with AI...');
-    }, 300);
-    
+    const recent = window.ChatHistory ? window.ChatHistory.getRecentMessages(10) : [];
+    // Drop the empty pending assistant from the context we send to the server.
+    const history = recent.filter(m => !(m.role === 'assistant' && !m.content));
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json'
       },
-      body: JSON.stringify({ 
+      body: JSON.stringify({
         prompt,
-        reportContext: typeof getChatReportContext === 'function' ? getChatReportContext() : null
+        history,
+        reportContext: reportContext || null
       })
     });
 
-    // Move to stage 3: Building Response
     setLoadingStage('response');
-    updateStageStatus('response', 'Formatting results...');
+    updateStageStatus('response', 'Formatting…');
 
     if (!res.ok) {
-      // Try to extract detailed error from the response body
       let message;
       const contentType = res.headers.get('content-type') || '';
       if (contentType.includes('application/problem+json') || contentType.includes('application/json')) {
@@ -261,37 +290,41 @@ async function handleChatSubmit(event) {
     }
 
     const payload = await res.json();
-    
-    // Small delay to show final stage
-    await new Promise(resolve => setTimeout(resolve, 300));
-    
     setRunSummary(payload.runSummary);
     renderMcpVisual(payload.model, payload.isMcpCall);
-    responseBody.textContent = payload.response ?? 'No content returned.';
-    responseCard.hidden = false;
-    
-    // If the response includes a runId, update the graph to show that run
-    console.log('Chat response received:', { hasRunId: !!payload.runId, runId: payload.runId, hasGraph: !!window.dependencyGraph });
+
+    // Update the pending assistant bubble with the real response.
+    if (window.ChatHistory) {
+      window.ChatHistory.updateLastAssistantMessage(payload.response ?? 'No content returned.', {
+        pending: false,
+        model: payload.model,
+        isMcpCall: payload.isMcpCall,
+        runId: payload.runId,
+        runSummary: payload.runSummary,
+        scope, scopeLabel,
+      });
+    } else {
+      responseBody.textContent = payload.response ?? 'No content returned.';
+      responseCard.hidden = false;
+    }
+
     if (payload.runId) {
       if (window.dependencyGraph) {
-        console.log(`✅ Updating graph to Run ${payload.runId}...`);
         window.dependencyGraph.loadGraphForRun(payload.runId);
       } else {
-        console.warn('⚠️ Graph not ready yet, retrying in 500ms...');
         setTimeout(() => {
-          if (window.dependencyGraph) {
-            console.log(`✅ Delayed update: Loading graph for Run ${payload.runId}`);
-            window.dependencyGraph.loadGraphForRun(payload.runId);
-          } else {
-            console.error('❌ Graph still not available after delay');
-          }
+          if (window.dependencyGraph) window.dependencyGraph.loadGraphForRun(payload.runId);
         }, 500);
       }
     }
   } catch (err) {
-    responseBody.textContent = `❌ Chat Error\n\n${err.message}`;
-    responseCard.hidden = false;
-    responseCard.classList.add('error-response');
+    if (window.ChatHistory) {
+      window.ChatHistory.updateLastAssistantMessage(`❌ ${err.message}`, { pending: false, error: true });
+    } else {
+      responseBody.textContent = `❌ Chat Error\n\n${err.message}`;
+      responseCard.hidden = false;
+      responseCard.classList.add('error-response');
+    }
   } finally {
     setLoadingStage('done');
     toggleLoading(chatForm.querySelector('button'), false);

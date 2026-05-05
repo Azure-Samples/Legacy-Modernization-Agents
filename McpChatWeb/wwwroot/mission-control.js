@@ -92,12 +92,24 @@ function initMissionControl() {
     fileInput.addEventListener('change', () => handleFileUpload(fileInput.files));
   }
 
-  // Report toggle
+  // Report toggle (hidden mc-* widgets) + visible cc-bar mirror
   const reportToggle = document.getElementById('mc-report-toggle');
-  if (reportToggle) reportToggle.addEventListener('change', toggleReportChat);
+  if (reportToggle) reportToggle.addEventListener('change', () => { toggleReportChat(); syncCcBarFromHidden(); });
 
   const reportSelect = document.getElementById('mc-report-select');
-  if (reportSelect) reportSelect.addEventListener('change', selectReport);
+  if (reportSelect) reportSelect.addEventListener('change', () => { selectReport(); syncCcBarFromHidden(); });
+
+  // Visible cc-bar widgets — proxy onto the hidden mc-* controls.
+  const barToggle = document.getElementById('cc-bar-toggle');
+  const barSelect = document.getElementById('cc-bar-select');
+  if (barToggle) barToggle.addEventListener('change', () => {
+    if (reportToggle) reportToggle.checked = barToggle.checked;
+    toggleReportChat(); syncCcBarFromHidden();
+  });
+  if (barSelect) barSelect.addEventListener('change', () => {
+    if (reportSelect) reportSelect.value = barSelect.value;
+    selectReport(); syncCcBarFromHidden();
+  });
 
   // Run selector
   const runSelect = document.getElementById('mc-run-select');
@@ -399,15 +411,47 @@ async function loadReports() {
 
 function renderReportDropdown() {
   const select = document.getElementById('mc-report-select');
-  if (!select) return;
-  select.innerHTML = '<option value="">No reports</option>';
-  for (const r of _reportsList) {
-    const opt = document.createElement('option');
-    opt.value = r.path;
-    opt.textContent = `${r.name} (${new Date(r.lastModified).toLocaleDateString()})`;
-    select.appendChild(opt);
+  const barSelect = document.getElementById('cc-bar-select');
+  const fill = (sel) => {
+    if (!sel) return;
+    sel.innerHTML = '<option value="">No reports</option>';
+    for (const r of _reportsList) {
+      const opt = document.createElement('option');
+      opt.value = r.path;
+      opt.textContent = `${r.name} (${new Date(r.lastModified).toLocaleDateString()})`;
+      sel.appendChild(opt);
+    }
+    if (_reportsList.length > 0) sel.value = _reportsList[0].path;
+    sel.disabled = _reportsList.length === 0;
+  };
+  fill(select);
+  fill(barSelect);
+  syncCcBarFromHidden();
+}
+
+// Mirror state from the hidden mc-* controls into the visible cc-bar-* widgets.
+function syncCcBarFromHidden() {
+  const toggle = document.getElementById('mc-report-toggle');
+  const select = document.getElementById('mc-report-select');
+  const barToggle = document.getElementById('cc-bar-toggle');
+  const barSelect = document.getElementById('cc-bar-select');
+  const sub = document.getElementById('cc-sub');
+  const bar = document.getElementById('cc-bar');
+  if (!barToggle) return;
+  if (barToggle.checked !== !!toggle?.checked) barToggle.checked = !!toggle?.checked;
+  if (barSelect && select && barSelect.value !== select.value) barSelect.value = select.value;
+  const active = !!toggle?.checked && !!select?.value;
+  bar?.classList.toggle('cc-bar-active', active);
+  if (sub) {
+    if (active) {
+      const opt = select.options[select.selectedIndex];
+      sub.textContent = `Report mode — answers come from "${opt?.text || select.value}"`;
+    } else if (_reportsList.length === 0) {
+      sub.textContent = 'No RE reports found yet — run a reverse-engineering pass first.';
+    } else {
+      sub.textContent = 'Database mode — answers come from SQLite + Neo4j';
+    }
   }
-  if (_reportsList.length > 0) select.value = _reportsList[0].path;
 }
 
 function toggleReportChat() {
@@ -415,18 +459,42 @@ function toggleReportChat() {
   const select = document.getElementById('mc-report-select');
   const indicator = document.getElementById('mc-report-indicator');
 
+  const wasActive = !!_chatWithReport;
   if (toggle?.checked && select?.value) {
     _chatWithReport = select.value;
     if (indicator) { indicator.textContent = '📊 Chatting with report'; indicator.style.display = 'inline'; }
+    const reportName = select.options[select.selectedIndex]?.text || select.value;
+    window.ChatHistory?.appendSystemNotice(
+      `Now chatting with the reverse-engineering report "${reportName}". The next prompts will be answered from the report content, not from the migration database. Toggle off to switch back.`,
+      'report'
+    );
   } else {
     _chatWithReport = null;
     if (indicator) indicator.style.display = 'none';
+    if (wasActive) {
+      window.ChatHistory?.appendSystemNotice(
+        'Switched back to the migration database. Prompts will be answered from SQLite + Neo4j context.',
+        'database'
+      );
+    }
   }
 }
 
 function selectReport() {
   const toggle = document.getElementById('mc-report-toggle');
-  if (toggle?.checked) toggleReportChat();
+  const select = document.getElementById('mc-report-select');
+  if (!toggle?.checked) return;
+  // Toggle is on and the report just changed — re-apply and notify.
+  if (select?.value) {
+    _chatWithReport = select.value;
+    const reportName = select.options[select.selectedIndex]?.text || select.value;
+    window.ChatHistory?.appendSystemNotice(
+      `Now chatting with "${reportName}".`,
+      'report'
+    );
+  } else {
+    toggleReportChat();
+  }
 }
 
 // Export for chat integration

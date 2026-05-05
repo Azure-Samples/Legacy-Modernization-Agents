@@ -168,8 +168,8 @@
           <div class="mc-folder-list" id="mc-folder-list"></div>
         </div>
 
-        <!-- Report Chat Toggle -->
-        <div class="mc-section">
+        <!-- Report Chat Toggle (kept in DOM for state — UI rendered above the chat box) -->
+        <div class="mc-section" style="display:none;" aria-hidden="true">
           <div class="mc-section-title">💬 Chat Context</div>
           <div class="mc-report-row">
             <label class="prompt-toggle" title="Toggle chatting with a report">
@@ -197,6 +197,17 @@
       <button id="showAllRunsBtn" class="info-button">📊 View All Runs & Data Guide</button>
       <button id="showArchitectureBtn" class="info-button">📄 Reverse Engineering Results</button>
       <button id="showMigrationMonitorBtn" class="info-button migration-monitor-btn">🔄 Migration Monitor</button>
+
+      <!-- ── Chat History (ChatGPT-style sidebar) ── -->
+      <div class="ch-section" id="ch-section">
+        <div class="ch-header">
+          <span class="ch-title">💬 Chat History</span>
+          <button id="ch-new-btn" class="btn-small" title="Start a new chat">＋ New</button>
+        </div>
+        <input type="search" id="ch-search" class="ch-search" placeholder="Search chats…">
+        <div id="ch-list" class="ch-list"><div class="ch-empty">No saved chats yet.</div></div>
+      </div>
+
       <div id="resources-list" class="resource-list"></div>
     </section>
 
@@ -269,6 +280,23 @@
         </div>
       </div>
       
+      <!-- ── Chat Context bar (visible, sits right above the prompt) ── -->
+      <div id="cc-bar" class="cc-bar">
+        <div class="cc-row">
+          <label class="cc-toggle" title="Toggle chatting with a reverse-engineering report">
+            <input type="checkbox" id="cc-bar-toggle">
+            <span class="cc-toggle-slider"></span>
+          </label>
+          <div class="cc-label">
+            <span class="cc-title">📊 Chat with RE Report</span>
+            <span class="cc-sub" id="cc-sub">Database mode — answers come from SQLite + Neo4j</span>
+          </div>
+          <select id="cc-bar-select" class="cc-select" disabled>
+            <option value="">No reports yet</option>
+          </select>
+        </div>
+      </div>
+
       <form id="chat-form">
         <label for="prompt">Prompt</label>
         <textarea id="prompt" rows="5" placeholder="e.g., What are the circular dependencies in this codebase?"></textarea>
@@ -313,6 +341,9 @@
           </div>
         </div>
       </div>
+
+      <!-- ── ChatGPT-style transcript (replaces the old single response card) ── -->
+      <div id="chat-transcript" class="chat-transcript" hidden></div>
 
       <article id="response" class="response" hidden>
         <h3>Response</h3>
@@ -1448,15 +1479,16 @@ curl http://localhost:5028/api/data-retrieval-guide</code></pre>
   <script src="controlflow-view.js"></script>
   <script src="mermaid-view.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-  <script src="migration-planner.js?v=20260504h"></script>
+  <script src="migration-planner.js?v=20260504j"></script>
   <script src="dashboard-tabs.js?v=20260504f"></script>
-  <script src="main.js"></script>
+  <script src="chat-history.js?v=20260505c"></script>
+  <script src="main.js?v=20260505c"></script>
   <script src="runs-viewer.js"></script>
   <script src="activity-dashboard.js"></script>
   <script src="migration-monitor.js"></script>
   <script src="model-prompt-panel.js"></script>
   <script src="model-setup-modal.js"></script>
-  <script src="mission-control.js"></script>
+  <script src="mission-control.js?v=20260505d"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script>
     // Toggle collapsible sections

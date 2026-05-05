@@ -24,7 +24,7 @@ public sealed class CopilotChatClient : IChatClient, IAsyncDisposable
     public CopilotChatClient(string model, CopilotClientOptions? options = null)
     {
         _model = model ?? throw new ArgumentNullException(nameof(model));
-        _client = new CopilotClient(options ?? new CopilotClientOptions());
+        _client = new CopilotClient(options ?? CopilotCliResolver.BuildOptions(useStdio: true));
     }
 
     private async Task EnsureStartedAsync()

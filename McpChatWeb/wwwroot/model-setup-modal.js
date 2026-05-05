@@ -82,6 +82,16 @@ function openSetupModal() {
     setSetupStatus('');
     setSetupModelList([]);
     document.getElementById('setup-save-btn').disabled = true;
+    // Prefill the Azure endpoint (and select Azure tab) when the backend
+    // already has a configured endpoint — saves the user re-typing it.
+    fetch('/api/models/available').then(r => r.ok ? r.json() : null).then(d => {
+      if (!d) return;
+      const ep = d.connectedEndpoint;
+      if (ep && /^https:/i.test(ep) && !/copilot-sdk-placeholder/i.test(ep)) {
+        const input = document.getElementById('azure-endpoint');
+        if (input && !input.value) input.value = ep;
+      }
+    }).catch(() => {});
   }
 }
 

@@ -1017,20 +1017,23 @@ sequenceDiagram
 
 ---
 
-### Three-Panel Portal UI
+### Portal UI
 
-```
-┌─────────────────┬───────────────────────────┬─────────────────────┐
-│  📋 Resources   │      💬 AI Chat           │   📊 Graph          │
-│                 │                           │                     │
-│  MCP Resources  │  Ask about your COBOL:   │  Interactive        │
-│  • Run summary  │  "What does CUSTOMER.cbl │  dependency graph   │
-│  • File lists   │   do?"                   │                     │
-│  • Dependencies │                           │  • Zoom/pan         │
-│  • Analyses     │  AI responses with        │  • Filter by type   │
-│                 │  SQLite + Neo4j data      │  • Click nodes      │
-└─────────────────┴───────────────────────────┴─────────────────────┘
-```
+The portal at **http://localhost:5028** is organised into four columns / panels:
+
+| Panel | Contents |
+|---|---|
+| **🚀 Mission Control** (left) | Provider/model picker, language target, file upload, run commands (Full Migration / RE / Convert / Resume), live run log |
+| **📋 MCP Resources** (left, below) | Live list of `insights://runs/<id>/...` URIs published by the MCP server (summary, dependencies, analyses, etc.) — updates after every run |
+| **💬 Chat History** (left, below) | ChatGPT-style sidebar — every conversation with the codebase is auto-saved (localStorage), bucketed by *Today / Yesterday / Previous 7 days / Older*, searchable, click any entry to resume |
+| **🤖 AI Chat** (centre) | Multi-turn transcript with markdown rendering, per-message scope tag (`🗄️ Database` or `📊 <report-name>`), copy buttons, pending dot animation, model + run-id metadata. Toggle **📊 Chat with RE Report** above the prompt to answer strictly from a generated reverse-engineering report instead of the migration database |
+| **📊 Dashboards** (right) | Tabbed: Architecture · Dependency Graph · Control Flow · AST Explorer · **AST Galaxy** (2D/3D, multiple view modes incl. Service Catalog Expanded 3D and Technical Expanded v2 swim-lane) · **Migration Planner** with weighted scoring, replatform recommender, editable Strategy Workbook, and live Gantt chart · Portfolio · Complexity |
+
+**Key dashboards added in v3.4:**
+
+- **AST Galaxy** — 2D (vis-network) and **3D** (3d-force-graph) views of the program-level dependency universe. View modes include *Service Catalog (Expanded)*, *Service Catalog (Expanded 3D)*, and *Technical (Expanded v2)* — a north-to-south swim-lane layout that traces communication paths cleanly across programs. Floating mode-aware legend, cancel-resume layout buttons, click-to-inspect, double-click-to-drill into the AST Explorer.
+- **Migration Planner** — interactive lowest-hanging-fruit scorer. Sliders: max LOC / complexity / SQL / CALLs / criticality. Weight sliders to bias the score. Programs are bucketed into 3 waves (lowest-hanging fruit → medium → hubs). Includes an *editable Strategy Workbook* (6 sheets) that exports to multi-sheet `.xlsx`, a **collapsible Gantt chart** wired live to workbook edits (edit a Start week / Wave / Assigned to → bar moves), and a **⇄ Replatform recommender** that flags too-hard programs as candidates for hosting on a managed COBOL runtime instead of rewriting.
+- **Latest-run-per-file dedup** — every Neo4j-backed endpoint applies a "latest scan run per file" filter so dashboards never show duplicate program rows from older scans.
 
 **Portal URL:** http://localhost:5028
 
@@ -1204,10 +1207,12 @@ See [Parallel Jobs Formula](#parallel-jobs-formula) for chunking configuration d
 
 ## 📚 Further Reading
 
-- [Smart Chunking & Token Architecture](docs/smart-chunking-architecture.md) - Full diagrams, constants reference, and complexity scoring details
-- [Smart Chunking Guide](Smart-chuncking-how%20it-works.md) - Deep technical details
-- [Architecture Documentation](REVERSE_ENGINEERING_ARCHITECTURE.md) - System design
-- [Changelog](CHANGELOG.md) - Version history
+- [Custom Agent Onboarding](docs/customagent.md) — How to add a custom GitHub agent (Copilot CLI, gh-aw workflow, or runtime LLM agent) to this framework
+- [Smart Chunking & Token Architecture](docs/smart-chunking-architecture.md) — Diagrams, constants reference, complexity scoring
+- [Smart Chunking Guide](Smart-chuncking-how%20it-works.md) — Deep technical details
+- [Architecture Documentation](REVERSE_ENGINEERING_ARCHITECTURE.md) — System design
+- [Cobol-REKT Demo](docs/rekt-demo.md) — Static-analysis pipeline walkthrough
+- [Changelog](CHANGELOG.md) — Version history
 
 ---
 
@@ -1219,6 +1224,8 @@ See [Parallel Jobs Formula](#parallel-jobs-formula) for chunking configuration d
 | [Documentation Audit](.github/workflows/documentation-audit.lock.yml) | Weekly schedule | Performs a full audit of project documentation for accuracy and completeness |
 | [Test Enhancer](.github/workflows/test-enhancer.lock.yml) | On demand | Agentic workflow that analyzes the codebase and proposes improvements to test coverage |
 | [Branch Reviewer](.github/agents/branch-reviewer.agent.md) | On demand (Copilot CLI) | Reviews branch changes, summarizes commits, and detects breaking changes vs. `main` |
+
+> Adding your own agent? See [Custom Agent Onboarding](docs/customagent.md) for the three supported surfaces (Copilot CLI agent · gh-aw workflow agent · runtime LLM agent).
 
 ---
 

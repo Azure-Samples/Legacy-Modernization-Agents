@@ -14,6 +14,61 @@ using Neo4j.Driver;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// ── Auto-load Config/ai-config.local.env (and the template fallback) so
+//    AISETTINGS__* and AZURE_OPENAI_* env vars are available even when the
+//    server is launched directly without first sourcing the file in a shell.
+//    Lookup order: ContentRoot/Config, ContentRoot/../Config, then a few
+//    parent directories so dev launches from arbitrary CWDs still work.
+foreach (var envFile in new[] { "ai-config.local.env", "ai-config.env" })
+{
+	var candidates = new List<string>
+	{
+		Path.Combine(builder.Environment.ContentRootPath, "Config", envFile),
+		Path.Combine(builder.Environment.ContentRootPath, "..", "Config", envFile),
+		Path.Combine(builder.Environment.ContentRootPath, "..", "..", "Config", envFile),
+	};
+	foreach (var path in candidates)
+	{
+		var resolved = Path.GetFullPath(path);
+		if (!File.Exists(resolved)) continue;
+		try
+		{
+			var loaded = 0;
+			foreach (var raw in File.ReadAllLines(resolved))
+			{
+				var line = raw.Trim();
+				if (line.Length == 0 || line.StartsWith("#")) continue;
+				// Strip optional leading "export "
+				if (line.StartsWith("export ")) line = line.Substring("export ".Length);
+				var eq = line.IndexOf('=');
+				if (eq <= 0) continue;
+				var key = line.Substring(0, eq).Trim();
+				var value = line.Substring(eq + 1).Trim();
+				// Strip matching quotes
+				if (value.Length >= 2 && ((value.StartsWith("\"") && value.EndsWith("\"")) || (value.StartsWith("'") && value.EndsWith("'"))))
+					value = value.Substring(1, value.Length - 2);
+				// Expand $VAR / ${VAR} from already-set env (mimics shell sourcing)
+				value = System.Text.RegularExpressions.Regex.Replace(value, @"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?",
+					m => Environment.GetEnvironmentVariable(m.Groups[1].Value) ?? "");
+				// Don't overwrite values already provided by the parent env
+				if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable(key)))
+				{
+					Environment.SetEnvironmentVariable(key, value);
+					loaded++;
+				}
+			}
+			Console.WriteLine($"📦 Loaded {loaded} env var(s) from {resolved}");
+		}
+		catch (Exception ex)
+		{
+			Console.WriteLine($"⚠️ Failed to load env file {resolved}: {ex.Message}");
+		}
+		break;
+	}
+}
+// Re-bind configuration so the new env vars are visible to GetValue<>().
+builder.Configuration.AddEnvironmentVariables();
+
 // Configure Kestrel with SO_REUSEADDR to allow port reuse
 builder.WebHost.ConfigureKestrel(serverOptions =>
 {
@@ -51,20 +106,37 @@ builder.Services.PostConfigure<McpOptions>(options =>
 
 	if (string.IsNullOrWhiteSpace(options.AssemblyPath))
 	{
+		// Try both Debug and Release outputs across .NET 8/9/10 — pick the first
+		// existing one so the portal works regardless of how the migrator was built.
+		// Order: prefer the configuration matching the running env, then the other.
 		var candidateFrameworks = new[] { "net10.0", "net9.0", "net8.0" };
-		foreach (var framework in candidateFrameworks)
+		var preferredCfg = builder.Environment.IsDevelopment() ? "Debug" : "Release";
+		var fallbackCfg  = preferredCfg == "Debug" ? "Release" : "Debug";
+		var configsToTry = new[] { preferredCfg, fallbackCfg };
+
+		foreach (var cfg in configsToTry)
 		{
-			var candidate = Path.Combine(repoRoot, "bin", buildConfiguration, framework, "CobolToQuarkusMigration.dll");
-			if (File.Exists(candidate))
+			foreach (var framework in candidateFrameworks)
 			{
-				options.AssemblyPath = candidate;
-				break;
+				var candidate = Path.Combine(repoRoot, "bin", cfg, framework, "CobolToQuarkusMigration.dll");
+				if (File.Exists(candidate))
+				{
+					options.AssemblyPath = candidate;
+					Console.WriteLine($"📦 MCP assembly: {candidate}");
+					break;
+				}
 			}
+			if (!string.IsNullOrWhiteSpace(options.AssemblyPath)) break;
 		}
 
 		if (string.IsNullOrWhiteSpace(options.AssemblyPath))
 		{
-			options.AssemblyPath = Path.Combine(repoRoot, "bin", buildConfiguration, candidateFrameworks[0], "CobolToQuarkusMigration.dll");
+			// No build found — leave a sentinel path so logs make the cause obvious
+			// (the MCP subprocess will fail to start and chat will fall back to the
+			// direct AI client we wired in McpProcessClient.SendChatDirectAsync).
+			options.AssemblyPath = Path.Combine(repoRoot, "bin", preferredCfg, candidateFrameworks[0], "CobolToQuarkusMigration.dll");
+			Console.WriteLine($"⚠️ MCP assembly not found in bin/{preferredCfg} or bin/{fallbackCfg}. " +
+			                  $"Run `dotnet build` in the repo root to enable MCP resources. Expected at: {options.AssemblyPath}");
 		}
 	}
 	else
@@ -336,8 +408,9 @@ app.MapPost("/api/chat", async (ChatRequest request, IMcpClient client, Cancella
 		return Results.BadRequest("Prompt cannot be empty.");
 	}
 
-	// If the user toggled "Chat with Report", load the report content and prepend as context
-	var effectivePrompt = request.Prompt;
+	// If the user toggled "Chat with Report", load the report content and answer
+	// directly from it — bypass the SQLite/MCP/pattern-matching code paths so
+	// the answer is unambiguously sourced from the report (matches the toggle UX).
 	if (!string.IsNullOrWhiteSpace(request.ReportContext))
 	{
 		try
@@ -355,23 +428,69 @@ app.MapPost("/api/chat", async (ChatRequest request, IMcpClient client, Cancella
 
 			var reportPath = Path.GetFullPath(Path.Combine(repoRoot, request.ReportContext));
 			var reportRoot = Path.GetFullPath(repoRoot);
-			// Security: ensure path stays within repo
-			if (reportPath.StartsWith(reportRoot) && File.Exists(reportPath))
+			if (!reportPath.StartsWith(reportRoot))
 			{
-				var reportContent = await File.ReadAllTextAsync(reportPath, cancellationToken);
-				// Truncate if very large (keep first 50K chars)
-				if (reportContent.Length > 50000)
-					reportContent = reportContent[..50000] + "\n\n[... report truncated for context ...]";
-
-				effectivePrompt = $"CONTEXT: The following reverse engineering report is available for reference:\n\n{reportContent}\n\n---\n\nUSER QUESTION: {request.Prompt}";
-				Console.WriteLine($"📊 Chat with report context: {Path.GetFileName(reportPath)} ({reportContent.Length} chars)");
+				return Results.BadRequest($"Report path outside repository root: {request.ReportContext}");
 			}
+			if (!File.Exists(reportPath))
+			{
+				return Results.NotFound($"Report not found at {request.ReportContext} (resolved to {reportPath}). " +
+					"Re-select a report from the dropdown or run a new RE pass.");
+			}
+
+			var reportContent = await File.ReadAllTextAsync(reportPath, cancellationToken);
+			var origLen = reportContent.Length;
+			// Cap report content sent to the model. 100K chars ≈ 25-30K tokens, fits any provider.
+			const int MAX = 100_000;
+			if (reportContent.Length > MAX)
+				reportContent = reportContent[..MAX] + $"\n\n[... report truncated for context, {origLen - MAX:N0} of {origLen:N0} chars omitted ...]";
+
+			// Build prior-conversation block (if the frontend sent history).
+			var historyBlock = "";
+			if (request.History != null && request.History.Count > 0)
+			{
+				var trimmed = request.History.Where(h => !string.IsNullOrWhiteSpace(h.Content)).TakeLast(8).ToList();
+				if (trimmed.Count > 0)
+				{
+					var sb = new System.Text.StringBuilder("PRIOR CONVERSATION:\n");
+					foreach (var m in trimmed)
+					{
+						var role = string.Equals(m.Role, "assistant", StringComparison.OrdinalIgnoreCase) ? "Assistant" : "User";
+						var snippet = m.Content.Length > 1500 ? m.Content[..1500] + "…" : m.Content;
+						sb.Append(role).Append(": ").AppendLine(snippet);
+					}
+					sb.AppendLine("---");
+					historyBlock = sb.ToString();
+				}
+			}
+
+			var reportPrompt =
+				$"You are answering questions strictly from the reverse-engineering report below. " +
+				$"Quote or cite specific sections when relevant. If the report does not contain the answer, " +
+				$"say so explicitly — do NOT fall back to outside knowledge or invent details.\n\n" +
+				$"=== REPORT: {Path.GetFileName(reportPath)} ({origLen:N0} chars) ===\n" +
+				$"{reportContent}\n" +
+				$"=== END OF REPORT ===\n\n" +
+				$"{historyBlock}USER QUESTION: {request.Prompt}";
+
+			Console.WriteLine($"📊 Chat with report: {Path.GetFileName(reportPath)} ({origLen:N0} chars, sent {Math.Min(origLen, MAX):N0})");
+
+			var reportResponse = await client.SendChatAsync(reportPrompt, cancellationToken);
+			return Results.Ok(new ChatResponse(reportResponse, null));
 		}
+		catch (OperationCanceledException) { throw; }
 		catch (Exception ex)
 		{
-			Console.WriteLine($"⚠️ Failed to load report context: {ex.Message}");
+			Console.WriteLine($"⚠️ Failed to chat with report: {ex.Message}");
+			return Results.Problem(
+				detail: $"Failed to load report '{request.ReportContext}': {ex.Message}",
+				title: "Report context unavailable",
+				statusCode: 502);
 		}
 	}
+
+	// (Database / MCP / pattern-matching path follows when no report toggle is active.)
+	var effectivePrompt = request.Prompt;
 
 	// Check if user is asking about a specific file's content/analysis
 	var fileAnalysisPattern = new System.Text.RegularExpressions.Regex(
@@ -954,12 +1073,38 @@ You can still access the data directly:
 			}
 		}
 
-		// Augment the prompt with SQLite context
+		// Build a textual conversation transcript from prior turns so the AI has
+		// continuity even though this endpoint is otherwise stateless. Capped to
+		// the last ~10 messages — enough for follow-ups, small enough to stay fast.
+		var historyBlock = "";
+		if (request.History != null && request.History.Count > 0)
+		{
+			var trimmed = request.History.Where(h => !string.IsNullOrWhiteSpace(h.Content))
+				.TakeLast(10).ToList();
+			if (trimmed.Count > 0)
+			{
+				var sb = new System.Text.StringBuilder("PRIOR CONVERSATION (most recent first turn at top):\n");
+				foreach (var m in trimmed)
+				{
+					var role = string.Equals(m.Role, "assistant", StringComparison.OrdinalIgnoreCase) ? "Assistant" : "User";
+					var snippet = m.Content.Length > 1500 ? m.Content[..1500] + "…" : m.Content;
+					sb.Append(role).Append(": ").AppendLine(snippet);
+				}
+				sb.AppendLine("---");
+				historyBlock = sb.ToString();
+			}
+		}
+
+		// Augment the prompt with SQLite context (and prior conversation, if any)
 		var augmentedPrompt = request.Prompt;
 		if (!string.IsNullOrEmpty(contextData))
 		{
-			augmentedPrompt = $"CONTEXT FROM DATABASE:\n{contextData}\n\nUSER QUESTION: {request.Prompt}";
-			Console.WriteLine($"💡 Augmented prompt with SQLite context ({contextData.Length} chars)");
+			augmentedPrompt = $"{historyBlock}CONTEXT FROM DATABASE:\n{contextData}\n\nUSER QUESTION: {request.Prompt}";
+			Console.WriteLine($"💡 Augmented prompt with SQLite context ({contextData.Length} chars){(historyBlock.Length > 0 ? $" + {request.History?.Count ?? 0} prior turn(s)" : "")}");
+		}
+		else if (!string.IsNullOrEmpty(historyBlock))
+		{
+			augmentedPrompt = $"{historyBlock}USER QUESTION: {request.Prompt}";
 		}
 
 		var normalResponse = await client.SendChatAsync(augmentedPrompt, cancellationToken);
@@ -2386,33 +2531,69 @@ app.MapGet("/api/graph/rekt/galaxy", async (int? scanRunId, CancellationToken ca
 		using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
 		await using var session = driver.AsyncSession();
 
-		// Single-pass aggregation: one scan of ASTNode with conditional counts.
-		// Latest-run-per-program for AST data so duplicate scan trees never inflate counts;
-		// latest-run-per-file for the CobolFile lookup so the join stays 1:1.
-		var progResult = await session.RunAsync(@"
-			MATCH (a0:ASTNode) WHERE a0.program IS NOT NULL
-			WITH a0.program AS program, max(coalesce(a0.runId, 0)) AS _astRun
-			MATCH (a:ASTNode) WHERE a.program = program AND coalesce(a.runId, 0) = _astRun
-			WITH program,
-			     count(a) AS nodeCount,
-			     count(CASE WHEN a.nodeType IN ['SECTION', 'PARAGRAPHS'] THEN 1 END) AS sectionCount,
-			     count(CASE WHEN a.nodeType = 'PARAGRAPH' THEN 1 END) AS paraCount,
-			     count(CASE WHEN a.nodeType IN ['DIALECT', 'DIALECT_CONTAINER'] THEN 1 END) AS sqlCount,
-			     count(CASE WHEN a.nodeType IN ['CALL', 'CallStatement'] THEN 1 END) AS callCount,
-			     count(CASE WHEN a.nodeType = 'PERFORM' THEN 1 END) AS performCount,
-			     count(CASE WHEN a.nodeType IN ['IF_BRANCH', 'EVALUATE'] THEN 1 END) AS branchCount
-			CALL {
-			    WITH program
-			    OPTIONAL MATCH (f0:CobolFile) WHERE f0.fileName = replace(program, 'flow-ast-', '')
-			    WITH max(coalesce(f0.runId, 0)) AS _fr, replace(program, 'flow-ast-', '') AS fn
-			    OPTIONAL MATCH (f:CobolFile) WHERE f.fileName = fn AND coalesce(f.runId, 0) = _fr
-			    RETURN coalesce(f.lineCount, 0) AS lineCount,
-			           coalesce(f.isCopybook, false) AS isCopybook
-			    LIMIT 1
-			}
-			RETURN program, nodeCount, sectionCount, paraCount, sqlCount, callCount,
-			       performCount, branchCount, lineCount, isCopybook
-			ORDER BY program");
+		// When the caller pins a specific scanRunId we honour it for both AST and CobolFile lookups;
+		// otherwise we fall back to "latest run per program / per file" so the dashboard always
+		// shows the most recent scan and never duplicates rows from old scans.
+		var pinned = scanRunId.HasValue;
+		// Two-form Cypher:
+		//   pinned   → single scan filtered by exact runId
+		//   unpinned → two-pass scan to take the latest runId per program (current default)
+		string cypher;
+		if (pinned)
+		{
+			cypher = $@"
+				MATCH (a:ASTNode)
+				WHERE a.program IS NOT NULL AND coalesce(a.runId, 0) = $scanRunId
+				WITH a.program AS program,
+				     count(a) AS nodeCount,
+				     count(CASE WHEN a.nodeType IN ['SECTION', 'PARAGRAPHS'] THEN 1 END) AS sectionCount,
+				     count(CASE WHEN a.nodeType = 'PARAGRAPH' THEN 1 END) AS paraCount,
+				     count(CASE WHEN a.nodeType IN ['DIALECT', 'DIALECT_CONTAINER'] THEN 1 END) AS sqlCount,
+				     count(CASE WHEN a.nodeType IN ['CALL', 'CallStatement'] THEN 1 END) AS callCount,
+				     count(CASE WHEN a.nodeType = 'PERFORM' THEN 1 END) AS performCount,
+				     count(CASE WHEN a.nodeType IN ['IF_BRANCH', 'EVALUATE'] THEN 1 END) AS branchCount
+				CALL {{
+				    WITH program
+				    OPTIONAL MATCH (f:CobolFile)
+				    WHERE f.fileName = replace(program, 'flow-ast-', '') AND coalesce(f.runId, 0) = $scanRunId
+				    RETURN coalesce(f.lineCount, 0) AS lineCount,
+				           coalesce(f.isCopybook, false) AS isCopybook
+				    LIMIT 1
+				}}
+				RETURN program, nodeCount, sectionCount, paraCount, sqlCount, callCount,
+				       performCount, branchCount, lineCount, isCopybook
+				ORDER BY program";
+		}
+		else
+		{
+			cypher = @"
+				MATCH (a0:ASTNode) WHERE a0.program IS NOT NULL
+				WITH a0.program AS program, max(coalesce(a0.runId, 0)) AS _astRun
+				MATCH (a:ASTNode) WHERE a.program = program AND coalesce(a.runId, 0) = _astRun
+				WITH program,
+				     count(a) AS nodeCount,
+				     count(CASE WHEN a.nodeType IN ['SECTION', 'PARAGRAPHS'] THEN 1 END) AS sectionCount,
+				     count(CASE WHEN a.nodeType = 'PARAGRAPH' THEN 1 END) AS paraCount,
+				     count(CASE WHEN a.nodeType IN ['DIALECT', 'DIALECT_CONTAINER'] THEN 1 END) AS sqlCount,
+				     count(CASE WHEN a.nodeType IN ['CALL', 'CallStatement'] THEN 1 END) AS callCount,
+				     count(CASE WHEN a.nodeType = 'PERFORM' THEN 1 END) AS performCount,
+				     count(CASE WHEN a.nodeType IN ['IF_BRANCH', 'EVALUATE'] THEN 1 END) AS branchCount
+				CALL {
+				    WITH program
+				    OPTIONAL MATCH (f0:CobolFile) WHERE f0.fileName = replace(program, 'flow-ast-', '')
+				    WITH max(coalesce(f0.runId, 0)) AS _fr, replace(program, 'flow-ast-', '') AS fn
+				    OPTIONAL MATCH (f:CobolFile) WHERE f.fileName = fn AND coalesce(f.runId, 0) = _fr
+				    RETURN coalesce(f.lineCount, 0) AS lineCount,
+				           coalesce(f.isCopybook, false) AS isCopybook
+				    LIMIT 1
+				}
+				RETURN program, nodeCount, sectionCount, paraCount, sqlCount, callCount,
+				       performCount, branchCount, lineCount, isCopybook
+				ORDER BY program";
+		}
+
+		var progResult = await session.RunAsync(cypher,
+			pinned ? (object)new { scanRunId = scanRunId!.Value } : null);
 
 		var programs = new List<object>();
 		await progResult.ForEachAsync(r => programs.Add(new
@@ -2429,7 +2610,9 @@ app.MapGet("/api/graph/rekt/galaxy", async (int? scanRunId, CancellationToken ca
 			isCopybook = r["isCopybook"].As<bool>()
 		}));
 
-		// Inter-program dependency edges
+		// Inter-program dependency edges. Always DISTINCT across runs so every known
+		// dependency surfaces exactly once even when a specific scanRunId is pinned —
+		// older runs may carry the same edge with a different runId.
 		var edges = new List<object>();
 		try
 		{
@@ -2446,12 +2629,12 @@ app.MapGet("/api/graph/rekt/galaxy", async (int? scanRunId, CancellationToken ca
 		}
 		catch { /* edges are optional — CobolFile nodes may not exist */ }
 
-		return Results.Ok(new { programs, edges });
+		return Results.Ok(new { programs, edges, scanRunId = scanRunId, pinned });
 	}
 	catch (Exception ex)
 	{
 		Console.WriteLine($"⚠️ Galaxy endpoint: {ex.Message}");
-		return Results.Ok(new { programs = Array.Empty<object>(), edges = Array.Empty<object>() });
+		return Results.Ok(new { programs = Array.Empty<object>(), edges = Array.Empty<object>(), scanRunId = scanRunId, pinned = scanRunId.HasValue });
 	}
 });
 
@@ -5869,11 +6052,9 @@ app.MapPost("/api/models/connect", async (McpChatWeb.Models.ConnectProviderReque
 			// ── GitHub Copilot SDK: list models via CopilotClient ──
 			try
 			{
-				var options = new GitHub.Copilot.SDK.CopilotClientOptions { UseStdio = true };
-				if (!string.IsNullOrWhiteSpace(request.ApiKey))
-				{
-					options.GitHubToken = request.ApiKey;
-				}
+				var options = McpChatWeb.Services.CopilotCliResolver.BuildOptions(
+					useStdio: true,
+					githubToken: string.IsNullOrWhiteSpace(request.ApiKey) ? null : request.ApiKey);
 
 				var client = new GitHub.Copilot.SDK.CopilotClient(options);
 				var copilotModels = await client.ListModelsAsync();

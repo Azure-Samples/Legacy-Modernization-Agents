@@ -46,12 +46,10 @@ public static class PromptStudioAI
 
             try
             {
-                var options = new CopilotClientOptions { UseStdio = true };
-
-                // Use PAT if configured
                 var copilotToken = Environment.GetEnvironmentVariable("GITHUB_COPILOT_TOKEN") ?? "";
-                if (!string.IsNullOrWhiteSpace(copilotToken))
-                    options.GitHubToken = copilotToken;
+                var options = CopilotCliResolver.BuildOptions(
+                    useStdio: true,
+                    githubToken: string.IsNullOrWhiteSpace(copilotToken) ? null : copilotToken);
 
                 var client = new CopilotChatClient(activeModel, options);
                 return (client, activeModel, "");

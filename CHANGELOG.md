@@ -5,6 +5,37 @@ All notable changes to this repository are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.0] - 2026-05-05
+
+### Added
+- **AST Galaxy 3D + view modes** — New 3D rendering of the program-level dependency universe (powered by `3d-force-graph`) plus the *Service Catalog (Expanded 3D)* and *Technical (Expanded v2)* view modes. The v2 mode is a manually-laid-out north-to-south swim-lane view (one column per program, AST nodes stacked by layer, inter-program edges arched as overlay arrows) for easier path-tracing in dense graphs.
+- **Floating mode-aware legend** for both 2D and 3D AST Galaxy views, plus cancel-and-resume layout buttons.
+- **Migration Planner** dashboard tab (`McpChatWeb/wwwroot/migration-planner.js`) with weighted lowest-hanging-fruit scoring, 3-wave plan, sortable program table, and editable Strategy Workbook (6 sheets: Summary, Wave Plan, Programs, Domain Breakdown, Per-Domain Detail, Replatform Candidates, Gantt, Assumptions). Exports to multi-sheet `.xlsx` via xlsx@0.18.5 (CDN).
+- **Live Gantt chart** in Migration Planner — collapsible per-wave swim-lanes wired bidirectionally to the Strategy Workbook (edit Wave / Start week / End week / Assigned to in the workbook → bar moves immediately). Included as a `Gantt` sheet in the Excel export.
+- **Replatform recommender** — toggle + thresholds (ease ≤ N OR LOC ≥ N OR criticality ≥ N) flag programs as candidates for hosting on a managed COBOL runtime (Micro Focus / OpenText, Heirloom, Raincode, GnuCOBOL, AWS Blu Insights) instead of rewriting in Java/C#. Surfaces as a badge in the table, a striped-orange bar in the Gantt, and a dedicated `Replatform Candidates` Excel sheet.
+- **ChatGPT-style chat experience** — multi-turn transcript with markdown rendering, per-message scope tag (`🗄️ Database` or `📊 <report>`), copy buttons, pending dot animation, model + run-id metadata. New `chat-history.js` adds a localStorage-backed history sidebar (bucketed by Today / Yesterday / Previous 7 days / Older, searchable, click-to-resume).
+- **Chat with RE Report** moved above the prompt — purple-glow context bar with toggle + report dropdown. When ON, the chat handler bypasses the SQLite/MCP/file-pattern code paths and sends a strict report-only prompt with up to 100 KB of report content. System notices in the transcript announce when the scope changes.
+- **Conversation history → backend** — `ChatRequest` now accepts `History: List<ChatHistoryMessage>`; the handler prepends a `PRIOR CONVERSATION` block (last 10 messages, capped at 1500 chars each) so follow-ups have continuity.
+- **Direct AI fallback** in `Services/McpProcessClient.SendChatAsync` — when the MCP subprocess fails, chat transparently falls through to the GitHub Copilot SDK or Azure OpenAI HTTP API so the portal stays usable.
+- **`Services/CopilotCliResolver`** — auto-discovers a usable Copilot CLI binary across the SDK-managed location, `$COPILOT_CLI_PATH`, every entry on `$PATH`, and well-known install paths (`/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`, `~/.npm-global/bin`). Used by all three `CopilotClient` construction sites.
+- **Auto-load `Config/ai-config.local.env`** at portal startup so `AISETTINGS__*` and `AZURE_OPENAI_*` vars are available when the binary is launched directly (no shell `source` required). Supports `export VAR=value`, quoted values, and `$VAR` expansion.
+- **Latest-run-per-file deduplication** in every Neo4j-backed endpoint (`/api/graph/stats`, `/complexity`, `/rekt/galaxy`, `/rekt/galaxy-ast`, `/rekt/structure`, `/rekt/ast`, `/rekt/cfg`) so dashboards never show duplicate program rows from older scan runs. New `?scanRunId=N` query parameter pins a specific scan run when needed.
+- **AST Explorer drill-through** from the AST Galaxy Inspector panel — `🔬 Open in AST Explorer` button now switches tabs and loads the program directly.
+- **`docs/customagent.md`** — onboarding guide covering the three custom-agent surfaces (Copilot CLI agent, gh-aw workflow agent, runtime LLM agent).
+
+### Changed
+- **`/api/health/databases`** — model IDs now populate from the auto-loaded env vars (no more `Unknown` chips).
+- **`/api/resources`** — degrades gracefully with `{ resources: [], error }` when the MCP subprocess can't start; UI shows a friendlier explanation pointing users at the dashboards (which keep working).
+- **`/api/chat`** — short-circuits to a report-only path when `reportContext` is set; raises actionable 404/400 on missing/escaping report paths instead of silently falling back to database mode.
+- **MCP assembly resolver** — tries both `Debug` and `Release` builds across `net10.0/9.0/8.0`, prefers the configuration matching the runtime env, logs the chosen path or an actionable warning.
+- **Acknowledgements** — added thanks to [`avishek-sen-gupta/cobol-rekt`](https://github.com/avishek-sen-gupta/cobol-rekt) (MIT) for inspiration on the static-analysis pipeline.
+
+### Fixed
+- ForceGraph3D `.onNodeDoubleClick is not a function` error (3d-force-graph 1.73.3 lacks the API) — polyfilled via 350 ms click-timing.
+- Inspector "Open in AST Explorer" button was unreachable from inline `onclick` because `let galaxyView` was script-scoped — fixed by mirroring on `window.galaxyView` / `window.astExplorer`.
+- AST Explorer raw-mode crash on drill-through — `viewMode='raw'` returned HTML; now restricted to `'ast'/'cfg'/'structure'` with a content-type guard.
+- Migration Planner sliders wouldn't auto-grow when a fresh scan introduced larger files — now follow the new max if the user had parked at the previous max, otherwise clamp to the new range.
+
 ## [3.3.0] - 2026-03-27
 
 ### Added

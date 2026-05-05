@@ -37,8 +37,21 @@ async function loadScanRuns() {
 }
 
 window._onScanRunChange = function(value) {
+  const prev = _currentScanRunId;
   _currentScanRunId = value;
   console.log('Scan run changed to:', value);
+  // Invalidate caches that pin to a specific scan run so they re-fetch.
+  if (prev !== value) {
+    if (migrationPlanner && typeof migrationPlanner.refresh === 'function') {
+      migrationPlanner._scanRunIdAtFetch = value;
+      migrationPlanner.refresh();
+    }
+    if (galaxyView) {
+      galaxyView.galaxyData = null;
+      galaxyView.astData = null;
+    }
+    if (astExplorer) astExplorer.structureData = null;
+  }
   // Refresh the active view with the new scan context
   const activeTab = document.querySelector('.dashboard-tab.active');
   if (activeTab) switchDashboard(activeTab.dataset.tab);
