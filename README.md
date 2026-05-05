@@ -30,6 +30,12 @@ The migration uses Microsoft.Extensions.AI with a multi-provider architecture su
 - [Quick Start](#-quick-start)
 - [Usage: doctor.sh](#-usage-doctorsh)
 - [Reverse Engineering Reports](#-reverse-engineering-reports)
+- [Portal Features](#-portal-features)
+  - [Portal Overview](#portal-overview)
+  - [AI Provider Setup, Prompt Studio & Chat](#-ai-provider-setup-prompt-studio--chat)
+  - [Cobol-REKT Static Analysis & Graph Pipeline](#-cobol-rekt-static-analysis--graph-pipeline)
+  - [AST Galaxy & AST Explorer](#-ast-galaxy--ast-explorer)
+  - [Migration Planner — Domain-Based Time Chart](#-migration-planner--domain-based-time-chart)
 - [Folder Structure](#-folder-structure)
 - [Customizing Agent Behavior](#-customizing-agent-behavior)
 - [File Splitting & Naming](#-file-splitting--naming)
@@ -431,6 +437,205 @@ Add business terms to `Data/glossary.json` for better translations:
 ```
 
 The extractor uses these translations to produce more readable reports.
+
+---
+
+## 🖥️ Portal Features
+
+Once a migration run has produced data, the portal at **http://localhost:5028** becomes a self-service control surface. The next sub-sections walk through the portal in the order a typical user encounters them — from picking a model, through chatting with the code or report, into the static-analysis pipeline that powers every dashboard, and finally the planning view that turns the analysis into a wave-by-wave migration timeline.
+
+### Portal Overview
+
+The portal at **http://localhost:5028** is organised into four columns / panels:
+
+| Panel | Contents |
+|---|---|
+| **🚀 Mission Control** (left) | Provider/model picker, language target, file upload, run commands (Full Migration / RE / Convert / Resume), live run log |
+| **📋 MCP Resources** (left, below) | Live list of `insights://runs/<id>/...` URIs published by the MCP server (summary, dependencies, analyses, etc.) — updates after every run |
+| **💬 Chat History** (left, below) | ChatGPT-style sidebar — every conversation with the codebase is auto-saved (localStorage), bucketed by *Today / Yesterday / Previous 7 days / Older*, searchable, click any entry to resume |
+| **🤖 AI Chat** (centre) | Multi-turn transcript with markdown rendering, per-message scope tag (`🗄️ Database` or `📊 <report-name>`), copy buttons, pending dot animation, model + run-id metadata. Toggle **📊 Chat with RE Report** above the prompt to answer strictly from a generated reverse-engineering report instead of the migration database |
+| **📊 Dashboards** (right) | Tabbed: Architecture · Dependency Graph · Control Flow · AST Explorer · **AST Galaxy** (2D/3D, multiple view modes incl. Service Catalog Expanded 3D and Technical Expanded v2 swim-lane) · **Migration Planner** with weighted scoring, replatform recommender, editable Strategy Workbook, and live Gantt chart · Portfolio · Complexity |
+
+**Key dashboards added in v3.4:**
+
+- **AST Galaxy** — 2D (vis-network) and **3D** (3d-force-graph) views of the program-level dependency universe. View modes include *Service Catalog (Expanded)*, *Service Catalog (Expanded 3D)*, and *Technical (Expanded v2)* — a north-to-south swim-lane layout that traces communication paths cleanly across programs. Floating mode-aware legend, cancel-resume layout buttons, click-to-inspect, double-click-to-drill into the AST Explorer.
+- **Migration Planner** — interactive lowest-hanging-fruit scorer. Sliders: max LOC / complexity / SQL / CALLs / criticality. Weight sliders to bias the score. Programs are bucketed into 3 waves (lowest-hanging fruit → medium → hubs). Includes an *editable Strategy Workbook* (6 sheets) that exports to multi-sheet `.xlsx`, a **collapsible Gantt chart** wired live to workbook edits (edit a Start week / Wave / Assigned to → bar moves), and a **⇄ Replatform recommender** that flags too-hard programs as candidates for hosting on a managed COBOL runtime instead of rewriting.
+- **Latest-run-per-file dedup** — every Neo4j-backed endpoint applies a "latest scan run per file" filter so dashboards never show duplicate program rows from older scans.
+
+**Portal URL:** http://localhost:5028
+
+---
+
+## 🤖 AI Provider Setup, Prompt Studio & Chat
+
+These three browser-side features turn the portal into a full self-service control surface — pick a model, edit the agent prompts, and chat with the codebase or generated documents — without leaving the page.
+
+### AI Provider Setup
+
+A modal accessible from the **🔧 Setup** button (in the *Model & Prompts* panel). It supports two providers and discovers actual models on the fly:
+
+| Provider | Authentication | What gets discovered |
+|---|---|---|
+| **☁️ Azure OpenAI** | API key, or Azure CLI (`az login`) → falls back to `DefaultAzureCredential` | Real deployed models in your resource via the ARM management API — deployment name, base model, version, SKU capacity |
+| **🤖 GitHub Copilot SDK** | `gh auth login` (CLI session, default) or a Personal Access Token | Every model the Copilot SDK exposes (Claude / GPT-5 / Codex / Gemini / Grok / Llama / Mistral) |
+
+The chosen provider + model is persisted to `Config/ai-config.local.env` (auto-loaded at portal startup — no need to `source` anything in your shell).
+
+![AI Provider Setup modal](docs/images/ai-provider-setup.png)
+
+The portal also auto-resolves a usable Copilot CLI binary (`Services/CopilotCliResolver.cs`) — if the SDK's NuGet build target couldn't download the binary, the portal will use a system install (`/opt/homebrew/bin/copilot`, `/usr/local/bin/copilot`, anything on `$PATH`, or `$COPILOT_CLI_PATH`).
+
+### Prompt Studio
+
+Every agent in the pipeline (`CobolAnalyzer`, `BusinessLogicExtractor`, `DependencyMapper`, `JavaConverter`, `CSharpConverter`, `ChunkAwareJavaConverter`, `ChunkAwareCSharpConverter`) is driven by an editable Markdown prompt under `Agents/Prompts/`. Prompt Studio gives you two paths to (re)generate all of them based on what's actually in your `source/` folder:
+
+| Mode | Cost | Speed | What it does |
+|---|---|---|---|
+| **⚡ Quick Generate** | Free, no AI call | < 1 s | Scans source files with regex pattern matching to detect COBOL features (EXEC SQL, CICS screens, file I/O, copybooks, architecture pattern) and builds tailored prompts from templates. |
+| **🧠 AI-Enhanced Generate** | One AI call (~4K tokens) | 10–30 s | Same regex pass first, then sends actual COBOL code samples (3 largest programs + 2 largest copybooks) to the active model. The model adds domain-specific enhancements regex can't detect (naming conventions, business-logic patterns, language-specific variables, error-handling idioms) and assigns a quality score (1–10) per agent prompt. |
+
+![Prompt Studio](docs/images/prompt-studio.png)
+
+After generation, every prompt is editable in-place; scores persist to `Agents/Prompts/.prompt-scores.json` so you can track prompt-quality drift over time.
+
+### Chat with your code, database, or RE report
+
+The chat panel is a multi-turn ChatGPT-style transcript with a localStorage-backed history sidebar (bucketed by *Today / Yesterday / Previous 7 days / Older*, searchable, click-to-resume). Above the prompt sits the **📊 Chat with RE Report** context bar — the single switch between two answer-source scopes:
+
+| Toggle state | Source the AI sees | Backend path |
+|---|---|---|
+| **OFF — Database mode** (default) | Live SQLite (migration metadata) + Neo4j (dependency graph + REKT analysis) extracts | MCP/SQLite/file-pattern code paths in `/api/chat` |
+| **ON — Report mode** | Up to 100 KB of the selected reverse-engineering report (`reverse-engineering-details.md` or any other `.md` in `output/`) | Short-circuits to a strict report-only prompt — *"answer from this report; if it doesn't say, say so explicitly"* |
+
+A purple system notice appears in the transcript whenever the scope changes, and every user/assistant bubble shows its scope tag (`🗄️ Database` or `📊 <report-name>`) so you can see at a glance which source answered each turn.
+
+![Chat with RE Report — multi-turn transcript with scope notice](docs/images/chat-with-report.png)
+
+Other transcript features: lightweight markdown (code fences, headers, lists, links), per-message **⧉ Copy**, model + run-id metadata badges, pending dot animation while the request is in flight, history sidebar `+ New` to start a fresh thread, and a multi-turn `history: [{role, content}, …]` block sent to the model so follow-ups have continuity.
+
+### Reverse Engineering Results panel
+
+The **📄 Reverse Engineering Results** button (left sidebar) opens the rendered RE report in an in-portal viewer with `⬇ Download Report` / `⧉ Copy to Clipboard` / `⟳ Refresh`. The report contains a structured walk-through of every program — purpose, key paragraphs (with COBOL snippets), called programs, COMMAREA contracts, error paths, and business-rule annotations.
+
+![Reverse Engineering Results panel](docs/images/re-report.png)
+
+Each `## SECTION` of the report is selectable as the active context for the chat (toggle above), so you can ask follow-ups against the same document the AI used to generate the analysis. The report itself is regenerated by `./doctor.sh reverse-eng` (or as part of `./doctor.sh run`), persisted under `output/reverse-engineering-details.md`, and indexed into the Migration database so previous runs stay browsable from the *Migration Run* dropdown.
+
+---
+
+## 🔬 Cobol-REKT Static Analysis & Graph Pipeline
+
+The REKT pipeline gives the portal its "structured truth" about every COBOL program — independent of the AI-generated reverse-engineering report. It runs as three Docker services (defined in `docker-compose.yml`):
+
+| Service | Port | Role |
+|---|---|---|
+| `cobol-rekt` | — | Java CLI (`smojol-cli`) that parses each `.cbl/.cpy` into AST / Control-Flow / Data-flow JSON under `output/rekt/<program>.cbl.report/` |
+| `cobol-rekt-neo4j` | bolt **7688**, http **7475** | Dedicated Neo4j 5.15 (separate from the migration metadata DB) holding the unified analysis graph, with APOC + Graph Data Science plugins |
+| `graph-populator` | — | Python ingester that loads the REKT JSON + MMA metadata into Neo4j |
+
+```bash
+./doctor.sh rekt-full   # one-shot: parse → ingest → launch portal
+```
+
+The portal reads this graph through these endpoints (all dedup the latest scan run per file so old scans never inflate counts):
+
+- `/api/graph/rekt/galaxy` — programs + dependency edges (drives **AST Galaxy** and **Migration Planner**)
+- `/api/graph/rekt/galaxy-ast` — full structural AST nodes for every program
+- `/api/graph/rekt/structure?file=…` — program-level summary (sections, paragraphs, AST/SQL/CALL counts)
+- `/api/graph/rekt/ast?file=…` and `/api/graph/rekt/cfg?file=…` — per-file AST and control-flow graphs
+- `/api/graph/rekt/runs` — list of historical scan runs (the `?scanRunId=N` query param pins any of them)
+
+See [`docs/rekt-demo.md`](docs/rekt-demo.md) for an end-to-end walkthrough.
+
+---
+
+## 🌌 AST Galaxy & AST Explorer
+
+The **AST Galaxy** dashboard tab visualises every program and its sub-structure as an interactive graph. It comes in 2D (vis-network) and **3D** (3d-force-graph) modes with multiple view layouts.
+
+### View modes
+
+| View | What it shows |
+|---|---|
+| **Service Catalog** | One node per program, grouped by detected business domain. Click a domain hub to drill into its members. |
+| **Service Catalog (Expanded 3D)** | Same, in 3D — nodes form a galaxy where domain clusters are visible at a glance. |
+| **Business Domains** | High-level cluster view: each program collapsed into its parent domain. |
+| **Technical (Expanded)** | Programs + their sections/paragraphs/CALL/SQL nodes with physics layout. |
+| **Technical (Expanded v2)** | Manually laid out **north-to-south swim-lane** view — one column per program, AST nodes stacked by layer, inter-program edges arched as overlay arrows. Designed for following a path of communication cleanly through dense graphs. |
+
+| Service Catalog (high-level domains) | Galaxy view (3D, programs as orbits) |
+|---|---|
+| ![Service Catalog](docs/images/ast-galaxy-service-catalog.png) | ![3D Galaxy](docs/images/ast-galaxy-3d.png) |
+
+| Domain drill-down (programs in *Customer Management*) | Business Domains cluster view |
+|---|---|
+| ![Domain drill](docs/images/ast-galaxy-domain.png) | ![Business Domains](docs/images/ast-galaxy-business-domains.png) |
+
+| Expanded view (every AST node visible) | Technical (Expanded v2) — swim-lane top-down |
+|---|---|
+| ![Expanded](docs/images/ast-galaxy-expanded.png) | ![Technical v2](docs/images/ast-galaxy-technical-v2.png) |
+
+### What you can do
+
+- **Click** a node → Inspector panel on the right shows its type, domain, line range, AST node count, SQL/CALL/PERFORM/branch counts.
+- **🔬 Open in AST Explorer** button on the Inspector → switches to the AST Explorer tab and loads the program directly.
+- **Double-click** a program node → expands its full AST tree inline.
+- **Floating legend** (top-right) is mode-aware and lists every shape, colour, and edge type currently on screen.
+- **Cancel / Resume layout** buttons stop the force simulation if it's busy with a large graph.
+- **Search** filter highlights matches; **scan run** dropdown pins a specific historical scan.
+
+### AST Explorer (per-file deep dive)
+
+The AST Explorer tab opens a single program at a time and renders its AST, control-flow, or program-structure graph (top-level dropdown). Each node shows the COBOL statement type (PERFORM / IF / DIALECT / CALL / …) plus line numbers. This is the surface you land on after the *Open in AST Explorer* drill-through from the Galaxy.
+
+---
+
+## 📅 Migration Planner — Domain-Based Time Chart
+
+The **Migration Planner** tab turns the same Neo4j graph into a sliceable migration strategy. It scores every program on a weighted *ease* metric and packs them into 3 waves (lowest-hanging fruit → medium effort → hubs/hard cases). Programs are grouped by detected **business domain** so squads can be assigned per domain.
+
+### Filters & weights
+
+Drag the sliders to exclude programs above a threshold (LOC / complexity / SQL stmts / CALLs / criticality), and bias the score by re-weighting any axis 0–10. Sliders auto-grow when a fresh scan introduces larger files.
+
+![Filters and weights](docs/images/migration-planner-sliders.png)
+
+### Wave summary + program table
+
+Each row shows wave assignment, domain, LOC, complexity, SQL, CALLs, inbound/outbound deps, ease score, and a recommendation badge (`↻ REWRITE` or `⇄ REPLATFORM`). The header shows the dataset summary (`66 nodes (29 programs, 37 copybooks) · 212 dependencies · Avg 6.4 connections/node`) live from `/api/graph/rekt/galaxy`.
+
+![Migration Planner table](docs/images/migration-planner-table.png)
+
+### Live Gantt — suggested time chart
+
+Below the table, the **Migration Path — Gantt** panel renders the suggested timeline grouped by wave. Each program gets a coloured bar from its scheduled start week → end week, sorted into 3 parallel dev tracks per wave (`Dev 1 / Dev 2 / Dev 3`). Click any wave header to expand/collapse its programs. The chart is wired bidirectionally to the Strategy Workbook below — edit *Wave / Start week / End week / Assigned to* in the workbook and the bars move immediately.
+
+![Migration Planner Gantt](docs/images/migration-planner-gantt.png)
+
+### Editable Strategy Workbook → Excel export
+
+The same data is rendered as a 6-sheet editable workbook (`Summary`, `Wave Plan`, `Programs`, `Domain Breakdown`, `Per-Domain Detail`, `Replatform Candidates`, `Gantt`, `Assumptions`). Click any cell to edit — *Tab* moves to the next column, *Enter* commits. Edits override the auto-computed values and are included in the Excel export. **⬇ Export Excel** writes a single multi-sheet `.xlsx`.
+
+![Strategy Workbook](docs/images/migration-planner-workbook.png)
+
+### Replatform recommender
+
+The orange context bar above the table flags programs that are too costly to rewrite as **replatform candidates** (host the COBOL on a managed runtime — Micro Focus / OpenText, Heirloom, Raincode, GnuCOBOL, AWS Blu Insights — instead of converting). Adjustable thresholds: `ease ≤ N` OR `LOC ≥ N` OR `criticality ≥ N`. Flagged rows show a striped-orange bar in the Gantt and appear on a dedicated `Replatform Candidates` Excel sheet with trigger reasons.
+
+![Migration Planner overview with Gantt and workbook](docs/images/migration-planner-overview.png)
+
+### Effort model (defaults — all editable in the *Assumptions* sheet)
+
+| Setting | Default | Meaning |
+|---|---|---|
+| Base velocity | 500 LOC / dev / week | COBOL → Java conversion (coding + unit tests, excludes integration) |
+| Team size | 3 devs | Parallelism within a single wave |
+| Wave multipliers | W1 ×1.0, W2 ×1.5, W3 ×2.5 | Hubs/highly-coupled need more design time |
+| SQL extra effort | 5 LOC-equivalent / SQL stmt | JPA/JDBC mapping cost |
+| CALL extra effort | 20 LOC-equivalent / CALL | Integration cost between programs |
+| Integration buffer | +30% per wave | QA, integration tests, hardening |
+
+---
 
 ---
 
@@ -1014,28 +1219,6 @@ sequenceDiagram
 5. **Conversion** - `JavaConverterAgent` or `CSharpConverterAgent` generates target code → `output/`
 6. **Storage** - `HybridMigrationRepository` writes metadata to SQLite, graph edges to Neo4j
 7. **Portal** - `McpChatWeb` surfaces chat, graphs, and reports at http://localhost:5028
-
----
-
-### Portal UI
-
-The portal at **http://localhost:5028** is organised into four columns / panels:
-
-| Panel | Contents |
-|---|---|
-| **🚀 Mission Control** (left) | Provider/model picker, language target, file upload, run commands (Full Migration / RE / Convert / Resume), live run log |
-| **📋 MCP Resources** (left, below) | Live list of `insights://runs/<id>/...` URIs published by the MCP server (summary, dependencies, analyses, etc.) — updates after every run |
-| **💬 Chat History** (left, below) | ChatGPT-style sidebar — every conversation with the codebase is auto-saved (localStorage), bucketed by *Today / Yesterday / Previous 7 days / Older*, searchable, click any entry to resume |
-| **🤖 AI Chat** (centre) | Multi-turn transcript with markdown rendering, per-message scope tag (`🗄️ Database` or `📊 <report-name>`), copy buttons, pending dot animation, model + run-id metadata. Toggle **📊 Chat with RE Report** above the prompt to answer strictly from a generated reverse-engineering report instead of the migration database |
-| **📊 Dashboards** (right) | Tabbed: Architecture · Dependency Graph · Control Flow · AST Explorer · **AST Galaxy** (2D/3D, multiple view modes incl. Service Catalog Expanded 3D and Technical Expanded v2 swim-lane) · **Migration Planner** with weighted scoring, replatform recommender, editable Strategy Workbook, and live Gantt chart · Portfolio · Complexity |
-
-**Key dashboards added in v3.4:**
-
-- **AST Galaxy** — 2D (vis-network) and **3D** (3d-force-graph) views of the program-level dependency universe. View modes include *Service Catalog (Expanded)*, *Service Catalog (Expanded 3D)*, and *Technical (Expanded v2)* — a north-to-south swim-lane layout that traces communication paths cleanly across programs. Floating mode-aware legend, cancel-resume layout buttons, click-to-inspect, double-click-to-drill into the AST Explorer.
-- **Migration Planner** — interactive lowest-hanging-fruit scorer. Sliders: max LOC / complexity / SQL / CALLs / criticality. Weight sliders to bias the score. Programs are bucketed into 3 waves (lowest-hanging fruit → medium → hubs). Includes an *editable Strategy Workbook* (6 sheets) that exports to multi-sheet `.xlsx`, a **collapsible Gantt chart** wired live to workbook edits (edit a Start week / Wave / Assigned to → bar moves), and a **⇄ Replatform recommender** that flags too-hard programs as candidates for hosting on a managed COBOL runtime instead of rewriting.
-- **Latest-run-per-file dedup** — every Neo4j-backed endpoint applies a "latest scan run per file" filter so dashboards never show duplicate program rows from older scans.
-
-**Portal URL:** http://localhost:5028
 
 ---
 
