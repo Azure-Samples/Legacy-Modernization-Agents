@@ -264,13 +264,12 @@
   // ── Wiring ──────────────────────────────────────────────────────────
   function init() {
     load();
-    if (!getCurrent() && state.conversations.length === 0) {
-      // Lazy: don't auto-create. Wait for the first user message.
-    } else if (!getCurrent()) {
-      // Pick the most recent if currentId is stale.
-      const latest = state.conversations.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
-      if (latest) state.currentId = latest.id;
-    }
+    // Always start with a fresh transcript on page load. The previous
+    // conversation (if any) is kept in the sidebar so the user can click
+    // it to resume — but the chat area itself is empty until they either
+    // click a sidebar entry or send a new prompt.
+    state.currentId = null;
+    try { localStorage.removeItem(CURRENT_KEY); } catch {}
     renderList();
     renderTranscript();
     document.getElementById('ch-new-btn')?.addEventListener('click', () => newConversation());

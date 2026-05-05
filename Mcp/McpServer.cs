@@ -752,84 +752,46 @@ public sealed class McpServer
 
     private async Task<string> BuildChatResponseAsync(string prompt, MigrationRunSummary summary, DependencyMap? dependencyMap, IReadOnlyList<CobolAnalysis> analyses)
     {
-        var builder = new StringBuilder();
+        // The chat response should contain ONLY the AI's answer to the user's
+        // prompt. Run-level metadata (programs/copybooks/insights), pre-canned
+        // dependency tables, and "explore via resources" footers are now surfaced
+        // in the portal's UI panels (Run Output, Resources, Migration Planner) —
+        // including them inline made the model echo them back and drowned the
+        // actual answer.
 
-        builder.AppendLine($"Run {summary.RunId} ({summary.Status})");
-        if (summary.Metrics is not null)
+        // No prompt → fall back to a tiny one-line summary so the channel still
+        // returns something useful when invoked without a question.
+        if (string.IsNullOrWhiteSpace(prompt))
         {
-            builder.AppendLine($"• Programs: {summary.Metrics.TotalPrograms}, Copybooks: {summary.Metrics.TotalCopybooks}, Dependencies: {summary.Metrics.TotalDependencies}");
-            if (!string.IsNullOrWhiteSpace(summary.Metrics.MostUsedCopybook))
-            {
-                builder.AppendLine($"• Most used copybook: {summary.Metrics.MostUsedCopybook} ({summary.Metrics.MostUsedCopybookCount} references)");
-            }
+            var s = new StringBuilder();
+            s.Append($"Run {summary.RunId} ({summary.Status})");
+            if (summary.Metrics is not null)
+                s.Append($" — {summary.Metrics.TotalPrograms} programs, {summary.Metrics.TotalCopybooks} copybooks, {summary.Metrics.TotalDependencies} deps.");
+            return s.ToString();
         }
 
-        if (!string.IsNullOrWhiteSpace(summary.AnalysisInsights))
+        // No AI client wired? Use the deterministic fallback (intent-matched).
+        if (_chatClient == null || string.IsNullOrEmpty(_modelId))
         {
-            builder.AppendLine();
-            builder.AppendLine("Insights:");
-            builder.AppendLine(summary.AnalysisInsights);
+            var fb = new StringBuilder();
+            AppendFallbackResponse(fb, prompt, analyses, dependencyMap);
+            return fb.ToString().TrimEnd();
         }
 
-        // Use IChatClient to answer custom questions
-        if (!string.IsNullOrWhiteSpace(prompt) && _chatClient != null && !string.IsNullOrEmpty(_modelId))
+        // Happy path — let the AI answer, return *only* its response.
+        try
         {
-            builder.AppendLine();
-            builder.AppendLine($"Your question: {prompt}");
-            builder.AppendLine();
-
-            try
-            {
-                var aiResponse = await GetAIResponseAsync(prompt, summary, dependencyMap, analyses);
-                
-                // Big ASCII banner to make AI response easy to find
-                builder.AppendLine();
-                builder.AppendLine("╔══════════════════════════════════════════════════════════════════╗");
-                builder.AppendLine("║     _    ___      _    _   _ ______        _______ ____          ║");
-                builder.AppendLine("║    / \\  |_ _|    / \\  | \\ | / ___\\ \\      / / ____|  _ \\         ║");
-                builder.AppendLine("║   / _ \\  | |    / _ \\ |  \\| \\___ \\\\ \\ /\\ / /|  _| | |_) |        ║");
-                builder.AppendLine("║  / ___ \\ | |   / ___ \\| |\\  |___) |\\ V  V / | |___|  _ <         ║");
-                builder.AppendLine("║ /_/   \\_\\___|_/_/   \\_\\_| \\_|____/  \\_/\\_/  |_____|_| \\_\\        ║");
-                builder.AppendLine("║                                                                  ║");
-                builder.AppendLine($"║  Model: {_modelId,-54} ║");
-                builder.AppendLine("╚══════════════════════════════════════════════════════════════════╝");
-                builder.AppendLine();
-                builder.AppendLine(aiResponse);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to get AI response for question: {Prompt}", prompt);
-                builder.AppendLine($"Unable to get AI answer. Error: {ex.Message}");
-                // builder.AppendLine(ex.StackTrace); // Uncomment for more details if needed
-                builder.AppendLine("Using fallback response.");
-                AppendFallbackResponse(builder, prompt, analyses, dependencyMap);
-            }
+            return (await GetAIResponseAsync(prompt, summary, dependencyMap, analyses)).Trim();
         }
-        else if (!string.IsNullOrWhiteSpace(prompt))
+        catch (Exception ex)
         {
-            builder.AppendLine();
-            builder.AppendLine($"Your question: {prompt}");
-            AppendFallbackResponse(builder, prompt, analyses, dependencyMap);
+            _logger.LogError(ex, "Failed to get AI response for question: {Prompt}", prompt);
+            var err = new StringBuilder();
+            err.AppendLine($"⚠️ AI call failed: {ex.Message}");
+            err.AppendLine();
+            AppendFallbackResponse(err, prompt, analyses, dependencyMap);
+            return err.ToString().TrimEnd();
         }
-
-        if (dependencyMap is not null && dependencyMap.Dependencies.Count > 0)
-        {
-            builder.AppendLine();
-            builder.AppendLine("Top dependencies:");
-            foreach (var dep in dependencyMap.Dependencies.Take(5))
-            {
-                builder.AppendLine($"- {dep.SourceFile} -> {dep.TargetFile} ({dep.DependencyType})");
-            }
-        }
-
-        builder.AppendLine();
-        builder.AppendLine("Explore richer data via resources:");
-        builder.AppendLine($"• Run summary: insights://runs/{_runId}/summary");
-        builder.AppendLine($"• Dependency graph: insights://runs/{_runId}/dependencies");
-        builder.AppendLine($"• Analyses index: insights://runs/{_runId}/analyses");
-        builder.AppendLine($"• Specific analysis: insights://runs/{_runId}/analyses/<program>");
-
-        return builder.ToString();
     }
 
     private void AppendFallbackResponse(StringBuilder builder, string prompt, IReadOnlyList<CobolAnalysis> analyses, DependencyMap? dependencyMap)

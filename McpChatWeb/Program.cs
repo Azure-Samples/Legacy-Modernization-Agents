@@ -1095,11 +1095,24 @@ You can still access the data directly:
 			}
 		}
 
-		// Augment the prompt with SQLite context (and prior conversation, if any)
+		// Augment the prompt with SQLite context (and prior conversation, if any).
+		// The leading instruction is intentionally strict: some models will
+		// otherwise treat the context block as the user's request and echo /
+		// summarise it. Hard-cap context size to keep latency bounded.
+		const int MAX_CONTEXT_CHARS = 20_000;
+		if (contextData.Length > MAX_CONTEXT_CHARS)
+			contextData = contextData[..MAX_CONTEXT_CHARS] +
+				$"\n\n[... context truncated to {MAX_CONTEXT_CHARS:N0} chars ...]";
+
 		var augmentedPrompt = request.Prompt;
 		if (!string.IsNullOrEmpty(contextData))
 		{
-			augmentedPrompt = $"{historyBlock}CONTEXT FROM DATABASE:\n{contextData}\n\nUSER QUESTION: {request.Prompt}";
+			var instruction =
+				"You are answering a single user question. Use the BACKGROUND CONTEXT below " +
+				"only as grounding knowledge — DO NOT echo, summarise, list, or describe the " +
+				"context unless the user explicitly asks for it. Answer concisely and address " +
+				"ONLY the USER QUESTION at the bottom of this prompt.\n";
+			augmentedPrompt = $"{instruction}\n{historyBlock}--- BEGIN BACKGROUND CONTEXT ---\n{contextData}\n--- END BACKGROUND CONTEXT ---\n\nUSER QUESTION: {request.Prompt}";
 			Console.WriteLine($"💡 Augmented prompt with SQLite context ({contextData.Length} chars){(historyBlock.Length > 0 ? $" + {request.History?.Count ?? 0} prior turn(s)" : "")}");
 		}
 		else if (!string.IsNullOrEmpty(historyBlock))
