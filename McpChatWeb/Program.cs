@@ -1545,7 +1545,7 @@ app.MapGet("/api/graph/rekt/runs", async (CancellationToken cancellationToken) =
 		var runs = new List<object>();
 		await result.ForEachAsync(r => runs.Add(new
 		{
-			runId = r["runId"].As<int>(),
+			runId = r["runId"].As<long>(),
 			fileCount = r["fileCount"].As<int>(),
 			maxLines = r["maxLines"].As<int>()
 		}));

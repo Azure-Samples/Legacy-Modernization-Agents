@@ -587,7 +587,7 @@ def ingest_rekt_outputs(driver, rekt_output_dir: str, source_dir: str, run_id: i
             ast_total += ingest_rekt_ast(driver, program_name, data, run_id)
         elif "cfg" in name_lower:
             cfg_total += ingest_rekt_cfg(driver, program_name, data, run_id)
-        elif "data-structure" in name_lower or "data_structure" in name_lower:
+        elif "data-structure" in name_lower or "data_structure" in name_lower or name_lower.endswith("-data.json"):
             ds_total += ingest_rekt_data_structures(driver, program_name, data, run_id)
 
     counts["ASTNode"] = ast_total

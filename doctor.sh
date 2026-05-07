@@ -2328,6 +2328,21 @@ ensure_rekt_containers() {
     else
         echo -e "  ${YELLOW}⚠️  Cobol-REKT CLI not responding (container may still be building)${NC}"
     fi
+
+    # Verify /output bind mount is writable — rm -rf on the host changes the inode and breaks it.
+    # Restart the container to re-establish the mount if needed.
+    if ! docker exec "$REKT_CONTAINER" bash -c \
+        "touch /output/.write_probe && rm -f /output/.write_probe" >/dev/null 2>&1; then
+        echo -e "  ${YELLOW}⚠️  /output bind mount stale — restarting $REKT_CONTAINER...${NC}"
+        docker restart "$REKT_CONTAINER" >/dev/null
+        sleep 3
+        if ! docker exec "$REKT_CONTAINER" bash -c \
+            "touch /output/.write_probe && rm -f /output/.write_probe" >/dev/null 2>&1; then
+            echo -e "  ${RED}❌ /output still not writable after restart. Check Docker volume mount.${NC}"
+            return 1
+        fi
+        echo -e "  ${GREEN}✅ Bind mount restored${NC}"
+    fi
 }
 
 run_rekt_parse() {
@@ -2379,12 +2394,19 @@ run_rekt_parse() {
     local succeeded=0
     local failed=0
     local failed_files=""
+    # Clear previous run outputs so old files from other projects don't contaminate the new ingest.
+    # Use find-delete rather than rm -rf dir to preserve the Docker bind mount (./output/rekt:/output).
+    # Deleting and recreating the directory breaks the container's volume mount on macOS.
     mkdir -p "$REPO_ROOT/output/rekt"
+    find "$REPO_ROOT/output/rekt" -mindepth 1 -delete 2>/dev/null || true
 
     for cbl_file in "$REPO_ROOT/source"/*.cbl "$REPO_ROOT/source"/*.CBL; do
         [[ -e "$cbl_file" ]] || continue
         local fname
         fname=$(basename "$cbl_file")
+        local stem="${fname%.cbl}"
+        stem="${stem%.CBL}"
+        local err_log="$REPO_ROOT/output/rekt/${stem}.parse.log"
 
         echo -ne "  Parsing $fname..."
 
@@ -2394,8 +2416,9 @@ run_rekt_parse() {
             --srcDir=/source --copyBooksDir=/source \
             --dialectJarPath=/app/dialect-idms.jar \
             --reportDir=/output \
-            --generation=PROGRAM >/dev/null 2>&1; then
+            --generation=PROGRAM >/dev/null 2>"$err_log"; then
             echo -e " ${GREEN}✅${NC}"
+            rm -f "$err_log"
             succeeded=$((succeeded + 1))
         else
             # Attempt 2: Retry without dialect JAR (for IMS/DL/I and other dialects)
@@ -2403,8 +2426,9 @@ run_rekt_parse() {
                 --commands="BUILD_BASE_ANALYSIS WRITE_FLOW_AST WRITE_CFG WRITE_DATA_STRUCTURES" \
                 --srcDir=/source --copyBooksDir=/source \
                 --reportDir=/output \
-                --generation=PROGRAM >/dev/null 2>&1; then
+                --generation=PROGRAM >/dev/null 2>>"$err_log"; then
                 echo -e " ${GREEN}✅${NC} (no-dialect mode)"
+                rm -f "$err_log"
                 succeeded=$((succeeded + 1))
             else
                 # Attempt 3: Raw AST only (tolerates more parse errors)
@@ -2412,8 +2436,9 @@ run_rekt_parse() {
                     --commands="WRITE_RAW_AST" \
                     --srcDir=/source --copyBooksDir=/source \
                     --reportDir=/output \
-                    --generation=PROGRAM >/dev/null 2>&1; then
+                    --generation=PROGRAM >/dev/null 2>>"$err_log"; then
                     echo -e " ${YELLOW}⚠️${NC} (raw AST only — complex copybooks)"
+                    rm -f "$err_log"
                     succeeded=$((succeeded + 1))
                 else
                     # Attempt 4: validate + dependency (bypasses AST-writer NPE bugs)
@@ -2423,19 +2448,29 @@ run_rekt_parse() {
                     if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar dependency "$fname" \
                         --srcDir=/source --copyBooksDir=/source \
                         --dialectJarPath=/app/dialect-idms.jar \
-                        --export=/output/"${fname%.cbl}"-deps.json >/dev/null 2>&1; then
+                        --export=/output/"${fname%.cbl}"-deps.json >/dev/null 2>>"$err_log"; then
                         dep_ok=true
                     fi
                     # Also try validate (may report warnings but still useful)
                     docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar validate "$fname" \
                         --srcDir=/source --copyBooksDir=/source \
-                        --dialectJarPath=/app/dialect-idms.jar >/dev/null 2>&1 || true
+                        --dialectJarPath=/app/dialect-idms.jar >/dev/null 2>>"$err_log" || true
 
                     if [[ "$dep_ok" == true ]]; then
                         echo -e " ${YELLOW}⚠️${NC} (deps only — AST writer bug)"
+                        # Show smojol error hint. Prefer "Caused by:" (root cause); fall back to first match.
+                        # Full log available at output/rekt/<stem>.parse.log
+                        local err_hint
+                        err_hint=$(grep -Eo '(Exception|Error|Caused by): .{1,120}' "$err_log" 2>/dev/null \
+                            | grep -i 'caused by' | head -1)
+                        [[ -z "$err_hint" ]] && \
+                            err_hint=$(grep -Eo '(Exception|Error|Caused by): .{1,120}' "$err_log" 2>/dev/null | head -1)
+                        [[ -n "$err_hint" ]] && echo -e "    ${YELLOW}↳ smojol: $err_hint${NC}"
+                        echo -e "    ${YELLOW}↳ log: output/rekt/${stem}.parse.log${NC}"
                         succeeded=$((succeeded + 1))
                     else
                         echo -e " ${RED}❌${NC}"
+                        echo -e "    ${RED}↳ log: output/rekt/${stem}.parse.log${NC}"
                         failed=$((failed + 1))
                         failed_files="${failed_files} ${fname}"
                     fi
@@ -2469,10 +2504,9 @@ run_rekt_ingest() {
         sqlite_flag="--sqlite-db /data/$(basename "$db_path")"
     fi
 
-    # Use timestamp-based run ID so each scan is trackable
+    # Use date-based run ID (YYYYMMDDhhmm) — readable and unique per minute
     local run_id
-    run_id=$(date +%s)
-    run_id=$((run_id % 100000)) # Keep it reasonable
+    run_id=$(date +%Y%m%d%H%M)
     echo -e "${BLUE}  Scan Run ID: ${GREEN}${run_id}${NC}"
 
     echo -e "${BLUE}  Ingesting into $REKT_NEO4J_CONTAINER (bolt://localhost:$REKT_NEO4J_BOLT_PORT)${NC}"
