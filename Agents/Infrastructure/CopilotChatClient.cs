@@ -285,9 +285,6 @@ public sealed class CopilotChatClient : IChatClient, IAsyncDisposable
     /// </remarks>
     public void Dispose()
     {
-        _disposed = true;
-    public void Dispose()
-    {
         if (_disposed) return;
         _disposed = true;
         try { _client.ForceStopAsync().GetAwaiter().GetResult(); } catch { /* best-effort */ }
