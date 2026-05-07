@@ -36,7 +36,10 @@ class ASTExplorer {
     if (!select) return;
     try {
       let files = [];
-      const rektResp = await fetch('/api/graph/rekt/files');
+      const scanParam = typeof _currentScanRunId !== 'undefined' && _currentScanRunId &&
+        _currentScanRunId !== 'all' && _currentScanRunId !== 'latest'
+        ? `?scanRunId=${_currentScanRunId}` : '';
+      const rektResp = await fetch('/api/graph/rekt/files' + scanParam);
       if (rektResp.ok) files = await rektResp.json();
 
       const current = select.value;
@@ -72,7 +75,10 @@ class ASTExplorer {
     if (sourceEl) sourceEl.innerHTML = '<div class="source-placeholder">Select a section or paragraph to view source</div>';
 
     try {
-      const resp = await fetch(`/api/graph/rekt/structure?file=${encodeURIComponent(fileName)}`);
+      const scanParam = typeof _currentScanRunId !== 'undefined' && _currentScanRunId &&
+        _currentScanRunId !== 'all' && _currentScanRunId !== 'latest'
+        ? `&scanRunId=${_currentScanRunId}` : '';
+      const resp = await fetch(`/api/graph/rekt/structure?file=${encodeURIComponent(fileName)}${scanParam}`);
       if (!resp.ok) {
         graphEl.innerHTML = `<div class="ast-empty">No structure data for ${this._escHtml(fileName.replace('flow-ast-',''))}.<br><code>./doctor.sh rekt-full</code></div>`;
         return;
@@ -324,7 +330,10 @@ class ASTExplorer {
     if (!inspectorEl) return;
 
     try {
-      const resp = await fetch(`/api/graph/rekt/ast?file=${encodeURIComponent(this.currentFile)}`);
+      const scanParam = typeof _currentScanRunId !== 'undefined' && _currentScanRunId &&
+        _currentScanRunId !== 'all' && _currentScanRunId !== 'latest'
+        ? `&scanRunId=${_currentScanRunId}` : '';
+      const resp = await fetch(`/api/graph/rekt/ast?file=${encodeURIComponent(this.currentFile)}${scanParam}`);
       if (!resp.ok) return;
       const astData = await resp.json();
 
@@ -426,7 +435,10 @@ class ASTExplorer {
     const mode = validModes.has(this.viewMode) ? this.viewMode : 'ast';
 
     try {
-      const endpoint = `/api/graph/rekt/${mode}?file=${encodeURIComponent(fileName)}`;
+      const scanParam = typeof _currentScanRunId !== 'undefined' && _currentScanRunId &&
+        _currentScanRunId !== 'all' && _currentScanRunId !== 'latest'
+        ? `&scanRunId=${_currentScanRunId}` : '';
+      const endpoint = `/api/graph/rekt/${mode}?file=${encodeURIComponent(fileName)}${scanParam}`;
       const resp = await fetch(endpoint);
       if (!resp.ok) { container.innerHTML = `<div class="ast-empty">No ${mode.toUpperCase()} data for ${this._escHtml(fileName)}</div>`; return; }
       const ct = resp.headers.get('content-type') || '';

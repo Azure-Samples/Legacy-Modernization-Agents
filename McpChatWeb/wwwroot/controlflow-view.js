@@ -22,7 +22,10 @@ class ControlFlowView {
     const select = document.getElementById('cf-file-select');
     if (!select) return;
     try {
-      const resp = await fetch('/api/graph/rekt/files');
+      const scanParam = typeof _currentScanRunId !== 'undefined' && _currentScanRunId &&
+        _currentScanRunId !== 'all' && _currentScanRunId !== 'latest'
+        ? `?scanRunId=${_currentScanRunId}` : '';
+      const resp = await fetch('/api/graph/rekt/files' + scanParam);
       if (!resp.ok) return;
       const files = await resp.json();
       const current = select.value;
@@ -66,7 +69,10 @@ class ControlFlowView {
     if (detailPanel) detailPanel.innerHTML = 'Select a block to see details';
 
     try {
-      const resp = await fetch(`/api/graph/rekt/cfg?file=${encodeURIComponent(fileName)}`);
+      const scanParam = typeof _currentScanRunId !== 'undefined' && _currentScanRunId &&
+        _currentScanRunId !== 'all' && _currentScanRunId !== 'latest'
+        ? `&scanRunId=${_currentScanRunId}` : '';
+      const resp = await fetch(`/api/graph/rekt/cfg?file=${encodeURIComponent(fileName)}${scanParam}`);
       if (!resp.ok) {
         container.innerHTML = `<div style="padding:20px;color:#f87171;">No CFG data for ${fileName.replace('flow-ast-','')}. Run: ./doctor.sh rekt-full</div>`;
         return;

@@ -50,7 +50,20 @@ window._onScanRunChange = function(value) {
       galaxyView.galaxyData = null;
       galaxyView.astData = null;
     }
-    if (astExplorer) astExplorer.structureData = null;
+    // Reset file-level views so they reload file lists and clear stale content
+    if (astExplorer) {
+      astExplorer.structureData = null;
+      astExplorer.currentFile = null;
+      astExplorer.loadFileList();
+    }
+    if (controlFlowView) {
+      controlFlowView.currentFile = null;
+      controlFlowView.loadFileList();
+    }
+    if (mermaidView) {
+      mermaidView.currentFile = '';
+      mermaidView.loadFileList();
+    }
   }
   // Refresh the active view with the new scan context
   const activeTab = document.querySelector('.dashboard-tab.active');

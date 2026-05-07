@@ -23,7 +23,10 @@ class MermaidView {
     const select = document.getElementById('mermaid-file-select');
     if (!select) return;
     try {
-      const resp = await fetch('/api/graph/rekt/files');
+      const scanParam = typeof _currentScanRunId !== 'undefined' && _currentScanRunId &&
+        _currentScanRunId !== 'all' && _currentScanRunId !== 'latest'
+        ? `?scanRunId=${_currentScanRunId}` : '';
+      const resp = await fetch('/api/graph/rekt/files' + scanParam);
       if (!resp.ok) return;
       const files = await resp.json();
       select.querySelectorAll('option:not(:first-child)').forEach(o => o.remove());
@@ -51,7 +54,12 @@ class MermaidView {
     container.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:200px;color:#94a3b8;">Generating diagram...</div>';
 
     try {
-      const url = file ? `/api/graph/rekt/mermaid?file=${encodeURIComponent(file)}` : '/api/graph/rekt/mermaid';
+      const scanParam = typeof _currentScanRunId !== 'undefined' && _currentScanRunId &&
+        _currentScanRunId !== 'all' && _currentScanRunId !== 'latest'
+        ? `&scanRunId=${_currentScanRunId}` : '';
+      const url = file
+        ? `/api/graph/rekt/mermaid?file=${encodeURIComponent(file)}${scanParam}`
+        : `/api/graph/rekt/mermaid${scanParam ? '?' + scanParam.slice(1) : ''}`;
       const resp = await fetch(url);
       if (!resp.ok) { container.innerHTML = '<div style="padding:20px;color:#f87171;">Failed to generate diagram</div>'; return; }
       this.currentData = await resp.json();

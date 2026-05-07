@@ -1559,7 +1559,7 @@ app.MapGet("/api/graph/rekt/runs", async (CancellationToken cancellationToken) =
 	}
 });
 
-app.MapGet("/api/graph/rekt/files", async (CancellationToken cancellationToken) =>
+app.MapGet("/api/graph/rekt/files", async (long? scanRunId, CancellationToken cancellationToken) =>
 {
 	try
 	{
@@ -1570,14 +1570,33 @@ app.MapGet("/api/graph/rekt/files", async (CancellationToken cancellationToken) 
 		using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
 		await using var session = driver.AsyncSession();
 
-		// Return files with AST data + flag which ones have CFG edges
-		var result = await session.RunAsync(@"
-			MATCH (a:ASTNode)
-			WITH DISTINCT a.program AS program
-			OPTIONAL MATCH (cfg:ASTNode {program: program})-[:FOLLOWED_BY|JUMPS_TO]->()
-			WITH program, count(cfg) > 0 AS hasCfg
-			RETURN program AS name, hasCfg
-			ORDER BY program");
+		// Return files with AST data + flag which ones have CFG edges.
+		// When a specific scan run is requested, filter to that run only.
+		// Otherwise deduplicate by max(runId) so each program appears once (latest scan).
+		IResultCursor result;
+		if (scanRunId.HasValue)
+		{
+			result = await session.RunAsync(@"
+				MATCH (a:ASTNode) WHERE a.program IS NOT NULL AND coalesce(a.runId, 0) = $runId
+				WITH DISTINCT a.program AS program
+				OPTIONAL MATCH (cfg:ASTNode {program: program})-[:FOLLOWED_BY|JUMPS_TO]->()
+				WHERE coalesce(cfg.runId, 0) = $runId
+				WITH program, count(cfg) > 0 AS hasCfg
+				RETURN program AS name, hasCfg
+				ORDER BY program",
+				new { runId = scanRunId.Value });
+		}
+		else
+		{
+			result = await session.RunAsync(@"
+				MATCH (a:ASTNode) WHERE a.program IS NOT NULL
+				WITH a.program AS program, max(coalesce(a.runId, 0)) AS _r
+				OPTIONAL MATCH (cfg:ASTNode {program: program})-[:FOLLOWED_BY|JUMPS_TO]->()
+				WHERE coalesce(cfg.runId, 0) = _r
+				WITH program, count(cfg) > 0 AS hasCfg
+				RETURN program AS name, hasCfg
+				ORDER BY program");
+		}
 
 		var files = new List<object>();
 		await result.ForEachAsync(r => files.Add(new
@@ -1597,7 +1616,7 @@ app.MapGet("/api/graph/rekt/files", async (CancellationToken cancellationToken) 
 });
 
 // ── Mermaid Diagram Generation — system-level and per-file diagrams ───
-app.MapGet("/api/graph/rekt/mermaid", async (string? file, CancellationToken cancellationToken) =>
+app.MapGet("/api/graph/rekt/mermaid", async (string? file, long? scanRunId, CancellationToken cancellationToken) =>
 {
 	try
 	{
@@ -1619,13 +1638,30 @@ app.MapGet("/api/graph/rekt/mermaid", async (string? file, CancellationToken can
 			mermaid.AppendLine("  classDef db fill:#581c87,stroke:#a855f7,color:#e2e8f0");
 
 			var seenNodes = new HashSet<string>();
-			var depResult = await session.RunAsync(@"
-				MATCH (a:CobolFile)-[d:DEPENDS_ON]->(b:CobolFile)
-				WHERE a.runId IS NOT NULL
-				WITH a.fileName AS src, b.fileName AS tgt, d.type AS depType,
-				     max(a.runId) AS latestRun
-				RETURN DISTINCT src, tgt, depType
-				ORDER BY src, depType");
+			IResultCursor depResult;
+			if (scanRunId.HasValue)
+			{
+				depResult = await session.RunAsync(@"
+					MATCH (a:CobolFile)-[d:DEPENDS_ON]->(b:CobolFile)
+					WHERE coalesce(a.runId, 0) = $runId
+					RETURN DISTINCT a.fileName AS src, b.fileName AS tgt, d.type AS depType
+					ORDER BY src, depType",
+					new { runId = scanRunId.Value });
+			}
+			else
+			{
+				// Use max(a.runId) to pin each source file to its latest scan run,
+				// then return only edges from that run to avoid duplicates.
+				depResult = await session.RunAsync(@"
+					MATCH (a:CobolFile)-[d:DEPENDS_ON]->(b:CobolFile)
+					WHERE a.runId IS NOT NULL
+					WITH a.fileName AS src, b.fileName AS tgt, d.type AS depType, a.runId AS rId
+					WITH src, tgt, depType, max(rId) AS latestRun
+					MATCH (a2:CobolFile {fileName: src})-[d2:DEPENDS_ON]->(b2:CobolFile {fileName: tgt})
+					WHERE coalesce(a2.runId, 0) = latestRun
+					RETURN DISTINCT src, tgt, COALESCE(d2.type, depType) AS depType
+					ORDER BY src, depType");
+			}
 
 			await depResult.ForEachAsync(r =>
 			{
@@ -1679,13 +1715,22 @@ app.MapGet("/api/graph/rekt/mermaid", async (string? file, CancellationToken can
 			mermaid.AppendLine("  classDef para fill:#059669,stroke:#34d399,color:#e2e8f0,rx:4,ry:4");
 			mermaid.AppendLine("  classDef flow fill:#1e40af,stroke:#60a5fa,color:#e2e8f0");
 
+			// Use pinned scanRunId if provided, otherwise auto-select the latest run for this program.
+			var mermaidRunId = scanRunId.GetValueOrDefault(0);
+			var mermaidRunParam = new { file = matchedProgram, runId = mermaidRunId };
+			var mermaidRunInit = mermaidRunId > 0
+				? "WITH $runId AS _r"
+				: "MATCH (a0:ASTNode {program: $file}) WITH max(coalesce(a0.runId, 0)) AS _r";
+
 			// Get sections and paragraphs
-			var structResult = await session.RunAsync(@"
-				MATCH (root:ASTNode {program: $file})-[:CONTAINS*1..2]->(sec:ASTNode)
+			var structResult = await session.RunAsync($@"
+				{mermaidRunInit}
+				MATCH (root:ASTNode {{program: $file}})-[:CONTAINS*1..2]->(sec:ASTNode)
 				WHERE sec.nodeType IN ['SECTION', 'PARAGRAPH']
+				  AND coalesce(root.runId, 0) = _r AND coalesce(sec.runId, 0) = _r
 				RETURN sec.id AS id, sec.nodeType AS nodeType, sec.name AS name
 				ORDER BY sec.nodeType, sec.name",
-				new { file = matchedProgram });
+				mermaidRunParam);
 
 			var nodeIds = new Dictionary<string, string>();
 
@@ -1705,11 +1750,13 @@ app.MapGet("/api/graph/rekt/mermaid", async (string? file, CancellationToken can
 			});
 
 			// Get FOLLOWED_BY edges between these nodes
-			var flowResult = await session.RunAsync(@"
-				MATCH (a:ASTNode {program: $file})-[r:FOLLOWED_BY]->(b:ASTNode {program: $file})
+			var flowResult = await session.RunAsync($@"
+				{mermaidRunInit}
+				MATCH (a:ASTNode {{program: $file}})-[r:FOLLOWED_BY]->(b:ASTNode {{program: $file}})
 				WHERE a.nodeType IN ['SECTION','PARAGRAPH'] AND b.nodeType IN ['SECTION','PARAGRAPH']
+				  AND coalesce(a.runId, 0) = _r AND coalesce(b.runId, 0) = _r
 				RETURN a.id AS fromId, b.id AS toId, type(r) AS relType",
-				new { file = matchedProgram });
+				mermaidRunParam);
 
 			await flowResult.ForEachAsync(r =>
 			{
@@ -1722,11 +1769,13 @@ app.MapGet("/api/graph/rekt/mermaid", async (string? file, CancellationToken can
 			});
 
 			// Get JUMPS_TO edges
-			var jumpResult = await session.RunAsync(@"
-				MATCH (a:ASTNode {program: $file})-[r:JUMPS_TO]->(b:ASTNode {program: $file})
+			var jumpResult = await session.RunAsync($@"
+				{mermaidRunInit}
+				MATCH (a:ASTNode {{program: $file}})-[r:JUMPS_TO]->(b:ASTNode {{program: $file}})
 				WHERE a.nodeType IN ['SECTION','PARAGRAPH'] AND b.nodeType IN ['SECTION','PARAGRAPH']
+				  AND coalesce(a.runId, 0) = _r AND coalesce(b.runId, 0) = _r
 				RETURN a.id AS fromId, b.id AS toId",
-				new { file = matchedProgram });
+				mermaidRunParam);
 
 			await jumpResult.ForEachAsync(r =>
 			{
@@ -1897,7 +1946,7 @@ app.MapGet("/api/graph/rekt/services", async (long? scanRunId, CancellationToken
 });
 
 // ── Program Structure (collapsed AST for dev drill-down) ──────────────
-app.MapGet("/api/graph/rekt/structure", async (string file, CancellationToken cancellationToken) =>
+app.MapGet("/api/graph/rekt/structure", async (string file, long? scanRunId, CancellationToken cancellationToken) =>
 {
 	try
 	{
@@ -1915,11 +1964,14 @@ app.MapGet("/api/graph/rekt/structure", async (string file, CancellationToken ca
 
 		foreach (var candidate in candidates)
 		{
-			// Latest-run-per-program — picks the most recent scan that contains this file.
-			var result = await session.RunAsync(@"
-				MATCH (a0:ASTNode {program: $file})
-				WITH max(coalesce(a0.runId, 0)) AS _r
-				MATCH (root:ASTNode {program: $file})-[:CONTAINS*1..2]->(sec:ASTNode)
+			// Use pinned scanRunId if provided, otherwise auto-select the latest run for this file.
+			var structRunId = scanRunId.GetValueOrDefault(0);
+			var structRunInit = structRunId > 0
+				? "WITH $runId AS _r"
+				: "MATCH (a0:ASTNode {program: $file}) WITH max(coalesce(a0.runId, 0)) AS _r";
+			var result = await session.RunAsync($@"
+				{structRunInit}
+				MATCH (root:ASTNode {{program: $file}})-[:CONTAINS*1..2]->(sec:ASTNode)
 				WHERE coalesce(root.runId, 0) = _r
 				  AND coalesce(sec.runId, 0) = _r
 				  AND sec.nodeType IN ['SECTION', 'PARAGRAPHS']
@@ -1941,7 +1993,7 @@ app.MapGet("/api/graph/rekt/structure", async (string file, CancellationToken ca
 				       para.startLine AS paraStart, para.endLine AS paraEnd,
 				       stmtCount, sqlCount, performCount, moveCount, branchCount, callCount
 				ORDER BY sec.name, para.name",
-				new { file = candidate });
+				new { file = candidate, runId = structRunId });
 
 			await result.ForEachAsync(r => sections.Add(new
 			{
@@ -2403,7 +2455,7 @@ app.MapGet("/api/graph/rekt/deadcode", async (string? file, long? scanRunId, Can
 });
 
 // ── CFG (Control Flow Graph) endpoint ─────────────────────────────────
-app.MapGet("/api/graph/rekt/cfg", async (string file, CancellationToken cancellationToken) =>
+app.MapGet("/api/graph/rekt/cfg", async (string file, long? scanRunId, CancellationToken cancellationToken) =>
 {
 	try
 	{
@@ -2422,11 +2474,17 @@ app.MapGet("/api/graph/rekt/cfg", async (string file, CancellationToken cancella
 
 		foreach (var candidate in candidates)
 		{
-			// 1. Get flow nodes — latest-run-per-program for this file
-			var flowNodeResult = await session.RunAsync(@"
-				MATCH (a0:ASTNode {program: $file})
-				WITH max(coalesce(a0.runId, 0)) AS _r
-				MATCH (a:ASTNode {program: $file})-[:FOLLOWED_BY|JUMPS_TO]-(b:ASTNode {program: $file})
+			// Use pinned scanRunId if provided, otherwise auto-select the latest run for this file.
+			var cfgRunId = scanRunId.GetValueOrDefault(0);
+			var cfgRunInit = cfgRunId > 0
+				? "WITH $runId AS _r"
+				: "MATCH (a0:ASTNode {program: $file}) WITH max(coalesce(a0.runId, 0)) AS _r";
+			var cfgRunParam = new { file = candidate, runId = cfgRunId };
+
+			// 1. Get flow nodes
+			var flowNodeResult = await session.RunAsync($@"
+				{cfgRunInit}
+				MATCH (a:ASTNode {{program: $file}})-[:FOLLOWED_BY|JUMPS_TO]-(b:ASTNode {{program: $file}})
 				WHERE coalesce(a.runId, 0) = _r AND coalesce(b.runId, 0) = _r
 				WITH collect(DISTINCT a) + collect(DISTINCT b) AS allNodes
 				UNWIND allNodes AS n
@@ -2434,7 +2492,7 @@ app.MapGet("/api/graph/rekt/cfg", async (string file, CancellationToken cancella
 				RETURN n.id AS id, n.nodeType AS nodeType, n.name AS name,
 				       n.startLine AS startLine, n.endLine AS endLine,
 				       n.originalText AS originalText",
-				new { file = candidate });
+				cfgRunParam);
 
 			await flowNodeResult.ForEachAsync(r =>
 			{
@@ -2456,21 +2514,20 @@ app.MapGet("/api/graph/rekt/cfg", async (string file, CancellationToken cancella
 
 			if (nodes.Count == 0) continue;
 
-			// 2. Get children of flow nodes — latest-run-per-program
-			var childResult = await session.RunAsync(@"
-				MATCH (a0:ASTNode {program: $file})
-				WITH max(coalesce(a0.runId, 0)) AS _r
-				MATCH (parent:ASTNode {program: $file})-[:FOLLOWED_BY|JUMPS_TO]-(:ASTNode {program: $file})
+			// 2. Get children of flow nodes
+			var childResult = await session.RunAsync($@"
+				{cfgRunInit}
+				MATCH (parent:ASTNode {{program: $file}})-[:FOLLOWED_BY|JUMPS_TO]-(:ASTNode {{program: $file}})
 				WHERE coalesce(parent.runId, 0) = _r
 				WITH DISTINCT parent, _r
-				MATCH (parent)-[:CONTAINS]->(child:ASTNode {program: $file})
+				MATCH (parent)-[:CONTAINS]->(child:ASTNode {{program: $file}})
 				WHERE coalesce(child.runId, 0) = _r
 				  AND NOT child.nodeType IN ['SENTENCE', 'PARAGRAPHS', 'PARAGRAPH_NAME', 'SECTION_HEADER']
 				RETURN child.id AS id, child.nodeType AS nodeType, child.name AS name,
 				       child.startLine AS startLine, child.endLine AS endLine,
 				       child.originalText AS originalText,
 				       parent.id AS parentId",
-				new { file = candidate });
+				cfgRunParam);
 
 			await childResult.ForEachAsync(r =>
 			{
@@ -2493,11 +2550,13 @@ app.MapGet("/api/graph/rekt/cfg", async (string file, CancellationToken cancella
 				containsCount++;
 			});
 
-			// 3. Get all flow edges
-			var edgeResult = await session.RunAsync(@"
-				MATCH (a:ASTNode {program: $file})-[r:FOLLOWED_BY|JUMPS_TO]->(b:ASTNode {program: $file})
+			// 3. Get all flow edges (run-filtered)
+			var edgeResult = await session.RunAsync($@"
+				{cfgRunInit}
+				MATCH (a:ASTNode {{program: $file}})-[r:FOLLOWED_BY|JUMPS_TO]->(b:ASTNode {{program: $file}})
+				WHERE coalesce(a.runId, 0) = _r AND coalesce(b.runId, 0) = _r
 				RETURN a.id AS source, b.id AS target, type(r) AS type",
-				new { file = candidate });
+				cfgRunParam);
 
 			await edgeResult.ForEachAsync(r =>
 			{
@@ -2664,20 +2723,68 @@ app.MapGet("/api/graph/rekt/galaxy-ast", async (long? scanRunId, CancellationTok
 		await using var session = driver.AsyncSession();
 
 		// Get key structural nodes across ALL programs (skip low-level SENTENCE/GENERIC nodes for performance).
-		// Latest-run-per-program so the same program isn't returned with multiple AST trees.
-		var nodeResult = await session.RunAsync(@"
-			MATCH (a0:ASTNode) WHERE a0.program IS NOT NULL
-			WITH a0.program AS program, max(coalesce(a0.runId, 0)) AS _r
-			MATCH (a:ASTNode)
-			WHERE a.program = program AND coalesce(a.runId, 0) = _r
-			  AND a.nodeType IN ['SECTION', 'PARAGRAPHS', 'PARAGRAPH', 'PARAGRAPH_NAME',
-			                     'PERFORM', 'CALL', 'CallStatement', 'IF_BRANCH', 'EVALUATE',
-			                     'DIALECT', 'DIALECT_CONTAINER', 'MOVE', 'COMPUTE', 'DISPLAY',
-			                     'EXIT', 'PROCEDURE_DIVISION_BODY']
-			RETURN a.id AS id, a.nodeType AS nodeType, a.name AS name,
-			       a.startLine AS startLine, a.endLine AS endLine,
-			       a.program AS program
-			ORDER BY a.program, a.startLine");
+		// When scanRunId is pinned, filter to that exact run; otherwise use latest-run-per-program.
+		IResultCursor nodeResult;
+		IResultCursor edgeResult;
+		if (scanRunId.HasValue)
+		{
+			nodeResult = await session.RunAsync(@"
+				MATCH (a:ASTNode) WHERE a.program IS NOT NULL AND coalesce(a.runId, 0) = $scanRunId
+				  AND a.nodeType IN ['SECTION', 'PARAGRAPHS', 'PARAGRAPH', 'PARAGRAPH_NAME',
+				                     'PERFORM', 'CALL', 'CallStatement', 'IF_BRANCH', 'EVALUATE',
+				                     'DIALECT', 'DIALECT_CONTAINER', 'MOVE', 'COMPUTE', 'DISPLAY',
+				                     'EXIT', 'PROCEDURE_DIVISION_BODY']
+				RETURN a.id AS id, a.nodeType AS nodeType, a.name AS name,
+				       a.startLine AS startLine, a.endLine AS endLine,
+				       a.program AS program
+				ORDER BY a.program, a.startLine",
+				new { scanRunId = scanRunId.Value });
+			edgeResult = await session.RunAsync(@"
+				MATCH (a:ASTNode)-[r:CONTAINS|FOLLOWED_BY|JUMPS_TO]->(b:ASTNode)
+				WHERE a.program IS NOT NULL AND b.program = a.program
+				  AND coalesce(a.runId, 0) = $scanRunId AND coalesce(b.runId, 0) = $scanRunId
+				  AND a.nodeType IN ['SECTION', 'PARAGRAPHS', 'PARAGRAPH', 'PARAGRAPH_NAME',
+				                     'PERFORM', 'CALL', 'CallStatement', 'IF_BRANCH', 'EVALUATE',
+				                     'DIALECT', 'DIALECT_CONTAINER', 'MOVE', 'COMPUTE', 'DISPLAY',
+				                     'EXIT', 'PROCEDURE_DIVISION_BODY']
+				  AND b.nodeType IN ['SECTION', 'PARAGRAPHS', 'PARAGRAPH', 'PARAGRAPH_NAME',
+				                     'PERFORM', 'CALL', 'CallStatement', 'IF_BRANCH', 'EVALUATE',
+				                     'DIALECT', 'DIALECT_CONTAINER', 'MOVE', 'COMPUTE', 'DISPLAY',
+				                     'EXIT', 'PROCEDURE_DIVISION_BODY']
+				RETURN a.id AS source, b.id AS target, type(r) AS type",
+				new { scanRunId = scanRunId.Value });
+		}
+		else
+		{
+			nodeResult = await session.RunAsync(@"
+				MATCH (a0:ASTNode) WHERE a0.program IS NOT NULL
+				WITH a0.program AS program, max(coalesce(a0.runId, 0)) AS _r
+				MATCH (a:ASTNode)
+				WHERE a.program = program AND coalesce(a.runId, 0) = _r
+				  AND a.nodeType IN ['SECTION', 'PARAGRAPHS', 'PARAGRAPH', 'PARAGRAPH_NAME',
+				                     'PERFORM', 'CALL', 'CallStatement', 'IF_BRANCH', 'EVALUATE',
+				                     'DIALECT', 'DIALECT_CONTAINER', 'MOVE', 'COMPUTE', 'DISPLAY',
+				                     'EXIT', 'PROCEDURE_DIVISION_BODY']
+				RETURN a.id AS id, a.nodeType AS nodeType, a.name AS name,
+				       a.startLine AS startLine, a.endLine AS endLine,
+				       a.program AS program
+				ORDER BY a.program, a.startLine");
+			edgeResult = await session.RunAsync(@"
+				MATCH (a0:ASTNode) WHERE a0.program IS NOT NULL
+				WITH a0.program AS program, max(coalesce(a0.runId, 0)) AS _r
+				MATCH (a:ASTNode)-[r:CONTAINS|FOLLOWED_BY|JUMPS_TO]->(b:ASTNode)
+				WHERE a.program = program AND b.program = program
+				  AND coalesce(a.runId, 0) = _r AND coalesce(b.runId, 0) = _r
+				  AND a.nodeType IN ['SECTION', 'PARAGRAPHS', 'PARAGRAPH', 'PARAGRAPH_NAME',
+				                     'PERFORM', 'CALL', 'CallStatement', 'IF_BRANCH', 'EVALUATE',
+				                     'DIALECT', 'DIALECT_CONTAINER', 'MOVE', 'COMPUTE', 'DISPLAY',
+				                     'EXIT', 'PROCEDURE_DIVISION_BODY']
+				  AND b.nodeType IN ['SECTION', 'PARAGRAPHS', 'PARAGRAPH', 'PARAGRAPH_NAME',
+				                     'PERFORM', 'CALL', 'CallStatement', 'IF_BRANCH', 'EVALUATE',
+				                     'DIALECT', 'DIALECT_CONTAINER', 'MOVE', 'COMPUTE', 'DISPLAY',
+				                     'EXIT', 'PROCEDURE_DIVISION_BODY']
+				RETURN a.id AS source, b.id AS target, type(r) AS type");
+		}
 
 		var nodes = new List<object>();
 		await nodeResult.ForEachAsync(r => nodes.Add(new
@@ -2689,23 +2796,6 @@ app.MapGet("/api/graph/rekt/galaxy-ast", async (long? scanRunId, CancellationTok
 			endLine = r["endLine"].As<int?>() ?? 0,
 			program = r["program"].As<string>()
 		}));
-
-		// Edges between latest-run nodes only (drop edges that would cross runs)
-		var edgeResult = await session.RunAsync(@"
-			MATCH (a0:ASTNode) WHERE a0.program IS NOT NULL
-			WITH a0.program AS program, max(coalesce(a0.runId, 0)) AS _r
-			MATCH (a:ASTNode)-[r:CONTAINS|FOLLOWED_BY|JUMPS_TO]->(b:ASTNode)
-			WHERE a.program = program AND b.program = program
-			  AND coalesce(a.runId, 0) = _r AND coalesce(b.runId, 0) = _r
-			  AND a.nodeType IN ['SECTION', 'PARAGRAPHS', 'PARAGRAPH', 'PARAGRAPH_NAME',
-			                     'PERFORM', 'CALL', 'CallStatement', 'IF_BRANCH', 'EVALUATE',
-			                     'DIALECT', 'DIALECT_CONTAINER', 'MOVE', 'COMPUTE', 'DISPLAY',
-			                     'EXIT', 'PROCEDURE_DIVISION_BODY']
-			  AND b.nodeType IN ['SECTION', 'PARAGRAPHS', 'PARAGRAPH', 'PARAGRAPH_NAME',
-			                     'PERFORM', 'CALL', 'CallStatement', 'IF_BRANCH', 'EVALUATE',
-			                     'DIALECT', 'DIALECT_CONTAINER', 'MOVE', 'COMPUTE', 'DISPLAY',
-			                     'EXIT', 'PROCEDURE_DIVISION_BODY']
-			RETURN a.id AS source, b.id AS target, type(r) AS type");
 
 		var edges = new List<object>();
 		await edgeResult.ForEachAsync(r => edges.Add(new
@@ -2740,7 +2830,7 @@ app.MapGet("/api/graph/rekt/galaxy-ast", async (long? scanRunId, CancellationTok
 	}
 });
 
-app.MapGet("/api/graph/rekt/ast", async (string file, CancellationToken cancellationToken) =>
+app.MapGet("/api/graph/rekt/ast", async (string file, long? scanRunId, CancellationToken cancellationToken) =>
 {
 	try
 	{
@@ -2756,20 +2846,22 @@ app.MapGet("/api/graph/rekt/ast", async (string file, CancellationToken cancella
 		var nodes = new List<object>();
 		var edges = new List<object>();
 		string? matchedProgram = null;
+		var astRunId = scanRunId.GetValueOrDefault(0);
+		var astRunInit = astRunId > 0
+			? "WITH $runId AS _r"
+			: "MATCH (a0:ASTNode {program: $file}) WITH max(coalesce(a0.runId, 0)) AS _r";
 
 		foreach (var candidate in candidates)
 		{
-			// Latest-run-per-program for this single file
-			var nodeResult = await session.RunAsync(@"
-				MATCH (a0:ASTNode {program: $file})
-				WITH max(coalesce(a0.runId, 0)) AS _r
-				MATCH (a:ASTNode {program: $file})
+			var nodeResult = await session.RunAsync($@"
+				{astRunInit}
+				MATCH (a:ASTNode {{program: $file}})
 				WHERE coalesce(a.runId, 0) = _r
 				RETURN a.id AS id, a.nodeType AS nodeType, a.label AS label,
 				       a.originalText AS originalText, a.startLine AS startLine,
 				       a.endLine AS endLine, a.name AS name,
 				       a.section AS section, a.paragraph AS paragraph",
-				new { file = candidate });
+				new { file = candidate, runId = astRunId });
 
 			await nodeResult.ForEachAsync(r => nodes.Add(new
 			{
@@ -2789,13 +2881,12 @@ app.MapGet("/api/graph/rekt/ast", async (string file, CancellationToken cancella
 
 		if (matchedProgram != null)
 		{
-			var edgeResult = await session.RunAsync(@"
-				MATCH (a0:ASTNode {program: $file})
-				WITH max(coalesce(a0.runId, 0)) AS _r
-				MATCH (a:ASTNode {program: $file})-[r:CONTAINS|FOLLOWED_BY|JUMPS_TO]->(b:ASTNode {program: $file})
+			var edgeResult = await session.RunAsync($@"
+				{astRunInit}
+				MATCH (a:ASTNode {{program: $file}})-[r:CONTAINS|FOLLOWED_BY|JUMPS_TO]->(b:ASTNode {{program: $file}})
 				WHERE coalesce(a.runId, 0) = _r AND coalesce(b.runId, 0) = _r
 				RETURN a.id AS source, b.id AS target, type(r) AS type",
-				new { file = matchedProgram });
+				new { file = matchedProgram, runId = astRunId });
 
 			await edgeResult.ForEachAsync(r => edges.Add(new
 			{
