@@ -1749,7 +1749,7 @@ app.MapGet("/api/graph/rekt/mermaid", async (string? file, CancellationToken can
 });
 
 // ── Architect Overview — programs clustered by capabilities ───────────
-app.MapGet("/api/graph/rekt/architect", async (int? scanRunId, CancellationToken cancellationToken) =>
+app.MapGet("/api/graph/rekt/architect", async (long? scanRunId, CancellationToken cancellationToken) =>
 {
 	try
 	{
@@ -1815,7 +1815,7 @@ app.MapGet("/api/graph/rekt/architect", async (int? scanRunId, CancellationToken
 });
 
 // ── Services Map — deduplicated program graph for WebGL rendering ─────
-app.MapGet("/api/graph/rekt/services", async (int? scanRunId, CancellationToken cancellationToken) =>
+app.MapGet("/api/graph/rekt/services", async (long? scanRunId, CancellationToken cancellationToken) =>
 {
 	try
 	{
@@ -2119,7 +2119,7 @@ app.MapGet("/api/source/content", async (string file, int? startLine, int? endLi
 });
 
 // ── Reachability Analysis — classify paragraph/section reachability ────
-app.MapGet("/api/graph/rekt/deadcode", async (string? file, int? scanRunId, CancellationToken cancellationToken) =>
+app.MapGet("/api/graph/rekt/deadcode", async (string? file, long? scanRunId, CancellationToken cancellationToken) =>
 {
 	try
 	{
@@ -2533,7 +2533,7 @@ app.MapGet("/api/graph/rekt/cfg", async (string file, CancellationToken cancella
 });
 
 // ── AST Galaxy — batch multi-file overview for portfolio visualization ──
-app.MapGet("/api/graph/rekt/galaxy", async (int? scanRunId, CancellationToken cancellationToken) =>
+app.MapGet("/api/graph/rekt/galaxy", async (long? scanRunId, CancellationToken cancellationToken) =>
 {
 	try
 	{
@@ -2652,7 +2652,7 @@ app.MapGet("/api/graph/rekt/galaxy", async (int? scanRunId, CancellationToken ca
 });
 
 // ── AST Galaxy batch — returns structural AST nodes for ALL programs at once ──
-app.MapGet("/api/graph/rekt/galaxy-ast", async (int? scanRunId, CancellationToken cancellationToken) =>
+app.MapGet("/api/graph/rekt/galaxy-ast", async (long? scanRunId, CancellationToken cancellationToken) =>
 {
 	try
 	{
