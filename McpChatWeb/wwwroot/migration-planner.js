@@ -58,12 +58,7 @@ class MigrationPlanner {
     // BIAN Wave Plan panel
     this._bianPlanOpen = true;
 
-    // Scan Comparison panel
-    this._compareOpen = false;
-    this._compareRunId = null;
-    this._compareData = null;
-    this._compareRuns = [];
-  }
+    // BIAN Wave Plan panel  }
 
   async loadAndRender() {
     const root = document.getElementById(this.rootId);
@@ -551,31 +546,12 @@ class MigrationPlanner {
         <div id="mp-bian-plan-body" style="display:${this._bianPlanOpen?'block':'none'};">${this._bianPlanOpen ? this._renderBianPlanHTML(rows, waveOf) : ''}</div>
       </div>
 
-      <!-- ── Scan Comparison ── -->
-      <div id="mp-compare-panel" style="border-top:2px solid #334155;background:linear-gradient(180deg,rgba(15,23,42,0.7),rgba(3,7,18,0.95));">
-        <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid #1e293b;flex-wrap:wrap;gap:8px;">
-          <div>
-            <strong style="color:#fbbf24;font-size:14px;">🔄 Scan Comparison</strong>
-            <span style="color:#94a3b8;font-size:11px;margin-left:8px;">Diff the current scan against an earlier run — see new, removed, and changed programs</span>
-          </div>
-          <div style="display:flex;gap:8px;align-items:center;">
-            <select id="mp-compare-select" style="padding:5px 8px;background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:6px;font-size:12px;">
-              <option value="">— select comparison scan —</option>
-              ${this._compareRuns.map(r=>`<option value="${r.scanRunId}" ${String(r.scanRunId)===String(this._compareRunId)?'selected':''}>${r.label||r.scanRunId}</option>`).join('')}
-            </select>
-            <button id="mp-compare-refresh-runs" class="btn-small" title="Refresh the list of available scan runs">⟳ Runs</button>
-            <button id="mp-compare-toggle" class="btn-small">${this._compareOpen?'▲ Collapse':'▼ Expand'}</button>
-          </div>
-        </div>
-        <div id="mp-compare-body" style="display:${this._compareOpen?'block':'none'};">${this._compareOpen ? this._renderCompareHTML(rows) : ''}</div>
-      </div>
+      <!-- end of panels -->
     `;
 
     this._wireEvents();
     if (this._workbookOpen) this._wireWorkbookEvents();
     if (this._ganttOpen) this._wireGanttEvents();
-    // Auto-load scan runs list for compare once the panel is first opened
-    if (this._compareOpen && !this._compareRuns.length) this._loadCompareRuns();
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -860,25 +836,6 @@ class MigrationPlanner {
       this._bianPlanOpen = !this._bianPlanOpen;
       this._render();
     });
-
-    // Scan Comparison panel
-    root.querySelector('#mp-compare-toggle')?.addEventListener('click', () => {
-      this._compareOpen = !this._compareOpen;
-      if (this._compareOpen && !this._compareRuns.length) this._loadCompareRuns();
-      this._render();
-    });
-    root.querySelector('#mp-compare-refresh-runs')?.addEventListener('click', () => this._loadCompareRuns());
-    root.querySelector('#mp-compare-select')?.addEventListener('change', async (e) => {
-      const id = e.target.value;
-      this._compareRunId = id || null;
-      if (id) await this._fetchCompareData(id);
-      else this._compareData = null;
-      const body = document.getElementById('mp-compare-body');
-      if (body && this._compareOpen) {
-        const rows = this._computeRows();
-        body.innerHTML = this._renderCompareHTML(rows);
-      }
-    });
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -971,115 +928,6 @@ class MigrationPlanner {
 
     html += `</div>`;
     return html;
-  }
-
-  // ─────────────────────────────────────────────────────────────────
-  // SCAN COMPARISON
-  // ─────────────────────────────────────────────────────────────────
-
-  async _loadCompareRuns() {
-    try {
-      const resp = await fetch('/api/graph/rekt/runs');
-      if (!resp.ok) return;
-      const data = await resp.json();
-      const scanId = (typeof _currentScanRunId !== 'undefined') ? String(_currentScanRunId) : null;
-      // Exclude the currently active scan run
-      this._compareRuns = (Array.isArray(data) ? data : [])
-        .filter(r => String(r.scanRunId) !== scanId)
-        .map(r => ({ ...r, label: `Scan ${r.scanRunId} · ${r.fileCount ?? '?'} files` }));
-      this._render();
-    } catch {}
-  }
-
-  async _fetchCompareData(scanRunId) {
-    try {
-      const p = (scanRunId && scanRunId !== 'latest' && scanRunId !== 'all') ? `?scanRunId=${scanRunId}` : '';
-      const resp = await fetch(`/api/graph/rekt/galaxy${p}`);
-      if (!resp.ok) { this._compareData = null; return; }
-      const data = await resp.json();
-      this._compareData = data.programs || [];
-    } catch { this._compareData = null; }
-  }
-
-  _renderCompareHTML(rows) {
-    if (!this._compareRunId) {
-      return '<div style="padding:20px;color:#64748b;">Select a scan run from the dropdown above to compare.</div>';
-    }
-    if (!this._compareData) {
-      return '<div style="padding:20px;color:#64748b;">⏳ Loading comparison data…</div>';
-    }
-    const norm = (name) => (name||'').replace(/\.cbl$/i,'').replace(/^flow-ast-/i,'').toUpperCase();
-    const curMap = new Map(rows.map(r => [norm(r.program), r]));
-    const prevMap = new Map(
-      this._compareData
-        .filter(p => !p.isCopybook && p.program)
-        .map(p => [norm(p.program), p])
-    );
-    const allKeys = new Set([...curMap.keys(), ...prevMap.keys()]);
-    const diffs = [];
-    for (const key of allKeys) {
-      const cur = curMap.get(key), prv = prevMap.get(key);
-      if (!cur && prv)      diffs.push({ key, type: 'removed', cur, prv });
-      else if (cur && !prv) diffs.push({ key, type: 'added',   cur, prv });
-      else {
-        const locDiff = (cur.lineCount||0) - (prv.lineCount||0);
-        const sqlDiff = (cur.sqlCount||0)  - (prv.sqlCount||0);
-        if (locDiff !== 0 || sqlDiff !== 0)
-          diffs.push({ key, type: 'changed', cur, prv, locDiff, sqlDiff });
-      }
-    }
-    if (!diffs.length) {
-      return '<div style="padding:20px;color:#10b981;">✓ No differences — both scans contain identical programs with the same metrics.</div>';
-    }
-    const typeColor = { added:'#10b981', removed:'#ef4444', changed:'#f59e0b' };
-    const typeIcon  = { added:'➕ New',  removed:'➖ Removed', changed:'📝 Changed' };
-    const order     = { removed:0, changed:1, added:2 };
-    const sorted = diffs.sort((a, b) => (order[a.type]||3) - (order[b.type]||3));
-
-    const summary = `<div style="display:flex;gap:14px;padding:12px 16px;flex-wrap:wrap;border-bottom:1px solid #1e293b;">
-      ${['added','changed','removed'].map(t => {
-        const n = diffs.filter(d=>d.type===t).length;
-        return n ? `<span style="color:${typeColor[t]};font-size:12px;font-weight:700;">${typeIcon[t]}: ${n}</span>` : '';
-      }).join('')}
-      <span style="color:#64748b;font-size:12px;margin-left:auto;">${diffs.length} differences across ${allKeys.size} programs</span>
-    </div>`;
-
-    const tableRows = sorted.map(d => {
-      const c = typeColor[d.type];
-      const locDiff = d.locDiff ?? 0;
-      const sqlDiff = d.sqlDiff ?? 0;
-      const diffColor = (v) => v > 0 ? '#f59e0b' : v < 0 ? '#10b981' : '#64748b';
-      const fmt = v => v != null ? Number(v).toLocaleString() : '<span style="color:#334155;">—</span>';
-      return `<tr style="border-bottom:1px solid #1e293b;" title="${d.key}">
-        <td style="padding:5px 10px;color:${c};font-size:11px;white-space:nowrap;">${typeIcon[d.type]}</td>
-        <td style="padding:5px 10px;font-family:monospace;font-size:12px;">${d.key}</td>
-        <td style="padding:5px 10px;text-align:right;font-size:11px;">${fmt(d.prv?.lineCount)}</td>
-        <td style="padding:5px 10px;text-align:right;font-size:11px;">${fmt(d.cur?.lineCount)}</td>
-        <td style="padding:5px 10px;text-align:right;font-size:11px;color:${diffColor(locDiff)};">${locDiff!==0?(locDiff>0?'+':'')+locDiff.toLocaleString():'—'}</td>
-        <td style="padding:5px 10px;text-align:right;font-size:11px;">${fmt(d.prv?.sqlCount)}</td>
-        <td style="padding:5px 10px;text-align:right;font-size:11px;">${fmt(d.cur?.sqlCount)}</td>
-        <td style="padding:5px 10px;text-align:right;font-size:11px;color:${diffColor(sqlDiff)};">${sqlDiff!==0?(sqlDiff>0?'+':'')+sqlDiff:'—'}</td>
-      </tr>`;
-    }).join('');
-
-    return `${summary}
-    <div style="overflow:auto;max-height:480px;">
-      <table style="width:100%;border-collapse:collapse;font-size:12px;color:#cbd5e1;">
-        <thead style="position:sticky;top:0;background:#0f172a;z-index:1;">
-          <tr>
-            <th style="padding:6px 10px;text-align:left;color:#94a3b8;white-space:nowrap;">Change</th>
-            <th style="padding:6px 10px;text-align:left;color:#94a3b8;">Program</th>
-            <th style="padding:6px 10px;text-align:right;color:#94a3b8;white-space:nowrap;">LOC before</th>
-            <th style="padding:6px 10px;text-align:right;color:#94a3b8;white-space:nowrap;">LOC after</th>
-            <th style="padding:6px 10px;text-align:right;color:#f59e0b;white-space:nowrap;">Δ LOC</th>
-            <th style="padding:6px 10px;text-align:right;color:#94a3b8;white-space:nowrap;">SQL before</th>
-            <th style="padding:6px 10px;text-align:right;color:#94a3b8;white-space:nowrap;">SQL after</th>
-            <th style="padding:6px 10px;text-align:right;color:#f59e0b;white-space:nowrap;">Δ SQL</th>
-          </tr>
-        </thead>
-        <tbody>${tableRows}</tbody>
-      </table>
-    </div>`;
   }
 
   // ─────────────────────────────────────────────────────────────────
