@@ -1095,7 +1095,7 @@ run_setup() {
 
     # Create local config from template
     echo -e "${BLUE}📁 Creating local configuration file...${NC}"
-    TEMPLATE_CONFIG="$REPO_ROOT/Config/ai-config.local.env.example"
+    TEMPLATE_CONFIG="$REPO_ROOT/Config/ai-config.env.example"
 
     if [ ! -f "$TEMPLATE_CONFIG" ]; then
         echo -e "${RED}❌ Example configuration file not found: $TEMPLATE_CONFIG${NC}"
@@ -1132,6 +1132,31 @@ run_setup() {
             return 1
         fi
         echo -e "${GREEN}✅ Copilot CLI found in PATH${NC}"
+        echo ""
+
+        # GitHub host selection
+        echo -e "${BOLD}${BLUE}GitHub Host${NC}"
+        echo -e "  ${GREEN}1)${NC} github.com (default)"
+        echo -e "  ${GREEN}2)${NC} GitHub Data Residency (custom host)"
+        echo ""
+        read -p "Choice [1]: " gh_host_choice
+        gh_host_choice=${gh_host_choice:-1}
+        echo ""
+
+        if [[ "$gh_host_choice" == "2" ]]; then
+            read -p "Enter your GitHub host (e.g., github.yourcompany.ghe.com): " custom_gh_host
+            if [[ -n "$custom_gh_host" ]]; then
+                # Strip protocol prefix if provided
+                custom_gh_host="${custom_gh_host#https://}"
+                custom_gh_host="${custom_gh_host#http://}"
+                # Strip trailing slash
+                custom_gh_host="${custom_gh_host%/}"
+                GITHUB_HOST="$custom_gh_host"
+            else
+                echo -e "${YELLOW}⚠️  No host provided, defaulting to github.com${NC}"
+            fi
+        fi
+        echo -e "${GREEN}✅ GitHub host: ${GITHUB_HOST}${NC}"
         echo ""
 
         # Check CLI version and update if needed (before auth, to avoid interrupted login)
@@ -1321,6 +1346,15 @@ AZURE_OPENAI_ENDPOINT="https://copilot-sdk-placeholder"
 AISETTINGS__ENDPOINT="https://copilot-sdk-placeholder"
 AISETTINGS__CHATENDPOINT="https://copilot-sdk-placeholder"
 EOF
+
+        # Append GitHub host if not default
+        if [[ "$GITHUB_HOST" != "github.com" ]]; then
+            cat >> "$LOCAL_CONFIG" <<EOF
+
+# GitHub Data Residency host
+GITHUB_HOST="$GITHUB_HOST"
+EOF
+        fi
 
         # Append PAT to config if provided
         if [[ -n "$ghcp_token" ]]; then
