@@ -215,7 +215,9 @@ class MigrationPlanner {
       );
     }
     if (this.domainFilter !== 'all') {
-      filtered = filtered.filter(r => r.domain === this.domainFilter);
+      // Copybooks belong to 'Shared Data' domain — when "Include copybooks" is on,
+      // they are exempt from the domain filter because they're cross-domain by nature.
+      filtered = filtered.filter(r => r.domain === this.domainFilter || (this.filters.includeCopybooks && r.isCopybook));
     }
 
     // Normalise per-axis (0..1) so weights are commensurable

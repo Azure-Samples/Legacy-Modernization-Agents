@@ -2682,6 +2682,42 @@ app.MapGet("/api/graph/rekt/galaxy", async (long? scanRunId, CancellationToken c
 			isCopybook = r["isCopybook"].As<bool>()
 		}));
 
+		// Copybooks don't have standalone ASTNode data — smojol only parses .cbl programs.
+		// Query CobolFile nodes directly so copybooks appear in the galaxy and migration planner.
+		try
+		{
+			string cbCypher = pinned
+				? @"MATCH (f:CobolFile)
+				    WHERE f.isCopybook = true AND coalesce(f.runId, 0) = $scanRunId
+				    RETURN f.fileName AS program, coalesce(f.lineCount, 0) AS lineCount"
+				: @"MATCH (f:CobolFile) WHERE f.isCopybook = true
+				    WITH f.fileName AS fn, max(coalesce(f.runId, 0)) AS _r
+				    MATCH (f2:CobolFile) WHERE f2.fileName = fn AND coalesce(f2.runId, 0) = _r
+				    RETURN f2.fileName AS program, coalesce(f2.lineCount, 0) AS lineCount";
+			var cbResult = await session.RunAsync(cbCypher,
+				pinned ? (object)new { scanRunId = scanRunId!.Value } : null);
+			var existingPrograms = new HashSet<string>(programs.Select(p => (string)(((dynamic)p).program ?? "")));
+			await cbResult.ForEachAsync(r =>
+			{
+				var prog = r["program"].As<string>();
+				if (!existingPrograms.Contains(prog))
+					programs.Add(new
+					{
+						program = prog,
+						nodeCount = 0,
+						sectionCount = 0,
+						paraCount = 0,
+						sqlCount = 0,
+						callCount = 0,
+						performCount = 0,
+						branchCount = 0,
+						lineCount = r["lineCount"].As<int>(),
+						isCopybook = true
+					});
+			});
+		}
+		catch { /* CobolFile nodes may not yet exist in this scan */ }
+
 		// Inter-program dependency edges. Always DISTINCT across runs so every known
 		// dependency surfaces exactly once even when a specific scanRunId is pinned —
 		// older runs may carry the same edge with a different runId.
