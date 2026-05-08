@@ -4827,17 +4827,21 @@ class ASTGalaxyView {
 
     const checked = this._bianShowCopybooks ? 'checked' : '';
     let html = `<div style="height:100%;overflow:auto;padding:16px;font-family:monospace;background:#0f172a;">
-      <div style="margin-bottom:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+      <div style="margin-bottom:8px;">
         <span style="font-size:16px;font-weight:700;color:#e2e8f0;">🏦 BIAN-aligned Service Landscape</span>
-        <span style="font-size:11px;color:#64748b;">V14.0 · heuristic mapping based on program naming conventions · click a chip to open in AST Explorer</span>
-        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:#94a3b8;margin-left:auto;white-space:nowrap;"
-          title="Show copybook (.cpy) files used by programs">
-          <input type="checkbox" ${checked} onchange="galaxyView._bianShowCopybooks=this.checked;galaxyView._rebuildAndRender()">
-          Show Copybooks
-        </label>
+        <span style="font-size:11px;color:#64748b;margin-left:12px;">V14.0 · heuristic mapping based on program naming conventions · click a chip to open in AST Explorer</span>
       </div>
-      <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;font-size:11px;color:#64748b;">
-        <span>⚡ = SQL-heavy (purple)</span><span>▪ = CALL-heavy (amber)</span><span>Click chip → AST Explorer</span>
+      <div style="display:flex;align-items:center;gap:16px;margin-bottom:12px;flex-wrap:wrap;font-size:11px;color:#64748b;padding:8px 10px;background:#1e293b;border-radius:6px;">
+        <span>⚡ = SQL-heavy (purple)</span>
+        <span>▪ = CALL-heavy (amber)</span>
+        <span>Click chip → AST Explorer</span>
+        <span style="width:1px;height:16px;background:#334155;"></span>
+        <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:12px;color:#e2e8f0;padding:4px 10px;background:#0f172a;border:1px solid ${this._bianShowCopybooks ? '#3b82f6' : '#334155'};border-radius:20px;transition:border-color .2s;"
+          title="Show the copybooks (.cpy) included by the programs above">
+          <input type="checkbox" ${checked} style="accent-color:#3b82f6;width:14px;height:14px;cursor:pointer;"
+            onchange="galaxyView._bianShowCopybooks=this.checked;galaxyView._rebuildAndRender()">
+          📂 Show Copybooks
+        </label>
       </div>`;
 
     for (const area of ASTGalaxyView.BIAN_LANDSCAPE) {
