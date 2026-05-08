@@ -2760,11 +2760,14 @@ app.MapGet("/api/graph/rekt/galaxy-ast", async (long? scanRunId, CancellationTok
 
 		// Get key structural nodes across ALL programs (skip low-level SENTENCE/GENERIC nodes for performance).
 		// When scanRunId is pinned, filter to that exact run; otherwise use latest-run-per-program.
-		IResultCursor nodeResult;
-		IResultCursor edgeResult;
+		// IMPORTANT: Neo4j .NET driver allows only ONE active cursor per session at a time.
+		//            Consume each result fully before issuing the next RunAsync call.
+		var nodes = new List<object>();
+		var edges = new List<object>();
+
 		if (scanRunId.HasValue)
 		{
-			nodeResult = await session.RunAsync(@"
+			var nodeResult = await session.RunAsync(@"
 				MATCH (a:ASTNode) WHERE a.program IS NOT NULL AND coalesce(a.runId, 0) = $scanRunId
 				  AND a.nodeType IN ['SECTION', 'PARAGRAPHS', 'PARAGRAPH', 'PARAGRAPH_NAME',
 				                     'PERFORM', 'CALL', 'CallStatement', 'IF_BRANCH', 'EVALUATE',
@@ -2775,7 +2778,17 @@ app.MapGet("/api/graph/rekt/galaxy-ast", async (long? scanRunId, CancellationTok
 				       a.program AS program
 				ORDER BY a.program, a.startLine",
 				new { scanRunId = scanRunId.Value });
-			edgeResult = await session.RunAsync(@"
+			await nodeResult.ForEachAsync(r => nodes.Add(new
+			{
+				id = r["id"].As<string>(),
+				nodeType = r["nodeType"].As<string?>() ?? "",
+				name = r["name"].As<string?>() ?? "",
+				startLine = r["startLine"].As<int?>() ?? 0,
+				endLine = r["endLine"].As<int?>() ?? 0,
+				program = r["program"].As<string>()
+			}));
+
+			var edgeResult = await session.RunAsync(@"
 				MATCH (a:ASTNode)-[r:CONTAINS|FOLLOWED_BY|JUMPS_TO]->(b:ASTNode)
 				WHERE a.program IS NOT NULL AND b.program = a.program
 				  AND coalesce(a.runId, 0) = $scanRunId AND coalesce(b.runId, 0) = $scanRunId
@@ -2789,10 +2802,16 @@ app.MapGet("/api/graph/rekt/galaxy-ast", async (long? scanRunId, CancellationTok
 				                     'EXIT', 'PROCEDURE_DIVISION_BODY']
 				RETURN a.id AS source, b.id AS target, type(r) AS type",
 				new { scanRunId = scanRunId.Value });
+			await edgeResult.ForEachAsync(r => edges.Add(new
+			{
+				source = r["source"].As<string>(),
+				target = r["target"].As<string>(),
+				type = r["type"].As<string>()
+			}));
 		}
 		else
 		{
-			nodeResult = await session.RunAsync(@"
+			var nodeResult = await session.RunAsync(@"
 				MATCH (a0:ASTNode) WHERE a0.program IS NOT NULL
 				WITH a0.program AS program, max(coalesce(a0.runId, 0)) AS _r
 				MATCH (a:ASTNode)
@@ -2805,7 +2824,17 @@ app.MapGet("/api/graph/rekt/galaxy-ast", async (long? scanRunId, CancellationTok
 				       a.startLine AS startLine, a.endLine AS endLine,
 				       a.program AS program
 				ORDER BY a.program, a.startLine");
-			edgeResult = await session.RunAsync(@"
+			await nodeResult.ForEachAsync(r => nodes.Add(new
+			{
+				id = r["id"].As<string>(),
+				nodeType = r["nodeType"].As<string?>() ?? "",
+				name = r["name"].As<string?>() ?? "",
+				startLine = r["startLine"].As<int?>() ?? 0,
+				endLine = r["endLine"].As<int?>() ?? 0,
+				program = r["program"].As<string>()
+			}));
+
+			var edgeResult = await session.RunAsync(@"
 				MATCH (a0:ASTNode) WHERE a0.program IS NOT NULL
 				WITH a0.program AS program, max(coalesce(a0.runId, 0)) AS _r
 				MATCH (a:ASTNode)-[r:CONTAINS|FOLLOWED_BY|JUMPS_TO]->(b:ASTNode)
@@ -2820,26 +2849,13 @@ app.MapGet("/api/graph/rekt/galaxy-ast", async (long? scanRunId, CancellationTok
 				                     'DIALECT', 'DIALECT_CONTAINER', 'MOVE', 'COMPUTE', 'DISPLAY',
 				                     'EXIT', 'PROCEDURE_DIVISION_BODY']
 				RETURN a.id AS source, b.id AS target, type(r) AS type");
+			await edgeResult.ForEachAsync(r => edges.Add(new
+			{
+				source = r["source"].As<string>(),
+				target = r["target"].As<string>(),
+				type = r["type"].As<string>()
+			}));
 		}
-
-		var nodes = new List<object>();
-		await nodeResult.ForEachAsync(r => nodes.Add(new
-		{
-			id = r["id"].As<string>(),
-			nodeType = r["nodeType"].As<string?>() ?? "",
-			name = r["name"].As<string?>() ?? "",
-			startLine = r["startLine"].As<int?>() ?? 0,
-			endLine = r["endLine"].As<int?>() ?? 0,
-			program = r["program"].As<string>()
-		}));
-
-		var edges = new List<object>();
-		await edgeResult.ForEachAsync(r => edges.Add(new
-		{
-			source = r["source"].As<string>(),
-			target = r["target"].As<string>(),
-			type = r["type"].As<string>()
-		}));
 
 		// Inter-program edges
 		try
