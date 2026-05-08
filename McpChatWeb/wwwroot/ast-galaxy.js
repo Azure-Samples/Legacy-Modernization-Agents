@@ -128,6 +128,8 @@ class ASTGalaxyView {
       this._populateFileFilter();
       if (this.viewMode === 'service-catalog-v3') {
         this._buildModernizationRadarVisData();
+      } else if (this.viewMode === 'program-map') {
+        this._buildProgramMapVisData();
       } else if (this._isServiceCatalogMode) {
         this._buildServiceCatalogVisData();
       } else if (this._isBusinessMode) {
@@ -775,7 +777,230 @@ class ASTGalaxyView {
     }
   }
 
+  // ═══════════════════════════════════════════════════════════════════
+  // PROGRAM MAP — north-to-south 2D view
+  // Each program is a column. Its direct dependencies (copybooks it
+  // COPYs, programs it CALLs) are stacked vertically below it.
+  // Shared dependencies shared by multiple programs are deduplicated
+  // and placed in the column of their first (alphabetically) caller.
+  // ═══════════════════════════════════════════════════════════════════
+
+  _buildProgramMapVisData() {
+    const allPrograms = this._getSortedPrograms();           // filtered + sorted
+    const edges      = this.galaxyData?.edges || [];
+
+    const COL_W   = 220;  // px between program columns
+    const ROW_H   = 90;   // px between rows
+
+    // Build adjacency: source → [targets] (using normalised names)
+    const norm    = s => (s || '').replace(/\.cbl$/i, '').replace(/\.cpy$/i, '').replace(/^flow-ast-/, '').toUpperCase();
+    const progSet = new Set(allPrograms.map(p => norm(p.program)));
+
+    // For each program, collect its direct service dependencies
+    const depsOf  = new Map();  // normName → Set<normName>
+    for (const e of edges) {
+      const src = norm(e.source), tgt = norm(e.target);
+      if (!depsOf.has(src)) depsOf.set(src, new Set());
+      depsOf.get(src).add(tgt);
+    }
+
+    // Sort programs A-Z for left→right column order
+    const sorted = [...allPrograms].sort((a, b) => norm(a.program).localeCompare(norm(b.program)));
+
+    // Assign each dependency to the leftmost (first alphabetically) caller column
+    // so shared copybooks appear only once in the visual
+    const depAssigned = new Map();  // normDep → colIndex
+    for (let col = 0; col < sorted.length; col++) {
+      const pn = norm(sorted[col].program);
+      for (const dep of (depsOf.get(pn) || [])) {
+        if (!depAssigned.has(dep)) depAssigned.set(dep, col);
+      }
+    }
+
+    const nodeList = [];
+    const edgeList = [];
+    const nodeIds  = new Set();
+
+    const _progMeta = name => allPrograms.find(p => norm(p.program) === name) || null;
+
+    // ── Program header nodes (row 0) ──
+    for (let col = 0; col < sorted.length; col++) {
+      const p       = sorted[col];
+      const pn      = norm(p.program);
+      const display = pn.replace(/^FLOW-AST-/, '');
+      const isCopy  = p.isCopybook || false;
+      const style   = ASTGalaxyView.NODE_STYLE[isCopy ? 'COPYBOOK' : 'PROGRAM'] || ASTGalaxyView.DEFAULT_STYLE;
+      const depCount = (depsOf.get(pn) || new Set()).size;
+
+      nodeList.push({
+        id:    'pm_prog__' + pn,
+        label: display,
+        x:     col * COL_W,
+        y:     0,
+        fixed: { x: true, y: true },
+        level: 0,
+        shape: style.shape || 'box',
+        color: { background: style.color, border: style.border || style.color, highlight: { background: style.color, border: '#fff' } },
+        font:  { color: '#e2e8f0', size: 12, bold: true },
+        size:  28,
+        title: `${isCopy ? 'Copybook' : 'Program'}: ${display}\nLOC: ${p.lineCount || 0} · Sections: ${p.sectionCount || 0} · Paragraphs: ${p.paraCount || 0}\nSQL: ${p.sqlCount || 0} · CALLs: ${p.callCount || 0}\nDirect dependencies: ${depCount}`,
+        _data: { ...p, program: p.program, nodeType: isCopy ? 'COPYBOOK' : 'PROGRAM', displayName: display },
+      });
+      nodeIds.add('pm_prog__' + pn);
+    }
+
+    // ── Dependency nodes (rows 1+) per assigned column ──
+    // Group deps by assigned column, then sort within each column
+    const colDeps = new Map();  // colIndex → [{normName, type}]
+    for (const [dep, col] of depAssigned) {
+      if (!colDeps.has(col)) colDeps.set(col, []);
+      colDeps.get(col).push(dep);
+    }
+
+    for (const [col, deps] of colDeps) {
+      const sortedDeps = [...deps].sort();
+      sortedDeps.forEach((dep, rowIdx) => {
+        const nodeId = 'pm_dep__' + dep;
+        if (nodeIds.has(nodeId)) return;
+        nodeIds.add(nodeId);
+
+        const meta     = _progMeta(dep);
+        const isCopy   = dep.endsWith('.CPY') || dep.endsWith('.cpy') || (meta?.isCopybook) || !progSet.has(dep);
+        const display  = dep.replace(/^FLOW-AST-/, '');
+        const style    = ASTGalaxyView.NODE_STYLE[isCopy ? 'COPYBOOK' : 'PROGRAM'] || ASTGalaxyView.DEFAULT_STYLE;
+
+        nodeList.push({
+          id:    nodeId,
+          label: display,
+          x:     col * COL_W,
+          y:     (rowIdx + 1) * ROW_H,
+          fixed: { x: true, y: true },
+          level: 1,
+          shape: style.shape || 'ellipse',
+          color: { background: style.color + 'cc', border: style.border || style.color, highlight: { background: style.color, border: '#fff' } },
+          font:  { color: '#cbd5e1', size: 11 },
+          size:  20,
+          title: `${isCopy ? 'Copybook' : 'Program'}: ${display}${meta ? `\nLOC: ${meta.lineCount || 0}` : '\n(not parsed — inferred from dependency edges)'}`,
+          _data: { ...(meta || {}), program: dep, nodeType: isCopy ? 'COPYBOOK' : 'PROGRAM', displayName: display },
+        });
+      });
+    }
+
+    // ── Edges: program → dependency ──
+    for (let col = 0; col < sorted.length; col++) {
+      const pn = norm(sorted[col].program);
+      for (const dep of (depsOf.get(pn) || [])) {
+        const srcId = 'pm_prog__' + pn;
+        const tgtId = 'pm_dep__' + dep;
+        if (!nodeIds.has(tgtId)) continue;
+        const isCross = depAssigned.get(dep) !== col;  // dep owned by another column
+        edgeList.push({
+          id:     `pm_e__${pn}__${dep}`,
+          from:   srcId,
+          to:     tgtId,
+          dashes: isCross,
+          color:  { color: isCross ? '#f59e0b' : '#475569', opacity: isCross ? 0.7 : 0.5 },
+          width:  isCross ? 1 : 1.5,
+          arrows: { to: { enabled: true, scaleFactor: 0.6 } },
+          smooth: { type: 'curvedCW', roundness: isCross ? 0.3 : 0.1 },
+          title:  `${pn} → ${dep}`,
+        });
+      }
+    }
+
+    this.nodes = new vis.DataSet(nodeList);
+    this.edges = new vis.DataSet(edgeList);
+    this._pmLayout = { sorted };  // stash for overlay headers
+  }
+
   _renderVisNetwork(container) {
+    if (this.viewMode === 'program-map') return this._renderProgramMapNetwork(container);
+    return this._renderVisNetworkInternal(container);
+  }
+
+  _renderProgramMapNetwork(container) {
+    if (this.network) { this.network.destroy(); this.network = null; }
+    container.innerHTML = '';
+
+    const COL_W = 220;
+
+    this.network = new vis.Network(container, { nodes: this.nodes, edges: this.edges }, {
+      nodes: {
+        borderWidth: 2,
+        shadow: { enabled: true, color: 'rgba(0,0,0,0.4)', size: 8, x: 0, y: 2 },
+        font: { multi: false },
+      },
+      edges: {
+        smooth: { type: 'curvedCW', roundness: 0.15 },
+        font: { size: 0 },
+      },
+      interaction: {
+        hover: true,
+        tooltipDelay: 150,
+        navigationButtons: false,
+        keyboard: { enabled: true, bindToWindow: false },
+      },
+      layout: { hierarchical: false },
+      physics: { enabled: false },  // positions are pre-computed
+    });
+
+    // Column header overlay — one label per program at the top
+    const sorted = this._pmLayout?.sorted || [];
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;z-index:10;width:100%;';
+
+    const updateOverlay = () => {
+      overlay.innerHTML = '';
+      if (!this.network) return;
+      for (let col = 0; col < sorted.length; col++) {
+        const p       = sorted[col];
+        const pn      = (p.program || '').replace(/\.cbl$/i,'').replace(/^flow-ast-/i,'').toUpperCase();
+        const display = pn.replace(/^FLOW-AST-/, '');
+        const pos     = this.network.canvasToDOM(this.network.getPosition('pm_prog__' + pn));
+        if (!pos) continue;
+        const lbl = document.createElement('div');
+        lbl.style.cssText = `position:absolute;left:${pos.x - 50}px;top:4px;width:100px;text-align:center;font-size:10px;color:#64748b;pointer-events:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;`;
+        lbl.title = display;
+        lbl.textContent = display;
+        overlay.appendChild(lbl);
+      }
+    };
+
+    container.style.position = 'relative';
+    container.appendChild(overlay);
+    this.network.once('afterDrawing', () => {
+      this.network.fit({ animation: { duration: 400 } });
+      setTimeout(updateOverlay, 420);
+    });
+    this.network.on('zoom', updateOverlay);
+    this.network.on('dragEnd', updateOverlay);
+
+    // Click → inspector
+    this.network.on('click', (params) => {
+      if (params.nodes.length > 0) {
+        const nd = this.nodes.get(params.nodes[0]);
+        if (nd?._data) {
+          this._updateInspector(nd._data);
+          this._updateSourcePanel(nd._data);
+        }
+      }
+    });
+
+    // Double-click → open in AST Explorer
+    this.network.on('doubleClick', (params) => {
+      if (params.nodes.length > 0) {
+        const nd = this.nodes.get(params.nodes[0]);
+        if (nd?._data?.program && typeof astExplorer !== 'undefined' && astExplorer) {
+          astExplorer.drillIntoProgram(nd._data.program);
+        }
+      }
+    });
+
+    this.network.on('hoverNode', () => { container.style.cursor = 'pointer'; });
+    this.network.on('blurNode',  () => { container.style.cursor = 'default'; });
+  }
+
+  _renderVisNetworkInternal(container) {
     if (this.network) { this.network.destroy(); this.network = null; }
     container.innerHTML = '';
 
@@ -1370,6 +1595,7 @@ class ASTGalaxyView {
       'service-catalog-expanded-3d': '🧊 Service Catalog (Expanded 3D)',
       'service-catalog-v2': '🚀 Service Catalog v2',
       'service-catalog-v3': '🎯 Modernization Radar',
+      'program-map': '📊 Programs',
     };
     const label = document.createElement('div');
     label.style.cssText = 'position:absolute;top:10px;left:10px;z-index:20;padding:6px 14px;background:rgba(3,7,18,0.85);color:#e2e8f0;border:1px solid #475569;border-radius:6px;font-size:13px;font-weight:600;pointer-events:none;backdrop-filter:blur(4px);';
@@ -4152,6 +4378,8 @@ class ASTGalaxyView {
       ? '🎯 Modernization Radar'
       : this.viewMode === 'service-catalog-v2'
       ? '🚀 Service Catalog v2'
+      : this.viewMode === 'program-map'
+      ? '📊 Programs'
       : this._isServiceCatalogMode
         ? (this.viewMode === 'service-catalog-expanded-3d'
             ? '🧊 Service Catalog (Expanded 3D)'
@@ -4336,6 +4564,8 @@ class ASTGalaxyView {
         seen5.add(p.program);
         this._expandedClusters.add(this._classifyBusinessDomain(p.program, p));
       }
+    } else if (value === 'program-map') {
+      this._expandedClusters.clear();
     } else {
       this._expandedClusters.clear();
     }
@@ -4416,6 +4646,8 @@ class ASTGalaxyView {
   _rebuildAndRender() {
     if (this.viewMode === 'service-catalog-v3') {
       this._buildModernizationRadarVisData();
+    } else if (this.viewMode === 'program-map') {
+      this._buildProgramMapVisData();
     } else if (this._isServiceCatalogMode) {
       this._buildServiceCatalogVisData();
     } else if (this._isBusinessMode) {
