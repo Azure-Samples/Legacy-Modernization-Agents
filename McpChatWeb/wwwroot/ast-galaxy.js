@@ -128,8 +128,6 @@ class ASTGalaxyView {
       this._populateFileFilter();
       if (this.viewMode === 'service-catalog-v3') {
         this._buildModernizationRadarVisData();
-      } else if (this.viewMode === 'program-map') {
-        this._buildProgramMapVisData();
       } else if (this._isServiceCatalogMode) {
         this._buildServiceCatalogVisData();
       } else if (this._isBusinessMode) {
@@ -923,7 +921,13 @@ class ASTGalaxyView {
   }
 
   _renderVisNetwork(container) {
-    if (this.viewMode === 'program-map') return this._renderProgramMapNetwork(container);
+    if (this.viewMode === 'program-map') {
+      // program-map uses the same swim-lane render as expanded-v2
+      this.viewMode = 'expanded-v2';
+      const result = this._renderVisNetworkInternal(container);
+      this.viewMode = 'program-map';
+      return result;
+    }
     return this._renderVisNetworkInternal(container);
   }
 
@@ -4506,7 +4510,7 @@ class ASTGalaxyView {
 
   setViewMode(value) {
     this.viewMode = value;
-    if (value === 'expanded' || value === 'expanded-v2') {
+    if (value === 'expanded' || value === 'expanded-v2' || value === 'program-map') {
       const programs = this._getSortedPrograms();
       for (const p of programs) this._expandedClusters.add(p.program);
     } else if (value === 'business') {
@@ -4655,8 +4659,6 @@ class ASTGalaxyView {
   _rebuildAndRender() {
     if (this.viewMode === 'service-catalog-v3') {
       this._buildModernizationRadarVisData();
-    } else if (this.viewMode === 'program-map') {
-      this._buildProgramMapVisData();
     } else if (this._isServiceCatalogMode) {
       this._buildServiceCatalogVisData();
     } else if (this._isBusinessMode) {
