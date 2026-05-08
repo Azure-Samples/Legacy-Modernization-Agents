@@ -295,6 +295,21 @@
             <option value="">No reports yet</option>
           </select>
         </div>
+        <div class="cc-row cc-row-secondary">
+          <label class="cc-toggle" title="Inject REKT Neo4j graph context into chat prompts">
+            <input type="checkbox" id="cc-rekt-toggle">
+            <span class="cc-toggle-slider"></span>
+          </label>
+          <div class="cc-label">
+            <span class="cc-title">🧠 Use REKT graph context</span>
+            <span class="cc-sub">Add AST/dependency facts from REKT Neo4j to ground chat responses</span>
+          </div>
+          <select id="cc-rekt-run-scope" class="cc-select">
+            <option value="latest">Use latest scan</option>
+            <option value="selected">Use selected scan</option>
+            <option value="all">Use all scans</option>
+          </select>
+        </div>
       </div>
 
       <form id="chat-form">

@@ -1383,6 +1383,7 @@ See [Parallel Jobs Formula](#parallel-jobs-formula) for chunking configuration d
 |-------|----------|
 | Neo4j connection refused | `docker-compose up -d neo4j` |
 | Azure API error | Check `Config/ai-config.local.env` credentials or run `az login` |
+| `./doctor.sh setup` fails with missing `ai-config.local.env.example` | Follow `docs/troubleshoot.md` |
 | No output generated | Ensure COBOL files are in `source/` |
 | Portal won't start | `lsof -ti :5028 \| xargs kill -9` then retry |
 
@@ -1395,6 +1396,7 @@ See [Parallel Jobs Formula](#parallel-jobs-formula) for chunking configuration d
 - [Smart Chunking Guide](Smart-chuncking-how%20it-works.md) — Deep technical details
 - [Architecture Documentation](REVERSE_ENGINEERING_ARCHITECTURE.md) — System design
 - [Cobol-REKT Demo](docs/rekt-demo.md) — Static-analysis pipeline walkthrough
+- [Setup Troubleshooting](docs/troubleshoot.md) — Setup failures and recovery steps for `./doctor.sh setup`
 - [Changelog](CHANGELOG.md) — Version history
 
 ---

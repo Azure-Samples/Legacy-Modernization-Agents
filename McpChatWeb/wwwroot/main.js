@@ -232,7 +232,14 @@ async function handleChatSubmit(event) {
   // Append the user's prompt to the transcript immediately, then a pending
   // assistant placeholder. This is what makes it feel ChatGPT-fast.
   const reportContext = typeof getChatReportContext === 'function' ? getChatReportContext() : null;
-  const scope = reportContext ? 'report' : 'database';
+  const rektContext = typeof getChatRektContextOptions === 'function'
+    ? (getChatRektContextOptions() || { enabled: false, runScope: 'latest' })
+    : { enabled: false, runScope: 'latest' };
+  const selectedScanRaw = typeof getSelectedScanRunId === 'function' ? getSelectedScanRunId() : null;
+  const selectedScanRunId = selectedScanRaw && selectedScanRaw !== 'latest' && selectedScanRaw !== 'all'
+    ? Number(selectedScanRaw)
+    : null;
+  const scope = reportContext ? 'report' : (rektContext.enabled ? 'database+rekt' : 'database');
   const scopeLabel = reportContext ? (String(reportContext).split('/').pop() || 'Report') : null;
   if (window.ChatHistory) {
     window.ChatHistory.appendMessage('user', prompt, { scope, scopeLabel });
@@ -268,7 +275,10 @@ async function handleChatSubmit(event) {
       body: JSON.stringify({
         prompt,
         history,
-        reportContext: reportContext || null
+        reportContext: reportContext || null,
+        useRektContext: !!rektContext.enabled,
+        rektRunScope: rektContext.runScope || 'latest',
+        selectedScanRunId: Number.isFinite(selectedScanRunId) ? selectedScanRunId : null
       })
     });
 

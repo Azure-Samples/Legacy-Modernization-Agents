@@ -923,21 +923,24 @@ You can still access the data directly:
 			{
 				await connection.OpenAsync(cancellationToken);
 
-				// Get run summary
-				using var runCmd = connection.CreateCommand();
-				runCmd.CommandText = "SELECT id, status, started_at FROM runs ORDER BY id DESC LIMIT 5";
-				var runs = new List<string>();
-				using (var reader = await runCmd.ExecuteReaderAsync(cancellationToken))
+				// In REKT mode we avoid migration-run summaries to prevent run-id confusion.
+				if (!request.UseRektContext)
 				{
-					while (await reader.ReadAsync(cancellationToken))
+					using var runCmd = connection.CreateCommand();
+					runCmd.CommandText = "SELECT id, status, started_at FROM runs ORDER BY id DESC LIMIT 5";
+					var runs = new List<string>();
+					using (var reader = await runCmd.ExecuteReaderAsync(cancellationToken))
 					{
-						var status = reader.IsDBNull(1) ? "Unknown" : reader.GetString(1);
-						runs.Add($"Run {reader.GetInt32(0)} ({status})");
+						while (await reader.ReadAsync(cancellationToken))
+						{
+							var status = reader.IsDBNull(1) ? "Unknown" : reader.GetString(1);
+							runs.Add($"Run {reader.GetInt32(0)} ({status})");
+						}
 					}
-				}
-				if (runs.Count > 0)
-				{
-					contextData += $"Available runs: {string.Join(", ", runs)}\n";
+					if (runs.Count > 0)
+					{
+						contextData += $"Available runs: {string.Join(", ", runs)}\n";
+					}
 				}
 
 				// Get file count and complexity stats
@@ -979,97 +982,238 @@ You can still access the data directly:
 					}
 				}
 
-				// Inject RE (reverse engineering) results from the latest run
-				var hasBlTable = await TableHasColumnAsync(connection, "business_logic", "file_name", cancellationToken);
-				if (hasBlTable)
+				// REKT mode should rely on REKT Neo4j run IDs, not migration DB business_logic runs.
+				if (!request.UseRektContext)
 				{
-					// Get the latest run that has RE results
-					using var latestReRunCmd = connection.CreateCommand();
-					latestReRunCmd.CommandText = "SELECT run_id FROM business_logic ORDER BY run_id DESC LIMIT 1";
-					var latestReRunObj = await latestReRunCmd.ExecuteScalarAsync(cancellationToken);
-
-					if (latestReRunObj != null)
+					var hasBlTable = await TableHasColumnAsync(connection, "business_logic", "file_name", cancellationToken);
+					if (hasBlTable)
 					{
-						var latestReRunId = Convert.ToInt32(latestReRunObj);
-						using var blCmd = connection.CreateCommand();
-						blCmd.CommandText = @"
-							SELECT file_name, business_purpose, user_stories_json, features_json, business_rules_json
-							FROM business_logic
-							WHERE run_id = $runId
-							ORDER BY file_name
-							LIMIT 20";
-						blCmd.Parameters.AddWithValue("$runId", latestReRunId);
+						// Get the latest run that has RE results
+						using var latestReRunCmd = connection.CreateCommand();
+						latestReRunCmd.CommandText = "SELECT run_id FROM business_logic ORDER BY run_id DESC LIMIT 1";
+						var latestReRunObj = await latestReRunCmd.ExecuteScalarAsync(cancellationToken);
 
-						var reSection = new System.Text.StringBuilder();
-						reSection.AppendLine($"\nReverse Engineering Results (Run {latestReRunId}):");
-
-						using (var reader = await blCmd.ExecuteReaderAsync(cancellationToken))
+						if (latestReRunObj != null)
 						{
-							while (await reader.ReadAsync(cancellationToken))
+							var latestReRunId = Convert.ToInt32(latestReRunObj);
+							using var blCmd = connection.CreateCommand();
+							blCmd.CommandText = @"
+								SELECT file_name, business_purpose, user_stories_json, features_json, business_rules_json
+								FROM business_logic
+								WHERE run_id = $runId
+								ORDER BY file_name
+								LIMIT 20";
+							blCmd.Parameters.AddWithValue("$runId", latestReRunId);
+
+							var reSection = new System.Text.StringBuilder();
+							reSection.AppendLine($"\nReverse Engineering Results (Run {latestReRunId}):");
+
+							using (var reader = await blCmd.ExecuteReaderAsync(cancellationToken))
 							{
-								var fileName = reader.GetString(0);
-								var purpose = reader.IsDBNull(1) ? null : reader.GetString(1);
-								var userStoriesJson = reader.IsDBNull(2) ? null : reader.GetString(2);
-								var featuresJson = reader.IsDBNull(3) ? null : reader.GetString(3);
-								var rulesJson = reader.IsDBNull(4) ? null : reader.GetString(4);
-
-								reSection.AppendLine($"\nFile: {fileName}");
-								if (!string.IsNullOrWhiteSpace(purpose))
-									reSection.AppendLine($"  Business Purpose: {purpose}");
-
-								if (!string.IsNullOrWhiteSpace(userStoriesJson) && userStoriesJson != "[]")
+								while (await reader.ReadAsync(cancellationToken))
 								{
-									try
-									{
-										var stories = System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.Nodes.JsonArray>(userStoriesJson);
-										if (stories != null && stories.Count > 0)
-										{
-											reSection.AppendLine($"  User Stories ({stories.Count}):");
-											foreach (var s in stories.Take(5))
-												reSection.AppendLine($"    - {s}");
-											if (stories.Count > 5) reSection.AppendLine($"    ... and {stories.Count - 5} more");
-										}
-									}
-									catch (System.Text.Json.JsonException ex) { Console.Error.WriteLine($"Failed to deserialize user stories JSON: {ex.Message}"); }
-								}
+									var fileName = reader.GetString(0);
+									var purpose = reader.IsDBNull(1) ? null : reader.GetString(1);
+									var userStoriesJson = reader.IsDBNull(2) ? null : reader.GetString(2);
+									var featuresJson = reader.IsDBNull(3) ? null : reader.GetString(3);
+									var rulesJson = reader.IsDBNull(4) ? null : reader.GetString(4);
 
-								if (!string.IsNullOrWhiteSpace(featuresJson) && featuresJson != "[]")
-								{
-									try
-									{
-										var features = System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.Nodes.JsonArray>(featuresJson);
-										if (features != null && features.Count > 0)
-										{
-											reSection.AppendLine($"  Features ({features.Count}):");
-											foreach (var f in features.Take(5))
-												reSection.AppendLine($"    - {f}");
-											if (features.Count > 5) reSection.AppendLine($"    ... and {features.Count - 5} more");
-										}
-									}
-									catch (System.Text.Json.JsonException ex) { Console.Error.WriteLine($"Failed to deserialize features JSON: {ex.Message}"); }
-								}
+									reSection.AppendLine($"\nFile: {fileName}");
+									if (!string.IsNullOrWhiteSpace(purpose))
+										reSection.AppendLine($"  Business Purpose: {purpose}");
 
-								if (!string.IsNullOrWhiteSpace(rulesJson) && rulesJson != "[]")
-								{
-									try
+									if (!string.IsNullOrWhiteSpace(userStoriesJson) && userStoriesJson != "[]")
 									{
-										var rules = System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.Nodes.JsonArray>(rulesJson);
-										if (rules != null && rules.Count > 0)
+										try
 										{
-											reSection.AppendLine($"  Business Rules ({rules.Count}):");
-											foreach (var r in rules.Take(5))
-												reSection.AppendLine($"    - {r}");
-											if (rules.Count > 5) reSection.AppendLine($"    ... and {rules.Count - 5} more");
+											var stories = System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.Nodes.JsonArray>(userStoriesJson);
+											if (stories != null && stories.Count > 0)
+											{
+												reSection.AppendLine($"  User Stories ({stories.Count}):");
+												foreach (var s in stories.Take(5))
+													reSection.AppendLine($"    - {s}");
+												if (stories.Count > 5) reSection.AppendLine($"    ... and {stories.Count - 5} more");
+											}
 										}
+										catch (System.Text.Json.JsonException ex) { Console.Error.WriteLine($"Failed to deserialize user stories JSON: {ex.Message}"); }
 									}
-									catch (System.Text.Json.JsonException ex) { Console.Error.WriteLine($"Failed to deserialize business rules JSON: {ex.Message}"); }
+
+									if (!string.IsNullOrWhiteSpace(featuresJson) && featuresJson != "[]")
+									{
+										try
+										{
+											var features = System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.Nodes.JsonArray>(featuresJson);
+											if (features != null && features.Count > 0)
+											{
+												reSection.AppendLine($"  Features ({features.Count}):");
+												foreach (var f in features.Take(5))
+													reSection.AppendLine($"    - {f}");
+												if (features.Count > 5) reSection.AppendLine($"    ... and {features.Count - 5} more");
+											}
+										}
+										catch (System.Text.Json.JsonException ex) { Console.Error.WriteLine($"Failed to deserialize features JSON: {ex.Message}"); }
+									}
+
+									if (!string.IsNullOrWhiteSpace(rulesJson) && rulesJson != "[]")
+									{
+										try
+										{
+											var rules = System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.Nodes.JsonArray>(rulesJson);
+											if (rules != null && rules.Count > 0)
+											{
+												reSection.AppendLine($"  Business Rules ({rules.Count}):");
+												foreach (var r in rules.Take(5))
+													reSection.AppendLine($"    - {r}");
+												if (rules.Count > 5) reSection.AppendLine($"    ... and {rules.Count - 5} more");
+											}
+										}
+										catch (System.Text.Json.JsonException ex) { Console.Error.WriteLine($"Failed to deserialize business rules JSON: {ex.Message}"); }
+									}
 								}
 							}
-						}
 
-						contextData += reSection;
+							contextData += reSection;
+						}
 					}
 				}
+			}
+		}
+
+		// Optional: enrich chat context with REKT Neo4j graph facts.
+		if (request.UseRektContext)
+		{
+			try
+			{
+				var scope = (request.RektRunScope ?? "latest").Trim().ToLowerInvariant();
+				if (scope != "latest" && scope != "selected" && scope != "all")
+					scope = "latest";
+
+				long? selectedRunId = request.SelectedScanRunId.HasValue && request.SelectedScanRunId.Value > 0
+					? request.SelectedScanRunId.Value
+					: null;
+				if (scope == "selected" && !selectedRunId.HasValue)
+					scope = "latest";
+
+				var rektUri = Environment.GetEnvironmentVariable("REKT_NEO4J_URI") ?? "bolt://localhost:7688";
+				var rektUser = Environment.GetEnvironmentVariable("REKT_NEO4J_USER") ?? "neo4j";
+				var rektPassword = Environment.GetEnvironmentVariable("REKT_NEO4J_PASSWORD") ?? "cobol-rekt-2026";
+
+				using var rektDriver = Neo4j.Driver.GraphDatabase.Driver(
+					rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
+				await using var rektSession = rektDriver.AsyncSession();
+
+				string scopeLabel = scope switch
+				{
+					"selected" => $"selected scan #{selectedRunId}",
+					"all" => "all scans",
+					_ => "latest scan per file"
+				};
+				string DisplayProgram(string raw) =>
+					(raw ?? string.Empty).Replace("flow-ast-", "", StringComparison.OrdinalIgnoreCase)
+						.Replace(".cbl", "", StringComparison.OrdinalIgnoreCase)
+						.Replace(".cpy", "", StringComparison.OrdinalIgnoreCase)
+						.ToUpperInvariant();
+
+				var rektSection = new System.Text.StringBuilder();
+				rektSection.AppendLine($"\nREKT Graph Context ({scopeLabel}):");
+				rektSection.AppendLine("  Note: REKT scan IDs are separate from migration run IDs.");
+
+				IResultCursor topProgramsResult;
+				if (scope == "selected")
+				{
+					topProgramsResult = await rektSession.RunAsync(@"
+						MATCH (f:CobolFile) WHERE coalesce(f.runId, 0) = $runId
+						RETURN f.fileName AS program,
+						       coalesce(f.lineCount, 0) AS loc,
+						       coalesce(f.isCopybook, false) AS isCopybook
+						ORDER BY loc DESC
+						LIMIT 20", new { runId = selectedRunId!.Value });
+				}
+				else if (scope == "all")
+				{
+					topProgramsResult = await rektSession.RunAsync(@"
+						MATCH (f:CobolFile)
+						WITH f.fileName AS fileName,
+						     max(coalesce(f.lineCount, 0)) AS loc,
+						     max(CASE WHEN coalesce(f.isCopybook, false) THEN 1 ELSE 0 END) AS isCopybookInt,
+						     count(DISTINCT coalesce(f.runId, 0)) AS runCount
+						RETURN fileName AS program,
+						       loc,
+						       isCopybookInt = 1 AS isCopybook,
+						       runCount
+						ORDER BY loc DESC
+						LIMIT 20");
+				}
+				else
+				{
+					topProgramsResult = await rektSession.RunAsync(@"
+						MATCH (f:CobolFile)
+						WITH f.fileName AS fileName, max(coalesce(f.runId, 0)) AS _r
+						MATCH (f2:CobolFile)
+						WHERE f2.fileName = fileName AND coalesce(f2.runId, 0) = _r
+						RETURN f2.fileName AS program,
+						       coalesce(f2.lineCount, 0) AS loc,
+						       coalesce(f2.isCopybook, false) AS isCopybook
+						ORDER BY loc DESC
+						LIMIT 20");
+				}
+
+				var topPrograms = new List<string>();
+				await topProgramsResult.ForEachAsync(r =>
+				{
+					var program = DisplayProgram(r["program"].As<string>());
+					var loc = r["loc"].As<int>();
+					var isCopybook = r["isCopybook"].As<bool>();
+					var kind = isCopybook ? "copybook" : "program";
+					var runSuffix = (scope == "all" && r.Keys.Contains("runCount"))
+						? $" across {r["runCount"].As<long>()} runs"
+						: string.Empty;
+					topPrograms.Add($"{program} ({kind}, {loc} LOC{runSuffix})");
+				});
+
+				if (topPrograms.Count > 0)
+					rektSection.AppendLine($"  Largest files: {string.Join("; ", topPrograms)}");
+
+				IResultCursor hubsResult;
+				if (scope == "selected")
+				{
+					hubsResult = await rektSession.RunAsync(@"
+						MATCH (a:CobolFile)-[:DEPENDS_ON]->(b:CobolFile)
+						WHERE coalesce(a.runId, 0) = $runId AND coalesce(b.runId, 0) = $runId
+						WITH b.fileName AS program, count(DISTINCT a.fileName) AS inbound
+						RETURN program, inbound
+						ORDER BY inbound DESC
+						LIMIT 12", new { runId = selectedRunId!.Value });
+				}
+				else
+				{
+					hubsResult = await rektSession.RunAsync(@"
+						MATCH (a:CobolFile)-[:DEPENDS_ON]->(b:CobolFile)
+						WITH b.fileName AS program, count(DISTINCT a.fileName) AS inbound
+						RETURN program, inbound
+						ORDER BY inbound DESC
+						LIMIT 12");
+				}
+
+				var hubs = new List<string>();
+				await hubsResult.ForEachAsync(r =>
+				{
+					var program = DisplayProgram(r["program"].As<string>());
+					var inbound = r["inbound"].As<long>();
+					hubs.Add($"{program} ({inbound} inbound deps)");
+				});
+				if (hubs.Count > 0)
+					rektSection.AppendLine($"  Dependency hubs: {string.Join("; ", hubs)}");
+
+				if (topPrograms.Count == 0 && hubs.Count == 0)
+					rektSection.AppendLine("  No REKT graph rows available for the selected scope.");
+
+				contextData += rektSection.ToString();
+				Console.WriteLine($"🧠 Added REKT graph context to chat (scope: {scopeLabel})");
+			}
+			catch (Exception rektEx)
+			{
+				Console.WriteLine($"⚠️ REKT chat context unavailable: {rektEx.Message}");
 			}
 		}
 
@@ -1079,8 +1223,12 @@ You can still access the data directly:
 		var historyBlock = "";
 		if (request.History != null && request.History.Count > 0)
 		{
-			var trimmed = request.History.Where(h => !string.IsNullOrWhiteSpace(h.Content))
-				.TakeLast(10).ToList();
+			var filteredHistory = request.History
+				.Where(h => !string.IsNullOrWhiteSpace(h.Content))
+				// In REKT mode, keep user turns only so stale assistant mentions of migration
+				// run IDs don't bias answers away from REKT scan IDs.
+				.Where(h => !request.UseRektContext || string.Equals(h.Role, "user", StringComparison.OrdinalIgnoreCase));
+			var trimmed = filteredHistory.TakeLast(request.UseRektContext ? 8 : 10).ToList();
 			if (trimmed.Count > 0)
 			{
 				var sb = new System.Text.StringBuilder("PRIOR CONVERSATION (most recent first turn at top):\n");
@@ -1112,6 +1260,12 @@ You can still access the data directly:
 				"only as grounding knowledge — DO NOT echo, summarise, list, or describe the " +
 				"context unless the user explicitly asks for it. Answer concisely and address " +
 				"ONLY the USER QUESTION at the bottom of this prompt.\n";
+			if (request.UseRektContext)
+			{
+				instruction +=
+					"When run IDs are mentioned, treat them as REKT scan IDs from the BACKGROUND CONTEXT. " +
+					"Do not reference migration database run IDs unless the user explicitly asks for migration runs.\n";
+			}
 			augmentedPrompt = $"{instruction}\n{historyBlock}--- BEGIN BACKGROUND CONTEXT ---\n{contextData}\n--- END BACKGROUND CONTEXT ---\n\nUSER QUESTION: {request.Prompt}";
 			Console.WriteLine($"💡 Augmented prompt with SQLite context ({contextData.Length} chars){(historyBlock.Length > 0 ? $" + {request.History?.Count ?? 0} prior turn(s)" : "")}");
 		}

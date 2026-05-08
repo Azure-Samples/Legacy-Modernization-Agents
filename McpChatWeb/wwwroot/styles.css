@@ -8057,6 +8057,11 @@ main.three-panel-layout {
 .cc-row {
   display: flex; align-items: center; gap: 12px;
 }
+.cc-row-secondary {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #1e293b;
+}
 .cc-label { display: flex; flex-direction: column; flex: 1; min-width: 0; }
 .cc-title {
   color: #e2e8f0; font-size: 13px; font-weight: 600;

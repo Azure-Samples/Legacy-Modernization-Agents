@@ -7,6 +7,8 @@ let _activeRunId = null;
 let _runPollInterval = null;
 let _reportsList = [];
 let _chatWithReport = null; // path of report being used as chat context
+let _chatUseRektContext = false;
+let _chatRektRunScope = 'latest';
 
 document.addEventListener('DOMContentLoaded', () => {
   initMissionControl();
@@ -110,6 +112,29 @@ function initMissionControl() {
     if (reportSelect) reportSelect.value = barSelect.value;
     selectReport(); syncCcBarFromHidden();
   });
+
+  const rektToggle = document.getElementById('cc-rekt-toggle');
+  const rektRunScope = document.getElementById('cc-rekt-run-scope');
+  if (rektToggle) {
+    rektToggle.checked = _chatUseRektContext;
+    rektToggle.addEventListener('change', () => {
+      _chatUseRektContext = rektToggle.checked;
+      syncCcBarFromHidden();
+      window.ChatHistory?.appendSystemNotice(
+        _chatUseRektContext
+          ? 'REKT graph context is ON for chat prompts.'
+          : 'REKT graph context is OFF for chat prompts.',
+        'info'
+      );
+    });
+  }
+  if (rektRunScope) {
+    rektRunScope.value = _chatRektRunScope;
+    rektRunScope.addEventListener('change', () => {
+      _chatRektRunScope = rektRunScope.value || 'latest';
+      syncCcBarFromHidden();
+    });
+  }
 
   // Run selector
   const runSelect = document.getElementById('mc-run-select');
@@ -437,15 +462,24 @@ function syncCcBarFromHidden() {
   const barSelect = document.getElementById('cc-bar-select');
   const sub = document.getElementById('cc-sub');
   const bar = document.getElementById('cc-bar');
+  const rektToggle = document.getElementById('cc-rekt-toggle');
+  const rektRunScope = document.getElementById('cc-rekt-run-scope');
   if (!barToggle) return;
   if (barToggle.checked !== !!toggle?.checked) barToggle.checked = !!toggle?.checked;
   if (barSelect && select && barSelect.value !== select.value) barSelect.value = select.value;
+  if (rektToggle && rektToggle.checked !== _chatUseRektContext) rektToggle.checked = _chatUseRektContext;
+  if (rektRunScope && rektRunScope.value !== _chatRektRunScope) rektRunScope.value = _chatRektRunScope;
   const active = !!toggle?.checked && !!select?.value;
   bar?.classList.toggle('cc-bar-active', active);
   if (sub) {
     if (active) {
       const opt = select.options[select.selectedIndex];
       sub.textContent = `Report mode — answers come from "${opt?.text || select.value}"`;
+    } else if (_chatUseRektContext) {
+      const scope = _chatRektRunScope === 'selected'
+        ? `selected scan (${window.getSelectedScanRunId ? window.getSelectedScanRunId() : 'latest'})`
+        : (_chatRektRunScope === 'all' ? 'all scans' : 'latest scan');
+      sub.textContent = `Database + REKT mode — SQLite + Neo4j + REKT graph (${scope})`;
     } else if (_reportsList.length === 0) {
       sub.textContent = 'No RE reports found yet — run a reverse-engineering pass first.';
     } else {
@@ -499,3 +533,9 @@ function selectReport() {
 
 // Export for chat integration
 window.getChatReportContext = function() { return _chatWithReport; };
+window.getChatRektContextOptions = function() {
+  return {
+    enabled: !!_chatUseRektContext,
+    runScope: _chatRektRunScope || 'latest',
+  };
+};

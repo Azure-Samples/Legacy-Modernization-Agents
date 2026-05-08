@@ -4852,8 +4852,9 @@ class ASTGalaxyView {
       const callTag= call > 0 ? `▪ ${call} CALLs` : '';
       const badge = color || (sql > 20 ? '#7c3aed' : call > 5 ? '#b45309' : '#1e40af');
       return `<span style="display:inline-flex;align-items:center;gap:4px;margin:3px;padding:4px 8px;background:${badge};border-radius:12px;font-size:11px;color:#e2e8f0;cursor:pointer;white-space:nowrap;"
-        title="${k}&#10;LOC: ${loc} · Sections: ${p.sectionCount||0} · Paragraphs: ${para}&#10;${sqlTag} ${callTag}"
-        onclick="if(typeof astExplorer!=='undefined'&&astExplorer)astExplorer.drillIntoProgram('${k}.cbl')">
+        title="${k}&#10;LOC: ${loc} · Sections: ${p.sectionCount||0} · Paragraphs: ${para}&#10;${sqlTag} ${callTag}&#10;Click: details · Double-click: AST Explorer"
+        onclick="galaxyView?.showProgramDetailsFromBian('${k}')"
+        ondblclick="galaxyView?.drillInto('${k}.cbl')">
         ${k}${sql>0?'<span style="font-size:9px;opacity:.7"> ⚡</span>':''}
       </span>`;
     };
@@ -4862,12 +4863,13 @@ class ASTGalaxyView {
     let html = `<div style="height:100%;overflow:auto;padding:16px;font-family:monospace;background:#0f172a;">
       <div style="margin-bottom:8px;">
         <span style="font-size:16px;font-weight:700;color:#e2e8f0;">🏦 BIAN-aligned Service Landscape</span>
-        <span style="font-size:11px;color:#64748b;margin-left:12px;">V14.0 · heuristic mapping based on program naming conventions · click a chip to open in AST Explorer</span>
+        <span style="font-size:11px;color:#64748b;margin-left:12px;">V14.0 · heuristic mapping based on program naming conventions · click a chip for details, double-click for AST Explorer</span>
       </div>
       <div style="display:flex;align-items:center;gap:16px;margin-bottom:12px;flex-wrap:wrap;font-size:11px;color:#64748b;padding:8px 10px;background:#1e293b;border-radius:6px;">
         <span>⚡ = SQL-heavy (purple)</span>
         <span>▪ = CALL-heavy (amber)</span>
-        <span>Click chip → AST Explorer</span>
+        <span>Click chip → details</span>
+        <span>Double-click chip → AST Explorer</span>
         <span style="width:1px;height:16px;background:#334155;"></span>
         <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:12px;color:#e2e8f0;padding:4px 10px;background:#0f172a;border:1px solid ${this._bianShowCopybooks ? '#3b82f6' : '#334155'};border-radius:20px;transition:border-color .2s;"
           title="Show the copybooks (.cpy) included by the programs above">
@@ -5156,6 +5158,35 @@ class ASTGalaxyView {
     } else {
       console.warn('AST Explorer not ready for drill-through:', programName);
     }
+  }
+
+  showProgramDetailsFromBian(programName) {
+    if (!programName) return;
+    const key = String(programName).replace(/\.cbl$/i, '').replace(/^flow-ast-/i, '').toUpperCase();
+    const programs = this.galaxyData?.programs || [];
+    const meta = programs.find(p =>
+      (p.program || '').replace(/\.cbl$/i, '').replace(/^flow-ast-/i, '').toUpperCase() === key
+    );
+    const resolvedProgram = meta?.program || `${key}.cbl`;
+    const service = this._describeProgram(resolvedProgram, meta || {});
+    const nodeData = {
+      nodeType: meta?.isCopybook ? 'COPYBOOK' : 'PROGRAM',
+      program: resolvedProgram,
+      displayName: key,
+      domain: this._classifyBusinessDomain(resolvedProgram, meta || {}),
+      serviceDesc: service?.desc,
+      serviceDetail: service?.detail,
+      sectionCount: meta?.sectionCount ?? 0,
+      paraCount: meta?.paraCount ?? 0,
+      nodeCount: meta?.nodeCount ?? 0,
+      sqlCount: meta?.sqlCount ?? 0,
+      callCount: meta?.callCount ?? 0,
+      performCount: meta?.performCount ?? 0,
+      branchCount: meta?.branchCount ?? 0,
+      lineCount: meta?.lineCount ?? 0,
+    };
+    this._updateInspector(nodeData);
+    this._updateSourcePanel(nodeData);
   }
 
   _update3DHighlight() {

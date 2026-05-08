@@ -58,7 +58,7 @@ class MigrationPlanner {
     // BIAN Wave Plan panel
     this._bianPlanOpen = true;
 
-    // BIAN Wave Plan panel  }
+  }
 
   async loadAndRender() {
     const root = document.getElementById(this.rootId);

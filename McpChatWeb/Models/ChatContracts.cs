@@ -5,7 +5,10 @@ public sealed record ChatHistoryMessage(string Role, string Content);
 public sealed record ChatRequest(
     string Prompt,
     string? ReportContext = null,
-    System.Collections.Generic.List<ChatHistoryMessage>? History = null);
+    System.Collections.Generic.List<ChatHistoryMessage>? History = null,
+    bool UseRektContext = false,
+    string? RektRunScope = null,
+    long? SelectedScanRunId = null);
 
 public sealed record ChatResponse(string Response, int? RunId = null);
 

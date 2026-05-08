@@ -12,6 +12,7 @@ let migrationPlanner = null;
 
 // Rekt scan run selector
 let _currentScanRunId = 'latest';
+window.getSelectedScanRunId = function() { return _currentScanRunId; };
 
 // Populate scan run dropdown on load
 async function loadScanRuns() {
