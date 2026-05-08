@@ -794,7 +794,16 @@ class ASTGalaxyView {
 
     // Build adjacency: source → [targets] (using normalised names)
     const norm    = s => (s || '').replace(/\.cbl$/i, '').replace(/\.cpy$/i, '').replace(/^flow-ast-/, '').toUpperCase();
-    const progSet = new Set(allPrograms.map(p => norm(p.program)));
+
+    // Deduplicate by normalised name — prefer entries with AST data (nodeCount > 0)
+    const dedupMap = new Map();
+    for (const p of allPrograms) {
+      const key = norm(p.program);
+      const cur = dedupMap.get(key);
+      if (!cur || (p.nodeCount || 0) > (cur.nodeCount || 0)) dedupMap.set(key, p);
+    }
+    const deduped = [...dedupMap.values()];
+    const progSet = new Set(deduped.map(p => norm(p.program)));
 
     // For each program, collect its direct service dependencies
     const depsOf  = new Map();  // normName → Set<normName>
@@ -805,7 +814,7 @@ class ASTGalaxyView {
     }
 
     // Sort programs A-Z for left→right column order
-    const sorted = [...allPrograms].sort((a, b) => norm(a.program).localeCompare(norm(b.program)));
+    const sorted = [...deduped].sort((a, b) => norm(a.program).localeCompare(norm(b.program)));
 
     // Assign each dependency to the leftmost (first alphabetically) caller column
     // so shared copybooks appear only once in the visual
@@ -821,7 +830,7 @@ class ASTGalaxyView {
     const edgeList = [];
     const nodeIds  = new Set();
 
-    const _progMeta = name => allPrograms.find(p => norm(p.program) === name) || null;
+    const _progMeta = name => deduped.find(p => norm(p.program) === name) || null;
 
     // ── Program header nodes (row 0) ──
     for (let col = 0; col < sorted.length; col++) {
