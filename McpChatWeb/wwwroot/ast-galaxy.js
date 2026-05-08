@@ -4715,14 +4715,16 @@ class ASTGalaxyView {
           { name: 'Current Account',            icon: '🏦', bianRef: 'BIAN::CurrentAccount',
             // BNK1* = MicroFocus Bank sample; CBACT*/COACT* = AWS CardDemo account management
             matches: ['CREACC','DELACC','INQACC','UPDACC','BNK1CAC','BNK1UAC',
-                      'CBACT01C','CBACT02C','CBACT03C','CBACT04C','COACTUPC','COACTVNC'],
+                      'CBACT01C','CBACT02C','CBACT03C','CBACT04C',
+                      'COACTUPC','COACTVNC','COACTVWC'],
             desc: 'Manage demand/current account lifecycle' },
           { name: 'Customer Agreement',          icon: '🤝', bianRef: 'BIAN::CustomerAgreement',
             // CBCUSR/COUSR = CardDemo customer management; CUSTOMER-* = screen programs
-            matches: ['CRECUST','DELCUS','BNK1CRA','CBCUSR1C',
-                      'COUSR01C','COUSR02C','COUSR03C',
+            matches: ['CRECUST','DELCUS','BNK1CRA',
+                      'CBCUSR1C','CBCUS01C',
+                      'COUSR00C','COUSR01C','COUSR02C','COUSR03C',
                       'CUSTOMER-DISPLAY','CUSTOMER-INQUIRY',
-                      'INQUCUST','UPDCUST','UPQCUST','CHECUST_TEST'],
+                      'INQUCUST','UPDCUST','UPQCUST','CHECUST_TEST','CRECUST_TEST'],
             desc: 'Establish and maintain customer contracts' },
           { name: 'Customer Profile',            icon: '👤', bianRef: 'BIAN::PartyDataManagement',
             matches: ['INQACCCU'],
@@ -4734,12 +4736,13 @@ class ASTGalaxyView {
             // CBTRN*/COTRN* = CardDemo transaction batch/CICS; COBIL = billing
             matches: ['DBCRFUN',
                       'CBTRNR1C','CBTRNR2C','CBTRNR3C',
+                      'CBTRN01C','CBTRN02C','CBTRN03C',
                       'COTRN00C','COTRN01C','COTRN02C','COTRN03C',
                       'COBIL00C'],
             desc: 'Debit/credit and card transaction processing' },
           { name: 'Card Management',             icon: '💎', bianRef: 'BIAN::CardCase',
             // COCRD* = card CICS screens; CRDTAGY* = credit agency batch
-            matches: ['COCRDSLC','COCRDUPE',
+            matches: ['COCRDSLC','COCRDUPE','COCRDUPC',
                       'CRDTAGY1','CRDTAGY2','CRDTAGY3','CRDTAGY4','CRDTAGY5'],
             desc: 'Credit card issuance, disputes, and agency reporting' },
         ],
@@ -4749,7 +4752,7 @@ class ASTGalaxyView {
         areaColor: '#7f1d1d', borderColor: '#ef4444',
         domains: [
           { name: 'Regulatory Reporting',        icon: '📋', bianRef: 'BIAN::RegulatoryReporting',
-            matches: ['RGNB649','CORPTG0C'],
+            matches: ['RGNB649','CORPTG0C','CORPT00C'],
             desc: 'Generate mandated regulatory submissions' },
         ],
       },
@@ -4762,8 +4765,9 @@ class ASTGalaxyView {
                       'CBEXPORT','CBIMPORT'],
             desc: 'Shared data structures and batch utilities' },
           { name: 'System Administration',       icon: '🔐', bianRef: 'BIAN::ITSystemAdministration',
-            // COADM = admin; COSGNN = sign-on (both 0-zero and double-zero variants); ABNDPROC = abend handler; COBSWAIT/CSUTLDTC = utilities
-            matches: ['COADM01C','COSGNN0C','COSGNN00C',
+            // COADM = admin; COSGNN/COSGN = sign-on variants; ABNDPROC = abend handler; utilities
+            matches: ['COADM01C',
+                      'COSGNN0C','COSGNN00C','COSGN00C',
                       'ABNDPROC','COBSWAIT','CSUTLDTC'],
             desc: 'Sign-on, administration, error handling and utilities' },
         ],
