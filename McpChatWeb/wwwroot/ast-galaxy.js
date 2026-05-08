@@ -26,6 +26,7 @@ class ASTGalaxyView {
     this._3dSearchTerm = '';
     this._c4Level = 1;          // C4 model level: 1=Context, 2=Containers, 3=Components
     this._c4SelectedProg = null; // program selected for L3 drill
+    this._bianShowCopybooks = false;
   }
 
   get _isBusinessMode() { return this.viewMode === 'business' || this.viewMode === 'business-expanded' || this.viewMode === 'service-catalog' || this.viewMode === 'service-catalog-expanded' || this.viewMode === 'service-catalog-expanded-3d' || this.viewMode === 'service-catalog-v2' || this.viewMode === 'service-catalog-v3'; }
@@ -4724,7 +4725,7 @@ class ASTGalaxyView {
                       'CBCUSR1C','CBCUS01C',
                       'COUSR00C','COUSR01C','COUSR02C','COUSR03C',
                       'CUSTOMER-DISPLAY','CUSTOMER-INQUIRY',
-                      'INQUCUST','UPDCUST','UPQCUST','CHECUST_TEST','CRECUST_TEST'],
+                      'INQCUST','INQUCUST','UPDCUST','UPQCUST','CHECUST_TEST','CRECUST_TEST'],
             desc: 'Establish and maintain customer contracts' },
           { name: 'Customer Profile',            icon: '👤', bianRef: 'BIAN::PartyDataManagement',
             matches: ['INQACCCU'],
@@ -4796,9 +4797,10 @@ class ASTGalaxyView {
 
     // Map programs to BIAN domains
     const domainMap = new Map();  // "Area||Domain" → program[]
+    const copybooks = [];
     const unmapped = [];
     for (const p of programs) {
-      if (p.isCopybook) continue;
+      if (p.isCopybook) { copybooks.push(p); continue; }
       const key = norm(p);
       const { area, domain } = this._bianMatchProgram(p.program);
       if (!area) { unmapped.push(p); continue; }
@@ -4807,7 +4809,7 @@ class ASTGalaxyView {
       domainMap.get(mk).push(p);
     }
 
-    const chip = (p) => {
+    const chip = (p, color) => {
       const k = norm(p);
       const loc  = p.lineCount   || 0;
       const sql  = p.sqlCount    || 0;
@@ -4815,7 +4817,7 @@ class ASTGalaxyView {
       const para = p.paraCount   || 0;
       const sqlTag = sql  > 0 ? `▪ ${sql} SQL`   : '';
       const callTag= call > 0 ? `▪ ${call} CALLs` : '';
-      const badge = sql > 20 ? '#7c3aed' : call > 5 ? '#b45309' : '#1e40af';
+      const badge = color || (sql > 20 ? '#7c3aed' : call > 5 ? '#b45309' : '#1e40af');
       return `<span style="display:inline-flex;align-items:center;gap:4px;margin:3px;padding:4px 8px;background:${badge};border-radius:12px;font-size:11px;color:#e2e8f0;cursor:pointer;white-space:nowrap;"
         title="${k}&#10;LOC: ${loc} · Sections: ${p.sectionCount||0} · Paragraphs: ${para}&#10;${sqlTag} ${callTag}"
         onclick="if(typeof astExplorer!=='undefined'&&astExplorer)astExplorer.drillIntoProgram('${k}.cbl')">
@@ -4823,10 +4825,16 @@ class ASTGalaxyView {
       </span>`;
     };
 
+    const checked = this._bianShowCopybooks ? 'checked' : '';
     let html = `<div style="height:100%;overflow:auto;padding:16px;font-family:monospace;background:#0f172a;">
-      <div style="margin-bottom:12px;">
+      <div style="margin-bottom:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
         <span style="font-size:16px;font-weight:700;color:#e2e8f0;">🏦 BIAN-aligned Service Landscape</span>
-        <span style="font-size:11px;color:#64748b;margin-left:12px;">V14.0 · heuristic mapping based on program naming conventions · click a chip to open in AST Explorer</span>
+        <span style="font-size:11px;color:#64748b;">V14.0 · heuristic mapping based on program naming conventions · click a chip to open in AST Explorer</span>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:#94a3b8;margin-left:auto;white-space:nowrap;"
+          title="Show copybook (.cpy) files used by programs">
+          <input type="checkbox" ${checked} onchange="galaxyView._bianShowCopybooks=this.checked;galaxyView._rebuildAndRender()">
+          Show Copybooks
+        </label>
       </div>
       <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;font-size:11px;color:#64748b;">
         <span>⚡ = SQL-heavy (purple)</span><span>▪ = CALL-heavy (amber)</span><span>Click chip → AST Explorer</span>
@@ -4862,7 +4870,19 @@ class ASTGalaxyView {
     if (unmapped.length) {
       html += `<div style="border:1px solid #334155;border-radius:8px;overflow:hidden;margin-bottom:16px;">
         <div style="background:#1e293b;padding:8px 14px;font-weight:600;color:#64748b;font-size:13px;">⚠️ Unmapped Programs</div>
-        <div style="padding:10px;display:flex;flex-wrap:wrap;">${unmapped.map(chip).join('')}</div>
+        <div style="padding:10px;display:flex;flex-wrap:wrap;">${unmapped.map(p => chip(p)).join('')}</div>
+      </div>`;
+    }
+
+    if (this._bianShowCopybooks && copybooks.length) {
+      const sortedCpy = [...copybooks].sort((a,b)=>norm(a).localeCompare(norm(b)));
+      html += `<div style="border:1px solid #1e3a5f;border-radius:8px;overflow:hidden;margin-bottom:16px;">
+        <div style="background:#0c1f3a;padding:8px 14px;display:flex;align-items:center;gap:8px;">
+          <span style="font-size:15px;">📂</span>
+          <span style="font-weight:700;color:#93c5fd;font-size:14px;">Shared Copybooks</span>
+          <span style="font-size:10px;color:#475569;margin-left:auto;">${sortedCpy.length} .cpy files · included by programs above</span>
+        </div>
+        <div style="padding:10px;display:flex;flex-wrap:wrap;">${sortedCpy.map(p => chip(p,'#1e3a5f')).join('')}</div>
       </div>`;
     }
 
