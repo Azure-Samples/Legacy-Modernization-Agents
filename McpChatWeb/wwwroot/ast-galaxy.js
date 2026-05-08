@@ -24,11 +24,15 @@ class ASTGalaxyView {
     this.edges = null;
     this._expandedClusters = new Set();
     this._3dSearchTerm = '';
+    this._c4Level = 1;          // C4 model level: 1=Context, 2=Containers, 3=Components
+    this._c4SelectedProg = null; // program selected for L3 drill
   }
 
   get _isBusinessMode() { return this.viewMode === 'business' || this.viewMode === 'business-expanded' || this.viewMode === 'service-catalog' || this.viewMode === 'service-catalog-expanded' || this.viewMode === 'service-catalog-expanded-3d' || this.viewMode === 'service-catalog-v2' || this.viewMode === 'service-catalog-v3'; }
   get _isServiceCatalogMode() { return this.viewMode === 'service-catalog' || this.viewMode === 'service-catalog-expanded' || this.viewMode === 'service-catalog-expanded-3d' || this.viewMode === 'service-catalog-v2' || this.viewMode === 'service-catalog-v3'; }
   get _isServiceCatalogExpanded() { return this.viewMode === 'service-catalog-expanded' || this.viewMode === 'service-catalog-expanded-3d'; }
+  // Modes that render pure HTML — vis.js must be skipped for these
+  get _isHtmlMode() { return this.viewMode === 'bian-matrix'; }
 
   // RAW AST view colors — exact match from ast-explorer.js
   static TYPE_COLORS = {
@@ -126,7 +130,12 @@ class ASTGalaxyView {
       }
 
       this._populateFileFilter();
-      if (this.viewMode === 'service-catalog-v3') {
+      if (this._isHtmlMode) {
+        this._renderHtmlMode(container);
+      } else if (this.viewMode === 'c4-model') {
+        this._buildC4VisData();
+        this._renderVisNetworkInternal(container);
+      } else if (this.viewMode === 'service-catalog-v3') {
         this._buildModernizationRadarVisData();
       } else if (this._isServiceCatalogMode) {
         this._buildServiceCatalogVisData();
@@ -135,7 +144,9 @@ class ASTGalaxyView {
       } else {
         this._buildVisData();
       }
-      this._renderVisNetwork(container);
+      if (!this._isHtmlMode) {
+        this._renderVisNetwork(container);
+      }
       this._updateStatsBar();
       this._renderLegend();
     } catch (e) {
@@ -921,6 +932,7 @@ class ASTGalaxyView {
   }
 
   _renderVisNetwork(container) {
+    if (this._isHtmlMode) return; // HTML modes render directly, not via vis.js
     if (this.viewMode === 'program-map') {
       // program-map uses the same swim-lane render as expanded-v2
       this.viewMode = 'expanded-v2';
@@ -1163,6 +1175,27 @@ class ASTGalaxyView {
     this.network.on('blurNode', () => {
       container.style.cursor = 'grab';
     });
+
+    // C4 specific: inject level switcher and wire L2→L3 drill
+    if (this.viewMode === 'c4-model') {
+      this._injectC4LevelUI(container);
+      this.network.on('doubleClick', (params) => {
+        if (params.nodes.length > 0) {
+          const nd = this.nodes.get(params.nodes[0]);
+          if (this._c4Level === 2 && nd?._data?.nodeType === 'C4_Container') {
+            // Drill into container → show its programs as L3 components
+            const progs = nd._data.programs || [];
+            if (progs.length > 0) {
+              this._c4Level = 3;
+              this._c4SelectedProg = (progs[0].program||'').replace(/\.cbl$/i,'').replace(/^flow-ast-/i,'').toUpperCase();
+              this._rebuildAndRender();
+            }
+          } else if ((this._c4Level === 2 || this._c4Level === 3) && nd?._data?.program) {
+            if (typeof astExplorer !== 'undefined' && astExplorer) astExplorer.drillIntoProgram(nd._data.program);
+          }
+        }
+      });
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -1609,6 +1642,8 @@ class ASTGalaxyView {
       'service-catalog-v2': '🚀 Service Catalog v2',
       'service-catalog-v3': '🎯 Modernization Radar',
       'program-map': '📊 Programs',
+      'bian-matrix': '🏦 BIAN Service Landscape',
+      'c4-model': '🏗️ C4 Model',
     };
     const label = document.createElement('div');
     label.style.cssText = 'position:absolute;top:10px;left:10px;z-index:20;padding:6px 14px;background:rgba(3,7,18,0.85);color:#e2e8f0;border:1px solid #475569;border-radius:6px;font-size:13px;font-weight:600;pointer-events:none;backdrop-filter:blur(4px);';
@@ -4393,6 +4428,10 @@ class ASTGalaxyView {
       ? '🚀 Service Catalog v2'
       : this.viewMode === 'program-map'
       ? '📊 Programs'
+      : this.viewMode === 'bian-matrix'
+      ? '🏦 BIAN Service Landscape'
+      : this.viewMode === 'c4-model'
+      ? `🏗️ C4 Model · L${this._c4Level} ${['System Context','Containers','Components'][this._c4Level-1]}`
       : this._isServiceCatalogMode
         ? (this.viewMode === 'service-catalog-expanded-3d'
             ? '🧊 Service Catalog (Expanded 3D)'
@@ -4577,6 +4616,12 @@ class ASTGalaxyView {
         seen5.add(p.program);
         this._expandedClusters.add(this._classifyBusinessDomain(p.program, p));
       }
+    } else if (value === 'bian-matrix') {
+      this._expandedClusters.clear();
+    } else if (value === 'c4-model') {
+      this._expandedClusters.clear();
+      this._c4Level = 1;
+      this._c4SelectedProg = null;
     } else if (value === 'program-map') {
       this._expandedClusters.clear();
     } else {
@@ -4656,8 +4701,338 @@ class ASTGalaxyView {
     this._rebuildAndRender();
   }
 
+  // ═══════════════════════════════════════════════════════════════════
+  // BIAN-ALIGNED SERVICE LANDSCAPE (V14.0)
+  // HTML matrix view — programs mapped to BIAN service domains
+  // ═══════════════════════════════════════════════════════════════════
+
+  static get BIAN_LANDSCAPE() {
+    return [
+      {
+        area: 'Operations & Execution', icon: '⚙️',
+        areaColor: '#1e3a8a', borderColor: '#3b82f6',
+        domains: [
+          { name: 'Current Account',            icon: '🏦', bianRef: 'BIAN::CurrentAccount',
+            matches: ['CREACC','DELACC','INQACC','UPDACC','BNK1CAC','BNK1UAC'],
+            desc: 'Manage demand/current account lifecycle' },
+          { name: 'Customer Agreement',          icon: '🤝', bianRef: 'BIAN::CustomerAgreement',
+            matches: ['CRECUST','DELCUS','BNK1CRA'],
+            desc: 'Establish and maintain customer contracts' },
+          { name: 'Customer Profile',            icon: '👤', bianRef: 'BIAN::PartyDataManagement',
+            matches: ['INQACCCU'],
+            desc: 'Consolidated customer data lookup' },
+          { name: 'Fund Transfer',               icon: '💸', bianRef: 'BIAN::FundsTransferPricing',
+            matches: ['XFRFUN','BNK1TFN'],
+            desc: 'Initiate and settle fund transfers' },
+          { name: 'Financial Transaction Assess',icon: '💳', bianRef: 'BIAN::CardTransactionSwitch',
+            matches: ['DBCRFUN'],
+            desc: 'Debit/credit transaction processing' },
+        ],
+      },
+      {
+        area: 'Risk & Compliance', icon: '🛡️',
+        areaColor: '#7f1d1d', borderColor: '#ef4444',
+        domains: [
+          { name: 'Regulatory Reporting',        icon: '📋', bianRef: 'BIAN::RegulatoryReporting',
+            matches: ['RGNB649'],
+            desc: 'Generate mandated regulatory submissions' },
+        ],
+      },
+      {
+        area: 'Business Support', icon: '🔧',
+        areaColor: '#1c1917', borderColor: '#78716c',
+        domains: [
+          { name: 'Data Management',             icon: '🗄️', bianRef: 'BIAN::DataManagement',
+            matches: ['BANKDATA','BDSDA23','BDSDA2F','BDSM043','BDSMFJL'],
+            desc: 'Shared data structures and batch utilities' },
+        ],
+      },
+    ];
+  }
+
+  _bianMatchProgram(progName) {
+    const key = (progName || '').replace(/\.cbl$/i,'').replace(/^flow-ast-/i,'').toUpperCase();
+    for (const area of ASTGalaxyView.BIAN_LANDSCAPE) {
+      for (const domain of area.domains) {
+        if (domain.matches.includes(key)) return { area: area.area, domain: domain.name };
+      }
+    }
+    return { area: null, domain: 'Unmapped' };
+  }
+
+  _renderHtmlMode(container) {
+    if (this.viewMode === 'bian-matrix') return this._renderBianMatrix(container);
+  }
+
+  _renderBianMatrix(container) {
+    if (this.network) { this.network.destroy(); this.network = null; }
+    const programs = this.galaxyData?.programs || [];
+    const norm = p => (p.program || '').replace(/\.cbl$/i,'').replace(/^flow-ast-/i,'').toUpperCase();
+
+    // Map programs to BIAN domains
+    const domainMap = new Map();  // "Area||Domain" → program[]
+    const unmapped = [];
+    for (const p of programs) {
+      if (p.isCopybook) continue;
+      const key = norm(p);
+      const { area, domain } = this._bianMatchProgram(p.program);
+      if (!area) { unmapped.push(p); continue; }
+      const mk = `${area}||${domain}`;
+      if (!domainMap.has(mk)) domainMap.set(mk, []);
+      domainMap.get(mk).push(p);
+    }
+
+    const chip = (p) => {
+      const k = norm(p);
+      const loc  = p.lineCount   || 0;
+      const sql  = p.sqlCount    || 0;
+      const call = p.callCount   || 0;
+      const para = p.paraCount   || 0;
+      const sqlTag = sql  > 0 ? `▪ ${sql} SQL`   : '';
+      const callTag= call > 0 ? `▪ ${call} CALLs` : '';
+      const badge = sql > 20 ? '#7c3aed' : call > 5 ? '#b45309' : '#1e40af';
+      return `<span style="display:inline-flex;align-items:center;gap:4px;margin:3px;padding:4px 8px;background:${badge};border-radius:12px;font-size:11px;color:#e2e8f0;cursor:pointer;white-space:nowrap;"
+        title="${k}&#10;LOC: ${loc} · Sections: ${p.sectionCount||0} · Paragraphs: ${para}&#10;${sqlTag} ${callTag}"
+        onclick="if(typeof astExplorer!=='undefined'&&astExplorer)astExplorer.drillIntoProgram('${k}.cbl')">
+        ${k}${sql>0?'<span style="font-size:9px;opacity:.7"> ⚡</span>':''}
+      </span>`;
+    };
+
+    let html = `<div style="height:100%;overflow:auto;padding:16px;font-family:monospace;background:#0f172a;">
+      <div style="margin-bottom:12px;">
+        <span style="font-size:16px;font-weight:700;color:#e2e8f0;">🏦 BIAN-aligned Service Landscape</span>
+        <span style="font-size:11px;color:#64748b;margin-left:12px;">V14.0 · heuristic mapping based on program naming conventions · click a chip to open in AST Explorer</span>
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;font-size:11px;color:#64748b;">
+        <span>⚡ = SQL-heavy (purple)</span><span>▪ = CALL-heavy (amber)</span><span>Click chip → AST Explorer</span>
+      </div>`;
+
+    for (const area of ASTGalaxyView.BIAN_LANDSCAPE) {
+      html += `<div style="margin-bottom:16px;border:1px solid ${area.borderColor};border-radius:8px;overflow:hidden;">
+        <div style="background:${area.areaColor};padding:8px 14px;display:flex;align-items:center;gap:8px;">
+          <span style="font-size:15px;">${area.icon}</span>
+          <span style="font-weight:700;color:#e2e8f0;font-size:14px;">${area.area}</span>
+          <span style="font-size:10px;color:#94a3b8;margin-left:auto;">BIAN Business Area</span>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:0;background:#0f172a;">`;
+
+      for (const domain of area.domains) {
+        const mk = `${area.area}||${domain.name}`;
+        const progs = domainMap.get(mk) || [];
+        html += `<div style="min-width:220px;flex:1;border-right:1px solid #1e293b;border-bottom:1px solid #1e293b;padding:10px;">
+          <div style="font-size:12px;font-weight:600;color:#94a3b8;margin-bottom:4px;display:flex;align-items:center;gap:6px;">
+            <span>${domain.icon}</span>
+            <span>${domain.name}</span>
+            <span style="font-size:9px;color:#475569;margin-left:auto;">${domain.bianRef}</span>
+          </div>
+          <div style="font-size:10px;color:#475569;margin-bottom:8px;">${domain.desc}</div>
+          <div style="display:flex;flex-wrap:wrap;min-height:32px;">
+            ${progs.length ? progs.map(chip).join('') : '<span style="font-size:10px;color:#334155;font-style:italic;">no programs mapped</span>'}
+          </div>
+        </div>`;
+      }
+      html += `</div></div>`;
+    }
+
+    if (unmapped.length) {
+      html += `<div style="border:1px solid #334155;border-radius:8px;overflow:hidden;margin-bottom:16px;">
+        <div style="background:#1e293b;padding:8px 14px;font-weight:600;color:#64748b;font-size:13px;">⚠️ Unmapped Programs</div>
+        <div style="padding:10px;display:flex;flex-wrap:wrap;">${unmapped.map(chip).join('')}</div>
+      </div>`;
+    }
+
+    html += `<div style="font-size:10px;color:#334155;padding:8px 0;">
+      BIAN Service Landscape V14.0 · Banking Industry Architecture Network ·
+      <a href="https://bian.org" target="_blank" style="color:#475569;">bian.org</a>
+    </div></div>`;
+
+    container.innerHTML = html;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // C4 MODEL VIEW (Structurizr-style)
+  // L1 System Context · L2 Containers · L3 Components
+  // ═══════════════════════════════════════════════════════════════════
+
+  static get C4_CONTAINER_MAP() {
+    return {
+      'Online (CICS)':      { color: '#1e40af', border: '#3b82f6', icon: '🖥️',  keys: ['BNK1CAC','BNK1CRA','BNK1TFN','BNK1UAC'] },
+      'Business Logic':     { color: '#065f46', border: '#10b981', icon: '⚙️',  keys: ['CREACC','CRECUST','DBCRFUN','DELACC','DELCUS','INQACC','INQACCCU','UPDACC','XFRFUN'] },
+      'Batch Processing':   { color: '#78350f', border: '#f59e0b', icon: '📦',  keys: ['BDSM043','BDSMFJL','RGNB649'] },
+      'Shared Data':        { color: '#1c1917', border: '#78716c', icon: '🗄️',  keys: ['BANKDATA','BDSDA23','BDSDA2F'] },
+    };
+  }
+
+  _c4ContainerOf(progName) {
+    const key = (progName||'').replace(/\.cbl$/i,'').replace(/^flow-ast-/i,'').toUpperCase();
+    for (const [name, cfg] of Object.entries(ASTGalaxyView.C4_CONTAINER_MAP)) {
+      if (cfg.keys.includes(key)) return name;
+    }
+    return null;
+  }
+
+  _buildC4VisData() {
+    const nodeList = [], edgeList = [];
+    const programs = this.galaxyData?.programs || [];
+    const norm = p => (p.program||'').replace(/\.cbl$/i,'').replace(/^flow-ast-/i,'').toUpperCase();
+    const level = this._c4Level;
+
+    if (level === 1) {
+      // L1: System Context
+      const box  = (id,lbl,sub,col,brd,shp,sz,x,y) => ({ id, label:`${lbl}\n[${sub}]`, x, y, fixed:{x:true,y:true},
+        shape: shp, size: sz, color:{background:col,border:brd,highlight:{background:col,border:'#fff'}},
+        font:{color:'#e2e8f0',size:12,multi:false}, borderWidth:2, _data:{displayName:lbl,nodeType:'C4_'+sub} });
+      nodeList.push(
+        { id:'actor_customer', label:'Bank Customer\n[Person]', shape:'ellipse', size:30, x:-300, y:0, fixed:{x:true,y:true},
+          color:{background:'#1e3a5f',border:'#3b82f6'}, font:{color:'#e2e8f0',size:11}, borderWidth:2, _data:{displayName:'Bank Customer',nodeType:'C4_Person'} },
+        { id:'actor_staff',    label:'Bank Staff\n[Person]',    shape:'ellipse', size:30, x:300, y:0, fixed:{x:true,y:true},
+          color:{background:'#1e3a5f',border:'#3b82f6'}, font:{color:'#e2e8f0',size:11}, borderWidth:2, _data:{displayName:'Bank Staff',nodeType:'C4_Person'} },
+        box('sys_core','Core Banking System','Software System','#1e3a8a','#60a5fa','box',60,0,0),
+        box('ext_db',   'DB2 / VSAM',        'Database',        '#1c1917','#78716c','database',35,-200,200),
+        box('ext_pay',  'Payment Network',   'External System', '#451a03','#f59e0b','box',35,200,200),
+        box('ext_reg',  'Regulatory Auth.',  'External System', '#450a0a','#ef4444','box',35,0,280),
+      );
+      edgeList.push(
+        {from:'actor_customer',to:'sys_core',label:'Uses',arrows:{to:{enabled:true,scaleFactor:.6}},dashes:false,color:{color:'#3b82f6'}},
+        {from:'actor_staff',   to:'sys_core',label:'Uses',arrows:{to:{enabled:true,scaleFactor:.6}},dashes:false,color:{color:'#3b82f6'}},
+        {from:'sys_core',to:'ext_db',  label:'Reads/Writes',arrows:{to:{enabled:true,scaleFactor:.6}},dashes:true,color:{color:'#78716c'}},
+        {from:'sys_core',to:'ext_pay', label:'Initiates',   arrows:{to:{enabled:true,scaleFactor:.6}},dashes:true,color:{color:'#f59e0b'}},
+        {from:'sys_core',to:'ext_reg', label:'Reports to',  arrows:{to:{enabled:true,scaleFactor:.6}},dashes:true,color:{color:'#ef4444'}},
+      );
+    } else if (level === 2) {
+      // L2: Containers — one node per container group + DB2
+      const containerMap = ASTGalaxyView.C4_CONTAINER_MAP;
+      let col = 0;
+      const contX = { 'Online (CICS)': -450, 'Business Logic': -150, 'Batch Processing': 150, 'Shared Data': 450 };
+      for (const [name, cfg] of Object.entries(containerMap)) {
+        const progs = programs.filter(p => cfg.keys.includes(norm(p)));
+        const loc  = progs.reduce((s,p) => s+(p.lineCount||0), 0);
+        const sql  = progs.reduce((s,p) => s+(p.sqlCount||0), 0);
+        nodeList.push({
+          id: 'cont__' + name,
+          label: `${cfg.icon} ${name}\n[COBOL Container]\n${progs.length} programs · ${loc} LOC`,
+          shape: 'box', size: 40,
+          x: contX[name] || col * 320, y: 0, fixed:{x:true,y:true},
+          color:{background:cfg.color,border:cfg.border,highlight:{background:cfg.color,border:'#fff'}},
+          font:{color:'#e2e8f0',size:11,multi:false}, borderWidth:2,
+          title: `${name}\n${progs.map(p=>norm(p)).join(', ')}\nTotal LOC: ${loc} · SQL stmts: ${sql}`,
+          _data:{displayName:name,nodeType:'C4_Container',programs:progs},
+        });
+        // Program nodes below each container
+        progs.forEach((p, i) => {
+          const pn = norm(p);
+          nodeList.push({
+            id: 'prog_c4__' + pn,
+            label: pn,
+            shape: 'box', size:20,
+            x: (contX[name]||0) + (i - (progs.length-1)/2) * 110,
+            y: 160,
+            fixed:{x:true,y:true},
+            color:{background:cfg.color+'99',border:cfg.border,highlight:{background:cfg.color,border:'#fff'}},
+            font:{color:'#cbd5e1',size:10}, borderWidth:1,
+            title:`${pn}\nLOC: ${p.lineCount||0} · SQL: ${p.sqlCount||0} · CALLs: ${p.callCount||0}`,
+            _data:{...p,displayName:pn,nodeType:'C4_Component',program:p.program},
+          });
+          edgeList.push({from:'cont__'+name,to:'prog_c4__'+pn,arrows:{to:{enabled:true,scaleFactor:.5}},color:{color:cfg.border,opacity:.4},width:.5,dashes:false});
+        });
+        col++;
+      }
+      nodeList.push({
+        id:'ext_db_c', label:'DB2 / VSAM\n[Database]', shape:'database', size:30,
+        x:0, y:-200, fixed:{x:true,y:true},
+        color:{background:'#1c1917',border:'#78716c'}, font:{color:'#e2e8f0',size:11}, borderWidth:2,
+        _data:{displayName:'DB2/VSAM',nodeType:'C4_Database'},
+      });
+      // Wire SQL-heavy containers to DB2
+      for (const [name, cfg] of Object.entries(containerMap)) {
+        const hasSql = programs.filter(p => cfg.keys.includes(norm(p))).some(p => (p.sqlCount||0)>0);
+        if (hasSql) edgeList.push({from:'cont__'+name,to:'ext_db_c',label:'SQL',arrows:{to:{enabled:true,scaleFactor:.5}},dashes:true,color:{color:'#78716c',opacity:.5}});
+      }
+      // Inter-container dependency edges from galaxy edges
+      const edgesData = this.galaxyData?.edges || [];
+      const seen = new Set();
+      for (const e of edgesData) {
+        const sc = this._c4ContainerOf(e.source), tc = this._c4ContainerOf(e.target);
+        if (!sc || !tc || sc === tc) continue;
+        const key = `${sc}→${tc}`;
+        if (seen.has(key)) continue; seen.add(key);
+        edgeList.push({from:'cont__'+sc,to:'cont__'+tc,label:'calls',arrows:{to:{enabled:true,scaleFactor:.5}},dashes:false,color:{color:'#94a3b8',opacity:.6},width:1.5});
+      }
+    } else {
+      // L3: Components — sections of selected program
+      const selProg = this._c4SelectedProg;
+      const astNodes = this.astData?.nodes || [];
+      const astEdges = this.astData?.edges || [];
+      const progNodes = astNodes.filter(n => {
+        const pn = (n.program||'').replace(/\.cbl$/i,'').replace(/^flow-ast-/i,'').toUpperCase();
+        return selProg ? pn === selProg : true;
+      }).filter(n => ['SECTION','PARAGRAPH','PERFORM','CALL','CallStatement','IF_BRANCH','EVALUATE','DIALECT','DIALECT_CONTAINER'].includes(n.nodeType));
+
+      const nodeIds = new Set(progNodes.map(n=>n.id));
+      nodeList.push(...progNodes.map(n => ({
+        id: n.id, label: (n.name||n.nodeType||'').substring(0,24),
+        shape: ASTGalaxyView.NODE_STYLE[n.nodeType]?.shape || 'ellipse',
+        size: 18,
+        color: { background: ASTGalaxyView.TYPE_COLORS[n.nodeType] || '#475569', border: '#fff2', highlight:{border:'#fff'} },
+        font: {color:'#e2e8f0',size:10}, borderWidth:1,
+        title:`${n.nodeType}: ${n.name||''}\nLines ${n.startLine}–${n.endLine}`,
+        _data:{...n,displayName:n.name||n.nodeType,program:n.program},
+      })));
+      edgeList.push(...astEdges
+        .filter(e => nodeIds.has(e.source) && nodeIds.has(e.target))
+        .map(e => ({from:e.source,to:e.target,arrows:{to:{enabled:true,scaleFactor:.5}},color:{color:'#475569',opacity:.5},width:.8})));
+    }
+
+    this.nodes = new vis.DataSet(nodeList);
+    this.edges = new vis.DataSet(edgeList);
+  }
+
+  _injectC4LevelUI(container) {
+    // Remove any prior C4 level bar
+    container.querySelectorAll('.c4-level-bar').forEach(el => el.remove());
+    const bar = document.createElement('div');
+    bar.className = 'c4-level-bar';
+    bar.style.cssText = 'position:absolute;top:8px;left:50%;transform:translateX(-50%);z-index:20;display:flex;gap:6px;background:rgba(3,7,18,0.88);border:1px solid #334155;border-radius:20px;padding:5px 10px;backdrop-filter:blur(6px);';
+    const levels = [
+      ['L1','System Context'],
+      ['L2','Containers'],
+      ['L3','Components'],
+    ];
+    levels.forEach(([code, label], idx) => {
+      const btn = document.createElement('button');
+      const active = (this._c4Level === idx+1);
+      btn.textContent = `${code} · ${label}`;
+      btn.style.cssText = `padding:4px 14px;border-radius:14px;border:1px solid ${active?'#3b82f6':'#334155'};background:${active?'#1e40af':'transparent'};color:${active?'#fff':'#94a3b8'};font-size:11px;font-weight:${active?700:400};cursor:pointer;transition:all .15s;`;
+      btn.title = `Switch to C4 Level ${idx+1}: ${label}`;
+      btn.addEventListener('click', () => {
+        this._c4Level = idx+1;
+        this._c4SelectedProg = null;
+        this._rebuildAndRender();
+      });
+      bar.appendChild(btn);
+    });
+    if (this._c4Level === 3 && this._c4SelectedProg) {
+      const sel = document.createElement('span');
+      sel.style.cssText = 'padding:4px 10px;border-radius:14px;background:#065f46;color:#6ee7b7;font-size:11px;';
+      sel.textContent = `▸ ${this._c4SelectedProg}`;
+      bar.appendChild(sel);
+    }
+    container.style.position = 'relative';
+    container.appendChild(bar);
+  }
+
   _rebuildAndRender() {
-    if (this.viewMode === 'service-catalog-v3') {
+    const container = document.getElementById(this.containerId);
+    if (this._isHtmlMode) {
+      if (this.network) { this.network.destroy(); this.network = null; }
+      if (container) this._renderHtmlMode(container);
+      this._updateStatsBar();
+      this._renderLegend();
+      return;
+    }
+    if (this.viewMode === 'c4-model') {
+      this._buildC4VisData();
+    } else if (this.viewMode === 'service-catalog-v3') {
       this._buildModernizationRadarVisData();
     } else if (this._isServiceCatalogMode) {
       this._buildServiceCatalogVisData();
