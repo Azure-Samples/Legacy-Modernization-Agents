@@ -1107,6 +1107,16 @@ class ASTGalaxyView {
     if (!(useHierarchical || useHierarchicalClustered) && totalNodes > 50) {
       const statsEl = document.getElementById('galaxy-stats-bar');
       if (statsEl) {
+        let _stabilizationDoneTimer = null;
+        const _forceStabilizationDone = () => {
+          clearTimeout(_stabilizationDoneTimer);
+          _stabilizationDoneTimer = null;
+          if (!this.network) return;
+          this.network.setOptions({ physics: { enabled: false } });
+          this._updateStatsBar();
+          this.network.fit({ animation: { duration: 500, easingFunction: 'easeInOutQuad' } });
+        };
+
         this.network.on('stabilizationProgress', (params) => {
           const pct = Math.round((params.iterations / params.total) * 100);
           statsEl.innerHTML = `<span class="ast-stat perform" id="galaxy-progress-pct">⏳ Laying out ${totalNodes} nodes... ${pct}%</span>
@@ -1117,11 +1127,13 @@ class ASTGalaxyView {
             btn._wired = true;
             btn.addEventListener('click', () => this._cancelLayout());
           }
+          // Safety net: if progress stalls at ≥95% (common in Chromium), force-complete after 1.5s
+          if (pct >= 95 && !_stabilizationDoneTimer) {
+            _stabilizationDoneTimer = setTimeout(_forceStabilizationDone, 1500);
+          }
         });
         this.network.on('stabilizationIterationsDone', () => {
-          this.network.setOptions({ physics: { enabled: false } });
-          this._updateStatsBar();
-          this.network.fit({ animation: { duration: 500, easingFunction: 'easeInOutQuad' } });
+          _forceStabilizationDone();
         });
       }
     }
