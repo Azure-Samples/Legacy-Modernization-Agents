@@ -1090,7 +1090,7 @@ class ASTGalaxyView {
               fit: true,
             },
             maxVelocity: 20,
-            minVelocity: 0.2,
+            minVelocity: 1.5,   // higher = vis.js declares stable sooner; avoids Chromium hang
           },
       interaction: {
         hover: true, tooltipDelay: 150,
@@ -1103,6 +1103,22 @@ class ASTGalaxyView {
       groups: this._groupColors || {},
     });
 
+    // Hard wall-clock deadline: always disable physics after a maximum time regardless of
+    // whether stabilizationIterationsDone fires. Guards against the Chromium/Edge bug where
+    // the event never arrives and the layout spins forever showing "95%".
+    if (!(useHierarchical || useHierarchicalClustered)) {
+      const maxMs = Math.min(12000, Math.max(2000, totalNodes * 25));
+      clearTimeout(this._physicsDeadlineTimer);
+      this._physicsDeadlineTimer = setTimeout(() => {
+        if (!this.network) return;
+        try {
+          this.network.setOptions({ physics: { enabled: false } });
+          this._updateStatsBar();
+          this.network.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' } });
+        } catch {}
+      }, maxMs);
+    }
+
     // Stabilization progress indicator with cancel button
     if (!(useHierarchical || useHierarchicalClustered) && totalNodes > 50) {
       const statsEl = document.getElementById('galaxy-stats-bar');
@@ -1111,6 +1127,8 @@ class ASTGalaxyView {
         const _forceStabilizationDone = () => {
           clearTimeout(_stabilizationDoneTimer);
           _stabilizationDoneTimer = null;
+          clearTimeout(this._physicsDeadlineTimer);  // hard deadline no longer needed
+          this._physicsDeadlineTimer = null;
           if (!this.network) return;
           this.network.setOptions({ physics: { enabled: false } });
           this._updateStatsBar();
@@ -1218,6 +1236,9 @@ class ASTGalaxyView {
   // ═══════════════════════════════════════════════════════════════════
   _cancelLayout() {
     let stopped = false;
+    // Clear the hard-deadline timer so it doesn't double-fire
+    clearTimeout(this._physicsDeadlineTimer);
+    this._physicsDeadlineTimer = null;
     // 2D vis-network: disable physics so iteration stops immediately
     if (this.network) {
       try {
