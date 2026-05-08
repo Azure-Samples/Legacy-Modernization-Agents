@@ -104,14 +104,24 @@ The fallback static list (scraped from the Copilot CLI binary) shows the CLI's b
 
 ### Workaround
 
-After the setup wizard runs with the fallback list, edit `Config/ai-config.local.env` directly and set the model IDs you know are available on your enterprise plan:
+Your `Config/ai-config.local.env` already has a `GITHUB_HOST` variable:
 
 ```env
-CHAT_MODEL=gpt-4o
-EMBEDDING_MODEL=text-embedding-ada-002
+GITHUB_HOST="companyname.ghe.com"
 ```
 
-The Copilot CLI (`copilot`) itself uses `GITHUB_TOKEN` / `GH_TOKEN` and the CLI's own authentication, which **does** resolve to `companyname.ghe.com` correctly. Only the .NET SDK model-listing step is affected.
+The **Copilot CLI** (`copilot`) respects this variable and routes correctly to the GHE instance. However, the **GitHub Copilot .NET SDK** (`GitHub.Copilot.SDK`) does **not** read `GITHUB_HOST` — it is hardcoded to `api.github.com`. So the `list-models` call during `doctor.sh setup` still fails.
+
+**Workaround:** after the setup wizard completes (even with the fallback list), manually edit `Config/ai-config.local.env` and set the model IDs that your enterprise Copilot plan provisions:
+
+```env
+_CHAT_MODEL="claude-sonnet-4"
+_CODE_MODEL="claude-sonnet-4"
+```
+
+Everything except the model-listing step works correctly with GHE — the Copilot CLI handles actual inference calls through `GITHUB_HOST`.
+
+> **Security note:** Never put a live PAT in a file that may be shared or screenshotted. Use a token with the minimum required scope (`copilot` for classic PATs). Rotate any token that has been exposed.
 
 ### For SDK maintainers / contributors
 
