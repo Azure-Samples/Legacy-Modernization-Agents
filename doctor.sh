@@ -2369,15 +2369,12 @@ run_rekt_parse() {
     echo -e "${BLUE}  Running preprocessor for IMS/DLI and dialect compatibility...${NC}"
     if [[ -x "$REPO_ROOT/tools/preprocess-for-rekt.sh" ]]; then
         "$REPO_ROOT/tools/preprocess-for-rekt.sh" "$REPO_ROOT/source" 2>/dev/null
-        # Copy preprocessed files back into source (overwrite originals with compatible versions)
         if [[ -d "$REPO_ROOT/source/.preprocessed" ]]; then
             local preproc_count=0
             if ls "$REPO_ROOT/source/.preprocessed"/*.cbl >/dev/null 2>&1; then
-                cp "$REPO_ROOT/source/.preprocessed"/*.cbl "$REPO_ROOT/source/" 2>/dev/null
                 preproc_count=$(ls "$REPO_ROOT/source/.preprocessed"/*.cbl 2>/dev/null | wc -l | tr -d ' ')
             fi
             if ls "$REPO_ROOT/source/.preprocessed"/*.cpy >/dev/null 2>&1; then
-                cp "$REPO_ROOT/source/.preprocessed"/*.cpy "$REPO_ROOT/source/" 2>/dev/null
                 local cpy_count
                 cpy_count=$(ls "$REPO_ROOT/source/.preprocessed"/*.cpy 2>/dev/null | wc -l | tr -d ' ')
                 preproc_count=$((preproc_count + cpy_count))
@@ -2387,6 +2384,29 @@ run_rekt_parse() {
             fi
         fi
     fi
+
+    # Build a flat staging dir so smojol can resolve copybooks regardless of subdir depth.
+    # The container sees this as /source/.rekt-staging (bind-mounted from source/).
+    local staging_dir="$REPO_ROOT/source/.rekt-staging"
+    rm -rf "$staging_dir"
+    mkdir -p "$staging_dir"
+
+    # Collect all copybooks (recursive) → flat staging dir; last write wins on collision (safe: no dupes found)
+    while IFS= read -r cpyfile; do
+        cp "$cpyfile" "$staging_dir/" 2>/dev/null || true
+    done < <(find "$REPO_ROOT/source" \( -name "*.cpy" -o -name "*.CPY" \) \
+        ! -path "*/.rekt-staging/*")
+
+    # Collect all COBOL programs (recursive) → flat staging dir so --srcDir stays constant
+    while IFS= read -r cblfile; do
+        cp "$cblfile" "$staging_dir/" 2>/dev/null || true
+    done < <(find "$REPO_ROOT/source" \( -name "*.cbl" -o -name "*.CBL" \) \
+        ! -path "*/.rekt-staging/*")
+
+    local staged_cbl staged_cpy
+    staged_cbl=$(find "$staging_dir" -maxdepth 1 \( -name "*.cbl" -o -name "*.CBL" \) | wc -l | tr -d ' ')
+    staged_cpy=$(find "$staging_dir" -maxdepth 1 \( -name "*.cpy" -o -name "*.CPY" \) | wc -l | tr -d ' ')
+    echo -e "  ${BLUE}Staged: ${staged_cbl} program(s), ${staged_cpy} copybook(s) → source/.rekt-staging/${NC}"
 
     # Parse each file via rekt container
     # Try with standard dialect first; on failure, retry with alternative options
@@ -2400,7 +2420,8 @@ run_rekt_parse() {
     mkdir -p "$REPO_ROOT/output/rekt"
     find "$REPO_ROOT/output/rekt" -mindepth 1 -delete 2>/dev/null || true
 
-    for cbl_file in "$REPO_ROOT/source"/*.cbl "$REPO_ROOT/source"/*.CBL; do
+    # Use process substitution so succeeded/failed counters persist outside the loop
+    while IFS= read -r cbl_file; do
         [[ -e "$cbl_file" ]] || continue
         local fname
         fname=$(basename "$cbl_file")
@@ -2413,7 +2434,7 @@ run_rekt_parse() {
         # Attempt 1: Standard dialect (handles CICS, SQL, standard COBOL)
         if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
             --commands="BUILD_BASE_ANALYSIS WRITE_FLOW_AST WRITE_CFG WRITE_DATA_STRUCTURES" \
-            --srcDir=/source --copyBooksDir=/source \
+            --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
             --dialectJarPath=/app/dialect-idms.jar \
             --reportDir=/output \
             --generation=PROGRAM >/dev/null 2>"$err_log"; then
@@ -2424,7 +2445,7 @@ run_rekt_parse() {
             # Attempt 2: Retry without dialect JAR (for IMS/DL/I and other dialects)
             if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
                 --commands="BUILD_BASE_ANALYSIS WRITE_FLOW_AST WRITE_CFG WRITE_DATA_STRUCTURES" \
-                --srcDir=/source --copyBooksDir=/source \
+                --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
                 --reportDir=/output \
                 --generation=PROGRAM >/dev/null 2>>"$err_log"; then
                 echo -e " ${GREEN}✅${NC} (no-dialect mode)"
@@ -2434,7 +2455,7 @@ run_rekt_parse() {
                 # Attempt 3: Raw AST only (tolerates more parse errors)
                 if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
                     --commands="WRITE_RAW_AST" \
-                    --srcDir=/source --copyBooksDir=/source \
+                    --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
                     --reportDir=/output \
                     --generation=PROGRAM >/dev/null 2>>"$err_log"; then
                     echo -e " ${YELLOW}⚠️${NC} (raw AST only — complex copybooks)"
@@ -2446,14 +2467,14 @@ run_rekt_parse() {
                     # can still succeed and produce useful output
                     local dep_ok=false
                     if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar dependency "$fname" \
-                        --srcDir=/source --copyBooksDir=/source \
+                        --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
                         --dialectJarPath=/app/dialect-idms.jar \
                         --export=/output/"${fname%.cbl}"-deps.json >/dev/null 2>>"$err_log"; then
                         dep_ok=true
                     fi
                     # Also try validate (may report warnings but still useful)
                     docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar validate "$fname" \
-                        --srcDir=/source --copyBooksDir=/source \
+                        --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
                         --dialectJarPath=/app/dialect-idms.jar >/dev/null 2>>"$err_log" || true
 
                     if [[ "$dep_ok" == true ]]; then
@@ -2477,7 +2498,10 @@ run_rekt_parse() {
                 fi
             fi
         fi
-    done
+    done < <(find "$staging_dir" -maxdepth 1 \( -name "*.cbl" -o -name "*.CBL" \) | sort)
+
+    # Clean up staging dir — it lives inside source/ which is gitignored
+    rm -rf "$staging_dir"
 
     echo -e "\n${GREEN}  Parsed: $succeeded succeeded, $failed failed${NC}"
     if [[ -n "$failed_files" ]]; then

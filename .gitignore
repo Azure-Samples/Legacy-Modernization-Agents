@@ -83,6 +83,8 @@ Config/appsettings.secrets.json
 # COBOL Source Files (Contains proprietary business logic)
 source/*
 !source/.gitkeep
+source/.rekt-staging/
+source/.preprocessed/
 !source/CUSTOMER-DATA.cpy
 !source/CUSTOMER-DISPLAY.cbl
 !source/CUSTOMER-INQUIRY.cbl
