@@ -2757,6 +2757,89 @@ main() {
     # Create required directories if they don't exist
     mkdir -p "$REPO_ROOT/source" "$REPO_ROOT/output" "$REPO_ROOT/Logs"
 
+    # ── REKT selector + quality flags ─────────────────────────────────────
+    # Pre-parse flags that scope a conversion run to a subset of programs
+    # resolved via output/rekt/ data. Selector flags:
+    #   --program NAME           --transaction TRANID
+    #   --wave N                 --target COMPONENT_ID
+    #   --keyword TEXT           --include-callees / --include-callers
+    # Quality flags (exported for Phase 2+ agents):
+    #   --fallback-to-ai         --max-validator-retries N
+    #   --min-program-score N    --on-low-score continue|stop
+    #
+    # Same flag repeated = OR within that flag. Different flags = AND between.
+    local sel_args=()
+    local has_selector=false
+    local quality_env=()
+    local positional=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --program|--transaction|--wave|--target|--keyword)
+                if [[ -z "${2:-}" ]]; then
+                    echo -e "${RED}❌ $1 requires a value${NC}"; exit 1
+                fi
+                sel_args+=("$1" "$2"); has_selector=true; shift 2 ;;
+            --include-callees|--include-callers)
+                sel_args+=("$1"); has_selector=true; shift ;;
+            --fallback-to-ai)
+                quality_env+=("STRUCTURAL_FALLBACK_TO_AI=true"); shift ;;
+            --max-validator-retries)
+                quality_env+=("MAX_VALIDATOR_RETRIES=$2"); shift 2 ;;
+            --min-program-score)
+                quality_env+=("MIN_PROGRAM_SCORE=$2"); shift 2 ;;
+            --on-low-score)
+                quality_env+=("ON_LOW_SCORE=$2"); shift 2 ;;
+            *)
+                positional+=("$1"); shift ;;
+        esac
+    done
+    set -- "${positional[@]}"
+
+    # Export quality env for downstream agents
+    for kv in "${quality_env[@]}"; do
+        export "$kv"
+    done
+
+    # If selectors were supplied, resolve them now into a staging folder under
+    # source/ and rewire COBOL_SOURCE_FOLDER so the migration only sees that
+    # subset. Resolution is deterministic via tools/resolve-programs.py.
+    if [[ "$has_selector" == true ]]; then
+        echo -e "${BLUE}🎯 Selector-driven conversion${NC}"
+        local resolved
+        if ! resolved=$("$PYTHON_CMD" "$REPO_ROOT/tools/resolve-programs.py" \
+                --repo-root "$REPO_ROOT" \
+                --source-folder source \
+                "${sel_args[@]}" 2>&1 >&1); then
+            echo -e "${RED}❌ Selector resolved to zero files. Check output/rekt/ has target-architecture.json if you used --wave/--target.${NC}"
+            exit 1
+        fi
+        # Split stdout (files) vs stderr-formatted summary
+        local files=$("$PYTHON_CMD" "$REPO_ROOT/tools/resolve-programs.py" \
+                --repo-root "$REPO_ROOT" \
+                --source-folder source \
+                "${sel_args[@]}" 2>/dev/null)
+        if [[ -z "$files" ]]; then
+            echo -e "${RED}❌ No files matched the selector.${NC}"
+            exit 1
+        fi
+        local stage_name=".convert-$(date +%Y%m%d%H%M%S)-$$"
+        local stage_dir="$REPO_ROOT/source/$stage_name"
+        mkdir -p "$stage_dir"
+        local n=0
+        while IFS= read -r f; do
+            [[ -z "$f" ]] && continue
+            if [[ -f "$REPO_ROOT/source/$f" ]]; then
+                cp "$REPO_ROOT/source/$f" "$stage_dir/" && n=$((n + 1))
+            fi
+        done <<< "$files"
+        # Also pull every .cpy in source/ so copybook references resolve
+        find "$REPO_ROOT/source" -maxdepth 1 -name "*.cpy" -exec cp -n {} "$stage_dir/" \;
+        echo -e "${GREEN}  Staged $n file(s) → source/$stage_name/${NC}"
+        export COBOL_SOURCE_FOLDER="source/$stage_name"
+        # Cleanup hook on exit
+        trap 'rm -rf "$stage_dir" 2>/dev/null || true' EXIT
+    fi
+
     case "${1:-doctor}" in
         "setup")
             run_setup

@@ -8427,6 +8427,157 @@ app.MapPost("/api/graph/rekt/target-architecture", async (HttpRequest req) =>
 	}
 });
 
+// ── Program search & focused conversion (selector-driven) ────────────────────
+// GET /api/programs/search — preview which files a selector resolves to.
+// POST /api/runs/convert    — same selector, but stages the files and starts a run.
+//
+// Selector shape:
+//   { "programs": ["A","B"], "transactions": ["CT01"], "waves": [1,2],
+//     "targets": ["svc-data"], "keywords": ["CUSTOMER"],
+//     "includeCallees": true, "includeCallers": false,
+//     "targetLanguage": "Java", "speedProfile": "balanced",
+//     "fallbackToAi": false, "maxValidatorRetries": 1, "minProgramScore": 0.6,
+//     "onLowScore": "continue" }
+
+app.MapPost("/api/programs/search", (System.Text.Json.JsonElement body) =>
+{
+	try
+	{
+		var repoRoot = ResolveRepoRoot();
+		var sel = ParseSelector(body, "source");
+		var svc = new McpChatWeb.Services.ProgramSelectorService(repoRoot);
+		var res = svc.Resolve(sel);
+		return Results.Ok(new { count = res.Files.Count, files = res.Files, reasons = res.Reasons, summary = res.Summary });
+	}
+	catch (Exception ex)
+	{
+		return Results.Problem($"Selector resolution failed: {ex.Message}");
+	}
+});
+
+app.MapPost("/api/runs/convert", (System.Text.Json.JsonElement body,
+	McpChatWeb.Services.ProcessManager pm) =>
+{
+	try
+	{
+		var repoRoot = ResolveRepoRoot();
+		var sel = ParseSelector(body, "source");
+		var svc = new McpChatWeb.Services.ProgramSelectorService(repoRoot);
+		var res = svc.Resolve(sel);
+		if (res.Files.Count == 0)
+			return Results.BadRequest(new { error = "No files matched the selector", summary = res.Summary });
+
+		// Stage the resolved files into a unique temp folder under source/ so the
+		// existing migration pipeline (which reads from a folder, not a list) only
+		// sees this subset. The folder name is sanitized + bounded for safety.
+		var stagingName = ".convert-" + DateTime.UtcNow.ToString("yyyyMMddHHmmss") + "-" + Guid.NewGuid().ToString("N").Substring(0, 6);
+		var stagingDir = Path.Combine(repoRoot, "source", stagingName);
+		Directory.CreateDirectory(stagingDir);
+		foreach (var f in res.Files)
+		{
+			var srcPath = Path.Combine(repoRoot, "source", f);
+			if (File.Exists(srcPath))
+				File.Copy(srcPath, Path.Combine(stagingDir, f), overwrite: true);
+		}
+
+		// Optional companion copybooks that the converter may need.
+		// We also copy every .cpy in source/ so referenced copybooks resolve.
+		foreach (var cpy in Directory.EnumerateFiles(Path.Combine(repoRoot, "source"), "*.cpy"))
+		{
+			var name = Path.GetFileName(cpy);
+			if (string.IsNullOrEmpty(name)) continue;
+			var dst = Path.Combine(stagingDir, name);
+			if (!File.Exists(dst)) File.Copy(cpy, dst);
+		}
+
+		// Quality-control env vars consumed by Phase 2 agents.
+		var extraEnv = new Dictionary<string, string>();
+		if (body.TryGetProperty("fallbackToAi", out var fb) && fb.ValueKind == System.Text.Json.JsonValueKind.True)
+			extraEnv["STRUCTURAL_FALLBACK_TO_AI"] = "true";
+		if (body.TryGetProperty("maxValidatorRetries", out var mr) && mr.ValueKind == System.Text.Json.JsonValueKind.Number)
+			extraEnv["MAX_VALIDATOR_RETRIES"] = mr.GetInt32().ToString();
+		if (body.TryGetProperty("minProgramScore", out var ms) && ms.ValueKind == System.Text.Json.JsonValueKind.Number)
+			extraEnv["MIN_PROGRAM_SCORE"] = ms.GetDouble().ToString("F2");
+		if (body.TryGetProperty("onLowScore", out var ols) && ols.ValueKind == System.Text.Json.JsonValueKind.String)
+			extraEnv["ON_LOW_SCORE"] = ols.GetString() ?? "continue";
+
+		var targetLanguage = body.TryGetProperty("targetLanguage", out var tl) && tl.ValueKind == System.Text.Json.JsonValueKind.String ? (tl.GetString() ?? "Java") : "Java";
+		var speedProfile  = body.TryGetProperty("speedProfile", out var sp) && sp.ValueKind == System.Text.Json.JsonValueKind.String ? (sp.GetString() ?? "balanced") : "balanced";
+		var provider      = body.TryGetProperty("provider", out var pr) && pr.ValueKind == System.Text.Json.JsonValueKind.String ? (pr.GetString() ?? "AzureOpenAI") : "AzureOpenAI";
+		var modelId       = body.TryGetProperty("modelId", out var mi) && mi.ValueKind == System.Text.Json.JsonValueKind.String ? mi.GetString() : null;
+		var runName       = $"convert-selector-{res.Files.Count}-{DateTime.Now:HHmmss}";
+
+		var run = pm.StartRun(
+			"migrate",
+			runName,
+			targetLanguage,
+			speedProfile,
+			Path.Combine("source", stagingName),
+			provider,
+			modelId,
+			extraEnv);
+
+		return Results.Ok(new
+		{
+			runId = run.RunId,
+			name = run.Name,
+			fileCount = res.Files.Count,
+			files = res.Files,
+			stagingFolder = Path.Combine("source", stagingName),
+			summary = res.Summary,
+		});
+	}
+	catch (Exception ex)
+	{
+		return Results.Problem($"Failed to start focused conversion: {ex.Message}");
+	}
+});
+
+// Selector parsing — JSON → ProgramSelector
+McpChatWeb.Services.ProgramSelector ParseSelector(System.Text.Json.JsonElement body, string defaultSourceFolder)
+{
+	List<string> ReadStringList(string name)
+	{
+		var list = new List<string>();
+		if (body.TryGetProperty(name, out var el) && el.ValueKind == System.Text.Json.JsonValueKind.Array)
+			foreach (var v in el.EnumerateArray())
+				if (v.ValueKind == System.Text.Json.JsonValueKind.String) list.Add(v.GetString() ?? "");
+		return list;
+	}
+	List<int> ReadIntList(string name)
+	{
+		var list = new List<int>();
+		if (body.TryGetProperty(name, out var el) && el.ValueKind == System.Text.Json.JsonValueKind.Array)
+			foreach (var v in el.EnumerateArray())
+				if (v.ValueKind == System.Text.Json.JsonValueKind.Number && v.TryGetInt32(out var i)) list.Add(i);
+		return list;
+	}
+	bool ReadBool(string name)
+		=> body.TryGetProperty(name, out var el) && el.ValueKind == System.Text.Json.JsonValueKind.True;
+	string ReadString(string name, string fallback)
+		=> body.TryGetProperty(name, out var el) && el.ValueKind == System.Text.Json.JsonValueKind.String ? (el.GetString() ?? fallback) : fallback;
+
+	return new McpChatWeb.Services.ProgramSelector
+	{
+		Programs = ReadStringList("programs"),
+		Transactions = ReadStringList("transactions"),
+		Waves = ReadIntList("waves"),
+		Targets = ReadStringList("targets"),
+		Keywords = ReadStringList("keywords"),
+		IncludeCallees = ReadBool("includeCallees"),
+		IncludeCallers = ReadBool("includeCallers"),
+		SourceFolder = ReadString("sourceFolder", defaultSourceFolder),
+	};
+}
+
+string ResolveRepoRoot()
+{
+	var dir = new DirectoryInfo(AppContext.BaseDirectory);
+	while (dir != null && !File.Exists(Path.Combine(dir.FullName, "doctor.sh")))
+		dir = dir.Parent;
+	return dir?.FullName ?? AppContext.BaseDirectory;
+}
+
 app.Run();
 
 // ── Prompt generation helper functions ───────────────────────────────────────

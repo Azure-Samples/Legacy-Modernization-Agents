@@ -510,6 +510,7 @@ class TargetArchitectureView {
       <div style="display:flex;gap:8px;align-items:center;">
         <button id="tarch-save" class="btn-small" title="Persist this plan to output/rekt/target-architecture.json so downstream conversion agents can read it.">💾 Save for AI agent</button>
         <button id="tarch-download" class="btn-small" title="Download the JSON plan to your computer.">⬇️ Download JSON</button>
+        <button id="tarch-convert-all" class="btn-small" title="Open the convert modal pre-filled with no selectors so you can pick programs/waves/components." style="background:#065f46;border:1px solid #10b981;color:#fff;">🛠️ Convert…</button>
         <button id="tarch-refresh" class="btn-small" title="Recompute from the latest scan.">↻ Refresh</button>
       </div>
     </div>`;
@@ -749,6 +750,11 @@ class TargetArchitectureView {
     root.querySelector('#tarch-save')?.addEventListener('click', () => this._save());
     root.querySelector('#tarch-download')?.addEventListener('click', () => this._download());
     root.querySelector('#tarch-refresh')?.addEventListener('click', () => this.loadAndRender());
+    root.querySelector('#tarch-convert-all')?.addEventListener('click', () => {
+      if (typeof openConvertModal === 'function') openConvertModal(this.selectedComponent
+        ? { targets: [this.selectedComponent] }
+        : {});
+    });
 
     // Diagram zoom & fullscreen controls
     root.querySelector('#tarch-zoom-in')?.addEventListener('click', () => {

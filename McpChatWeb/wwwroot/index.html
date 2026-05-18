@@ -382,6 +382,7 @@
         <button class="dashboard-tab" data-tab="galaxy" onclick="switchDashboard('galaxy')">🌌 AST Galaxy</button>
         <button class="dashboard-tab" data-tab="migration" onclick="switchDashboard('migration')">🎯 Migration Planner</button>
         <button class="dashboard-tab" data-tab="target-arch" onclick="switchDashboard('target-arch')">🏛️ Target Architecture</button>
+        <button class="dashboard-tab" onclick="openConvertModal({})" title="Open the focused-conversion modal — pick programs/transactions/waves to convert" style="margin-left:auto;background:#065f46;border:1px solid #10b981;color:#fff;">🛠️ Convert…</button>
         <button class="dashboard-tab" data-tab="portfolio" onclick="switchDashboard('portfolio')">Portfolio</button>
         <button class="dashboard-tab" data-tab="complexity" onclick="switchDashboard('complexity')">Readiness</button>
         <span style="margin-left:auto; display:flex; align-items:center; gap:6px;">
@@ -1505,6 +1506,7 @@ curl http://localhost:5028/api/data-retrieval-guide</code></pre>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="migration-planner.js?v=20260504j"></script>
   <script src="target-architecture.js?v=20260518g"></script>
+  <script src="convert-modal.js?v=20260518a"></script>
   <script src="dashboard-tabs.js?v=20260518b"></script>
   <script src="chat-history.js?v=20260505e"></script>
   <script src="main.js?v=20260505c"></script>

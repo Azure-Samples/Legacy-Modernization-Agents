@@ -17,4 +17,15 @@
     <PackageReference Include="GitHub.Copilot.SDK" Version="0.1.32" />
   </ItemGroup>
 
+  <!-- Pull in shared helpers from the main project as linked source so we can use
+       RektContextLoader / StructuralContextProvider / BmsReader / etc. without
+       taking a project reference (which would drag in the whole agent runtime). -->
+  <ItemGroup>
+    <Compile Include="..\Helpers\RektContext.cs"                 Link="Shared\RektContext.cs" />
+    <Compile Include="..\Helpers\RektContextLoader.cs"           Link="Shared\RektContextLoader.cs" />
+    <Compile Include="..\Helpers\StructuralContextProvider.cs"   Link="Shared\StructuralContextProvider.cs" />
+    <Compile Include="..\Helpers\BmsReader.cs"                   Link="Shared\BmsReader.cs" />
+    <Compile Include="..\Helpers\ImsReaders.cs"                  Link="Shared\ImsReaders.cs" />
+  </ItemGroup>
+
 </Project>
