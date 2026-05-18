@@ -53,21 +53,20 @@ def strip_trailing_seq(text):
     out = []
     for line in text.split('\n'):
         raw = line.rstrip()
-        if len(raw) >= 14 and raw[:6].strip().isdigit():
-            # Skip comment lines
-            if len(raw) > 6 and raw[6] == '*':
-                out.append(line)
-                continue
-            # Pattern 1: trailing seq separated by 2+ spaces
-            m = re.match(r'^(.+?)\s{2,}(\d{8})$', raw)
-            if m:
-                out.append(m.group(1))
-                continue
-            # Pattern 2: trailing seq concatenated after period
-            m = re.match(r'^(.+\.)(\d{8})$', raw)
-            if m:
-                out.append(m.group(1))
-                continue
+        # Skip comment lines
+        if len(raw) > 6 and raw[6] == '*':
+            out.append(line)
+            continue
+        # Pattern 1: trailing seq separated by whitespace on long fixed-format lines
+        m = re.match(r'^(.+?)\s+(\d{8})$', raw) if len(raw) > 72 else None
+        if m:
+            out.append(m.group(1))
+            continue
+        # Pattern 2: trailing seq concatenated after period
+        m = re.match(r'^(.+\.)(\d{8})$', raw)
+        if m:
+            out.append(m.group(1))
+            continue
         out.append(line)
     return '\n'.join(out)
 
@@ -226,18 +225,18 @@ def strip_trailing_seq(text):
     out = []
     for line in text.split('\n'):
         raw = line.rstrip()
-        if len(raw) >= 14 and raw[:6].strip().isdigit():
-            if len(raw) > 6 and raw[6] == '*':
-                out.append(line)
-                continue
-            m = re.match(r'^(.+?)\s{2,}(\d{8})$', raw)
-            if m:
-                out.append(m.group(1))
-                continue
-            m = re.match(r'^(.+\.)(\d{8})$', raw)
-            if m:
-                out.append(m.group(1))
-                continue
+        # Skip comment lines
+        if len(raw) > 6 and raw[6] == '*':
+            out.append(line)
+            continue
+        m = re.match(r'^(.+?)\s+(\d{8})$', raw) if len(raw) > 72 else None
+        if m:
+            out.append(m.group(1))
+            continue
+        m = re.match(r'^(.+\.)(\d{8})$', raw)
+        if m:
+            out.append(m.group(1))
+            continue
         out.append(line)
     return '\n'.join(out)
 
@@ -323,6 +322,11 @@ content = re.sub(
     flags=re.IGNORECASE
 )
 
+# 5d. Normalize numeric MOVE literals written as 0(1) / 1(1) so the parser sees
+#     a plain numeric literal instead of unsupported parenthesized syntax.
+content = content.replace('MOVE 0(1) TO', 'MOVE 0 TO')
+content = content.replace('MOVE 1(1) TO', 'MOVE 1 TO')
+
 def insert_filler(m):
     prefix = m.group(1)
     level = m.group(2)
@@ -351,6 +355,27 @@ content = re.sub(
 # 8. Replace standalone COMP-2/COMP-1 (no PIC) with byte-equivalent PIC
 content = re.sub(r'\bCOMP-2\b', 'PIC X(8)', content)
 content = re.sub(r'\bCOMP-1\b', 'PIC X(4)', content)
+
+# 8b. Best-effort normalize compiler-specific copy-with-prefix lines so the parser
+#     can keep scanning the file instead of aborting recursion on these directives.
+def comment_copy_with_prefix(line):
+    upper = line.upper()
+    if '-COPY' in upper and '-PRE' in upper and not (len(line) > 6 and line[6] == '*'):
+        if len(line) >= 7:
+            return line[:6] + '*' + line[7:]
+        return (line[:6].ljust(6)) + '*' + line[6:]
+    return line
+
+content = '\n'.join(comment_copy_with_prefix(line) for line in content.split('\n'))
+
+# 8c. Best-effort rewrite unsupported figurative constants using punctuation so the
+#     parser sees a safe literal rather than failing on ALL '%'.
+def normalize_all_punct(line):
+    if len(line) > 6 and line[6] == '*':
+        return line
+    return re.sub(r'\bALL\s+\'([^\']+)\'', lambda m: "'" + m.group(1) + "'", line)
+
+content = '\n'.join(normalize_all_punct(line) for line in content.split('\n'))
 
 # 9. Enforce column 72 limit
 def enforce_col72(text):

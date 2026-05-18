@@ -454,12 +454,13 @@ The portal at **http://localhost:5028** is organised into four columns / panels:
 | **📋 MCP Resources** (left, below) | Live list of `insights://runs/<id>/...` URIs published by the MCP server (summary, dependencies, analyses, etc.) — updates after every run |
 | **💬 Chat History** (left, below) | ChatGPT-style sidebar — every conversation with the codebase is auto-saved (localStorage), bucketed by *Today / Yesterday / Previous 7 days / Older*, searchable, click any entry to resume |
 | **🤖 AI Chat** (centre) | Multi-turn transcript with markdown rendering, per-message scope tag (`🗄️ Database` or `📊 <report-name>`), copy buttons, pending dot animation, model + run-id metadata. Toggle **📊 Chat with RE Report** above the prompt to answer strictly from a generated reverse-engineering report instead of the migration database |
-| **📊 Dashboards** (right) | Tabbed: Architecture · Dependency Graph · Control Flow · AST Explorer · **AST Galaxy** (2D/3D, multiple view modes incl. Service Catalog Expanded 3D and Technical Expanded v2 swim-lane) · **Migration Planner** with weighted scoring, replatform recommender, editable Strategy Workbook, and live Gantt chart · Portfolio · Complexity |
+| **📊 Dashboards** (right) | Tabbed: Architecture · Dependency Graph · Control Flow · AST Explorer · **AST Galaxy** (2D/3D, multiple view modes incl. Service Catalog Expanded 3D and Technical Expanded v2 swim-lane) · **Migration Planner** with weighted scoring, replatform recommender, editable Strategy Workbook, and live Gantt chart · **🏛️ Target Architecture** with per-program 7-Rs recommendation + AI-agent-ready JSON · Portfolio · Complexity |
 
 **Key dashboards added in v3.4:**
 
 - **AST Galaxy** — 2D (vis-network) and **3D** (3d-force-graph) views of the program-level dependency universe. View modes include *Service Catalog (Expanded)*, *Service Catalog (Expanded 3D)*, and *Technical (Expanded v2)* — a north-to-south swim-lane layout that traces communication paths cleanly across programs. Floating mode-aware legend, cancel-resume layout buttons, click-to-inspect, double-click-to-drill into the AST Explorer.
 - **Migration Planner** — interactive lowest-hanging-fruit scorer. Sliders: max LOC / complexity / SQL / CALLs / criticality. Weight sliders to bias the score. Programs are bucketed into 3 waves (lowest-hanging fruit → medium → hubs). Includes an *editable Strategy Workbook* (6 sheets) that exports to multi-sheet `.xlsx`, a **collapsible Gantt chart** wired live to workbook edits (edit a Start week / Wave / Assigned to → bar moves), and a **⇄ Replatform recommender** that flags too-hard programs as candidates for hosting on a managed COBOL runtime instead of rewriting.
+- **🏛️ Target Architecture** — industry-neutral cloud-native microservices recommendation. Maps every scanned program to a target component (web UI, API gateway, business logic / data / identity service, batch worker, reporting, event bus, relational DB, object storage, observability, shared libraries) plus a modernization strategy (Retire / Rehost / Replatform / Rearchitect / Replace), wave, complexity score, and concrete migration notes. Includes a tailored Mermaid diagram that adapts to the scanned codebase (hides empty components) with zoom + fullscreen, grouped + collapsible source-to-target mapping, and a *💾 Save for AI agent* button that persists the JSON plan to `output/rekt/target-architecture.json` for downstream conversion agents. See [`docs/target-architecture-recommendation.md`](docs/target-architecture-recommendation.md).
 - **Latest-run-per-file dedup** — every Neo4j-backed endpoint applies a "latest scan run per file" filter so dashboards never show duplicate program rows from older scans.
 
 **Portal URL:** http://localhost:5028
@@ -1396,6 +1397,7 @@ See [Parallel Jobs Formula](#parallel-jobs-formula) for chunking configuration d
 - [Smart Chunking Guide](Smart-chuncking-how%20it-works.md) — Deep technical details
 - [Architecture Documentation](REVERSE_ENGINEERING_ARCHITECTURE.md) — System design
 - [Cobol-REKT Demo](docs/rekt-demo.md) — Static-analysis pipeline walkthrough
+- [Target Architecture Recommendation](docs/target-architecture-recommendation.md) — Modernization plan view, mapping heuristics, and the JSON schema consumed by AI conversion agents
 - [Setup Troubleshooting](docs/troubleshoot.md) — Setup failures and recovery steps for `./doctor.sh setup`
 - [Changelog](CHANGELOG.md) — Version history
 

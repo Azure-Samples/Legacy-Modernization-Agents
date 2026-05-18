@@ -542,9 +542,24 @@ def ingest_rekt_outputs(driver, rekt_output_dir: str, source_dir: str, run_id: i
         console.print(f"[yellow]Rekt output dir not found: {rekt_output_dir}[/yellow]")
         return counts
 
-    # Find all COBOL source files and create CobolFile nodes
-    cobol_files = list(source_path.glob("*.cbl")) + list(source_path.glob("*.CBL"))
-    copybooks = list(source_path.glob("*.cpy")) + list(source_path.glob("*.CPY"))
+    # Find all COBOL source files recursively and create CobolFile nodes.
+    # Ignore tool artifacts so they don't pollute run-scoped file sets.
+    def _is_ignored_source_file(p: Path) -> bool:
+        ignored_markers = {".rekt-staging", ".preprocessed"}
+        return any(part in ignored_markers for part in p.parts)
+
+    cobol_files = [
+        p for p in source_path.rglob("*")
+        if p.is_file()
+        and p.suffix.lower() == ".cbl"
+        and not _is_ignored_source_file(p)
+    ]
+    copybooks = [
+        p for p in source_path.rglob("*")
+        if p.is_file()
+        and p.suffix.lower() == ".cpy"
+        and not _is_ignored_source_file(p)
+    ]
 
     file_nodes = []
     for f in cobol_files + copybooks:

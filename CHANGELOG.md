@@ -5,6 +5,29 @@ All notable changes to this repository are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Target Architecture dashboard tab** (`McpChatWeb/wwwroot/target-architecture.js`) — recommends a cloud-native microservices target architecture and maps every scanned COBOL program to a target component, modernization strategy (Retire / Rehost / Replatform / Rearchitect / Replace), wave, and per-program migration notes. Industry-neutral (works for non-banking codebases). Includes a tailored Mermaid architecture diagram that adapts to the scan (hides empty components / layers, transitive-closure over `consumes`), with zoom controls and a fullscreen overlay. Grouped + collapsible *Source → Target Mapping* keeps the page skimmable when scans have many copybooks. Glossary tooltips for common acronyms (DTO, JPA, EF Core, CICS, IMS, BMS, etc.).
+- **`output/rekt/target-architecture.json`** — deterministic JSON plan persisted via `POST /api/graph/rekt/target-architecture` (with corresponding `GET`), designed for downstream AI conversion agents to consume directly. Schema documented in `docs/target-architecture-recommendation.md`.
+- **REKT pipeline missing-copybook report** — `output/rekt/missing-copybooks.txt` lists every COPY target that wasn't found in `source/`, plus an inline summary printed by `./doctor.sh rekt-full` both before parsing (pre-flight) and after (degraded-parse summary).
+- **`docs/target-architecture-recommendation.md`** — full documentation of the target architecture template, mapping heuristics, the 7-Rs strategy decision table, and the JSON contract that AI conversion agents consume.
+
+### Changed
+- **REKT preprocessor** (`tools/preprocess-for-rekt.sh`) — handles compiler-specific `-COPY ... -PRE ...` directives, unsupported `ALL '<lit>'` figurative constants, `MOVE 0(1) TO` numeric literals, and trailing 8-digit sequence numbers on long fixed-format lines. Previously these patterns silently dropped programs into deps-only fallback.
+- **REKT staging** (`doctor.sh` → `run_rekt_parse`) — stages files from `source/.preprocessed/` first (was raw `source/`), so the preprocessor's rewrites actually reach the parser. Also recursively discovers `.cbl`/`.cpy` in `source/` subdirectories.
+- **AST Galaxy → BIAN view** — reverted the heuristic fallback that mis-classified non-banking programs into banking domains. Now shows an explicit "BIAN may not apply" warning when less than 10% of programs match the landscape. Migration Planner BIAN view uses the same exact-match logic for consistency.
+- **AST Galaxy → C4 Model** — L2 container grouping now uses heuristic `_c4ContainerOf()` so LOC totals reflect real program counts instead of "0". Tighter L2 layout (smaller boxes, closer spacing, auto-fit camera). L3 components auto-select the heaviest program with a dropdown picker including a `★ All programs` overview mode; node count capped at 80 (single program) or 400 (all-programs sections-only overview) to keep the view legible.
+- **AST Galaxy sort options** — `setSortMode` now triggers a graph re-render (previously only updated the file picker). All metric sorts have a deterministic name tie-breaker. Connection sort uses a normalized lookup key that survives `.cbl` / `flow-ast-` prefix differences. Dropdown labels gained consistent direction arrows and tooltips.
+- **`_classifyBusinessDomain`** reverted to exact-match-only — same correctness reasoning as BIAN.
+
+### Fixed
+- AST Galaxy sort dropdown did not actually re-render the graph on change.
+- C4 L2 view showed "0 LOC" for every container in non-banking repos because grouping was filtering by hard-coded sample-program names.
+- C4 L3 view was an unbrowseable hairball when no program was selected (it rendered every AST node from every program).
+- Mermaid diagram in Target Architecture was clamped to its layout width by the default `max-width` styling — stripped so the diagram honours its container and zoom transforms.
+- Target Architecture diagram tech labels only showed the first option before the first `/` (e.g. only "S3" instead of "S3 / Azure Blob / GCS"); now shows every recommended cloud alternative on its own line.
+
 ## [3.4.0] - 2026-05-05
 
 ### Added

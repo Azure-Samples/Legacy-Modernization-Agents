@@ -8362,6 +8362,71 @@ app.MapGet("/api/reports/available", () =>
 	}
 });
 
+// ── Target Architecture (recommended modernization plan) ────────────────────
+// Persists the JSON plan produced by target-architecture.js so AI conversion
+// agents can pick up the plan from a known on-disk location. Stored under
+// output/rekt/target-architecture.json (one file, always overwritten — the
+// scanRunId is recorded inside the JSON so consumers can detect staleness).
+app.MapGet("/api/graph/rekt/target-architecture", () =>
+{
+	try
+	{
+		var repoRoot = AppContext.BaseDirectory;
+		// Walk up from bin/Debug to the repo root (look for a sibling output/ dir).
+		var dir = new DirectoryInfo(repoRoot);
+		while (dir != null && !Directory.Exists(Path.Combine(dir.FullName, "output", "rekt")))
+			dir = dir.Parent;
+		if (dir == null) return Results.NotFound(new { error = "output/rekt not found" });
+
+		var path = Path.Combine(dir.FullName, "output", "rekt", "target-architecture.json");
+		if (!File.Exists(path)) return Results.NotFound(new { error = "no plan saved yet", path });
+
+		var json = File.ReadAllText(path);
+		return Results.Content(json, "application/json");
+	}
+	catch (Exception ex)
+	{
+		return Results.Problem($"Failed to read target architecture: {ex.Message}");
+	}
+});
+
+app.MapPost("/api/graph/rekt/target-architecture", async (HttpRequest req) =>
+{
+	try
+	{
+		using var reader = new StreamReader(req.Body);
+		var body = await reader.ReadToEndAsync();
+		if (string.IsNullOrWhiteSpace(body))
+			return Results.BadRequest(new { error = "empty body" });
+
+		// Validate it's parseable JSON before writing (rejects garbage payloads).
+		using (var _ = System.Text.Json.JsonDocument.Parse(body)) { }
+
+		var repoRoot = AppContext.BaseDirectory;
+		var dir = new DirectoryInfo(repoRoot);
+		while (dir != null && !Directory.Exists(Path.Combine(dir.FullName, "output")))
+			dir = dir.Parent;
+		if (dir == null) return Results.Problem("output/ directory not found above app base");
+
+		var rektDir = Path.Combine(dir.FullName, "output", "rekt");
+		Directory.CreateDirectory(rektDir);
+		var path = Path.Combine(rektDir, "target-architecture.json");
+		await File.WriteAllTextAsync(path, body);
+
+		// Relative path is friendlier in the UI status line.
+		var rel = Path.GetRelativePath(dir.FullName, path).Replace('\\', '/');
+		return Results.Ok(new { path = rel, bytes = body.Length });
+	}
+	catch (System.Text.Json.JsonException jex)
+	{
+		return Results.BadRequest(new { error = "invalid JSON", detail = jex.Message });
+	}
+	catch (Exception ex)
+	{
+		return Results.Problem($"Failed to save target architecture: {ex.Message}");
+	}
+});
+
 app.Run();
 
 // ── Prompt generation helper functions ───────────────────────────────────────

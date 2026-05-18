@@ -1210,6 +1210,12 @@ class ASTGalaxyView {
     // C4 specific: inject level switcher and wire L2→L3 drill
     if (this.viewMode === 'c4-model') {
       this._injectC4LevelUI(container);
+      // Fit camera to the laid-out nodes so the user doesn't land on a
+      // zoomed-out view with everything clustered in the corner. The
+      // afterDrawing event fires once vis has measured the node geometry.
+      this.network.once('afterDrawing', () => {
+        try { this.network.fit({ animation: false }); } catch {}
+      });
       this.network.on('doubleClick', (params) => {
         if (params.nodes.length > 0) {
           const nd = this.nodes.get(params.nodes[0]);
@@ -1351,9 +1357,10 @@ class ASTGalaxyView {
     for (const [domain, cfg] of Object.entries(ASTGalaxyView.BUSINESS_DOMAINS)) {
       if (cfg.keys.some(k => upper.includes(k))) return domain;
     }
-    // Heuristic fallback: heavy SQL → database ops, heavy CALL → orchestration
-    if (meta?.sqlCount > 50) return 'Account Operations';
-    if (meta?.callCount > 3) return 'Transaction Processing';
+    // No name-match. We deliberately avoid name-shape heuristics here because they
+    // produce false-positive banking labels for non-banking COBOL repos. Anything
+    // unmatched is classed as Infrastructure — a neutral catch-all — rather than
+    // being forced into a specific business domain.
     return 'Infrastructure';
   }
 
@@ -4538,25 +4545,41 @@ class ASTGalaxyView {
   }
 
   _applySortMode(programs) {
+    // Normalize a program name to a stable lookup key (matches what edges use).
+    const normKey = (s) => (s || '')
+      .replace(/^flow-ast-/i, '')
+      .replace(/\.cbl$/i, '')
+      .replace(/\.cpy$/i, '')
+      .toUpperCase();
+
     const edgeCount = new Map();
     if (this.galaxyData?.edges) {
       for (const e of this.galaxyData.edges) {
-        edgeCount.set(e.source, (edgeCount.get(e.source) || 0) + 1);
-        edgeCount.set(e.target, (edgeCount.get(e.target) || 0) + 1);
+        const src = normKey(e.source);
+        const tgt = normKey(e.target);
+        if (src) edgeCount.set(src, (edgeCount.get(src) || 0) + 1);
+        if (tgt) edgeCount.set(tgt, (edgeCount.get(tgt) || 0) + 1);
       }
     }
+
+    // Stable tie-breaker by name keeps the ordering deterministic.
+    const byName = (a, b) => normKey(a.program).localeCompare(normKey(b.program));
+    const desc = (getter) => (a, b) => {
+      const diff = (getter(b) || 0) - (getter(a) || 0);
+      return diff !== 0 ? diff : byName(a, b);
+    };
+
+    // Sort a copy so we don't mutate the caller's array.
+    const arr = [...programs];
     switch (this.sortMode) {
-      case 'loc': return programs.sort((a, b) => (b.lineCount || 0) - (a.lineCount || 0));
-      case 'complexity': return programs.sort((a, b) => this._computeComplexity(b) - this._computeComplexity(a));
-      case 'sql': return programs.sort((a, b) => (b.sqlCount || 0) - (a.sqlCount || 0));
-      case 'calls': return programs.sort((a, b) => (b.callCount || 0) - (a.callCount || 0));
-      case 'sections': return programs.sort((a, b) => (b.sectionCount || 0) - (a.sectionCount || 0));
-      case 'connections': return programs.sort((a, b) => {
-        const aName = a.program.replace('flow-ast-','').replace('.cbl','');
-        const bName = b.program.replace('flow-ast-','').replace('.cbl','');
-        return (edgeCount.get(bName) || edgeCount.get(bName+'.cbl') || 0) - (edgeCount.get(aName) || edgeCount.get(aName+'.cbl') || 0);
-      });
-      default: return programs.sort((a, b) => a.program.localeCompare(b.program));
+      case 'loc':         return arr.sort(desc(p => p.lineCount));
+      case 'complexity':  return arr.sort(desc(p => this._computeComplexity(p)));
+      case 'sql':         return arr.sort(desc(p => p.sqlCount));
+      case 'calls':       return arr.sort(desc(p => p.callCount));
+      case 'sections':    return arr.sort(desc(p => p.sectionCount));
+      case 'connections': return arr.sort(desc(p => edgeCount.get(normKey(p.program)) || 0));
+      case 'name':
+      default:            return arr.sort(byName);
     }
   }
 
@@ -4689,8 +4712,14 @@ class ASTGalaxyView {
   }
 
   setSortMode(value) {
+    if (this.sortMode === value) return;
     this.sortMode = value;
+    // Clear expansion state so re-sorted clusters render cleanly (matches setShowFilter).
+    this._expandedClusters.clear();
     this._populateFileFilter();
+    // Without this rebuild the dropdown reorders but the graph keeps the
+    // previous sort — exactly the bug a user would notice first.
+    this._rebuildAndRender();
   }
 
   search(query) {
@@ -4816,6 +4845,10 @@ class ASTGalaxyView {
         if (domain.matches.includes(key)) return { area: area.area, domain: domain.name };
       }
     }
+    // No banking-conventional name match. We deliberately do NOT force programs
+    // into named BIAN domains via heuristics — BIAN V14.0 is a banking taxonomy
+    // and false-positive classification (e.g. tagging a manufacturing program as
+    // "Current Account") misleads downstream architecture decisions.
     return { area: null, domain: 'Unmapped' };
   }
 
@@ -4860,12 +4893,28 @@ class ASTGalaxyView {
     };
 
     const checked = this._bianShowCopybooks ? 'checked' : '';
+    const mappedCount = [...domainMap.values()].reduce((s,arr)=>s+arr.length,0);
+    const nonCpyTotal = programs.filter(p => !p.isCopybook).length;
+    const mappedRatio = nonCpyTotal ? (mappedCount / nonCpyTotal) : 0;
     let html = `<div style="height:100%;overflow:auto;padding:16px;font-family:monospace;background:#0f172a;">
       <div style="margin-bottom:8px;">
         <span style="font-size:16px;font-weight:700;color:#e2e8f0;">🏦 BIAN-aligned Service Landscape</span>
-        <span style="font-size:11px;color:#64748b;margin-left:12px;">V14.0 · heuristic mapping based on program naming conventions · click a chip for details, double-click for AST Explorer</span>
-      </div>
-      <div style="display:flex;align-items:center;gap:16px;margin-bottom:12px;flex-wrap:wrap;font-size:11px;color:#64748b;padding:8px 10px;background:#1e293b;border-radius:6px;">
+        <span style="font-size:11px;color:#64748b;margin-left:12px;">V14.0 · exact-match mapping against banking program-naming conventions · click a chip for details, double-click for AST Explorer</span>
+      </div>`;
+
+    if (nonCpyTotal > 0 && mappedRatio < 0.1) {
+      html += `<div style="margin-bottom:12px;padding:10px 14px;background:#422006;border:1px solid #b45309;border-radius:6px;color:#fbbf24;font-size:12px;line-height:1.5;">
+        <strong>⚠️ BIAN landscape may not apply to this codebase.</strong>
+        Only ${mappedCount} of ${nonCpyTotal} programs matched a banking service domain
+        (${(mappedRatio*100).toFixed(0)}%). BIAN V14.0 is the Banking Industry Architecture
+        Network taxonomy — the rest of your programs appear under <em>Unmapped Programs</em>
+        below because their names do not follow banking conventions
+        (e.g. CREACC, COCRDSLC, RGNB649). For non-banking domains, the Architecture
+        and Service Catalog views are more appropriate.
+      </div>`;
+    }
+
+    html += `<div style="display:flex;align-items:center;gap:16px;margin-bottom:12px;flex-wrap:wrap;font-size:11px;color:#64748b;padding:8px 10px;background:#1e293b;border-radius:6px;">
         <span>⚡ = SQL-heavy (purple)</span>
         <span>▪ = CALL-heavy (amber)</span>
         <span>Click chip → details</span>
@@ -4952,7 +5001,13 @@ class ASTGalaxyView {
     for (const [name, cfg] of Object.entries(ASTGalaxyView.C4_CONTAINER_MAP)) {
       if (cfg.keys.includes(key)) return name;
     }
-    return null;
+    const meta = this.galaxyData?.programs?.find?.(p => (p.program || '').replace(/\.cbl$/i,'').replace(/^flow-ast-/i,'').toUpperCase() === key) || {};
+    if (meta?.isCopybook || key.includes('DATA') || key.includes('DG') || key.includes('DO') || key.includes('MID') || key.includes('MOD')) return 'Shared Data';
+    if (key.startsWith('T660R') || key.includes('REPORT') || key.includes('RPT')) return 'Batch Processing';
+    if (key.includes('INQ') || key.includes('UPD') || key.includes('CRE') || key.includes('DEL') || key.includes('XFR')) return 'Business Logic';
+    if ((meta.callCount || 0) > (meta.sqlCount || 0) && (meta.callCount || 0) > 0) return 'Business Logic';
+    if ((meta.sqlCount || 0) > 0) return 'Business Logic';
+    return 'Batch Processing';
   }
 
   _buildC4VisData() {
@@ -4984,53 +5039,75 @@ class ASTGalaxyView {
         {from:'sys_core',to:'ext_reg', label:'Reports to',  arrows:{to:{enabled:true,scaleFactor:.6}},dashes:true,color:{color:'#ef4444'}},
       );
     } else if (level === 2) {
-      // L2: Containers — one node per container group + DB2
+      // L2: Containers — one node per container group + DB2.
+      // Layout is hand-tuned to be compact: containers in a tight row, programs
+      // close beneath, DB just above. We rely on network.fit() (below) to zoom
+      // the camera to the bounding box on first render so the user doesn't
+      // have to manually zoom in.
       const containerMap = ASTGalaxyView.C4_CONTAINER_MAP;
       let col = 0;
-      const contX = { 'Online (CICS)': -450, 'Business Logic': -150, 'Batch Processing': 150, 'Shared Data': 450 };
+      const contX = { 'Online (CICS)': -270, 'Business Logic': -90, 'Batch Processing': 90, 'Shared Data': 270 };
+      // Group programs by container using the same heuristic _c4ContainerOf() uses.
+      const byContainer = new Map();
+      for (const name of Object.keys(containerMap)) byContainer.set(name, []);
+      for (const p of programs) {
+        if (p.isCopybook) continue;
+        const cname = this._c4ContainerOf(p.program);
+        if (cname && byContainer.has(cname)) byContainer.get(cname).push(p);
+      }
       for (const [name, cfg] of Object.entries(containerMap)) {
-        const progs = programs.filter(p => cfg.keys.includes(norm(p)));
+        const progs = byContainer.get(name) || [];
         const loc  = progs.reduce((s,p) => s+(p.lineCount||0), 0);
         const sql  = progs.reduce((s,p) => s+(p.sqlCount||0), 0);
         nodeList.push({
           id: 'cont__' + name,
-          label: `${cfg.icon} ${name}\n[COBOL Container]\n${progs.length} programs · ${loc} LOC`,
-          shape: 'box', size: 40,
-          x: contX[name] || col * 320, y: 0, fixed:{x:true,y:true},
+          label: `${cfg.icon} ${name}\n[COBOL Container]\n${progs.length} programs · ${loc.toLocaleString()} LOC`,
+          shape: 'box', size: 30,
+          x: contX[name] || col * 200, y: 0, fixed:{x:true,y:true},
           color:{background:cfg.color,border:cfg.border,highlight:{background:cfg.color,border:'#fff'}},
           font:{color:'#e2e8f0',size:11,multi:false}, borderWidth:2,
-          title: `${name}\n${progs.map(p=>norm(p)).join(', ')}\nTotal LOC: ${loc} · SQL stmts: ${sql}`,
+          margin: { top: 6, bottom: 6, left: 10, right: 10 },
+          widthConstraint: { maximum: 170 },
+          title: `${name}\n${progs.map(p=>norm(p)).join(', ')}\nTotal LOC: ${loc.toLocaleString()} · SQL stmts: ${sql}`,
           _data:{displayName:name,nodeType:'C4_Container',programs:progs},
         });
-        // Program nodes below each container
+        // Program nodes below each container — packed in 2 rows when there are
+        // more than 4 to keep horizontal spread small.
+        const perRow = Math.min(4, Math.max(1, Math.ceil(Math.sqrt(progs.length))));
         progs.forEach((p, i) => {
           const pn = norm(p);
+          const row = Math.floor(i / perRow);
+          const colIdx = i % perRow;
+          const rowCount = Math.ceil(progs.length / perRow);
+          const lastRowCount = progs.length - perRow * (rowCount - 1);
+          const slots = (row === rowCount - 1) ? lastRowCount : perRow;
           nodeList.push({
             id: 'prog_c4__' + pn,
             label: pn,
-            shape: 'box', size:20,
-            x: (contX[name]||0) + (i - (progs.length-1)/2) * 110,
-            y: 160,
+            shape: 'box', size:14,
+            x: (contX[name]||0) + (colIdx - (slots-1)/2) * 70,
+            y: 70 + row * 32,
             fixed:{x:true,y:true},
             color:{background:cfg.color+'99',border:cfg.border,highlight:{background:cfg.color,border:'#fff'}},
-            font:{color:'#cbd5e1',size:10}, borderWidth:1,
+            font:{color:'#cbd5e1',size:9}, borderWidth:1,
+            margin: { top: 3, bottom: 3, left: 6, right: 6 },
             title:`${pn}\nLOC: ${p.lineCount||0} · SQL: ${p.sqlCount||0} · CALLs: ${p.callCount||0}`,
             _data:{...p,displayName:pn,nodeType:'C4_Component',program:p.program},
           });
-          edgeList.push({from:'cont__'+name,to:'prog_c4__'+pn,arrows:{to:{enabled:true,scaleFactor:.5}},color:{color:cfg.border,opacity:.4},width:.5,dashes:false});
+          edgeList.push({from:'cont__'+name,to:'prog_c4__'+pn,arrows:{to:{enabled:true,scaleFactor:.4}},color:{color:cfg.border,opacity:.35},width:.5,dashes:false});
         });
         col++;
       }
       nodeList.push({
-        id:'ext_db_c', label:'DB2 / VSAM\n[Database]', shape:'database', size:30,
-        x:0, y:-200, fixed:{x:true,y:true},
-        color:{background:'#1c1917',border:'#78716c'}, font:{color:'#e2e8f0',size:11}, borderWidth:2,
+        id:'ext_db_c', label:'DB2 / VSAM\n[Database]', shape:'database', size:22,
+        x:0, y:-110, fixed:{x:true,y:true},
+        color:{background:'#1c1917',border:'#78716c'}, font:{color:'#e2e8f0',size:10}, borderWidth:2,
         _data:{displayName:'DB2/VSAM',nodeType:'C4_Database'},
       });
       // Wire SQL-heavy containers to DB2
       for (const [name, cfg] of Object.entries(containerMap)) {
-        const hasSql = programs.filter(p => cfg.keys.includes(norm(p))).some(p => (p.sqlCount||0)>0);
-        if (hasSql) edgeList.push({from:'cont__'+name,to:'ext_db_c',label:'SQL',arrows:{to:{enabled:true,scaleFactor:.5}},dashes:true,color:{color:'#78716c',opacity:.5}});
+        const hasSql = (byContainer.get(name) || []).some(p => (p.sqlCount||0)>0);
+        if (hasSql) edgeList.push({from:'cont__'+name,to:'ext_db_c',label:'SQL',arrows:{to:{enabled:true,scaleFactor:.4}},dashes:true,color:{color:'#78716c',opacity:.5}});
       }
       // Inter-container dependency edges from galaxy edges
       const edgesData = this.galaxyData?.edges || [];
@@ -5040,31 +5117,79 @@ class ASTGalaxyView {
         if (!sc || !tc || sc === tc) continue;
         const key = `${sc}→${tc}`;
         if (seen.has(key)) continue; seen.add(key);
-        edgeList.push({from:'cont__'+sc,to:'cont__'+tc,label:'calls',arrows:{to:{enabled:true,scaleFactor:.5}},dashes:false,color:{color:'#94a3b8',opacity:.6},width:1.5});
+        edgeList.push({from:'cont__'+sc,to:'cont__'+tc,label:'calls',arrows:{to:{enabled:true,scaleFactor:.4}},dashes:false,color:{color:'#94a3b8',opacity:.55},width:1.2});
       }
     } else {
-      // L3: Components — sections of selected program
+      // L3: Components — sections of the selected program, OR a sections-only
+      // overview across all programs when '__ALL__' is picked.
+      const programs = this.galaxyData?.programs || [];
+      // Auto-select the heaviest program only on first arrival (no explicit pick).
+      // '__ALL__' is an explicit pick and must be preserved.
+      if (this._c4SelectedProg === null && programs.length) {
+        const heaviest = [...programs]
+          .filter(p => !p.isCopybook)
+          .sort((a,b) => (b.lineCount||0)+(b.sectionCount||0)*10 - ((a.lineCount||0)+(a.sectionCount||0)*10))[0];
+        if (heaviest) {
+          this._c4SelectedProg = (heaviest.program||'').replace(/\.cbl$/i,'').replace(/^flow-ast-/i,'').toUpperCase();
+        }
+      }
       const selProg = this._c4SelectedProg;
+      const showAll = selProg === '__ALL__';
       const astNodes = this.astData?.nodes || [];
       const astEdges = this.astData?.edges || [];
-      const progNodes = astNodes.filter(n => {
-        const pn = (n.program||'').replace(/\.cbl$/i,'').replace(/^flow-ast-/i,'').toUpperCase();
-        return selProg ? pn === selProg : true;
-      }).filter(n => ['SECTION','PARAGRAPH','PERFORM','CALL','CallStatement','IF_BRANCH','EVALUATE','DIALECT','DIALECT_CONTAINER'].includes(n.nodeType));
 
-      const nodeIds = new Set(progNodes.map(n=>n.id));
-      nodeList.push(...progNodes.map(n => ({
-        id: n.id, label: (n.name||n.nodeType||'').substring(0,24),
-        shape: ASTGalaxyView.NODE_STYLE[n.nodeType]?.shape || 'ellipse',
-        size: 18,
-        color: { background: ASTGalaxyView.TYPE_COLORS[n.nodeType] || '#475569', border: '#fff2', highlight:{border:'#fff'} },
-        font: {color:'#e2e8f0',size:10}, borderWidth:1,
-        title:`${n.nodeType}: ${n.name||''}\nLines ${n.startLine}–${n.endLine}`,
-        _data:{...n,displayName:n.name||n.nodeType,program:n.program},
-      })));
+      // In "all programs" mode we keep only SECTION nodes — the highest-level
+      // structural unit — so the picture stays browseable; PARAGRAPH and below
+      // would balloon to thousands of nodes. When a single program is selected
+      // we include the richer detail set the user expects.
+      const KEEP_ALL    = ['SECTION'];
+      const KEEP_SINGLE = ['SECTION','PARAGRAPH','PERFORM','CALL','CallStatement','IF_BRANCH','EVALUATE','DIALECT','DIALECT_CONTAINER'];
+      const keepSet = new Set(showAll ? KEEP_ALL : KEEP_SINGLE);
+      const normName = (s) => (s||'').replace(/\.cbl$/i,'').replace(/^flow-ast-/i,'').toUpperCase();
+
+      const progNodes = astNodes.filter(n => {
+        if (!keepSet.has(n.nodeType)) return false;
+        if (showAll) return true;
+        return selProg ? normName(n.program) === selProg : false;
+      });
+
+      // Rank nodes structurally so the cap keeps the most meaningful ones.
+      const RANK = { SECTION: 0, PARAGRAPH: 1, PERFORM: 2, CALL: 3, CallStatement: 3, IF_BRANCH: 4, EVALUATE: 4, DIALECT: 5, DIALECT_CONTAINER: 5 };
+      progNodes.sort((a,b) => (RANK[a.nodeType]??9) - (RANK[b.nodeType]??9));
+      const NODE_CAP = showAll ? 400 : 80;
+      const visibleNodes = progNodes.slice(0, NODE_CAP);
+
+      // Deterministic per-program color palette so each program is visually grouped.
+      const PALETTE = ['#3b82f6','#10b981','#f59e0b','#a855f7','#ef4444','#06b6d4','#ec4899','#14b8a6','#f97316','#84cc16','#6366f1','#22d3ee'];
+      const progColor = new Map();
+      const colorFor = (progName) => {
+        const k = normName(progName);
+        if (!progColor.has(k)) progColor.set(k, PALETTE[progColor.size % PALETTE.length]);
+        return progColor.get(k);
+      };
+
+      const nodeIds = new Set(visibleNodes.map(n=>n.id));
+      nodeList.push(...visibleNodes.map(n => {
+        const bg = showAll
+          ? colorFor(n.program)
+          : (ASTGalaxyView.TYPE_COLORS[n.nodeType] || '#475569');
+        const labelText = showAll
+          ? `${normName(n.program)} · ${(n.name||n.nodeType||'').substring(0,20)}`
+          : (n.name||n.nodeType||'').substring(0,24);
+        return {
+          id: n.id, label: labelText,
+          shape: ASTGalaxyView.NODE_STYLE[n.nodeType]?.shape || 'ellipse',
+          size: showAll ? 14 : 18,
+          color: { background: bg, border: '#fff2', highlight:{border:'#fff'} },
+          font: {color:'#e2e8f0',size: showAll ? 9 : 10}, borderWidth:1,
+          title:`${normName(n.program)}\n${n.nodeType}: ${n.name||''}\nLines ${n.startLine}–${n.endLine}`,
+          _data:{...n,displayName:n.name||n.nodeType,program:n.program},
+          group: showAll ? `prog__${normName(n.program)}` : undefined,
+        };
+      }));
       edgeList.push(...astEdges
         .filter(e => nodeIds.has(e.source) && nodeIds.has(e.target))
-        .map(e => ({from:e.source,to:e.target,arrows:{to:{enabled:true,scaleFactor:.5}},color:{color:'#475569',opacity:.5},width:.8})));
+        .map(e => ({from:e.source,to:e.target,arrows:{to:{enabled:true,scaleFactor:.5}},color:{color:'#475569',opacity: showAll ? 0.25 : 0.5},width:.8})));
     }
 
     this.nodes = new vis.DataSet(nodeList);
@@ -5095,10 +5220,40 @@ class ASTGalaxyView {
       });
       bar.appendChild(btn);
     });
-    if (this._c4Level === 3 && this._c4SelectedProg) {
-      const sel = document.createElement('span');
-      sel.style.cssText = 'padding:4px 10px;border-radius:14px;background:#065f46;color:#6ee7b7;font-size:11px;';
-      sel.textContent = `▸ ${this._c4SelectedProg}`;
+    if (this._c4Level === 3) {
+      // Program picker: lets the user choose which program's components to inspect.
+      const sel = document.createElement('select');
+      sel.title = 'Select a program (single) or "All programs" for a sections-only overview';
+      sel.style.cssText = 'padding:4px 10px;border-radius:14px;background:#065f46;color:#6ee7b7;font-size:11px;border:1px solid #10b981;cursor:pointer;max-width:240px;';
+      const programs = (this.galaxyData?.programs || [])
+        .filter(p => !p.isCopybook)
+        .slice()
+        .sort((a,b) => ((b.lineCount||0)+(b.sectionCount||0)*10) - ((a.lineCount||0)+(a.sectionCount||0)*10));
+      // "All programs" overview — sections only, color-grouped per program.
+      const allOpt = document.createElement('option');
+      allOpt.value = '__ALL__';
+      allOpt.textContent = `★ All programs (sections, ${programs.length})`;
+      allOpt.title = 'Show every program at once as a sections-only overview';
+      if (this._c4SelectedProg === '__ALL__') allOpt.selected = true;
+      sel.appendChild(allOpt);
+      const sep = document.createElement('option');
+      sep.disabled = true;
+      sep.textContent = '──────────';
+      sel.appendChild(sep);
+      for (const p of programs) {
+        const opt = document.createElement('option');
+        const k = (p.program||'').replace(/\.cbl$/i,'').replace(/^flow-ast-/i,'').toUpperCase();
+        opt.value = k;
+        const loc = p.lineCount || 0;
+        const sec = p.sectionCount || 0;
+        opt.textContent = `${k} — ${loc} LOC · ${sec} sec`;
+        if (this._c4SelectedProg === k) opt.selected = true;
+        sel.appendChild(opt);
+      }
+      sel.addEventListener('change', () => {
+        this._c4SelectedProg = sel.value || null;
+        this._rebuildAndRender();
+      });
       bar.appendChild(sel);
     }
     container.style.position = 'relative';

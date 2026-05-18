@@ -381,6 +381,7 @@
         <button class="dashboard-tab" data-tab="ast" onclick="switchDashboard('ast')">🔬 AST Explorer</button>
         <button class="dashboard-tab" data-tab="galaxy" onclick="switchDashboard('galaxy')">🌌 AST Galaxy</button>
         <button class="dashboard-tab" data-tab="migration" onclick="switchDashboard('migration')">🎯 Migration Planner</button>
+        <button class="dashboard-tab" data-tab="target-arch" onclick="switchDashboard('target-arch')">🏛️ Target Architecture</button>
         <button class="dashboard-tab" data-tab="portfolio" onclick="switchDashboard('portfolio')">Portfolio</button>
         <button class="dashboard-tab" data-tab="complexity" onclick="switchDashboard('complexity')">Readiness</button>
         <span style="margin-left:auto; display:flex; align-items:center; gap:6px;">
@@ -645,14 +646,14 @@
             <option value="complex">High Complexity</option>
             <option value="simple">Low Complexity</option>
           </select>
-          <select id="galaxy-sort-mode" onchange="galaxyView?.setSortMode(this.value)" style="padding: 6px; background: #1e293b; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; font-size: 13px;">
-            <option value="name">Sort: Name</option>
-            <option value="loc">Sort: LOC ↓</option>
-            <option value="complexity">Sort: Complexity ↓</option>
-            <option value="sql">Sort: SQL Count ↓</option>
-            <option value="calls">Sort: CALLs ↓</option>
-            <option value="sections">Sort: Sections ↓</option>
-            <option value="connections">Sort: Connections ↓</option>
+          <select id="galaxy-sort-mode" onchange="galaxyView?.setSortMode(this.value)" style="padding: 6px; background: #1e293b; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; font-size: 13px;" title="Order programs and the file picker by the chosen metric.">
+            <option value="name" title="Alphabetical by program name (A → Z).">Sort: Name ↑</option>
+            <option value="loc" title="Lines of code (largest first).">Sort: LOC ↓</option>
+            <option value="complexity" title="Composite complexity score derived from branches, SQL, CALLs, paragraphs and AST node count.">Sort: Complexity ↓</option>
+            <option value="sql" title="Number of EXEC SQL statements (most first).">Sort: SQL Count ↓</option>
+            <option value="calls" title="Number of CALL statements to other programs (most first).">Sort: CALLs ↓</option>
+            <option value="sections" title="Number of SECTION definitions (most first).">Sort: Sections ↓</option>
+            <option value="connections" title="Number of dependency edges incident on the program (most-connected first).">Sort: Connections ↓</option>
           </select>
           <input type="text" id="galaxy-search" placeholder="Search..." oninput="galaxyView?.search(this.value)" style="width: 160px; padding: 6px 10px; background: #1e293b; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; font-size: 13px;">
           <button id="galaxy-3d-btn" onclick="galaxyView?.toggle3D()" class="btn-small" title="Toggle 3D view">🧊 3D</button>
@@ -750,6 +751,11 @@
       <!-- Migration Planner — sortable, sliceable migration strategy report (hidden by default) -->
       <div id="migration-planner-container" class="dashboard-panel" style="display: none;">
         <div id="mp-root" style="height:100%; overflow:auto; display:flex; flex-direction:column; background:#0a0e1a;"></div>
+      </div>
+
+      <!-- Target Architecture — recommended modernization plan, AI-agent-ready (hidden by default) -->
+      <div id="target-arch-container" class="dashboard-panel" style="display: none;">
+        <div id="tarch-root" style="height:100%;overflow:auto;background:#0a0e1a;"></div>
       </div>
 
       <!-- Complexity / Readiness (hidden by default) -->
@@ -1492,13 +1498,14 @@ curl http://localhost:5028/api/data-retrieval-guide</code></pre>
   <script src="run-selector.js"></script>
   <script src="graph.js"></script>
   <script src="ast-explorer.js"></script>
-  <script src="ast-galaxy.js?v=20260504f"></script>
+  <script src="ast-galaxy.js?v=20260518a"></script>
   <script src="services-view.js"></script>
   <script src="controlflow-view.js"></script>
   <script src="mermaid-view.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="migration-planner.js?v=20260504j"></script>
-  <script src="dashboard-tabs.js?v=20260504f"></script>
+  <script src="target-architecture.js?v=20260518g"></script>
+  <script src="dashboard-tabs.js?v=20260518b"></script>
   <script src="chat-history.js?v=20260505e"></script>
   <script src="main.js?v=20260505c"></script>
   <script src="runs-viewer.js"></script>

@@ -2354,9 +2354,17 @@ run_rekt_parse() {
     ensure_rekt_containers || return 1
 
     local cobol_count
-    cobol_count=$(find "$REPO_ROOT/source" -name "*.cbl" -o -name "*.CBL" 2>/dev/null | wc -l | tr -d ' ')
+    cobol_count=$(find "$REPO_ROOT/source" \
+        \( -name "*.cbl" -o -name "*.CBL" \) \
+        ! -path "*/.rekt-staging/*" \
+        ! -path "*/.preprocessed/*" \
+        2>/dev/null | wc -l | tr -d ' ')
     local copy_count
-    copy_count=$(find "$REPO_ROOT/source" -name "*.cpy" -o -name "*.CPY" 2>/dev/null | wc -l | tr -d ' ')
+    copy_count=$(find "$REPO_ROOT/source" \
+        \( -name "*.cpy" -o -name "*.CPY" \) \
+        ! -path "*/.rekt-staging/*" \
+        ! -path "*/.preprocessed/*" \
+        2>/dev/null | wc -l | tr -d ' ')
 
     echo -e "${BLUE}  Found: ${cobol_count} programs, ${copy_count} copybooks${NC}"
 
@@ -2390,23 +2398,139 @@ run_rekt_parse() {
     local staging_dir="$REPO_ROOT/source/.rekt-staging"
     rm -rf "$staging_dir"
     mkdir -p "$staging_dir"
+    local preprocessed_dir="$REPO_ROOT/source/.preprocessed"
+
+    stage_input_file() {
+        local src_file="$1"
+        local file_name
+        file_name="$(basename "$src_file")"
+        local target="$staging_dir/$file_name"
+        if [[ -f "$preprocessed_dir/$file_name" ]]; then
+            cp "$preprocessed_dir/$file_name" "$target" 2>/dev/null || true
+        else
+            cp "$src_file" "$target" 2>/dev/null || true
+        fi
+        if [[ -f "$target" ]]; then
+            perl -0pi -e 's/MOVE ([01])\(1\)\s+TO/MOVE $1 TO/g' "$target" 2>/dev/null || true
+        fi
+    }
 
     # Collect all copybooks (recursive) → flat staging dir; last write wins on collision (safe: no dupes found)
     while IFS= read -r cpyfile; do
-        cp "$cpyfile" "$staging_dir/" 2>/dev/null || true
+        stage_input_file "$cpyfile"
     done < <(find "$REPO_ROOT/source" \( -name "*.cpy" -o -name "*.CPY" \) \
-        ! -path "*/.rekt-staging/*")
+        ! -path "*/.rekt-staging/*" \
+        ! -path "*/.preprocessed/*")
 
     # Collect all COBOL programs (recursive) → flat staging dir so --srcDir stays constant
     while IFS= read -r cblfile; do
-        cp "$cblfile" "$staging_dir/" 2>/dev/null || true
+        stage_input_file "$cblfile"
     done < <(find "$REPO_ROOT/source" \( -name "*.cbl" -o -name "*.CBL" \) \
-        ! -path "*/.rekt-staging/*")
+        ! -path "*/.rekt-staging/*" \
+        ! -path "*/.preprocessed/*")
 
     local staged_cbl staged_cpy
     staged_cbl=$(find "$staging_dir" -maxdepth 1 \( -name "*.cbl" -o -name "*.CBL" \) | wc -l | tr -d ' ')
     staged_cpy=$(find "$staging_dir" -maxdepth 1 \( -name "*.cpy" -o -name "*.CPY" \) | wc -l | tr -d ' ')
     echo -e "  ${BLUE}Staged: ${staged_cbl} program(s), ${staged_cpy} copybook(s) → source/.rekt-staging/${NC}"
+
+    # Clear previous run outputs first so the missing-copybook report below survives.
+    # Use find-delete rather than rm -rf dir to preserve the Docker bind mount (./output/rekt:/output).
+    mkdir -p "$REPO_ROOT/output/rekt"
+    find "$REPO_ROOT/output/rekt" -mindepth 1 -delete 2>/dev/null || true
+
+    # Pre-parse dependency check: scan COPY directives and report missing copybooks.
+    # This surfaces resolvable parse failures BEFORE the parser runs so the user can
+    # decide whether to obtain the missing copybooks or accept reduced coverage.
+    local missing_report="$REPO_ROOT/output/rekt/missing-copybooks.txt"
+    mkdir -p "$REPO_ROOT/output/rekt"
+    "$PYTHON_CMD" - "$staging_dir" "$missing_report" <<'PYEOF' || true
+import os, re, sys
+from collections import defaultdict
+
+staging_dir = sys.argv[1]
+report_path = sys.argv[2]
+
+# Available copybook stems (case-insensitive), as staged
+available = set()
+for name in os.listdir(staging_dir):
+    stem, ext = os.path.splitext(name)
+    if ext.lower() == '.cpy':
+        available.add(stem.upper())
+
+# Match COPY / -COPY directives in non-comment lines.
+# Handles: COPY NAME., COPY 'NAME'., COPY NAME REPLACING ...
+copy_pat = re.compile(
+    r"^[^*]{0,6}[^*\n].*?\bCOPY\s+['\"]?([A-Z][A-Z0-9_-]*)['\"]?",
+    re.IGNORECASE,
+)
+
+referenced_by = defaultdict(set)  # copybook_name → set(referencing_files)
+for name in sorted(os.listdir(staging_dir)):
+    if not name.lower().endswith(('.cbl', '.cpy')):
+        continue
+    path = os.path.join(staging_dir, name)
+    try:
+        with open(path, 'r', encoding='latin-1') as f:
+            for line in f:
+                # Skip comments (col 7 = '*') and lines too short
+                if len(line) > 6 and line[6] == '*':
+                    continue
+                m = copy_pat.match(line.rstrip())
+                if m:
+                    cpy = m.group(1).upper()
+                    if cpy not in available:
+                        referenced_by[cpy].add(name)
+    except OSError:
+        continue
+
+if not referenced_by:
+    # Truncate the report so stale entries don't linger.
+    open(report_path, 'w').close()
+    sys.exit(0)
+
+with open(report_path, 'w', encoding='utf-8') as out:
+    out.write('# Missing copybooks referenced by staged sources\n')
+    out.write('# These COPY targets were not found in source/. The parser will\n')
+    out.write('# still attempt the file but may emit MISSING_COPYBOOK errors and\n')
+    out.write('# produce reduced AST/data coverage for affected programs.\n\n')
+    for cpy in sorted(referenced_by):
+        refs = ', '.join(sorted(referenced_by[cpy]))
+        out.write(f'{cpy}\treferenced by: {refs}\n')
+
+# Stdout: short, colorized-friendly summary (no ANSI here; caller decorates)
+total = len(referenced_by)
+unique_files = set()
+for refs in referenced_by.values():
+    unique_files.update(refs)
+print(f'{total}|{len(unique_files)}')
+for cpy in sorted(referenced_by):
+    print(f'  {cpy} ← {", ".join(sorted(referenced_by[cpy]))}')
+PYEOF
+
+    if [[ -s "$missing_report" ]]; then
+        local miss_summary
+        miss_summary=$("$PYTHON_CMD" -c "
+import sys
+with open('$missing_report') as f:
+    lines = [l.rstrip() for l in f if l.strip() and not l.startswith('#')]
+print(len(lines))
+" 2>/dev/null || echo 0)
+        if [[ "$miss_summary" -gt 0 ]]; then
+            echo -e "  ${YELLOW}⚠️  Missing copybooks: ${miss_summary} unresolved COPY target(s)${NC}"
+            # Show the first few inline for quick scanning
+            local first_lines
+            first_lines=$(grep -v '^#' "$missing_report" | head -5)
+            while IFS= read -r line; do
+                [[ -z "$line" ]] && continue
+                echo -e "    ${YELLOW}↳ ${line}${NC}"
+            done <<< "$first_lines"
+            if [[ "$miss_summary" -gt 5 ]]; then
+                echo -e "    ${YELLOW}↳ … and $((miss_summary - 5)) more — see output/rekt/missing-copybooks.txt${NC}"
+            fi
+            echo -e "    ${YELLOW}Provide these in source/ for full AST coverage; the scan will continue.${NC}"
+        fi
+    fi
 
     # Parse each file via rekt container
     # Try with standard dialect first; on failure, retry with alternative options
@@ -2414,11 +2538,6 @@ run_rekt_parse() {
     local succeeded=0
     local failed=0
     local failed_files=""
-    # Clear previous run outputs so old files from other projects don't contaminate the new ingest.
-    # Use find-delete rather than rm -rf dir to preserve the Docker bind mount (./output/rekt:/output).
-    # Deleting and recreating the directory breaks the container's volume mount on macOS.
-    mkdir -p "$REPO_ROOT/output/rekt"
-    find "$REPO_ROOT/output/rekt" -mindepth 1 -delete 2>/dev/null || true
 
     # Use process substitution so succeeded/failed counters persist outside the loop
     while IFS= read -r cbl_file; do
@@ -2504,6 +2623,23 @@ run_rekt_parse() {
     rm -rf "$staging_dir"
 
     echo -e "\n${GREEN}  Parsed: $succeeded succeeded, $failed failed${NC}"
+    # Count degraded outputs (succeeded with warnings — deps-only or raw-AST fallbacks).
+    local degraded
+    degraded=$(find "$REPO_ROOT/output/rekt" -maxdepth 1 -name '*.parse.log' 2>/dev/null | wc -l | tr -d ' ')
+    if [[ "$degraded" -gt 0 ]]; then
+        echo -e "${YELLOW}  ⚠️  ${degraded} program(s) parsed with reduced fidelity (deps-only / raw-AST fallback).${NC}"
+        echo -e "${YELLOW}      These usually mean missing copybooks or smojol parser limitations.${NC}"
+        echo -e "${YELLOW}      Inspect: output/rekt/*.parse.log${NC}"
+    fi
+    if [[ -s "$missing_report" ]]; then
+        local miss_count
+        miss_count=$(grep -cv '^#' "$missing_report" 2>/dev/null | tr -d ' ')
+        # grep -cv may count blank lines; recompute strictly
+        miss_count=$(grep -v '^#' "$missing_report" | grep -c .)
+        if [[ "$miss_count" -gt 0 ]]; then
+            echo -e "${YELLOW}  ⚠️  ${miss_count} missing copybook(s) — see output/rekt/missing-copybooks.txt${NC}"
+        fi
+    fi
     if [[ -n "$failed_files" ]]; then
         echo -e "${YELLOW}  Failed files:${failed_files}${NC}"
         echo -e "${YELLOW}  These may use IMS/DL/I EXEC DLI, non-standard column formats,${NC}"

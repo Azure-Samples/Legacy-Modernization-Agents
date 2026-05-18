@@ -9,6 +9,7 @@ let architectView = null;
 let controlFlowView = null;
 let mermaidView = null;
 let migrationPlanner = null;
+let targetArchView = null;
 
 // Rekt scan run selector
 let _currentScanRunId = 'latest';
@@ -65,6 +66,19 @@ window._onScanRunChange = function(value) {
       mermaidView.currentFile = '';
       mermaidView.loadFileList();
     }
+    if (targetArchView) {
+      // Invalidate cached recommendations / programs so the next loadAndRender
+      // (triggered by switchDashboard below) refetches from the new run.
+      // Filter + zoom state stay so the user doesn't lose UI context.
+      targetArchView.programs = [];
+      targetArchView.recommendations = null;
+      targetArchView.selectedComponent = null;
+      // Close any stale fullscreen overlay so we don't show diagram counts
+      // from the previous scan run.
+      if (typeof targetArchView._exitDiagramFullscreen === 'function') {
+        targetArchView._exitDiagramFullscreen();
+      }
+    }
   }
   // Refresh the active view with the new scan context
   const activeTab = document.querySelector('.dashboard-tab.active');
@@ -89,6 +103,7 @@ function switchDashboard(tabName) {
     galaxy: ['ast-galaxy-container'],
     ast: ['ast-explorer-container'],
     migration: ['migration-planner-container'],
+    'target-arch': ['target-arch-container'],
     portfolio: ['portfolio-container'],
     complexity: ['complexity-container'],
   };
@@ -165,6 +180,14 @@ function switchDashboard(tabName) {
       migrationPlanner = new MigrationPlanner('mp-root');
     }
     migrationPlanner.loadAndRender();
+  }
+
+  if (tabName === 'target-arch') {
+    if (!targetArchView) {
+      targetArchView = new TargetArchitectureView('tarch-root');
+      window.targetArchView = targetArchView;
+    }
+    targetArchView.loadAndRender();
   }
 
   if (tabName === 'complexity') {
