@@ -1398,6 +1398,7 @@ See [Parallel Jobs Formula](#parallel-jobs-formula) for chunking configuration d
 - [Architecture Documentation](REVERSE_ENGINEERING_ARCHITECTURE.md) — System design
 - [Cobol-REKT Demo](docs/rekt-demo.md) — Static-analysis pipeline walkthrough
 - [Target Architecture Recommendation](docs/target-architecture-recommendation.md) — Modernization plan view, mapping heuristics, and the JSON schema consumed by AI conversion agents
+- [REKT-grounded Conversion](docs/rekt-grounded-conversion.md) — Selector-driven `doctor.sh run`, BMS/IMS readers, quality-validation agents, env-var reference
 - [Setup Troubleshooting](docs/troubleshoot.md) — Setup failures and recovery steps for `./doctor.sh setup`
 - [Changelog](CHANGELOG.md) — Version history
 

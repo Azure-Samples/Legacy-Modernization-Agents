@@ -8,6 +8,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+
+#### REKT-grounded conversion pipeline (4 phases)
+
+**Phase 1 — Selection & structural context**
+- `Helpers/RektContext.cs` + `RektContextLoader.cs` — typed model of every program's REKT output (sections, paragraphs, perform graph, call targets, SQL statements, copybook usage, data structures) plus per-program target architecture plan. Tolerant readers: missing fields don't throw.
+- `Helpers/StructuralContextProvider.cs` — single source-of-truth that tries native REKT JSON first, falls back to deps-only, then optionally to LLM extraction. Every result carries a `StructuralProvenance` flag (`RektNative` / `RektPartial` / `LlmExtracted` / `None`) plus a confidence score so downstream consumers can scale strictness.
+- `Helpers/BmsReader.cs` — deterministic parser for CICS BMS source (DFHMSD / DFHMDI / DFHMDF). Emits REKT-shaped JSON.
+- `Helpers/ImsReaders.cs` — deterministic parsers for IMS DBDGEN (segments, fields) and PSBGEN (PCBs, SENSEGs). Same REKT shape.
+- `Agents/StructuralExtractorAgent.cs` + prompt — LLM fallback that emits REKT-shaped JSON from raw COBOL source when smojol can't parse it. Output cached to `output/rekt/llm-derived/<program>.json` so subsequent runs are free.
+- `McpChatWeb/Services/ProgramSelectorService.cs` + `tools/resolve-programs.py` — resolves a selector to a concrete program list using REKT + `target-architecture.json`. Same-flag-repeated = OR; different-flags = AND. `--include-callees`/`--include-callers` walk the CALL graph.
+- New endpoints: `POST /api/programs/search` (preview matches) and `POST /api/runs/convert` (start a focused run on the selector). Stages resolved files into `source/.convert-<ts>/`.
+- New `doctor.sh` flags: `--program NAME` (repeatable), `--transaction TRANID`, `--wave N`, `--target COMPONENT`, `--keyword TEXT`, `--include-callees`, `--include-callers`. Auto-stages + cleans up on exit.
+- New quality flags propagated as env vars: `--fallback-to-ai`, `--max-validator-retries N`, `--min-program-score N`, `--on-low-score continue|stop`.
+- `McpChatWeb/wwwroot/convert-modal.js` — shared "🛠️ Convert" modal with live preview, inline buttons in the dashboard header and Target Architecture tab pre-fill the selector.
+
+**Phase 2 — Quality validation**
+- `Agents/ConversionParityAgent.cs` + prompt — deterministic parity check (sections → methods, copybook fields → DTO fields, CALL → service-call, SQL → repository method) + optional LLM repair pass. Honours `MAX_VALIDATOR_RETRIES` / `MIN_PROGRAM_SCORE` / `ON_LOW_SCORE` env vars.
+- `Agents/CodeReviewerAgent.cs` + prompt — idiomatic-code reviewer with structured JSON findings (severity, line, rule, message, suggestion). Naming, DI patterns, annotations, logging, exception handling, null safety, concurrency, SQL safety.
+- `Agents/DataMappingAgent.cs` + prompt — generates JPA / EF Core entities + repositories with explicit COBOL PIC → target-type mapping table (X→String, S9V9 COMP-3→BigDecimal/decimal, etc.). Skipped automatically when no SQL.
+
+**Phase 3 — Test generation**
+- `Agents/TestSynthesizerAgent.cs` + prompt — JUnit 5 / xUnit test classes with happy-path + boundary + DB tests per method. Uses REKT CFG to enumerate branches.
+- `Helpers/RegressionFixtureAgent.cs` — deterministic (no LLM) generator for input/output JSON golden fixtures derived from REKT data structures.
+
+**Phase 4 — Reporting**
+- `Agents/MigrationSummaryAgent.cs` + prompt — per-program migration summary with weighted risk score plus portfolio aggregation helper.
+- `Agents/DocumentationAgent.cs` + prompt — wraps converted code with JavaDoc / XML-doc comments that reference the COBOL origin (section name, line range, SQL operation, CALL target).
+
+**Phase 5 — Pipeline integration**
+- `Agents/JavaConverterAgent.cs` + `Agents/CSharpConverterAgent.cs` inject the REKT structural-context block (sections, perform graph, CALL targets, SQL, data layout, target plan, migration notes) into the per-program conversion prompt when `ENABLE_REKT_CONTEXT=true`. Provenance flag is logged per file so users see whether the LLM had authoritative structure or just a target plan.
+
+### Fixed
+- **SQLite UNIQUE constraint failure on re-runs** — `SqliteMigrationRepository.SaveBusinessLogicAsync` now de-duplicates by `file_name` within a batch before insert. Earlier code tripped `UNIQUE constraint failed: business_logic.run_id, business_logic.file_name` when the analyzer emitted the same file twice (e.g. raw source + preprocessed copy).
+
+### Added (previous)
+
 - **Target Architecture dashboard tab** (`McpChatWeb/wwwroot/target-architecture.js`) — recommends a cloud-native microservices target architecture and maps every scanned COBOL program to a target component, modernization strategy (Retire / Rehost / Replatform / Rearchitect / Replace), wave, and per-program migration notes. Industry-neutral (works for non-banking codebases). Includes a tailored Mermaid architecture diagram that adapts to the scan (hides empty components / layers, transitive-closure over `consumes`), with zoom controls and a fullscreen overlay. Grouped + collapsible *Source → Target Mapping* keeps the page skimmable when scans have many copybooks. Glossary tooltips for common acronyms (DTO, JPA, EF Core, CICS, IMS, BMS, etc.).
 - **`output/rekt/target-architecture.json`** — deterministic JSON plan persisted via `POST /api/graph/rekt/target-architecture` (with corresponding `GET`), designed for downstream AI conversion agents to consume directly. Schema documented in `docs/target-architecture-recommendation.md`.
 - **REKT pipeline missing-copybook report** — `output/rekt/missing-copybooks.txt` lists every COPY target that wasn't found in `source/`, plus an inline summary printed by `./doctor.sh rekt-full` both before parsing (pre-flight) and after (degraded-parse summary).

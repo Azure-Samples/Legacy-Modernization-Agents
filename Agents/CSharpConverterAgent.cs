@@ -156,15 +156,24 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
                     if (d != null)
                     {
                         var srcFolder = Environment.GetEnvironmentVariable("COBOL_SOURCE_FOLDER") ?? "source";
-                        var provider = new StructuralContextProvider(d.FullName, srcFolder, fallbackToAi: false);
+                        var fallback = string.Equals(Environment.GetEnvironmentVariable("STRUCTURAL_FALLBACK_TO_AI"), "true", StringComparison.OrdinalIgnoreCase);
+                        var provider = new StructuralContextProvider(d.FullName, srcFolder, fallbackToAi: fallback);
                         var sc = await provider.GetAsync(cobolFile.FileName);
-                        if (sc.Provenance != StructuralProvenance.None)
+                        var hasContext = sc.Context.Sections.Count > 0
+                            || sc.Context.CallTargets.Count > 0
+                            || sc.Context.CopybookUsage.Count > 0
+                            || sc.Context.DataStructure.Count > 0
+                            || sc.Context.SqlStatements.Count > 0
+                            || sc.Context.TargetPlan != null;
+                        if (hasContext)
                         {
                             userPromptBuilder.AppendLine();
                             userPromptBuilder.AppendLine("---");
                             userPromptBuilder.AppendLine("REKT STRUCTURAL CONTEXT (authoritative — use this as the conversion blueprint):");
                             userPromptBuilder.AppendLine();
                             userPromptBuilder.AppendLine(RektContextFormatter.ToPromptBlock(sc));
+                            Logger.LogInformation("[CSharpConverterAgent] Injected REKT context for {File} (provenance={Prov}, confidence={Conf:F2})",
+                                cobolFile.FileName, sc.Provenance, sc.Confidence);
                         }
                     }
                 }

@@ -796,7 +796,15 @@ WHERE run_id = $runId AND (file_name LIKE $term OR content LIKE $term)";
 
     public async Task SaveBusinessLogicAsync(int runId, IEnumerable<BusinessLogic> businessLogicExtracts, CancellationToken cancellationToken = default)
     {
-        var list = businessLogicExtracts.ToList();
+        // Deduplicate by file_name within this batch — the analyzer can emit
+        // the same file twice (e.g. when both the raw source and its preprocessed
+        // copy are enumerated). Keep the last entry per file_name so newer data wins.
+        // Without this, the (run_id, file_name) UNIQUE constraint trips.
+        var list = businessLogicExtracts
+            .GroupBy(bl => bl.FileName, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.Last())
+            .ToList();
+
         await using var connection = CreateConnection();
         await connection.OpenAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
