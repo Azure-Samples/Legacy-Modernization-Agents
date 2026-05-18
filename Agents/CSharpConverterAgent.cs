@@ -145,6 +145,35 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
                 userPromptBuilder.Append(FormatBusinessLogicContext(businessLogic));
             }
 
+            // REKT structural context — same opt-in as JavaConverterAgent.
+            if (string.Equals(Environment.GetEnvironmentVariable("ENABLE_REKT_CONTEXT"), "true", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    var repoRoot = AppContext.BaseDirectory;
+                    var d = new DirectoryInfo(repoRoot);
+                    while (d != null && !File.Exists(Path.Combine(d.FullName, "doctor.sh"))) d = d.Parent;
+                    if (d != null)
+                    {
+                        var srcFolder = Environment.GetEnvironmentVariable("COBOL_SOURCE_FOLDER") ?? "source";
+                        var provider = new StructuralContextProvider(d.FullName, srcFolder, fallbackToAi: false);
+                        var sc = await provider.GetAsync(cobolFile.FileName);
+                        if (sc.Provenance != StructuralProvenance.None)
+                        {
+                            userPromptBuilder.AppendLine();
+                            userPromptBuilder.AppendLine("---");
+                            userPromptBuilder.AppendLine("REKT STRUCTURAL CONTEXT (authoritative — use this as the conversion blueprint):");
+                            userPromptBuilder.AppendLine();
+                            userPromptBuilder.AppendLine(RektContextFormatter.ToPromptBlock(sc));
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.LogDebug("[CSharpConverterAgent] REKT context injection failed for {File}: {Msg}", cobolFile.FileName, ex.Message);
+                }
+            }
+
             userPromptBuilder.AppendLine();
             userPromptBuilder.AppendLine("IMPORTANT REQUIREMENTS:");
             userPromptBuilder.AppendLine("1. Return ONLY the C# code - NO explanations, NO markdown blocks");

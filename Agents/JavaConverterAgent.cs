@@ -145,6 +145,37 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
                 userPromptBuilder.Append(FormatBusinessLogicContext(businessLogic));
             }
 
+            // Inject REKT structural context when available — this gives the LLM
+            // an authoritative section/paragraph/call/SQL/data layout instead of
+            // forcing it to re-derive structure from source. Opt-in via env var.
+            if (string.Equals(Environment.GetEnvironmentVariable("ENABLE_REKT_CONTEXT"), "true", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    var repoRoot = AppContext.BaseDirectory;
+                    var d = new DirectoryInfo(repoRoot);
+                    while (d != null && !File.Exists(Path.Combine(d.FullName, "doctor.sh"))) d = d.Parent;
+                    if (d != null)
+                    {
+                        var srcFolder = Environment.GetEnvironmentVariable("COBOL_SOURCE_FOLDER") ?? "source";
+                        var provider = new StructuralContextProvider(d.FullName, srcFolder, fallbackToAi: false);
+                        var sc = await provider.GetAsync(cobolFile.FileName);
+                        if (sc.Provenance != StructuralProvenance.None)
+                        {
+                            userPromptBuilder.AppendLine();
+                            userPromptBuilder.AppendLine("---");
+                            userPromptBuilder.AppendLine("REKT STRUCTURAL CONTEXT (authoritative — use this as the conversion blueprint):");
+                            userPromptBuilder.AppendLine();
+                            userPromptBuilder.AppendLine(RektContextFormatter.ToPromptBlock(sc));
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.LogDebug("[JavaConverterAgent] REKT context injection failed for {File}: {Msg}", cobolFile.FileName, ex.Message);
+                }
+            }
+
             userPromptBuilder.AppendLine();
             userPromptBuilder.AppendLine("IMPORTANT REQUIREMENTS:");
             userPromptBuilder.AppendLine("1. Return ONLY the Java code - NO explanations, NO markdown blocks, NO additional text");
