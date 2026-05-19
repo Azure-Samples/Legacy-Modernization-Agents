@@ -453,3 +453,6 @@ McpChatWeb/wwwroot/node_modules/
 McpChatWeb/wwwroot/forceatlas2-entry.js
 Agents/Prompts/_history/
 *.bak
+
+# Allow synthetic golden programs in the regression suite
+!tests/prompt-regression/programs/*.cbl
