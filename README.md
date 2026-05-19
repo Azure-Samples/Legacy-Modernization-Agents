@@ -3,6 +3,39 @@
 This open source migration framework was developed to demonstrate AI Agents capabilities for converting legacy code like COBOL to Java or C# .NET. Each Agent has a persona that can be edited depending on the desired outcome.
 The migration uses Microsoft.Extensions.AI with a multi-provider architecture supporting **Azure OpenAI** (Responses API + Chat Completions), **GitHub Copilot** (PAT or CLI-based SDK), and **direct OpenAI** to analyze COBOL code and its dependencies, then convert to either Java Quarkus or C# .NET (user's choice).
 
+> ### 🚦 Recommended order of operations
+>
+> The pipeline is deliberately split so you can **analyse first, then choose what to convert**. Run the steps in this order:
+>
+> | # | Step | Command | What it does |
+> |---|------|---------|--------------|
+> | 1 | **Drop source code** | copy `*.cbl`, `*.cpy`, `*.bms`, `*.psb`, `*.dbd` into `source/` | The folder all later steps read from. |
+> | 2 | **Static analysis (REKT)** | `./doctor.sh rekt-full` | Parses every program with smojol, writes AST/CFG/data-flow JSON to `output/rekt/`, ingests into Neo4j, and starts the portal. **Do this once per source change.** |
+> | 3 | **Save the target plan** | Open the portal → **Target Architecture** tab → click **💾 Save for AI agent** | Writes `output/rekt/target-architecture.json`. Required for wave / target-component selection in step 4. |
+> | 4 | **Pick what to convert** | Portal → **🛠️ Convert…** button (or CLI flags below) | Opens the Convert modal. Dropdowns are pre-populated from the REKT catalog — pick a program, a CICS transaction, a wave, or a target component. |
+> | 5 | **Run the focused conversion** | Click **🚀 Start conversion** (or `./doctor.sh run` with selector flags) | Stages just the selected files into a temp folder and runs the full migration pipeline (RE + REKT context injection + Java/C# converter + parity validator + tests + reports). |
+> | 6 | **Inspect results** | Portal → **Migration Monitor** / **Reverse Engineering Results** / `output/java` / `output/csharp` | View converted code, parity scores, generated tests, and architecture docs. |
+>
+> **Equivalent CLI for step 4 + 5** — same selector, no portal needed:
+> ```bash
+> # By program name
+> ./doctor.sh run --program T6608031 --target-language Java
+>
+> # By CICS transaction (scans source for EXEC CICS RETURN TRANSID / LINK PROGRAM)
+> ./doctor.sh run --transaction CT01 --include-callees
+>
+> # By migration wave from target-architecture.json
+> ./doctor.sh run --wave 1 --target svc-data
+>
+> # By keyword in source
+> ./doctor.sh run --keyword CUSTOMER --min-program-score 0.75
+> ```
+> Each flag is repeatable; **same flag = OR, different flags = AND**. Add `--include-callees` / `--include-callers` to walk the CALL graph.
+>
+> **Skip step 2** if you only want to convert without REKT context (legacy behaviour): just run `./doctor.sh run`. The conversion will still work — it just won't have the REKT structural facts injected, and the wave / target / transaction selectors won't have anything to resolve against.
+>
+> Full reference: [docs/rekt-grounded-conversion.md](docs/rekt-grounded-conversion.md).
+
 ## 🎬 Portal Demo
 
 ![Portal Demo](gifdemowithgraphandreportign.gif)

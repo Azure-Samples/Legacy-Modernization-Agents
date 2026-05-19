@@ -41,6 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Documentation
 
+- `README.md` — added a **"🚦 Recommended order of operations"** info box at the very top with a 6-step table (drop source → `rekt-full` → save target plan → pick what to convert → run focused conversion → inspect) plus equivalent CLI snippets for selector usage.
+- `doctor.sh --help` — now lists the recommended order, all selector flags (`--program / --transaction / --wave / --target / --keyword / --include-callees / --include-callers`) and the quality flags (`--fallback-to-ai / --max-validator-retries / --min-program-score / --on-low-score`).
 - `README.md` — added "REKT-Grounded Conversion Pipeline" section under Architecture with two mermaid diagrams: (a) the five-stage pipeline flow (static analysis → selection → conversion → quality validation → tests/fixtures → reporting) and (b) the component view mapping every new helper / agent to its artefacts and data stores.
 
 ### Fixed
