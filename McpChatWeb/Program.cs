@@ -8455,6 +8455,26 @@ app.MapPost("/api/programs/search", (System.Text.Json.JsonElement body) =>
 	}
 });
 
+// GET /api/programs/catalog — returns every program, transaction, wave, and
+// target-component discoverable from the current source folder + REKT outputs.
+// Used by the Convert modal to pre-populate the picker dropdowns so users can
+// choose from a real list instead of typing.
+app.MapGet("/api/programs/catalog", (string? sourceFolder) =>
+{
+	try
+	{
+		var repoRoot = ResolveRepoRoot();
+		var folder = string.IsNullOrWhiteSpace(sourceFolder) ? "source" : sourceFolder;
+		var svc = new McpChatWeb.Services.ProgramSelectorService(repoRoot);
+		var catalog = svc.BuildCatalog(folder);
+		return Results.Ok(catalog);
+	}
+	catch (Exception ex)
+	{
+		return Results.Problem($"Catalog build failed: {ex.Message}");
+	}
+});
+
 app.MapPost("/api/runs/convert", (System.Text.Json.JsonElement body,
 	McpChatWeb.Services.ProcessManager pm) =>
 {

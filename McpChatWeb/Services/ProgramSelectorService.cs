@@ -282,4 +282,121 @@ public sealed class ProgramSelectorService
         }
         if (!list.Contains(reason)) list.Add(reason);
     }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Catalog — pre-populates the Convert modal dropdowns with everything
+    // discoverable from the current source folder + REKT outputs + target
+    // architecture plan. Scans each program file once (regex) to collect
+    // CICS transaction codes and CALL targets so the UI can offer real
+    // values instead of forcing the user to type from memory.
+    // ─────────────────────────────────────────────────────────────────────
+    public ProgramCatalog BuildCatalog(string sourceFolder = "source")
+    {
+        var loader = new RektContextLoader(_repoRoot);
+        var sourceDir = Path.Combine(_repoRoot, sourceFolder);
+        var allFiles = loader.EnumerateProgramFiles(sourceFolder);
+        var plans = loader.GetAllTargetPlans();
+
+        var catalog = new ProgramCatalog { SourceFolder = sourceFolder };
+
+        // Index plans by basename (case-insensitive) for fast lookup.
+        var planByStem = new Dictionary<string, RektTargetPlan>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (prog, plan) in plans)
+        {
+            var stem = Path.GetFileNameWithoutExtension(prog);
+            if (!string.IsNullOrEmpty(stem)) planByStem[stem] = plan;
+        }
+
+        var rxTransid = new Regex(@"\bEXEC\s+CICS\b[^\.]*?\bTRANSID\s*\(\s*['""]?([A-Z0-9$@#]{1,8})['""]?\s*\)",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        var rxLinkProg = new Regex(@"\bEXEC\s+CICS\s+(?:LINK|XCTL|START)\b[^\.]*?\bPROGRAM\s*\(\s*['""]?([A-Z0-9$@#]{1,8})['""]?\s*\)",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+        var tranIndex = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+        var waveIndex = new Dictionary<int, int>();
+        var targetIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var f in allFiles)
+        {
+            var entry = new CatalogProgram { Name = f };
+            var stem = Path.GetFileNameWithoutExtension(f);
+            if (!string.IsNullOrEmpty(stem) && planByStem.TryGetValue(stem, out var plan))
+            {
+                entry.Wave = plan.Wave;
+                entry.TargetComponent = plan.TargetComponent;
+                entry.Pattern = plan.Patterns.FirstOrDefault() ?? "";
+                if (plan.Wave > 0)
+                    waveIndex[plan.Wave] = waveIndex.GetValueOrDefault(plan.Wave) + 1;
+                if (!string.IsNullOrEmpty(plan.TargetComponent))
+                    targetIndex[plan.TargetComponent] = targetIndex.GetValueOrDefault(plan.TargetComponent) + 1;
+            }
+
+            try
+            {
+                var src = File.ReadAllText(Path.Combine(sourceDir, f));
+                foreach (Match m in rxTransid.Matches(src))
+                {
+                    var code = m.Groups[1].Value.ToUpperInvariant();
+                    entry.Transactions.Add(code);
+                    if (!tranIndex.TryGetValue(code, out var set)) tranIndex[code] = set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    set.Add(f);
+                }
+                foreach (Match m in rxLinkProg.Matches(src))
+                {
+                    var code = m.Groups[1].Value.ToUpperInvariant();
+                    entry.Transactions.Add(code);
+                    if (!tranIndex.TryGetValue(code, out var set)) tranIndex[code] = set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    set.Add(f);
+                }
+                entry.LineCount = src.Count(c => c == '\n') + 1;
+            }
+            catch { /* unreadable file, skip */ }
+
+            catalog.Programs.Add(entry);
+        }
+
+        catalog.Transactions = tranIndex
+            .OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(kv => new CatalogTransaction { Code = kv.Key, Programs = kv.Value.OrderBy(x => x).ToList() })
+            .ToList();
+        catalog.Waves = waveIndex
+            .OrderBy(kv => kv.Key)
+            .Select(kv => new CatalogWave { Wave = kv.Key, Count = kv.Value })
+            .ToList();
+        catalog.Targets = targetIndex
+            .OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(kv => new CatalogTarget { Component = kv.Key, Count = kv.Value })
+            .ToList();
+
+        catalog.Programs = catalog.Programs.OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase).ToList();
+        return catalog;
+    }
 }
+
+public sealed class ProgramCatalog
+{
+    public string SourceFolder { get; set; } = "";
+    public List<CatalogProgram> Programs { get; set; } = new();
+    public List<CatalogTransaction> Transactions { get; set; } = new();
+    public List<CatalogWave> Waves { get; set; } = new();
+    public List<CatalogTarget> Targets { get; set; } = new();
+}
+
+public sealed class CatalogProgram
+{
+    public string Name { get; set; } = "";
+    public int Wave { get; set; }
+    public string TargetComponent { get; set; } = "";
+    public string Pattern { get; set; } = "";
+    public HashSet<string> Transactions { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public int LineCount { get; set; }
+}
+
+public sealed class CatalogTransaction
+{
+    public string Code { get; set; } = "";
+    public List<string> Programs { get; set; } = new();
+}
+
+public sealed class CatalogWave { public int Wave { get; set; } public int Count { get; set; } }
+public sealed class CatalogTarget { public string Component { get; set; } = ""; public int Count { get; set; } }
