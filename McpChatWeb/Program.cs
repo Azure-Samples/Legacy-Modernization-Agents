@@ -6907,6 +6907,24 @@ app.MapPost("/api/prompts/update", (McpChatWeb.Models.UpdatePromptRequest reques
 			var promptFile = Path.Combine(repoRoot, "Agents", "Prompts", $"{request.Id}.md");
 			if (File.Exists(promptFile))
 			{
+				// Archive the current version BEFORE we overwrite it, so users can
+				// diff / restore via /api/prompts/{id}/history.
+				try
+				{
+					var historyDir = Path.Combine(repoRoot, "Agents", "Prompts", "_history");
+					Directory.CreateDirectory(historyDir);
+					var existingContent = File.ReadAllText(promptFile);
+					var versionTs = DateTime.UtcNow.ToString("yyyyMMddTHHmmssZ");
+					var archivePath = Path.Combine(historyDir, $"{request.Id}.{versionTs}.md");
+					if (!File.Exists(archivePath))
+						File.WriteAllText(archivePath, existingContent);
+				}
+				catch (Exception archiveEx)
+				{
+					Console.WriteLine($"⚠️ Failed to archive previous version of '{request.Id}': {archiveEx.Message}");
+					// Continue — archive failure must not block the save.
+				}
+
 				var content = File.ReadAllText(promptFile);
 				var sections = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 				var otherSections = new List<(string Name, string Content)>();
@@ -6973,6 +6991,228 @@ app.MapPost("/api/prompts/update", (McpChatWeb.Models.UpdatePromptRequest reques
 	Console.WriteLine($"📝 Prompt '{request.Id}' updated (enabled={request.Enabled ?? existing.Enabled})");
 
 	return Results.Ok(new { updated = request.Id, savedToDisk = request.SystemPrompt != null || request.UserPromptTemplate != null });
+});
+
+// ── Prompt token budget ──────────────────────────────────────────────────────
+// Parses recent Logs/FULL_CHAT_LOG_*.md files and aggregates per-agent token
+// usage (p50, p95, mean, total). Cheap — only reads the most recent N files.
+
+app.MapGet("/api/prompts/token-usage", (int? days) =>
+{
+	try
+	{
+		var repoRoot = ResolveRepoRoot();
+		var logsDir = Path.Combine(repoRoot, "Logs");
+		if (!Directory.Exists(logsDir))
+			return Results.Ok(new { agents = Array.Empty<object>() });
+
+		var cutoff = DateTime.UtcNow.AddDays(-(days ?? 7));
+		var files = Directory.EnumerateFiles(logsDir, "FULL_CHAT_LOG_*.md")
+			.Select(p => new FileInfo(p))
+			.Where(fi => fi.LastWriteTimeUtc >= cutoff)
+			.OrderByDescending(fi => fi.LastWriteTimeUtc)
+			.Take(40)
+			.ToList();
+
+		var perAgent = new Dictionary<string, List<int>>(StringComparer.OrdinalIgnoreCase);
+		var rxAgent = new System.Text.RegularExpressions.Regex(@"\*\*Agent:\*\*\s+(\S+)");
+		var rxTokens = new System.Text.RegularExpressions.Regex(@"\*\*Tokens:\*\*\s+([0-9.,]+)");
+
+		foreach (var fi in files)
+		{
+			string? currentAgent = null;
+			foreach (var line in File.ReadLines(fi.FullName))
+			{
+				var ma = rxAgent.Match(line);
+				if (ma.Success) { currentAgent = ma.Groups[1].Value; continue; }
+				if (currentAgent == null) continue;
+				var mt = rxTokens.Match(line);
+				if (mt.Success)
+				{
+					var num = mt.Groups[1].Value.Replace(".", "").Replace(",", "");
+					if (int.TryParse(num, out var n) && n > 0)
+					{
+						if (!perAgent.TryGetValue(currentAgent, out var list))
+							perAgent[currentAgent] = list = new List<int>();
+						list.Add(n);
+					}
+				}
+			}
+		}
+
+		int Percentile(List<int> sorted, double p)
+		{
+			if (sorted.Count == 0) return 0;
+			var idx = (int)Math.Clamp(Math.Ceiling(p * sorted.Count) - 1, 0, sorted.Count - 1);
+			return sorted[idx];
+		}
+
+		var agents = perAgent.Select(kv =>
+		{
+			var sorted = kv.Value.OrderBy(x => x).ToList();
+			return new
+			{
+				agent = kv.Key,
+				calls = sorted.Count,
+				total = sorted.Sum(),
+				mean  = (int)Math.Round(sorted.Average()),
+				p50   = Percentile(sorted, 0.50),
+				p95   = Percentile(sorted, 0.95),
+				max   = sorted.Last(),
+			};
+		})
+		.OrderByDescending(a => a.total)
+		.ToList();
+
+		return Results.Ok(new { days = days ?? 7, filesScanned = files.Count, agents });
+	}
+	catch (Exception ex)
+	{
+		return Results.Problem($"Token usage scan failed: {ex.Message}");
+	}
+});
+
+// ── Prompt regression suite ──────────────────────────────────────────────────
+// Runs tools/run-prompt-regression.sh and returns the result for the UI.
+
+app.MapPost("/api/prompts/regression", async () =>
+{
+	try
+	{
+		var repoRoot = ResolveRepoRoot();
+		var script = Path.Combine(repoRoot, "tools", "run-prompt-regression.sh");
+		if (!File.Exists(script))
+			return Results.NotFound(new { error = "Regression script not found", path = script });
+
+		var psi = new System.Diagnostics.ProcessStartInfo
+		{
+			FileName = "/bin/bash",
+			Arguments = $"\"{script}\"",
+			WorkingDirectory = repoRoot,
+			RedirectStandardOutput = true,
+			RedirectStandardError = true,
+			UseShellExecute = false,
+		};
+		var proc = System.Diagnostics.Process.Start(psi)!;
+		var stdout = await proc.StandardOutput.ReadToEndAsync();
+		var stderr = await proc.StandardError.ReadToEndAsync();
+		await proc.WaitForExitAsync();
+
+		var passed = System.Text.RegularExpressions.Regex.Match(stdout, @"(\d+)\s+passed");
+		var failed = System.Text.RegularExpressions.Regex.Match(stdout, @"(\d+)\s+failed");
+		return Results.Ok(new
+		{
+			exitCode = proc.ExitCode,
+			passed = passed.Success ? int.Parse(passed.Groups[1].Value) : -1,
+			failed = failed.Success ? int.Parse(failed.Groups[1].Value) : -1,
+			output = stdout + (string.IsNullOrEmpty(stderr) ? "" : "\nstderr:\n" + stderr),
+		});
+	}
+	catch (Exception ex)
+	{
+		return Results.Problem($"Regression run failed: {ex.Message}");
+	}
+});
+
+// ── Prompt history + diff ────────────────────────────────────────────────────
+// History is auto-written by /api/prompts/update before each save. Files live at
+// Agents/Prompts/_history/<id>.<utc-timestamp>.md.
+
+app.MapGet("/api/prompts/{id}/history", (string id) =>
+{
+	try
+	{
+		var repoRoot = ResolveRepoRoot();
+		var historyDir = Path.Combine(repoRoot, "Agents", "Prompts", "_history");
+		if (!Directory.Exists(historyDir))
+			return Results.Ok(Array.Empty<object>());
+		var entries = Directory.EnumerateFiles(historyDir, $"{id}.*.md")
+			.Select(p => new FileInfo(p))
+			.OrderByDescending(fi => fi.LastWriteTimeUtc)
+			.Select(fi =>
+			{
+				var name = Path.GetFileNameWithoutExtension(fi.Name);
+				var version = name.Length > id.Length + 1 ? name.Substring(id.Length + 1) : name;
+				return new { version, path = fi.Name, size = fi.Length, savedAt = fi.LastWriteTimeUtc };
+			}).ToList();
+		return Results.Ok(entries);
+	}
+	catch (Exception ex)
+	{
+		return Results.Problem($"Failed to list prompt history: {ex.Message}");
+	}
+});
+
+app.MapGet("/api/prompts/{id}/version/{version}", (string id, string version) =>
+{
+	try
+	{
+		var repoRoot = ResolveRepoRoot();
+		var path = Path.Combine(repoRoot, "Agents", "Prompts", "_history", $"{id}.{version}.md");
+		if (!File.Exists(path))
+			return Results.NotFound(new { error = "Version not found", id, version });
+		return Results.Ok(new { id, version, content = File.ReadAllText(path) });
+	}
+	catch (Exception ex)
+	{
+		return Results.Problem($"Failed to read prompt version: {ex.Message}");
+	}
+});
+
+// GET /api/prompts/{id}/diff?from=<ver>&to=<ver|current>
+app.MapGet("/api/prompts/{id}/diff", (string id, string from, string? to) =>
+{
+	try
+	{
+		var repoRoot = ResolveRepoRoot();
+		string ReadVersion(string v)
+		{
+			if (string.IsNullOrEmpty(v) || v.Equals("current", StringComparison.OrdinalIgnoreCase))
+			{
+				var live = Path.Combine(repoRoot, "Agents", "Prompts", $"{id}.md");
+				return File.Exists(live) ? File.ReadAllText(live) : "";
+			}
+			var path = Path.Combine(repoRoot, "Agents", "Prompts", "_history", $"{id}.{v}.md");
+			return File.Exists(path) ? File.ReadAllText(path) : "";
+		}
+		var a = ReadVersion(from);
+		var b = ReadVersion(to ?? "current");
+		// Line-based diff (no external deps): emit unified-ish hunks.
+		var aLines = a.Replace("\r\n", "\n").Split('\n');
+		var bLines = b.Replace("\r\n", "\n").Split('\n');
+		var diff = new List<object>();
+		int i = 0, j = 0;
+		while (i < aLines.Length || j < bLines.Length)
+		{
+			if (i < aLines.Length && j < bLines.Length && aLines[i] == bLines[j])
+			{
+				diff.Add(new { op = "ctx", line = aLines[i] }); i++; j++;
+			}
+			else
+			{
+				// Look ahead a small window for resync.
+				int resyncA = -1, resyncB = -1;
+				const int window = 6;
+				for (int k = 1; k <= window && resyncA < 0; k++)
+				{
+					if (i + k < aLines.Length && j < bLines.Length && aLines[i + k] == bLines[j]) { resyncA = k; break; }
+					if (j + k < bLines.Length && i < aLines.Length && aLines[i] == bLines[j + k]) { resyncB = k; break; }
+				}
+				if (resyncA > 0) { for (int k = 0; k < resyncA; k++) diff.Add(new { op = "del", line = aLines[i + k] }); i += resyncA; }
+				else if (resyncB > 0) { for (int k = 0; k < resyncB; k++) diff.Add(new { op = "add", line = bLines[j + k] }); j += resyncB; }
+				else
+				{
+					if (i < aLines.Length) { diff.Add(new { op = "del", line = aLines[i] }); i++; }
+					if (j < bLines.Length) { diff.Add(new { op = "add", line = bLines[j] }); j++; }
+				}
+			}
+		}
+		return Results.Ok(new { id, from, to = to ?? "current", diff });
+	}
+	catch (Exception ex)
+	{
+		return Results.Problem($"Failed to diff prompt: {ex.Message}");
+	}
 });
 
 // ── Generate All Prompts endpoint ────────────────────────────────────────────

@@ -1,0 +1,23 @@
+{
+  "_doc": "Per-agent / per-program minimum acceptable scores. Baseline is the score we are happy to ship at. The regression runner FAILS if a re-run drops > tolerance below baseline.",
+  "tolerance": 0.05,
+  "programs": {
+    "ORDERSUM": {
+      "StructuralExtractor": { "minSections": 3, "minParagraphs": 6, "minSqlStatements": 2, "minBranches": 1 },
+      "ConversionParity":    { "score": 0.85 },
+      "CodeReviewer":        { "maxErrorFindings": 0, "maxWarningFindings": 2 },
+      "DataMapping":         { "minEntities": 1, "minRepositories": 1 },
+      "TestSynthesizer":     { "minTestClasses": 1, "minTestMethods": 4 },
+      "MigrationSummary":    { "maxRisk": 35 },
+      "DocumentationAgent":  { "requireCobolOriginTag": true }
+    },
+    "CUSTLKUP": {
+      "StructuralExtractor": { "minSections": 2, "minParagraphs": 4, "minCallTargets": 1, "minCicsBlocks": 2 },
+      "ConversionParity":    { "score": 0.80 },
+      "CodeReviewer":        { "maxErrorFindings": 0, "maxWarningFindings": 2 },
+      "TestSynthesizer":     { "minTestClasses": 1, "minTestMethods": 3 },
+      "MigrationSummary":    { "maxRisk": 40 },
+      "DocumentationAgent":  { "requireCobolOriginTag": true }
+    }
+  }
+}

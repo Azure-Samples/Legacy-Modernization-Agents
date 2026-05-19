@@ -388,6 +388,7 @@ function renderPromptList(prompts) {
         ${scoreBadge}
         <div class="prompt-actions">
           <button class="btn-prompt-action" onclick="openPromptEditor('${p.id}')" title="Edit current prompt">✏️</button>
+          <button class="btn-prompt-action" onclick="openPromptHistory('${p.id}')" title="View saved versions and diff against current">📜 History</button>
           <button class="btn-prompt-action btn-prompt-rescore" onclick="rescorePrompt('${p.id}', this)" title="Re-evaluate quality score with AI">🔍 Score</button>
           <button class="btn-prompt-action btn-prompt-generate" onclick="autoGenerateForPrompt('${p.id}')" title="Analyze source files and generate optimized prompt">⚡ Generate</button>
         </div>
@@ -948,4 +949,163 @@ function showAnalysisBanner(analysis) {
   }
 
   banner.style.display = 'block';
+}
+
+// ── Prompt history + diff ────────────────────────────────────────────────────
+window.openPromptHistory = async function (promptId) {
+  ensureHistoryModal();
+  document.getElementById('ph-title').textContent = `📜 ${promptId} — version history`;
+  const list = document.getElementById('ph-list');
+  list.innerHTML = '<em style="color:#94a3b8;">Loading…</em>';
+  document.getElementById('ph-modal').style.display = 'flex';
+  document.getElementById('ph-diff').textContent = '';
+  try {
+    const resp = await fetch(`/api/prompts/${encodeURIComponent(promptId)}/history`);
+    if (!resp.ok) throw new Error(resp.statusText);
+    const entries = await resp.json();
+    if (!entries || entries.length === 0) {
+      list.innerHTML = '<em style="color:#94a3b8;">No saved versions yet. Edit and save the prompt once to start tracking history.</em>';
+      return;
+    }
+    list.innerHTML = entries.map(e =>
+      `<div class="ph-row">
+         <code>${e.version}</code>
+         <span style="color:#64748b;">${new Date(e.savedAt).toLocaleString()}</span>
+         <span style="color:#64748b;">${e.size} bytes</span>
+         <button class="btn-small" onclick="loadPromptDiff('${promptId}', '${e.version}')">↔ Diff vs current</button>
+       </div>`).join('');
+  } catch (err) {
+    list.innerHTML = `<em style="color:#ef4444;">Failed to load history: ${err.message}</em>`;
+  }
+};
+
+window.loadPromptDiff = async function (promptId, version) {
+  const target = document.getElementById('ph-diff');
+  target.innerHTML = '<em style="color:#94a3b8;">Loading diff…</em>';
+  try {
+    const resp = await fetch(`/api/prompts/${encodeURIComponent(promptId)}/diff?from=${encodeURIComponent(version)}&to=current`);
+    if (!resp.ok) throw new Error(resp.statusText);
+    const data = await resp.json();
+    target.innerHTML = `<pre class="ph-diff-pre">${data.diff.map(d => {
+      const color = d.op === 'add' ? '#10b981' : d.op === 'del' ? '#ef4444' : '#94a3b8';
+      const sign = d.op === 'add' ? '+' : d.op === 'del' ? '-' : ' ';
+      const safe = (d.line || '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
+      return `<span style="color:${color};">${sign} ${safe}</span>`;
+    }).join('\n')}</pre>`;
+  } catch (err) {
+    target.innerHTML = `<em style="color:#ef4444;">Failed to load diff: ${err.message}</em>`;
+  }
+};
+
+function ensureHistoryModal() {
+  if (document.getElementById('ph-modal')) return;
+  const wrap = document.createElement('div');
+  wrap.id = 'ph-modal';
+  wrap.style.cssText = `position:fixed;inset:0;background:rgba(3,7,18,0.85);z-index:9999;display:none;
+    align-items:center;justify-content:center;font-family:'Inter',system-ui,sans-serif;color:#e2e8f0;`;
+  wrap.innerHTML = `
+    <div style="background:#0f172a;border:1px solid #334155;border-radius:10px;padding:0;
+                width:min(1000px,94vw);max-height:90vh;display:flex;flex-direction:column;overflow:hidden;">
+      <div style="padding:14px 18px;border-bottom:1px solid #1e293b;display:flex;align-items:center;gap:10px;">
+        <span id="ph-title" style="font-size:15px;font-weight:700;color:#93c5fd;"></span>
+        <button onclick="document.getElementById('ph-modal').style.display='none'"
+                style="margin-left:auto;background:none;border:1px solid #334155;color:#94a3b8;
+                       border-radius:6px;padding:4px 10px;cursor:pointer;font-size:12px;">✕ Close</button>
+      </div>
+      <div style="padding:14px 18px;overflow-y:auto;flex:1;">
+        <div id="ph-list" style="margin-bottom:12px;display:flex;flex-direction:column;gap:6px;font-size:12px;"></div>
+        <div id="ph-diff" style="font-family:'JetBrains Mono',Menlo,monospace;font-size:11px;
+             background:#0a0e1a;border:1px solid #1e293b;border-radius:6px;padding:10px;max-height:55vh;overflow:auto;"></div>
+      </div>
+    </div>
+    <style>
+      .ph-row { display:flex;align-items:center;gap:10px;padding:6px 10px;border:1px solid #1e293b;border-radius:6px;background:#0a0e1a; }
+      .ph-diff-pre { white-space:pre-wrap;margin:0;font-family:inherit; }
+    </style>`;
+  document.body.appendChild(wrap);
+  wrap.addEventListener('click', (e) => { if (e.target === wrap) wrap.style.display = 'none'; });
+}
+
+// ── Regression + token-usage actions ─────────────────────────────────────────
+window.runPromptRegression = async function () {
+  ensureSimpleResultModal();
+  const out = document.getElementById('psr-body');
+  document.getElementById('psr-title').textContent = '🧪 Prompt regression';
+  out.innerHTML = '<em style="color:#94a3b8;">Running…</em>';
+  document.getElementById('psr-modal').style.display = 'flex';
+  try {
+    const resp = await fetch('/api/prompts/regression', { method: 'POST' });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    const color = data.exitCode === 0 ? '#10b981' : '#ef4444';
+    const verdict = data.exitCode === 0 ? '✓ All checks passed' : `✗ ${data.failed} check(s) failed`;
+    out.innerHTML = `<div style="color:${color};font-weight:600;margin-bottom:8px;">${verdict} — ${data.passed} passed, ${data.failed} failed.</div>
+      <pre style="white-space:pre-wrap;background:#0a0e1a;border:1px solid #1e293b;border-radius:6px;padding:10px;font-family:'JetBrains Mono',Menlo,monospace;font-size:11px;color:#cbd5e1;max-height:60vh;overflow:auto;">${escapeHtml(data.output)}</pre>`;
+  } catch (e) {
+    out.innerHTML = `<em style="color:#ef4444;">Failed: ${e.message}</em>`;
+  }
+};
+
+window.showTokenUsage = async function () {
+  ensureSimpleResultModal();
+  const out = document.getElementById('psr-body');
+  document.getElementById('psr-title').textContent = '💰 Token usage (last 7 days)';
+  out.innerHTML = '<em style="color:#94a3b8;">Scanning chat logs…</em>';
+  document.getElementById('psr-modal').style.display = 'flex';
+  try {
+    const resp = await fetch('/api/prompts/token-usage?days=7');
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    if (!data.agents.length) {
+      out.innerHTML = `<em style="color:#94a3b8;">No chat logs found in the last 7 days. Run a migration to populate Logs/FULL_CHAT_LOG_*.md.</em>`;
+      return;
+    }
+    const fmt = n => Number(n).toLocaleString();
+    out.innerHTML = `
+      <div style="color:#94a3b8;font-size:11px;margin-bottom:8px;">Scanned ${data.filesScanned} chat log(s) from the last ${data.days} day(s).</div>
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead><tr style="background:#1e293b;color:#93c5fd;">
+          <th style="text-align:left;padding:6px 10px;">Agent</th>
+          <th style="text-align:right;padding:6px 10px;">Calls</th>
+          <th style="text-align:right;padding:6px 10px;">Total</th>
+          <th style="text-align:right;padding:6px 10px;">Mean</th>
+          <th style="text-align:right;padding:6px 10px;">p50</th>
+          <th style="text-align:right;padding:6px 10px;">p95</th>
+          <th style="text-align:right;padding:6px 10px;">Max</th>
+        </tr></thead>
+        <tbody>${data.agents.map(a => `
+          <tr style="border-bottom:1px solid #1e293b;">
+            <td style="padding:6px 10px;color:#e2e8f0;">${escapeHtml(a.agent)}</td>
+            <td style="padding:6px 10px;text-align:right;color:#cbd5e1;">${a.calls}</td>
+            <td style="padding:6px 10px;text-align:right;color:#fbbf24;font-weight:600;">${fmt(a.total)}</td>
+            <td style="padding:6px 10px;text-align:right;color:#cbd5e1;">${fmt(a.mean)}</td>
+            <td style="padding:6px 10px;text-align:right;color:#cbd5e1;">${fmt(a.p50)}</td>
+            <td style="padding:6px 10px;text-align:right;color:#cbd5e1;">${fmt(a.p95)}</td>
+            <td style="padding:6px 10px;text-align:right;color:#cbd5e1;">${fmt(a.max)}</td>
+          </tr>`).join('')}</tbody>
+      </table>`;
+  } catch (e) {
+    out.innerHTML = `<em style="color:#ef4444;">Failed: ${e.message}</em>`;
+  }
+};
+
+function ensureSimpleResultModal() {
+  if (document.getElementById('psr-modal')) return;
+  const wrap = document.createElement('div');
+  wrap.id = 'psr-modal';
+  wrap.style.cssText = `position:fixed;inset:0;background:rgba(3,7,18,0.85);z-index:9999;display:none;
+    align-items:center;justify-content:center;font-family:'Inter',system-ui,sans-serif;color:#e2e8f0;`;
+  wrap.innerHTML = `
+    <div style="background:#0f172a;border:1px solid #334155;border-radius:10px;
+                width:min(900px,94vw);max-height:90vh;display:flex;flex-direction:column;overflow:hidden;">
+      <div style="padding:14px 18px;border-bottom:1px solid #1e293b;display:flex;align-items:center;gap:10px;">
+        <span id="psr-title" style="font-size:15px;font-weight:700;color:#93c5fd;"></span>
+        <button onclick="document.getElementById('psr-modal').style.display='none'"
+                style="margin-left:auto;background:none;border:1px solid #334155;color:#94a3b8;
+                       border-radius:6px;padding:4px 10px;cursor:pointer;font-size:12px;">✕ Close</button>
+      </div>
+      <div id="psr-body" style="padding:14px 18px;overflow:auto;flex:1;"></div>
+    </div>`;
+  document.body.appendChild(wrap);
+  wrap.addEventListener('click', (e) => { if (e.target === wrap) wrap.style.display = 'none'; });
 }

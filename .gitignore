@@ -451,3 +451,5 @@ Data/*.db
 Data/*.db-*
 McpChatWeb/wwwroot/node_modules/
 McpChatWeb/wwwroot/forceatlas2-entry.js
+Agents/Prompts/_history/
+*.bak

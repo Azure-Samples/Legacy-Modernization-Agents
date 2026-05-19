@@ -255,6 +255,12 @@
           <div class="config-section">
             <div class="config-section-header">
               📝 Agent Prompts
+              <button id="btn-prompt-regression" class="btn-prompt-studio" onclick="runPromptRegression()" title="Verify every agent prompt still passes its static-rule checks">
+                🧪 Regression
+              </button>
+              <button id="btn-prompt-tokens" class="btn-prompt-studio" onclick="showTokenUsage()" title="Aggregate per-agent token usage from the last 7 days of chat logs">
+                💰 Tokens
+              </button>
               <button id="btn-prompt-studio" class="btn-prompt-studio" onclick="openPromptStudio()" title="Open Prompt Studio to generate or AI-enhance all agent prompts">
                 🚀 Prompt Studio
               </button>
@@ -1513,7 +1519,7 @@ curl http://localhost:5028/api/data-retrieval-guide</code></pre>
   <script src="runs-viewer.js"></script>
   <script src="activity-dashboard.js"></script>
   <script src="migration-monitor.js"></script>
-  <script src="model-prompt-panel.js"></script>
+  <script src="model-prompt-panel.js?v=20260519d"></script>
   <script src="model-setup-modal.js"></script>
   <script src="mission-control.js?v=20260505d"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>

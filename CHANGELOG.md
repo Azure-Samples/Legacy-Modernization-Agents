@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Agent quality pass + Prompt Studio platform
+
+**Per-agent prompt improvements**
+- `Agents/Prompts/StructuralExtractor.md` — silent self-check (schema validation, key set, line-range consistency) + few-shot hints for BMS / IMS DBDGEN / IMS PSBGEN so the agent reliably emits REKT-shaped JSON for non-COBOL dialects.
+- `Agents/Prompts/ConversionParity.md` — explicit gap-classification ladder (missing → add code, renamed → comment-only, merged → comment-only, deferred → TODO) so the repair pass stops over-generating code for refactors already covered.
+- `Agents/Prompts/CodeReviewer.md` — tightened scope: an explicit deny-list (style, formatting, naming taste, method length unless SRP, missing docs) and an allow-list (null-safety, concurrency, SQL injection, transactional boundaries, leaked COBOL idioms, resource leaks, swallowed exceptions).
+- `Agents/Prompts/DataMapping.md` — extracted the COBOL PIC → Java/C# mapping table into a reusable knowledge fragment and references it via the new `{{include}}` directive.
+- `Agents/Prompts/TestSynthesizer.md` — requires one test per CFG branch with the branch identifier as `@DisplayName` / `[Trait("branch", ...)]` and a ≥80% branch-coverage target.
+- `Agents/Prompts/MigrationSummary.md` — explicit 0–100 risk formula (parity, reviewer, complexity, error/warning findings, deferred CALLs, REKT provenance) with low/medium/high verdict mapping so scores are comparable across runs.
+- `Agents/Prompts/DocumentationAgent.md` — mandatory `@cobolOrigin <file>:<startLine>-<endLine>` Javadoc tag (XML `<cobolOrigin .../>` in C#) sourced from REKT line ranges, with an explicit instruction not to fabricate the range.
+
+**Knowledge fragments**
+- New `Agents/Prompts/knowledge/` folder for reusable snippets.
+- `Agents/Prompts/knowledge/cobol-pic-mapping.md` — full PIC table including 88-levels, REDEFINES, OCCURS, dates/times, and the "never silently downcast" hard rules.
+- `Helpers/PromptLoader.cs` gains `ExpandIncludes()`: `{{include path}}` recursively (max depth 3, missing files surface as visible HTML comments). The `McpChatWeb` `/api/prompts` endpoint mirrors the expansion so Prompt Studio displays the rendered prompt the runtime actually sees.
+
+**Converter fact-locking**
+- `Agents/JavaConverterAgent.cs` + `CSharpConverterAgent.cs` prepend explicit "GROUND TRUTH — do not invent" rules to the REKT context block, closing a recurring failure mode where the LLM would invent fields or CALL targets not present in the REKT data.
+
+**Prompt Studio platform additions**
+- Auto-archive: `POST /api/prompts/update` now copies the previous version to `Agents/Prompts/_history/<id>.<UTC-timestamp>.md` before overwriting. The folder is git-ignored.
+- `GET /api/prompts/{id}/history` — lists saved versions.
+- `GET /api/prompts/{id}/version/{version}` — returns a specific archived version.
+- `GET /api/prompts/{id}/diff?from=<ver>&to=<ver|current>` — unified-style line diff.
+- New "📜 History" button per prompt in Prompt Studio opens a modal that lists versions and shows a colour-coded diff against the current file.
+- `POST /api/prompts/regression` — runs `tools/run-prompt-regression.sh` (a 21-check static suite that asserts every hard rule still appears in every prompt, every `{{include}}` resolves, and every golden program is intact). Exposed in Prompt Studio as a "🧪 Regression" button.
+- `GET /api/prompts/token-usage?days=N` — aggregates per-agent token usage from the last N days of `Logs/FULL_CHAT_LOG_*.md` (calls, total, mean, p50, p95, max). Exposed as a "💰 Tokens" button.
+- New `tests/prompt-regression/programs/` golden programs (`ORDERSUM.cbl`, `CUSTLKUP.cbl`) + `baselines/baseline.json`.
+
 #### REKT-grounded conversion pipeline (4 phases)
 
 **Phase 1 — Selection & structural context**
