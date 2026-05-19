@@ -522,16 +522,50 @@ The portal also auto-resolves a usable Copilot CLI binary (`Services/CopilotCliR
 
 ### Prompt Studio
 
-Every agent in the pipeline (`CobolAnalyzer`, `BusinessLogicExtractor`, `DependencyMapper`, `JavaConverter`, `CSharpConverter`, `ChunkAwareJavaConverter`, `ChunkAwareCSharpConverter`) is driven by an editable Markdown prompt under `Agents/Prompts/`. Prompt Studio gives you two paths to (re)generate all of them based on what's actually in your `source/` folder:
+Every agent in the pipeline (`CobolAnalyzer`, `BusinessLogicExtractor`, `DependencyMapper`, `JavaConverter`, `CSharpConverter`, `ChunkAwareJavaConverter`, `ChunkAwareCSharpConverter`, plus the REKT-grounded agents `StructuralExtractor`, `ConversionParity`, `CodeReviewer`, `DataMapping`, `TestSynthesizer`, `MigrationSummary`, `DocumentationAgent`) is driven by an editable Markdown prompt under `Agents/Prompts/`. Prompt Studio gives you two paths to (re)generate all of them based on what's actually in your `source/` folder, plus three platform tools to experiment safely:
 
-| Mode | Cost | Speed | What it does |
+| Button | Purpose |
+|---|---|
+| **ℹ️ How to use** | In-app guide explaining every other button and the recommended workflow. Click it first. |
+| **🧪 Regression** | Runs 21 static checks asserting every hard rule still appears in every prompt, every `{{include}}` resolves, and the two golden COBOL programs are intact. Green ✓ = safe; red ✗ tells you exactly which rule went missing. Smoke alarm for prompts, not a quality grade. |
+| **💰 Tokens** | Per-agent token usage parsed live from `Logs/FULL_CHAT_LOG_*.md` — Calls, Total, Mean, p50, p95, Max. Configurable window: 30 min / 1 h / 2 h / 4 h / 8 h / 1 day / 7 days. Shows which agent is the budget hog and where the expensive outliers live. |
+| **🚀 Prompt Studio** | Generate / AI-enhance all prompts based on your codebase (see modes below). |
+| **📜 History** (per prompt) | Lists every saved version (auto-archived to `Agents/Prompts/_history/` on each save, git-ignored) with a colour-coded diff vs the current file. Revert with one click. |
+| **🔍 Score** (per prompt) | AI grades the prompt 1–10 and explains what's good / weak. Opinion, not verdict — pair with 🧪 Regression. |
+| **⚡ Generate** (per prompt) | Re-analyses your source and proposes a fresh prompt for one specific agent. Heavy; use sparingly. Always 📜 History the old version first. |
+| **✏️ Edit** (per prompt) | Inline editor. Save auto-archives the previous version. |
+
+| Generation mode | Cost | Speed | What it does |
 |---|---|---|---|
 | **⚡ Quick Generate** | Free, no AI call | < 1 s | Scans source files with regex pattern matching to detect COBOL features (EXEC SQL, CICS screens, file I/O, copybooks, architecture pattern) and builds tailored prompts from templates. |
 | **🧠 AI-Enhanced Generate** | One AI call (~4K tokens) | 10–30 s | Same regex pass first, then sends actual COBOL code samples (3 largest programs + 2 largest copybooks) to the active model. The model adds domain-specific enhancements regex can't detect (naming conventions, business-logic patterns, language-specific variables, error-handling idioms) and assigns a quality score (1–10) per agent prompt. |
 
-![Prompt Studio](docs/images/prompt-studio.png)
+#### Recommended workflow
 
-After generation, every prompt is editable in-place; scores persist to `Agents/Prompts/.prompt-scores.json` so you can track prompt-quality drift over time.
+1. **Look first** — open the studio, check the quality scores.
+2. **🧪 Regression once** — confirm a baseline green (21 passed).
+3. **💰 Tokens** — pick the highest-spending agent. That's where edits will save real money.
+4. **✏️ Edit** — one focused change at a time.
+5. **🔍 Score** — sanity-check the edit didn't make things obviously worse.
+6. **🧪 Regression again** — if red, fix or revert via 📜 History.
+7. **Run a small conversion** (Convert modal → one program) to confirm the change helps in practice.
+8. **💰 weekly, 🧪 before every PR** — watch for drift; keep prompts strong.
+
+#### Where is the data stored?
+
+| Artefact | Location | Lifetime |
+|---|---|---|
+| Live prompt files | `Agents/Prompts/*.md` | Tracked in git |
+| Knowledge fragments | `Agents/Prompts/knowledge/*.md` | Tracked in git |
+| Saved versions | `Agents/Prompts/_history/<agent>.<UTC-timestamp>.md` | Local only — git-ignored |
+| Quality scores | `Agents/Prompts/.prompt-scores.json` | Local only — git-ignored |
+| Token usage source | `Logs/FULL_CHAT_LOG_*.md` | Local only — git-ignored |
+| Regression golden programs | `tests/prompt-regression/programs/` | Tracked in git |
+| Regression baselines | `tests/prompt-regression/baselines/baseline.json` | Tracked in git |
+
+Token usage is **parsed live** on every 💰 click — there is no separate database. If you delete the chat logs the panel will simply show "no data in window".
+
+![Prompt Studio](docs/images/prompt-studio.png)
 
 ### Chat with your code, database, or RE report
 

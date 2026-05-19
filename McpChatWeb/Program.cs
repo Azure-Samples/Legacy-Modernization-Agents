@@ -6994,41 +6994,72 @@ app.MapPost("/api/prompts/update", (McpChatWeb.Models.UpdatePromptRequest reques
 });
 
 // ── Prompt token budget ──────────────────────────────────────────────────────
-// Parses recent Logs/FULL_CHAT_LOG_*.md files and aggregates per-agent token
-// usage (p50, p95, mean, total). Cheap — only reads the most recent N files.
+// Parses Logs/FULL_CHAT_LOG_*.md and aggregates per-agent token usage
+// within the requested window. The chat-log filename is the run start
+// (FULL_CHAT_LOG_YYYY-MM-DD_HH-MM-SS.md); each agent block has
+// **Time:** HH.MM.SS (UTC) which we combine with the file's date to get
+// a per-call timestamp.
 
-app.MapGet("/api/prompts/token-usage", (int? days) =>
+app.MapGet("/api/prompts/token-usage", (int? minutes, int? days) =>
 {
 	try
 	{
 		var repoRoot = ResolveRepoRoot();
 		var logsDir = Path.Combine(repoRoot, "Logs");
 		if (!Directory.Exists(logsDir))
-			return Results.Ok(new { agents = Array.Empty<object>() });
+			return Results.Ok(new { agents = Array.Empty<object>(), filesScanned = 0, windowMinutes = 0 });
 
-		var cutoff = DateTime.UtcNow.AddDays(-(days ?? 7));
+		int windowMinutes = minutes ?? (days.HasValue ? days.Value * 1440 : 7 * 1440);
+		var cutoff = DateTime.UtcNow.AddMinutes(-windowMinutes);
+		var fileNameRx = new System.Text.RegularExpressions.Regex(@"FULL_CHAT_LOG_(\d{4}-\d{2}-\d{2})_(\d{2}-\d{2}-\d{2})\.md$");
+
+		// Scan files whose last-write is at or after the cutoff. A long-running
+		// migration may have started before the cutoff but still contains
+		// per-call entries inside the window, so we also include files whose
+		// LastWrite is within +1h of the cutoff for safety.
+		var slack = cutoff.AddHours(-1);
 		var files = Directory.EnumerateFiles(logsDir, "FULL_CHAT_LOG_*.md")
 			.Select(p => new FileInfo(p))
-			.Where(fi => fi.LastWriteTimeUtc >= cutoff)
+			.Where(fi => fi.LastWriteTimeUtc >= slack)
 			.OrderByDescending(fi => fi.LastWriteTimeUtc)
-			.Take(40)
+			.Take(100)
 			.ToList();
 
 		var perAgent = new Dictionary<string, List<int>>(StringComparer.OrdinalIgnoreCase);
 		var rxAgent = new System.Text.RegularExpressions.Regex(@"\*\*Agent:\*\*\s+(\S+)");
+		var rxTime  = new System.Text.RegularExpressions.Regex(@"\*\*Time:\*\*\s+(\d{2})[.:\-](\d{2})[.:\-](\d{2})");
 		var rxTokens = new System.Text.RegularExpressions.Regex(@"\*\*Tokens:\*\*\s+([0-9.,]+)");
 
 		foreach (var fi in files)
 		{
+			var m = fileNameRx.Match(fi.Name);
+			if (!m.Success) continue;
+			if (!DateOnly.TryParseExact(m.Groups[1].Value, "yyyy-MM-dd", out var fileDate)) continue;
+
 			string? currentAgent = null;
+			DateTime? currentCallTime = null;
+
 			foreach (var line in File.ReadLines(fi.FullName))
 			{
 				var ma = rxAgent.Match(line);
-				if (ma.Success) { currentAgent = ma.Groups[1].Value; continue; }
+				if (ma.Success) { currentAgent = ma.Groups[1].Value; currentCallTime = null; continue; }
+				var mTime = rxTime.Match(line);
+				if (mTime.Success)
+				{
+					currentCallTime = new DateTime(
+						fileDate.Year, fileDate.Month, fileDate.Day,
+						int.Parse(mTime.Groups[1].Value),
+						int.Parse(mTime.Groups[2].Value),
+						int.Parse(mTime.Groups[3].Value),
+						DateTimeKind.Utc);
+					continue;
+				}
 				if (currentAgent == null) continue;
 				var mt = rxTokens.Match(line);
 				if (mt.Success)
 				{
+					if (currentCallTime.HasValue && currentCallTime.Value < cutoff)
+						continue;  // older than window
 					var num = mt.Groups[1].Value.Replace(".", "").Replace(",", "");
 					if (int.TryParse(num, out var n) && n > 0)
 					{
@@ -7064,7 +7095,13 @@ app.MapGet("/api/prompts/token-usage", (int? days) =>
 		.OrderByDescending(a => a.total)
 		.ToList();
 
-		return Results.Ok(new { days = days ?? 7, filesScanned = files.Count, agents });
+		return Results.Ok(new
+		{
+			windowMinutes,
+			filesScanned = files.Count,
+			source = "Logs/FULL_CHAT_LOG_*.md (parsed in-memory; no separate datastore)",
+			agents
+		});
 	}
 	catch (Exception ex)
 	{

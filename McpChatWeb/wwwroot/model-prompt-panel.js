@@ -1035,7 +1035,14 @@ window.runPromptRegression = async function () {
   document.getElementById('psr-modal').style.display = 'flex';
   try {
     const resp = await fetch('/api/prompts/regression', { method: 'POST' });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const ctype = (resp.headers.get('content-type') || '').toLowerCase();
+    if (!resp.ok) {
+      if (resp.status === 405 || resp.status === 404)
+        throw new Error('Endpoint missing — restart the portal (your portal binary is older than this UI).');
+      throw new Error(`HTTP ${resp.status}`);
+    }
+    if (!ctype.includes('application/json'))
+      throw new Error('Endpoint missing — restart the portal (your portal binary is older than this UI).');
     const data = await resp.json();
     const color = data.exitCode === 0 ? '#10b981' : '#ef4444';
     const verdict = data.exitCode === 0 ? '✓ All checks passed' : `✗ ${data.failed} check(s) failed`;
@@ -1046,23 +1053,50 @@ window.runPromptRegression = async function () {
   }
 };
 
-window.showTokenUsage = async function () {
+window.showTokenUsage = function () {
   ensureSimpleResultModal();
   const out = document.getElementById('psr-body');
-  document.getElementById('psr-title').textContent = '💰 Token usage (last 7 days)';
-  out.innerHTML = '<em style="color:#94a3b8;">Scanning chat logs…</em>';
+  document.getElementById('psr-title').textContent = '💰 Token usage';
   document.getElementById('psr-modal').style.display = 'flex';
+  out.innerHTML = `
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;font-size:12px;color:#cbd5e1;flex-wrap:wrap;">
+      <label>Window:</label>
+      <select id="tok-window" style="background:#0a0e1a;border:1px solid #334155;color:#e2e8f0;border-radius:6px;padding:4px 8px;">
+        <option value="30">Last 30 minutes</option>
+        <option value="60">Last 1 hour</option>
+        <option value="120">Last 2 hours</option>
+        <option value="240">Last 4 hours</option>
+        <option value="480">Last 8 hours</option>
+        <option value="1440" selected>Last 1 day</option>
+        <option value="10080">Last 7 days</option>
+      </select>
+      <button class="btn-small" onclick="loadTokenUsage()" style="background:#1e1b4b;border:1px solid #6366f1;color:#c7d2fe;border-radius:6px;padding:4px 10px;cursor:pointer;">🔄 Refresh</button>
+      <span style="margin-left:auto;color:#64748b;font-size:11px;font-style:italic;">Source: <code>Logs/FULL_CHAT_LOG_*.md</code> (parsed live, no DB)</span>
+    </div>
+    <div id="tok-results"><em style="color:#94a3b8;">Loading…</em></div>`;
+  document.getElementById('tok-window').addEventListener('change', loadTokenUsage);
+  loadTokenUsage();
+};
+
+window.loadTokenUsage = async function () {
+  const target = document.getElementById('tok-results');
+  if (!target) return;
+  const minutes = parseInt(document.getElementById('tok-window').value, 10) || 1440;
+  target.innerHTML = '<em style="color:#94a3b8;">Scanning chat logs…</em>';
   try {
-    const resp = await fetch('/api/prompts/token-usage?days=7');
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const resp = await fetch(`/api/prompts/token-usage?minutes=${minutes}`);
+    const ctype = (resp.headers.get('content-type') || '').toLowerCase();
+    if (!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
+    if (!ctype.includes('application/json'))
+      throw new Error('Endpoint missing — restart the portal (your portal binary is older than this UI).');
     const data = await resp.json();
     if (!data.agents.length) {
-      out.innerHTML = `<em style="color:#94a3b8;">No chat logs found in the last 7 days. Run a migration to populate Logs/FULL_CHAT_LOG_*.md.</em>`;
+      target.innerHTML = `<em style="color:#94a3b8;">No agent calls in the selected window (${minutes} min). Either the window is too narrow or no migrations ran in it.</em>`;
       return;
     }
     const fmt = n => Number(n).toLocaleString();
-    out.innerHTML = `
-      <div style="color:#94a3b8;font-size:11px;margin-bottom:8px;">Scanned ${data.filesScanned} chat log(s) from the last ${data.days} day(s).</div>
+    target.innerHTML = `
+      <div style="color:#94a3b8;font-size:11px;margin-bottom:8px;">Scanned ${data.filesScanned} chat log(s) within the last ${minutes} minute(s).</div>
       <table style="width:100%;border-collapse:collapse;font-size:12px;">
         <thead><tr style="background:#1e293b;color:#93c5fd;">
           <th style="text-align:left;padding:6px 10px;">Agent</th>
@@ -1085,8 +1119,48 @@ window.showTokenUsage = async function () {
           </tr>`).join('')}</tbody>
       </table>`;
   } catch (e) {
-    out.innerHTML = `<em style="color:#ef4444;">Failed: ${e.message}</em>`;
+    target.innerHTML = `<em style="color:#ef4444;">Failed: ${e.message}</em>`;
   }
+};
+
+window.showPromptStudioInfo = function () {
+  ensureSimpleResultModal();
+  document.getElementById('psr-title').textContent = 'ℹ️ How to use Prompt Studio';
+  document.getElementById('psr-body').innerHTML = `
+    <div style="font-size:13px;line-height:1.6;color:#cbd5e1;">
+      <h3 style="color:#93c5fd;margin:0 0 8px 0;">In one line</h3>
+      <p>Prompts are the rules each AI agent follows. Edit them when output quality is off; use the buttons below to keep yourself safe while you experiment.</p>
+
+      <h3 style="color:#93c5fd;margin:18px 0 8px 0;">🧪 Regression — what it does</h3>
+      <p>Editing a prompt can <em>accidentally weaken it</em> (e.g. delete the "never invent fields" rule while cleaning up wording). Regression runs <strong>21 static checks</strong> that assert every hard rule still appears in every prompt, every <code>{{include}}</code> still points at a real file, and the two golden COBOL programs are still on disk. Green ✓ means you didn't break anything fundamental. Red ✗ tells you exactly which rule went missing. Think of it as a <strong>smoke alarm for your prompts</strong> — not a quality grade.</p>
+
+      <h3 style="color:#93c5fd;margin:18px 0 8px 0;">💰 Tokens — what it does</h3>
+      <p>Every agent call costs tokens (you pay per token). This panel reads the chat logs and shows per-agent <strong>Calls, Total, Mean, p50, p95, Max</strong> for a configurable window (30 min → 7 days). Use it to spot which agent is the budget hog and which calls are the expensive outliers. <em>p95</em> is the line above which the worst 5% of calls live — that's where cost spikes hide. <strong>Data source:</strong> <code>Logs/FULL_CHAT_LOG_*.md</code> — parsed in-memory on every request, no separate datastore.</p>
+
+      <h3 style="color:#93c5fd;margin:18px 0 8px 0;">📜 History — what it does</h3>
+      <p>Every save auto-archives the previous version to <code>Agents/Prompts/_history/&lt;agent&gt;.&lt;UTC-timestamp&gt;.md</code> (git-ignored). The button opens a list of every save with a colour-coded diff against the current file — red lines were removed, green lines were added. Use it to revert or to see what you changed in the last week.</p>
+
+      <h3 style="color:#93c5fd;margin:18px 0 8px 0;">🔍 Score — what it does</h3>
+      <p>Asks the AI to grade the current prompt out of 10 and explain what's good or bad. Useful as a sanity check after an edit. It's an opinion, not a verdict — pair it with 🧪 Regression for the hard checks.</p>
+
+      <h3 style="color:#93c5fd;margin:18px 0 8px 0;">⚡ Generate — what it does</h3>
+      <p>The heavy button. Re-analyses your <code>source/</code> folder and proposes a fresh prompt tailored to your codebase. Use it sparingly — when an agent is clearly underperforming and you want a fresh start. Always 📜 History the old version first.</p>
+
+      <h3 style="color:#93c5fd;margin:18px 0 8px 0;">Recommended workflow</h3>
+      <ol style="margin:0;padding-left:20px;">
+        <li><strong>Look first.</strong> Open the studio. Quality scores and previews give you a starting picture.</li>
+        <li><strong>🧪 Regression once</strong> to confirm a baseline green (21 passed).</li>
+        <li><strong>💰 Tokens</strong> to spot the most expensive agent — that's where edits will save real money.</li>
+        <li><strong>✏️ Edit</strong> one agent. Make one focused change at a time.</li>
+        <li><strong>🔍 Score</strong> to sanity-check the edit didn't make things obviously worse.</li>
+        <li><strong>🧪 Regression again</strong> — if any check went red, fix or revert via 📜 History.</li>
+        <li><strong>Run a small real conversion</strong> (Convert modal → pick one program) to confirm the change helps in practice.</li>
+        <li><strong>💰 weekly</strong> — watch for cost drift; 🧪 before every PR — keep prompts strong.</li>
+      </ol>
+
+      <p style="color:#64748b;font-style:italic;margin-top:16px;">Full reference: <code>README.md</code> → "🤖 Prompt Studio" section.</p>
+    </div>`;
+  document.getElementById('psr-modal').style.display = 'flex';
 };
 
 function ensureSimpleResultModal() {
