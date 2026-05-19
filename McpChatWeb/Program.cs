@@ -8735,16 +8735,85 @@ app.MapPost("/api/programs/search", (System.Text.Json.JsonElement body) =>
 
 // GET /api/programs/catalog — returns every program, transaction, wave, and
 // target-component discoverable from the current source folder + REKT outputs.
-// Used by the Convert modal to pre-populate the picker dropdowns so users can
-// choose from a real list instead of typing.
-app.MapGet("/api/programs/catalog", (string? sourceFolder) =>
+// Optional ?scanRunId=N pulls additional program names from the migration DB
+// so historical runs are visible even when source/ no longer holds them. Each
+// entry carries availableInSource so the UI can warn / block conversion of
+// missing files.
+app.MapGet("/api/programs/catalog", async (string? sourceFolder, long? scanRunId) =>
 {
 	try
 	{
 		var repoRoot = ResolveRepoRoot();
 		var folder = string.IsNullOrWhiteSpace(sourceFolder) ? "source" : sourceFolder;
 		var svc = new McpChatWeb.Services.ProgramSelectorService(repoRoot);
-		var catalog = svc.BuildCatalog(folder);
+
+		List<string>? extra = null;
+		if (scanRunId.HasValue)
+		{
+			extra = new List<string>();
+			try
+			{
+				var dbPath = GetMigrationDbPath();
+				if (File.Exists(dbPath))
+				{
+					await using var conn = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly");
+					await conn.OpenAsync();
+					await using var cmd = conn.CreateCommand();
+					cmd.CommandText = "SELECT DISTINCT file_name FROM business_logic WHERE run_id = $r ORDER BY file_name";
+					cmd.Parameters.AddWithValue("$r", scanRunId.Value);
+					await using var reader = await cmd.ExecuteReaderAsync();
+					while (await reader.ReadAsync())
+					{
+						if (!reader.IsDBNull(0)) extra.Add(reader.GetString(0));
+					}
+				}
+			}
+			catch (Exception dbEx)
+			{
+				Console.WriteLine($"⚠️ Catalog: failed to pull scan-run {scanRunId} programs from SQLite: {dbEx.Message}");
+			}
+
+			// Also pull from the REKT Neo4j scan run — that's where the
+			// "Run 202605xxxxxx (NNN files)" labels in the dashboard come from.
+			// Most scan runs only exist in Neo4j, not in the business_logic table.
+			try
+			{
+				var rektUri = Environment.GetEnvironmentVariable("REKT_NEO4J_URI") ?? "bolt://localhost:7688";
+				var rektUser = Environment.GetEnvironmentVariable("REKT_NEO4J_USER") ?? "neo4j";
+				var rektPassword = Environment.GetEnvironmentVariable("REKT_NEO4J_PASSWORD") ?? "cobol-rekt-2026";
+				using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
+				await using var neoSession = driver.AsyncSession();
+				var result = await neoSession.RunAsync(@"
+					MATCH (a:ASTNode) WHERE a.program IS NOT NULL AND coalesce(a.runId, 0) = $runId
+					WITH DISTINCT a.program AS name
+					RETURN name ORDER BY name",
+					new { runId = scanRunId.Value });
+				await result.ForEachAsync(r =>
+				{
+					var name = r["name"].As<string>();
+					if (string.IsNullOrEmpty(name)) return;
+					// Strip REKT artefact prefixes so the dropdown shows the
+					// canonical COBOL program name, not the JSON file name.
+					foreach (var prefix in new[] { "flow-ast-", "flow-data-", "flow-deps-" })
+					{
+						if (name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+						{
+							name = name.Substring(prefix.Length);
+							break;
+						}
+					}
+					if (!extra.Contains(name, StringComparer.OrdinalIgnoreCase))
+						extra.Add(name);
+				});
+			}
+			catch (Exception neoEx)
+			{
+				Console.WriteLine($"⚠️ Catalog: failed to pull scan-run {scanRunId} programs from Neo4j: {neoEx.Message}");
+			}
+		}
+
+		var catalog = svc.BuildCatalog(folder, extra);
+		catalog.ScanRunId = scanRunId;
 		return Results.Ok(catalog);
 	}
 	catch (Exception ex)
@@ -8771,11 +8840,36 @@ app.MapPost("/api/runs/convert", (System.Text.Json.JsonElement body,
 		var stagingName = ".convert-" + DateTime.UtcNow.ToString("yyyyMMddHHmmss") + "-" + Guid.NewGuid().ToString("N").Substring(0, 6);
 		var stagingDir = Path.Combine(repoRoot, "source", stagingName);
 		Directory.CreateDirectory(stagingDir);
+
+		var missing = new List<string>();
+		var staged = new List<string>();
 		foreach (var f in res.Files)
 		{
 			var srcPath = Path.Combine(repoRoot, "source", f);
 			if (File.Exists(srcPath))
+			{
 				File.Copy(srcPath, Path.Combine(stagingDir, f), overwrite: true);
+				staged.Add(f);
+			}
+			else
+			{
+				missing.Add(f);
+			}
+		}
+
+		// Hard stop if NOTHING could be staged — the user likely selected programs
+		// from a historical scan run whose source/ folder no longer exists on disk.
+		if (staged.Count == 0)
+		{
+			try { Directory.Delete(stagingDir, recursive: true); } catch { }
+			return Results.BadRequest(new
+			{
+				error = "Selected program(s) are not in the source/ folder",
+				explanation = "The catalog can include programs from historical scan runs whose files are no longer on disk. To convert them, restore the original source files into source/ and try again. The migration database has business-logic metadata but not the raw COBOL source needed for conversion.",
+				missingFiles = missing,
+				resolvedCount = res.Files.Count,
+				stagingFolder = (string?)null,
+			});
 		}
 
 		// Optional companion copybooks that the converter may need.
@@ -8819,10 +8913,11 @@ app.MapPost("/api/runs/convert", (System.Text.Json.JsonElement body,
 		{
 			runId = run.RunId,
 			name = run.Name,
-			fileCount = res.Files.Count,
-			files = res.Files,
+			fileCount = staged.Count,
+			files = staged,
+			missingFiles = missing,
 			stagingFolder = Path.Combine("source", stagingName),
-			summary = res.Summary,
+			summary = res.Summary + (missing.Count > 0 ? $" ({missing.Count} requested file(s) not on disk — skipped)" : ""),
 		});
 	}
 	catch (Exception ex)

@@ -290,7 +290,7 @@ public sealed class ProgramSelectorService
     // CICS transaction codes and CALL targets so the UI can offer real
     // values instead of forcing the user to type from memory.
     // ─────────────────────────────────────────────────────────────────────
-    public ProgramCatalog BuildCatalog(string sourceFolder = "source")
+    public ProgramCatalog BuildCatalog(string sourceFolder = "source", IEnumerable<string>? extraProgramNames = null)
     {
         var loader = new RektContextLoader(_repoRoot);
         var sourceDir = Path.Combine(_repoRoot, sourceFolder);
@@ -307,6 +307,21 @@ public sealed class ProgramSelectorService
             if (!string.IsNullOrEmpty(stem)) planByStem[stem] = plan;
         }
 
+        // Union of file lists: live source + any historical scan-run programs the
+        // caller wants surfaced. We mark each entry with availableInSource so the
+        // UI can warn the user when a scanned program is no longer on disk.
+        var sourceSet = new HashSet<string>(allFiles, StringComparer.OrdinalIgnoreCase);
+        var combined = new List<string>(allFiles);
+        if (extraProgramNames != null)
+        {
+            foreach (var name in extraProgramNames)
+            {
+                if (string.IsNullOrWhiteSpace(name)) continue;
+                if (!sourceSet.Contains(name) && !combined.Contains(name, StringComparer.OrdinalIgnoreCase))
+                    combined.Add(name);
+            }
+        }
+
         var rxTransid = new Regex(@"\bEXEC\s+CICS\b[^\.]*?\bTRANSID\s*\(\s*['""]?([A-Z0-9$@#]{1,8})['""]?\s*\)",
             RegexOptions.IgnoreCase | RegexOptions.Singleline);
         var rxLinkProg = new Regex(@"\bEXEC\s+CICS\s+(?:LINK|XCTL|START)\b[^\.]*?\bPROGRAM\s*\(\s*['""]?([A-Z0-9$@#]{1,8})['""]?\s*\)",
@@ -316,9 +331,9 @@ public sealed class ProgramSelectorService
         var waveIndex = new Dictionary<int, int>();
         var targetIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var f in allFiles)
+        foreach (var f in combined)
         {
-            var entry = new CatalogProgram { Name = f };
+            var entry = new CatalogProgram { Name = f, AvailableInSource = sourceSet.Contains(f) };
             var stem = Path.GetFileNameWithoutExtension(f);
             if (!string.IsNullOrEmpty(stem) && planByStem.TryGetValue(stem, out var plan))
             {
@@ -331,29 +346,34 @@ public sealed class ProgramSelectorService
                     targetIndex[plan.TargetComponent] = targetIndex.GetValueOrDefault(plan.TargetComponent) + 1;
             }
 
-            try
+            if (entry.AvailableInSource)
             {
-                var src = File.ReadAllText(Path.Combine(sourceDir, f));
-                foreach (Match m in rxTransid.Matches(src))
+                try
                 {
-                    var code = m.Groups[1].Value.ToUpperInvariant();
-                    entry.Transactions.Add(code);
-                    if (!tranIndex.TryGetValue(code, out var set)) tranIndex[code] = set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                    set.Add(f);
+                    var src = File.ReadAllText(Path.Combine(sourceDir, f));
+                    foreach (Match m in rxTransid.Matches(src))
+                    {
+                        var code = m.Groups[1].Value.ToUpperInvariant();
+                        entry.Transactions.Add(code);
+                        if (!tranIndex.TryGetValue(code, out var set)) tranIndex[code] = set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        set.Add(f);
+                    }
+                    foreach (Match m in rxLinkProg.Matches(src))
+                    {
+                        var code = m.Groups[1].Value.ToUpperInvariant();
+                        entry.Transactions.Add(code);
+                        if (!tranIndex.TryGetValue(code, out var set)) tranIndex[code] = set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        set.Add(f);
+                    }
+                    entry.LineCount = src.Count(c => c == '\n') + 1;
                 }
-                foreach (Match m in rxLinkProg.Matches(src))
-                {
-                    var code = m.Groups[1].Value.ToUpperInvariant();
-                    entry.Transactions.Add(code);
-                    if (!tranIndex.TryGetValue(code, out var set)) tranIndex[code] = set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                    set.Add(f);
-                }
-                entry.LineCount = src.Count(c => c == '\n') + 1;
+                catch { /* unreadable file, skip */ }
             }
-            catch { /* unreadable file, skip */ }
 
             catalog.Programs.Add(entry);
         }
+
+        catalog.MissingFromSource = catalog.Programs.Count(p => !p.AvailableInSource);
 
         catalog.Transactions = tranIndex
             .OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
@@ -376,6 +396,8 @@ public sealed class ProgramSelectorService
 public sealed class ProgramCatalog
 {
     public string SourceFolder { get; set; } = "";
+    public int MissingFromSource { get; set; }
+    public long? ScanRunId { get; set; }
     public List<CatalogProgram> Programs { get; set; } = new();
     public List<CatalogTransaction> Transactions { get; set; } = new();
     public List<CatalogWave> Waves { get; set; } = new();
@@ -385,6 +407,7 @@ public sealed class ProgramCatalog
 public sealed class CatalogProgram
 {
     public string Name { get; set; } = "";
+    public bool AvailableInSource { get; set; } = true;
     public int Wave { get; set; }
     public string TargetComponent { get; set; } = "";
     public string Pattern { get; set; } = "";

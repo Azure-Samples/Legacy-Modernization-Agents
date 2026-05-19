@@ -78,6 +78,9 @@
 
         <div style="padding:14px 18px;overflow-y:auto;flex:1;display:grid;grid-template-columns:1fr 1fr;gap:14px;">
 
+          <!-- Scan-vs-source banner (populated by populateDropdowns) -->
+          <div id="cm-scan-banner" style="grid-column:1/3;display:none;padding:10px 12px;border-radius:6px;font-size:12px;color:#fef3c7;"></div>
+
           <div><label class="cm-lab">Programs <span class="cm-q" title="Pick from the dropdown of programs found in the current scan. Comma-separated; each name OR-combines with the next.">?</span></label>
             <input id="cm-programs" type="text" placeholder="click to pick — e.g. CRECUST, COCRDSLC" class="cm-in" list="cm-programs-list" autocomplete="off">
             <datalist id="cm-programs-list"></datalist>
@@ -224,20 +227,26 @@
   let _catalogLoading = null;
 
   async function loadCatalog(force) {
-    if (!force && _catalogCache) return _catalogCache;
+    const scanId = (typeof _currentScanRunId !== 'undefined' && _currentScanRunId &&
+                    _currentScanRunId !== 'all' && _currentScanRunId !== 'latest')
+                   ? _currentScanRunId : null;
+    const cacheKey = scanId || '__live__';
+    if (!force && _catalogCache && _catalogCache.__key === cacheKey) return _catalogCache;
     if (_catalogLoading) return _catalogLoading;
     _catalogLoading = (async () => {
       try {
-        const resp = await fetch('/api/programs/catalog');
+        const url = scanId ? `/api/programs/catalog?scanRunId=${encodeURIComponent(scanId)}`
+                           : '/api/programs/catalog';
+        const resp = await fetch(url);
         const ctype = (resp.headers.get('content-type') || '').toLowerCase();
         if (!resp.ok) {
           throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
         }
-        // Stale portal builds will return the SPA HTML for unknown routes.
         if (!ctype.includes('application/json')) {
           throw new Error('Catalog endpoint missing — your portal is running an older build. Stop the portal process and re-run ./doctor.sh portal (or rebuild McpChatWeb).');
         }
         const data = await resp.json();
+        data.__key = cacheKey;
         _catalogCache = data;
         return data;
       } finally { _catalogLoading = null; }
@@ -248,20 +257,48 @@
   function populateDropdowns(cat) {
     if (!cat) return;
 
-    // Programs — datalist option per program; show wave/target as a hint.
+    // Scan-vs-source banner: warn the user when the selected scan run contains
+    // programs that are no longer on disk in source/. The convert endpoint will
+    // refuse the run anyway, so flag it up front.
+    const banner = document.getElementById('cm-scan-banner');
+    if (banner) {
+      const total = (cat.programs || []).length;
+      const missing = cat.missingFromSource || 0;
+      if (cat.scanRunId && missing > 0) {
+        banner.style.display = 'block';
+        banner.style.background = '#7c2d12';
+        banner.style.border = '1px solid #ea580c';
+        banner.innerHTML = `⚠️ This scan run (<code>${cat.scanRunId}</code>) references <strong>${missing} of ${total}</strong> programs that are <strong>not in <code>source/</code></strong>. They're shown greyed-out below and cannot be converted until you restore the COBOL files. The database has business-logic metadata only, not raw source.`;
+      } else if (cat.scanRunId) {
+        banner.style.display = 'block';
+        banner.style.background = '#064e3b';
+        banner.style.border = '1px solid #10b981';
+        banner.innerHTML = `✓ Scan run <code>${cat.scanRunId}</code> — all ${total} programs are available in <code>source/</code>.`;
+      } else {
+        banner.style.display = 'none';
+      }
+    }
+
+    // Programs — datalist option per program; show wave/target/availability hint.
     const progList = document.getElementById('cm-programs-list');
     progList.innerHTML = (cat.programs || []).map(p => {
       const parts = [];
+      if (!p.availableInSource) parts.push('⚠ not in source/');
       if (p.wave > 0)        parts.push(`wave ${p.wave}`);
       if (p.targetComponent) parts.push(p.targetComponent);
       if (p.lineCount > 0)   parts.push(`${p.lineCount} LOC`);
       if (p.transactions && p.transactions.length)
         parts.push('txn: ' + p.transactions.slice(0, 3).join(','));
       const label = parts.length ? ` — ${parts.join(' · ')}` : '';
-      return `<option value="${escapeAttr(p.name)}">${escapeAttr(p.name + label)}</option>`;
+      // datalist options can't be disabled but the prefix makes the warning
+      // visible in both the dropdown and the resulting comma list.
+      const value = p.availableInSource ? p.name : `${p.name} ⚠`;
+      return `<option value="${escapeAttr(value)}">${escapeAttr(p.name + label)}</option>`;
     }).join('');
     document.getElementById('cm-programs-count').textContent =
-      `${(cat.programs || []).length} program(s) in this scan`;
+      cat.missingFromSource > 0
+        ? `${(cat.programs || []).length} program(s) in scan · ${cat.missingFromSource} not on disk`
+        : `${(cat.programs || []).length} program(s) in this scan`;
 
     // Transactions — show how many programs each transaction belongs to.
     const tranList = document.getElementById('cm-transactions-list');
@@ -348,22 +385,35 @@
 
   async function startConversion() {
     const out = document.getElementById('cm-preview-result');
+    // Strip the "⚠" markers users may have picked from the dropdown — the
+    // backend will refuse them anyway, but this gives a clearer "X not on disk"
+    // error rather than "no files matched".
+    const sel = readSelector();
+    sel.programs = (sel.programs || []).map(p => p.replace(/\s*⚠\s*$/, '').trim()).filter(Boolean);
     out.textContent = 'Starting…';
     out.style.color = '#94a3b8';
     try {
       const resp = await fetch('/api/runs/convert', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(readSelector()),
+        body: JSON.stringify(sel),
       });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({ error: resp.statusText }));
-        out.textContent = `❌ ${err.error || resp.statusText}`;
+        if (err.missingFiles && err.missingFiles.length) {
+          out.innerHTML = `❌ <strong>${escapeAttr(err.error)}</strong><br>
+            <span style="font-size:11px;color:#fbbf24;">${escapeAttr(err.explanation || '')}</span><br>
+            <span style="font-size:11px;color:#94a3b8;">Missing: ${err.missingFiles.slice(0,8).map(escapeAttr).join(', ')}${err.missingFiles.length>8?'…':''}</span>`;
+        } else {
+          out.textContent = `❌ ${err.error || resp.statusText}`;
+        }
         out.style.color = '#ef4444';
         return;
       }
       const data = await resp.json();
-      out.innerHTML = `✓ Run <code>${data.runId}</code> started — ${data.fileCount} file(s) staged. Watch the Mission Control panel for progress.`;
+      const skippedNote = data.missingFiles && data.missingFiles.length
+        ? ` <span style="color:#fbbf24;">(skipped ${data.missingFiles.length} not on disk)</span>` : '';
+      out.innerHTML = `✓ Run <code>${data.runId}</code> started — ${data.fileCount} file(s) staged.${skippedNote} Watch the Mission Control panel for progress.`;
       out.style.color = '#10b981';
     } catch (e) {
       out.textContent = `❌ ${e.message}`;
