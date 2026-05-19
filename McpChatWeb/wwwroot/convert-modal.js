@@ -229,7 +229,14 @@
     _catalogLoading = (async () => {
       try {
         const resp = await fetch('/api/programs/catalog');
-        if (!resp.ok) throw new Error(resp.statusText);
+        const ctype = (resp.headers.get('content-type') || '').toLowerCase();
+        if (!resp.ok) {
+          throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
+        }
+        // Stale portal builds will return the SPA HTML for unknown routes.
+        if (!ctype.includes('application/json')) {
+          throw new Error('Catalog endpoint missing — your portal is running an older build. Stop the portal process and re-run ./doctor.sh portal (or rebuild McpChatWeb).');
+        }
         const data = await resp.json();
         _catalogCache = data;
         return data;
