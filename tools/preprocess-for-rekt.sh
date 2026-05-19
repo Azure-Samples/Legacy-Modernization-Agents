@@ -373,7 +373,7 @@ content = '\n'.join(comment_copy_with_prefix(line) for line in content.split('\n
 def normalize_all_punct(line):
     if len(line) > 6 and line[6] == '*':
         return line
-    return re.sub(r'\bALL\s+\'([^\']+)\'', lambda m: "'" + m.group(1) + "'", line)
+    return re.sub(r'\bALL\s+\'([^\']+)\'', lambda m: \"'\" + m.group(1) + \"'\", line)
 
 content = '\n'.join(normalize_all_punct(line) for line in content.split('\n'))
 
