@@ -417,7 +417,37 @@ public class {{className}} {
 
                 if (endIndex >= 0)
                 {
-                    return input.Substring(startIndex, endIndex - startIndex).Trim();
+                    input = input.Substring(startIndex, endIndex - startIndex).Trim();
+                }
+            }
+        }
+
+        // Defensive: some LLM responses emit two complete class bodies for the
+        // same program — typically when the model hits an internal token limit
+        // mid-output and "restarts" from scratch. Pick the body with balanced
+        // braces (preferring the longer/complete one), not blindly the first.
+        var firstPkg = input.IndexOf("package ", StringComparison.Ordinal);
+        if (firstPkg >= 0)
+        {
+            var afterFirstPkg = input.IndexOf('\n', firstPkg) + 1;
+            if (afterFirstPkg > 0)
+            {
+                var secondPkg = input.IndexOf("package ", afterFirstPkg, StringComparison.Ordinal);
+                if (secondPkg > 0)
+                {
+                    var firstBody = input.Substring(firstPkg, secondPkg - firstPkg);
+                    var secondBody = input.Substring(secondPkg);
+                    bool firstBalanced = firstBody.Count(c => c == '{') == firstBody.Count(c => c == '}');
+                    bool secondBalanced = secondBody.Count(c => c == '{') == secondBody.Count(c => c == '}');
+                    string keep;
+                    if (firstBalanced && !secondBalanced) keep = firstBody;
+                    else if (!firstBalanced && secondBalanced) keep = secondBody;
+                    else keep = secondBody.Length >= firstBody.Length ? secondBody : firstBody;
+                    Logger.LogWarning(
+                        "[JavaConverterAgent] Duplicate 'package …;' detected in LLM output (first={FirstLen}c balanced={FirstBal}, second={SecondLen}c balanced={SecondBal}) — keeping the {Pick}.",
+                        firstBody.Length, firstBalanced, secondBody.Length, secondBalanced,
+                        keep == firstBody ? "first" : "second");
+                    input = keep.TrimEnd();
                 }
             }
         }

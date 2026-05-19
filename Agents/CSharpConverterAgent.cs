@@ -379,9 +379,38 @@ public class {{className}}
                 startIndex += startMarker.Length;
                 int endIndex = input.IndexOf(endMarker, startIndex);
                 if (endIndex >= 0)
-                    return input.Substring(startIndex, endIndex - startIndex).Trim();
+                    input = input.Substring(startIndex, endIndex - startIndex).Trim();
             }
         }
+
+        // Defensive: detect duplicate `namespace …;` declarations from the LLM
+        // emitting two complete bodies (token-limit restart). Keep the one with
+        // balanced braces / the longer (complete) body.
+        var firstNs = input.IndexOf("namespace ", StringComparison.Ordinal);
+        if (firstNs >= 0)
+        {
+            var afterFirstNs = input.IndexOf('\n', firstNs) + 1;
+            if (afterFirstNs > 0)
+            {
+                var secondNs = input.IndexOf("namespace ", afterFirstNs, StringComparison.Ordinal);
+                if (secondNs > 0)
+                {
+                    var firstBody = input.Substring(firstNs, secondNs - firstNs);
+                    var secondBody = input.Substring(secondNs);
+                    bool firstBalanced = firstBody.Count(c => c == '{') == firstBody.Count(c => c == '}');
+                    bool secondBalanced = secondBody.Count(c => c == '{') == secondBody.Count(c => c == '}');
+                    string keep;
+                    if (firstBalanced && !secondBalanced) keep = firstBody;
+                    else if (!firstBalanced && secondBalanced) keep = secondBody;
+                    else keep = secondBody.Length >= firstBody.Length ? secondBody : firstBody;
+                    Logger.LogWarning(
+                        "[CSharpConverterAgent] Duplicate 'namespace …;' detected in LLM output — keeping the {Pick} body.",
+                        keep == firstBody ? "first" : "second");
+                    input = keep.TrimEnd();
+                }
+            }
+        }
+
         return input;
     }
 
