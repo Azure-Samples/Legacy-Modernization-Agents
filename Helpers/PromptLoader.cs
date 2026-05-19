@@ -25,8 +25,29 @@ public static class PromptLoader
             var path = Path.Combine(PromptsDirectory, $"{name}.md");
             if (!File.Exists(path))
                 throw new FileNotFoundException($"Prompt template not found: {path}");
-            return File.ReadAllText(path);
+            return ExpandIncludes(File.ReadAllText(path), depth: 0);
         });
+    }
+
+    /// <summary>
+    /// Expands `{{include path/to/fragment.md}}` directives relative to the
+    /// Agents/Prompts/ directory. Maximum 3 levels of nesting to avoid runaway
+    /// recursion. Missing files render as a comment so the error is visible.
+    /// </summary>
+    private static string ExpandIncludes(string content, int depth)
+    {
+        if (depth > 3) return content; // guard against circular includes
+        return System.Text.RegularExpressions.Regex.Replace(
+            content,
+            @"\{\{\s*include\s+([^}\s]+)\s*\}\}",
+            match =>
+            {
+                var rel = match.Groups[1].Value.Trim();
+                var path = Path.Combine(PromptsDirectory, rel);
+                if (!File.Exists(path))
+                    return $"<!-- include not found: {rel} -->";
+                return ExpandIncludes(File.ReadAllText(path), depth + 1);
+            });
     }
 
     /// <summary>

@@ -6816,6 +6816,7 @@ app.MapGet("/api/prompts", () =>
 			var id = Path.GetFileNameWithoutExtension(file);
 			var friendlyName = System.Text.RegularExpressions.Regex.Replace(id, "([a-z])([A-Z])", "$1 $2");
 			var content = File.ReadAllText(file);
+			content = ExpandPromptIncludes(content, promptsDir, depth: 0);
 
 			// Parse ## SECTION: System and ## SECTION: User
 			var systemPrompt = "";
@@ -8599,6 +8600,24 @@ string ResolveRepoRoot()
 }
 
 app.Run();
+
+// Expand {{include path}} directives in prompt markdown. Mirrors PromptLoader.ExpandIncludes
+// so the Prompt Studio UI shows the same fully-rendered text the runtime sees.
+static string ExpandPromptIncludes(string content, string promptsDir, int depth)
+{
+	if (depth > 3) return content;
+	return System.Text.RegularExpressions.Regex.Replace(
+		content,
+		@"\{\{\s*include\s+([^}\s]+)\s*\}\}",
+		match =>
+		{
+			var rel = match.Groups[1].Value.Trim();
+			var path = Path.Combine(promptsDir, rel);
+			if (!File.Exists(path))
+				return $"<!-- include not found: {rel} -->";
+			return ExpandPromptIncludes(File.ReadAllText(path), promptsDir, depth + 1);
+		});
+}
 
 // ── Prompt generation helper functions ───────────────────────────────────────
 

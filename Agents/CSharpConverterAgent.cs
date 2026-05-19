@@ -171,6 +171,14 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
                             userPromptBuilder.AppendLine("---");
                             userPromptBuilder.AppendLine("REKT STRUCTURAL CONTEXT (authoritative — use this as the conversion blueprint):");
                             userPromptBuilder.AppendLine();
+                            userPromptBuilder.AppendLine("FACT-LOCKING RULES — read these BEFORE looking at the structural context:");
+                            userPromptBuilder.AppendLine("  • Treat the structural context below as GROUND TRUTH.");
+                            userPromptBuilder.AppendLine("  • Every method you emit must map to a section or paragraph listed in the context.");
+                            userPromptBuilder.AppendLine("  • Every field you emit must map to a data-structure entry in the context.");
+                            userPromptBuilder.AppendLine("  • Never invent new fields, methods, classes, SQL operations, or CALL targets that are not present here.");
+                            userPromptBuilder.AppendLine("  • If a name is unclear from the source, prefer the name in the structural context.");
+                            userPromptBuilder.AppendLine("  • If the structural context shows zero items for a category (e.g. no CALL targets), do NOT generate any.");
+                            userPromptBuilder.AppendLine();
                             userPromptBuilder.AppendLine(RektContextFormatter.ToPromptBlock(sc));
                             Logger.LogInformation("[CSharpConverterAgent] Injected REKT context for {File} (provenance={Prov}, confidence={Conf:F2})",
                                 cobolFile.FileName, sc.Provenance, sc.Confidence);

@@ -21,15 +21,7 @@ Return a single JSON object — no Markdown, no commentary:
 
 # Type mapping conventions
 
-| COBOL PIC                     | Java                       | C#               |
-|-------------------------------|----------------------------|------------------|
-| PIC X(n)                      | `String` (length=n)        | `string` (n)     |
-| PIC 9(n)         (n≤9)        | `int`                      | `int`            |
-| PIC 9(n)         (n>9, n≤18)  | `long`                     | `long`           |
-| PIC S9(p)V9(s)                | `BigDecimal` (p+s, s)      | `decimal`        |
-| PIC S9(p) COMP-3              | `BigDecimal` (p, 0)        | `decimal`        |
-| PIC S9(p) COMP / COMP-4       | `int` or `long`            | `int` / `long`   |
-| PIC S9(p) COMP-1 / COMP-2     | `float` / `double`         | `float` / `double` |
+{{include knowledge/cobol-pic-mapping.md}}
 
 # Rules
 
