@@ -2457,6 +2457,28 @@ run_rekt_parse() {
     staged_cpy=$(find "$staging_dir" -maxdepth 1 \( -name "*.cpy" -o -name "*.CPY" \) | wc -l | tr -d ' ')
     echo -e "  ${BLUE}Staged: ${staged_cbl} program(s), ${staged_cpy} copybook(s) → source/.rekt-staging/${NC}"
 
+    # Sanity-check the container can actually see the staging dir. On macOS
+    # Docker Desktop, bind mounts can desync when the host directory's inode
+    # changes (folder recreated, restored from a snapshot, etc.). If that
+    # happens we silently emit empty AST/CFG/DataStructure JSON. Detect and
+    # auto-heal by restarting the container before parsing starts.
+    if [[ "$staged_cbl" -gt 0 ]]; then
+        local container_visible
+        container_visible=$(docker exec "$REKT_CONTAINER" sh -c "ls /source/.rekt-staging 2>/dev/null | wc -l" 2>/dev/null | tr -d ' ')
+        if [[ -z "$container_visible" || "$container_visible" -eq 0 ]]; then
+            echo -e "  ${YELLOW}⚠️  Container can't see /source/.rekt-staging — bind mount is stale. Restarting cobol-rekt…${NC}"
+            docker compose -f "$REPO_ROOT/docker-compose.yml" restart "$REKT_CONTAINER" >/dev/null 2>&1 || true
+            sleep 3
+            container_visible=$(docker exec "$REKT_CONTAINER" sh -c "ls /source/.rekt-staging 2>/dev/null | wc -l" 2>/dev/null | tr -d ' ')
+            if [[ -z "$container_visible" || "$container_visible" -eq 0 ]]; then
+                echo -e "  ${RED}❌ Container still can't see staging files after restart.${NC}"
+                echo -e "     Try: ${BLUE}docker compose down && docker compose up -d${NC} from the repo root."
+                return 1
+            fi
+            echo -e "  ${GREEN}✅ Container now sees ${container_visible} staged file(s).${NC}"
+        fi
+    fi
+
     # Clear previous run outputs first so the missing-copybook report below survives.
     # Use find-delete rather than rm -rf dir to preserve the Docker bind mount (./output/rekt:/output).
     mkdir -p "$REPO_ROOT/output/rekt"
@@ -2467,7 +2489,7 @@ run_rekt_parse() {
     # decide whether to obtain the missing copybooks or accept reduced coverage.
     local missing_report="$REPO_ROOT/output/rekt/missing-copybooks.txt"
     mkdir -p "$REPO_ROOT/output/rekt"
-    "$PYTHON_CMD" - "$staging_dir" "$missing_report" <<'PYEOF' || true
+    "$PYTHON_CMD" - "$staging_dir" "$missing_report" >/dev/null 2>&1 <<'PYEOF' || true
 import os, re, sys
 from collections import defaultdict
 
