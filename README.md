@@ -40,6 +40,7 @@ The migration uses Microsoft.Extensions.AI with a multi-provider architecture su
 - [Customizing Agent Behavior](#-customizing-agent-behavior)
 - [File Splitting & Naming](#-file-splitting--naming)
 - [Architecture](#-architecture)
+  - [REKT-Grounded Conversion Pipeline](#rekt-grounded-conversion-pipeline)
 - [Smart Chunking & Token Strategy](#-smart-chunking--token-strategy)
 - [Build & Run](#-build--run)
 
@@ -793,6 +794,184 @@ Naming strategies are configured in `ConversionSettings`:
 ---
 
 ## 🏗️ Architecture
+
+### REKT-Grounded Conversion Pipeline
+
+The conversion pipeline is structured in five stages. Stage 0 (static analysis)
+produces structural facts that all later stages consume, so generation,
+validation, and reporting share a single source of truth instead of relying on
+the LLM to re-derive structure each turn.
+
+Toggle the structural injection with `ENABLE_REKT_CONTEXT=true`; without it
+the converter falls back to the legacy prompt path. Quality agents (parity,
+reviewer, data-mapping) and the test/fixture agents always run when their
+inputs are available, regardless of the flag.
+
+```mermaid
+flowchart LR
+    subgraph Stage0["Stage 0 — Static analysis (Cobol-REKT)"]
+        SRC[("source/*.cbl, *.cpy<br/>*.bms, *.psb")]
+        SRC --> PREP[Preprocessor<br/>strip EXEC CICS/DLI,<br/>normalise dialect]
+        PREP --> SMOJOL[smojol parser]
+        SMOJOL --> RAW[("output/rekt/<br/>flow-ast / flow-data / deps")]
+        RAW --> NEO[(Neo4j<br/>graph)]
+        RAW --> TGT[output/rekt/<br/>target-architecture.json]
+    end
+
+    subgraph Stage1["Stage 1 — Selection &amp; context"]
+        SEL[Program selector<br/>CLI flags / Portal modal]
+        LOADER[RektContextLoader +<br/>StructuralContextProvider]
+        BMS[BmsReader]
+        IMS[ImsReaders]
+        STRUCT[StructuralExtractorAgent<br/>fallback when REKT incomplete]
+        SEL --> LOADER
+        RAW --> LOADER
+        TGT --> LOADER
+        BMS --> LOADER
+        IMS --> LOADER
+        LOADER -. when sparse .-> STRUCT
+        STRUCT --> LOADER
+    end
+
+    subgraph Stage2["Stage 2 — Conversion"]
+        CONV[Java / C# Converter<br/>prompt + REKT context block]
+        OUT[(output/java<br/>output/csharp)]
+        LOADER --> CONV
+        CONV --> OUT
+    end
+
+    subgraph Stage3["Stage 3 — Quality validation"]
+        PAR[ConversionParityAgent]
+        REV[CodeReviewerAgent]
+        DMAP[DataMappingAgent]
+        OUT --> PAR
+        OUT --> REV
+        OUT --> DMAP
+        LOADER --> PAR
+        LOADER --> DMAP
+    end
+
+    subgraph Stage4["Stage 4 — Tests &amp; fixtures"]
+        TST[TestSynthesizerAgent]
+        FIX[RegressionFixtureAgent<br/>deterministic]
+        OUT --> TST
+        OUT --> FIX
+        LOADER --> TST
+    end
+
+    subgraph Stage5["Stage 5 — Reporting"]
+        SUM[MigrationSummaryAgent]
+        DOC[DocumentationAgent]
+        PAR --> SUM
+        REV --> SUM
+        DMAP --> SUM
+        TST --> SUM
+        FIX --> SUM
+        SUM --> DOC
+        DOC --> REPORT[(reports/<br/>chat logs)]
+    end
+
+    PORTAL[McpChatWeb portal<br/>Convert modal +<br/>program search] --> SEL
+    DOCSH[doctor.sh<br/>--program / --transaction /<br/>--wave / --keyword] --> SEL
+```
+
+The component view below shows where each new helper and agent lives in the
+codebase and which artefacts cross stage boundaries.
+
+```mermaid
+flowchart TB
+    subgraph Helpers["Helpers/ — deterministic"]
+        RC[RektContext]
+        RCL[RektContextLoader]
+        SCP[StructuralContextProvider]
+        BMSR[BmsReader]
+        IMSR[ImsReaders]
+        RFA[RegressionFixtureAgent]
+    end
+
+    subgraph Agents["Agents/ — LLM-backed"]
+        SEA[StructuralExtractorAgent]
+        JCA[JavaConverterAgent]
+        CSA[CSharpConverterAgent]
+        CPA[ConversionParityAgent]
+        CRA[CodeReviewerAgent]
+        DMA[DataMappingAgent]
+        TSA[TestSynthesizerAgent]
+        MSA[MigrationSummaryAgent]
+        DOA[DocumentationAgent]
+    end
+
+    subgraph Portal["McpChatWeb/"]
+        PSS[ProgramSelectorService]
+        API["/api/programs/search<br/>/api/runs/convert"]
+        UI[convert-modal.js<br/>+ help panel]
+        UI --> API --> PSS
+    end
+
+    subgraph CLI["doctor.sh"]
+        FLAGS[--program / --transaction<br/>--wave / --target / --keyword<br/>--max-validator-retries<br/>--min-program-score]
+    end
+
+    subgraph Data["Artefacts"]
+        REKT[(output/rekt/)]
+        TARG[(target-architecture.json)]
+        OUTJ[(output/java &amp; csharp)]
+        REP[(reports/)]
+        SQL[(Data/migration.db<br/>scan runs, business logic)]
+    end
+
+    REKT --> RCL --> RC
+    TARG --> RCL
+    BMSR --> RC
+    IMSR --> RC
+    SCP --> RC
+
+    PSS --> RCL
+    FLAGS --> RCL
+
+    RC --> JCA
+    RC --> CSA
+    RC --> CPA
+    RC --> DMA
+    RC --> TSA
+    RC -. fallback .-> SEA --> RC
+
+    JCA --> OUTJ
+    CSA --> OUTJ
+
+    OUTJ --> CPA --> MSA
+    OUTJ --> CRA --> MSA
+    OUTJ --> DMA --> MSA
+    OUTJ --> TSA --> MSA
+    OUTJ --> RFA --> MSA
+    MSA --> DOA --> REP
+
+    JCA -. de-dupes LLM<br/>token-limit restart .-> JCA
+    CSA -. de-dupes LLM<br/>token-limit restart .-> CSA
+
+    JCA --> SQL
+    CSA --> SQL
+    MSA --> SQL
+```
+
+Key invariants:
+- **Provenance is tagged** — every field in `RektContext` carries
+  `None | RektPartial | RektFull | StructuralExtractor`, so downstream agents
+  know whether to trust a fact or treat it as a hypothesis.
+- **Quality agents are read-only** — they never rewrite generated code; they
+  emit scores and findings that the validator loop consumes via
+  `--max-validator-retries` and `--min-program-score`.
+- **Converter output is post-processed** — `ExtractJavaCode` /
+  `ExtractCSharpCode` detect the LLM token-limit restart pattern (two
+  `package` / `namespace` declarations) and keep the complete body.
+- **Selection is unified** — CLI flags and the portal modal both route through
+  `ProgramSelectorService`, so a search expression behaves identically in
+  either entry point.
+
+See [docs/rekt-grounded-conversion.md](docs/rekt-grounded-conversion.md) for
+the full per-agent contract, prompt locations, and provenance rules.
+
+---
 
 ### Hybrid Database Architecture
 

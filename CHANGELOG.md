@@ -39,6 +39,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 **Phase 5 — Pipeline integration**
 - `Agents/JavaConverterAgent.cs` + `Agents/CSharpConverterAgent.cs` inject the REKT structural-context block (sections, perform graph, CALL targets, SQL, data layout, target plan, migration notes) into the per-program conversion prompt when `ENABLE_REKT_CONTEXT=true`. Provenance flag is logged per file so users see whether the LLM had authoritative structure or just a target plan.
 
+#### Documentation
+
+- `README.md` — added "REKT-Grounded Conversion Pipeline" section under Architecture with two mermaid diagrams: (a) the five-stage pipeline flow (static analysis → selection → conversion → quality validation → tests/fixtures → reporting) and (b) the component view mapping every new helper / agent to its artefacts and data stores.
+
+### Fixed
+
+- `Agents/JavaConverterAgent.cs` + `CSharpConverterAgent.cs` — `ExtractJavaCode` / `ExtractCSharpCode` now detect when the LLM hits an internal token limit mid-output and silently restarts. The response contains two complete bodies concatenated; the first is truncated mid-method (unbalanced braces), the second is the full restart. Logic compares brace-balance + length of both halves and keeps the complete one. Logged at warn so the symptom remains visible.
+
 ### Fixed
 - **SQLite UNIQUE constraint failure on re-runs** — `SqliteMigrationRepository.SaveBusinessLogicAsync` now de-duplicates by `file_name` within a batch before insert. Earlier code tripped `UNIQUE constraint failed: business_logic.run_id, business_logic.file_name` when the analyzer emitted the same file twice (e.g. raw source + preprocessed copy).
 
