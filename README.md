@@ -13,26 +13,85 @@ The migration uses Microsoft.Extensions.AI with a multi-provider architecture su
 > | 2 | **Static analysis (REKT)** | `./doctor.sh rekt-full` | Parses every program with smojol, writes AST/CFG/data-flow JSON to `output/rekt/`, ingests into Neo4j, and starts the portal. **Do this once per source change.** |
 > | 3 | **Save the target plan** | Open the portal → **Target Architecture** tab → click **💾 Save for AI agent** | Writes `output/rekt/target-architecture.json`. Required for wave / target-component selection in step 4. |
 > | 4 | **Pick what to convert** | Portal → **🛠️ Convert…** button (or CLI flags below) | Opens the Convert modal. Dropdowns are pre-populated from the REKT catalog — pick a program, a CICS transaction, a wave, or a target component. |
-> | 5 | **Run the focused conversion** | Click **🚀 Start conversion** (or `./doctor.sh run` with selector flags) | Stages just the selected files into a temp folder and runs the full migration pipeline (RE + REKT context injection + Java/C# converter + parity validator + tests + reports). |
-> | 6 | **Inspect results** | Portal → **Migration Monitor** / **Reverse Engineering Results** / `output/java` / `output/csharp` | View converted code, parity scores, generated tests, and architecture docs. |
+> | 5 | **Run the focused conversion** | Click **🚀 Start conversion** (or `./doctor.sh convert-only` with selector flags) | Stages just the selected files into a temp folder and runs the conversion pipeline (REKT context injection + Java/C# converter + shared-types registry). |
+> | 6 | **Inspect results** | Portal → **Mission Control → Run Output** / `output/java` / `output/csharp` | View converted code, run logs, and architecture docs. |
 >
-> **Equivalent CLI for step 4 + 5** — same selector, no portal needed:
+> ### CLI quick reference
+>
+> **REKT static analysis** (step 2):
 > ```bash
-> # By program name
-> ./doctor.sh run --program T6608031 --target-language Java
+> # Full pipeline: parse → ingest into Neo4j → launch portal
+> ./doctor.sh rekt-full
 >
-> # By CICS transaction (scans source for EXEC CICS RETURN TRANSID / LINK PROGRAM)
+> # Parse only (no Neo4j ingest)
+> ./doctor.sh rekt-parse
+>
+> # Ingest only (after a manual parse)
+> ./doctor.sh rekt-ingest
+>
+> # Check scan status
+> ./doctor.sh rekt-status
+> ```
+>
+> **Convert selected programs** (steps 4 + 5):
+> ```bash
+> # Convert one program to C# — fastest path (skips RE)
+> ./doctor.sh convert-only --program ACCTMGR
+>
+> # Convert to Java with full RE analysis
+> ./doctor.sh run --program ACCTMGR
+>
+> # Multiple programs (OR-combined)
+> ./doctor.sh convert-only --program CUSTINQ --program RPTGEN
+>
+> # By CICS transaction code (scans for EXEC CICS RETURN TRANSID / LINK PROGRAM)
 > ./doctor.sh run --transaction CT01 --include-callees
 >
 > # By migration wave from target-architecture.json
 > ./doctor.sh run --wave 1 --target svc-data
 >
-> # By keyword in source
+> # By keyword in source (whole-word, case-insensitive)
 > ./doctor.sh run --keyword CUSTOMER --min-program-score 0.75
-> ```
-> Each flag is repeatable; **same flag = OR, different flags = AND**. Add `--include-callees` / `--include-callers` to walk the CALL graph.
 >
-> **Skip step 2** if you only want to convert without REKT context (legacy behaviour): just run `./doctor.sh run`. The conversion will still work — it just won't have the REKT structural facts injected, and the wave / target / transaction selectors won't have anything to resolve against.
+> # Convert everything a program calls (transitively)
+> ./doctor.sh convert-only --program ACCTMGR --include-callees
+>
+> # Convert everything that calls into a program
+> ./doctor.sh convert-only --program ACCTMGR --include-callers
+>
+> # Pure-LLM mode (skip REKT injection — A/B testing or no scan yet)
+> ./doctor.sh run --program ACCTMGR --no-rekt-context
+> ```
+>
+> **Selector logic**: same flag repeated = **OR**, different flags = **AND**.
+> Example: `--program A --program B` → A or B. `--wave 1 --target svc-data` → wave 1 AND svc-data.
+>
+> ### Flag reference
+>
+> | Flag | Default | What it does |
+> |---|---|---|
+> | **Selector flags** (for `run` / `convert-only`) | | |
+> | `--program NAME` | — | Convert a specific program (repeatable) |
+> | `--transaction TRANID` | — | Convert programs using a CICS transaction |
+> | `--wave N` | — | Convert programs in migration wave N (needs target-architecture.json) |
+> | `--target COMPONENT` | — | Convert programs mapped to a target component (e.g. `svc-data`) |
+> | `--keyword TEXT` | — | Convert programs containing a whole-word match |
+> | `--include-callees` | off | Also convert programs the selection calls (transitively) |
+> | `--include-callers` | off | Also convert programs that call into the selection |
+> | **Quality flags** | | |
+> | `--rekt-context` | **on** | REKT structural facts + FACT-LOCKING rules + shared-types registry |
+> | `--no-rekt-context` | off | Pure-LLM mode (no REKT). For A/B testing or when no scan exists |
+> | `--fallback-to-ai` | off | Use LLM to derive structure when smojol can't parse a program |
+> | `--max-validator-retries N` | 1 | Parity validator re-prompt attempts |
+> | `--min-program-score 0.75` | 0 | Per-program parity score gate (0 = off) |
+> | `--on-low-score continue\|stop` | continue | What to do when a file misses the score |
+> | **Provider flags** | | |
+> | `--copilot-safe` | auto | Force Copilot-safe mode (small chunks, sequential) |
+> | `--copilot-unsafe` | — | Disable Copilot-safe overrides (use full chunk sizes) |
+> | `LLM_CALL_TIMEOUT_SECONDS=N` | 240 | Hang-timeout per LLM call (env var, not a flag) |
+>
+> Selector mode **auto-skips standalone copybook analysis** so a one-program run finishes in minutes instead of hours.
+> Pair `convert-only` + a selector for the fastest feedback loop.
 >
 > Full reference: [docs/rekt-grounded-conversion.md](docs/rekt-grounded-conversion.md).
 
@@ -80,6 +139,8 @@ The migration uses Microsoft.Extensions.AI with a multi-provider architecture su
 ---
 
 ## 🚀 Quick Start
+
+> **CLI-focused guide**: See [`docs/quick-start.md`](docs/quick-start.md) for a step-by-step walkthrough of REKT scan → program selection → conversion using CLI flags.
 
 ### Prerequisites
 

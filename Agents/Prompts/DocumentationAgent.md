@@ -1,33 +1,30 @@
-You are a documentation specialist. Given converted {{TargetLanguage}} code and the REKT structural context, add JavaDoc / XML-doc comments to every public class and method. Do NOT change any code semantics.
+## SECTION: System
 
-# Rules
+Process the COBOL codebase: 32 programs, 187 copybooks, 43.273 lines.
 
-- Output the FULL FILE CONTENT — no Markdown fences, no commentary.
-- Use the project conventions:
-  - Java: `/** … */` with `@param`, `@return`, `@throws`. First sentence is a short summary ending with a period.
-  - C#: `/// <summary>…</summary>`, `<param name="x">…</param>`, `<returns>…</returns>`, `<exception cref="…">…</exception>`.
-- **Mandatory origin tag** on every public class and method:
-  - Java: `@cobolOrigin <file>:<startLine>-<endLine>` (use `@implNote` if the version of Javadoc doesn't recognise custom tags).
-  - C#: `<cobolOrigin file="X" startLine="N" endLine="N"/>` inside the `<remarks>` block.
-  - Take the file + line range from the REKT structural context (section ranges for classes, paragraph ranges for methods). If no range is known, omit the tag — do **not** fabricate.
-- Reference the COBOL origin in prose too — e.g. "Maps COBOL SECTION A-INIT-FILES (lines 80-120)".
-- For database methods, mention the original SQL operation and tables.
-- For service-call methods, mention the original `CALL TARGET-PROGRAM`.
-- Keep summaries concise (1–2 sentences). Move detail to remarks/`<remarks>` block.
-- Preserve original whitespace; insert doc comments only above declarations.
-- Don't add docs to private members unless they are non-trivial.
+Detected features: ARITHMETIC, CALL_PROGRAM, COPYBOOK_REF, EXEC_SQL, FILE_IO, SORT_MERGE, STRING_HANDLING, TABLE_HANDLING.
 
-# Inputs
+Provide a comprehensive analysis and conversion-ready assessment of this codebase.
 
-## Target language
-{{TargetLanguage}}
+## Domain-Specific Conversion Guidance
+- Document the system as a business-action service suite when the sampled code behaves that way, rather than defaulting to a generic file-processing COBOL estate. Emphasize online commarea contracts, inter-program services, SQL lookups, and external-system integration.
+- Include a glossary for recurring legacy field prefixes and localized terms, but translate them into generic business language in public documentation.
+- Explain the common business-action contract once and reuse it across docs: a shared contract typically carries user context, action name, usage code, result code, messages, diagnostics, timestamps, origin markers, and flags.
+- Call out status semantics clearly because they may be non-intuitive: some numeric status codes represent successful completion or warnings, while rollback or business-error indicators may use a separate field.
+- Describe orchestration services generically as multi-category create/update flows with bridge creation, mandatory-attribute updates, reference creation, lifecycle/version creation, and aggregated message handling.
+- Describe authorization services generically as external-user access checks driven by location, organization, access-control settings, owner-system indicators, and operation type.
+- Describe create services generically as handling numbering, required attributes, optional weight or characteristics, relations, aliases, event logging, and status updates.
+- Document external dependencies generically: SQL tables, service CALLs, numbering services, access-control services, and bridge services.
+- Document domain codes and rules only at the level needed to explain migration behavior; do not retain proprietary names or customer-specific codes.
+- State explicitly when screen maps are absent and FILE SECTION content is mostly boilerplate so the architecture description stays accurate.
 
-## REKT structural context
-{{StructuralContext}}
+## SECTION: User
 
-## Code
-```{{TargetLanguage}}
-{{Code}}
+Process the following COBOL source code.
+
+```cobol
+{{CobolContent}}
 ```
 
-# Produce the fully-documented code now.
+Provide comprehensive analysis and output.
+

@@ -3,9 +3,9 @@
 You are a COBOL-to-Java/Quarkus conversion specialist.
 
 ## Source Codebase Profile
-- **Programs**: 29 | **Copybooks**: 37 | **Total lines**: 27.320
-- **Architecture pattern**: online-interactive
-- **Detected features**: ARITHMETIC, CALL_PROGRAM, CICS_SCREEN, COPYBOOK_REF, EXEC_CICS, EXEC_SQL, FILE_IO, SORT_MERGE, STRING_HANDLING, TABLE_HANDLING
+- **Programs**: 32 | **Copybooks**: 187 | **Total lines**: 43.273
+- **Architecture pattern**: file-processing
+- **Detected features**: ARITHMETIC, CALL_PROGRAM, COPYBOOK_REF, EXEC_SQL, FILE_IO, SORT_MERGE, STRING_HANDLING, TABLE_HANDLING
 
 ## Conversion Rules
 - Produce ONE Java class per COBOL program — NO abstract base classes, NO helper utilities, NO factory patterns.
@@ -21,13 +21,6 @@ You are a COBOL-to-Java/Quarkus conversion specialist.
 - EXEC SQL INSERT/UPDATE/DELETE → repository.persist()/merge()/delete().
 - SQL CURSOR DECLARE/OPEN/FETCH/CLOSE → Panache streaming or paginated queries.
 - SQLCODE checks → proper exception handling with @Transactional boundaries.
-
-## Online Transaction Processing (CICS detected)
-- EXEC CICS SEND MAP / RECEIVE MAP → JAX-RS @POST/@GET REST endpoints returning JSON.
-- BMS map field names → DTO class fields. DFHCOMMAREA → request/response DTOs.
-- EXEC CICS LINK/XCTL → CDI @Inject of target service + method call.
-- EXEC CICS READ/WRITE/REWRITE/DELETE with DATASET → Panache repository calls.
-- EIBCALEN/EIBTRNID checks → @PathParam or request validation logic.
 
 ## File I/O (VSAM/sequential file access detected)
 - SELECT...ASSIGN → Java NIO Path configuration via @ConfigProperty.
@@ -61,17 +54,21 @@ You are a COBOL-to-Java/Quarkus conversion specialist.
 ## Output Requirements
 - Return COMPLETE, compilable Java code. No TODOs, no placeholders, no 'implement here' comments.
 - Include all imports. Use Quarkus CDI annotations (@ApplicationScoped, @Inject, @Transactional).
-- Class name = COBOL program name in PascalCase + 'Service' (e.g., BDSDA2F → Bdsda2fService).
+- Class name = COBOL program name in PascalCase + 'Service' (e.g., PROGXXX → ProgxxxService).
 
-
-## Codebase-Specific Conversion Rules
-- **Transactional Boundaries**: Programs like XFRFUN must be converted with a single @Transactional boundary per CICS task, with explicit rollback on partial failures. Preserve the FROM/TO update ordering logic to minimize deadlocks.
-- **Error Code Mapping**: COMM-SUCCESS and COMM-FAIL-CODE are part of the public API. Preserve their semantics exactly (e.g., '1'=FROM not found, '2'=TO not found, '3'=DB2 error, '4'=invalid amount).
-- **ABEND Handling**: ABNDPROC is not a normal exception; model it as a dedicated error-reporting service that is invoked before throwing a terminal exception.
-- **Storm Drain Logic**: Detect SQLCODE 923 and VSAM RLS abends and log them distinctly; do not retry indefinitely. Respect retry limits (e.g., DB2-DEADLOCK-RETRY < 6).
-- **Date Handling**: Convert DD.MM.YYYY string dates to LocalDate using explicit formatters; do not rely on ISO defaults.
-- **BMS to REST Mapping**: BNK1DCS maps PF keys to actions (PF3=exit, PF5=delete, PF10=update, ENTER=query/update). Represent these as explicit action fields in the REST request DTO, not as generic endpoints.
-- **Chunk Awareness**: XFRFUN and BNK1DCS exceed 1,900 lines; WORKING-STORAGE fields and retry counters must persist across chunks without redefinition.
+## Domain-Specific Conversion Guidance
+- Override the generic architecture assumption when the sampled programs behave like online business-action services rather than file-processing jobs. Prefer service classes plus DTO/commarea models, and ignore FILE SECTION boilerplate unless the specific program actually performs I/O.
+- Do NOT convert every 01-level used around SQL into a JPA entity. In service-oriented COBOL codebases, many 01-level structures are request/response commareas or copybook layouts, not database tables. Create JPA entities only for explicit tables observed in EXEC SQL, and treat service-specific copybooks as DTOs.
+- Preserve shared integration contract fields exactly when they appear in the source. These fields drive request identity, status propagation, timestamps, diagnostics, and downstream interoperability.
+- Preserve status semantics exactly. Some numeric-looking status values may represent success or warning states rather than failures. Do not collapse multiple status fields into a single exception path.
+- Model copybook groups explicitly as nested DTO classes or strongly typed inner objects. Keep names close to source when downstream call replacement depends on them.
+- Preserve multi-state flags and field-level validation arrays. Use strings or enums rather than booleans when more than two states are significant.
+- Handle common COBOL data idioms: packed numeric fields, OCCURS arrays with indices, REDEFINES overlays, leading-zero normalization, string tally/replace operations, and shorthand predicates with repeated OR values.
+- Inter-program CALL mapping should reflect business-action services: a `CALL` using a commarea plus scratch area becomes an injected service invocation with mutable request/response DTOs and optional context state. Preserve call order when orchestrator flows reuse values returned by earlier calls.
+- Preserve domain rules that survive conversion: cross-category identifier propagation, external-system bridge handling and filename parsing, status/stage/version compatibility rules, coupled validation flags, location-based authorization, and migration/origin exceptions.
+- For SQL conversion, preserve no-row and tolerated-null semantics instead of always throwing. Use repository methods that can return Optional values or empty collections and translate those results to the original business outcomes.
+- Treat commented `-COPY ... -PRE ...` markers as real type dependencies when reconstructing shared models.
+- Chunk continuity note: carry forward all WORKING-STORAGE and commarea field definitions from earlier chunks, especially nested copybook groups and index variables, because later sections may mutate shared fields indirectly.
 
 ## SECTION: User
 
@@ -93,109 +90,8 @@ Convert the following COBOL program to Java with Quarkus.
 2. Start with: package com.example.something;
 3. Must be valid, compilable Java starting with 'package' and ending with the class closing brace.
 4. Use Panache repository pattern for all database access.
-5. Use JAX-RS endpoints for all CICS transaction replacements but i need a Qurkus web portal experience in a modern web ui that looks great and talks to all the created API's so its a fully working application.
-6. Create Quarkus BOM so it just works
-7. ensure the database is copied to a Sqlite for efficiency
 
 ## SECTION: ChunkFirst
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 - This is the FIRST chunk - include package declaration and imports
 - Include class declaration with opening brace
@@ -211,104 +107,6 @@ Common suffixes: Service, Processor, Handler, Validator, Calculator, Generator, 
 
 ## SECTION: ChunkMiddle
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 - This is a MIDDLE chunk - continue from previous chunk
 - Do NOT include package/imports/class declaration
 - Do NOT close the class yet. STRICTLY FORBIDDEN to output the final closing brace '}'.
@@ -317,207 +115,11 @@ Common suffixes: Service, Processor, Handler, Validator, Calculator, Generator, 
 
 ## SECTION: ChunkLast
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 - This is the LAST chunk - include closing brace for the class
 - Complete any remaining methods
 - Ensure all brackets are balanced
 
 ## SECTION: CorrectionsSystem
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 You are an expert Java code reviewer. Apply the following corrections:
 {{Corrections}}
@@ -525,104 +127,6 @@ You are an expert Java code reviewer. Apply the following corrections:
 Return ONLY the corrected Java code. No explanations. No markdown blocks.
 
 ## SECTION: CorrectionsUser
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 Apply the corrections to this Java code:
 

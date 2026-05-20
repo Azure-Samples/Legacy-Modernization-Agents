@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Conversion-quality + speed improvements (May 2026 v2)
+
+- `Helpers/SharedTypeRegistry.cs` + `SharedTypeRegistryHolder` — deterministic pre-pass that scans `source/`, finds copybooks referenced by ≥2 programs, and emits a "DO NOT REDECLARE — these types already exist" block into every converter prompt. Closes the **CS0101 / duplicate-class** failure mode that hit the 65-file C# batch (5 duplicate type definitions in `CobolMigration.Models`).
+- `Helpers/RektPromptInjector.cs` — shared injection helper used by all four converter agents (`JavaConverterAgent`, `CSharpConverterAgent`, `ChunkAwareJavaConverter`, `ChunkAwareCSharpConverter`) so the REKT context + shared-types registry stay consistent. Previously the chunk-aware variants had **no** REKT injection at all.
+- `--rekt-context` / `--no-rekt-context` flags on `doctor.sh run` / `convert-only`. Default ON; banner fires only on conversion commands.
+  - `--rekt-context` (default): inject REKT structural facts + FACT-LOCKING rules + shared-types registry. Recommended whenever `rekt-full` has been run.
+  - `--no-rekt-context`: pure-LLM mode. Faster per call but lower fidelity. For A/B testing prompts or when no scan exists.
+- `SELECTOR_MODE=true` is exported automatically when any selector flag is used. `Helpers/FileHelper.cs` reads it and **skips standalone `.cpy` analysis** — the converter still reads `.cpy` content as COPY context, but we don't waste an analyzer LLM call per copybook. Effect: `convert-only --program X` finishes in **minutes instead of an hour**.
+- `convert-only` now accepts every selector flag (was previously only on `run`). Pair with the interactive "reuse cached RE" prompt for fastest possible turnaround.
+- `doctor.sh` `run` / `convert-only` honour `COBOL_SOURCE_FOLDER` env (set by the selector pre-pass) so the dotnet invocation reads from the staging folder, not the whole `source/`.
+
+#### Portal — Convert modal updates
+
+- New checkbox **"REKT structural context"** (default ON) wired through `POST /api/runs/convert` → `ENABLE_REKT_CONTEXT` env. Mirrors the CLI `--rekt-context` / `--no-rekt-context` flags.
+- `POST /api/runs/convert` now exports `SELECTOR_MODE=true` and the REKT context flag so selector-driven runs from the portal behave identically to CLI selector runs.
+- Help-panel text updated to explain the REKT-context toggle and the "selector mode skips copybook re-analysis" speedup.
+- `?v=20260519g` cache bust.
+
+#### Documentation
+
+- `README.md` — order-of-operations table updated: the equivalent CLI block now shows `convert-only --program PROGNAME` as the fastest path, calls out the selector-mode copybook skip, and adds a dedicated `--rekt-context` / `--no-rekt-context` reference table.
+
 #### Agent quality pass + Prompt Studio platform
 
 **Per-agent prompt improvements**

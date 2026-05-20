@@ -185,18 +185,38 @@ public static class RektContextFormatter
 
         if (ctx.DataStructure.Count > 0)
         {
-            sb.AppendLine();
-            sb.AppendLine($"DATA STRUCTURE ({ctx.DataStructure.Count} top-level groups):");
-            foreach (var d in ctx.DataStructure.Take(8))
-                RenderDataItem(sb, d, indent: 2);
-            if (ctx.DataStructure.Count > 8)
-                sb.AppendLine($"  … and {ctx.DataStructure.Count - 8} more top-level groups");
+            // Filter out smojol artefacts (level -1, TypedRecord noise) and FILLER-only groups.
+            var meaningful = ctx.DataStructure
+                .Where(d => d.Level >= 0 && !d.Name.StartsWith("TypedRecord") && d.Name != "FILLER")
+                .ToList();
+
+            if (meaningful.Count > 0)
+            {
+                sb.AppendLine();
+                sb.AppendLine($"DATA STRUCTURE ({meaningful.Count} groups — generate a DTO/record class for each):");
+                sb.AppendLine("  Each top-level group (01-level) should become a separate class/record.");
+                sb.AppendLine("  Use the field names and PIC clauses below to derive the correct types.");
+                sb.AppendLine("  If a group comes from a COPY (copybook), name the class after the copybook.");
+                sb.AppendLine();
+                foreach (var d in meaningful)
+                {
+                    // For large groups (>50 fields), show only top 2 levels to
+                    // keep the prompt under the model's effective budget. The
+                    // converter should generate ALL fields in the DTO, using
+                    // the COBOL source for the full detail.
+                    int totalFields = CountFields(d);
+                    int maxDepth = totalFields > 50 ? 10 : 30;
+                    RenderDataItem(sb, d, indent: 2, maxChildren: maxDepth);
+                    if (totalFields > 50)
+                        sb.AppendLine($"    … {totalFields} fields total — generate ALL in the DTO using the COBOL source for complete field list");
+                }
+            }
         }
 
         return sb.ToString();
     }
 
-    private static void RenderDataItem(System.Text.StringBuilder sb, RektDataItem d, int indent)
+    private static void RenderDataItem(System.Text.StringBuilder sb, RektDataItem d, int indent, int maxChildren = 30)
     {
         var pad = new string(' ', indent);
         var pic = d.PicClause != null ? $" {d.PicClause}" : "";
@@ -204,8 +224,15 @@ public static class RektContextFormatter
         var redef = d.Redefines != null ? $" REDEFINES {d.Redefines}" : "";
         var occ = d.Occurs.HasValue ? $" OCCURS {d.Occurs}" : "";
         sb.AppendLine($"{pad}{d.Level:00} {d.Name}{pic}{usage}{redef}{occ}");
-        foreach (var c in d.Children.Take(5)) RenderDataItem(sb, c, indent + 2);
-        if (d.Children.Count > 5)
-            sb.AppendLine($"{pad}  … and {d.Children.Count - 5} more child fields");
+        foreach (var c in d.Children.Take(maxChildren)) RenderDataItem(sb, c, indent + 2, maxChildren);
+        if (d.Children.Count > maxChildren)
+            sb.AppendLine($"{pad}  … and {d.Children.Count - maxChildren} more child fields");
+    }
+
+    private static int CountFields(RektDataItem d)
+    {
+        int count = 1;
+        foreach (var c in d.Children) count += CountFields(c);
+        return count;
     }
 }

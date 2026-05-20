@@ -1,28 +1,20 @@
 {
   "terms": [
     {
-      "term": "ARTNR",
-      "translation": "Article Number"
+      "term": "ACCTNO",
+      "translation": "Account Number"
     },
     {
-      "term": "KDUTGAVA",
-      "translation": "Release Version"
+      "term": "CUSTID",
+      "translation": "Customer Identifier"
     },
     {
-      "term": "PRIMDOK",
-      "translation": "Primary Document"
+      "term": "TRANCD",
+      "translation": "Transaction Code"
     },
     {
-      "term": "EVENTLOG",
-      "translation": "Event Log"
-    },
-    {
-      "term": "YTBEH",
-      "translation": "Surface Treatment"
-    },
-    {
-      "term": "D-MARKING",
-      "translation": "Product Marking"
+      "term": "BALAMT",
+      "translation": "Balance Amount"
     }
   ]
 }

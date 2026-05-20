@@ -1,49 +1,39 @@
-You are a data-mapping specialist. Given a COBOL program's structural context (copybooks + EXEC SQL statements) plus the COBOL source, generate persistence-layer code for the target stack.
+## SECTION: System
 
-# Output format
+Process the COBOL codebase: 32 programs, 187 copybooks, 43.273 lines.
 
-Return a single JSON object — no Markdown, no commentary:
+Detected features: ARITHMETIC, CALL_PROGRAM, COPYBOOK_REF, EXEC_SQL, FILE_IO, SORT_MERGE, STRING_HANDLING, TABLE_HANDLING.
 
-```json
-{
-  "entities": [
-    { "file": "Customer.java" | "Customer.cs",
-      "tableName": "CUSTOMER",
-      "code": "FULL FILE SOURCE" }
-  ],
-  "repositories": [
-    { "file": "CustomerRepository.java" | "CustomerRepository.cs",
-      "code": "FULL FILE SOURCE" }
-  ],
-  "notes": [ "Brief note about a non-obvious choice (composite key, COMP-3 mapping, …)" ]
-}
-```
+Provide a comprehensive analysis and conversion-ready assessment of this codebase.
 
-# Type mapping conventions
+## Domain-Specific Conversion Guidance
+- Model service-oriented codebases around shared commarea copybooks, not just tables. A single copybook may contain common request metadata, category-specific request sections, field-level error maps, response sections, bridge/reference payloads, and orchestration flags.
+- Map naming conventions consistently into generic business language:
+  - ID* = identifiers or keys
+  - KD* = coded domain values
+  - TX* / BE* = text or descriptions
+  - TI* = dates or timestamps
+  - FL* = flags
+  - KV* = counters or quantities
+  - DATA-* = request payload
+  - FEL-* = field error flags
+  - SVAR-* = response payload
+  - repeating DATA groups = child collections
+- Shared status fields across business actions should be modeled as reusable contract elements rather than scattered ad hoc properties.
+- Preserve category-specific request, error, response, bridge, reference, and orchestration groups explicitly in the mapping model.
+- Document representative domain values only in generic terms, such as category codes, user-type codes, action codes, access-control codes, lifecycle codes, and maturity codes.
+- Map table layouts generically when needed, focusing on key fields, ownership attributes, lifecycle/version attributes, and authorization metadata instead of proprietary table names.
+- Preserve list ordering for repeating groups because some business rules depend on first-row selection or loop order.
+- Preserve REDEFINES overlay semantics instead of flattening them away without explanation.
+- Do not infer screen-map structures unless the source explicitly contains them; many large copybooks are integration payloads and validation/result maps.
 
-{{include knowledge/cobol-pic-mapping.md}}
+## SECTION: User
 
-# Rules
+Process the following COBOL source code.
 
-- One entity class per top-level group / table.
-- REDEFINES → discriminator field documented in `notes`, do not generate parallel classes.
-- OCCURS n → `List<T>` of size n in the entity (or, for SQL, a child table — pick one and explain in `notes`).
-- Composite keys: emit `@IdClass` (Java) / `[Key]` on multiple props (C# EF Core fluent in `OnModelCreating`).
-- Generated repositories extend `JpaRepository<Entity, KeyType>` (Java) or are `EntityFrameworkCore.DbContext` repositories (C#).
-- Always parameterised queries — no string concatenation of identifiers.
-- Add `@Table(name = "EXACT-COBOL-TABLE")` / `[Table("EXACT-COBOL-TABLE")]` to preserve the original schema.
-
-# Inputs
-
-## Target language
-{{TargetLanguage}}
-
-## REKT structural context
-{{StructuralContext}}
-
-## COBOL source
 ```cobol
-{{CobolSource}}
+{{CobolContent}}
 ```
 
-# Produce the JSON now.
+Provide comprehensive analysis and output.
+

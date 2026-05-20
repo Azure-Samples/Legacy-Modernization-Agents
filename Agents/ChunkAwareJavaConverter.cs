@@ -128,7 +128,7 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
         try
         {
             var systemPrompt = BuildChunkAwareSystemPrompt(chunk, context);
-            var userPrompt = BuildChunkAwareUserPrompt(chunk, context);
+            var userPrompt = await BuildChunkAwareUserPromptAsync(chunk, context);
             
             EnhancedLogger?.LogBehindTheScenes("AI_PROCESSING", "CHUNK_CONVERSION_START",
                 $"Converting chunk {chunk.ChunkIndex + 1}/{context.TotalChunks} of {chunk.SourceFile}",
@@ -385,7 +385,7 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
         return sb.ToString();
     }
 
-    private string BuildChunkAwareUserPrompt(ChunkResult chunk, ChunkContext context)
+    private async Task<string> BuildChunkAwareUserPromptAsync(ChunkResult chunk, ChunkContext context)
     {
         var sb = new StringBuilder();
 
@@ -425,6 +425,9 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
             sb.AppendLine();
             sb.Append(FormatBusinessLogicContext(businessLogic));
         }
+
+        // REKT structural context + shared-types registry (opt-in via ENABLE_REKT_CONTEXT).
+        await RektPromptInjector.InjectAsync(sb, "Java", chunk.SourceFile ?? "(unknown)", Logger);
 
         sb.AppendLine("Return ONLY Java code. No markdown blocks. No explanations.");
 

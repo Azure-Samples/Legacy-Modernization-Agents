@@ -185,6 +185,33 @@ public class SmartMigrationOrchestrator
         var large = new List<CobolFile>();
         var chunkingSettings = _settings.ChunkingSettings;
 
+        // Copilot-safe: lower the routing thresholds so files that are too big
+        // for Copilot's single-shot ceiling get routed to chunking. Without this,
+        // a 1500-line file (under the 3000-line default) goes to the single-shot
+        // converter which then gets a 0-token silent drop from Copilot.
+        var envServiceType = Environment.GetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE") ?? "";
+        var settingsServiceType = _settings?.AISettings?.ServiceType ?? "";
+        var isCopilot =
+            envServiceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase) ||
+            settingsServiceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase);
+        var optOut = string.Equals(Environment.GetEnvironmentVariable("COPILOT_SAFE_MODE"), "false", StringComparison.OrdinalIgnoreCase);
+
+        if (isCopilot && !optOut)
+        {
+            // With continuation-retry in the converters, single-shot can self-heal
+            // truncated output. Only force-chunk files that are genuinely too large
+            // for a single prompt+response round-trip (~1000 lines / 40K chars).
+            // The converter will auto-continue if Copilot truncates the response.
+            chunkingSettings.AutoChunkCharThreshold = Math.Min(chunkingSettings.AutoChunkCharThreshold, 40000);
+            chunkingSettings.AutoChunkLineThreshold = Math.Min(chunkingSettings.AutoChunkLineThreshold, 1000);
+            chunkingSettings.MaxTokensPerChunk = Math.Min(chunkingSettings.MaxTokensPerChunk, 8000);
+            chunkingSettings.MaxLinesPerChunk = Math.Min(chunkingSettings.MaxLinesPerChunk, 600);
+            chunkingSettings.MaxParallelChunks = 1;
+            chunkingSettings.MaxParallelConversion = 1;
+            chunkingSettings.MaxParallelAnalysis = Math.Min(chunkingSettings.MaxParallelAnalysis, 1);
+            Console.WriteLine($"  🛡️  Copilot-safe: files >{chunkingSettings.AutoChunkLineThreshold} lines chunked; smaller files use continuation-retry if truncated");
+        }
+
         foreach (var file in files)
         {
             var charCount = file.Content.Length;

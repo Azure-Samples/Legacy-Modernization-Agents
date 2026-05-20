@@ -73,7 +73,7 @@ The mapping from a COBOL program to a target component is driven by the **techni
 | Name contains `CICS`, `SCREEN`, `TERM`, `MAP`, `MENU`             | `web-ui`           |
 | Name contains `SGN`, `SIGN`, `AUTH`, `LOGIN`, `ABND`              | `svc-identity`    |
 | Name contains `RPT`, `REPORT`, `EXP`, `DUMP`, `EXTR`, `LIST`      | `svc-reporting`    |
-| Name starts with `CB`, `BAT`, `DG`, `DO`, `T660DG`, `T660DO`      | `batch-worker`     |
+| Name starts with `CB`, `BAT`, `DG`, `DO`, `BATDG`, `BATDO`      | `batch-worker`     |
 | `sqlCount ≥ max(10, callCount × 2)`                               | `svc-data`         |
 | `callCount ≥ 3` or `performCount ≥ 8`                             | `svc-business`     |
 | anything else                                                     | `svc-business`     |

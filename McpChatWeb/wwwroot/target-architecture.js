@@ -289,7 +289,7 @@ class TargetArchitectureView {
       target = 'svc-identity';
     } else if (/(RPT|REPORT|EXP|DUMP|EXTR|EXTRACT|LIST)/.test(name)) {
       target = 'svc-reporting';
-    } else if (/^CB|^BAT|BATCH|^DG|^DO|NIGHT|^T660DG|^T660DO/.test(name)) {
+    } else if (/^CB|^BAT|BATCH|^DG|^DO|NIGHT|^BATDG|^BATDO/.test(name)) {
       target = 'batch-worker';
     } else if (sqlCount >= Math.max(10, callCount * 2)) {
       target = 'svc-data';

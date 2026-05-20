@@ -179,15 +179,42 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
                             userPromptBuilder.AppendLine("  • If a name is unclear from the source, prefer the name in the structural context.");
                             userPromptBuilder.AppendLine("  • If the structural context shows zero items for a category (e.g. no CALL targets), do NOT generate any.");
                             userPromptBuilder.AppendLine();
+                            userPromptBuilder.AppendLine("DATA STRUCTURE → DTO RULES:");
+                            userPromptBuilder.AppendLine("  • For EVERY 01-level data group below, generate a COMPLETE DTO class with ALL fields.");
+                            userPromptBuilder.AppendLine("  • Map PIC X→string, PIC S9V9→decimal, PIC 9 COMP-3→decimal, PIC 9 COMP→int/long.");
+                            userPromptBuilder.AppendLine("  • Preserve original COBOL field names (PascalCase). Do NOT simplify to fewer fields.");
+                            userPromptBuilder.AppendLine("  • If a group has >50 fields, still generate ALL of them.");
+                            userPromptBuilder.AppendLine();
+                            userPromptBuilder.AppendLine("CALL TARGET → SERVICE INJECTION RULES:");
+                            userPromptBuilder.AppendLine("  • For EVERY CALL target below: generate an interface + constructor-injected field + method call.");
+                            userPromptBuilder.AppendLine("  • Do NOT inline the called program's logic.");
+                            userPromptBuilder.AppendLine();
                             userPromptBuilder.AppendLine(RektContextFormatter.ToPromptBlock(sc));
                             Logger.LogInformation("[CSharpConverterAgent] Injected REKT context for {File} (provenance={Prov}, confidence={Conf:F2})",
                                 cobolFile.FileName, sc.Provenance, sc.Confidence);
+                        }
+
+                        // Shared-types registry: prevent duplicate type definitions across files.
+                        try
+                        {
+                            var registry = SharedTypeRegistryHolder.GetOrBuild(d.FullName, srcFolder);
+                            var sharedBlock = registry.ToPromptBlock("C#");
+                            if (!string.IsNullOrEmpty(sharedBlock))
+                            {
+                                userPromptBuilder.Append(sharedBlock);
+                                Logger.LogInformation("[CSharpConverterAgent] Injected shared-types registry for {File} ({Count} shared names)",
+                                    cobolFile.FileName, registry.SharedTypeNames.Count);
+                            }
+                        }
+                        catch (Exception strEx)
+                        {
+                            Logger.LogDebug("[CSharpConverterAgent] Shared-types registry build failed for {File}: {Msg}", cobolFile.FileName, strEx.Message);
                         }
                     }
                 }
                 catch (Exception ex)
                 {
-                    Logger.LogDebug("[CSharpConverterAgent] REKT context injection failed for {File}: {Msg}", cobolFile.FileName, ex.Message);
+                    Logger.LogWarning("[CSharpConverterAgent] ⚠️ REKT injection FAILED for {File}: {Msg}", cobolFile.FileName, ex.Message);
                 }
             }
 
@@ -214,6 +241,48 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
                 $"Completed C# conversion of {cobolFile.FileName} in {stopwatch.ElapsedMilliseconds}ms");
 
             csharpCode = ExtractCSharpCode(csharpCode);
+
+            // ── Continuation retry: if the output is truncated, ask the LLM to
+            // continue from where it left off. ──
+            var hasAnyCode = csharpCode.Contains("{") && (csharpCode.Contains("class ") || csharpCode.Contains("void ") || csharpCode.Contains("public "));
+            var maxContinuations = hasAnyCode ? 3 : 0;
+            if (!hasAnyCode && !string.IsNullOrWhiteSpace(csharpCode))
+            {
+                Logger.LogWarning("[CSharpConverterAgent] ⚠️ Response contains no valid C# code — skipping continuation");
+            }
+            for (int cont = 0; cont < maxContinuations; cont++)
+            {
+                var hasNs = csharpCode.Contains("namespace ", StringComparison.Ordinal);
+                var hasCls = csharpCode.Contains("class ", StringComparison.Ordinal);
+                var opens = csharpCode.Count(c => c == '{');
+                var closes = csharpCode.Count(c => c == '}');
+                if (hasNs && hasCls && opens == closes) break;
+
+                Logger.LogWarning(
+                    "[CSharpConverterAgent] Output truncated (ns={HasNs} cls={HasCls} braces={Opens}/{Closes}) — sending continuation {Cont}/{Max}",
+                    hasNs, hasCls, opens, closes, cont + 1, maxContinuations);
+
+                var lastLines = string.Join("\n", csharpCode.Split('\n').TakeLast(10));
+                var contPrompt = $"Your previous response was truncated mid-output. Here are the LAST 10 lines you generated:\n\n```csharp\n{lastLines}\n```\n\n" +
+                    $"Continue from EXACTLY where you left off. Return ONLY the remaining C# code — no namespace, no using statements, no class declaration. " +
+                    $"Start with the next line after the fragment above and end with the final closing brace '}}' of the class.";
+
+                var (contCode, contFallback, _) = await ExecuteWithFallbackAsync(
+                    systemPrompt, contPrompt, $"{cobolFile.FileName} [continuation-{cont + 1}]");
+
+                if (contFallback || string.IsNullOrWhiteSpace(contCode)) break;
+
+                contCode = ExtractCSharpCode(contCode);
+                var contLines = contCode.Split('\n')
+                    .SkipWhile(l => l.TrimStart().StartsWith("using ") || l.TrimStart().StartsWith("namespace ") || l.Trim() == "")
+                    .ToList();
+                var classIdx = contLines.FindIndex(l => l.Contains("class ") && l.Contains("{"));
+                if (classIdx >= 0 && classIdx < 3) contLines = contLines.Skip(classIdx + 1).ToList();
+
+                csharpCode = csharpCode.TrimEnd() + "\n" + string.Join("\n", contLines);
+                Logger.LogInformation("[CSharpConverterAgent] Continuation {Cont} appended {Lines} lines",
+                    cont + 1, contLines.Count);
+            }
 
             // Extract AI's semantic class name (based on domain/action/type pattern)
             string aiClassName = ExtractClassNameFromCode(csharpCode);
@@ -417,6 +486,21 @@ public class {{className}}
                     input = keep.TrimEnd();
                 }
             }
+        }
+
+        // ── Truncation detection ──
+        var hasNs = input.Contains("namespace ", StringComparison.Ordinal);
+        var hasClass = input.Contains("class ", StringComparison.Ordinal);
+        var opens = input.Count(c => c == '{');
+        var closes = input.Count(c => c == '}');
+        if (!hasNs || !hasClass || opens != closes)
+        {
+            Logger.LogWarning(
+                "[CSharpConverterAgent] ⚠️ OUTPUT APPEARS TRUNCATED: namespace={HasNs}, class={HasClass}, braces {Opens}/{Closes}. " +
+                "The provider likely hit its output token limit. Re-run with chunking or switch to Azure OpenAI.",
+                hasNs, hasClass, opens, closes);
+            EnhancedLogger?.LogBehindTheScenes("TRUNCATION_DETECTED", "WARNING",
+                $"namespace={hasNs}, class={hasClass}, braces={opens}/{closes}");
         }
 
         return input;

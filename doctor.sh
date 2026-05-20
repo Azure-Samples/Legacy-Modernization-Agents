@@ -108,7 +108,7 @@ show_usage() {
     echo -e "  ${CYAN}4.${NC} Portal → ${GREEN}🛠️ Convert…${NC}   ${BOLD}OR${NC}   ${GREEN}$0 run --program X / --transaction Y / --wave N${NC}"
     echo -e "  ${CYAN}5.${NC} View results in Portal / ${GREEN}output/java${NC} / ${GREEN}output/csharp${NC}"
     echo
-    echo -e "${BOLD}🛠️ Focused-conversion selector flags (for ${GREEN}run${NC}):${NC}"
+    echo -e "${BOLD}🛠️ Focused-conversion selector flags (for ${GREEN}run${NC} / ${GREEN}convert-only${NC}):${NC}"
     echo -e "  ${GREEN}--program NAME${NC}            Convert a specific program (repeatable; OR)"
     echo -e "  ${GREEN}--transaction TRANID${NC}      Convert programs that use a CICS transaction"
     echo -e "  ${GREEN}--wave N${NC}                  Convert all programs in migration wave N (needs target-architecture.json)"
@@ -117,12 +117,38 @@ show_usage() {
     echo -e "  ${GREEN}--include-callees${NC}         Also convert programs called (transitively) by the selection"
     echo -e "  ${GREEN}--include-callers${NC}         Also convert programs that call (transitively) into the selection"
     echo -e "  Same flag repeated = OR  ·  different flags = AND"
+    echo -e "  ${CYAN}Selector mode auto-skips standalone .cpy analysis — runs finish in minutes, not hours.${NC}"
+    echo -e "  ${CYAN}Pair with ${GREEN}convert-only${CYAN} + ${GREEN}--reuse-re${CYAN} when you already have RE results to go even faster.${NC}"
     echo
-    echo -e "${BOLD}🎯 Quality flags (for ${GREEN}run${NC}):${NC}"
+    echo -e "${BOLD}🎯 Quality flags (for ${GREEN}run${NC} / ${GREEN}convert-only${NC}):${NC}"
+    echo -e "  ${GREEN}--rekt-context${NC}                    Force-enable REKT structural context injection (default ON)"
+    echo -e "                                  ${CYAN}→ The converter is given the REKT AST/CFG/data-flow facts plus${NC}"
+    echo -e "                                  ${CYAN}  the FACT-LOCKING rules (do not invent fields/methods/CALLs).${NC}"
+    echo -e "                                  ${CYAN}  Also activates the shared-types registry that prevents${NC}"
+    echo -e "                                  ${CYAN}  CS0101 / duplicate-class errors across files.${NC}"
+    echo -e "  ${GREEN}--no-rekt-context${NC}                 Disable REKT injection (pure-LLM, legacy behaviour)"
+    echo -e "                                  ${CYAN}→ Faster, no REKT data needed. Lower fidelity — recommended only${NC}"
+    echo -e "                                  ${CYAN}  if you haven't run rekt-full yet or want to A/B test prompts.${NC}"
     echo -e "  ${GREEN}--fallback-to-ai${NC}                  Use LLM to derive structure when smojol fails"
     echo -e "  ${GREEN}--max-validator-retries N${NC}         Parity validator may re-prompt N times (default 1)"
     echo -e "  ${GREEN}--min-program-score 0.75${NC}          Per-program parity score gate (0 = off)"
     echo -e "  ${GREEN}--on-low-score continue|stop${NC}      What to do when a file misses the score"
+    echo
+    echo -e "${BOLD}🛡️ Reliability:${NC}"
+    echo -e "  Every LLM call has a hang-timeout (default 480 s). If the provider accepts the"
+    echo -e "  request but never replies (Copilot endpoint sometimes does this on long calls),"
+    echo -e "  the call is cancelled and retried up to ${GREEN}MaxRetries${NC} times (exponential backoff)."
+    echo -e "  Tune with: ${GREEN}LLM_CALL_TIMEOUT_SECONDS=300 ./doctor.sh run …${NC}"
+    echo -e "  Chunking thresholds lowered to 80K chars / 1500 lines so REKT+shared-types"
+    echo -e "  prompt growth doesn't push single-shot conversions past the model's window."
+    echo
+    echo -e "${BOLD}🤖 GitHub Copilot provider:${NC}"
+    echo -e "  Copilot silently drops requests above ~10K tokens with high reasoning effort."
+    echo -e "  When the active provider is ${GREEN}GitHubCopilot${NC}, the orchestrator auto-shrinks"
+    echo -e "  chunks to ${GREEN}MaxTokensPerChunk=8000${NC}, ${GREEN}MaxLinesPerChunk=600${NC}, and forces"
+    echo -e "  ${GREEN}MaxParallelChunks=1${NC} (sequential) — this trades wall-clock for reliability."
+    echo -e "  ${GREEN}--copilot-safe${NC}     Force-enable Copilot-safe mode (default ON for Copilot)"
+    echo -e "  ${GREEN}--copilot-unsafe${NC}   Disable the override (use full chunk sizes — expect hangs)"
     echo
     echo -e "${BOLD}Business Logic Persistence (--reuse-re):${NC}"
   echo -e "  RE results are automatically persisted to the database after each run."
@@ -330,7 +356,7 @@ launch_portal_background() {
 
     # Launch portal in background
     export MIGRATION_DB_PATH="$db_path"
-    ASPNETCORE_URLS="$url" ASPNETCORE_HTTP_PORTS="$port" "$DOTNET_CMD" run --project "$REPO_ROOT/McpChatWeb" > "$REPO_ROOT/Logs/portal.log" 2>&1 &
+    ASPNETCORE_URLS="$url" ASPNETCORE_HTTP_PORTS="$port" "$DOTNET_CMD" run --no-build --project "$REPO_ROOT/McpChatWeb" > "$REPO_ROOT/Logs/portal.log" 2>&1 &
     PORTAL_PID=$!
     
     # Wait for portal to start
@@ -418,7 +444,7 @@ check_model_deployments() {
     local token=""
 
     # Determine auth method
-    if [[ -n "$api_key" ]] && [[ "$api_key" != *"your-"* ]] && [[ "$api_key" != *"placeholder"* ]] && [[ "$api_key" != *"key-placeholder"* ]]; then
+    if [[ -n "$api_key" ]] && [[ "$api_key" != *"your-"* ]] && [[ "$api_key" != *"placeholder"* ]] && [[ "$api_key" != *"key-placeholder"* ]] && [[ "$(echo "$api_key" | tr "[:lower:]" "[:upper:]")" != "ENTRA_ID" ]]; then
         has_api_key=true
     fi
 
@@ -564,7 +590,7 @@ check_ai_connectivity() {
     local has_azure_ad=false
 
     # Check for valid API key
-    if [[ -n "$api_key" ]] && [[ "$api_key" != *"your-"* ]] && [[ "$api_key" != *"placeholder"* ]] && [[ "$api_key" != *"key-placeholder"* ]]; then
+    if [[ -n "$api_key" ]] && [[ "$api_key" != *"your-"* ]] && [[ "$api_key" != *"placeholder"* ]] && [[ "$api_key" != *"key-placeholder"* ]] && [[ "$(echo "$api_key" | tr "[:lower:]" "[:upper:]")" != "ENTRA_ID" ]]; then
         has_api_key=true
         auth_method="API Key"
     fi
@@ -869,7 +895,7 @@ run_doctor() {
                 # --- Authentication ---
                 echo -e "${CYAN}Authentication:${NC}"
                 api_key_val="${AZURE_OPENAI_API_KEY}"
-                if [[ -n "$api_key_val" ]] && [[ "$api_key_val" != *"your-"* ]] && [[ "$api_key_val" != *"placeholder"* ]] && [[ "$api_key_val" != *"key-placeholder"* ]]; then
+                if [[ -n "$api_key_val" ]] && [[ "$api_key_val" != *"your-"* ]] && [[ "$api_key_val" != *"placeholder"* ]] && [[ "$api_key_val" != *"key-placeholder"* ]] && [[ "$(echo "$api_key_val" | tr "[:lower:]" "[:upper:]")" != "ENTRA_ID" ]]; then
                     masked_key="${api_key_val:0:4}...${api_key_val: -4}"
                     echo -e "  ${GREEN}✅ API Key: $masked_key${NC}"
                 elif command -v az >/dev/null 2>&1 && az account show >/dev/null 2>&1; then
@@ -1713,6 +1739,135 @@ select_speed_profile() {
     echo ""
 }
 
+# Route a conversion through the portal's ProcessManager when available.
+# This makes the run visible in the Run Output panel and allows stop/pause.
+# Falls back to direct dotnet invocation (return 1) when the portal isn't reachable.
+#
+# Usage: run_via_portal <command> <targetLanguage> <sourceFolder> [extra-flags]
+# Returns: exit code of the run (0 = success), or 1 if portal isn't reachable (caller should fall back).
+run_via_portal() {
+    local command="${1:-migrate}"
+    local target_lang="${2:-Java}"
+    local src_folder="${3:-source}"
+    local extra_flags="${4:-}"
+    local portal_port="${MCP_WEB_PORT:-$DEFAULT_MCP_PORT}"
+    local portal_url="http://localhost:${portal_port}"
+
+    # Check if we were ALREADY launched by the portal — if so, do NOT route
+    # back through it (that creates an infinite spawn loop).
+    if [[ "${PORTAL_LAUNCHED:-}" == "true" ]]; then
+        echo -e "  ${YELLOW}(launched by portal — running direct, not re-routing)${NC}"
+        return 1  # caller falls back to direct dotnet invocation
+    fi
+
+    # Check if portal is running
+    if ! curl -sf -o /dev/null "${portal_url}/api/runs/managed" 2>/dev/null; then
+        echo -e "  ${YELLOW}Portal not running — using direct dotnet invocation${NC}"
+        return 1  # caller falls back
+    fi
+
+    echo -e "  ${GREEN}📡 Routing through portal (http://localhost:${portal_port}) — Run Output panel will show live output${NC}"
+
+    # Map command: "migrate" with --skip-reverse-engineering → "convert-only"
+    local api_command="$command"
+    if [[ "$extra_flags" == *"--skip-reverse-engineering"* && "$command" == "migrate" ]]; then
+        api_command="convert-only"
+    fi
+
+    # Detect speed profile from env
+    local speed_profile="balanced"
+    [[ "${AI_LOW_REASONING_EFFORT:-}" == "low" ]] && speed_profile="turbo"
+    [[ "${AI_HIGH_REASONING_EFFORT:-}" == "high" ]] && speed_profile="thorough"
+
+    # Detect provider
+    local provider="${AZURE_OPENAI_SERVICE_TYPE:-AzureOpenAI}"
+
+    # Start the run via portal API
+    local run_json
+    run_json=$(curl -sf -X POST "${portal_url}/api/runs/start" \
+        -H "Content-Type: application/json" \
+        -d "{
+            \"command\": \"${api_command}\",
+            \"name\": \"cli-${api_command}-$(date +%H%M%S)\",
+            \"targetLanguage\": \"${target_lang}\",
+            \"speedProfile\": \"${speed_profile}\",
+            \"sourceFolder\": \"${src_folder}\",
+            \"provider\": \"${provider}\",
+            \"extraEnv\": {
+                \"ENABLE_REKT_CONTEXT\": \"${ENABLE_REKT_CONTEXT:-true}\",
+                \"SELECTOR_MODE\": \"${SELECTOR_MODE:-false}\",
+                \"COPILOT_SAFE_MODE\": \"${COPILOT_SAFE_MODE:-}\",
+                \"STRUCTURAL_FALLBACK_TO_AI\": \"${STRUCTURAL_FALLBACK_TO_AI:-false}\",
+                \"MAX_VALIDATOR_RETRIES\": \"${MAX_VALIDATOR_RETRIES:-1}\",
+                \"MIN_PROGRAM_SCORE\": \"${MIN_PROGRAM_SCORE:-0}\",
+                \"ON_LOW_SCORE\": \"${ON_LOW_SCORE:-continue}\"
+            }
+        }" 2>/dev/null)
+
+    if [[ -z "$run_json" ]]; then
+        echo -e "  ${YELLOW}Portal API returned empty — falling back to direct invocation${NC}"
+        return 1
+    fi
+
+    local run_id
+    run_id=$(echo "$run_json" | "$PYTHON_CMD" -c "import sys,json; print(json.load(sys.stdin).get('runId',''))" 2>/dev/null)
+
+    if [[ -z "$run_id" ]]; then
+        echo -e "  ${YELLOW}Could not parse runId — falling back to direct invocation${NC}"
+        return 1
+    fi
+
+    echo -e "  ${GREEN}✅ Run started: ${run_id}${NC}"
+    echo -e "  ${CYAN}📊 View live in portal → Mission Control → Run Output${NC}"
+    echo -e "  ${CYAN}⏹  Stop: curl -X POST ${portal_url}/api/runs/stop -H 'Content-Type: application/json' -d '{\"runId\":\"${run_id}\"}'${NC}"
+    echo ""
+
+    # Tail the log until the run completes
+    local status="running"
+    local last_line_count=0
+    while [[ "$status" == "running" || "$status" == "paused" ]]; do
+        sleep 3
+        local data
+        data=$(curl -sf "${portal_url}/api/runs/managed/${run_id}" 2>/dev/null)
+        if [[ -z "$data" ]]; then continue; fi
+
+        status=$(echo "$data" | "$PYTHON_CMD" -c "import sys,json; d=json.load(sys.stdin); print(d.get('info',{}).get('status','unknown'))" 2>/dev/null)
+
+        # Print new log lines
+        local lines
+        lines=$(echo "$data" | "$PYTHON_CMD" -c "
+import sys, json
+d = json.load(sys.stdin)
+log = d.get('log', [])
+skip = int(sys.argv[1])
+for line in log[skip:]:
+    print(line)
+print(f'__COUNT__{len(log)}')
+" "$last_line_count" 2>/dev/null)
+
+        while IFS= read -r line; do
+            if [[ "$line" == __COUNT__* ]]; then
+                last_line_count="${line#__COUNT__}"
+            else
+                echo "$line"
+            fi
+        done <<< "$lines"
+    done
+
+    # Final status
+    local exit_code
+    exit_code=$(curl -sf "${portal_url}/api/runs/managed/${run_id}" 2>/dev/null | \
+        "$PYTHON_CMD" -c "import sys,json; print(json.load(sys.stdin).get('info',{}).get('exitCode',1))" 2>/dev/null)
+
+    if [[ "$status" == "completed" && "$exit_code" == "0" ]]; then
+        echo -e "\n  ${GREEN}✅ Run ${run_id} completed successfully${NC}"
+        return 0
+    else
+        echo -e "\n  ${RED}❌ Run ${run_id} ended with status=${status} exit=${exit_code}${NC}"
+        return "${exit_code:-1}"
+    fi
+}
+
 # Function to run migration
 run_migration() {
     echo -e "${BLUE}🚀 COBOL Migration Tool${NC}"
@@ -1786,27 +1941,37 @@ run_migration() {
     fi
 
     # For options 1 and 3, continue with language selection and migration
-    echo ""
-    echo "🎯 Select Target Language for Migration"
-    echo "========================================"
-    echo "  1) Java (Quarkus)"
-    echo "  2) C# (.NET)"
-    echo ""
-    read -p "Enter choice (1 or 2) [default: 1]: " lang_choice
-    
-    # Trim whitespace from input
-    lang_choice=$(echo "$lang_choice" | tr -d '[:space:]')
-    
-    # Validate the choice explicitly
-    if [[ "$lang_choice" == "2" ]]; then
-        export TARGET_LANGUAGE="CSharp"
-        echo -e "${GREEN}✅ Selected: C# (.NET)${NC}"
-    elif [[ "$lang_choice" == "1" ]] || [[ -z "$lang_choice" ]]; then
-        export TARGET_LANGUAGE="Java"
-        echo -e "${GREEN}✅ Selected: Java (Quarkus)${NC}"
+    # If --target was supplied on the CLI, skip the interactive prompt
+    if [[ -n "${CONVERSION_TARGET:-}" ]]; then
+        case "$(echo "$CONVERSION_TARGET" | tr "[:upper:]" "[:lower:]")" in
+            java|quarkus)  export TARGET_LANGUAGE="Java"   ;;
+            csharp|c#|cs|dotnet|.net) export TARGET_LANGUAGE="CSharp" ;;
+            *) echo -e "${RED}❌ Unknown --target '${CONVERSION_TARGET}'. Use java or csharp.${NC}"; exit 1 ;;
+        esac
+        echo -e "${GREEN}✅ Target (from --target flag): ${TARGET_LANGUAGE}${NC}"
     else
-        echo -e "${YELLOW}⚠️  Invalid choice '$lang_choice', defaulting to Java${NC}"
-        export TARGET_LANGUAGE="Java"
+        echo ""
+        echo "🎯 Select Target Language for Migration"
+        echo "========================================"
+        echo "  1) Java (Quarkus)"
+        echo "  2) C# (.NET)"
+        echo ""
+        read -p "Enter choice (1 or 2) [default: 1]: " lang_choice
+        
+        # Trim whitespace from input
+        lang_choice=$(echo "$lang_choice" | tr -d '[:space:]')
+        
+        # Validate the choice explicitly
+        if [[ "$lang_choice" == "2" ]]; then
+            export TARGET_LANGUAGE="CSharp"
+            echo -e "${GREEN}✅ Selected: C# (.NET)${NC}"
+        elif [[ "$lang_choice" == "1" ]] || [[ -z "$lang_choice" ]]; then
+            export TARGET_LANGUAGE="Java"
+            echo -e "${GREEN}✅ Selected: Java (Quarkus)${NC}"
+        else
+            echo -e "${YELLOW}⚠️  Invalid choice '$lang_choice', defaulting to Java${NC}"
+            export TARGET_LANGUAGE="Java"
+        fi
     fi
 
     # ========================
@@ -1838,9 +2003,11 @@ run_migration() {
     echo "be split into semantic chunks for optimal processing."
     echo ""
     
-    # Launch portal in background for monitoring
+    # Launch portal in background for monitoring (unless --no-portal)
     local db_path="$REPO_ROOT/Data/migration.db"
-    launch_portal_background "$db_path"
+    if [[ "${SKIP_PORTAL:-}" != "true" ]]; then
+        launch_portal_background "$db_path"
+    fi
     
     echo "🚀 Starting COBOL to ${TARGET_LANGUAGE} Migration..."
     echo "=============================================="
@@ -1863,9 +2030,29 @@ run_migration() {
     
     echo -e "${CYAN}🎯 Target: ${TARGET_LANGUAGE}${NC}"
     echo -e "${CYAN}💾 Database: $MIGRATION_DB_PATH${NC}"
-    
-    "$DOTNET_CMD" run -- --source ./source $skip_reverse_eng
-    local migration_exit=$?
+
+    # When launched by the portal, skip the build — the portal already built
+    # the project, and rebuilding would crash the running portal process (binary
+    # lock on macOS causes the portal to restart and lose its in-memory run list).
+    local no_build_flag=""
+    if [[ "${PORTAL_LAUNCHED:-}" == "true" ]]; then
+        no_build_flag="--no-build"
+    fi
+
+    # Honour selector-driven staging folder (set by main() when --program/
+    # --transaction/--wave/--target/--keyword is used). Falls back to ./source.
+    local src_folder="${COBOL_SOURCE_FOLDER:-source}"
+    echo -e "${CYAN}📁 Source folder: ${src_folder}${NC}"
+
+    # Route through the portal when it's running so the Run Output panel
+    # shows live output for CLI-initiated runs. Falls back to direct
+    # dotnet invocation when the portal isn't reachable.
+    if run_via_portal "migrate" "$TARGET_LANGUAGE" "$src_folder" "$skip_reverse_eng"; then
+        local migration_exit=$?
+    else
+        "$DOTNET_CMD" run $no_build_flag -- --source "./$src_folder" $skip_reverse_eng
+        local migration_exit=$?
+    fi
 
     if [[ $migration_exit -ne 0 ]]; then
         echo ""
@@ -2186,7 +2373,17 @@ run_reverse_engineering() {
 
 # Function to run conversion-only (skip reverse engineering)
 run_conversion_only() {
-    echo -e "${BLUE}🔄 Starting COBOL to Java Conversion (Skip Reverse Engineering)${NC}"
+    # If --target was supplied, resolve it into TARGET_LANGUAGE before prompting
+    if [[ -n "${CONVERSION_TARGET:-}" ]] && [[ -z "${TARGET_LANGUAGE:-}" ]]; then
+        case "$(echo "$CONVERSION_TARGET" | tr "[:upper:]" "[:lower:]")" in
+            java|quarkus)  export TARGET_LANGUAGE="Java"   ;;
+            csharp|c#|cs|dotnet|.net) export TARGET_LANGUAGE="CSharp" ;;
+            *) echo -e "${RED}❌ Unknown --target '${CONVERSION_TARGET}'. Use java or csharp.${NC}"; return 1 ;;
+        esac
+        echo -e "${GREEN}✅ Target (from --target flag): ${TARGET_LANGUAGE}${NC}"
+    fi
+
+    echo -e "${BLUE}🔄 Starting COBOL to ${TARGET_LANGUAGE:-Java} Conversion (Skip Reverse Engineering)${NC}"
     echo "================================================================"
 
     echo -e "${BLUE}Using dotnet CLI:${NC} $DOTNET_CMD"
@@ -2280,8 +2477,21 @@ run_conversion_only() {
         resume_flag="--resume"
     fi
     
-    "$DOTNET_CMD" run -- --source ./source --skip-reverse-engineering $reuse_re_flag $resume_flag
-    local migration_exit=$?
+    local src_folder="${COBOL_SOURCE_FOLDER:-source}"
+    echo -e "${CYAN}📁 Source folder: ${src_folder}${NC}"
+
+    local no_build_flag=""
+    if [[ "${PORTAL_LAUNCHED:-}" == "true" ]]; then
+        no_build_flag="--no-build"
+    fi
+
+    # Route through portal when available.
+    if run_via_portal "convert-only" "$TARGET_LANGUAGE" "$src_folder" "--skip-reverse-engineering $reuse_re_flag $resume_flag"; then
+        local migration_exit=$?
+    else
+        "$DOTNET_CMD" run $no_build_flag -- --source "./$src_folder" --skip-reverse-engineering $reuse_re_flag $resume_flag
+        local migration_exit=$?
+    fi
 
     if [[ $migration_exit -ne 0 ]]; then
         echo ""
@@ -2819,11 +3029,16 @@ main() {
     local positional=()
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --program|--transaction|--wave|--target|--keyword)
+            --program|--transaction|--wave|--keyword)
                 if [[ -z "${2:-}" ]]; then
                     echo -e "${RED}❌ $1 requires a value${NC}"; exit 1
                 fi
                 sel_args+=("$1" "$2"); has_selector=true; shift 2 ;;
+            --target)
+                if [[ -z "${2:-}" ]]; then
+                    echo -e "${RED}❌ $1 requires a value${NC}"; exit 1
+                fi
+                export CONVERSION_TARGET="$2"; shift 2 ;;
             --include-callees|--include-callers)
                 sel_args+=("$1"); has_selector=true; shift ;;
             --fallback-to-ai)
@@ -2834,6 +3049,19 @@ main() {
                 quality_env+=("MIN_PROGRAM_SCORE=$2"); shift 2 ;;
             --on-low-score)
                 quality_env+=("ON_LOW_SCORE=$2"); shift 2 ;;
+            --no-rekt-context)
+                export ENABLE_REKT_CONTEXT=false; shift ;;
+            --rekt-context)
+                export ENABLE_REKT_CONTEXT=true; shift ;;
+            --copilot-safe)
+                export COPILOT_SAFE_MODE=true; shift ;;
+            --copilot-unsafe)
+                export COPILOT_SAFE_MODE=false; shift ;;
+            --no-portal)
+                export SKIP_PORTAL=true; shift ;;
+            --*)
+                # Strip leading -- from commands like --convert-only → convert-only
+                positional+=("${1#--}"); shift ;;
             *)
                 positional+=("$1"); shift ;;
         esac
@@ -2844,6 +3072,20 @@ main() {
     for kv in "${quality_env[@]}"; do
         export "$kv"
     done
+
+    # Default-ON: inject REKT structural context into the converter prompts.
+    # Users can disable with --no-rekt-context if they want pure-LLM conversion
+    # (legacy behaviour). Without this flag, the FACT-LOCKING rules and
+    # structural facts the converter relies on are dormant — which is what
+    # caused the "duplicate types across files" failure mode in May 2026.
+    if [[ "${ENABLE_REKT_CONTEXT:-}" == "" ]]; then
+        export ENABLE_REKT_CONTEXT=true
+        case "${1:-doctor}" in
+            run|run-chunked|chunked|convert|convert-only|conversion-only|reverse-eng|reverse-engineer|reverse|resume)
+                echo -e "  ${CYAN}REKT context injection: ENABLED (use --no-rekt-context for legacy pure-LLM mode)${NC}"
+                ;;
+        esac
+    fi
 
     # If selectors were supplied, resolve them now into a staging folder under
     # source/ and rewire COBOL_SOURCE_FOLDER so the migration only sees that
@@ -2881,6 +3123,11 @@ main() {
         find "$REPO_ROOT/source" -maxdepth 1 -name "*.cpy" -exec cp -n {} "$stage_dir/" \;
         echo -e "${GREEN}  Staged $n file(s) → source/$stage_name/${NC}"
         export COBOL_SOURCE_FOLDER="source/$stage_name"
+        # Tell the analyzer to skip standalone .cpy files in selector mode —
+        # the user picked a specific program, the analyzer doesn't need to
+        # re-RE every copybook (the copybooks are pulled in as COPY context
+        # by the converter regardless).
+        export SELECTOR_MODE=true
         # Cleanup hook on exit
         trap 'rm -rf "$stage_dir" 2>/dev/null || true' EXIT
     fi

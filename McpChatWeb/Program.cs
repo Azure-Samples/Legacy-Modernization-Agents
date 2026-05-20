@@ -207,7 +207,7 @@ async Task CleanupStaleRunsAsync()
 		await using var connection = new SqliteConnection($"Data Source={dbPath}");
 		await connection.OpenAsync();
 
-		// Mark runs that have been "Running" for more than 1 hour as "Cancelled"
+		// Mark runs that have been "Running" for more than 15 minutes as "Cancelled"
 		// This handles crashed processes that didn't update their status
 		await using var command = connection.CreateCommand();
 		command.CommandText = @"
@@ -215,7 +215,7 @@ async Task CleanupStaleRunsAsync()
 			SET status = 'Cancelled', 
 			    completed_at = datetime('now')
 			WHERE status = 'Running' 
-			AND datetime(started_at) < datetime('now', '-1 hour')";
+			AND datetime(started_at) < datetime('now', '-15 minutes')";
 		
 		var affected = await command.ExecuteNonQueryAsync();
 		if (affected > 0)
@@ -3375,7 +3375,7 @@ app.MapPost("/api/runs/cleanup-stale", async () =>
 			SET status = 'Cancelled', 
 			    completed_at = datetime('now')
 			WHERE status = 'Running' 
-			AND datetime(started_at) < datetime('now', '-1 hour')";
+			AND datetime(started_at) < datetime('now', '-15 minutes')";
 
 		var affected = await command.ExecuteNonQueryAsync();
 		Console.WriteLine($"🧹 Cleaned up {affected} stale run(s)");
@@ -6028,7 +6028,7 @@ app.MapPost("/api/models/connect", async (McpChatWeb.Models.ConnectProviderReque
 			var endpoint = request.Endpoint.TrimEnd('/');
 
 			// Extract the account name from the endpoint URL
-			// e.g. "https://g-openai.cognitiveservices.azure.com" → "g-openai"
+			// e.g. "https://myendpoint.cognitiveservices.azure.com" → "myendpoint"
 			string accountName;
 			try
 			{
@@ -8314,7 +8314,8 @@ app.MapPost("/api/runs/start", (McpChatWeb.Models.StartRunRequest request, McpCh
 		request.SpeedProfile,
 		request.SourceFolder,
 		request.Provider,
-		request.ModelId);
+		request.ModelId,
+		request.ExtraEnv);
 
 	return Results.Ok(new McpChatWeb.Models.RunStatusDto(
 		run.RunId, run.Name, run.Command, run.TargetLanguage, run.SpeedProfile,
@@ -8714,7 +8715,7 @@ app.MapPost("/api/graph/rekt/target-architecture", async (HttpRequest req) =>
 //     "targets": ["svc-data"], "keywords": ["CUSTOMER"],
 //     "includeCallees": true, "includeCallers": false,
 //     "targetLanguage": "Java", "speedProfile": "balanced",
-//     "fallbackToAi": false, "maxValidatorRetries": 1, "minProgramScore": 0.6,
+//     "fallbackToAi": false, "rektContext": true, "maxValidatorRetries": 1, "minProgramScore": 0.6,
 //     "onLowScore": "continue" }
 
 app.MapPost("/api/programs/search", (System.Text.Json.JsonElement body) =>
@@ -8886,6 +8887,15 @@ app.MapPost("/api/runs/convert", (System.Text.Json.JsonElement body,
 		var extraEnv = new Dictionary<string, string>();
 		if (body.TryGetProperty("fallbackToAi", out var fb) && fb.ValueKind == System.Text.Json.JsonValueKind.True)
 			extraEnv["STRUCTURAL_FALLBACK_TO_AI"] = "true";
+		// REKT context: default ON (matches CLI). Caller passes rektContext=false
+		// to opt out — matches doctor.sh --no-rekt-context.
+		extraEnv["ENABLE_REKT_CONTEXT"] =
+			(body.TryGetProperty("rektContext", out var rc) && rc.ValueKind == System.Text.Json.JsonValueKind.False)
+			? "false" : "true";
+		// Tell the analyzer to skip standalone .cpy files — selector mode auto-implies
+		// "user picked a specific program" so we don't burn LLM cycles re-analysing
+		// every copybook the COPY directive pulls in.
+		extraEnv["SELECTOR_MODE"] = "true";
 		if (body.TryGetProperty("maxValidatorRetries", out var mr) && mr.ValueKind == System.Text.Json.JsonValueKind.Number)
 			extraEnv["MAX_VALIDATOR_RETRIES"] = mr.GetInt32().ToString();
 		if (body.TryGetProperty("minProgramScore", out var ms) && ms.ValueKind == System.Text.Json.JsonValueKind.Number)
@@ -8897,10 +8907,16 @@ app.MapPost("/api/runs/convert", (System.Text.Json.JsonElement body,
 		var speedProfile  = body.TryGetProperty("speedProfile", out var sp) && sp.ValueKind == System.Text.Json.JsonValueKind.String ? (sp.GetString() ?? "balanced") : "balanced";
 		var provider      = body.TryGetProperty("provider", out var pr) && pr.ValueKind == System.Text.Json.JsonValueKind.String ? (pr.GetString() ?? "AzureOpenAI") : "AzureOpenAI";
 		var modelId       = body.TryGetProperty("modelId", out var mi) && mi.ValueKind == System.Text.Json.JsonValueKind.String ? mi.GetString() : null;
-		var runName       = $"convert-selector-{res.Files.Count}-{DateTime.Now:HHmmss}";
+		var runName       = $"convert-selector-{staged.Count}-{DateTime.Now:HHmmss}";
+
+		// Default to convert-only (skips RE). User can opt into a full run via
+		// the "Include reverse engineering" checkbox in the portal modal.
+		var includeRE = body.TryGetProperty("includeReverseEngineering", out var ire) &&
+		                ire.ValueKind == System.Text.Json.JsonValueKind.True;
+		var runCommand = includeRE ? "migrate" : "convert-only";
 
 		var run = pm.StartRun(
-			"migrate",
+			runCommand,
 			runName,
 			targetLanguage,
 			speedProfile,
@@ -9092,7 +9108,7 @@ string BuildJavaPrompt(List<string> programs, List<string> copybooks, HashSet<st
 	sb.AppendLine("## Output Requirements");
 	sb.AppendLine("- Return COMPLETE, compilable Java code. No TODOs, no placeholders, no 'implement here' comments.");
 	sb.AppendLine("- Include all imports. Use Quarkus CDI annotations (@ApplicationScoped, @Inject, @Transactional).");
-	sb.AppendLine("- Class name = COBOL program name in PascalCase + 'Service' (e.g., BDSDA2F → Bdsda2fService).");
+	sb.AppendLine("- Class name = COBOL program name in PascalCase + 'Service' (e.g., ACCTMGR → AcctmgrService).");
 
 	return sb.ToString();
 }
@@ -9193,7 +9209,7 @@ string BuildCSharpPrompt(List<string> programs, List<string> copybooks, HashSet<
 	sb.AppendLine("## Output Requirements");
 	sb.AppendLine("- Return COMPLETE, compilable C# code. No TODOs, no placeholders.");
 	sb.AppendLine("- Use .NET dependency injection, async/await, file-scoped namespaces.");
-	sb.AppendLine("- Class name = COBOL program name in PascalCase + 'Service' (e.g., BDSDA2F → Bdsda2fService).");
+	sb.AppendLine("- Class name = COBOL program name in PascalCase + 'Service' (e.g., ACCTMGR → AcctmgrService).");
 
 	return sb.ToString();
 }

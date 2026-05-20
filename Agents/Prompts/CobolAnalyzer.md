@@ -1,11 +1,9 @@
 ## SECTION: System
 
-Analyze the following COBOL codebase: 29 program(s), 37 copybook(s), 27.320 total lines.
+Analyze the following COBOL codebase: 32 program(s), 187 copybook(s), 43.273 total lines.
 
 ## Detected Features to Investigate
 - **Embedded SQL**: Map all database tables, queries, cursors. Document SQLCODE error handling paths.
-- **CICS Transactions**: Document all SEND/RECEIVE MAP flows, LINK/XCTL chains, COMMAREA usage.
-- **Screen Handling**: Map BMS screen definitions to data flow. Document user interaction sequences.
 - **File I/O**: Identify all file definitions (FD/SELECT), access modes, record structures.
 - **Program CALLs**: Trace CALL chains and shared LINKAGE SECTION parameters.
 - **Copybook Dependencies**: Map which copybooks are used by which programs. Flag shared data structures.
@@ -19,17 +17,18 @@ Analyze the following COBOL codebase: 29 program(s), 37 copybook(s), 27.320 tota
 4. **Modernization Complexity** — rate each program as low/medium/high/very-high with justification.
 5. **Recommended Migration Order** — which programs to convert first based on dependencies.
 
-
-## Domain-Specific Observations (Banking/CICS/DB2)
-- **Core Banking Domain**: This codebase implements a retail banking application with CUSTOMER, ACCOUNT, PROCTRAN (processed transactions), REJTRAN (rejected transactions), and CONTROL tables. Programs fall into three categories: online CICS transactions (BNK1DCS, XFRFUN), batch initialisation (BANKDATA), and service-style DB2/VSAM access programs (INQCUST, UPDCUST, DELCUS, INQACC, CREACC, DELACC, etc.).
-- **Transaction Integrity Pattern**: XFRFUN enforces strict debit/credit atomicity using EXEC CICS SYNCPOINT with explicit ROLLBACK on partial failure. The ordering of FROM/TO account updates is deliberately chosen by comparing account numbers to reduce DB2 deadlock probability.
-- **SQL Error Semantics**: SQLCODE handling is business-significant: +100 = not found (mapped to COMM-FAIL-CODE values like '1' or '2'); -911 with SQLERRD(3)=13172872 indicates DB2 deadlock; SQLERRD(3)=13172894 indicates timeout. Storm Drain logic is triggered for SQLCODE 923 and certain VSAM RLS abends (AFCR/AFCS/AFCT).
-- **CICS Error Handling**: A centralized ABNDPROC program is used. Many programs populate ABNDINFO copybook with RESP/RESP2, program name, timestamps, SQLCODE, and free-form diagnostics before LINKing to ABNDPROC.
-- **COMMAREA Contracts**: DFHCOMMAREA structures are stable APIs between programs (e.g., XFRFUN.cpy, INQCUST.cpy, UPDCUST.cpy). Treat them as service contracts during analysis.
-- **Date/Time Conventions**: Dates are stored as DD.MM.YYYY strings in DB2 columns, but often split/redefined into numeric components. CICS ASKTIME/FORMATTIME is the canonical source of time.
-- **Arithmetic Precision**: Monetary values use PIC S9(10)V99 COMP-3 consistently; no overdraft limit validation is performed in transfers (explicitly documented business rule).
-- **BMS Screen Flow**: BNK1DCS implements a classic conversational CICS pattern: initial ERASE send, RECEIVE ASIS, PF-key driven state machine, cursor positioning via -1 length fields, and dynamic field protection/unprotection.
-- **Batch vs Online Split**: BANKDATA is non-CICS, batch-only, uses random data generation, frequent DB2 COMMIT WORK, and VSAM writes; do not conflate its behavior with online programs.
+## Domain-Specific Conversion Guidance
+- Treat sampled programs that behave like online business-action services as service-oriented transaction handlers, not primarily file-processing jobs. In these cases, LINKAGE-SECTION commarea processing, inter-program CALLs, and SQL access are the primary behaviors.
+- Expect a common contract pattern built around a large copybook-based commarea that carries request data, response data, timestamps, diagnostics, and status fields. Input and output often share the same structure, and a secondary scratch area may be passed as an additional parameter.
+- Important return semantics may differ from generic analyzer assumptions: some status codes represent successful completion or warnings rather than failures. Multiple status fields can be set independently and should be analyzed separately.
+- Error-field conventions often use dedicated error groups and multi-state flags, where a third state can mean "mandatory missing" rather than a simple boolean.
+- Build a naming glossary from the code under analysis, but translate localized terms into generic business language in the final output.
+- Treat commented preprocessor markers like `*01 -COPY ... -PRE ...` as meaningful copybook dependency hints when reconstructing logical layout and prefixing conventions.
+- Document actual SQL tables, composite keys, and no-row/tolerated-null handling paths that materially change business outcomes.
+- When you encounter orchestration services, focus on their CALL graph, request sequencing, bridge-record creation, lifecycle/versioning logic, and message aggregation rather than only paragraph counts.
+- When you encounter authorization services, document limited-access user handling, access-control checks, owner-system bypasses, and operation-specific rules without retaining proprietary role or location codes.
+- No screen maps or UI definitions should be inferred unless the sample explicitly contains them.
+- Normalize older COBOL shorthand predicates carefully in dependency and logic reports instead of treating them as malformed text.
 
 ## SECTION: User
 

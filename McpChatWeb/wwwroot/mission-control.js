@@ -292,7 +292,21 @@ function updateRunLog(lines) {
   const logEl = document.getElementById('mc-run-log');
   if (!logEl || !lines) return;
   const wasAtBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 50;
-  logEl.textContent = lines.join('\n');
+
+  // Colour-code log lines for readability.
+  logEl.innerHTML = lines.map(line => {
+    let cls = 'mc-log-default';
+    if (/✅|SUCCESS|COMPLETE|passed/i.test(line)) cls = 'mc-log-success';
+    else if (/⚠️|WARN|warn:|WARNING|TIMEOUT|RETRY|failed/i.test(line)) cls = 'mc-log-warn';
+    else if (/❌|ERROR|error:|FAIL|Exception/i.test(line)) cls = 'mc-log-error';
+    else if (/🚀|Starting|Processing|Converting|Analyzing|Injected|REKT|chunk [0-9]/i.test(line)) cls = 'mc-log-progress';
+    else if (/🛡️|Copilot-safe|SELECTOR|Staged|Selector/i.test(line)) cls = 'mc-log-info';
+    else if (/^\s*╔|╚|╠|║|═/i.test(line)) cls = 'mc-log-banner';
+    else if (/Chat:.*→|API_CALL|tokens\)/i.test(line)) cls = 'mc-log-api';
+    const safe = line.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+    return `<div class="${cls}">${safe}</div>`;
+  }).join('');
+
   if (wasAtBottom) logEl.scrollTop = logEl.scrollHeight;
 }
 

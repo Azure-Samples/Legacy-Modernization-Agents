@@ -198,6 +198,22 @@ public abstract class AgentBase
     }
 
     /// <summary>
+    /// Per-LLM-call hang timeout. If the underlying client doesn't return within
+    /// this window we treat the call as failed and retry. Tunable via the
+    /// LLM_CALL_TIMEOUT_SECONDS environment variable (default 240 s).
+    /// </summary>
+    private static TimeSpan LlmCallTimeout
+    {
+        get
+        {
+            var raw = Environment.GetEnvironmentVariable("LLM_CALL_TIMEOUT_SECONDS");
+            if (int.TryParse(raw, out var s) && s > 10 && s < 3600)
+                return TimeSpan.FromSeconds(s);
+            return TimeSpan.FromSeconds(480);
+        }
+    }
+
+    /// <summary>
     /// Executes a chat completion with fallback handling for common errors.
     /// Returns a tuple of (response, usedFallback, fallbackReason).
     /// </summary>
@@ -216,7 +232,29 @@ public abstract class AgentBase
 
             try
             {
-                var response = await ExecuteChatCompletionAsync(systemPrompt, userPrompt, contextIdentifier);
+                // Hang-guard: race the actual call against a timeout. Some providers
+                // (GitHub Copilot in particular) sometimes accept a request and
+                // never reply — no exception is thrown, just silence. The timeout
+                // converts that into a TaskCanceledException so the standard
+                // retry path picks it up.
+                using var cts = new CancellationTokenSource(LlmCallTimeout);
+                var callTask = ExecuteChatCompletionAsync(systemPrompt, userPrompt, contextIdentifier);
+                var timeoutTask = Task.Delay(LlmCallTimeout, cts.Token);
+                var finished = await Task.WhenAny(callTask, timeoutTask);
+
+                if (finished == timeoutTask)
+                {
+                    Logger.LogWarning(
+                        "[{Agent}] LLM call for {Context} exceeded {Seconds}s hang-timeout (attempt {Attempt}/{MaxRetries}). Treating as transient and retrying.",
+                        AgentName, contextIdentifier, LlmCallTimeout.TotalSeconds, attempt, maxRetries);
+                    EnhancedLogger?.LogBehindTheScenes("HANG_TIMEOUT", "TIMEOUT",
+                        $"LLM call exceeded {LlmCallTimeout.TotalSeconds}s for {contextIdentifier} — retrying");
+                    throw new TaskCanceledException(
+                        $"LLM call exceeded {LlmCallTimeout.TotalSeconds}s hang-timeout for {contextIdentifier}");
+                }
+
+                cts.Cancel();
+                var response = await callTask;
                 return (response, false, null);
             }
             // ── Reasoning exhaustion catch (before transient error catch) ──
@@ -459,6 +497,21 @@ public abstract class AgentBase
             }
             catch (Exception ex)
             {
+                // If the exception is transient but we've used the last attempt,
+                // log "max retries exhausted" rather than "non-retryable error" so
+                // diagnosis stays honest. Without this branch the hang-timeout
+                // path on attempt N gets misclassified as "non-retryable" because
+                // the `when (IsTransientError && attempt < maxRetries)` clause
+                // stops matching after the budget is spent.
+                if (IsTransientError(ex) || IsRateLimitError(ex))
+                {
+                    var reason = $"Max retries ({maxRetries}) exhausted after transient errors. Last error: {ex.Message}";
+                    Logger.LogError("[{Agent}] {Reason} for {Context}", AgentName, reason, contextIdentifier);
+                    EnhancedLogger?.LogBehindTheScenes("RETRIES_EXHAUSTED", "GIVING_UP",
+                        $"All {maxRetries} attempts for {contextIdentifier} failed transiently. Last: {ex.Message}");
+                    return (string.Empty, true, reason);
+                }
+
                 // Non-retryable error
                 Logger.LogError(ex,
                     "[{Agent}] Non-retryable error for {Context}: {Error}",
@@ -468,7 +521,8 @@ public abstract class AgentBase
             }
         }
 
-        // All retries exhausted
+        // All retries exhausted (reached when the loop exited normally — e.g.
+        // every attempt threw a retryable error that the `when` clause matched).
         var finalReason = $"Max retries ({maxRetries}) exhausted. Last error: {lastException?.Message}";
         Logger.LogError("[{Agent}] {Reason}", AgentName, finalReason);
 

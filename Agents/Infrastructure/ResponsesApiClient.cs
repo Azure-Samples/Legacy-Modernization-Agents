@@ -157,7 +157,11 @@ public class ResponsesApiClient : IDisposable
             Profile.TokensPerMinute, Profile.RequestsPerMinute, logger, rateLimitSafetyFactor);
 
         _httpClient = new HttpClient();
-        if (!string.IsNullOrEmpty(_apiKey))
+        var isPlaceholder = string.IsNullOrEmpty(_apiKey)
+            || _apiKey.Equals("ENTRA_ID", StringComparison.OrdinalIgnoreCase)
+            || _apiKey.Contains("placeholder", StringComparison.OrdinalIgnoreCase)
+            || _apiKey.Contains("your-key", StringComparison.OrdinalIgnoreCase);
+        if (!isPlaceholder)
         {
             _httpClient.DefaultRequestHeaders.Add("api-key", _apiKey);
         }

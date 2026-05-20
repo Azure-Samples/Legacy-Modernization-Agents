@@ -112,9 +112,20 @@ public sealed class RektContextLoader
     {
         if (el.ValueKind == JsonValueKind.Object)
         {
+            // smojol v2 uses nodeType=CODE_VERTEX for everything and puts the
+            // structural type (SECTION, PARAGRAPHS, SENTENCE, etc.) in the `type`
+            // field. Prefer `type` when `nodeType` is the generic CODE_VERTEX.
             string? nodeType = null;
-            if (el.TryGetProperty("nodeType", out var nt) && nt.ValueKind == JsonValueKind.String) nodeType = nt.GetString();
-            else if (el.TryGetProperty("type", out var t) && t.ValueKind == JsonValueKind.String) nodeType = t.GetString();
+            if (el.TryGetProperty("nodeType", out var nt) && nt.ValueKind == JsonValueKind.String)
+                nodeType = nt.GetString();
+            if (el.TryGetProperty("type", out var t) && t.ValueKind == JsonValueKind.String)
+            {
+                var typeVal = t.GetString();
+                // If nodeType is a generic bucket (CODE_VERTEX, COMPOSITE), prefer
+                // the more specific `type` field for classification.
+                if (nodeType is null or "CODE_VERTEX" or "COMPOSITE" or "ATOMIC")
+                    nodeType = typeVal;
+            }
 
             var name = TryGetString(el, "name") ?? TryGetString(el, "displayName") ?? "";
             var startLine = TryGetInt(el, "startLine");
@@ -130,10 +141,38 @@ public sealed class RektContextLoader
                     break;
                 }
                 case "PARAGRAPH":
+                case "SENTENCE":
                 {
                     var p = new RektParagraph { Name = name, StartLine = startLine, EndLine = endLine };
                     if (currentSection != null) currentSection.Paragraphs.Add(p);
                     else ctx.Sections.Add(new RektSection { Name = "(implicit)", Paragraphs = { p } });
+                    // v2: sentences may contain PERFORM/CALL info in `name` (e.g. "PERFORM010-INIT")
+                    if (name.StartsWith("PERFORM", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var target = name.Substring("PERFORM".Length).Trim();
+                        if (!string.IsNullOrEmpty(target))
+                        {
+                            ctx.PerformGraph.Add(new RektPerformEdge
+                            {
+                                From = currentSection?.Name ?? "",
+                                To = target,
+                                Conditional = name.Contains("UNTIL", StringComparison.OrdinalIgnoreCase)
+                            });
+                        }
+                    }
+                    else if (name.StartsWith("CALL", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var target = name.Substring("CALL".Length).Trim().Trim('\'');
+                        if (!string.IsNullOrEmpty(target))
+                        {
+                            ctx.CallTargets.Add(new RektCallTarget
+                            {
+                                TargetProgram = target,
+                                IsDynamic = false,
+                                LineNumber = startLine,
+                            });
+                        }
+                    }
                     break;
                 }
                 case "PERFORM":
@@ -221,17 +260,45 @@ public sealed class RektContextLoader
         if (el.ValueKind == JsonValueKind.Object)
         {
             var name = TryGetString(el, "name");
+            // v1 uses "level", v2 uses "levelNumber"
             var level = TryGetInt(el, "level");
+            if (level == 0) level = TryGetInt(el, "levelNumber");
             if (!string.IsNullOrEmpty(name) && level > 0)
             {
+                // Extract PIC clause: v1 has "pic"/"picClause", v2 embeds it in "rawText"
+                var pic = TryGetString(el, "pic") ?? TryGetString(el, "picClause");
+                if (pic == null)
+                {
+                    var rawText = TryGetString(el, "rawText") ?? "";
+                    var picMatch = System.Text.RegularExpressions.Regex.Match(
+                        rawText, @"\bPIC\s+(\S+(?:\(\d+\))?(?:V\S+)?)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    if (picMatch.Success) pic = "PIC " + picMatch.Groups[1].Value;
+                }
+
+                // Usage: v1 has "usage", v2 may have it in rawText
+                var usage = TryGetString(el, "usage");
+                if (usage == null)
+                {
+                    var rawText = TryGetString(el, "rawText") ?? "";
+                    if (rawText.Contains("COMP-3", StringComparison.OrdinalIgnoreCase)) usage = "COMP-3";
+                    else if (rawText.Contains("COMP-5", StringComparison.OrdinalIgnoreCase)) usage = "COMP-5";
+                    else if (rawText.Contains("COMP-4", StringComparison.OrdinalIgnoreCase)) usage = "COMP-4";
+                    else if (rawText.Contains("COMP-2", StringComparison.OrdinalIgnoreCase)) usage = "COMP-2";
+                    else if (rawText.Contains("COMP-1", StringComparison.OrdinalIgnoreCase)) usage = "COMP-1";
+                    else if (System.Text.RegularExpressions.Regex.IsMatch(rawText, @"\bCOMP\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) usage = "COMP";
+                }
+
+                // Redefines: v1 has "redefines" string, v2 has "isRedefinition" bool + "redefines" string
+                var redefines = TryGetString(el, "redefines");
+
                 var item = new RektDataItem
                 {
                     Level = level,
                     Name = name,
-                    PicClause = TryGetString(el, "pic") ?? TryGetString(el, "picClause"),
-                    Usage = TryGetString(el, "usage"),
+                    PicClause = pic,
+                    Usage = usage,
                     Value = TryGetString(el, "value"),
-                    Redefines = TryGetString(el, "redefines"),
+                    Redefines = redefines,
                     Occurs = TryGetIntNullable(el, "occurs"),
                 };
                 bucket.Add(item);
@@ -259,8 +326,18 @@ public sealed class RektContextLoader
     {
         // Even when AST writer fails, deps export usually succeeds — feed it into CallTargets/CopybookUsage
         // so the converter at least knows what the program depends on.
-        var path = Path.Combine(_rektDir, $"{stem}-deps.json");
-        if (!File.Exists(path)) return;
+        string? path = null;
+        foreach (var candidate in new[]
+        {
+            Path.Combine(_rektDir, $"{stem}-deps.json"),
+            Path.Combine(_rektDir, $"{stem}.cbl-deps.json"),
+            Path.Combine(_rektDir, $"{stem}.cbl.report", $"{stem}-deps.json"),
+            Path.Combine(_rektDir, $"{stem}.cbl.report", $"{stem}.cbl-deps.json"),
+        })
+        {
+            if (File.Exists(candidate)) { path = candidate; break; }
+        }
+        if (path is null) return;
         try
         {
             using var doc = JsonDocument.Parse(File.ReadAllText(path));
@@ -360,12 +437,67 @@ public sealed class RektContextLoader
 
     private string? FindRektFile(string stem, string prefix)
     {
-        // smojol emits files using either bare stem or with .cbl suffix in the name.
+        // Layout 1 (legacy / flat): output/rekt/flow-ast-PROG.json
         foreach (var candidate in new[] { $"{prefix}{stem}.json", $"{prefix}{stem}.cbl.json" })
         {
             var p = Path.Combine(_rektDir, candidate);
             if (File.Exists(p)) return p;
         }
+
+        // Layout 2 (smojol v2): output/rekt/PROG.cbl.report/flow_ast/flow-ast-PROG.cbl.json
+        // Maps prefix → subdirectory:
+        //   "flow-ast-"  → flow_ast/flow-ast-<stem>.cbl.json
+        //   "flow-data-" → data_structures/<stem>.cbl-data.json
+        //   "flow-cfg-"  → cfg/cfg-<stem>.cbl.json
+        var reportDirs = new[]
+        {
+            $"{stem}.cbl.report",
+            $"{stem}.report",
+            $"{stem}.CBL.report"
+        };
+        foreach (var reportDir in reportDirs)
+        {
+            var rdir = Path.Combine(_rektDir, reportDir);
+            if (!Directory.Exists(rdir)) continue;
+
+            // Try standard subdirectory mappings
+            var subPaths = prefix switch
+            {
+                "flow-ast-" => new[]
+                {
+                    Path.Combine(rdir, "flow_ast", $"flow-ast-{stem}.cbl.json"),
+                    Path.Combine(rdir, "flow_ast", $"flow-ast-{stem}.json"),
+                },
+                "flow-data-" => new[]
+                {
+                    Path.Combine(rdir, "data_structures", $"{stem}.cbl-data.json"),
+                    Path.Combine(rdir, "data_structures", $"{stem}-data.json"),
+                    Path.Combine(rdir, "data_structures", $"flow-data-{stem}.cbl.json"),
+                },
+                "flow-cfg-" => new[]
+                {
+                    Path.Combine(rdir, "cfg", $"cfg-{stem}.cbl.json"),
+                    Path.Combine(rdir, "cfg", $"cfg-{stem}.json"),
+                    Path.Combine(rdir, "cfg", $"flow-cfg-{stem}.cbl.json"),
+                },
+                _ => Array.Empty<string>(),
+            };
+            foreach (var sp in subPaths)
+            {
+                if (File.Exists(sp)) return sp;
+            }
+
+            // Fallback: glob the report dir recursively for the prefix
+            try
+            {
+                var found = Directory.EnumerateFiles(rdir, $"*{stem}*", SearchOption.AllDirectories)
+                    .FirstOrDefault(f => Path.GetFileName(f).Contains(prefix.TrimEnd('-'), StringComparison.OrdinalIgnoreCase)
+                                      || Path.GetFileName(f).StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+                if (found != null) return found;
+            }
+            catch { /* access error — skip */ }
+        }
+
         return null;
     }
 

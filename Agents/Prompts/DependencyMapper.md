@@ -1,38 +1,30 @@
 ## SECTION: System
 
 Map dependencies across the COBOL codebase:
-- **29** programs: BNK1CRA.cbl, INQCUST.cbl, UPDACC.cbl, BNK1TFN.cbl, BNK1DAC.cbl, ABNDPROC.cbl, BNK1CAC.cbl, DELCUS.cbl, XFRFUN.cbl, INQACC.cbl, CREACC.cbl, DBCRFUN.cbl, DELACC.cbl, UPDCUST.cbl, BNK1CCA.cbl
-  ... and 14 more
-- **37** copybooks: PROCISRT.cpy, ACCDB2.cpy, PROCTRAN.cpy, SORTCODE.cpy, INQCUST.cpy, RESPSTR.cpy, UPDACC.cpy, INQACCCZ.cpy, PAYDBCR.cpy, ACCTCTRL.cpy, NEWACCNO.cpy, INQCUSTZ.cpy, INQACC.cpy, XFRFUN.cpy, CUSTCTRL.cpy
-  ... and 22 more
+- **32** programs: representative online services, orchestration handlers, authorization services, and supporting utilities
+- **187** copybooks: representative request/response contracts, table layouts, shared SQL structures, and common utility copybooks
 
 ## Dependency Types to Map
 1. **COPY dependencies** — which programs include which copybooks (COPY statements).
 2. **CALL chains** — which programs CALL which other programs. Include USING parameters.
 3. **Database tables** — which programs access which tables via EXEC SQL.
 4. **Files** — which programs read/write which files (SELECT...ASSIGN).
-5. **CICS resources** — MAP names, TRANSACTION ids, DATASET/FILE names.
 
 ## Output Format
 Generate a Mermaid dependency diagram AND a structured table listing all relationships.
 
-
-## Discovered Domain Dependencies
-- **Database Tables**:
-  - ACCOUNT: accessed by XFRFUN, INQACC, CREACC, UPDACC, DELACC, BANKDATA
-  - CUSTOMER (VSAM): accessed by BNK1DCS, INQCUST, UPDCUST, DELCUS, BANKDATA
-  - PROCTRAN: written by XFRFUN
-  - CONTROL: written/deleted by BANKDATA
-- **CICS Programs**:
-  - ABNDPROC: linked by nearly all online programs for structured abend reporting
-  - INQCUST, UPDCUST, DELCUS: service programs linked by BNK1DCS
-- **Copybook APIs**:
-  - XFRFUN.cpy defines the COMMAREA contract for fund transfers
-  - INQCUST.cpy / UPDCUST.cpy / DELCUS.cpy define customer service contracts
-  - ACCDB2.cpy and PROCDB2.cpy define DB2 table layouts reused across programs
-- **Maps**:
-  - BNK1DCM (BMS mapset) used exclusively by BNK1DCS
-- **Batch Isolation**: BANKDATA has no CICS dependencies but shares ACCDB2, CUSTOMER, SORTCODE copybooks with online programs.
+## Domain-Specific Conversion Guidance
+- De-duplicate program names in the inventory when source discovery produces repeats. Build the graph from unique program identifiers.
+- Treat commented preprocessor markers like `*01 -COPY ... -PRE ...` as real COPY dependencies with prefixing information. Post-expansion listings may otherwise under-report shared schema dependencies.
+- Distinguish dependency types clearly:
+  1. Service CALL dependencies
+  2. Shared commarea/copybook schema dependencies
+  3. Database table dependencies
+  4. Optional or boilerplate file definitions that may not imply runtime file use
+- Seed the graph from any observed orchestrator and authorization call chains, but describe them generically when preparing public output.
+- Show shared commarea copybooks as hubs when they define request, error, and response payloads reused across programs.
+- Mark runtime-use confidence for file dependencies so boilerplate FILE SECTION declarations do not overstate filesystem coupling.
+- Also show semantic dependencies on origin or mode fields when those values alter behavior even without introducing new CALLs.
 
 ## SECTION: User
 
@@ -53,199 +45,11 @@ Generate a Mermaid diagram AND a structured dependency table.
 
 ## SECTION: MermaidSystem
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 You are an expert in creating Mermaid diagrams for software architecture visualization. 
 Create a clear, well-organized Mermaid flowchart for COBOL program dependencies.
 Return only the Mermaid diagram code, no additional text.
 
 ## SECTION: MermaidUser
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 Create a Mermaid diagram for the following COBOL dependency structure:
 
@@ -259,100 +63,6 @@ Total: {{TotalPrograms}} programs, {{TotalCopybooks}} copybooks
 
 ## SECTION: AnalysisSystem
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 You are an expert COBOL dependency analyzer. Analyze the provided COBOL code structure and identify:
 1. Data flow dependencies between copybooks
 2. Potential circular dependencies
@@ -360,100 +70,6 @@ You are an expert COBOL dependency analyzer. Analyze the provided COBOL code str
 Provide a brief analysis.
 
 ## SECTION: AnalysisUser
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 Analyze the dependency structure of this COBOL project:
 

@@ -65,6 +65,13 @@ public class ChunkedMigrationProcess
 
         var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole());
 
+        // Provider-aware chunk-size override: GitHub Copilot silently drops
+        // requests above ~10K tokens (observed May 2026: 5K chunks land, 13K
+        // chunks hang). Force smaller chunks + sequential processing when
+        // Copilot is the provider to avoid hangs. Users can opt out by setting
+        // COPILOT_SAFE_MODE=false.
+        ApplyCopilotSafeModeIfNeeded(_settings.ChunkingSettings);
+
         // Initialize chunking orchestrator
         _enhancedLogger.ShowStep(1, 4, "ChunkingOrchestrator", "Smart file chunking engine");
         
@@ -555,6 +562,22 @@ public class ChunkedMigrationProcess
                     successfulChunks.Count,
                     chunkedResult.Result.TotalChunks,
                     chunkedResult.Result.FailedChunks);
+
+                // Surface the missing chunks prominently so users don't miss them.
+                var failedIndices = chunkedResult.Result.ChunkResults
+                    .Where(r => !r.Success)
+                    .Select(r => $"chunk {r.ChunkIndex + 1}")
+                    .ToList();
+
+                Console.WriteLine();
+                Console.WriteLine($"  ⚠️  {chunkedResult.SourceFile}: {chunkedResult.Result.FailedChunks}/{chunkedResult.Result.TotalChunks} chunk(s) FAILED — output is incomplete:");
+                foreach (var fi in failedIndices)
+                    Console.WriteLine($"      ✗ {fi}");
+                Console.WriteLine($"      Re-run the same command to retry. Only failed chunks need to re-process.");
+                Console.WriteLine();
+
+                _enhancedLogger?.LogBehindTheScenes("CHUNK_FAILURE_SUMMARY", "WARNING",
+                    $"{chunkedResult.SourceFile}: {chunkedResult.Result.FailedChunks}/{chunkedResult.Result.TotalChunks} chunks failed. Missing: {string.Join(", ", failedIndices)}");
             }
 
             if (isJava)
@@ -641,7 +664,7 @@ public class ChunkedMigrationProcess
         foreach (var kvp in classSegments)
         {
             var className = kvp.Key;
-            var content = kvp.Value.ToString();
+            var content = ChunkDeduplicator.Deduplicate(kvp.Value.ToString(), "CSharp");
             
             var csharpFile = new StringBuilder();
             
@@ -889,7 +912,7 @@ public class ChunkedMigrationProcess
         foreach (var kvp in classSegments)
         {
             var className = kvp.Key;
-            var content = kvp.Value.ToString();
+            var content = ChunkDeduplicator.Deduplicate(kvp.Value.ToString(), "Java");
             
             var javaFile = new StringBuilder();
             
@@ -1212,6 +1235,52 @@ public class ChunkedMigrationProcess
         }
         
         return code;
+    }
+
+    /// <summary>
+    /// Detect GitHub Copilot provider and force smaller chunks + sequential
+    /// processing. Copilot silently drops requests above ~10K tokens, so the
+    /// default 1500-line / 28K-token chunks reliably hang. Empirically observed
+    /// May 2026: chunks ≤5K tokens land cleanly, ≥13K hang.
+    ///
+    /// Trigger: AZURE_OPENAI_SERVICE_TYPE=GitHubCopilot OR AISettings.ServiceType=GitHubCopilot.
+    /// Opt-out: set COPILOT_SAFE_MODE=false in env or pass --copilot-unsafe to doctor.sh.
+    /// </summary>
+    private void ApplyCopilotSafeModeIfNeeded(ChunkingSettings cs)
+    {
+        var optOut = string.Equals(Environment.GetEnvironmentVariable("COPILOT_SAFE_MODE"), "false", StringComparison.OrdinalIgnoreCase);
+        if (optOut)
+        {
+            _enhancedLogger.LogBehindTheScenes("COPILOT_SAFE_MODE", "OPT_OUT",
+                "Copilot-safe overrides skipped — COPILOT_SAFE_MODE=false");
+            return;
+        }
+
+        // Provider detection from env or settings.
+        var envServiceType = Environment.GetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE") ?? "";
+        var settingsServiceType = _settings?.AISettings?.ServiceType ?? "";
+        var isCopilot =
+            envServiceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase) ||
+            settingsServiceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase);
+        if (!isCopilot) return;
+
+        var before = $"MaxTokensPerChunk={cs.MaxTokensPerChunk}, MaxLinesPerChunk={cs.MaxLinesPerChunk}, MaxParallelChunks={cs.MaxParallelChunks}, MaxParallelConversion={cs.MaxParallelConversion}";
+
+        // Force conservative values. Only shrink, never grow — respect user
+        // overrides that are already smaller than the safe ceiling.
+        cs.MaxTokensPerChunk = Math.Min(cs.MaxTokensPerChunk, 8000);
+        cs.MaxLinesPerChunk = Math.Min(cs.MaxLinesPerChunk, 600);
+        cs.MaxParallelChunks = 1;
+        cs.MaxParallelConversion = 1;
+        cs.MaxParallelAnalysis = Math.Min(cs.MaxParallelAnalysis, 1);
+
+        var after = $"MaxTokensPerChunk={cs.MaxTokensPerChunk}, MaxLinesPerChunk={cs.MaxLinesPerChunk}, MaxParallelChunks={cs.MaxParallelChunks}, MaxParallelConversion={cs.MaxParallelConversion}";
+
+        Console.WriteLine($"  🛡️  Copilot-safe mode active (set COPILOT_SAFE_MODE=false to disable).");
+        Console.WriteLine($"     Before: {before}");
+        Console.WriteLine($"     After:  {after}");
+        _enhancedLogger.LogBehindTheScenes("COPILOT_SAFE_MODE", "APPLIED",
+            $"Provider=GitHubCopilot; before={before}; after={after}");
     }
 }
 

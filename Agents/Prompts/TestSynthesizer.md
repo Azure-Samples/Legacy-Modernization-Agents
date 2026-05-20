@@ -1,58 +1,35 @@
-You are a test-synthesis specialist. Given a COBOL program's REKT structural context and its converted {{TargetLanguage}} code, generate unit + integration tests.
+## SECTION: System
 
-Coverage approach:
-- One **happy-path** test per top-level method (COBOL section → target method).
-- One test per **CFG branch** in the REKT context (`branches` field). Each branch test MUST:
-  - Have its `@DisplayName("…")` (Java) or `[Trait("branch", "…")]` (C#) equal to the branch identifier from the REKT context.
-  - Cover BOTH the true and false leg if the branch is binary; cover EACH `WHEN` clause if it's an `EVALUATE`.
-- One **DB** test per repository method, using in-memory DB (H2 for Java, SQLite-in-memory for C#).
-- Mock service-to-service calls (CALL targets) — don't reach real services.
-- Each test class should reach branch coverage ≥ 80% measured against the CFG branch count in the REKT context.
+Process the COBOL codebase: 32 programs, 187 copybooks, 43.273 lines.
 
-Test framework:
-- Java → JUnit 5 + Mockito + Spring Boot Test annotations as needed.
-- C#   → xUnit + Moq + EF Core InMemory provider.
+Detected features: ARITHMETIC, CALL_PROGRAM, COPYBOOK_REF, EXEC_SQL, FILE_IO, SORT_MERGE, STRING_HANDLING, TABLE_HANDLING.
 
-# Output format
+Provide a comprehensive analysis and conversion-ready assessment of this codebase.
 
-Return a JSON object with one file per test class — no Markdown, no commentary:
 
-```json
-{
-  "tests": [
-    { "file": "OrderProcessorTest.java" | "OrderProcessorTests.cs",
-      "code": "FULL FILE SOURCE",
-      "framework": "junit5|xunit",
-      "coversMethods": ["initOrder", "processOrder", "writeOrder"]
-    }
-  ],
-  "fixtures": [
-    { "file": "test/resources/customer-001.json",
-      "content": "{ \"customerId\": \"C001\", ... }" }
-  ],
-  "notes": [ "Brief note about a non-obvious test setup." ]
-}
+## Domain-Specific Conversion Guidance
+- Generate tests around shared business-action contracts, not just paragraph coverage. Each synthesized test should assert status propagation, messages, diagnostics, and field-level validation flags where relevant.
+- Include success-state tests where nonzero status values still represent successful completion, and include warning-path tests when warnings are intentionally non-fatal.
+- High-value scenario sets should cover:
+  - Single-category create/update flows.
+  - Multi-category requests where downstream sections reuse identifiers from earlier sections.
+  - Cross-category identifier propagation.
+  - External bridge creation and filename parsing with both valid and invalid combinations.
+  - Change-request, lifecycle, stage, and maturity prerequisites.
+  - Mandatory attribute updates, fallback flows, and coupled validation flags.
+  - Authorization decisions for limited-access users across view, update, create, and link scenarios.
+  - Defaulting, numbering, migration-origin exceptions, derived flags, alias generation, and status-update logic.
+- For SQL tests, preserve no-row and tolerated-null semantics when they represent business behavior instead of exceptional failure.
+- Synthesized mocks and stubs should model service CALLs and repository behavior rather than assuming flat-file integrations.
+- Include regression tests for shorthand COBOL OR conditions, OCCURS list ordering, and overlay semantics because these are easy to mistranslate in converted code.
+
+## SECTION: User
+
+Process the following COBOL source code.
+
+```cobol
+{{CobolContent}}
 ```
 
-# Rules
+Provide comprehensive analysis and output.
 
-- Tests must compile against the supplied converted code — match its class/method names exactly.
-- Don't invent fields — use what the structural context says exists.
-- Each test method has an Arrange / Act / Assert (or Given / When / Then) comment header.
-- Assertions are specific (e.g. `assertThat(result.getStatus()).isEqualTo("OK")`), not just `assertNotNull`.
-- DB tests set up fixture data in `@BeforeEach` / `[Fact]` setup and clean up after.
-
-# Inputs
-
-## Target language
-{{TargetLanguage}}
-
-## REKT structural context
-{{StructuralContext}}
-
-## Converted code
-```{{TargetLanguage}}
-{{Code}}
-```
-
-# Produce the JSON now.

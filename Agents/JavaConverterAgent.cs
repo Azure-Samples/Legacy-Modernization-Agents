@@ -183,20 +183,47 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
                             userPromptBuilder.AppendLine("  • If a name is unclear from the source, prefer the name in the structural context.");
                             userPromptBuilder.AppendLine("  • If the structural context shows zero items for a category (e.g. no CALL targets), do NOT generate any.");
                             userPromptBuilder.AppendLine();
+                            userPromptBuilder.AppendLine("DATA STRUCTURE → DTO RULES:");
+                            userPromptBuilder.AppendLine("  • For EVERY 01-level data group below, generate a COMPLETE DTO class with ALL fields.");
+                            userPromptBuilder.AppendLine("  • Map PIC X→String, PIC S9V9→BigDecimal, PIC 9 COMP-3→BigDecimal, PIC 9 COMP→int/long.");
+                            userPromptBuilder.AppendLine("  • Preserve original COBOL field names (camelCase). Do NOT simplify to fewer fields.");
+                            userPromptBuilder.AppendLine("  • If a group has >50 fields, still generate ALL of them.");
+                            userPromptBuilder.AppendLine();
+                            userPromptBuilder.AppendLine("CALL TARGET → SERVICE INJECTION RULES:");
+                            userPromptBuilder.AppendLine("  • For EVERY CALL target below: generate an interface + @Inject field + method call.");
+                            userPromptBuilder.AppendLine("  • Do NOT inline the called program's logic.");
+                            userPromptBuilder.AppendLine();
                             userPromptBuilder.AppendLine(RektContextFormatter.ToPromptBlock(sc));
                             Logger.LogInformation("[JavaConverterAgent] Injected REKT context for {File} (provenance={Prov}, confidence={Conf:F2})",
                                 cobolFile.FileName, sc.Provenance, sc.Confidence);
                         }
                         else
                         {
-                            Logger.LogDebug("[JavaConverterAgent] No REKT context available for {File} (provenance={Prov})",
+                            Logger.LogWarning("[JavaConverterAgent] ⚠️ NO REKT DATA available for {File} (provenance={Prov})",
                                 cobolFile.FileName, sc.Provenance);
+                        }
+
+                        // Shared-types registry: prevent duplicate type definitions across files.
+                        try
+                        {
+                            var registry = SharedTypeRegistryHolder.GetOrBuild(d.FullName, srcFolder);
+                            var sharedBlock = registry.ToPromptBlock("Java");
+                            if (!string.IsNullOrEmpty(sharedBlock))
+                            {
+                                userPromptBuilder.Append(sharedBlock);
+                                Logger.LogInformation("[JavaConverterAgent] Injected shared-types registry for {File} ({Count} shared names)",
+                                    cobolFile.FileName, registry.SharedTypeNames.Count);
+                            }
+                        }
+                        catch (Exception strEx)
+                        {
+                            Logger.LogDebug("[JavaConverterAgent] Shared-types registry build failed for {File}: {Msg}", cobolFile.FileName, strEx.Message);
                         }
                     }
                 }
                 catch (Exception ex)
                 {
-                    Logger.LogDebug("[JavaConverterAgent] REKT context injection failed for {File}: {Msg}", cobolFile.FileName, ex.Message);
+                    Logger.LogWarning("[JavaConverterAgent] ⚠️ REKT injection FAILED for {File}: {Msg}", cobolFile.FileName, ex.Message);
                 }
             }
 
@@ -228,6 +255,54 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
 
             // Extract the Java code from markdown code blocks if necessary
             javaCode = ExtractJavaCode(javaCode);
+
+            // ── Continuation retry: if the output is truncated, ask the LLM to
+            // continue from where it left off. Up to 3 continuations to reconstruct
+            // the full file without needing chunking. ──
+            // Guard: only attempt continuation if the initial response contains
+            // actual Java code (at least one method/class/brace). If the response
+            // was empty or an error message, continuation just confuses the LLM.
+            var hasAnyCode = javaCode.Contains("{") && (javaCode.Contains("class ") || javaCode.Contains("void ") || javaCode.Contains("public "));
+            var maxContinuations = hasAnyCode ? 3 : 0;
+            if (!hasAnyCode && !string.IsNullOrWhiteSpace(javaCode))
+            {
+                Logger.LogWarning("[JavaConverterAgent] ⚠️ Response contains no valid Java code — skipping continuation (response may be an error message or empty)");
+            }
+            for (int cont = 0; cont < maxContinuations; cont++)
+            {
+                var hasPkg = javaCode.Contains("package ", StringComparison.Ordinal);
+                var hasCls = javaCode.Contains("class ", StringComparison.Ordinal);
+                var opens = javaCode.Count(c => c == '{');
+                var closes = javaCode.Count(c => c == '}');
+                if (hasPkg && hasCls && opens == closes) break; // complete
+
+                Logger.LogWarning(
+                    "[JavaConverterAgent] Output truncated (pkg={HasPkg} cls={HasCls} braces={Opens}/{Closes}) — sending continuation {Cont}/{Max}",
+                    hasPkg, hasCls, opens, closes, cont + 1, maxContinuations);
+
+                var lastLines = string.Join("\n", javaCode.Split('\n').TakeLast(10));
+                var contPrompt = $"Your previous response was truncated mid-output. Here are the LAST 10 lines you generated:\n\n```java\n{lastLines}\n```\n\n" +
+                    $"Continue from EXACTLY where you left off. Return ONLY the remaining Java code — no package declaration, no class declaration, no imports. " +
+                    $"Start with the next line after the fragment above and end with the final closing brace '}}' of the class.";
+
+                var (contCode, contFallback, _) = await ExecuteWithFallbackAsync(
+                    systemPrompt, contPrompt, $"{cobolFile.FileName} [continuation-{cont + 1}]");
+
+                if (contFallback || string.IsNullOrWhiteSpace(contCode)) break;
+
+                contCode = ExtractJavaCode(contCode);
+                // Strip any duplicate package/import/class declarations the LLM may re-emit
+                var contLines = contCode.Split('\n')
+                    .SkipWhile(l => l.TrimStart().StartsWith("package ") || l.TrimStart().StartsWith("import ") || l.Trim() == "")
+                    .ToList();
+                // Remove class re-declaration if present
+                var classIdx = contLines.FindIndex(l => l.Contains("class ") && l.Contains("{"));
+                if (classIdx >= 0 && classIdx < 3) contLines = contLines.Skip(classIdx + 1).ToList();
+
+                javaCode = javaCode.TrimEnd() + "\n" + string.Join("\n", contLines);
+                Logger.LogInformation("[JavaConverterAgent] Continuation {Cont} appended {Lines} lines",
+                    cont + 1, contLines.Count);
+            }
 
             // Extract AI's semantic class name (based on domain/action/type pattern)
             string aiClassName = ExtractClassNameFromCode(javaCode);
@@ -460,6 +535,24 @@ public class {{className}} {
             }
         }
 
+        // ── Truncation detection ──
+        // If the output has no 'package' declaration OR unbalanced braces, it was
+        // truncated by the provider (Copilot drops responses silently). Log a clear
+        // warning so the user knows to re-run or switch provider.
+        var hasPkg = input.Contains("package ", StringComparison.Ordinal);
+        var hasClass = input.Contains("class ", StringComparison.Ordinal);
+        var opens = input.Count(c => c == '{');
+        var closes = input.Count(c => c == '}');
+        if (!hasPkg || !hasClass || opens != closes)
+        {
+            Logger.LogWarning(
+                "[JavaConverterAgent] ⚠️ OUTPUT APPEARS TRUNCATED: package={HasPkg}, class={HasClass}, braces {Opens}/{Closes}. " +
+                "The provider likely hit its output token limit. Re-run with chunking (lower --copilot-safe thresholds) or switch to Azure OpenAI.",
+                hasPkg, hasClass, opens, closes);
+            EnhancedLogger?.LogBehindTheScenes("TRUNCATION_DETECTED", "WARNING",
+                $"package={hasPkg}, class={hasClass}, braces={opens}/{closes}");
+        }
+
         return input;
     }
 
@@ -529,7 +622,7 @@ public class {{className}} {
             {"INC-FEJLMELD", "INC-ERROR-MSG"},
             {"FEJL VED KALD", "ERROR IN CALL"},
             {"FEJL VED KALD AF", "ERROR CALLING"},
-            {"FEJL VED KALD BDSDATO", "ERROR CALLING BDSDATO"},
+            {"ERROR CALLING DATECONV", "ERROR CALLING DATE SERVICE"},
             {"KALD", "CALL_OP"},
             {"MEDD-TEKST", "MSG_TEXT"},
         };

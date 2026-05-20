@@ -4815,7 +4815,7 @@ class ASTGalaxyView {
         areaColor: '#7f1d1d', borderColor: '#ef4444',
         domains: [
           { name: 'Regulatory Reporting',        icon: '📋', bianRef: 'BIAN::RegulatoryReporting',
-            matches: ['RGNB649','CORPTG0C','CORPT00C'],
+            matches: ['RPTGEN','CORPTG0C','CORPT00C'],
             desc: 'Generate mandated regulatory submissions' },
         ],
       },
@@ -4824,7 +4824,7 @@ class ASTGalaxyView {
         areaColor: '#1c1917', borderColor: '#78716c',
         domains: [
           { name: 'Data Management',             icon: '🗄️', bianRef: 'BIAN::DataManagement',
-            matches: ['BANKDATA','BDSDA23','BDSDA2F','BDSM043','BDSMFJL',
+            matches: ['BANKDATA','CUSTINQ','DATCONV','BATPROC','ACCTMGR',
                       'CBEXPORT','CBIMPORT'],
             desc: 'Shared data structures and batch utilities' },
           { name: 'System Administration',       icon: '🔐', bianRef: 'BIAN::ITSystemAdministration',
@@ -4909,7 +4909,7 @@ class ASTGalaxyView {
         (${(mappedRatio*100).toFixed(0)}%). BIAN V14.0 is the Banking Industry Architecture
         Network taxonomy — the rest of your programs appear under <em>Unmapped Programs</em>
         below because their names do not follow banking conventions
-        (e.g. CREACC, COCRDSLC, RGNB649). For non-banking domains, the Architecture
+        (e.g. CREACC, COCRDSLC, RPTGEN). For non-banking domains, the Architecture
         and Service Catalog views are more appropriate.
       </div>`;
     }
@@ -4991,8 +4991,8 @@ class ASTGalaxyView {
     return {
       'Online (CICS)':      { color: '#1e40af', border: '#3b82f6', icon: '🖥️',  keys: ['BNK1CAC','BNK1CRA','BNK1TFN','BNK1UAC'] },
       'Business Logic':     { color: '#065f46', border: '#10b981', icon: '⚙️',  keys: ['CREACC','CRECUST','DBCRFUN','DELACC','DELCUS','INQACC','INQACCCU','UPDACC','XFRFUN'] },
-      'Batch Processing':   { color: '#78350f', border: '#f59e0b', icon: '📦',  keys: ['BDSM043','BDSMFJL','RGNB649'] },
-      'Shared Data':        { color: '#1c1917', border: '#78716c', icon: '🗄️',  keys: ['BANKDATA','BDSDA23','BDSDA2F'] },
+      'Batch Processing':   { color: '#78350f', border: '#f59e0b', icon: '📦',  keys: ['BATPROC','ACCTMGR','RPTGEN'] },
+      'Shared Data':        { color: '#1c1917', border: '#78716c', icon: '🗄️',  keys: ['BANKDATA','CUSTINQ','DATCONV'] },
     };
   }
 
@@ -5003,7 +5003,7 @@ class ASTGalaxyView {
     }
     const meta = this.galaxyData?.programs?.find?.(p => (p.program || '').replace(/\.cbl$/i,'').replace(/^flow-ast-/i,'').toUpperCase() === key) || {};
     if (meta?.isCopybook || key.includes('DATA') || key.includes('DG') || key.includes('DO') || key.includes('MID') || key.includes('MOD')) return 'Shared Data';
-    if (key.startsWith('T660R') || key.includes('REPORT') || key.includes('RPT')) return 'Batch Processing';
+    if (key.startsWith('BATR') || key.includes('REPORT') || key.includes('RPT')) return 'Batch Processing';
     if (key.includes('INQ') || key.includes('UPD') || key.includes('CRE') || key.includes('DEL') || key.includes('XFR')) return 'Business Logic';
     if ((meta.callCount || 0) > (meta.sqlCount || 0) && (meta.callCount || 0) > 0) return 'Business Logic';
     if ((meta.sqlCount || 0) > 0) return 'Business Logic';

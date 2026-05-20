@@ -60,6 +60,10 @@
               <br>• <strong>Thorough</strong>: high reasoning, single worker — slowest but highest quality
             </div>
 
+            <div><strong style="color:#93c5fd;">REKT structural context</strong> <em>(default ON)</em> — Injects the REKT AST/CFG/data-flow facts + FACT-LOCKING rules ("never invent fields/methods/CALLs") + shared-types registry (prevents CS0101 duplicate-type errors) into the converter prompt. Turn OFF only to A/B test prompts or if you haven't run <code>rekt-full</code> yet.</div>
+
+            <div><strong style="color:#93c5fd;">Include reverse engineering</strong> <em>(default OFF)</em> — Run the full RE analysis (business logic extraction, use cases, glossary) <strong>before</strong> conversion. Adds 5–30 min per program. <strong>Most conversion runs don't need this</strong> — REKT structural context already gives the converter the facts it needs. Turn ON when you want a fresh RE report for documentation or when the conversion quality on a specific program is low.</div>
+
             <div><strong style="color:#93c5fd;">Use AI fallback when REKT misses</strong> — When the static analyser (smojol) can't parse a program, run <code>StructuralExtractorAgent</code> to synthesise the structure from raw source via the LLM. Adds tokens; output is cached.</div>
             <div><strong style="color:#93c5fd;">Max validator retries</strong> — How many times the parity validator may re-prompt the LLM to fix missing translations (missing methods, fields, CALLs). <code>0</code> = no repair pass. Default <code>1</code>.</div>
 
@@ -120,6 +124,10 @@
               <option value="turbo">Turbo</option>
             </select></div>
 
+          <div><label class="cm-chk"><input id="cm-rekt-context" type="checkbox" checked> REKT structural context <span class="cm-q" title="Inject the REKT AST/CFG/data-flow facts + FACT-LOCKING rules + shared-types registry into the converter prompt. Default ON when you've run rekt-full. Turn OFF for pure-LLM (legacy) mode.">?</span></label></div>
+
+          <div><label class="cm-chk"><input id="cm-include-re" type="checkbox"> Include reverse engineering <span class="cm-q" title="Run the full reverse-engineering analysis (business logic extraction) before conversion. Default OFF — skips RE and goes straight to conversion. Turn ON only if you need a fresh RE report (adds 5-30 min per program).">?</span></label></div>
+
           <div><label class="cm-chk"><input id="cm-fallback" type="checkbox"> Use AI fallback when REKT misses <span class="cm-q" title="Run StructuralExtractorAgent (LLM) on programs that smojol couldn't parse. Costs tokens; output cached.">?</span></label></div>
 
           <div><label class="cm-lab">Max validator retries <span class="cm-q" title="How many times the parity validator may re-prompt the LLM to fix missing translations. 0 = off.">?</span></label>
@@ -139,6 +147,18 @@
           <button id="cm-preview" class="btn-small" style="background:#1e293b;border:1px solid #334155;">🔍 Preview matches</button>
           <span id="cm-preview-result" style="font-size:11px;color:#94a3b8;flex:1;"></span>
           <button id="cm-start" class="btn-small" style="background:#065f46;border:1px solid #10b981;color:#fff;font-weight:600;">🚀 Start conversion</button>
+        </div>
+
+        <!-- Running jobs panel -->
+        <div id="cm-jobs-panel" style="display:none;padding:10px 18px;border-top:1px solid #1e293b;background:#0a0e1a;max-height:120px;overflow-y:auto;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+            <span style="font-size:11px;color:#94a3b8;font-weight:600;">Active runs:</span>
+            <button id="cm-stop-all" class="btn-small" style="background:#7c2d12;border:1px solid #ea580c;color:#fef3c7;font-size:10px;padding:2px 8px;"
+                    onclick="stopAllRuns()">⏹ Stop all</button>
+            <button class="btn-small" style="background:#1e293b;border:1px solid #334155;color:#94a3b8;font-size:10px;padding:2px 8px;"
+                    onclick="refreshJobsPanel()">🔄</button>
+          </div>
+          <div id="cm-jobs-list" style="font-size:10px;color:#cbd5e1;"></div>
         </div>
       </div>
       <style>
@@ -354,6 +374,8 @@
       targetLanguage: document.getElementById('cm-lang').value,
       speedProfile:   document.getElementById('cm-speed').value,
       fallbackToAi:   document.getElementById('cm-fallback').checked,
+      rektContext:    document.getElementById('cm-rekt-context').checked,
+      includeReverseEngineering: document.getElementById('cm-include-re').checked,
       maxValidatorRetries: parseInt(document.getElementById('cm-max-retries').value, 10) || 0,
       minProgramScore:     parseFloat(document.getElementById('cm-min-score').value) || 0,
       onLowScore:          document.getElementById('cm-on-low').value,
@@ -385,6 +407,13 @@
 
   async function startConversion() {
     const out = document.getElementById('cm-preview-result');
+    const startBtn = document.getElementById('cm-start');
+
+    // Guard: prevent double-click spam that spawns 100+ processes
+    if (startBtn.disabled) return;
+    startBtn.disabled = true;
+    startBtn.textContent = '⏳ Starting…';
+    startBtn.style.opacity = '0.5';
     // Strip the "⚠" markers users may have picked from the dropdown — the
     // backend will refuse them anyway, but this gives a clearer "X not on disk"
     // error rather than "no files matched".
@@ -413,11 +442,27 @@
       const data = await resp.json();
       const skippedNote = data.missingFiles && data.missingFiles.length
         ? ` <span style="color:#fbbf24;">(skipped ${data.missingFiles.length} not on disk)</span>` : '';
-      out.innerHTML = `✓ Run <code>${data.runId}</code> started — ${data.fileCount} file(s) staged.${skippedNote} Watch the Mission Control panel for progress.`;
+      out.innerHTML = `✓ Run <code>${data.runId}</code> started — ${data.fileCount} file(s) staged.${skippedNote}
+        <button id="cm-stop-run" style="margin-left:10px;background:#7c2d12;border:1px solid #ea580c;color:#fef3c7;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:11px;"
+                onclick="stopConversionRun('${data.runId}')">⏹ Stop run</button>
+        <span style="color:#94a3b8;font-size:11px;"> Watch the Mission Control panel for progress.</span>`;
       out.style.color = '#10b981';
+      // Auto-switch Mission Control to this run so the log panel shows output.
+      if (typeof _activeRunId !== 'undefined') window._activeRunId = data.runId;
+      const mcSelect = document.getElementById('mc-run-select');
+      if (mcSelect) {
+        if (typeof loadManagedRuns === 'function') loadManagedRuns().then(() => {
+          mcSelect.value = data.runId;
+          if (typeof refreshRunLog === 'function') refreshRunLog();
+        });
+      }
+      refreshJobsPanel();
+      // Re-enable after 5s (enough to see the confirmation; prevents spam)
+      setTimeout(() => { startBtn.disabled = false; startBtn.textContent = '🚀 Start conversion'; startBtn.style.opacity = '1'; }, 5000);
     } catch (e) {
       out.textContent = `❌ ${e.message}`;
       out.style.color = '#ef4444';
+      startBtn.disabled = false; startBtn.textContent = '🚀 Start conversion'; startBtn.style.opacity = '1';
     }
   }
 
@@ -435,6 +480,10 @@
     setChk('cm-callees',  prefill.includeCallees);
     setChk('cm-callers',  prefill.includeCallers);
     setChk('cm-fallback', prefill.fallbackToAi);
+    // REKT context defaults ON unless the caller explicitly opts out.
+    setChk('cm-rekt-context', prefill.rektContext !== false);
+    // RE defaults OFF — most selector runs want convert-only.
+    setChk('cm-include-re', !!prefill.includeReverseEngineering);
 
     if (prefill.targetLanguage)     setVal('cm-lang',  prefill.targetLanguage);
     if (prefill.speedProfile)       setVal('cm-speed', prefill.speedProfile);
@@ -444,6 +493,11 @@
 
     document.getElementById('cm-preview-result').textContent = '';
     document.getElementById('convert-modal').style.display = 'flex';
+    // Re-enable start button in case it was left disabled
+    const startBtn = document.getElementById('cm-start');
+    if (startBtn) { startBtn.disabled = false; startBtn.textContent = '🚀 Start conversion'; startBtn.style.opacity = '1'; }
+    // Show any active runs
+    if (typeof refreshJobsPanel === 'function') refreshJobsPanel();
 
     // Load catalog → populate dropdowns + waves. Re-apply any pre-selected
     // waves once the pills are rendered.
@@ -464,5 +518,72 @@
       const hint = document.getElementById('cm-programs-count');
       if (hint) { hint.textContent = `Catalog load failed: ${err.message}`; hint.style.color = '#ef4444'; }
     });
+  };
+
+  // ── Running jobs panel ───────────────────────────────────────────────
+  window.refreshJobsPanel = async function () {
+    const panel = document.getElementById('cm-jobs-panel');
+    const list = document.getElementById('cm-jobs-list');
+    if (!panel || !list) return;
+    try {
+      const resp = await fetch('/api/runs/managed');
+      if (!resp.ok) return;
+      const runs = await resp.json();
+      const active = runs.filter(r => r.status === 'running');
+      if (active.length === 0) {
+        panel.style.display = 'none';
+        return;
+      }
+      panel.style.display = 'block';
+      list.innerHTML = active.map(r =>
+        `<div style="display:flex;align-items:center;gap:8px;padding:3px 0;border-bottom:1px solid #1e293b;">
+          <span style="color:#10b981;">🟢</span>
+          <code style="color:#e2e8f0;">${escapeAttr(r.name)}</code>
+          <span style="color:#64748b;">${r.command} · ${r.targetLanguage} · PID ${r.processId || '?'}</span>
+          <button style="margin-left:auto;background:#7c2d12;border:1px solid #ea580c;color:#fef3c7;border-radius:4px;padding:1px 6px;cursor:pointer;font-size:9px;"
+                  onclick="stopConversionRun('${r.runId}');setTimeout(refreshJobsPanel,1000)">⏹</button>
+        </div>`).join('');
+    } catch { /* silent */ }
+  };
+
+  window.stopAllRuns = async function () {
+    try {
+      const resp = await fetch('/api/runs/managed');
+      if (!resp.ok) return;
+      const runs = await resp.json();
+      const active = runs.filter(r => r.status === 'running');
+      for (const r of active) {
+        await fetch('/api/runs/stop', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ runId: r.runId })
+        });
+      }
+      const out = document.getElementById('cm-preview-result');
+      if (out) { out.textContent = `⏹ Stopped ${active.length} run(s).`; out.style.color = '#fbbf24'; }
+      setTimeout(refreshJobsPanel, 500);
+    } catch (e) {
+      console.error('stopAllRuns failed:', e);
+    }
+  };
+
+  // ── Stop a running conversion ──────────────────────────────────────────
+  window.stopConversionRun = async function (runId) {
+    const btn = document.getElementById('cm-stop-run');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Stopping…'; }
+    try {
+      const resp = await fetch('/api/runs/stop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runId }),
+      });
+      if (resp.ok) {
+        const out = document.getElementById('cm-preview-result');
+        if (out) { out.innerHTML = `⏹ Run <code>${runId}</code> stopped.`; out.style.color = '#fbbf24'; }
+      } else {
+        if (btn) { btn.textContent = '⏹ Stop failed'; }
+      }
+    } catch (e) {
+      if (btn) { btn.textContent = `⏹ ${e.message}`; }
+    }
   };
 })();

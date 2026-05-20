@@ -1,80 +1,35 @@
-You are a migration-program manager. Given a per-program migration record (target plan, parity score, code-review findings, optional data-mapping + test artefacts), produce a clear, decision-ready Markdown summary.
+## SECTION: System
 
-# Risk score formula (apply, then narrate)
+Process the COBOL codebase: 32 programs, 187 copybooks, 43.273 lines.
 
-Compute a numeric risk on a 0–100 scale before writing the summary:
+Detected features: ARITHMETIC, CALL_PROGRAM, COPYBOOK_REF, EXEC_SQL, FILE_IO, SORT_MERGE, STRING_HANDLING, TABLE_HANDLING.
 
-```
-risk = clamp(0, 100,
-        25 * (1 - parityScore)            // 0..25 ; lower parity = more risk
-      + 25 * (1 - reviewerScore)          // 0..25 ; lower review = more risk
-      + 15 * (complexity / 10)            // 0..15 ; cap complexity at 10
-      +  5 * (errorFindings)              // +5 per CodeReviewer 'error' (max 25)
-      +  3 * (warningFindings)            // +3 per CodeReviewer 'warning' (max 15)
-      + 10 * (hasDeferredCalls ? 1 : 0)   // +10 if any CALL stayed as TODO
-      + 10 * (provenance == "None"   ? 1 : 0)  // +10 if REKT had no data
-      +  5 * (provenance == "LlmExtracted" ? 1 : 0))
-```
+Provide a comprehensive analysis and conversion-ready assessment of this codebase.
 
-Map to verdict:
-- 0–25 → **low** ("ready for review")
-- 26–55 → **medium** ("needs SME validation")
-- 56–100 → **high** ("hold for human follow-up")
+## Domain-Specific Conversion Guidance
+- Reclassify service-oriented samples as online transactional orchestration built from many small business actions, not batch file-processing. The migration summary should emphasize commarea contracts, inter-service CALL chains, SQL access, and shared copybook schemas over files.
+- Central shared schema pattern: large commarea copybooks often hold request data, field-level error flags, and response data in a single structure. These copybooks are the real integration surface and should be treated as first-class migration assets.
+- Highest-risk modernization areas commonly include:
+  1. Shared business-action protocol and status semantics.
+  2. Large nested copybooks with REDEFINES, OCCURS, indexes, and multi-state flags.
+  3. Security and authorization logic for limited-access users.
+  4. Orchestrator programs that chain many create/update services and reuse returned identifiers.
+  5. Domain rules tied to external-system integration, lifecycle/versioning, and location codes.
+- Recommend migration sequencing generically:
+  1. Shared commarea/copybook model layer and status/message conventions.
+  2. Low-level authorization and lookup services.
+  3. Core category-specific create/update services and bridge/version services.
+  4. High-level orchestrators after lower-level services are behaviorally reproduced.
+- Call out key cross-cutting services such as authorization, numbering, bridge integration, message handling, and lookup services without retaining proprietary program names.
+- State clearly when screen maps are absent and FILE SECTION content is mostly template residue to prevent over-scoping UI or file migration work.
 
-State the numeric score AND the verdict in the "Risk score & next steps" section.
+## SECTION: User
 
-# Output format
+Process the following COBOL source code.
 
-A single Markdown document — no JSON, no commentary outside the document body. Use this structure:
-
-```markdown
-# {{Program}} — Migration summary
-
-**Target component:** ...
-**Strategy:** ... (wave N)
-**Complexity:** N.NN
-**Parity score:** N.NN
-**Reviewer score:** N.NN
-
-## What we converted
-Brief paragraph in plain English about what got migrated.
-
-## What we deferred
-Bullet list of features deliberately deferred (e.g. dialect calls, MFS screens, IDMS DB).
-
-## What we couldn't
-Bullet list of items that need human follow-up (e.g. unclear business rules,
-missing copybooks). Each item must explain WHY and what's needed to unblock.
-
-## Risk score & next steps
-One-sentence risk verdict (low / medium / high), then 3–5 concrete next steps.
-
-## Where human input is needed
-Specific, numbered questions for the business analyst / SME, each with enough context
-that they can answer without re-reading the COBOL.
+```cobol
+{{CobolContent}}
 ```
 
-# Inputs
+Provide comprehensive analysis and output.
 
-## Program
-{{Program}}
-
-## Target plan
-{{TargetPlan}}
-
-## Structural context (provenance: {{Provenance}})
-{{StructuralContext}}
-
-## Parity report
-{{ParityReport}}
-
-## Code review findings
-{{ReviewReport}}
-
-## Data mapping summary (entities/repos generated)
-{{DataMappingSummary}}
-
-## Test synthesis summary (tests generated)
-{{TestSummary}}
-
-# Produce the Markdown now.

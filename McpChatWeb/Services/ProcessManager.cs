@@ -107,20 +107,27 @@ public class ProcessManager : IDisposable
         psi.Environment["TARGET_LANGUAGE"] = targetLanguage;
         psi.Environment["MIGRATION_DB_PATH"] = Path.Combine(_repoRoot, "Data", "migration.db");
         psi.Environment["COBOL_SOURCE_FOLDER"] = sourceFolder ?? "source";
+        // Default-ON: REKT context injection (matches doctor.sh behaviour)
+        psi.Environment["ENABLE_REKT_CONTEXT"] = "true";
 
         if (targetLanguage.Equals("CSharp", StringComparison.OrdinalIgnoreCase))
             psi.Environment["CSHARP_OUTPUT_FOLDER"] = "output/csharp";
         else
             psi.Environment["JAVA_OUTPUT_FOLDER"] = "output/java";
 
+        // Load AI config env files (same ones doctor.sh sources)
+        // Order: local first (higher priority), then template for defaults.
+        LoadEnvFile(psi.Environment, Path.Combine(_repoRoot, "Config", "ai-config.local.env"));
+        LoadEnvFile(psi.Environment, Path.Combine(_repoRoot, "Config", "ai-config.env"));
+
         // Speed profile env vars
         ApplySpeedProfile(psi.Environment, speedProfile);
 
-        // Extra env vars
+        // Extra env vars (from Convert modal: SELECTOR_MODE, COPILOT_SAFE_MODE, etc.)
         if (extraEnv != null)
         {
             foreach (var (k, v) in extraEnv)
-                psi.Environment[k] = v;
+                if (!string.IsNullOrEmpty(v)) psi.Environment[k] = v;
         }
 
         // ── Apply provider/model selection from portal UI ──
@@ -329,6 +336,19 @@ public class ProcessManager : IDisposable
     private (string executable, string arguments) BuildCommand(
         string command, string targetLang, string speedProfile, string? sourceFolder)
     {
+        // Always use direct dotnet invocation with --no-build from the portal.
+        // Using doctor.sh caused two critical issues:
+        //   1. doctor.sh calls `dotnet run` (without --no-build) which rebuilds
+        //      the project, including the portal's DLL → macOS file lock kills
+        //      the running portal → portal restarts → loses all in-memory state.
+        //   2. doctor.sh's interactive prompts + run_via_portal() created an
+        //      infinite process-spawn loop (portal → doctor.sh → portal → ...).
+        //
+        // Instead, ProcessManager sets ALL the env vars that doctor.sh would
+        // (ENABLE_REKT_CONTEXT, SELECTOR_MODE, COPILOT_SAFE_MODE, etc.) so
+        // the dotnet process gets the same configuration. The preprocessor and
+        // REKT staging are handled by the Convert modal's staging logic which
+        // already runs before this point.
         var dotnet = "dotnet";
         var source = sourceFolder ?? "source";
         var project = Path.Combine(_repoRoot, "CobolToQuarkusMigration.csproj");
@@ -336,18 +356,18 @@ public class ProcessManager : IDisposable
         return command.ToLowerInvariant() switch
         {
             "migrate" or "run" or "full" =>
-                (dotnet, $"run --project \"{project}\" -- --source ./{source}"),
+                (dotnet, $"run --no-build --project \"{project}\" -- --source ./{source}"),
 
             "reverse-engineer" or "reverse" or "re" =>
-                (dotnet, $"run --project \"{project}\" -- reverse-engineer --source ./{source} --output output"),
+                (dotnet, $"run --no-build --project \"{project}\" -- reverse-engineer --source ./{source} --output output"),
 
             "convert-only" or "convert" =>
-                (dotnet, $"run --project \"{project}\" -- --source ./{source} --skip-reverse-engineering"),
+                (dotnet, $"run --no-build --project \"{project}\" -- --source ./{source} --skip-reverse-engineering"),
 
             "resume" =>
-                (dotnet, $"run --project \"{project}\" -- --source ./{source} --resume"),
+                (dotnet, $"run --no-build --project \"{project}\" -- --source ./{source} --resume"),
 
-            _ => (dotnet, $"run --project \"{project}\" -- --source ./{source}")
+            _ => (dotnet, $"run --no-build --project \"{project}\" -- --source ./{source}")
         };
     }
 
@@ -432,6 +452,27 @@ public class ProcessManager : IDisposable
             {
                 try { run.Process.Kill(entireProcessTree: true); } catch { }
             }
+        }
+    }
+
+    /// <summary>
+    /// Load a KEY=VALUE env file (same format doctor.sh uses) into the process
+    /// environment. Skips comments, blank lines, and keys already set.
+    /// </summary>
+    private static void LoadEnvFile(IDictionary<string, string?> env, string path)
+    {
+        if (!File.Exists(path)) return;
+        foreach (var rawLine in File.ReadAllLines(path))
+        {
+            var line = rawLine.Trim();
+            if (string.IsNullOrEmpty(line) || line.StartsWith('#')) continue;
+            var eq = line.IndexOf('=');
+            if (eq <= 0) continue;
+            var key = line[..eq].Trim();
+            var val = line[(eq + 1)..].Trim().Trim('"');
+            // Don't overwrite values already set (local.env loaded after template)
+            if (!env.ContainsKey(key) || string.IsNullOrEmpty(env[key]))
+                env[key] = val;
         }
     }
 }

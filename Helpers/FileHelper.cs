@@ -60,7 +60,23 @@ public class FileHelper
         }
 
         // Get all .cpy files (COBOL copybooks)
-        var cpyFiles = Directory.GetFiles(directory, "*.cpy", SearchOption.AllDirectories);
+        // In selector mode (the user picked a specific program), skip standalone
+        // copybook analysis — the converter still reads the .cpy content as
+        // structural context, but we don't waste an analyzer LLM call per
+        // copybook. This makes "convert-only --program X" finish in minutes
+        // instead of an hour.
+        var selectorMode = string.Equals(
+            Environment.GetEnvironmentVariable("SELECTOR_MODE"),
+            "true",
+            StringComparison.OrdinalIgnoreCase);
+        var cpyFiles = selectorMode
+            ? Array.Empty<string>()
+            : Directory.GetFiles(directory, "*.cpy", SearchOption.AllDirectories);
+        if (selectorMode)
+        {
+            _logger.LogInformation("[FileHelper] SELECTOR_MODE=true — skipping standalone .cpy analysis ({Skipped} copybooks present in source folder will only be used as COPY context)",
+                Directory.GetFiles(directory, "*.cpy", SearchOption.AllDirectories).Length);
+        }
         foreach (var filePath in cpyFiles)
         {
             var content = await File.ReadAllTextAsync(filePath);
