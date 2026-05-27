@@ -198,8 +198,10 @@ public static class LlmRetryHelper
         double retryAfterSeconds, double waitMs, string decision, string reason)
     {
         logger?.LogWarning(
-            "[{Event}] provider={Provider} model={Model} statusCode={StatusCode} " +
-            "retryAfterSeconds={RetryAfter:F1} waitMs={WaitMs:F0} decision={Decision} reason={Reason}",
-            LogEventName, provider, model, statusCode, retryAfterSeconds, waitMs, decision, reason);
+            "[{Event}] runId={RunId} correlationId={CorrelationId} provider={Provider} model={Model} " +
+            "statusCode={StatusCode} retryAfterSeconds={RetryAfter:F1} waitMs={WaitMs:F0} " +
+            "decision={Decision} reason={Reason}",
+            LogEventName, LlmCorrelationContext.RunId, LlmCorrelationContext.CorrelationId,
+            provider, model, statusCode, retryAfterSeconds, waitMs, decision, reason);
     }
 }

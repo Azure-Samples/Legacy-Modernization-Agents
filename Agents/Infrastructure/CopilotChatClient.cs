@@ -133,9 +133,10 @@ public sealed class CopilotChatClient : IChatClient, IAsyncDisposable
         // here, so we use a heuristic — this is for budgeting only, not for capping).
         var estimatedTotalTokens = estimatedInputTokens + Math.Min(estimatedInputTokens * 4, 32_000);
 
+        IRateLimitReservation? reservation = null;
         if (_limiter is not null)
         {
-            await _limiter.AcquireAsync(estimatedTotalTokens, cancellationToken);
+            reservation = await _limiter.AcquireAsync(estimatedTotalTokens, cancellationToken);
         }
 
         try
@@ -144,17 +145,16 @@ public sealed class CopilotChatClient : IChatClient, IAsyncDisposable
                 model, systemMessage, userPrompt, cancellationToken);
 
             var actualOutputTokens = EstimateTokens(responseText);
-            _limiter?.RecordUsage(estimatedInputTokens + actualOutputTokens);
+            reservation?.Commit(estimatedInputTokens + actualOutputTokens);
 
             var responseMessage = new AIChatMessage(ChatRole.Assistant, responseText);
             return new ChatResponse(responseMessage);
         }
         catch
         {
-            // Limiter records were taken at acquire; if we don't reach RecordUsage
-            // they will age out of the rolling window naturally. RateLimitTracker
-            // exposes ReleaseReservation() for the Azure client; the GitHub
-            // limiter (a separate instance) just lets the reservation expire.
+            // Cancel the reservation explicitly on failure to avoid leaking
+            // capacity for the full 60-second rolling window.
+            reservation?.Cancel();
             throw;
         }
     }

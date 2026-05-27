@@ -434,8 +434,10 @@ public class ResponsesApiClient : IDisposable
         var estimatedInputTokens = EstimateTokens(systemPrompt) + EstimateTokens(userPrompt);
         var estimatedTotalTokens = estimatedInputTokens + maxOutputTokens;
         
-        // Wait for rate limit capacity (TPM + RPM)
-        await _rateLimitTracker.WaitForCapacityAsync(estimatedTotalTokens, cancellationToken);
+        // Wait for rate limit capacity (TPM + RPM) and obtain a typed reservation
+        // handle so we don't depend on AsyncLocal (which doesn't flow back from
+        // an async method into the caller's continuation).
+        long reservationId = await _rateLimitTracker.WaitForCapacityAsync(estimatedTotalTokens, cancellationToken);
         
         _logger?.LogInformation(
             "Responses API: ~{Input} input + {MaxOutput} max output = ~{Total} total tokens, reasoning='{Effort}'",
@@ -527,16 +529,17 @@ public class ResponsesApiClient : IDisposable
                         var retryAfter = LlmRetryHelper.ParseRetryAfter(retryAfterHeader);
                         _rateLimitTracker.NoteRateLimitResponse(retryAfter ?? TimeSpan.FromSeconds(60));
                         // Release reservation — this request did not consume tokens.
-                        _rateLimitTracker.ReleaseReservation();
+                        _rateLimitTracker.ReleaseReservation(reservationId);
 
                         // Fast-fail if Retry-After exceeds the wait ceiling.
                         if (retryAfter is { } ra && ra > _callWaitCeiling)
                         {
                             _logger?.LogWarning(
-                                "[{Event}] provider=azure-openai model={Model} statusCode=429 " +
-                                "retryAfterSeconds={RetryAfter:F1} waitMs=0 decision=fast-fail-over-ceiling " +
-                                "reason=server-throttle estimatedTokens={Estimated}",
-                                LlmRetryHelper.LogEventName, _deploymentName, ra.TotalSeconds, estimatedTotalTokens);
+                                "[{Event}] runId={RunId} correlationId={CorrelationId} provider=azure-openai " +
+                                "model={Model} statusCode=429 retryAfterSeconds={RetryAfter:F1} waitMs=0 " +
+                                "decision=fast-fail-over-ceiling reason=server-throttle estimatedTokens={Estimated}",
+                                LlmRetryHelper.LogEventName, LlmCorrelationContext.RunId, LlmCorrelationContext.CorrelationId,
+                                _deploymentName, ra.TotalSeconds, estimatedTotalTokens);
                             _enhancedLogger?.LogApiCallError(apiCallId, $"HTTP 429 (Retry-After {ra.TotalSeconds:F0}s > ceiling)");
                             throw new RateLimitedException("azure-openai", _deploymentName, ra,
                                 $"Azure OpenAI rate-limited for {ra.TotalSeconds:F0}s, exceeds wait ceiling {_callWaitCeiling.TotalSeconds:F0}s.");
@@ -547,10 +550,11 @@ public class ResponsesApiClient : IDisposable
                         if (rateLimited429Attempts >= maxRateLimitedAttempts)
                         {
                             _logger?.LogWarning(
-                                "[{Event}] provider=azure-openai model={Model} statusCode=429 " +
-                                "retryAfterSeconds={RetryAfter:F1} waitMs=0 decision=give-up " +
-                                "reason=exhausted-rate-limit-retries",
-                                LlmRetryHelper.LogEventName, _deploymentName, retryAfter?.TotalSeconds ?? 0);
+                                "[{Event}] runId={RunId} correlationId={CorrelationId} provider=azure-openai " +
+                                "model={Model} statusCode=429 retryAfterSeconds={RetryAfter:F1} waitMs=0 " +
+                                "decision=give-up reason=exhausted-rate-limit-retries",
+                                LlmRetryHelper.LogEventName, LlmCorrelationContext.RunId, LlmCorrelationContext.CorrelationId,
+                                _deploymentName, retryAfter?.TotalSeconds ?? 0);
                             _enhancedLogger?.LogApiCallError(apiCallId, "HTTP 429 (exhausted retries)");
                             throw new RateLimitedException("azure-openai", _deploymentName, retryAfter,
                                 $"Azure OpenAI rate-limited after {rateLimited429Attempts} attempts.");
@@ -560,14 +564,14 @@ public class ResponsesApiClient : IDisposable
                             ? TimeSpan.FromSeconds(15)
                             : TimeSpan.FromSeconds(45));
                         _logger?.LogWarning(
-                            "[{Event}] provider=azure-openai model={Model} statusCode=429 " +
-                            "retryAfterSeconds={RetryAfter:F1} waitMs={WaitMs:F0} decision=retry-after-wait " +
-                            "reason=server-throttle",
-                            LlmRetryHelper.LogEventName, _deploymentName,
-                            retryAfter?.TotalSeconds ?? wait.TotalSeconds, wait.TotalMilliseconds);
+                            "[{Event}] runId={RunId} correlationId={CorrelationId} provider=azure-openai " +
+                            "model={Model} statusCode=429 retryAfterSeconds={RetryAfter:F1} waitMs={WaitMs:F0} " +
+                            "decision=retry-after-wait reason=server-throttle",
+                            LlmRetryHelper.LogEventName, LlmCorrelationContext.RunId, LlmCorrelationContext.CorrelationId,
+                            _deploymentName, retryAfter?.TotalSeconds ?? wait.TotalSeconds, wait.TotalMilliseconds);
                         await Task.Delay(wait, cancellationToken);
                         // Re-reserve capacity for the next attempt.
-                        await _rateLimitTracker.AcquireAsync(estimatedTotalTokens, cancellationToken);
+                        reservationId = await _rateLimitTracker.WaitForCapacityAsync(estimatedTotalTokens, cancellationToken);
                         continue;
                     }
 
@@ -588,7 +592,7 @@ public class ResponsesApiClient : IDisposable
                     }
 
                     _enhancedLogger?.LogApiCallError(apiCallId, $"HTTP {response.StatusCode}");
-                    _rateLimitTracker.ReleaseReservation();
+                    _rateLimitTracker.ReleaseReservation(reservationId);
                     
                     // Check for Tenant Mismatch error
                     if (response.StatusCode == System.Net.HttpStatusCode.BadRequest && 
@@ -618,7 +622,7 @@ public class ResponsesApiClient : IDisposable
                 var actualTotalTokens = actualInputTokens + actualOutputTokens;
                 
                 // Record actual usage for rate limiting
-                _rateLimitTracker.RecordUsage(actualTotalTokens);
+                _rateLimitTracker.RecordUsage(reservationId, actualTotalTokens);
                 
                 var elapsed = DateTime.UtcNow - startTime;
                 
@@ -665,7 +669,7 @@ public class ResponsesApiClient : IDisposable
                                         !(ex is HttpRequestException && attempts < maxAttempts))
             {
                 // Let the retry loop handle HttpRequestException if we decide to add more logic there (currently only handled via continue)
-                _rateLimitTracker.ReleaseReservation();
+                _rateLimitTracker.ReleaseReservation(reservationId);
                 _logger?.LogError(ex, "Responses API error after {Elapsed:F1}s", (DateTime.UtcNow - startTime).TotalSeconds);
                 throw;
             }
@@ -785,7 +789,7 @@ public class ResponsesApiClient : IDisposable
 ///     blocks subsequent acquires until it expires (caller's wait-ceiling policy
 ///     applies on top of this).
 /// </summary>
-internal class RateLimitTracker : IRateLimiter
+internal class RateLimitTracker : IRateLimiter, ILimiterObservable
 {
     private readonly int _tokensPerMinute;
     private readonly int _requestsPerMinute;
@@ -799,10 +803,6 @@ internal class RateLimitTracker : IRateLimiter
     // by RecordUsage. Keyed by reservation id so RecordUsage can find its own row.
     private readonly Dictionary<long, (DateTime time, int tokens)> _reservations = new();
     private long _nextReservationId;
-
-    // Per-thread stash of the last reservation id so callers that use the
-    // interface (AcquireAsync → RecordUsage) don't need to thread the id through.
-    private static readonly AsyncLocal<long?> CurrentReservationId = new();
 
     // Cooldown installed by NoteRateLimitResponse — Acquire waits until this passes.
     private DateTime _cooldownUntilUtc = DateTime.MinValue;
@@ -818,15 +818,40 @@ internal class RateLimitTracker : IRateLimiter
         _logger = logger;
     }
 
+    /// <inheritdoc cref="ILimiterObservable.Snapshot"/>
+    public LimiterSnapshot Snapshot()
+    {
+        lock (_lock)
+        {
+            PruneOldEntries();
+            var cooldownRemaining = _cooldownUntilUtc > DateTime.UtcNow
+                ? (long)(_cooldownUntilUtc - DateTime.UtcNow).TotalMilliseconds
+                : 0;
+            return new LimiterSnapshot(
+                CurrentTpm: GetCurrentTokensPerMinute(),
+                TpmLimit: _tokensPerMinute,
+                CurrentRpm: GetCurrentRequestsPerMinute(),
+                RpmLimit: _requestsPerMinute,
+                OutstandingReservations: _reservations.Count,
+                CooldownRemainingMs: cooldownRemaining);
+        }
+    }
+
     /// <inheritdoc cref="IRateLimiter.AcquireAsync"/>
-    public Task AcquireAsync(int estimatedTokens, CancellationToken cancellationToken = default) =>
-        WaitForCapacityAsync(estimatedTokens, cancellationToken);
+    public async Task<IRateLimitReservation> AcquireAsync(int estimatedTokens, CancellationToken cancellationToken = default)
+    {
+        var id = await WaitForCapacityAsync(estimatedTokens, cancellationToken);
+        return new LimiterReservation(this, id);
+    }
 
     /// <summary>
     /// Waits until there's capacity for the estimated token usage, then reserves it.
+    /// Returns the reservation id — caller must subsequently call
+    /// <see cref="RecordUsage(long,int)"/> or <see cref="ReleaseReservation(long)"/>.
     /// </summary>
-    public async Task WaitForCapacityAsync(int estimatedTokens, CancellationToken cancellationToken)
+    public async Task<long> WaitForCapacityAsync(int estimatedTokens, CancellationToken cancellationToken)
     {
+        var waitStartedAt = DateTime.UtcNow;
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -835,14 +860,34 @@ internal class RateLimitTracker : IRateLimiter
 
             if (canProceed)
             {
-                CurrentReservationId.Value = reservationId;
-                return;
+                var totalWaitMs = (DateTime.UtcNow - waitStartedAt).TotalMilliseconds;
+                if (totalWaitMs > 50) // skip noise for instant acquires
+                {
+                    var snap = Snapshot();
+                    _logger?.LogInformation(
+                        "[{Event}] runId={RunId} correlationId={CorrelationId} provider=local model=- " +
+                        "statusCode=0 retryAfterSeconds=0.0 waitMs={WaitMs:F0} " +
+                        "decision=acquired reason=after-wait " +
+                        "queueDepthTpm={Tpm}/{TpmLimit} queueDepthRpm={Rpm}/{RpmLimit} " +
+                        "reservations={Reservations} cooldownRemainingMs={Cooldown}",
+                        LlmRetryHelper.LogEventName, LlmCorrelationContext.RunId, LlmCorrelationContext.CorrelationId,
+                        totalWaitMs, snap.CurrentTpm, snap.TpmLimit, snap.CurrentRpm, snap.RpmLimit,
+                        snap.OutstandingReservations, snap.CooldownRemainingMs);
+                }
+                return reservationId;
             }
 
+            var snapWait = Snapshot();
             _logger?.LogInformation(
-                "[{Event}] provider=local model=- statusCode=0 retryAfterSeconds=0.0 " +
-                "waitMs={WaitMs:F0} decision=limiter-wait reason={Reason}",
-                LlmRetryHelper.LogEventName, waitTime.TotalMilliseconds, reason);
+                "[{Event}] runId={RunId} correlationId={CorrelationId} provider=local model=- " +
+                "statusCode=0 retryAfterSeconds=0.0 waitMs={WaitMs:F0} " +
+                "decision=limiter-wait reason={Reason} " +
+                "queueDepthTpm={Tpm}/{TpmLimit} queueDepthRpm={Rpm}/{RpmLimit} " +
+                "reservations={Reservations} cooldownRemainingMs={Cooldown}",
+                LlmRetryHelper.LogEventName, LlmCorrelationContext.RunId, LlmCorrelationContext.CorrelationId,
+                waitTime.TotalMilliseconds, reason, snapWait.CurrentTpm, snapWait.TpmLimit,
+                snapWait.CurrentRpm, snapWait.RpmLimit, snapWait.OutstandingReservations,
+                snapWait.CooldownRemainingMs);
 
             await Task.Delay(waitTime, cancellationToken);
         }
@@ -902,40 +947,21 @@ internal class RateLimitTracker : IRateLimiter
     }
 
     /// <summary>
-    /// Records actual token usage after a request completes. Reconciles the
-    /// reservation issued by the matching <see cref="AcquireAsync"/> call.
+    /// Records actual token usage for the specified reservation. Reconciles the
+    /// reservation issued by <see cref="AcquireAsync"/>.
     /// </summary>
-    public void RecordUsage(int actualTokens)
+    public void RecordUsage(long reservationId, int actualTokens)
     {
-        var reservationId = CurrentReservationId.Value;
-        CurrentReservationId.Value = null;
-
         lock (_lock)
         {
-            // Replace the reservation (estimated) with the actual usage.
-            if (reservationId is { } id && _reservations.Remove(id, out var reserved))
+            if (_reservations.Remove(reservationId, out var reserved))
             {
-                // Remove the matching reserved entry from the token history; replace
-                // with actual. We can't do an O(1) lookup, so do a linear walk over
-                // the bounded 60-second window — cheap enough.
-                var rebuilt = new Queue<(DateTime time, int tokens)>(_tokenHistory.Count);
-                var removed = false;
-                foreach (var entry in _tokenHistory)
-                {
-                    if (!removed && entry.time == reserved.time && entry.tokens == reserved.tokens)
-                    {
-                        removed = true;
-                        continue;
-                    }
-                    rebuilt.Enqueue(entry);
-                }
-                _tokenHistory.Clear();
-                foreach (var e in rebuilt) _tokenHistory.Enqueue(e);
+                RemoveReservationFromHistory(reserved);
                 _tokenHistory.Enqueue((reserved.time, actualTokens));
             }
             else
             {
-                // No reservation — caller didn't go through AcquireAsync; just append.
+                // No matching reservation — just append (degraded path).
                 var now = DateTime.UtcNow;
                 _tokenHistory.Enqueue((now, actualTokens));
                 _requestHistory.Enqueue(now);
@@ -958,51 +984,50 @@ internal class RateLimitTracker : IRateLimiter
             if (until > _cooldownUntilUtc) _cooldownUntilUtc = until;
         }
         _logger?.LogWarning(
-            "[{Event}] provider=local model=- statusCode=429 retryAfterSeconds={Seconds:F1} " +
-            "waitMs=0 decision=install-cooldown reason=server-throttle",
-            LlmRetryHelper.LogEventName, retryAfter.TotalSeconds);
+            "[{Event}] runId={RunId} correlationId={CorrelationId} provider=local model=- " +
+            "statusCode=429 retryAfterSeconds={Seconds:F1} waitMs=0 " +
+            "decision=install-cooldown reason=server-throttle",
+            LlmRetryHelper.LogEventName, LlmCorrelationContext.RunId, LlmCorrelationContext.CorrelationId,
+            retryAfter.TotalSeconds);
     }
 
     /// <summary>
-    /// Drops the in-flight reservation issued by <see cref="AcquireAsync"/> without
-    /// recording any actual usage. Called after a request fails (429, transport
-    /// error) so the reserved capacity becomes available to the next acquire.
+    /// Drops the in-flight reservation without recording any actual usage. Called
+    /// after a request fails (429, transport error) so the reserved capacity
+    /// becomes available to the next acquire.
     /// </summary>
-    public void ReleaseReservation()
+    public void ReleaseReservation(long reservationId)
     {
-        var reservationId = CurrentReservationId.Value;
-        CurrentReservationId.Value = null;
-        if (reservationId is not { } id) return;
-
         lock (_lock)
         {
-            if (!_reservations.Remove(id, out var reserved)) return;
-            // Remove the matching reserved entry from the token history.
-            var rebuilt = new Queue<(DateTime time, int tokens)>(_tokenHistory.Count);
-            var removed = false;
-            foreach (var entry in _tokenHistory)
-            {
-                if (!removed && entry.time == reserved.time && entry.tokens == reserved.tokens)
-                {
-                    removed = true;
-                    continue;
-                }
-                rebuilt.Enqueue(entry);
-            }
-            _tokenHistory.Clear();
-            foreach (var e in rebuilt) _tokenHistory.Enqueue(e);
+            if (!_reservations.Remove(reservationId, out var reserved)) return;
+            RemoveReservationFromHistory(reserved);
 
-            // Also drop the most recent request slot at or after `reserved.time`.
+            // Also drop the most recent request slot matching the reservation time.
             if (_requestHistory.Count > 0)
             {
                 var keep = _requestHistory.Where(t => t != reserved.time).ToList();
-                if (keep.Count == _requestHistory.Count - 1 || keep.Count == _requestHistory.Count)
-                {
-                    _requestHistory.Clear();
-                    foreach (var t in keep) _requestHistory.Enqueue(t);
-                }
+                _requestHistory.Clear();
+                foreach (var t in keep) _requestHistory.Enqueue(t);
             }
         }
+    }
+
+    private void RemoveReservationFromHistory((DateTime time, int tokens) reserved)
+    {
+        var rebuilt = new Queue<(DateTime time, int tokens)>(_tokenHistory.Count);
+        var removed = false;
+        foreach (var entry in _tokenHistory)
+        {
+            if (!removed && entry.time == reserved.time && entry.tokens == reserved.tokens)
+            {
+                removed = true;
+                continue;
+            }
+            rebuilt.Enqueue(entry);
+        }
+        _tokenHistory.Clear();
+        foreach (var e in rebuilt) _tokenHistory.Enqueue(e);
     }
 
     private void PruneOldEntries()
