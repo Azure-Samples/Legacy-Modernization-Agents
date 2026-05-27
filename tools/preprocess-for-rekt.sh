@@ -33,8 +33,9 @@ fi
 # ─── Phase 1: Preprocess copybooks (.cpy) ───────────────────────────
 # Resolve pseudo-text tokens :TOKEN: → XTOKEN and add FILLER to anonymous entries
 cpy_count=0
-for cpy in "$SOURCE_DIR"/*.cpy "$SOURCE_DIR"/*.CPY; do
-    [[ -e "$cpy" ]] || continue
+# Recursive find so nested layouts (source/FUENTES/cpy/, etc.) are picked up.
+# -print0 / read -d '' avoids issues with paths containing whitespace.
+while IFS= read -r -d '' cpy; do
     fname=$(basename "$cpy")
 
     "$PYTHON" -c "
@@ -204,12 +205,16 @@ if content != original:
 else:
     sys.exit(1)
 " 2>/dev/null && cpy_count=$((cpy_count + 1))
-done
+done < <(find "$SOURCE_DIR" \
+    \( -name "*.cpy" -o -name "*.CPY" \) \
+    -type f \
+    ! -path "*/.rekt-staging/*" \
+    ! -path "*/.preprocessed/*" \
+    -print0)
 
-# ─── Phase 2: Preprocess ALL programs (.cbl) ────────────────────────
+# ─── Phase 2: Preprocess ALL programs (.cbl, .cob) ──────────────────
 cbl_count=0
-for cbl in "$SOURCE_DIR"/*.cbl "$SOURCE_DIR"/*.CBL; do
-    [[ -e "$cbl" ]] || continue
+while IFS= read -r -d '' cbl; do
     fname=$(basename "$cbl")
 
     "$PYTHON" -c "
@@ -838,7 +843,12 @@ if content != original:
 else:
     sys.exit(1)
 " 2>/dev/null && cbl_count=$((cbl_count + 1))
-done
+done < <(find "$SOURCE_DIR" \
+    \( -name "*.cbl" -o -name "*.CBL" -o -name "*.cob" -o -name "*.COB" \) \
+    -type f \
+    ! -path "*/.rekt-staging/*" \
+    ! -path "*/.preprocessed/*" \
+    -print0)
 
 total=$((cbl_count + cpy_count))
 if [[ $total -gt 0 ]]; then
@@ -850,8 +860,7 @@ fi
 # ─── Phase 3: Handle >8-char copybook names ─────────────────────────
 # smojol warns about copybook names >8 characters. Create 8-char .cpy
 # aliases in the source dir so the parser can resolve them.
-for cpy in "$SOURCE_DIR"/*.cpy "$SOURCE_DIR"/*.CPY; do
-    [[ -e "$cpy" ]] || continue
+while IFS= read -r -d '' cpy; do
     fname=$(basename "$cpy")
     base="${fname%.*}"
     ext="${fname##*.}"
@@ -863,4 +872,9 @@ for cpy in "$SOURCE_DIR"/*.cpy "$SOURCE_DIR"/*.CPY; do
             echo "  Created 8-char alias: ${short}.${ext} → $fname"
         fi
     fi
-done
+done < <(find "$SOURCE_DIR" \
+    \( -name "*.cpy" -o -name "*.CPY" \) \
+    -type f \
+    ! -path "*/.rekt-staging/*" \
+    ! -path "*/.preprocessed/*" \
+    -print0)

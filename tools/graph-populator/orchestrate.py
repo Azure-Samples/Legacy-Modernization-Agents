@@ -122,12 +122,15 @@ def orchestrate(
     source_path = Path(source_dir)
     worker_count = workers or get_worker_count()
 
-    # Find COBOL files
+    # Find COBOL files (recursive — supports nested enterprise layouts).
+    # Keep in sync with SourceTypeRegistry: .cbl, .cob → programs; .cpy → copybook.
+    skip_dirs = {".rekt-staging", ".preprocessed"}
+    exts = {".cbl", ".cob", ".cpy"}
     cobol_files = sorted(
-        list(source_path.glob("*.cbl"))
-        + list(source_path.glob("*.CBL"))
-        + list(source_path.glob("*.cpy"))
-        + list(source_path.glob("*.CPY"))
+        p for p in source_path.rglob("*")
+        if p.is_file()
+        and p.suffix.lower() in exts
+        and not any(part in skip_dirs for part in p.parts)
     )
 
     if not cobol_files:

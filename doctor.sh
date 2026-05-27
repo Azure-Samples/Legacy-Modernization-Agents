@@ -1505,7 +1505,7 @@ run_test() {
     # Check source folders
     echo ""
     echo "Checking source folders..."
-    cobol_files=$(find "$REPO_ROOT/source" -name "*.cbl" 2>/dev/null | wc -l)
+    cobol_files=$(find "$REPO_ROOT/source" \( -name "*.cbl" -o -name "*.cob" \) 2>/dev/null | wc -l)
     copybook_files=$(find "$REPO_ROOT/source" -name "*.cpy" 2>/dev/null | wc -l)
     total_files=$((cobol_files + copybook_files))
     
@@ -2286,7 +2286,7 @@ run_reverse_engineering() {
     echo ""
 
     # Check for COBOL files
-    cobol_count=$(find "$REPO_ROOT/source" -name "*.cbl" 2>/dev/null | wc -l)
+    cobol_count=$(find "$REPO_ROOT/source" \( -name "*.cbl" -o -name "*.cob" \) 2>/dev/null | wc -l)
     copybook_count=$(find "$REPO_ROOT/source" -name "*.cpy" 2>/dev/null | wc -l)
     total_count=$((cobol_count + copybook_count))
     
@@ -2308,14 +2308,14 @@ run_reverse_engineering() {
     local total_lines=0
     local large_file_count=0
     if command -v wc >/dev/null 2>&1; then
-        total_lines=$(find "$REPO_ROOT/source" -name "*.cbl" -exec wc -l {} + 2>/dev/null | tail -1 | awk '{print $1}')
+        total_lines=$(find "$REPO_ROOT/source" \( -name "*.cbl" -o -name "*.cob" \) -exec wc -l {} + 2>/dev/null | tail -1 | awk '{print $1}')
         # Count files over threshold
         while IFS= read -r file; do
             local lines=$(wc -l < "$file" 2>/dev/null | tr -d ' ')
             if [[ "$lines" -gt 3000 ]]; then
                 large_file_count=$((large_file_count + 1))
             fi
-        done < <(find "$REPO_ROOT/source" -name "*.cbl" 2>/dev/null)
+        done < <(find "$REPO_ROOT/source" \( -name "*.cbl" -o -name "*.cob" \) 2>/dev/null)
         
         if [[ "$large_file_count" -gt 0 ]]; then
             echo -e "${CYAN}🧩 Smart Chunking: AUTO-ENABLED${NC}"
@@ -2588,7 +2588,7 @@ run_rekt_parse() {
 
     local cobol_count
     cobol_count=$(find "$REPO_ROOT/source" \
-        \( -name "*.cbl" -o -name "*.CBL" \) \
+        \( -name "*.cbl" -o -name "*.CBL" -o -name "*.cob" -o -name "*.COB" \) \
         ! -path "*/.rekt-staging/*" \
         ! -path "*/.preprocessed/*" \
         2>/dev/null | wc -l | tr -d ' ')
@@ -2602,7 +2602,7 @@ run_rekt_parse() {
     echo -e "${BLUE}  Found: ${cobol_count} programs, ${copy_count} copybooks${NC}"
 
     if [[ "$cobol_count" -eq 0 ]]; then
-        echo -e "${RED}❌ No .cbl files found in source/. Drop COBOL files there first.${NC}"
+        echo -e "${RED}❌ No .cbl/.cob files found in source/. Drop COBOL files there first.${NC}"
         return 1
     fi
 
@@ -2612,14 +2612,13 @@ run_rekt_parse() {
         "$REPO_ROOT/tools/preprocess-for-rekt.sh" "$REPO_ROOT/source" 2>/dev/null
         if [[ -d "$REPO_ROOT/source/.preprocessed" ]]; then
             local preproc_count=0
-            if ls "$REPO_ROOT/source/.preprocessed"/*.cbl >/dev/null 2>&1; then
-                preproc_count=$(ls "$REPO_ROOT/source/.preprocessed"/*.cbl 2>/dev/null | wc -l | tr -d ' ')
-            fi
-            if ls "$REPO_ROOT/source/.preprocessed"/*.cpy >/dev/null 2>&1; then
-                local cpy_count
-                cpy_count=$(ls "$REPO_ROOT/source/.preprocessed"/*.cpy 2>/dev/null | wc -l | tr -d ' ')
-                preproc_count=$((preproc_count + cpy_count))
-            fi
+            local pp_p
+            for pp_p in cbl cob cpy; do
+                local hits
+                hits=$(find "$REPO_ROOT/source/.preprocessed" -maxdepth 1 \
+                    \( -name "*.${pp_p}" -o -name "*.$(echo $pp_p | tr 'a-z' 'A-Z')" \) 2>/dev/null | wc -l | tr -d ' ')
+                preproc_count=$((preproc_count + hits))
+            done
             if [[ "$preproc_count" -gt 0 ]]; then
                 echo -e "  ${GREEN}✅ Preprocessed ${preproc_count} file(s) for rekt compatibility${NC}"
             fi
@@ -2658,12 +2657,12 @@ run_rekt_parse() {
     # Collect all COBOL programs (recursive) → flat staging dir so --srcDir stays constant
     while IFS= read -r cblfile; do
         stage_input_file "$cblfile"
-    done < <(find "$REPO_ROOT/source" \( -name "*.cbl" -o -name "*.CBL" \) \
+    done < <(find "$REPO_ROOT/source" \( -name "*.cbl" -o -name "*.CBL" -o -name "*.cob" -o -name "*.COB" \) \
         ! -path "*/.rekt-staging/*" \
         ! -path "*/.preprocessed/*")
 
     local staged_cbl staged_cpy
-    staged_cbl=$(find "$staging_dir" -maxdepth 1 \( -name "*.cbl" -o -name "*.CBL" \) | wc -l | tr -d ' ')
+    staged_cbl=$(find "$staging_dir" -maxdepth 1 \( -name "*.cbl" -o -name "*.CBL" -o -name "*.cob" -o -name "*.COB" \) | wc -l | tr -d ' ')
     staged_cpy=$(find "$staging_dir" -maxdepth 1 \( -name "*.cpy" -o -name "*.CPY" \) | wc -l | tr -d ' ')
     echo -e "  ${BLUE}Staged: ${staged_cbl} program(s), ${staged_cpy} copybook(s) → source/.rekt-staging/${NC}"
 
@@ -2722,7 +2721,7 @@ copy_pat = re.compile(
 
 referenced_by = defaultdict(set)  # copybook_name → set(referencing_files)
 for name in sorted(os.listdir(staging_dir)):
-    if not name.lower().endswith(('.cbl', '.cpy')):
+    if not name.lower().endswith(('.cbl', '.cob', '.cpy')):
         continue
     path = os.path.join(staging_dir, name)
     try:
@@ -2799,8 +2798,8 @@ print(len(lines))
         [[ -e "$cbl_file" ]] || continue
         local fname
         fname=$(basename "$cbl_file")
-        local stem="${fname%.cbl}"
-        stem="${stem%.CBL}"
+        # Strip any recognised program extension (case-insensitive) to get the stem.
+        local stem="${fname%.*}"
         local err_log="$REPO_ROOT/output/rekt/${stem}.parse.log"
 
         echo -ne "  Parsing $fname..."
@@ -2843,7 +2842,7 @@ print(len(lines))
                     if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar dependency "$fname" \
                         --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
                         --dialectJarPath=/app/dialect-idms.jar \
-                        --export=/output/"${fname%.cbl}"-deps.json >/dev/null 2>>"$err_log"; then
+                        --export=/output/"${stem}"-deps.json >/dev/null 2>>"$err_log"; then
                         dep_ok=true
                     fi
                     # Also try validate (may report warnings but still useful)
@@ -2872,7 +2871,7 @@ print(len(lines))
                 fi
             fi
         fi
-    done < <(find "$staging_dir" -maxdepth 1 \( -name "*.cbl" -o -name "*.CBL" \) | sort)
+    done < <(find "$staging_dir" -maxdepth 1 \( -name "*.cbl" -o -name "*.CBL" -o -name "*.cob" -o -name "*.COB" \) | sort)
 
     # Clean up staging dir — it lives inside source/ which is gitignored
     rm -rf "$staging_dir"
@@ -3115,12 +3114,23 @@ main() {
         local n=0
         while IFS= read -r f; do
             [[ -z "$f" ]] && continue
-            if [[ -f "$REPO_ROOT/source/$f" ]]; then
-                cp "$REPO_ROOT/source/$f" "$stage_dir/" && n=$((n + 1))
+            # Look up the file recursively — supports nested source layouts.
+            local src_found
+            src_found=$(find "$REPO_ROOT/source" -type f -name "$f" \
+                ! -path "*/.rekt-staging/*" \
+                ! -path "*/.preprocessed/*" \
+                ! -path "*/.convert-*/*" \
+                -print -quit 2>/dev/null)
+            if [[ -n "$src_found" && -f "$src_found" ]]; then
+                cp "$src_found" "$stage_dir/" && n=$((n + 1))
             fi
         done <<< "$files"
-        # Also pull every .cpy in source/ so copybook references resolve
-        find "$REPO_ROOT/source" -maxdepth 1 -name "*.cpy" -exec cp -n {} "$stage_dir/" \;
+        # Also pull every .cpy in source/ (recursive) so copybook references resolve.
+        find "$REPO_ROOT/source" -type f \( -name "*.cpy" -o -name "*.CPY" \) \
+            ! -path "*/.rekt-staging/*" \
+            ! -path "*/.preprocessed/*" \
+            ! -path "*/.convert-*/*" \
+            -exec cp -n {} "$stage_dir/" \;
         echo -e "${GREEN}  Staged $n file(s) → source/$stage_name/${NC}"
         export COBOL_SOURCE_FOLDER="source/$stage_name"
         # Tell the analyzer to skip standalone .cpy files in selector mode —
@@ -3323,7 +3333,7 @@ check_chunking_health() {
     
     # Check 7: Source file analysis
     echo -e "${CYAN}7. Source File Analysis${NC}"
-    local cobol_files=$(find "$REPO_ROOT/source" -name "*.cbl" 2>/dev/null)
+    local cobol_files=$(find "$REPO_ROOT/source" \( -name "*.cbl" -o -name "*.cob" \) 2>/dev/null)
     if [[ -n "$cobol_files" ]]; then
         local large_file_count=0
         local total_lines=0

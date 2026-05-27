@@ -29,14 +29,43 @@ import argparse, json, os, re, sys
 from pathlib import Path
 
 
-def enumerate_program_files(source_dir: Path) -> list[str]:
+# Recognised source extensions — keep in sync with Helpers/SourceTypeRegistry.cs
+PROGRAM_EXTS = (".cbl", ".cob")
+COPYBOOK_EXTS = (".cpy",)
+ALL_EXTS = PROGRAM_EXTS + COPYBOOK_EXTS
+
+# Internal staging dirs to skip during discovery (mirror SourceTypeRegistry).
+SKIP_DIR_PARTS = (".rekt-staging", ".preprocessed")
+
+
+def enumerate_program_files(source_dir: Path) -> tuple[list[str], dict[str, Path]]:
+    """Recursively list COBOL programs + copybooks under source_dir.
+
+    Returns (basenames, basename→fullpath map). Emits a warning to stderr if
+    two files share a basename, since downstream staging in doctor.sh flattens
+    to a single directory and will silently collide.
+    """
     if not source_dir.is_dir():
-        return []
-    out: list[str] = []
-    for p in sorted(source_dir.iterdir(), key=lambda x: x.name.lower()):
-        if p.is_file() and p.suffix.lower() in (".cbl", ".cpy"):
-            out.append(p.name)
-    return out
+        return [], {}
+    by_name: dict[str, Path] = {}
+    dup_warned: set[str] = set()
+    for p in sorted(source_dir.rglob("*"), key=lambda x: str(x).lower()):
+        if not p.is_file():
+            continue
+        if p.suffix.lower() not in ALL_EXTS:
+            continue
+        # Skip internal staging copies.
+        if any(part in SKIP_DIR_PARTS for part in p.relative_to(source_dir).parts):
+            continue
+        if p.name in by_name and p.name not in dup_warned:
+            print(
+                f"⚠️  Duplicate basename '{p.name}' found at {p} and {by_name[p.name]} — "
+                "staging will flatten and keep last write. Rename or move.",
+                file=sys.stderr,
+            )
+            dup_warned.add(p.name)
+        by_name[p.name] = p
+    return sorted(by_name.keys(), key=str.lower), by_name
 
 
 def load_target_plans(rekt_dir: Path) -> dict[str, dict]:
@@ -69,7 +98,7 @@ def load_call_targets(rekt_dir: Path, program: str) -> list[str]:
             d = json.loads(deps.read_text())
             for dep in d.get("dependencies", []) or []:
                 name = dep.get("name") or ""
-                if name and not name.lower().endswith(".cpy"):
+                if name and not name.lower().endswith(COPYBOOK_EXTS):
                     targets.append(name)
         except Exception:
             pass
@@ -112,7 +141,7 @@ def main() -> int:
     repo_root = Path(args.repo_root).resolve()
     source_dir = repo_root / args.source_folder
     rekt_dir   = repo_root / "output" / "rekt"
-    all_files  = enumerate_program_files(source_dir)
+    all_files, file_paths = enumerate_program_files(source_dir)
     if not all_files:
         print(f"⚠️  No COBOL files in {source_dir}", file=sys.stderr)
         return 1
@@ -145,7 +174,7 @@ def main() -> int:
                 re.IGNORECASE | re.DOTALL)
             for f in all_files:
                 try:
-                    src = (source_dir / f).read_text(encoding="latin-1")
+                    src = file_paths[f].read_text(encoding="latin-1")
                 except Exception:
                     continue
                 if rx_tran.search(src) or rx_link.search(src):
@@ -183,7 +212,7 @@ def main() -> int:
             rx = re.compile(rf"\b{re.escape(k)}\b", re.IGNORECASE)
             for f in all_files:
                 try:
-                    src = (source_dir / f).read_text(encoding="latin-1")
+                    src = file_paths[f].read_text(encoding="latin-1")
                 except Exception:
                     continue
                 if rx.search(src):

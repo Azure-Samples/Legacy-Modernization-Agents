@@ -45,8 +45,10 @@ public class FileHelper
 
         var cobolFiles = new List<CobolFile>();
 
-        // Get all .cbl files (COBOL programs)
-        var cblFiles = Directory.GetFiles(directory, "*.cbl", SearchOption.AllDirectories);
+        // Use SourceTypeRegistry so .cbl, .cob, and .cpy are picked up uniformly.
+        // FileHelper has always recursed (SearchOption.AllDirectories); the
+        // registry only changes which extensions count as programs vs copybooks.
+        var cblFiles = SourceTypeRegistry.EnumerateProgramFiles(directory).ToArray();
         foreach (var filePath in cblFiles)
         {
             var content = await File.ReadAllTextAsync(filePath);
@@ -59,7 +61,6 @@ public class FileHelper
             });
         }
 
-        // Get all .cpy files (COBOL copybooks)
         // In selector mode (the user picked a specific program), skip standalone
         // copybook analysis — the converter still reads the .cpy content as
         // structural context, but we don't waste an analyzer LLM call per
@@ -69,13 +70,12 @@ public class FileHelper
             Environment.GetEnvironmentVariable("SELECTOR_MODE"),
             "true",
             StringComparison.OrdinalIgnoreCase);
-        var cpyFiles = selectorMode
-            ? Array.Empty<string>()
-            : Directory.GetFiles(directory, "*.cpy", SearchOption.AllDirectories);
+        var allCopybooks = SourceTypeRegistry.EnumerateCopybookFiles(directory).ToArray();
+        var cpyFiles = selectorMode ? Array.Empty<string>() : allCopybooks;
         if (selectorMode)
         {
             _logger.LogInformation("[FileHelper] SELECTOR_MODE=true — skipping standalone .cpy analysis ({Skipped} copybooks present in source folder will only be used as COPY context)",
-                Directory.GetFiles(directory, "*.cpy", SearchOption.AllDirectories).Length);
+                allCopybooks.Length);
         }
         foreach (var filePath in cpyFiles)
         {

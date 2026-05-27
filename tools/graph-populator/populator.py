@@ -551,7 +551,7 @@ def ingest_rekt_outputs(driver, rekt_output_dir: str, source_dir: str, run_id: i
     cobol_files = [
         p for p in source_path.rglob("*")
         if p.is_file()
-        and p.suffix.lower() == ".cbl"
+        and p.suffix.lower() in (".cbl", ".cob")
         and not _is_ignored_source_file(p)
     ]
     copybooks = [
