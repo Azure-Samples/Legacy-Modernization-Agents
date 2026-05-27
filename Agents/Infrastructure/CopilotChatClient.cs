@@ -3,6 +3,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using System.Runtime.CompilerServices;
 using System.Text;
+using System.Text.RegularExpressions;
 
 using AIChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
@@ -18,9 +19,17 @@ public sealed class CopilotChatClient : IChatClient, IAsyncDisposable
     private readonly CopilotClient _client;
     private readonly string _model;
     private readonly ILogger? _logger;
+    private readonly IRateLimiter? _limiter;
+    private readonly TimeSpan _callWaitCeiling;
     private readonly SemaphoreSlim _startLock = new(1, 1);
     private bool _started;
     private bool _disposed;
+
+    // Best-effort detection of throttling messages from the Copilot SDK,
+    // which surfaces errors as strings without HTTP status codes.
+    private static readonly Regex RateLimitMessageRegex = new(
+        @"\b(429|rate[\s-]?limit(ed|ing)?|too\s+many\s+requests|quota\s+exceeded)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     /// <summary>
     /// Per-request timeout. Prevents infinite hangs if the SDK never fires
@@ -34,19 +43,24 @@ public sealed class CopilotChatClient : IChatClient, IAsyncDisposable
     /// <param name="model">Model name (e.g. "gpt-5", "claude-sonnet-4.5").</param>
     /// <param name="options">Optional CopilotClientOptions for CLI path, auth, etc.</param>
     /// <param name="logger">Optional logger.</param>
-    public CopilotChatClient(string model, CopilotClientOptions? options = null, ILogger? logger = null)
+    /// <param name="limiter">Optional rate limiter shared via <see cref="IRateLimiter"/>.</param>
+    /// <param name="callWaitCeiling">Per-call wait ceiling for Retry-After honouring. Defaults to <see cref="LlmRetryHelper.DefaultWaitCeilingSeconds"/>.</param>
+    public CopilotChatClient(
+        string model,
+        CopilotClientOptions? options = null,
+        ILogger? logger = null,
+        IRateLimiter? limiter = null,
+        TimeSpan? callWaitCeiling = null)
     {
         _model = model ?? throw new ArgumentNullException(nameof(model));
         _logger = logger;
+        _limiter = limiter;
+        _callWaitCeiling = callWaitCeiling ?? TimeSpan.FromSeconds(LlmRetryHelper.DefaultWaitCeilingSeconds);
 
-        // Merge logger into options if provided
-        var clientOptions = options ?? new CopilotClientOptions();
-        if (logger != null)
-        {
-            clientOptions.Logger = logger;
-        }
-
-        _client = new CopilotClient(clientOptions);
+        // NOTE: deliberately do NOT attach the app logger to CopilotClientOptions.Logger
+        // — the SDK emits very verbose JSON-RPC tracing that floods the console.
+        // Use the app logger here only for our own structured throttling logs.
+        _client = new CopilotClient(options ?? new CopilotClientOptions());
     }
 
     /// <summary>
@@ -108,6 +122,96 @@ public sealed class CopilotChatClient : IChatClient, IAsyncDisposable
             throw new InvalidOperationException("Cannot send empty prompt to Copilot SDK");
         }
 
+        var userPrompt = userPromptBuilder.ToString();
+
+        // Best-effort token estimate so the shared limiter can budget for GitHub
+        // Models calls in the same way it does for Azure. The SDK does not expose
+        // exact usage, so we approximate at ~4 chars per token.
+        var estimatedInputTokens = EstimateTokens(systemMessage) + EstimateTokens(userPrompt);
+        // Reserve a conservative 4× input as upper bound for response (output is
+        // bounded by the model's max_output_tokens; we don't have a way to know it
+        // here, so we use a heuristic — this is for budgeting only, not for capping).
+        var estimatedTotalTokens = estimatedInputTokens + Math.Min(estimatedInputTokens * 4, 32_000);
+
+        if (_limiter is not null)
+        {
+            await _limiter.AcquireAsync(estimatedTotalTokens, cancellationToken);
+        }
+
+        try
+        {
+            var responseText = await SendOnceWithRetryAsync(
+                model, systemMessage, userPrompt, cancellationToken);
+
+            var actualOutputTokens = EstimateTokens(responseText);
+            _limiter?.RecordUsage(estimatedInputTokens + actualOutputTokens);
+
+            var responseMessage = new AIChatMessage(ChatRole.Assistant, responseText);
+            return new ChatResponse(responseMessage);
+        }
+        catch
+        {
+            // Limiter records were taken at acquire; if we don't reach RecordUsage
+            // they will age out of the rolling window naturally. RateLimitTracker
+            // exposes ReleaseReservation() for the Azure client; the GitHub
+            // limiter (a separate instance) just lets the reservation expire.
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Sends a single prompt, applying our shared retry policy. The Copilot SDK
+    /// signals errors via string messages without HTTP status codes, so we
+    /// pattern-match for throttling indicators and surface a typed
+    /// <see cref="RateLimitedException"/> after bounded retries.
+    /// </summary>
+    private async Task<string> SendOnceWithRetryAsync(
+        string model,
+        string? systemMessage,
+        string userPrompt,
+        CancellationToken cancellationToken)
+    {
+        return await LlmRetryHelper.ExecuteAsync<string>(
+            provider: "github-copilot-sdk",
+            model: model,
+            attempt: async (attemptIndex, ct) =>
+            {
+                try
+                {
+                    var text = await IssueRequestAsync(model, systemMessage, userPrompt, ct);
+                    return new CallOutcome.Success<string>(text);
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (TimeoutException tex)
+                {
+                    return new CallOutcome.Fatal(tex, tex.Message);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    // The SDK throws InvalidOperationException for all error paths.
+                    // Best-effort throttling detection via the message text.
+                    if (RateLimitMessageRegex.IsMatch(ex.Message))
+                    {
+                        return new CallOutcome.RateLimited(
+                            RetryAfter: null,
+                            Reason: $"github-sdk-message: {Truncate(ex.Message, 200)}");
+                    }
+                    return new CallOutcome.Fatal(ex, ex.Message);
+                }
+            },
+            limiter: _limiter,
+            waitCeiling: _callWaitCeiling,
+            logger: _logger,
+            cancellationToken: cancellationToken);
+    }
+
+    /// <summary>
+    /// One round-trip to the Copilot SDK — no retry. Returns the assembled
+    /// assistant text or throws on SDK error / timeout.
+    /// </summary>
+    private async Task<string> IssueRequestAsync(
+        string model, string? systemMessage, string userPrompt, CancellationToken cancellationToken)
+    {
         // Create a session per request (stateless adapter pattern)
         var sessionConfig = new SessionConfig
         {
@@ -154,9 +258,8 @@ public sealed class CopilotChatClient : IChatClient, IAsyncDisposable
             }
         });
 
-        await session.SendAsync(new MessageOptions { Prompt = userPromptBuilder.ToString() });
+        await session.SendAsync(new MessageOptions { Prompt = userPrompt });
 
-        // Wait for completion, cancellation, or timeout
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(RequestTimeout);
         using var ctsReg = timeoutCts.Token.Register(() =>
@@ -189,12 +292,14 @@ public sealed class CopilotChatClient : IChatClient, IAsyncDisposable
             throw new InvalidOperationException($"Copilot SDK error: {errorMessage}");
         }
 
-        var responseText = responseBuilder.ToString();
-        _logger?.LogDebug("CopilotChatClient: received {Length} chars from model {Model}", responseText.Length, model);
-
-        var responseMessage = new AIChatMessage(ChatRole.Assistant, responseText);
-        return new ChatResponse(responseMessage);
+        return responseBuilder.ToString();
     }
+
+    private static int EstimateTokens(string? text) =>
+        string.IsNullOrEmpty(text) ? 0 : Math.Max(1, text.Length / 4);
+
+    private static string Truncate(string s, int max) =>
+        s.Length <= max ? s : s.Substring(0, max) + "…";
 
     /// <inheritdoc />
     public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(

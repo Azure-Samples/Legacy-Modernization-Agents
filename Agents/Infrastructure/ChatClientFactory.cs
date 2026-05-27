@@ -176,6 +176,14 @@ public static class ChatClientFactory
     // GITHUB COPILOT SDK (Copilot CLI)
     // ═══════════════════════════════════════════════════════════════════════
 
+    // Single shared limiter for the GitHub provider. Conservative defaults —
+    // GitHub Models tends to be stricter than Azure. Override values are not
+    // currently exposed via config; tracked in docs/throttling-and-cache-design.md §6.
+    private const int GitHubTokensPerMinute = 200_000;
+    private const int GitHubRequestsPerMinute = 60;
+    private static readonly Lazy<RateLimitTracker> GitHubLimiter = new(() =>
+        new RateLimitTracker(GitHubTokensPerMinute, GitHubRequestsPerMinute, logger: null));
+
     /// <summary>
     /// Creates an IChatClient for GitHub Copilot SDK.
     /// Requires the Copilot CLI in PATH.
@@ -200,9 +208,11 @@ public static class ChatClientFactory
             options.GitHubToken = githubToken;
         }
 
-        // Don't pass the app logger to the SDK — it produces very verbose
-        // internal JSON-RPC tracing that floods the console output.
-        return new CopilotChatClient(modelId, options);
+        // Pass the shared GitHub limiter so concurrent CopilotChatClient
+        // instances share a single TPM/RPM bucket and adaptive cooldown.
+        // App logger is used for our structured throttling logs only, not piped
+        // into the SDK (that would flood console with JSON-RPC traces).
+        return new CopilotChatClient(modelId, options, logger, limiter: GitHubLimiter.Value);
     }
 
     // ═══════════════════════════════════════════════════════════════════════

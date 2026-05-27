@@ -95,6 +95,10 @@ public class ResponsesApiClient : IDisposable
     // Rate limiting
     private readonly RateLimitTracker _rateLimitTracker;
 
+    // Per-call wait ceiling — if Retry-After exceeds this, fast-fail with
+    // RateLimitedException rather than silently sleeping.
+    private readonly TimeSpan _callWaitCeiling;
+
     // Three-tier reasoning profile
     /// <summary>The model profile controlling reasoning effort and token limits.</summary>
     public ModelProfileSettings Profile { get; }
@@ -128,6 +132,7 @@ public class ResponsesApiClient : IDisposable
     /// <param name="profile">Optional model profile for three-tier reasoning. Falls back to conservative defaults.</param>
     /// <param name="apiVersion">API version (default: 2025-04-01-preview)</param>
     /// <param name="rateLimitSafetyFactor">Safety margin for rate limiting (0.5–0.99, default 0.90)</param>
+    /// <param name="callWaitCeiling">Per-call wait ceiling for honouring Retry-After. Defaults to <see cref="LlmRetryHelper.DefaultWaitCeilingSeconds"/>.</param>
     public ResponsesApiClient(
         string endpoint, 
         string apiKey, 
@@ -136,7 +141,8 @@ public class ResponsesApiClient : IDisposable
         EnhancedLogger? enhancedLogger = null,
         ModelProfileSettings? profile = null,
         string apiVersion = "2025-04-01-preview",
-        double rateLimitSafetyFactor = 0.90)
+        double rateLimitSafetyFactor = 0.90,
+        TimeSpan? callWaitCeiling = null)
     {
         if (string.IsNullOrEmpty(endpoint))
             throw new ArgumentNullException(nameof(endpoint));
@@ -155,6 +161,8 @@ public class ResponsesApiClient : IDisposable
 
         _rateLimitTracker = new RateLimitTracker(
             Profile.TokensPerMinute, Profile.RequestsPerMinute, logger, rateLimitSafetyFactor);
+
+        _callWaitCeiling = callWaitCeiling ?? TimeSpan.FromSeconds(LlmRetryHelper.DefaultWaitCeilingSeconds);
 
         _httpClient = new HttpClient();
         var isPlaceholder = string.IsNullOrEmpty(_apiKey)
@@ -472,9 +480,14 @@ public class ResponsesApiClient : IDisposable
             _deploymentName,
             $"Input: {estimatedInputTokens} tokens, MaxOutput: {maxOutputTokens}, Reasoning: {reasoningEffort}") ?? 0;
 
-        // Try loop to handle Auth fallback
+        // Try loop to handle Auth fallback and 429/Retry-After.
+        // Auth-switch is counted separately and capped at 1; 429 retries are
+        // counted separately and capped via LlmRetryHelper rules (1 honoured
+        // Retry-After wait + 1 retry, or 15s/45s without header).
         int attempts = 0;
-        int maxAttempts = 2; // 1 normal + 1 fallback
+        int maxAttempts = 6; // 1 success + 1 auth-switch + up to ~4 throttle waits
+        int rateLimited429Attempts = 0;
+        bool authSwitched = false;
 
         while (attempts < maxAttempts)
         {
@@ -507,9 +520,60 @@ public class ResponsesApiClient : IDisposable
 
                 if (!response.IsSuccessStatusCode)
                 {
+                    // ── HTTP 429: Rate limited — honour Retry-After per LlmRetryHelper rules.
+                    if (response.StatusCode == (System.Net.HttpStatusCode)429)
+                    {
+                        var retryAfterHeader = response.Headers.RetryAfter?.ToString();
+                        var retryAfter = LlmRetryHelper.ParseRetryAfter(retryAfterHeader);
+                        _rateLimitTracker.NoteRateLimitResponse(retryAfter ?? TimeSpan.FromSeconds(60));
+                        // Release reservation — this request did not consume tokens.
+                        _rateLimitTracker.ReleaseReservation();
+
+                        // Fast-fail if Retry-After exceeds the wait ceiling.
+                        if (retryAfter is { } ra && ra > _callWaitCeiling)
+                        {
+                            _logger?.LogWarning(
+                                "[{Event}] provider=azure-openai model={Model} statusCode=429 " +
+                                "retryAfterSeconds={RetryAfter:F1} waitMs=0 decision=fast-fail-over-ceiling " +
+                                "reason=server-throttle estimatedTokens={Estimated}",
+                                LlmRetryHelper.LogEventName, _deploymentName, ra.TotalSeconds, estimatedTotalTokens);
+                            _enhancedLogger?.LogApiCallError(apiCallId, $"HTTP 429 (Retry-After {ra.TotalSeconds:F0}s > ceiling)");
+                            throw new RateLimitedException("azure-openai", _deploymentName, ra,
+                                $"Azure OpenAI rate-limited for {ra.TotalSeconds:F0}s, exceeds wait ceiling {_callWaitCeiling.TotalSeconds:F0}s.");
+                        }
+
+                        rateLimited429Attempts++;
+                        var maxRateLimitedAttempts = retryAfter is null ? 3 : 2;
+                        if (rateLimited429Attempts >= maxRateLimitedAttempts)
+                        {
+                            _logger?.LogWarning(
+                                "[{Event}] provider=azure-openai model={Model} statusCode=429 " +
+                                "retryAfterSeconds={RetryAfter:F1} waitMs=0 decision=give-up " +
+                                "reason=exhausted-rate-limit-retries",
+                                LlmRetryHelper.LogEventName, _deploymentName, retryAfter?.TotalSeconds ?? 0);
+                            _enhancedLogger?.LogApiCallError(apiCallId, "HTTP 429 (exhausted retries)");
+                            throw new RateLimitedException("azure-openai", _deploymentName, retryAfter,
+                                $"Azure OpenAI rate-limited after {rateLimited429Attempts} attempts.");
+                        }
+
+                        var wait = retryAfter ?? (rateLimited429Attempts == 1
+                            ? TimeSpan.FromSeconds(15)
+                            : TimeSpan.FromSeconds(45));
+                        _logger?.LogWarning(
+                            "[{Event}] provider=azure-openai model={Model} statusCode=429 " +
+                            "retryAfterSeconds={RetryAfter:F1} waitMs={WaitMs:F0} decision=retry-after-wait " +
+                            "reason=server-throttle",
+                            LlmRetryHelper.LogEventName, _deploymentName,
+                            retryAfter?.TotalSeconds ?? wait.TotalSeconds, wait.TotalMilliseconds);
+                        await Task.Delay(wait, cancellationToken);
+                        // Re-reserve capacity for the next attempt.
+                        await _rateLimitTracker.AcquireAsync(estimatedTotalTokens, cancellationToken);
+                        continue;
+                    }
+
                     // Check for Key Auth disabled (HTTP 403 Forbidden)
                     // {"error":{"code":"AuthenticationTypeDisabled","message": "Key based authentication is disabled for this resource."}}
-                    if (response.StatusCode == System.Net.HttpStatusCode.Forbidden && !_hasSwitchedToEntraId)
+                    if (response.StatusCode == System.Net.HttpStatusCode.Forbidden && !authSwitched)
                     {
                         if (responseText.Contains("AuthenticationTypeDisabled") || responseText.Contains("Key based authentication is disabled"))
                         {
@@ -517,12 +581,14 @@ public class ResponsesApiClient : IDisposable
                             
                             // Switch strategy and retry immediately
                             _hasSwitchedToEntraId = true;
+                            authSwitched = true;
                             _enhancedLogger?.LogBehindTheScenes("AUTH_SWITCH", "EntraID", "Switched to Entra ID auth due to 403", "System");
                             continue;
                         }
                     }
 
                     _enhancedLogger?.LogApiCallError(apiCallId, $"HTTP {response.StatusCode}");
+                    _rateLimitTracker.ReleaseReservation();
                     
                     // Check for Tenant Mismatch error
                     if (response.StatusCode == System.Net.HttpStatusCode.BadRequest && 
@@ -595,9 +661,11 @@ public class ResponsesApiClient : IDisposable
             }
             catch (Exception ex) when (ex is not InvalidOperationException && 
                                         ex is not ReasoningExhaustionException &&
+                                        ex is not RateLimitedException &&
                                         !(ex is HttpRequestException && attempts < maxAttempts))
             {
                 // Let the retry loop handle HttpRequestException if we decide to add more logic there (currently only handled via continue)
+                _rateLimitTracker.ReleaseReservation();
                 _logger?.LogError(ex, "Responses API error after {Elapsed:F1}s", (DateTime.UtcNow - startTime).TotalSeconds);
                 throw;
             }
@@ -708,17 +776,37 @@ public class ResponsesApiClient : IDisposable
 /// <summary>
 /// Tracks token and request usage for rate limiting.
 /// Optimized for 1M TPM / 1K RPM limits.
+///
+/// Behaviour notes:
+///   - <see cref="AcquireAsync"/> *reserves* the estimate so concurrent callers do
+///     not all pass the gate before any usage is recorded.
+///   - <see cref="RecordUsage"/> reconciles the reservation against the actual usage.
+///   - <see cref="NoteRateLimitResponse"/> installs an adaptive cooldown that
+///     blocks subsequent acquires until it expires (caller's wait-ceiling policy
+///     applies on top of this).
 /// </summary>
-internal class RateLimitTracker
+internal class RateLimitTracker : IRateLimiter
 {
     private readonly int _tokensPerMinute;
     private readonly int _requestsPerMinute;
     private readonly ILogger? _logger;
     private readonly object _lock = new();
-    
+
     private readonly Queue<(DateTime time, int tokens)> _tokenHistory = new();
     private readonly Queue<DateTime> _requestHistory = new();
-    
+
+    // Outstanding reservations from AcquireAsync that have not yet been reconciled
+    // by RecordUsage. Keyed by reservation id so RecordUsage can find its own row.
+    private readonly Dictionary<long, (DateTime time, int tokens)> _reservations = new();
+    private long _nextReservationId;
+
+    // Per-thread stash of the last reservation id so callers that use the
+    // interface (AcquireAsync → RecordUsage) don't need to thread the id through.
+    private static readonly AsyncLocal<long?> CurrentReservationId = new();
+
+    // Cooldown installed by NoteRateLimitResponse — Acquire waits until this passes.
+    private DateTime _cooldownUntilUtc = DateTime.MinValue;
+
     // Safety margin: configurable fraction of limits to stay under
     private readonly double _safetyMargin;
 
@@ -730,73 +818,129 @@ internal class RateLimitTracker
         _logger = logger;
     }
 
+    /// <inheritdoc cref="IRateLimiter.AcquireAsync"/>
+    public Task AcquireAsync(int estimatedTokens, CancellationToken cancellationToken = default) =>
+        WaitForCapacityAsync(estimatedTokens, cancellationToken);
+
     /// <summary>
-    /// Waits until there's capacity for the estimated token usage.
+    /// Waits until there's capacity for the estimated token usage, then reserves it.
     /// </summary>
     public async Task WaitForCapacityAsync(int estimatedTokens, CancellationToken cancellationToken)
     {
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            
-            var (canProceed, waitTime, reason) = CheckCapacity(estimatedTokens);
-            
+
+            var (canProceed, waitTime, reason, reservationId) = TryReserve(estimatedTokens);
+
             if (canProceed)
+            {
+                CurrentReservationId.Value = reservationId;
                 return;
-            
+            }
+
             _logger?.LogInformation(
-                "Rate limit: waiting {Wait:F1}s ({Reason}). Current: {Tokens:N0}/{TPM:N0} TPM, {Requests}/{RPM} RPM",
-                waitTime.TotalSeconds, reason, GetCurrentTokensPerMinute(), _tokensPerMinute, 
-                GetCurrentRequestsPerMinute(), _requestsPerMinute);
-            
+                "[{Event}] provider=local model=- statusCode=0 retryAfterSeconds=0.0 " +
+                "waitMs={WaitMs:F0} decision=limiter-wait reason={Reason}",
+                LlmRetryHelper.LogEventName, waitTime.TotalMilliseconds, reason);
+
             await Task.Delay(waitTime, cancellationToken);
         }
     }
 
-    private (bool canProceed, TimeSpan waitTime, string reason) CheckCapacity(int estimatedTokens)
+    /// <summary>
+    /// Tries to reserve <paramref name="estimatedTokens"/>. Returns the wait time if no
+    /// capacity, otherwise issues a reservation id.
+    /// </summary>
+    private (bool canProceed, TimeSpan waitTime, string reason, long reservationId) TryReserve(int estimatedTokens)
     {
         lock (_lock)
         {
             PruneOldEntries();
-            
+
+            // Honour any cooldown installed by NoteRateLimitResponse.
+            var now = DateTime.UtcNow;
+            if (now < _cooldownUntilUtc)
+            {
+                var wait = _cooldownUntilUtc - now;
+                if (wait < TimeSpan.FromMilliseconds(100)) wait = TimeSpan.FromMilliseconds(100);
+                return (false, wait, $"cooldown: {wait.TotalSeconds:F1}s remaining", 0);
+            }
+
             var currentTokens = GetCurrentTokensPerMinute();
             var currentRequests = GetCurrentRequestsPerMinute();
-            
-            // Check TPM
+
             if (currentTokens + estimatedTokens > _tokensPerMinute)
             {
-                var oldestToken = _tokenHistory.Count > 0 ? _tokenHistory.Peek().time : DateTime.UtcNow;
+                var oldestToken = _tokenHistory.Count > 0 ? _tokenHistory.Peek().time : now;
                 var waitUntil = oldestToken.AddMinutes(1);
-                var waitTime = waitUntil - DateTime.UtcNow;
+                var waitTime = waitUntil - now;
                 if (waitTime < TimeSpan.Zero) waitTime = TimeSpan.FromSeconds(1);
-                return (false, waitTime, $"TPM: {currentTokens:N0}+{estimatedTokens:N0} > {_tokensPerMinute:N0}");
+                return (false, waitTime,
+                    $"TPM: {currentTokens:N0}+{estimatedTokens:N0} > {_tokensPerMinute:N0}", 0);
             }
-            
-            // Check RPM
+
             if (currentRequests + 1 > _requestsPerMinute)
             {
-                var oldestRequest = _requestHistory.Count > 0 ? _requestHistory.Peek() : DateTime.UtcNow;
+                var oldestRequest = _requestHistory.Count > 0 ? _requestHistory.Peek() : now;
                 var waitUntil = oldestRequest.AddMinutes(1);
-                var waitTime = waitUntil - DateTime.UtcNow;
+                var waitTime = waitUntil - now;
                 if (waitTime < TimeSpan.Zero) waitTime = TimeSpan.FromSeconds(1);
-                return (false, waitTime, $"RPM: {currentRequests}+1 > {_requestsPerMinute}");
+                return (false, waitTime,
+                    $"RPM: {currentRequests}+1 > {_requestsPerMinute}", 0);
             }
-            
-            return (true, TimeSpan.Zero, "OK");
+
+            // Reserve estimated tokens + request slot so concurrent acquires see
+            // the load before the response (and RecordUsage) lands.
+            var reservationId = ++_nextReservationId;
+            _reservations[reservationId] = (now, estimatedTokens);
+            _tokenHistory.Enqueue((now, estimatedTokens));
+            _requestHistory.Enqueue(now);
+
+            return (true, TimeSpan.Zero, "OK", reservationId);
         }
     }
 
     /// <summary>
-    /// Records actual token usage after a request completes.
+    /// Records actual token usage after a request completes. Reconciles the
+    /// reservation issued by the matching <see cref="AcquireAsync"/> call.
     /// </summary>
     public void RecordUsage(int actualTokens)
     {
+        var reservationId = CurrentReservationId.Value;
+        CurrentReservationId.Value = null;
+
         lock (_lock)
         {
-            var now = DateTime.UtcNow;
-            _tokenHistory.Enqueue((now, actualTokens));
-            _requestHistory.Enqueue(now);
-            
+            // Replace the reservation (estimated) with the actual usage.
+            if (reservationId is { } id && _reservations.Remove(id, out var reserved))
+            {
+                // Remove the matching reserved entry from the token history; replace
+                // with actual. We can't do an O(1) lookup, so do a linear walk over
+                // the bounded 60-second window — cheap enough.
+                var rebuilt = new Queue<(DateTime time, int tokens)>(_tokenHistory.Count);
+                var removed = false;
+                foreach (var entry in _tokenHistory)
+                {
+                    if (!removed && entry.time == reserved.time && entry.tokens == reserved.tokens)
+                    {
+                        removed = true;
+                        continue;
+                    }
+                    rebuilt.Enqueue(entry);
+                }
+                _tokenHistory.Clear();
+                foreach (var e in rebuilt) _tokenHistory.Enqueue(e);
+                _tokenHistory.Enqueue((reserved.time, actualTokens));
+            }
+            else
+            {
+                // No reservation — caller didn't go through AcquireAsync; just append.
+                var now = DateTime.UtcNow;
+                _tokenHistory.Enqueue((now, actualTokens));
+                _requestHistory.Enqueue(now);
+            }
+
             _logger?.LogDebug(
                 "Recorded: {Tokens:N0} tokens. Window: {TotalTokens:N0}/{TPM:N0} TPM, {Requests}/{RPM} RPM",
                 actualTokens, GetCurrentTokensPerMinute(), _tokensPerMinute,
@@ -804,13 +948,70 @@ internal class RateLimitTracker
         }
     }
 
+    /// <inheritdoc cref="IRateLimiter.NoteRateLimitResponse"/>
+    public void NoteRateLimitResponse(TimeSpan retryAfter)
+    {
+        if (retryAfter <= TimeSpan.Zero) return;
+        lock (_lock)
+        {
+            var until = DateTime.UtcNow + retryAfter;
+            if (until > _cooldownUntilUtc) _cooldownUntilUtc = until;
+        }
+        _logger?.LogWarning(
+            "[{Event}] provider=local model=- statusCode=429 retryAfterSeconds={Seconds:F1} " +
+            "waitMs=0 decision=install-cooldown reason=server-throttle",
+            LlmRetryHelper.LogEventName, retryAfter.TotalSeconds);
+    }
+
+    /// <summary>
+    /// Drops the in-flight reservation issued by <see cref="AcquireAsync"/> without
+    /// recording any actual usage. Called after a request fails (429, transport
+    /// error) so the reserved capacity becomes available to the next acquire.
+    /// </summary>
+    public void ReleaseReservation()
+    {
+        var reservationId = CurrentReservationId.Value;
+        CurrentReservationId.Value = null;
+        if (reservationId is not { } id) return;
+
+        lock (_lock)
+        {
+            if (!_reservations.Remove(id, out var reserved)) return;
+            // Remove the matching reserved entry from the token history.
+            var rebuilt = new Queue<(DateTime time, int tokens)>(_tokenHistory.Count);
+            var removed = false;
+            foreach (var entry in _tokenHistory)
+            {
+                if (!removed && entry.time == reserved.time && entry.tokens == reserved.tokens)
+                {
+                    removed = true;
+                    continue;
+                }
+                rebuilt.Enqueue(entry);
+            }
+            _tokenHistory.Clear();
+            foreach (var e in rebuilt) _tokenHistory.Enqueue(e);
+
+            // Also drop the most recent request slot at or after `reserved.time`.
+            if (_requestHistory.Count > 0)
+            {
+                var keep = _requestHistory.Where(t => t != reserved.time).ToList();
+                if (keep.Count == _requestHistory.Count - 1 || keep.Count == _requestHistory.Count)
+                {
+                    _requestHistory.Clear();
+                    foreach (var t in keep) _requestHistory.Enqueue(t);
+                }
+            }
+        }
+    }
+
     private void PruneOldEntries()
     {
         var oneMinuteAgo = DateTime.UtcNow.AddMinutes(-1);
-        
+
         while (_tokenHistory.Count > 0 && _tokenHistory.Peek().time < oneMinuteAgo)
             _tokenHistory.Dequeue();
-        
+
         while (_requestHistory.Count > 0 && _requestHistory.Peek() < oneMinuteAgo)
             _requestHistory.Dequeue();
     }
