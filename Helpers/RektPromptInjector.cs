@@ -95,12 +95,16 @@ public static class RektPromptInjector
                 {
                     ProgramFacts nonNullFacts = facts!;
                     var projectionTokens = TokenHelper.EstimateTokens(projectionBlock);
+                    // Stable projection hash: future cache key. Same projection
+                    // block (same facts + same language + same template version)
+                    // → same hash → eligible for projection-level cache reuse.
+                    var projectionHash = CanonicalHasher.HashUtf8(projectionBlock);
                     sb.AppendLine();
                     sb.AppendLine(projectionBlock);
                     factsInjected = true;
                     logger?.LogInformation(
-                        "[RektPromptInjector] Injected program-facts projection for {File} (target={Lang}, schema={Schema}, confidence={Conf}, warnings={Warn})",
-                        fileName, targetLanguage, nonNullFacts.SchemaVersion, nonNullFacts.Confidence, nonNullFacts.Warnings.Count);
+                        "[RektPromptInjector] Injected program-facts projection for {File} (target={Lang}, schema={Schema}, confidence={Conf}, warnings={Warn}, hash={Hash})",
+                        fileName, targetLanguage, nonNullFacts.SchemaVersion, nonNullFacts.Confidence, nonNullFacts.Warnings.Count, projectionHash.Substring(0, 12));
                     logger?.LogInformation(
                         "[RektPromptInjector] PROJECTION_METRICS projectionMode=projection agent={Agent} file={File} projectionTokens={ProjTok} rawRektTokens=0 reductionPercent=n/a",
                         agentName, fileName, projectionTokens);
@@ -113,6 +117,7 @@ public static class RektPromptInjector
                         ProjectionMode = "projection",
                         ProjectionTokens = projectionTokens,
                         RawRektTokens = 0,
+                        ProjectionHash = projectionHash,
                         FactsSchema = nonNullFacts.SchemaVersion,
                         FactsConfidence = nonNullFacts.Confidence,
                         FactsWarnings = nonNullFacts.Warnings.Count

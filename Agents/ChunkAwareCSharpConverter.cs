@@ -109,6 +109,8 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
             "Converting chunk {Index} of {File} to C# (lines {Start}-{End}, {ContentLen} chars)",
             chunk.ChunkIndex, chunk.SourceFile, chunk.StartLine, chunk.EndLine, chunk.Content?.Length ?? 0);
 
+        MetricsSink.CurrentRunId = _runId;
+
         var contentLength = chunk.Content?.Length ?? 0;
         if (contentLength > MaxContentChars)
         {

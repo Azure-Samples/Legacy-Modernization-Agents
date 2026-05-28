@@ -460,3 +460,6 @@ Agents/Prompts/_history/
 # A/B projection suite output (per-run, transient)
 tools/ab-results-*/
 output/.metrics/
+
+# Benchmark analytics DB
+Data/benchmark.db

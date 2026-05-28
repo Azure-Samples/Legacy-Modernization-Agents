@@ -14,6 +14,12 @@ namespace CobolToQuarkusMigration.Helpers;
 ///
 /// Writes are append-only, fail-soft (any I/O exception is swallowed and logged
 /// to stderr — we never want metrics emission to break the conversion).
+///
+/// Ambient runId:
+///   <see cref="CurrentRunId"/> is an AsyncLocal&lt;int?&gt; that agents set
+///   before issuing LLM calls. Infrastructure components (e.g.
+///   CopilotChatClient, LlmRetryHelper) read this without needing the runId
+///   threaded through their public APIs.
 /// </summary>
 public static class MetricsSink
 {
@@ -23,6 +29,19 @@ public static class MetricsSink
         WriteIndented = false,
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
+
+    /// <summary>
+    /// Ambient run id consulted by Emit overload that doesn't take an explicit
+    /// id. Set this in the calling agent before issuing LLM calls; restore /
+    /// clear it afterwards.
+    /// </summary>
+    private static readonly AsyncLocal<int?> _currentRunId = new();
+
+    public static int? CurrentRunId
+    {
+        get => _currentRunId.Value;
+        set => _currentRunId.Value = value;
+    }
 
     private static string ResolveDir()
     {
@@ -68,6 +87,14 @@ public static class MetricsSink
             Console.Error.WriteLine($"[MetricsSink] Failed to emit metrics for run '{runId}': {ex.Message}");
         }
     }
+
+    /// <summary>
+    /// Convenience overload that uses <see cref="CurrentRunId"/> ambient context.
+    /// Use this from infrastructure components (CopilotChatClient, retry helper)
+    /// that don't want runId threaded through their public APIs.
+    /// </summary>
+    public static void EmitAmbient(object payload)
+        => Emit(CurrentRunId?.ToString(), payload);
 
     private static string CamelCase(string s)
         => string.IsNullOrEmpty(s) ? s : char.ToLowerInvariant(s[0]) + s.Substring(1);

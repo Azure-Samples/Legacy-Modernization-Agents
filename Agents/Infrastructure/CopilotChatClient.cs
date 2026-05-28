@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.RegularExpressions;
+using CobolToQuarkusMigration.Helpers;
 
 using AIChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
@@ -313,6 +314,18 @@ public sealed class CopilotChatClient : IChatClient, IAsyncDisposable
                 "timeout",
                 EstimateTokens(responseBuilder.ToString()));
             _logger?.LogError("CopilotChatClient: request timed out after {Minutes}m for model {Model}", RequestTimeout.TotalMinutes, model);
+            MetricsSink.EmitAmbient(new
+            {
+                Event = "llm_call",
+                Provider = "github-copilot-sdk",
+                Model = model,
+                Outcome = "timeout",
+                FirstTokenLatencyMs = firstTokenLatencyMs ?? -1,
+                StreamDurationMs = streamWatch.ElapsedMilliseconds,
+                SdkTimeoutMs = (long)RequestTimeout.TotalMilliseconds,
+                CompletionTokens = EstimateTokens(responseBuilder.ToString()),
+                FallbackReason = "timeout"
+            });
             throw;
         }
 
@@ -328,9 +341,22 @@ public sealed class CopilotChatClient : IChatClient, IAsyncDisposable
                 (long)RequestTimeout.TotalMilliseconds,
                 errorMessage,
                 EstimateTokens(responseBuilder.ToString()));
+            MetricsSink.EmitAmbient(new
+            {
+                Event = "llm_call",
+                Provider = "github-copilot-sdk",
+                Model = model,
+                Outcome = "error",
+                FirstTokenLatencyMs = firstTokenLatencyMs ?? -1,
+                StreamDurationMs = streamWatch.ElapsedMilliseconds,
+                SdkTimeoutMs = (long)RequestTimeout.TotalMilliseconds,
+                CompletionTokens = EstimateTokens(responseBuilder.ToString()),
+                FallbackReason = errorMessage
+            });
             throw new InvalidOperationException($"Copilot SDK error: {errorMessage}");
         }
 
+        var completionTokens = EstimateTokens(responseBuilder.ToString());
         _logger?.LogInformation(
             "CopilotChatClient metrics: model={Model} firstTokenLatencyMs={FirstTokenLatencyMs} streamDurationMs={StreamDurationMs} sdkTimeoutMs={SdkTimeoutMs} fallbackReason={FallbackReason} totalCompletionTokens={TotalCompletionTokens}",
             model,
@@ -338,7 +364,19 @@ public sealed class CopilotChatClient : IChatClient, IAsyncDisposable
             streamWatch.ElapsedMilliseconds,
             (long)RequestTimeout.TotalMilliseconds,
             "-",
-            EstimateTokens(responseBuilder.ToString()));
+            completionTokens);
+        MetricsSink.EmitAmbient(new
+        {
+            Event = "llm_call",
+            Provider = "github-copilot-sdk",
+            Model = model,
+            Outcome = "success",
+            FirstTokenLatencyMs = firstTokenLatencyMs ?? -1,
+            StreamDurationMs = streamWatch.ElapsedMilliseconds,
+            SdkTimeoutMs = (long)RequestTimeout.TotalMilliseconds,
+            CompletionTokens = completionTokens,
+            FallbackReason = (string?)null
+        });
 
         return responseBuilder.ToString();
     }

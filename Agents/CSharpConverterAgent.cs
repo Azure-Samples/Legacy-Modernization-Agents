@@ -100,6 +100,8 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
         EnhancedLogger?.LogBehindTheScenes("AI_PROCESSING", "CSHARP_CONVERSION_START",
             $"Starting C# conversion of {cobolFile.FileName}", cobolFile.FileName);
 
+        MetricsSink.CurrentRunId = _runId;
+
         try
         {
             var systemPrompt = PromptLoader.LoadSection("CSharpConverter", "System");
@@ -169,11 +171,12 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
                             {
                                 var projectionBlock = CobolToQuarkusMigration.Helpers.PromptProjections.CSharpConverterProjection.BuildPromptBlock(facts);
                                 projectionTokens = TokenHelper.EstimateTokens(projectionBlock);
+                                var projectionHash = CanonicalHasher.HashUtf8(projectionBlock);
                                 userPromptBuilder.AppendLine();
                                 userPromptBuilder.AppendLine(projectionBlock);
                                 Logger.LogInformation(
-                                    "[CSharpConverterAgent] Injected program-facts projection for {File} (schema={Schema}, confidence={Conf}, warnings={Warn})",
-                                    cobolFile.FileName, facts.SchemaVersion, facts.Confidence, facts.Warnings.Count);
+                                    "[CSharpConverterAgent] Injected program-facts projection for {File} (schema={Schema}, confidence={Conf}, warnings={Warn}, hash={Hash})",
+                                    cobolFile.FileName, facts.SchemaVersion, facts.Confidence, facts.Warnings.Count, projectionHash.Substring(0, 12));
                                 Logger.LogInformation(
                                     "[CSharpConverterAgent] PROJECTION_METRICS projectionMode=projection file={File} projectionTokens={ProjTok} rawRektTokens=0 reductionPercent=n/a",
                                     cobolFile.FileName, projectionTokens);
@@ -186,6 +189,7 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
                                     ProjectionMode = "projection",
                                     ProjectionTokens = projectionTokens,
                                     RawRektTokens = 0,
+                                    ProjectionHash = projectionHash,
                                     FactsSchema = facts.SchemaVersion,
                                     FactsConfidence = facts.Confidence,
                                     FactsWarnings = facts.Warnings.Count

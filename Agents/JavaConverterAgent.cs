@@ -102,6 +102,11 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
         EnhancedLogger?.LogBehindTheScenes("AI_PROCESSING", "JAVA_CONVERSION_START",
             $"Starting Java conversion of {cobolFile.FileName}", cobolFile.FileName);
 
+        // Publish runId into AsyncLocal so infrastructure (CopilotChatClient,
+        // RektPromptInjector, retry helpers) can emit metrics without us
+        // threading the id through every call.
+        MetricsSink.CurrentRunId = _runId;
+
         try
         {
             // System prompt for Java conversion
@@ -180,11 +185,12 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
                             {
                                 var projectionBlock = JavaConverterProjection.BuildPromptBlock(facts);
                                 projectionTokens = TokenHelper.EstimateTokens(projectionBlock);
+                                var projectionHash = CanonicalHasher.HashUtf8(projectionBlock);
                                 userPromptBuilder.AppendLine();
                                 userPromptBuilder.AppendLine(projectionBlock);
                                 Logger.LogInformation(
-                                    "[JavaConverterAgent] Injected program-facts projection for {File} (schema={Schema}, confidence={Conf}, warnings={Warn})",
-                                    cobolFile.FileName, facts.SchemaVersion, facts.Confidence, facts.Warnings.Count);
+                                    "[JavaConverterAgent] Injected program-facts projection for {File} (schema={Schema}, confidence={Conf}, warnings={Warn}, hash={Hash})",
+                                    cobolFile.FileName, facts.SchemaVersion, facts.Confidence, facts.Warnings.Count, projectionHash.Substring(0, 12));
                                 // Structured projection metrics — parsed by ab-projection.sh
                                 Logger.LogInformation(
                                     "[JavaConverterAgent] PROJECTION_METRICS projectionMode=projection file={File} projectionTokens={ProjTok} rawRektTokens=0 reductionPercent=n/a",
@@ -198,6 +204,7 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
                                     ProjectionMode = "projection",
                                     ProjectionTokens = projectionTokens,
                                     RawRektTokens = 0,
+                                    ProjectionHash = projectionHash,
                                     FactsSchema = facts.SchemaVersion,
                                     FactsConfidence = facts.Confidence,
                                     FactsWarnings = facts.Warnings.Count
