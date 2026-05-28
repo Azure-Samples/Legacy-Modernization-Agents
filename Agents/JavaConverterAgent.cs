@@ -1,6 +1,7 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using CobolToQuarkusMigration.Agents.Infrastructure;
+using CobolToQuarkusMigration.Agents.Infrastructure.Caching;
 using CobolToQuarkusMigration.Agents.Interfaces;
 using CobolToQuarkusMigration.Models;
 using CobolToQuarkusMigration.Helpers;
@@ -239,32 +240,91 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
 
             var userPrompt = userPromptBuilder.ToString();
 
-            var (javaCode, usedFallback, fallbackReason) = await ExecuteWithFallbackAsync(
-                systemPrompt,
-                userPrompt,
-                cobolFile.FileName);
-
-            if (usedFallback)
+            // ── P1 response cache (opt-in via _LLM_CACHE_ENABLED=true) ──
+            // Cache the FINAL Java code (post-continuation, post-extraction) keyed
+            // on every input that shaped the prompt. Caching at the outermost
+            // boundary means only structurally complete, validated code lands in
+            // the cache — partial / truncated responses are impossible to poison
+            // with because they never reach the store. See
+            // docs/p1-response-cache.md for the invalidation matrix.
+            var cache = LlmCacheGate.EnsureCache(Logger);
+            var cacheEnabled = LlmCacheGate.Enabled && cache is not null && ResponsesClient is not null;
+            CacheKey? cacheKey = null;
+            string? cacheHitJava = null;
+            int cachedMaxTokens = 0;
+            string cachedReasoning = "";
+            string rektContextForKey = ExtractRektContextBlock(userPrompt);
+            if (cacheEnabled)
             {
-                return CreateFallbackJavaFile(cobolFile, cobolAnalysis, fallbackReason ?? "Unknown error");
+                // ResponsesClient is non-null when cacheEnabled is true (guard above).
+                // CalculateTokenSettings is deterministic on the prompts, so we can
+                // compute the generation settings hash without actually calling the
+                // model. This guarantees the key is stable across runs.
+                (cachedMaxTokens, cachedReasoning) =
+                    ResponsesClient!.CalculateTokenSettings(systemPrompt, userPrompt);
+                cacheKey = JavaConverterCacheKeys.ForConversion(
+                    systemPrompt: systemPrompt,
+                    userPrompt: userPrompt,
+                    preprocessedSourceBytes: sanitizedContent,
+                    rektContextBlock: rektContextForKey,
+                    model: ModelId,
+                    maxOutputTokens: cachedMaxTokens,
+                    reasoningEffort: cachedReasoning,
+                    cobolFile: cobolFile);
+
+                var lookup = await cache!.TryGetAsync(cacheKey);
+                if (lookup.IsHit)
+                {
+                    cacheHitJava = lookup.Entry!.ResponseText;
+                    Logger.LogInformation(
+                        "[JavaConverterAgent] Cache HIT for {File} (age={Age:F0}s, hits={Hits}, key={KeyShort}). Skipping LLM call.",
+                        cobolFile.FileName, lookup.Entry.Age.TotalSeconds, lookup.Entry.HitCount,
+                        lookup.Entry.KeyHash[..Math.Min(12, lookup.Entry.KeyHash.Length)]);
+                }
+            }
+
+            string javaCode;
+            bool cameFromCache = cacheHitJava is not null;
+            bool usedFallback = false;
+            string? fallbackReason = null;
+
+            if (cameFromCache)
+            {
+                javaCode = cacheHitJava!;
+            }
+            else
+            {
+                (javaCode, usedFallback, fallbackReason) = await ExecuteWithFallbackAsync(
+                    systemPrompt,
+                    userPrompt,
+                    cobolFile.FileName);
+
+                if (usedFallback)
+                {
+                    return CreateFallbackJavaFile(cobolFile, cobolAnalysis, fallbackReason ?? "Unknown error");
+                }
             }
 
             stopwatch.Stop();
             EnhancedLogger?.LogBehindTheScenes("AI_PROCESSING", "JAVA_CONVERSION_COMPLETE",
                 $"Completed Java conversion of {cobolFile.FileName} in {stopwatch.ElapsedMilliseconds}ms");
 
-            // Extract the Java code from markdown code blocks if necessary
-            javaCode = ExtractJavaCode(javaCode);
+            // Extract the Java code from markdown code blocks if necessary.
+            // Cached responses have already been through this — skip when from cache.
+            if (!cameFromCache)
+            {
+                javaCode = ExtractJavaCode(javaCode);
+            }
 
             // ── Continuation retry: if the output is truncated, ask the LLM to
             // continue from where it left off. Up to 3 continuations to reconstruct
             // the full file without needing chunking. ──
-            // Guard: only attempt continuation if the initial response contains
-            // actual Java code (at least one method/class/brace). If the response
-            // was empty or an error message, continuation just confuses the LLM.
+            // Skipped entirely on cache hit — the cached value already passed
+            // the completeness check at store time, so additional LLM calls
+            // would only re-introduce non-determinism.
             var hasAnyCode = javaCode.Contains("{") && (javaCode.Contains("class ") || javaCode.Contains("void ") || javaCode.Contains("public "));
-            var maxContinuations = hasAnyCode ? 3 : 0;
-            if (!hasAnyCode && !string.IsNullOrWhiteSpace(javaCode))
+            var maxContinuations = (cameFromCache || !hasAnyCode) ? 0 : 3;
+            if (!cameFromCache && !hasAnyCode && !string.IsNullOrWhiteSpace(javaCode))
             {
                 Logger.LogWarning("[JavaConverterAgent] ⚠️ Response contains no valid Java code — skipping continuation (response may be an error message or empty)");
             }
@@ -302,6 +362,40 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
                 javaCode = javaCode.TrimEnd() + "\n" + string.Join("\n", contLines);
                 Logger.LogInformation("[JavaConverterAgent] Continuation {Cont} appended {Lines} lines",
                     cont + 1, contLines.Count);
+            }
+
+            // ── P1 cache store: persist the final, validated Java code so future
+            // runs with the same inputs skip the LLM round-trip entirely. We only
+            // cache when (a) the response actually came from the LLM (not from
+            // cache itself), (b) the conversion structurally passed our own
+            // validity checks (matching braces, package+class present). Storing
+            // post-validation guarantees the cache cannot serve truncated or
+            // poisoned output to a subsequent run.
+            if (cacheEnabled && cacheKey is not null && !cameFromCache)
+            {
+                if (JavaConverterCacheKeys.IsCacheableJava(javaCode))
+                {
+                    try
+                    {
+                        await cache!.PutAsync(cacheKey, javaCode);
+                    }
+                    catch (Exception storeEx)
+                    {
+                        // Cache failures must never break a conversion. Log and continue.
+                        Logger.LogWarning(storeEx,
+                            "[JavaConverterAgent] Failed to store conversion in cache for {File}; continuing uncached.",
+                            cobolFile.FileName);
+                    }
+                }
+                else
+                {
+                    Logger.LogInformation(
+                        "[{Event}] runId={RunId} correlationId={CorrelationId} provider={Provider} model={Model} " +
+                        "decision=skip-store missReason=UpstreamNotCacheable reason=java-structurally-incomplete " +
+                        "basename={Basename}",
+                        SqliteResponseCache.LogEventName, LlmCorrelationContext.RunId, LlmCorrelationContext.CorrelationId,
+                        JavaConverterCacheKeys.Provider, ModelId, cobolFile.FileName);
+                }
             }
 
             // Extract AI's semantic class name (based on domain/action/type pattern)
@@ -482,6 +576,25 @@ public class {{className}} {
             Content = javaCode,
             OriginalCobolFileName = cobolFile.FileName
         };
+    }
+
+    /// <summary>
+    /// Extracts the REKT structural-context block from an assembled user prompt,
+    /// so the response cache key can hash exactly the REKT text that influenced
+    /// the LLM call (rather than the raw REKT files on disk, which include data
+    /// the prompt doesn't see). Returns the empty string when no REKT block is
+    /// present (cache key encodes "no REKT" distinctly from "REKT was empty").
+    /// </summary>
+    private static string ExtractRektContextBlock(string userPrompt)
+    {
+        const string startMarker = "REKT STRUCTURAL CONTEXT (authoritative";
+        const string endMarker = "IMPORTANT REQUIREMENTS:";
+        var startIdx = userPrompt.IndexOf(startMarker, StringComparison.Ordinal);
+        if (startIdx < 0) return string.Empty;
+        var endIdx = userPrompt.IndexOf(endMarker, startIdx, StringComparison.Ordinal);
+        return endIdx < 0
+            ? userPrompt.Substring(startIdx)
+            : userPrompt.Substring(startIdx, endIdx - startIdx);
     }
 
     private string ExtractJavaCode(string input)
