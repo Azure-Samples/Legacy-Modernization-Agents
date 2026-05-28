@@ -150,6 +150,9 @@ run_leg() {
         cd "$REPO_ROOT"
         export ENABLE_REKT_CONTEXT=true
         export _LLM_CACHE_ENABLED=true
+        # doctor.sh convert-only auto-launches McpChatWeb at the end (line ~2516)
+        # which blocks indefinitely. MCP_AUTO_LAUNCH=0 disables that.
+        export MCP_AUTO_LAUNCH=0
         if [[ "$use_facts" == "true" ]]; then
             export _USE_PROGRAM_FACTS=true
         else

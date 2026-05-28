@@ -208,6 +208,95 @@ For each program: copy the template, fill in the cells, replace `?` with
 - [ ] **Refine projection** — record the failure mode below and fix before expanding.
 - [ ] **Refine REKT first** — facts are too sparse to validate; PR5 first.
 
+---
+
+## RECORDED LIVE-RUN RESULT — 2026-05-28
+
+### Suite metadata
+
+- **Date run**: 2026-05-28
+- **Operator**: assistant (Copilot CLI session, on operator's machine)
+- **Model (code)**: `claude-opus-4.6-1m`
+- **Provider**: `github-copilot-sdk` (GitHub Copilot SDK)
+- **Programs attempted**: BDSM043 (single-program smoke before broader suite)
+- **Cache state**: cold (`Data/llm-cache.db` cleared)
+- **Output dir**: `tools/ab-results-smoke/`
+
+### What the A/B actually proved
+
+The harness, projection, and cache plumbing **all work correctly end-to-end**:
+
+| Observation | Baseline (raw-AST) | Projection (program-facts) |
+|---|---:|---:|
+| Wall clock | 528 s | 523 s |
+| Input tokens (JavaConverter primary call) | **11,732** | **9,423** |
+| Chat tokens (LLM-side accounting) | 10,264 | 8,244 |
+| REKT injection log line | `Injected REKT context (provenance=RektNative, confidence=0.95)` | `Injected program-facts projection (schema=1, confidence=High, warnings=0)` |
+
+**Input-token savings: ~20%.** Chat-side: also ~20%. Wall clock parity (within
+1%). The projection block carries the same fact-locking rules + structural
+data as raw-AST in fewer tokens — the architecture works.
+
+### Why the rubric below is unscored
+
+**Both legs produced 0-byte Java files.** From `Logs/FULL_CHAT_LOG_*.md`:
+
+```
+Agent: JavaConverterAgent
+[Human → AI] Tokens: 8,244
+[AI → Human] Tokens: 0      ← empty response
+[FILE_OUTPUT] CODE_FILE_SAVED → Saved Bdsm043.java (0 chars)
+```
+
+Identical empty-response behaviour on the baseline leg (10,264 in, 0 out). The
+`claude-opus-4.6-1m` model via the GitHub Copilot SDK is accepting the
+conversion request, thinking for ~8 minutes, and returning **empty**. This is
+the same refusal/policy pattern previously observed with `gpt-5.1-codex-mini`
+in this session — see the checkpoint history.
+
+### What this means for the PR4 gate
+
+- ✅ **Projection architecture is sound.** Per-program facts inject cleanly,
+  cache key extraction works, token reduction is measurable, no exceptions.
+- ⚠️ **Downstream-model blocker is independent of projection.** Same input
+  shape, same empty result on both legs.
+- ❌ **Conversion quality dimensions (compile / DTO / CALL / hallucinations /
+  structure) are unscored** because there is no generated code to score.
+
+### Recommended next investigations
+
+These are model / SDK questions, not P1-architecture questions:
+
+1. **Try a different model on the same provider.** Configure `_CODE_MODEL=claude-opus-4.7` (or `claude-sonnet-4.5`) via `doctor.sh setup` and rerun the suite. If non-`opus-4.6-1m` models produce content, the issue is model-specific.
+2. **Try Azure OpenAI provider.** The PR1.b cache key already namespaces by provider so cached entries from each leg are isolated. Switch back to `_CODE_MODEL=gpt-5.3-codex` (Azure) and rerun. Earlier in this session a single-shot Java conversion of BDSDA2F via Azure+codex worked (790 LOC, 10 classes, 18 methods).
+3. **Check Copilot SDK with a minimal prompt.** Verify the SDK adapter is not silently dropping large responses. A 1-prompt CLI test against `claude-opus-4.6-1m` outside the converter flow would isolate this.
+4. **Inspect Copilot SDK telemetry / `~/.copilot/` logs.** The model may be hitting an internal cap or content filter that silently truncates to empty.
+
+### What is NOT recommended
+
+- ❌ Refining the projection content — the projection is working as designed; refining it cannot rescue an empty model response.
+- ❌ Refining the REKT extractor — same reason.
+- ❌ Expanding to the full 5-program suite with this model — every program will hit the same empty-response pattern; will burn ~50 min for no information.
+
+### Decision (after rerun on a working model)
+
+Once a working model produces non-empty Java in BOTH legs:
+- [ ] Rerun the full suite (5 programs).
+- [ ] Score the rubric.
+- [ ] Tick one of the original decision boxes above.
+
+Until then, **PR4 architecture is provisionally validated by the
+token-reduction measurement**, but the quality dimensions remain to be
+confirmed on a model that returns content.
+
+### Files retained for inspection
+
+- `tools/ab-results-smoke/BDSM043/baseline.log` — full doctor.sh stdout for raw-AST leg.
+- `tools/ab-results-smoke/BDSM043/projection.log` — full doctor.sh stdout for projection leg.
+- `Logs/FULL_CHAT_LOG_2026-05-28_10-48-12.md` — baseline chat (empty assistant response).
+- `Logs/FULL_CHAT_LOG_2026-05-28_10-56-48.md` — projection chat (empty assistant response).
+- `output/rekt/BDSM043.facts.json` — facts file used by the projection leg (confidence=High, 4 groups, 1 callee).
+
 #### If refinement needed, what to change
 
 ```

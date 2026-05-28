@@ -2801,7 +2801,11 @@ print(len(lines))
     # so resolution works. Combine with _REKT_INCREMENTAL=true for the smallest
     # possible scan.  Example:
     #     _REKT_PROGRAM_FILTER=BDSDA2F,BDSDA01.cbl ./doctor.sh rekt-full
-    declare -A rekt_program_filter=()
+    #
+    # bash 3.2 (macOS default) does not support associative arrays, so we
+    # store the set as a space-delimited string and test membership with
+    # [[ " $set " == *" $key "* ]].
+    local rekt_program_filter=""
     local rekt_filter_active=false
     if [[ -n "${_REKT_PROGRAM_FILTER:-}" ]]; then
         rekt_filter_active=true
@@ -2810,15 +2814,12 @@ print(len(lines))
         for _f in "${_filter_items[@]}"; do
             _f=$(echo "$_f" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             [[ -z "$_f" ]] && continue
-            # Accept both 'PROG' and 'PROG.cbl'. Add common-extension variants
-            # so case- and extension-insensitive matching works in the loop below.
-            rekt_program_filter["$_f"]=1
+            rekt_program_filter="$rekt_program_filter $_f"
+            # Accept both 'PROG' and 'PROG.cbl'. Auto-expand stems to common
+            # extension variants for case- and extension-insensitive matching.
             case "$_f" in
                 *.cbl|*.CBL|*.cob|*.COB) ;;
-                *) rekt_program_filter["${_f}.cbl"]=1
-                   rekt_program_filter["${_f}.CBL"]=1
-                   rekt_program_filter["${_f}.cob"]=1
-                   rekt_program_filter["${_f}.COB"]=1 ;;
+                *) rekt_program_filter="$rekt_program_filter ${_f}.cbl ${_f}.CBL ${_f}.cob ${_f}.COB" ;;
             esac
         done
         echo -e "  ${BLUE}REKT program filter: ${_REKT_PROGRAM_FILTER}${NC}"
@@ -2831,7 +2832,7 @@ print(len(lines))
     local rekt_inc=false
     [[ "${_REKT_INCREMENTAL:-false}" == "true" ]] && rekt_inc=true
 
-    declare -A rekt_skip_set=()
+    declare rekt_skip_set=""
     local rekt_manifest=""
     if [[ "$rekt_inc" == "true" ]]; then
         if command -v dotnet >/dev/null 2>&1 && [[ -f "$REPO_ROOT/CobolToQuarkusMigration.csproj" ]]; then
@@ -2856,7 +2857,7 @@ print(len(lines))
                 while IFS=$'\t' read -r action basename reason; do
                     [[ -z "$action" ]] && continue
                     if [[ "$action" == "skip" ]]; then
-                        rekt_skip_set["$basename"]=1
+                        rekt_skip_set="$rekt_skip_set $basename"
                         _skip_count=$((_skip_count + 1))
                     else
                         _parse_count=$((_parse_count + 1))
@@ -2884,13 +2885,16 @@ print(len(lines))
         local err_log="$REPO_ROOT/output/rekt/${stem}.parse.log"
 
         # PR2.c: program filter — skip files not in the requested set.
-        if [[ "$rekt_filter_active" == "true" && -z "${rekt_program_filter[$fname]:-}" && -z "${rekt_program_filter[$stem]:-}" ]]; then
+        # bash 3.2 string-membership test (see filter-setup comment above).
+        if [[ "$rekt_filter_active" == "true" ]] \
+           && [[ " $rekt_program_filter " != *" $fname "* ]] \
+           && [[ " $rekt_program_filter " != *" $stem "* ]]; then
             filtered_out=$((filtered_out + 1))
             continue
         fi
 
         # PR2.b: honour the planner's skip decision.
-        if [[ "$rekt_inc" == "true" && -n "${rekt_skip_set[$fname]:-}" ]]; then
+        if [[ "$rekt_inc" == "true" ]] && [[ " $rekt_skip_set " == *" $fname "* ]]; then
             echo -e "  Skipping $fname ${GREEN}(cached)${NC}"
             succeeded=$((succeeded + 1))
             skipped=$((skipped + 1))
