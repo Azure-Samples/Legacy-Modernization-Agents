@@ -78,33 +78,40 @@ public static class RektPromptInjector
             {
                 var factsDir = Path.Combine(d.FullName, "output", "rekt");
                 ProgramFacts? facts;
-                string projectionBlock;
+                Func<string>? builder = null;
                 if (string.Equals(targetLanguage, "C#", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(targetLanguage, "CSharp", StringComparison.OrdinalIgnoreCase))
                 {
                     facts = CSharpConverterProjection.TryLoad(factsDir, fileName);
-                    projectionBlock = facts is null ? string.Empty : CSharpConverterProjection.BuildPromptBlock(facts!);
+                    if (facts is not null)
+                    {
+                        var capturedFacts = facts;
+                        builder = () => CSharpConverterProjection.BuildPromptBlock(capturedFacts);
+                    }
                 }
                 else
                 {
                     facts = JavaConverterProjection.TryLoad(factsDir, fileName);
-                    projectionBlock = facts is null ? string.Empty : JavaConverterProjection.BuildPromptBlock(facts!);
+                    if (facts is not null)
+                    {
+                        var capturedFacts = facts;
+                        builder = () => JavaConverterProjection.BuildPromptBlock(capturedFacts);
+                    }
                 }
 
-                if (facts is not null && !string.IsNullOrEmpty(projectionBlock))
+                if (facts is not null && builder is not null)
                 {
                     ProgramFacts nonNullFacts = facts!;
+                    // PR6: route projection-block construction through the cache.
+                    var (projectionBlock, _, projectionHash, wasCacheHit) =
+                        ProjectionCache.GetOrBuild(targetLanguage, nonNullFacts, builder, runId, logger);
                     var projectionTokens = TokenHelper.EstimateTokens(projectionBlock);
-                    // Stable projection hash: future cache key. Same projection
-                    // block (same facts + same language + same template version)
-                    // → same hash → eligible for projection-level cache reuse.
-                    var projectionHash = CanonicalHasher.HashUtf8(projectionBlock);
                     sb.AppendLine();
                     sb.AppendLine(projectionBlock);
                     factsInjected = true;
                     logger?.LogInformation(
-                        "[RektPromptInjector] Injected program-facts projection for {File} (target={Lang}, schema={Schema}, confidence={Conf}, warnings={Warn}, hash={Hash})",
-                        fileName, targetLanguage, nonNullFacts.SchemaVersion, nonNullFacts.Confidence, nonNullFacts.Warnings.Count, projectionHash.Substring(0, 12));
+                        "[RektPromptInjector] Injected program-facts projection for {File} (target={Lang}, schema={Schema}, confidence={Conf}, warnings={Warn}, hash={Hash}, cacheHit={Hit})",
+                        fileName, targetLanguage, nonNullFacts.SchemaVersion, nonNullFacts.Confidence, nonNullFacts.Warnings.Count, projectionHash.Substring(0, 12), wasCacheHit);
                     logger?.LogInformation(
                         "[RektPromptInjector] PROJECTION_METRICS projectionMode=projection agent={Agent} file={File} projectionTokens={ProjTok} rawRektTokens=0 reductionPercent=n/a",
                         agentName, fileName, projectionTokens);
@@ -118,6 +125,7 @@ public static class RektPromptInjector
                         ProjectionTokens = projectionTokens,
                         RawRektTokens = 0,
                         ProjectionHash = projectionHash,
+                        ProjectionCacheHit = wasCacheHit,
                         FactsSchema = nonNullFacts.SchemaVersion,
                         FactsConfidence = nonNullFacts.Confidence,
                         FactsWarnings = nonNullFacts.Warnings.Count

@@ -207,6 +207,24 @@ def report(conn: sqlite3.Connection) -> None:
     else:
         print("  (no hash reuse observed yet — each program has unique facts)")
 
+    print("\n=== Projection-block cache (PR6) ===")
+    rows = list(cur.execute(
+        "SELECT json_extract(payload_json,'$.decision') AS d, COUNT(*) "
+        "FROM metric_events WHERE event='cache_event' "
+        "GROUP BY d ORDER BY 2 DESC"
+    ))
+    if rows:
+        total = sum(r[1] for r in rows)
+        print(f"  {'decision':<22} {'count':>6} {'%':>6}")
+        for d, n in rows:
+            pct = (n * 100.0 / total) if total else 0
+            print(f"  {d or '?':<22} {n:>6} {pct:>5.1f}%")
+        hits = sum(n for d, n in rows if d == 'hit')
+        if total:
+            print(f"\n  → cache hit rate: {hits*100/total:.1f}% ({hits}/{total})")
+    else:
+        print("  (no cache_event yet — projection cache may not have run)")
+
     print("\n=== Quality metrics (latest 5 runs) ===")
     rows = list(cur.execute("""
         SELECT run_id,

@@ -169,14 +169,19 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
                             var facts = CobolToQuarkusMigration.Helpers.PromptProjections.CSharpConverterProjection.TryLoad(factsDir, cobolFile.FileName);
                             if (facts is not null)
                             {
-                                var projectionBlock = CobolToQuarkusMigration.Helpers.PromptProjections.CSharpConverterProjection.BuildPromptBlock(facts);
+                                var (projectionBlock, _, projectionHash, wasCacheHit) =
+                                    CobolToQuarkusMigration.Helpers.PromptProjections.ProjectionCache.GetOrBuild(
+                                        "C#",
+                                        facts,
+                                        () => CobolToQuarkusMigration.Helpers.PromptProjections.CSharpConverterProjection.BuildPromptBlock(facts),
+                                        _runId,
+                                        Logger);
                                 projectionTokens = TokenHelper.EstimateTokens(projectionBlock);
-                                var projectionHash = CanonicalHasher.HashUtf8(projectionBlock);
                                 userPromptBuilder.AppendLine();
                                 userPromptBuilder.AppendLine(projectionBlock);
                                 Logger.LogInformation(
-                                    "[CSharpConverterAgent] Injected program-facts projection for {File} (schema={Schema}, confidence={Conf}, warnings={Warn}, hash={Hash})",
-                                    cobolFile.FileName, facts.SchemaVersion, facts.Confidence, facts.Warnings.Count, projectionHash.Substring(0, 12));
+                                    "[CSharpConverterAgent] Injected program-facts projection for {File} (schema={Schema}, confidence={Conf}, warnings={Warn}, hash={Hash}, cacheHit={Hit})",
+                                    cobolFile.FileName, facts.SchemaVersion, facts.Confidence, facts.Warnings.Count, projectionHash.Substring(0, 12), wasCacheHit);
                                 Logger.LogInformation(
                                     "[CSharpConverterAgent] PROJECTION_METRICS projectionMode=projection file={File} projectionTokens={ProjTok} rawRektTokens=0 reductionPercent=n/a",
                                     cobolFile.FileName, projectionTokens);
@@ -190,6 +195,7 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
                                     ProjectionTokens = projectionTokens,
                                     RawRektTokens = 0,
                                     ProjectionHash = projectionHash,
+                                    ProjectionCacheHit = wasCacheHit,
                                     FactsSchema = facts.SchemaVersion,
                                     FactsConfidence = facts.Confidence,
                                     FactsWarnings = facts.Warnings.Count
