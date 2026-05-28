@@ -1,0 +1,489 @@
+using System.Globalization;
+using System.Text.Json;
+using Microsoft.Data.Sqlite;
+
+namespace McpChatWeb.Services;
+
+/// <summary>
+/// Backend for the Modernization Intelligence portal workspace (Phase-1).
+///
+/// <para>
+/// Read-only. Reads from existing artifacts only — never collects new data:
+///   • <c>Data/migration.db</c> — run history (runs table)
+///   • <c>Data/benchmark.db</c> — ingested MetricsSink events (metric_events table)
+///   • <c>Data/projection-cache.db</c> — projection-block cache (hit counts)
+///   • <c>source/</c> — COBOL inventory (recursive)
+///   • <c>output/rekt/*.facts.json</c> — per-program facts (for inventory drill-down)
+/// </para>
+///
+/// <para>
+/// All queries fail-soft: missing DBs / files return sensible empty defaults
+/// so the portal degrades gracefully when run before any conversion has
+/// happened.
+/// </para>
+/// </summary>
+public sealed class ModernizationIntelligenceService
+{
+    private readonly string _repoRoot;
+    private readonly ILogger<ModernizationIntelligenceService> _logger;
+
+    public ModernizationIntelligenceService(IConfiguration config, ILogger<ModernizationIntelligenceService> logger)
+    {
+        _repoRoot = ResolveRepoRoot(config);
+        _logger = logger;
+    }
+
+    private static string ResolveRepoRoot(IConfiguration config)
+    {
+        var envRoot = Environment.GetEnvironmentVariable("REPO_ROOT");
+        if (!string.IsNullOrEmpty(envRoot) && Directory.Exists(envRoot)) return envRoot;
+        var cwd = Directory.GetCurrentDirectory();
+        var dir = new DirectoryInfo(cwd);
+        while (dir != null && !File.Exists(Path.Combine(dir.FullName, "doctor.sh"))) dir = dir.Parent;
+        return dir?.FullName ?? cwd;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Application Explorer
+    // ─────────────────────────────────────────────────────────────────────
+
+    public IEnumerable<ApplicationRow> GetApplications()
+    {
+        var sourceDir = Path.Combine(_repoRoot, "source");
+        if (!Directory.Exists(sourceDir)) yield break;
+
+        // Aggregate per-program quality + cache state from benchmark.db once.
+        var qualityMap = LoadLatestQualityByRunId();
+        var runToProgram = LoadRunToProgramMap();
+        var cacheState = LoadProjectionCacheState();
+        var factsDir = Path.Combine(_repoRoot, "output", "rekt");
+
+        var cblFiles = Directory.EnumerateFiles(sourceDir, "*.cbl", SearchOption.AllDirectories)
+            .Where(f => !f.Contains("/.convert-", StringComparison.Ordinal)
+                     && !f.Contains("/.rekt-staging", StringComparison.Ordinal)
+                     && !f.Contains("/.preprocessed", StringComparison.Ordinal));
+
+        foreach (var cbl in cblFiles)
+        {
+            var basename = Path.GetFileName(cbl);
+            var stem = Path.GetFileNameWithoutExtension(cbl);
+            var rel = Path.GetRelativePath(_repoRoot, cbl);
+
+            int loc = 0;
+            try
+            {
+                // Match `wc -l` semantics: count line-feeds only. FUENTES corpus
+                // has files with scattered CR + LF (not paired CRLF); .NET's
+                // File.ReadAllLines + universal-newline parsing would double-
+                // count every line by splitting on both terminators independently.
+                var bytes = File.ReadAllBytes(cbl);
+                foreach (var b in bytes) if (b == (byte)'\n') loc++;
+                // If file ends without a newline the last line still counts.
+                if (bytes.Length > 0 && bytes[^1] != (byte)'\n') loc++;
+            }
+            catch { /* skip */ }
+
+            var factsPath = Path.Combine(factsDir, $"{stem}.facts.json");
+            var (factsConfidence, depCount, warningCount, hasFacts) = ReadFactsSummary(factsPath);
+
+            cacheState.TryGetValue(basename, out var cacheEntry);
+
+            // Latest run for this program. runToProgram now maps runId → exact
+            // basename via cobol_files join, so we can match strictly.
+            int? latestRunId = null;
+            QualityRow? latestQuality = null;
+            foreach (var (runId, programName) in runToProgram)
+            {
+                if (string.Equals(programName, basename, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (latestRunId == null || runId > latestRunId)
+                    {
+                        latestRunId = runId;
+                        if (qualityMap.TryGetValue(runId, out var q)) latestQuality = q;
+                    }
+                }
+            }
+
+            yield return new ApplicationRow(
+                Basename: basename,
+                RelativePath: rel,
+                LinesOfCode: loc,
+                HasFacts: hasFacts,
+                FactsConfidence: factsConfidence,
+                DependencyCount: depCount,
+                FactsWarnings: warningCount,
+                LatestRunId: latestRunId,
+                LatestCompileSuccess: latestQuality?.CompileSuccess,
+                LatestCompileErrors: latestQuality?.CompileErrors,
+                LatestGeneratedClasses: latestQuality?.GeneratedClassCount,
+                LatestGeneratedLines: latestQuality?.GeneratedJavaLines,
+                LatestFallbackClasses: latestQuality?.FallbackClassCount,
+                ProjectionCacheHits: cacheEntry?.HitCount ?? 0,
+                ProjectionCacheBytes: cacheEntry?.ByteSize ?? 0,
+                ModernizationStatus: DeriveStatus(latestRunId, latestQuality)
+            );
+        }
+    }
+
+    private static string DeriveStatus(int? runId, QualityRow? q)
+    {
+        if (runId == null) return "not-started";
+        if (q == null) return "converted";  // ran but quality gate not executed
+        if (q.CompileSuccess) return "verified";
+        if (q.FallbackClassCount > 0) return "partial-fallback";
+        return "compile-failing";
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Modernization Dashboard
+    // ─────────────────────────────────────────────────────────────────────
+
+    public DashboardSummary GetDashboard()
+    {
+        var dbPath = Path.Combine(_repoRoot, "Data", "benchmark.db");
+        if (!File.Exists(dbPath))
+        {
+            return DashboardSummary.Empty("benchmark.db not found — run tools/ingest-metrics.py to build it");
+        }
+
+        try
+        {
+            using var conn = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly;");
+            conn.Open();
+
+            var summary = new DashboardSummary();
+            summary.Source = dbPath;
+
+            // Event counts by type
+            using (var c = conn.CreateCommand())
+            {
+                c.CommandText = "SELECT event, COUNT(*) FROM metric_events GROUP BY event ORDER BY 2 DESC";
+                using var r = c.ExecuteReader();
+                while (r.Read())
+                {
+                    summary.EventCountsByType[r.GetString(0) ?? "?"] = r.GetInt32(1);
+                }
+            }
+
+            // Projection mode
+            using (var c = conn.CreateCommand())
+            {
+                c.CommandText =
+                    "SELECT projection_mode, COUNT(*) FROM metric_events " +
+                    "WHERE event='projection_metrics' GROUP BY projection_mode ORDER BY 2 DESC";
+                using var r = c.ExecuteReader();
+                while (r.Read())
+                {
+                    summary.ProjectionModeCounts[r.IsDBNull(0) ? "(none)" : r.GetString(0)] = r.GetInt32(1);
+                }
+            }
+
+            // Per-program context reduction (latest)
+            using (var c = conn.CreateCommand())
+            {
+                c.CommandText = @"
+                    WITH agg AS (
+                        SELECT file, projection_mode,
+                               AVG(CAST(projection_tokens AS REAL)) AS proj_tok,
+                               AVG(CAST(raw_rekt_tokens AS REAL)) AS raw_tok
+                          FROM metric_events
+                         WHERE event='projection_metrics'
+                         GROUP BY file, projection_mode
+                    )
+                    SELECT a.file,
+                           MAX(CASE WHEN projection_mode='raw-rekt' THEN raw_tok END) AS raw,
+                           MAX(CASE WHEN projection_mode='projection' THEN proj_tok END) AS proj
+                      FROM agg a
+                     GROUP BY a.file
+                     HAVING raw IS NOT NULL AND proj IS NOT NULL
+                     ORDER BY raw DESC";
+                using var r = c.ExecuteReader();
+                while (r.Read())
+                {
+                    var file = r.IsDBNull(0) ? "?" : r.GetString(0);
+                    var raw = r.IsDBNull(1) ? 0 : r.GetDouble(1);
+                    var proj = r.IsDBNull(2) ? 0 : r.GetDouble(2);
+                    var pct = raw > 0 ? Math.Round((raw - proj) * 100 / raw, 1) : 0;
+                    summary.ContextReduction.Add(new ContextReductionRow(file, raw, proj, pct));
+                }
+            }
+
+            // LLM call outcomes
+            using (var c = conn.CreateCommand())
+            {
+                c.CommandText =
+                    "SELECT outcome, COUNT(*), AVG(stream_duration_ms), AVG(completion_tokens) " +
+                    "FROM metric_events WHERE event='llm_call' GROUP BY outcome ORDER BY 2 DESC";
+                using var r = c.ExecuteReader();
+                while (r.Read())
+                {
+                    summary.LlmCallOutcomes.Add(new LlmOutcomeRow(
+                        Outcome: r.IsDBNull(0) ? "?" : r.GetString(0),
+                        Count: r.GetInt32(1),
+                        AvgDurationMs: r.IsDBNull(2) ? 0 : r.GetDouble(2),
+                        AvgCompletionTokens: r.IsDBNull(3) ? 0 : r.GetDouble(3)
+                    ));
+                }
+            }
+
+            // Cache event breakdown
+            using (var c = conn.CreateCommand())
+            {
+                c.CommandText =
+                    "SELECT json_extract(payload_json,'$.decision'), COUNT(*) " +
+                    "FROM metric_events WHERE event='cache_event' " +
+                    "GROUP BY 1 ORDER BY 2 DESC";
+                using var r = c.ExecuteReader();
+                while (r.Read())
+                {
+                    var key = r.IsDBNull(0) ? "?" : r.GetString(0);
+                    summary.CacheDecisionCounts[key] = r.GetInt32(1);
+                }
+            }
+
+            // Latest quality metrics (last 5 runs)
+            using (var c = conn.CreateCommand())
+            {
+                c.CommandText = @"
+                    SELECT run_id,
+                           json_extract(payload_json,'$.compileSuccess'),
+                           json_extract(payload_json,'$.compileErrors'),
+                           json_extract(payload_json,'$.generatedClassCount'),
+                           json_extract(payload_json,'$.generatedJavaLines'),
+                           json_extract(payload_json,'$.fallbackClassCount'),
+                           json_extract(payload_json,'$.injectAnnotationCount'),
+                           ts
+                      FROM metric_events
+                     WHERE event='quality_metrics'
+                     ORDER BY ts DESC LIMIT 5";
+                using var r = c.ExecuteReader();
+                while (r.Read())
+                {
+                    summary.RecentQuality.Add(new QualitySummaryRow(
+                        RunId: r.IsDBNull(0) ? "?" : r.GetString(0),
+                        CompileSuccess: !r.IsDBNull(1) && (r.GetValue(1)?.ToString() == "1" || r.GetValue(1)?.ToString()?.ToLowerInvariant() == "true"),
+                        CompileErrors: r.IsDBNull(2) ? 0 : Convert.ToInt32(r.GetValue(2)),
+                        GeneratedClasses: r.IsDBNull(3) ? 0 : Convert.ToInt32(r.GetValue(3)),
+                        GeneratedLines: r.IsDBNull(4) ? 0 : Convert.ToInt32(r.GetValue(4)),
+                        FallbackClasses: r.IsDBNull(5) ? 0 : Convert.ToInt32(r.GetValue(5)),
+                        InjectAnnotations: r.IsDBNull(6) ? 0 : Convert.ToInt32(r.GetValue(6)),
+                        Timestamp: r.IsDBNull(7) ? "" : r.GetString(7)
+                    ));
+                }
+            }
+
+            // Derived headline metrics
+            summary.TotalEvents = summary.EventCountsByType.Values.Sum();
+            var hits = summary.CacheDecisionCounts.TryGetValue("hit", out var h) ? h : 0;
+            var cacheTotal = summary.CacheDecisionCounts.Values.Sum();
+            summary.CacheHitRatePct = cacheTotal > 0 ? Math.Round(hits * 100.0 / cacheTotal, 1) : 0;
+            var llmTotal = summary.LlmCallOutcomes.Sum(o => o.Count);
+            var llmSuccess = summary.LlmCallOutcomes.Where(o => o.Outcome == "success").Sum(o => o.Count);
+            summary.LlmSuccessRatePct = llmTotal > 0 ? Math.Round(llmSuccess * 100.0 / llmTotal, 1) : 0;
+            var compileRuns = summary.RecentQuality.Count;
+            var compileOk = summary.RecentQuality.Count(q => q.CompileSuccess);
+            summary.RecentCompileSuccessPct = compileRuns > 0 ? Math.Round(compileOk * 100.0 / compileRuns, 1) : 0;
+            summary.AvgContextReductionPct = summary.ContextReduction.Count > 0
+                ? Math.Round(summary.ContextReduction.Average(r => r.ReductionPct), 1)
+                : 0;
+
+            return summary;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "ModernizationIntelligence dashboard query failed");
+            return DashboardSummary.Empty($"benchmark.db query failed: {ex.Message}");
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Helpers
+    // ─────────────────────────────────────────────────────────────────────
+
+    private Dictionary<int, QualityRow> LoadLatestQualityByRunId()
+    {
+        var map = new Dictionary<int, QualityRow>();
+        var dbPath = Path.Combine(_repoRoot, "Data", "benchmark.db");
+        if (!File.Exists(dbPath)) return map;
+        try
+        {
+            using var conn = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly;");
+            conn.Open();
+            using var c = conn.CreateCommand();
+            c.CommandText = @"
+                SELECT run_id,
+                       json_extract(payload_json,'$.compileSuccess'),
+                       json_extract(payload_json,'$.compileErrors'),
+                       json_extract(payload_json,'$.generatedClassCount'),
+                       json_extract(payload_json,'$.generatedJavaLines'),
+                       json_extract(payload_json,'$.fallbackClassCount')
+                  FROM metric_events
+                 WHERE event='quality_metrics'";
+            using var r = c.ExecuteReader();
+            while (r.Read())
+            {
+                if (r.IsDBNull(0)) continue;
+                if (!int.TryParse(r.GetString(0), out var runId)) continue;
+                var success = !r.IsDBNull(1) && (r.GetValue(1)?.ToString() == "1" || r.GetValue(1)?.ToString()?.ToLowerInvariant() == "true");
+                map[runId] = new QualityRow(
+                    CompileSuccess: success,
+                    CompileErrors: r.IsDBNull(2) ? 0 : Convert.ToInt32(r.GetValue(2)),
+                    GeneratedClassCount: r.IsDBNull(3) ? 0 : Convert.ToInt32(r.GetValue(3)),
+                    GeneratedJavaLines: r.IsDBNull(4) ? 0 : Convert.ToInt32(r.GetValue(4)),
+                    FallbackClassCount: r.IsDBNull(5) ? 0 : Convert.ToInt32(r.GetValue(5))
+                );
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug("Quality map load failed: {Msg}", ex.Message);
+        }
+        return map;
+    }
+
+    private Dictionary<int, string> LoadRunToProgramMap()
+    {
+        // Maps run id → primary program basename for that run.
+        // Joins runs with cobol_files (the latter is where the actual program
+        // filenames live — runs.cobol_source only holds the directory path).
+        var map = new Dictionary<int, string>();
+        var dbPath = Path.Combine(_repoRoot, "Data", "migration.db");
+        if (!File.Exists(dbPath)) return map;
+        try
+        {
+            using var conn = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly;");
+            conn.Open();
+            using var c = conn.CreateCommand();
+            // Pick the first non-copybook .cbl per run as the "primary" program.
+            c.CommandText = @"
+                SELECT cf.run_id, cf.file_name
+                  FROM cobol_files cf
+                 WHERE cf.is_copybook = 0
+                   AND cf.file_name LIKE '%.cbl'
+                 GROUP BY cf.run_id
+                 ORDER BY cf.run_id";
+            using var r = c.ExecuteReader();
+            while (r.Read())
+            {
+                map[r.GetInt32(0)] = r.GetString(1);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug("Run-to-program map load failed: {Msg}", ex.Message);
+        }
+        return map;
+    }
+
+    private Dictionary<string, CacheEntry> LoadProjectionCacheState()
+    {
+        var map = new Dictionary<string, CacheEntry>(StringComparer.OrdinalIgnoreCase);
+        var dbPath = Path.Combine(_repoRoot, "Data", "projection-cache.db");
+        if (!File.Exists(dbPath)) return map;
+        try
+        {
+            using var conn = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly;");
+            conn.Open();
+            using var c = conn.CreateCommand();
+            c.CommandText = "SELECT basename, byte_size, hit_count FROM projection_cache WHERE basename IS NOT NULL";
+            using var r = c.ExecuteReader();
+            while (r.Read())
+            {
+                map[r.GetString(0)] = new CacheEntry(
+                    ByteSize: r.IsDBNull(1) ? 0 : r.GetInt32(1),
+                    HitCount: r.IsDBNull(2) ? 0 : r.GetInt32(2)
+                );
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug("Cache state load failed: {Msg}", ex.Message);
+        }
+        return map;
+    }
+
+    private static (int confidence, int depCount, int warnings, bool present) ReadFactsSummary(string path)
+    {
+        if (!File.Exists(path)) return (0, 0, 0, false);
+        try
+        {
+            using var doc = JsonDocument.Parse(File.ReadAllText(path));
+            var root = doc.RootElement;
+            int conf = root.TryGetProperty("confidence", out var c) ? c.GetInt32() : 0;
+            int warn = root.TryGetProperty("warnings", out var w) ? w.GetArrayLength() : 0;
+            int deps = 0;
+            if (root.TryGetProperty("dependencies", out var d) && d.ValueKind == JsonValueKind.Array) deps += d.GetArrayLength();
+            if (root.TryGetProperty("callTargets", out var ct) && ct.ValueKind == JsonValueKind.Array) deps += ct.GetArrayLength();
+            if (root.TryGetProperty("copybooks", out var cb) && cb.ValueKind == JsonValueKind.Array) deps += cb.GetArrayLength();
+            return (conf, deps, warn, true);
+        }
+        catch
+        {
+            return (0, 0, 0, true);
+        }
+    }
+
+    private record QualityRow(
+        bool CompileSuccess,
+        int CompileErrors,
+        int GeneratedClassCount,
+        int GeneratedJavaLines,
+        int FallbackClassCount);
+
+    private record CacheEntry(int ByteSize, int HitCount);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// DTOs (one per row / endpoint)
+// ─────────────────────────────────────────────────────────────────────────
+
+public record ApplicationRow(
+    string Basename,
+    string RelativePath,
+    int LinesOfCode,
+    bool HasFacts,
+    int FactsConfidence,
+    int DependencyCount,
+    int FactsWarnings,
+    int? LatestRunId,
+    bool? LatestCompileSuccess,
+    int? LatestCompileErrors,
+    int? LatestGeneratedClasses,
+    int? LatestGeneratedLines,
+    int? LatestFallbackClasses,
+    int ProjectionCacheHits,
+    int ProjectionCacheBytes,
+    string ModernizationStatus);
+
+public class DashboardSummary
+{
+    public string? Source { get; set; }
+    public int TotalEvents { get; set; }
+    public Dictionary<string, int> EventCountsByType { get; } = new();
+    public Dictionary<string, int> ProjectionModeCounts { get; } = new();
+    public List<ContextReductionRow> ContextReduction { get; } = new();
+    public List<LlmOutcomeRow> LlmCallOutcomes { get; } = new();
+    public Dictionary<string, int> CacheDecisionCounts { get; } = new();
+    public List<QualitySummaryRow> RecentQuality { get; } = new();
+    public double CacheHitRatePct { get; set; }
+    public double LlmSuccessRatePct { get; set; }
+    public double RecentCompileSuccessPct { get; set; }
+    public double AvgContextReductionPct { get; set; }
+    public string? Note { get; set; }
+
+    public static DashboardSummary Empty(string note) => new() { Note = note };
+}
+
+public record ContextReductionRow(string File, double RawTokens, double ProjectionTokens, double ReductionPct);
+
+public record LlmOutcomeRow(string Outcome, int Count, double AvgDurationMs, double AvgCompletionTokens);
+
+public record QualitySummaryRow(
+    string RunId,
+    bool CompileSuccess,
+    int CompileErrors,
+    int GeneratedClasses,
+    int GeneratedLines,
+    int FallbackClasses,
+    int InjectAnnotations,
+    string Timestamp);

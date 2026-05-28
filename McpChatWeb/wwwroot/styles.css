@@ -8109,3 +8109,105 @@ main.three-panel-layout {
 }
 .cc-toggle input:checked + .cc-toggle-slider { background: #a855f7; }
 .cc-toggle input:checked + .cc-toggle-slider::before { transform: translateX(16px); }
+
+/* ────────────────────────────────────────────────────────────────────── */
+/* Modernization Intelligence (Phase-1)                                    */
+/* ────────────────────────────────────────────────────────────────────── */
+
+.mi-shell { padding: 16px; color: #e2e8f0; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
+
+.mi-header {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 16px; padding-bottom: 12px;
+  border-bottom: 1px solid #1e293b;
+}
+.mi-title { display: flex; align-items: center; gap: 12px; }
+.mi-icon { font-size: 28px; }
+.mi-title-main { font-size: 18px; font-weight: 600; color: #f8fafc; }
+.mi-title-sub { font-size: 12px; color: #94a3b8; margin-top: 2px; }
+.mi-actions { display: flex; gap: 8px; }
+.mi-btn {
+  background: #1e293b; border: 1px solid #475569; color: #e2e8f0;
+  padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px;
+}
+.mi-btn:hover { background: #334155; }
+
+.mi-subnav {
+  display: flex; gap: 4px; margin-bottom: 16px;
+  border-bottom: 1px solid #1e293b; padding-bottom: 0;
+}
+.mi-subtab {
+  background: transparent; border: none; color: #94a3b8;
+  padding: 8px 14px; cursor: pointer; font-size: 13px;
+  border-bottom: 2px solid transparent;
+}
+.mi-subtab:hover:not(:disabled) { color: #e2e8f0; }
+.mi-subtab-active { color: #60a5fa; border-bottom-color: #60a5fa; }
+.mi-subtab-disabled { opacity: 0.45; cursor: not-allowed; }
+
+.mi-body { min-height: 200px; }
+.mi-loading { padding: 40px; text-align: center; color: #94a3b8; }
+.mi-error { padding: 16px; background: #7f1d1d; color: #fee2e2; border-radius: 4px; }
+.mi-empty { padding: 32px; text-align: center; color: #94a3b8; font-size: 14px; }
+
+.mi-kpi-row {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px; margin-bottom: 20px;
+}
+.mi-kpi {
+  background: #0f172a; border: 1px solid #1e293b; border-left: 3px solid #475569;
+  padding: 12px 14px; border-radius: 4px;
+}
+.mi-kpi-value { font-size: 22px; font-weight: 600; color: #f8fafc; }
+.mi-kpi-label { font-size: 12px; color: #cbd5e1; margin-top: 2px; }
+.mi-kpi-sub { font-size: 11px; color: #64748b; margin-top: 4px; }
+
+.mi-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 12px;
+}
+.mi-card {
+  background: #0f172a; border: 1px solid #1e293b; border-radius: 4px; padding: 14px;
+}
+.mi-card-wide { grid-column: 1 / -1; }
+.mi-card h3 {
+  margin: 0 0 10px; font-size: 13px; color: #60a5fa; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+
+.mi-table {
+  width: 100%; border-collapse: collapse; font-size: 12px; color: #cbd5e1;
+}
+.mi-table th {
+  text-align: left; padding: 6px 8px; background: #1e293b; color: #94a3b8;
+  font-weight: 500; border-bottom: 1px solid #334155;
+}
+.mi-table td {
+  padding: 6px 8px; border-bottom: 1px solid #1e293b;
+}
+.mi-table tr:hover { background: #0c1424; }
+.mi-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.mi-table code { font-size: 11px; color: #e2e8f0; }
+.mi-table-dense td { padding: 4px 8px; }
+.mi-path { font-size: 10px; color: #64748b; font-family: monospace; }
+
+.mi-ok { color: #4ade80; }
+.mi-bad { color: #f87171; }
+.mi-info { color: #60a5fa; }
+.mi-muted { color: #64748b; }
+
+.mi-status {
+  display: inline-block; padding: 2px 8px; border-radius: 10px;
+  font-size: 11px; font-weight: 500;
+}
+.mi-status-not-started { background: #1e293b; color: #94a3b8; }
+.mi-status-converted { background: #1e3a5f; color: #93c5fd; }
+.mi-status-verified { background: #14532d; color: #86efac; }
+.mi-status-partial-fallback { background: #78350f; color: #fcd34d; }
+.mi-status-compile-failing { background: #7f1d1d; color: #fca5a5; }
+
+.mi-source {
+  margin-top: 16px; padding: 10px 12px; background: #0c1424; border-radius: 4px;
+  font-size: 11px; color: #64748b;
+}
+.mi-source code { color: #94a3b8; }

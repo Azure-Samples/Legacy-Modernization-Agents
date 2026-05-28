@@ -106,6 +106,7 @@ function switchDashboard(tabName) {
     'target-arch': ['target-arch-container'],
     portfolio: ['portfolio-container'],
     complexity: ['complexity-container'],
+    modernization: ['modernization-intelligence-container'],
   };
 
   // Hide everything first
@@ -188,6 +189,13 @@ function switchDashboard(tabName) {
       window.targetArchView = targetArchView;
     }
     targetArchView.loadAndRender();
+  }
+
+  if (tabName === 'modernization') {
+    if (!window.modernizationIntelligenceView) {
+      window.modernizationIntelligenceView = new ModernizationIntelligenceView('modernization-intelligence-root');
+    }
+    window.modernizationIntelligenceView.loadAndRender();
   }
 
   if (tabName === 'complexity') {

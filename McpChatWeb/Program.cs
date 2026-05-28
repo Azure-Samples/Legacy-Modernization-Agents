@@ -167,6 +167,9 @@ builder.Services.AddSingleton<McpChatWeb.Services.ProcessManager>(sp =>
 
 builder.Services.AddOpenApi();
 
+// PR Portal-P1: Modernization Intelligence (read-only over existing DBs/artifacts)
+builder.Services.AddSingleton<McpChatWeb.Services.ModernizationIntelligenceService>();
+
 var app = builder.Build();
 
 // Helper to resolve the migration database path consistently
@@ -8986,6 +8989,21 @@ string ResolveRepoRoot()
 		dir = dir.Parent;
 	return dir?.FullName ?? AppContext.BaseDirectory;
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// PR Portal-P1: Modernization Intelligence endpoints
+// ─────────────────────────────────────────────────────────────────────────
+// Read-only over Data/benchmark.db, Data/migration.db, Data/projection-cache.db,
+// source/, output/rekt/. See McpChatWeb/Services/ModernizationIntelligenceService.cs
+// for query implementation. Frontend at wwwroot/modernization-intelligence.{js,css}.
+
+app.MapGet("/api/modernization/applications",
+    (McpChatWeb.Services.ModernizationIntelligenceService svc) =>
+        Results.Ok(svc.GetApplications().ToList()));
+
+app.MapGet("/api/modernization/dashboard",
+    (McpChatWeb.Services.ModernizationIntelligenceService svc) =>
+        Results.Ok(svc.GetDashboard()));
 
 app.Run();
 
