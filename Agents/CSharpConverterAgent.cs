@@ -156,6 +156,35 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
                     if (d != null)
                     {
                         var srcFolder = Environment.GetEnvironmentVariable("COBOL_SOURCE_FOLDER") ?? "source";
+
+                        // ── PR4.b: program-facts.json projection (opt-in) ──
+                        // Identical pattern to JavaConverterAgent (PR4.a).
+                        bool factsInjected = false;
+                        if (CobolToQuarkusMigration.Helpers.PromptProjections.CSharpConverterProjection.IsEnabled())
+                        {
+                            var factsDir = Path.Combine(d.FullName, "output", "rekt");
+                            var facts = CobolToQuarkusMigration.Helpers.PromptProjections.CSharpConverterProjection.TryLoad(factsDir, cobolFile.FileName);
+                            if (facts is not null)
+                            {
+                                userPromptBuilder.AppendLine();
+                                userPromptBuilder.AppendLine(
+                                    CobolToQuarkusMigration.Helpers.PromptProjections.CSharpConverterProjection.BuildPromptBlock(facts));
+                                Logger.LogInformation(
+                                    "[CSharpConverterAgent] Injected program-facts projection for {File} (schema={Schema}, confidence={Conf}, warnings={Warn})",
+                                    cobolFile.FileName, facts.SchemaVersion, facts.Confidence, facts.Warnings.Count);
+                                factsInjected = true;
+                            }
+                            else
+                            {
+                                Logger.LogInformation(
+                                    "[CSharpConverterAgent] _USE_PROGRAM_FACTS=true but no facts.json for {File} — falling back to raw-AST path",
+                                    cobolFile.FileName);
+                            }
+                        }
+
+                        // Raw-AST fallback (existing path). Only runs when the facts projection didn't fire.
+                        if (!factsInjected)
+                        {
                         var fallback = string.Equals(Environment.GetEnvironmentVariable("STRUCTURAL_FALLBACK_TO_AI"), "true", StringComparison.OrdinalIgnoreCase);
                         var provider = new StructuralContextProvider(d.FullName, srcFolder, fallbackToAi: fallback);
                         var sc = await provider.GetAsync(cobolFile.FileName);
@@ -193,6 +222,7 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
                             Logger.LogInformation("[CSharpConverterAgent] Injected REKT context for {File} (provenance={Prov}, confidence={Conf:F2})",
                                 cobolFile.FileName, sc.Provenance, sc.Confidence);
                         }
+                        }   // end raw-AST fallback block
 
                         // Shared-types registry: prevent duplicate type definitions across files.
                         try
