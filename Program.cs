@@ -150,6 +150,9 @@ internal static class Program
         // PR3 — program-facts.json extractor CLI surface.
         rootCommand.AddCommand(CobolToQuarkusMigration.Cli.ProgramFactsCommand.Build(loggerFactory));
 
+        // PR2.d — response cache housekeeping CLI surface.
+        rootCommand.AddCommand(CobolToQuarkusMigration.Cli.LlmCacheCommand.Build(loggerFactory));
+
         rootCommand.SetHandler(async (string cobolSource, string javaOutput, string reverseEngineerOutput, bool reverseEngineerOnly, bool skipReverseEngineering, bool reuseRe, string configPath, bool resume) =>
         {
             await RunMigrationAsync(loggerFactory, logger, fileHelper, settingsHelper, cobolSource, javaOutput, reverseEngineerOutput, reverseEngineerOnly, skipReverseEngineering, reuseRe, configPath, resume);

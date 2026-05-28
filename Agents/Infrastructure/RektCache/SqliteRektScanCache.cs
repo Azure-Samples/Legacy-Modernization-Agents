@@ -292,6 +292,103 @@ public sealed class SqliteRektScanCache : IRektScanCache
         }
     }
 
+    /// <inheritdoc />
+    public async Task<int> PruneByAgeAsync(TimeSpan maxAge, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            using var conn = Open();
+            var cutoff = DateTime.UtcNow.Subtract(maxAge).ToString("O", CultureInfo.InvariantCulture);
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "DELETE FROM scan_entry WHERE parsed_at_utc < $cutoff;";
+            cmd.Parameters.AddWithValue("$cutoff", cutoff);
+            var n = await cmd.ExecuteNonQueryAsync(cancellationToken);
+            _logger?.LogInformation(
+                "[{Event}] runId={RunId} correlationId={CorrelationId} " +
+                "decision=prune-by-age deletedEntries={N} maxAgeSeconds={Age:F0}",
+                LogEventName, LlmCorrelationContext.RunId, LlmCorrelationContext.CorrelationId,
+                n, maxAge.TotalSeconds);
+            return n;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex,
+                "[{Event}] runId={RunId} correlationId={CorrelationId} " +
+                "decision=prune-by-age-failed reason=fail-open",
+                LogEventName, LlmCorrelationContext.RunId, LlmCorrelationContext.CorrelationId);
+            return 0;
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<int> PruneStaleSemanticVersionsAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            using var conn = Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "DELETE FROM scan_entry WHERE semantic_invalidation_ver != $v;";
+            cmd.Parameters.AddWithValue("$v", SemanticInvalidationVersion);
+            var n = await cmd.ExecuteNonQueryAsync(cancellationToken);
+            _logger?.LogInformation(
+                "[{Event}] runId={RunId} correlationId={CorrelationId} " +
+                "decision=prune-stale-semantic deletedEntries={N} currentVersion={V}",
+                LogEventName, LlmCorrelationContext.RunId, LlmCorrelationContext.CorrelationId,
+                n, SemanticInvalidationVersion);
+            return n;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex,
+                "[{Event}] runId={RunId} correlationId={CorrelationId} " +
+                "decision=prune-stale-semantic-failed reason=fail-open",
+                LogEventName, LlmCorrelationContext.RunId, LlmCorrelationContext.CorrelationId);
+            return 0;
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<int> PruneToMaxEntriesAsync(int maxEntries, CancellationToken cancellationToken = default)
+    {
+        if (maxEntries < 0) maxEntries = 0;
+        try
+        {
+            using var conn = Open();
+            using var countCmd = conn.CreateCommand();
+            countCmd.CommandText = "SELECT COUNT(*) FROM scan_entry;";
+            var total = Convert.ToInt32(await countCmd.ExecuteScalarAsync(cancellationToken) ?? 0,
+                CultureInfo.InvariantCulture);
+            if (total <= maxEntries) return 0;
+
+            var toDelete = total - maxEntries;
+            using var cmd = conn.CreateCommand();
+            // Two-stage delete: collect oldest N row identities, then drop. The
+            // composite PRIMARY KEY (basename, identity_scheme) is the row id.
+            cmd.CommandText = @"
+                DELETE FROM scan_entry WHERE rowid IN (
+                    SELECT rowid FROM scan_entry
+                    ORDER BY parsed_at_utc ASC
+                    LIMIT $n
+                );";
+            cmd.Parameters.AddWithValue("$n", toDelete);
+            var n = await cmd.ExecuteNonQueryAsync(cancellationToken);
+            _logger?.LogInformation(
+                "[{Event}] runId={RunId} correlationId={CorrelationId} " +
+                "decision=prune-to-max-entries deletedEntries={N} maxEntries={Max} previousTotal={Total}",
+                LogEventName, LlmCorrelationContext.RunId, LlmCorrelationContext.CorrelationId,
+                n, maxEntries, total);
+            return n;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex,
+                "[{Event}] runId={RunId} correlationId={CorrelationId} " +
+                "decision=prune-to-max-entries-failed reason=fail-open",
+                LogEventName, LlmCorrelationContext.RunId, LlmCorrelationContext.CorrelationId);
+            return 0;
+        }
+    }
+
     private static RektScanEntry BuildEntry(string basename, string identityScheme, SqliteDataReader reader)
     {
         var warnings = JsonSerializer.Deserialize<List<string>>(reader.GetString(6)) ?? new();

@@ -31,8 +31,75 @@ public static class ProgramFactsCommand
 
         root.AddCommand(BuildExtractCommand(loggerFactory));
         root.AddCommand(BuildReadCommand(loggerFactory));
+        root.AddCommand(BuildPruneOrphansCommand(loggerFactory));
 
         return root;
+    }
+
+    private static Command BuildPruneOrphansCommand(ILoggerFactory loggerFactory)
+    {
+        var cmd = new Command("prune-orphans",
+            "Delete *.facts.json files whose program is no longer present in the staging dir.");
+
+        var factsDirArg = new Argument<string>("facts-dir", "Directory holding existing *.facts.json files.");
+        cmd.AddArgument(factsDirArg);
+
+        var stagingDirOption = new Option<string>("--staging-dir",
+            "Authoritative source-of-truth dir. Any *.facts.json whose stem has no matching program file here is deleted.")
+        { IsRequired = true };
+        cmd.AddOption(stagingDirOption);
+
+        var dryRunOption = new Option<bool>("--dry-run", () => false,
+            "Print what would be deleted without removing anything.");
+        cmd.AddOption(dryRunOption);
+
+        cmd.SetHandler((string factsDir, string stagingDir, bool dryRun) =>
+        {
+            var logger = loggerFactory.CreateLogger("ProgramFacts.prune-orphans");
+            if (!Directory.Exists(factsDir))
+            {
+                Console.Error.WriteLine($"facts dir not found: {factsDir}");
+                Environment.ExitCode = 2;
+                return;
+            }
+            if (!Directory.Exists(stagingDir))
+            {
+                Console.Error.WriteLine($"staging dir not found: {stagingDir}");
+                Environment.ExitCode = 2;
+                return;
+            }
+
+            var liveStems = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var f in CobolToQuarkusMigration.Helpers.SourceTypeRegistry.EnumerateProgramFiles(stagingDir))
+            {
+                liveStems.Add(Path.GetFileNameWithoutExtension(f));
+            }
+
+            var deleted = 0;
+            foreach (var f in Directory.EnumerateFiles(factsDir, "*.facts.json", SearchOption.TopDirectoryOnly))
+            {
+                var stem = Path.GetFileNameWithoutExtension(Path.GetFileNameWithoutExtension(f));
+                if (liveStems.Contains(stem)) continue;
+                logger.LogInformation(
+                    "[ProgramFacts] decision=prune-orphan path={Path} stem={Stem} {Suffix}",
+                    f, stem, dryRun ? "(dry-run)" : "");
+                if (!dryRun)
+                {
+                    try { File.Delete(f); deleted++; }
+                    catch (Exception ex)
+                    {
+                        logger.LogWarning(ex,
+                            "[ProgramFacts] failed to delete orphan {Path}: {Msg}", f, ex.Message);
+                    }
+                }
+                else deleted++;
+            }
+
+            Console.Error.WriteLine(
+                $"program-facts prune-orphans: {(dryRun ? "would delete" : "deleted")} {deleted} orphan(s).");
+        }, factsDirArg, stagingDirOption, dryRunOption);
+
+        return cmd;
     }
 
     private static Command BuildExtractCommand(ILoggerFactory loggerFactory)

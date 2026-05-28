@@ -35,4 +35,26 @@ public interface IRektScanCache
     /// </summary>
     Task<int> PruneOtherIdentitySchemesAsync(
         string currentIdentityScheme, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Deletes entries whose <c>parsed_at_utc</c> is older than
+    /// <paramref name="maxAge"/>. Returns the number of rows deleted.
+    /// Use as a TTL eviction step so deleted-file rows don't linger forever.
+    /// </summary>
+    Task<int> PruneByAgeAsync(TimeSpan maxAge, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Deletes entries whose stored semantic-invalidation version is not the
+    /// current <see cref="SqliteRektScanCache.SemanticInvalidationVersion"/>.
+    /// These would already be treated as cache misses by lookups — this op
+    /// just reclaims the disk space. Returns the number of rows deleted.
+    /// </summary>
+    Task<int> PruneStaleSemanticVersionsAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// LRU-style cap: if more than <paramref name="maxEntries"/> rows exist,
+    /// delete the oldest by <c>parsed_at_utc</c> until the cap is met.
+    /// Returns the number of rows deleted.
+    /// </summary>
+    Task<int> PruneToMaxEntriesAsync(int maxEntries, CancellationToken cancellationToken = default);
 }

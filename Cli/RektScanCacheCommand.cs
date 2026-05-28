@@ -264,18 +264,56 @@ public static class RektScanCacheCommand
 
     private static Command BuildPruneCommand(ILoggerFactory loggerFactory)
     {
-        var cmd = new Command("prune", "Drop rows whose identity scheme is not the current one. Future cleanup hook.");
+        var cmd = new Command("prune",
+            "Cache housekeeping: drop entries by age, by row cap, by stale semantic version, or by old identity scheme.");
 
         var dbPathOption = new Option<string>("--db", () => DefaultDbPath, "Cache DB path.");
         cmd.AddOption(dbPathOption);
 
-        cmd.SetHandler(async (string dbPath) =>
+        var ttlDaysOption = new Option<int?>("--ttl-days",
+            "Delete entries whose parsed_at_utc is older than this many days.")
+        { Arity = ArgumentArity.ZeroOrOne };
+        cmd.AddOption(ttlDaysOption);
+
+        var maxEntriesOption = new Option<int?>("--max-entries",
+            "If the cache holds more than N rows, delete the oldest until the cap is met.")
+        { Arity = ArgumentArity.ZeroOrOne };
+        cmd.AddOption(maxEntriesOption);
+
+        var dropStaleSemanticOption = new Option<bool>("--drop-stale-semantic", () => false,
+            "Delete rows whose stored semantic-invalidation version is not the current one.");
+        cmd.AddOption(dropStaleSemanticOption);
+
+        var dropOtherIdentityOption = new Option<bool>("--drop-other-identity", () => false,
+            "Delete rows whose identity scheme is not the current one (post-migration cleanup).");
+        cmd.AddOption(dropOtherIdentityOption);
+
+        cmd.SetHandler(async (string dbPath, int? ttlDays, int? maxEntries,
+                              bool dropStaleSemantic, bool dropOtherIdentity) =>
         {
             var logger = loggerFactory.CreateLogger("RektScanCache.prune");
             var cache = new SqliteRektScanCache(dbPath, logger);
-            var n = await cache.PruneOtherIdentitySchemesAsync(IdentityScheme);
-            Console.Error.WriteLine($"rekt-scan-cache prune: deleted {n} row(s) with non-{IdentityScheme} identity scheme.");
-        }, dbPathOption);
+            var total = 0;
+            if (ttlDays is int days && days > 0)
+                total += await cache.PruneByAgeAsync(TimeSpan.FromDays(days));
+            if (dropStaleSemantic)
+                total += await cache.PruneStaleSemanticVersionsAsync();
+            if (dropOtherIdentity)
+                total += await cache.PruneOtherIdentitySchemesAsync(IdentityScheme);
+            if (maxEntries is int cap && cap >= 0)
+                total += await cache.PruneToMaxEntriesAsync(cap);
+
+            if (ttlDays is null && maxEntries is null && !dropStaleSemantic && !dropOtherIdentity)
+            {
+                Console.Error.WriteLine(
+                    "rekt-scan-cache prune: no policy supplied. " +
+                    "Pass at least one of --ttl-days, --max-entries, --drop-stale-semantic, --drop-other-identity.");
+                Environment.ExitCode = 2;
+                return;
+            }
+
+            Console.Error.WriteLine($"rekt-scan-cache prune: deleted {total} row(s) total.");
+        }, dbPathOption, ttlDaysOption, maxEntriesOption, dropStaleSemanticOption, dropOtherIdentityOption);
 
         return cmd;
     }
