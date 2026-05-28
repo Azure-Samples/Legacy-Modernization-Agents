@@ -308,6 +308,25 @@ public abstract class AgentBase
                         AgentName, exhaustionRetry + 1, maxExhaustionRetries,
                         contextIdentifier, currentMaxTokens, currentEffort);
 
+                    // PR P1: continuation telemetry. Each escalation cycle is
+                    // a continuation event — capture the resolved effort, token
+                    // budget, and outcome so we can quantify the "continuation
+                    // amplification" hypothesis (suspected dominant hidden
+                    // latency driver at large-estate scale).
+                    CobolToQuarkusMigration.Helpers.MetricsSink.EmitAmbient(new
+                    {
+                        Agent = AgentName,
+                        Event = "continuation_event",
+                        Context = contextIdentifier,
+                        ContinuationAttempt = exhaustionRetry + 1,
+                        MaxContinuations = maxExhaustionRetries,
+                        ContinuationReason = "max_output_tokens",
+                        ReasoningEffortResolved = currentEffort,
+                        MaxOutputTokensResolved = currentMaxTokens,
+                        ExhaustionBefore = rex.MaxOutputTokens,
+                        ReasoningTokensBefore = rex.ReasoningTokens
+                    });
+
                     try
                     {
                         var retryResponse = await ResponsesClient.GetResponseAsync(
@@ -316,6 +335,17 @@ public abstract class AgentBase
                         EnhancedLogger?.LogBehindTheScenes("REASONING_EXHAUSTION_RECOVERED", "SUCCESS",
                             $"Recovered on retry {exhaustionRetry + 1} with tokens={currentMaxTokens}, effort='{currentEffort}'",
                             AgentName);
+
+                        CobolToQuarkusMigration.Helpers.MetricsSink.EmitAmbient(new
+                        {
+                            Agent = AgentName,
+                            Event = "continuation_event",
+                            Context = contextIdentifier,
+                            ContinuationAttempt = exhaustionRetry + 1,
+                            Outcome = "recovered",
+                            ReasoningEffortResolved = currentEffort,
+                            MaxOutputTokensResolved = currentMaxTokens
+                        });
 
                         ChatLogger?.LogAIResponse(AgentName, contextIdentifier, retryResponse);
                         return (retryResponse, false, null);
@@ -326,6 +356,16 @@ public abstract class AgentBase
                         Logger.LogWarning(
                             "[{Agent}] Still exhausted after retry {Retry} with tokens={Tokens}",
                             AgentName, exhaustionRetry + 1, currentMaxTokens);
+                        CobolToQuarkusMigration.Helpers.MetricsSink.EmitAmbient(new
+                        {
+                            Agent = AgentName,
+                            Event = "continuation_event",
+                            Context = contextIdentifier,
+                            ContinuationAttempt = exhaustionRetry + 1,
+                            Outcome = "still-exhausted",
+                            ReasoningEffortResolved = currentEffort,
+                            MaxOutputTokensResolved = currentMaxTokens
+                        });
                     }
                 }
 

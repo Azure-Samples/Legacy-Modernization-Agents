@@ -774,24 +774,49 @@ public class ChunkedMigrationProcess
 
     private string ExtractCSharpClassContent(string code)
     {
-        // Extract content between class braces
-        var classStart = code.IndexOf('{');
-        var classEnd = code.LastIndexOf('}');
-        
-        if (classStart >= 0 && classEnd > classStart)
+        if (string.IsNullOrWhiteSpace(code)) return string.Empty;
+
+        // Same defensive logic as ExtractJavaClassContent — see comments there.
+        var classDeclRegex = new System.Text.RegularExpressions.Regex(
+            @"^\s*(?:public\s+|protected\s+|private\s+|internal\s+)?(?:static\s+)?(?:sealed\s+)?(?:partial\s+)?(?:abstract\s+)?class\s+[A-Za-z_][A-Za-z0-9_]*[^\{]*\{",
+            System.Text.RegularExpressions.RegexOptions.Multiline);
+
+        var match = classDeclRegex.Match(code);
+        if (match.Success)
         {
-            return code.Substring(classStart + 1, classEnd - classStart - 1).Trim();
+            var classOpen = code.IndexOf('{', match.Index);
+            if (classOpen < 0) return CleanedNonClassContentCSharp(code);
+
+            var depth = 0;
+            var classClose = -1;
+            for (var i = classOpen; i < code.Length; i++)
+            {
+                if (code[i] == '{') depth++;
+                else if (code[i] == '}')
+                {
+                    depth--;
+                    if (depth == 0) { classClose = i; break; }
+                }
+            }
+            if (classClose > classOpen)
+            {
+                return code.Substring(classOpen + 1, classClose - classOpen - 1).Trim();
+            }
+            return code.Substring(classOpen + 1).Trim();
         }
-        
-        // If no braces found, return cleaned code without using/namespace statements
+
+        return CleanedNonClassContentCSharp(code);
+    }
+
+    private static string CleanedNonClassContentCSharp(string code)
+    {
         var lines = code.Split('\n')
-            .Where(l => !l.Trim().StartsWith("using ") && 
-                       !l.Trim().StartsWith("namespace ") &&
-                       !l.Trim().StartsWith("public class ") &&
-                       !l.Trim().StartsWith("public partial class ") &&
-                       !l.Trim().StartsWith("class "));
-        
-        return string.Join("\n", lines);
+            .Where(l =>
+            {
+                var t = l.TrimStart();
+                return !t.StartsWith("using ") && !t.StartsWith("namespace ");
+            });
+        return string.Join("\n", lines).Trim();
     }
 
     private string ExtractCSharpClassContentForClass(string code, string targetClassName)
@@ -951,10 +976,45 @@ public class ChunkedMigrationProcess
             javaFile.AppendLine(content);
             javaFile.AppendLine("}");
 
+            var assembledContent = javaFile.ToString();
+
+            // PR P0: reassembly sanity telemetry. Counts brace balance and the
+            // class-scope-orphan signal (a non-method statement immediately
+            // after the class opening brace) so future runs can detect
+            // chunk-stitching regressions immediately rather than waiting for
+            // a compile gate.
+            var (openBraces, closeBraces) = CountBraces(assembledContent);
+            var braceImbalance = openBraces - closeBraces;
+            var orphanStatements = DetectClassScopeOrphans(assembledContent);
+
+            CobolToQuarkusMigration.Helpers.MetricsSink.Emit(
+                CobolToQuarkusMigration.Helpers.MetricsSink.CurrentRunId?.ToString(),
+                new
+                {
+                    Agent = "ChunkedMigrationProcess",
+                    Event = "reassembly_metrics",
+                    TargetLanguage = "Java",
+                    SourceFile = chunkedResult.SourceFile,
+                    ClassName = className,
+                    ChunkCount = successfulChunks.Count,
+                    AssembledBytes = assembledContent.Length,
+                    OpenBraces = openBraces,
+                    CloseBraces = closeBraces,
+                    BraceImbalance = braceImbalance,
+                    OrphanStatementCount = orphanStatements,
+                    ReassemblyOk = braceImbalance == 0 && orphanStatements == 0
+                });
+            if (braceImbalance != 0 || orphanStatements > 0)
+            {
+                _logger.LogWarning(
+                    "[ChunkedMigrationProcess] Reassembly anomaly for {File}: braceImbalance={Imb} orphans={Orph}",
+                    chunkedResult.SourceFile, braceImbalance, orphanStatements);
+            }
+
             results.Add(new CodeFile
             {
                 FileName = $"{className}.java",
-                Content = javaFile.ToString(),
+                Content = assembledContent,
                 ClassName = className,
                 OriginalCobolFileName = chunkedResult.SourceFile,
                 TargetLanguage = "Java"
@@ -1019,23 +1079,63 @@ public class ChunkedMigrationProcess
 
     private string ExtractJavaClassContent(string code)
     {
-        // Extract content between class braces
-        var classStart = code.IndexOf('{');
-        var classEnd = code.LastIndexOf('}');
-        
-        if (classStart >= 0 && classEnd > classStart)
+        if (string.IsNullOrWhiteSpace(code)) return string.Empty;
+
+        // ── PR P0 fix: do NOT use naive IndexOf('{')/LastIndexOf('}')
+        // brace matching. That breaks when a chunk has NO class wrapper but
+        // contains internal '{...}' pairs (array initializers, method bodies),
+        // because IndexOf finds the array's opening brace and the body gets
+        // truncated to just the array elements — producing orphan literals at
+        // class scope after reassembly (seen in Bdsda2f.java where
+        // `new String[]{` was lost, leaving `"UKENDT", "UKENDT", ...; }; `
+        // dangling at line 12). Detect the actual class declaration first.
+        var classDeclRegex = new System.Text.RegularExpressions.Regex(
+            @"^\s*(?:public\s+|protected\s+|private\s+)?(?:static\s+)?(?:final\s+)?(?:abstract\s+)?class\s+[A-Za-z_][A-Za-z0-9_]*[^\{]*\{",
+            System.Text.RegularExpressions.RegexOptions.Multiline);
+
+        var match = classDeclRegex.Match(code);
+        if (match.Success)
         {
-            return code.Substring(classStart + 1, classEnd - classStart - 1).Trim();
+            // Real class declaration found — find ITS opening brace, then
+            // walk forward counting braces to find the matching close.
+            var classOpen = code.IndexOf('{', match.Index);
+            if (classOpen < 0) return CleanedNonClassContent(code);
+
+            var depth = 0;
+            var classClose = -1;
+            for (var i = classOpen; i < code.Length; i++)
+            {
+                if (code[i] == '{') depth++;
+                else if (code[i] == '}')
+                {
+                    depth--;
+                    if (depth == 0) { classClose = i; break; }
+                }
+            }
+            if (classClose > classOpen)
+            {
+                return code.Substring(classOpen + 1, classClose - classOpen - 1).Trim();
+            }
+            // Unbalanced — return what's after the class opening brace; better
+            // than truncating to the wrong matching close.
+            return code.Substring(classOpen + 1).Trim();
         }
-        
-        // If no braces found, return cleaned code without package/import statements
+
+        // No class declaration in this chunk — it's a method/field fragment.
+        // Strip package/import noise but preserve everything else verbatim so
+        // we don't accidentally drop array openings or method bodies.
+        return CleanedNonClassContent(code);
+    }
+
+    private static string CleanedNonClassContent(string code)
+    {
         var lines = code.Split('\n')
-            .Where(l => !l.Trim().StartsWith("package ") && 
-                       !l.Trim().StartsWith("import ") &&
-                       !l.Trim().StartsWith("public class ") &&
-                       !l.Trim().StartsWith("class "));
-        
-        return string.Join("\n", lines);
+            .Where(l =>
+            {
+                var t = l.TrimStart();
+                return !t.StartsWith("package ") && !t.StartsWith("import ");
+            });
+        return string.Join("\n", lines).Trim();
     }
 
     private string ExtractJavaClassContentForClass(string code, string targetClassName)
@@ -1281,6 +1381,95 @@ public class ChunkedMigrationProcess
         Console.WriteLine($"     After:  {after}");
         _enhancedLogger.LogBehindTheScenes("COPILOT_SAFE_MODE", "APPLIED",
             $"Provider=GitHubCopilot; before={before}; after={after}");
+    }
+
+    // ── PR P0 helpers: reassembly sanity ──────────────────────────────────
+
+    /// <summary>
+    /// Count open vs close curly braces, ignoring those inside string literals
+    /// and line comments. Char-level walk; cheap.
+    /// </summary>
+    private static (int Open, int Close) CountBraces(string code)
+    {
+        if (string.IsNullOrEmpty(code)) return (0, 0);
+        var open = 0;
+        var close = 0;
+        var inString = false;
+        var inChar = false;
+        var inLineComment = false;
+        var inBlockComment = false;
+        for (var i = 0; i < code.Length; i++)
+        {
+            var c = code[i];
+            var prev = i > 0 ? code[i - 1] : '\0';
+            if (inLineComment)
+            {
+                if (c == '\n') inLineComment = false;
+                continue;
+            }
+            if (inBlockComment)
+            {
+                if (c == '/' && prev == '*') inBlockComment = false;
+                continue;
+            }
+            if (inString)
+            {
+                if (c == '"' && prev != '\\') inString = false;
+                continue;
+            }
+            if (inChar)
+            {
+                if (c == '\'' && prev != '\\') inChar = false;
+                continue;
+            }
+            if (c == '"') { inString = true; continue; }
+            if (c == '\'') { inChar = true; continue; }
+            if (c == '/' && i + 1 < code.Length && code[i + 1] == '/') { inLineComment = true; continue; }
+            if (c == '/' && i + 1 < code.Length && code[i + 1] == '*') { inBlockComment = true; continue; }
+            if (c == '{') open++;
+            else if (c == '}') close++;
+        }
+        return (open, close);
+    }
+
+    /// <summary>
+    /// Detect statements at class scope that aren't field/method declarations
+    /// — the canonical signature of a chunked-reassembly bug (e.g. the
+    /// orphan <c>"UKENDT", "UKENDT", ...; };</c> we saw in Bdsda2f.java).
+    /// Heuristic: lines starting with a quote, a number, or <c>return</c>
+    /// when the depth-from-class-opening-brace is exactly 1 and we're not
+    /// inside a method body.
+    /// </summary>
+    private static int DetectClassScopeOrphans(string code)
+    {
+        if (string.IsNullOrEmpty(code)) return 0;
+        var orphans = 0;
+        var depth = 0;
+        var classDepth = -1;
+        foreach (var rawLine in code.Split('\n'))
+        {
+            var line = rawLine.TrimStart();
+            // Detect class opening
+            if (classDepth < 0 && System.Text.RegularExpressions.Regex.IsMatch(
+                line, @"^(?:public|protected|private)?\s*(?:static)?\s*(?:final)?\s*(?:abstract)?\s*class\s+"))
+            {
+                classDepth = depth;
+            }
+            // Check orphan candidates BEFORE updating depth for this line
+            if (classDepth >= 0 && depth == classDepth + 1)
+            {
+                if (line.StartsWith("\"") ||
+                    line.StartsWith("return ") || line.StartsWith("return;") ||
+                    (line.Length > 0 && char.IsDigit(line[0])))
+                {
+                    orphans++;
+                }
+            }
+            // Update depth using brace count on this line
+            var (o, c) = CountBraces(rawLine);
+            depth += o - c;
+        }
+        return orphans;
     }
 }
 

@@ -207,6 +207,42 @@ def report(conn: sqlite3.Connection) -> None:
     else:
         print("  (no hash reuse observed yet — each program has unique facts)")
 
+    print("\n=== Reassembly sanity (PR P0) ===")
+    rows = list(cur.execute("""
+        SELECT json_extract(payload_json,'$.sourceFile') AS src,
+               json_extract(payload_json,'$.chunkCount') AS chunks,
+               json_extract(payload_json,'$.braceImbalance') AS imb,
+               json_extract(payload_json,'$.orphanStatementCount') AS orph,
+               json_extract(payload_json,'$.reassemblyOk') AS ok
+          FROM metric_events
+         WHERE event='reassembly_metrics'
+         ORDER BY ts DESC LIMIT 10
+    """))
+    if rows:
+        print(f"  {'source':<28} {'chunks':>6} {'braceΔ':>6} {'orphans':>8} {'ok':>4}")
+        for r in rows:
+            ok = "✅" if r[4] in (1, "true", True) else "❌"
+            print(f"  {(r[0] or '?')[:28]:<28} {r[1] or 0:>6} {r[2] or 0:>6} {r[3] or 0:>8} {ok:>4}")
+    else:
+        print("  (no reassembly_metrics events — no chunked conversion has run since the fix)")
+
+    print("\n=== Continuation events (PR P1) ===")
+    rows = list(cur.execute("""
+        SELECT json_extract(payload_json,'$.agent') AS agent,
+               json_extract(payload_json,'$.outcome') AS outcome,
+               COUNT(*) AS n,
+               AVG(CAST(json_extract(payload_json,'$.maxOutputTokensResolved') AS INTEGER)) AS avg_tokens
+          FROM metric_events
+         WHERE event='continuation_event'
+         GROUP BY agent, outcome ORDER BY n DESC LIMIT 10
+    """))
+    if rows:
+        print(f"  {'agent':<28} {'outcome':<18} {'count':>6} {'avgTokens':>10}")
+        for r in rows:
+            print(f"  {(r[0] or '?')[:28]:<28} {(r[1] or '?'):<18} {r[2] or 0:>6} {(r[3] or 0):>10.0f}")
+    else:
+        print("  (no continuation_event events — Azure exhaustion-retry path hasn't fired)")
+
     print("\n=== Projection-block cache (PR6) ===")
     rows = list(cur.execute(
         "SELECT json_extract(payload_json,'$.decision') AS d, COUNT(*) "
