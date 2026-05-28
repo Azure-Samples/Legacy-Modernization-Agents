@@ -1800,7 +1800,12 @@ run_via_portal() {
                 \"STRUCTURAL_FALLBACK_TO_AI\": \"${STRUCTURAL_FALLBACK_TO_AI:-false}\",
                 \"MAX_VALIDATOR_RETRIES\": \"${MAX_VALIDATOR_RETRIES:-1}\",
                 \"MIN_PROGRAM_SCORE\": \"${MIN_PROGRAM_SCORE:-0}\",
-                \"ON_LOW_SCORE\": \"${ON_LOW_SCORE:-continue}\"
+                \"ON_LOW_SCORE\": \"${ON_LOW_SCORE:-continue}\",
+                \"_USE_PROGRAM_FACTS\": \"${_USE_PROGRAM_FACTS:-}\",
+                \"_LLM_CACHE_ENABLED\": \"${_LLM_CACHE_ENABLED:-}\",
+                \"COPILOT_SDK_REQUEST_TIMEOUT_SECONDS\": \"${COPILOT_SDK_REQUEST_TIMEOUT_SECONDS:-}\",
+                \"LLM_CALL_TIMEOUT_SECONDS\": \"${LLM_CALL_TIMEOUT_SECONDS:-}\",
+                \"MCP_AUTO_LAUNCH\": \"${MCP_AUTO_LAUNCH:-}\"
             }
         }" 2>/dev/null)
 

@@ -93,7 +93,7 @@ mkdir -p "$OUTPUT_DIR"
 CSV="$OUTPUT_DIR/suite.csv"
 SUMMARY="$OUTPUT_DIR/suite-summary.md"
 
-echo "program,baseline_ms,projection_ms,baseline_input_tokens,projection_input_tokens,baseline_total_tokens,projection_total_tokens,input_savings_pct,total_savings_pct,baseline_cache,projection_cache,status" > "$CSV"
+echo "program,baseline_ms,projection_ms,baseline_input_tokens,projection_input_tokens,baseline_total_tokens,projection_total_tokens,input_savings_pct,total_savings_pct,baseline_cache,projection_cache,mode,raw_rekt_context_tokens,projection_context_tokens,status" > "$CSV"
 
 echo "═══════════════════════════════════════════════════════════════════════════"
 echo "Suite: ${#PROGRAM_LIST[@]} program(s) → $TARGET"
@@ -115,34 +115,28 @@ extract_int_pair() {
     # final results table, given the metric name.
     local metric="$1" suite_log="$2"
     grep -E "^\s*$metric\b" "$suite_log" 2>/dev/null | head -1 \
-        | awk '{print $(NF-2), $(NF-1)}'
+        | awk '{print $(NF-2), $(NF-1)}' || true
 }
 
 extract_pct() {
     local metric="$1" suite_log="$2"
     grep -E "^\s*$metric\b" "$suite_log" 2>/dev/null | head -1 \
-        | awk '{print $NF}' | sed 's/%//'
+        | awk '{print $NF}' | sed 's/%//' || true
 }
 
 extract_cache_pair() {
     local suite_log="$1"
     grep -E '^\s*cache decision' "$suite_log" 2>/dev/null | head -1 \
-        | awk '{print $(NF-2)"|"$(NF-1)}'
+        | awk '{print $(NF-2)"|"$(NF-1)}' || true
 }
 
 extract_input_tokens_from_log() {
     local leg_log="$1"
     
     # Try Copilot SDK format first: "CopilotChatClient metrics: ... totalCompletionTokens=123"
-    # The SDK logs completion tokens, not input tokens separately. For compatibility,
-    # we'll extract the totalCompletionTokens and note this is output-only.
     local sdk_tokens=$(grep -Eo 'CopilotChatClient metrics:.*totalCompletionTokens=[0-9]+' "$leg_log" 2>/dev/null | head -1 \
         | grep -Eo 'totalCompletionTokens=[0-9]+' | grep -Eo '[0-9]+' || true)
-    
-    if [[ -n "$sdk_tokens" ]]; then
-        echo "$sdk_tokens"
-        return
-    fi
+    if [[ -n "$sdk_tokens" ]]; then echo "$sdk_tokens"; return; fi
     
     # Fall back to Azure Responses API format: "Responses API: ~N input ..."
     grep -E '^\s*Responses API:|^\s*Responses API completed' "$leg_log" 2>/dev/null || true \
@@ -156,16 +150,27 @@ extract_total_tokens_from_log() {
     # Try Copilot SDK format first: "CopilotChatClient metrics: ... totalCompletionTokens=123"
     local sdk_tokens=$(grep -Eo 'CopilotChatClient metrics:.*totalCompletionTokens=[0-9]+' "$leg_log" 2>/dev/null | head -1 \
         | grep -Eo 'totalCompletionTokens=[0-9]+' | grep -Eo '[0-9]+' || true)
-    
-    if [[ -n "$sdk_tokens" ]]; then
-        echo "$sdk_tokens"
-        return
-    fi
+    if [[ -n "$sdk_tokens" ]]; then echo "$sdk_tokens"; return; fi
     
     # Fall back to Azure Responses API format: "Responses API completed ... = N tokens"
     grep -E 'Responses API completed' "$leg_log" 2>/dev/null || true \
         | grep -Eo '= [0-9]+ tokens' | head -1 \
         | grep -Eo '[0-9]+' || true
+}
+
+# Extract PROJECTION_METRICS structured log:
+# "[JavaConverterAgent] PROJECTION_METRICS projectionMode=X file=Y projectionTokens=N rawRektTokens=M reductionPercent=P"
+extract_projection_mode() {
+    grep -Eo 'PROJECTION_METRICS projectionMode=[a-z-]+' "$1" 2>/dev/null | head -1 \
+        | grep -Eo '[a-z-]+$' || echo "unknown"
+}
+extract_proj_tokens_from_metrics() {
+    grep -Eo 'PROJECTION_METRICS.*projectionTokens=[0-9]+' "$1" 2>/dev/null | head -1 \
+        | grep -Eo 'projectionTokens=[0-9]+' | grep -Eo '[0-9]+' || echo "0"
+}
+extract_rekt_tokens_from_metrics() {
+    grep -Eo 'PROJECTION_METRICS.*rawRektTokens=[0-9]+' "$1" 2>/dev/null | head -1 \
+        | grep -Eo 'rawRektTokens=[0-9]+' | grep -Eo '[0-9]+' || echo "0"
 }
 
 time_ms() {
@@ -220,11 +225,14 @@ for raw in "${PROGRAM_LIST[@]}"; do
         if PROJ_MS=$(run_projection_only "$PROG" "$LEG_DIR/projection.log"); then
             PROJ_IN=$(extract_input_tokens_from_log "$LEG_DIR/projection.log"); PROJ_IN=${PROJ_IN:-0}
             PROJ_TOTAL=$(extract_total_tokens_from_log "$LEG_DIR/projection.log"); PROJ_TOTAL=${PROJ_TOTAL:-0}
-            echo "$PROG,0,${PROJ_MS:-0},0,${PROJ_IN:-0},0,${PROJ_TOTAL:-0},n/a,n/a,-,-,ok" >> "$CSV"
+            PROJ_MODE=$(extract_projection_mode "$LEG_DIR/projection.log")
+            PROJ_CONTEXT_TOK=$(extract_proj_tokens_from_metrics "$LEG_DIR/projection.log")
+            REKT_CONTEXT_TOK=$(extract_rekt_tokens_from_metrics "$LEG_DIR/projection.log")
+            echo "$PROG,0,${PROJ_MS:-0},0,${PROJ_IN:-0},0,${PROJ_TOTAL:-0},n/a,n/a,-,-,$PROJ_MODE,$REKT_CONTEXT_TOK,$PROJ_CONTEXT_TOK,ok" >> "$CSV"
             success_count=$((success_count + 1))
-            echo "  ✓ $PROG : projection=${PROJ_IN:-?}in/${PROJ_TOTAL:-?}tot/${PROJ_MS:-?}ms"
+            echo "  ✓ $PROG : mode=$PROJ_MODE proj_context=${PROJ_CONTEXT_TOK}tok rekt_context=${REKT_CONTEXT_TOK}tok total=${PROJ_TOTAL:-?}tok ${PROJ_MS:-?}ms"
         else
-            echo "$PROG,0,0,0,0,0,0,n/a,n/a,-,-,fail" >> "$CSV"
+            echo "$PROG,0,0,0,0,0,0,n/a,n/a,-,-,unknown,0,0,fail" >> "$CSV"
             fail_count=$((fail_count + 1))
             echo "  ✗ $PROG : projection-only leg failed, see $LEG_DIR/projection.log"
         fi
@@ -240,20 +248,32 @@ for raw in "${PROGRAM_LIST[@]}"; do
             fi
 
             # Parse the final results table from suite log.
-            read -r BASE_MS PROJ_MS < <(extract_int_pair "wall clock \(ms\)" "$SUITE_LOG")
-            read -r BASE_IN PROJ_IN < <(extract_int_pair "input tokens \(primary\)" "$SUITE_LOG")
-            read -r BASE_TOTAL PROJ_TOTAL < <(extract_int_pair "total tokens \(primary\)" "$SUITE_LOG")
-            IN_PCT=$(extract_pct "input tokens \(primary\)" "$SUITE_LOG")
-            TOTAL_PCT=$(extract_pct "total tokens \(primary\)" "$SUITE_LOG")
-            CACHES=$(extract_cache_pair "$SUITE_LOG")
+            read -r BASE_MS PROJ_MS < <(extract_int_pair "wall clock \(ms\)" "$SUITE_LOG") || true
+            read -r BASE_IN PROJ_IN < <(extract_int_pair "input tokens \(primary\)" "$SUITE_LOG") || true
+            read -r BASE_TOTAL PROJ_TOTAL < <(extract_int_pair "total tokens \(primary\)" "$SUITE_LOG") || true
+            IN_PCT=$(extract_pct "input tokens \(primary\)" "$SUITE_LOG") || true
+            TOTAL_PCT=$(extract_pct "total tokens \(primary\)" "$SUITE_LOG") || true
+            CACHES=$(extract_cache_pair "$SUITE_LOG") || true
             BASE_CACHE="${CACHES%|*}"
             PROJ_CACHE="${CACHES#*|}"
 
-            echo "$PROG,${BASE_MS:-0},${PROJ_MS:-0},${BASE_IN:-0},${PROJ_IN:-0},${BASE_TOTAL:-0},${PROJ_TOTAL:-0},${IN_PCT:-n/a},${TOTAL_PCT:-n/a},${BASE_CACHE:--},${PROJ_CACHE:--},ok" >> "$CSV"
+            # Extract PROJECTION_METRICS from both legs
+            BASE_REKT_TOK=$(extract_rekt_tokens_from_metrics "$LEG_DIR/baseline.log"); BASE_REKT_TOK=${BASE_REKT_TOK:-0}
+            PROJ_CONTEXT_TOK=$(extract_proj_tokens_from_metrics "$LEG_DIR/projection.log"); PROJ_CONTEXT_TOK=${PROJ_CONTEXT_TOK:-0}
+            # Compute context reduction: how much smaller was projection vs raw REKT?
+            if [[ "$BASE_REKT_TOK" -gt 0 && "$PROJ_CONTEXT_TOK" -gt 0 ]]; then
+                CTX_REDUCTION=$(awk -v b="$BASE_REKT_TOK" -v a="$PROJ_CONTEXT_TOK" \
+                    'BEGIN { printf "%.1f%%", (b-a)*100/b }')
+            else
+                CTX_REDUCTION="n/a"
+            fi
+
+            echo "$PROG,${BASE_MS:-0},${PROJ_MS:-0},${BASE_IN:-0},${PROJ_IN:-0},${BASE_TOTAL:-0},${PROJ_TOTAL:-0},${IN_PCT:-n/a},${TOTAL_PCT:-n/a},${BASE_CACHE:--},${PROJ_CACHE:--},ab,$BASE_REKT_TOK,$PROJ_CONTEXT_TOK,ok" >> "$CSV"
             success_count=$((success_count + 1))
             echo "  ✓ $PROG : baseline=${BASE_IN:-?}in/${BASE_TOTAL:-?}tot/${BASE_MS:-?}ms → projection=${PROJ_IN:-?}in/${PROJ_TOTAL:-?}tot/${PROJ_MS:-?}ms (input ${IN_PCT:-n/a}, total ${TOTAL_PCT:-n/a})"
+            echo "       context: raw-rekt=${BASE_REKT_TOK}tok → projection=${PROJ_CONTEXT_TOK}tok (reduction=${CTX_REDUCTION})"
         else
-            echo "$PROG,0,0,0,0,0,0,n/a,n/a,-,-,fail" >> "$CSV"
+            echo "$PROG,0,0,0,0,0,0,n/a,n/a,-,-,ab,0,0,fail" >> "$CSV"
             fail_count=$((fail_count + 1))
             echo "  ✗ $PROG : leg failed, see $SUITE_LOG"
         fi
@@ -275,10 +295,15 @@ done
     echo ""
     echo "## Automated metrics"
     echo ""
-    echo "| program | baseline ms | projection ms | baseline in | projection in | baseline total | projection total | input Δ | total Δ | baseline cache | projection cache | status |"
-    echo "|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|"
-    tail -n +2 "$CSV" | while IFS=',' read -r p bm pm bi pi bt pt ip tp bc pc st; do
-        echo "| $p | $bm | $pm | $bi | $pi | $bt | $pt | $ip | $tp | $bc | $pc | $st |"
+    echo "| program | baseline ms | projection ms | baseline in | projection in | baseline total | projection total | input Δ | total Δ | rekt-ctx tok | proj-ctx tok | ctx Δ | status |"
+    echo "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|"
+    tail -n +2 "$CSV" | while IFS=',' read -r p bm pm bi pi bt pt ip tp bc pc mode rektok prjtok st; do
+        # Compute context reduction inline
+        ctx_delta="n/a"
+        if [[ "$rektok" =~ ^[0-9]+$ && "$prjtok" =~ ^[0-9]+$ && "$rektok" -gt 0 && "$prjtok" -gt 0 ]]; then
+            ctx_delta=$(awk -v b="$rektok" -v a="$prjtok" 'BEGIN { printf "%.1f%%", (b-a)*100/b }')
+        fi
+        echo "| $p | $bm | $pm | $bi | $pi | $bt | $pt | $ip | $tp | $rektok | $prjtok | $ctx_delta | $st |"
     done
     echo ""
     echo "## Per-program raw logs"

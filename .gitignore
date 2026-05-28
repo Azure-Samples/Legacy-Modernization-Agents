@@ -456,3 +456,7 @@ Agents/Prompts/_history/
 
 # Allow synthetic golden programs in the regression suite
 !tests/prompt-regression/programs/*.cbl
+
+# A/B projection suite output (per-run, transient)
+tools/ab-results-*/
+output/.metrics/

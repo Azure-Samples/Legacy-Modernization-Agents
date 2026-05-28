@@ -153,6 +153,14 @@ run_leg() {
         # doctor.sh convert-only auto-launches McpChatWeb at the end (line ~2516)
         # which blocks indefinitely. MCP_AUTO_LAUNCH=0 disables that.
         export MCP_AUTO_LAUNCH=0
+        # Force direct dotnet invocation, bypassing run_via_portal.
+        # The portal API only forwards a fixed allowlist of env vars; routing
+        # through it would silently drop _USE_PROGRAM_FACTS,
+        # COPILOT_SDK_REQUEST_TIMEOUT_SECONDS, and others — invalidating the
+        # A/B test. Setting PORTAL_LAUNCHED=true short-circuits run_via_portal
+        # and falls back to a direct child dotnet process that inherits our
+        # full environment.
+        export PORTAL_LAUNCHED=true
         if [[ "$use_facts" == "true" ]]; then
             export _USE_PROGRAM_FACTS=true
         else
@@ -197,7 +205,7 @@ extract_input_tokens() {
     # Fall back to Responses API format
     grep -E '^\s*Responses API:|^\s*Responses API completed' "$log_file" 2>/dev/null \
         | grep -Eo '~[0-9]+ input|[0-9]+ input tokens' | head -1 \
-        | grep -Eo '[0-9]+' | head -1
+        | grep -Eo '[0-9]+' | head -1 || true
 }
 
 extract_total_tokens() {
@@ -214,12 +222,12 @@ extract_total_tokens() {
     # Fall back to Responses API format
     grep -E 'Responses API completed' "$log_file" 2>/dev/null \
         | grep -Eo '= [0-9]+ tokens' | head -1 \
-        | grep -Eo '[0-9]+'
+        | grep -Eo '[0-9]+' || true
 }
 
 extract_cache_decision() {
     grep -Eo 'LlmResponseCache.*decision=[a-z-]+' "$1" 2>/dev/null | head -1 \
-        | grep -Eo 'decision=[a-z-]+' | head -1
+        | grep -Eo 'decision=[a-z-]+' | head -1 || true
 }
 
 BASELINE_IN=$(extract_input_tokens "$BASELINE_LOG"); BASELINE_IN=${BASELINE_IN:-0}
