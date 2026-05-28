@@ -2990,6 +2990,50 @@ print(len(lines))
         rm -f "$rekt_manifest"
     fi
 
+    # ── PR3.b: auto-extract program-facts.json (opt-in via _PROGRAM_FACTS=true) ──
+    # Run after the parse loop while the staging dir is still in place — the
+    # extractor needs the preprocessed source bytes for sourceHash and IO
+    # heuristics. Skip entirely when nothing succeeded (no point extracting
+    # from a completely failed parse). Failure here logs a warning but never
+    # breaks the run — facts are derived data, never load-bearing.
+    if [[ "${_PROGRAM_FACTS:-false}" == "true" && "$succeeded" -gt 0 ]]; then
+        if command -v dotnet >/dev/null 2>&1 && [[ -f "$REPO_ROOT/CobolToQuarkusMigration.csproj" ]]; then
+            local pf_db="${_REKT_SCAN_DB:-$REPO_ROOT/Data/rekt-scan.db}"
+            echo -e "  ${BLUE}Extracting program-facts.json …${NC}"
+            local pf_extract_args=(
+                program-facts extract "$staging_dir"
+                --rekt-dir "$REPO_ROOT/output/rekt"
+                --output-dir "$REPO_ROOT/output/rekt"
+                --repo-root "$REPO_ROOT"
+            )
+            # Forward the scan-cache DB only when it exists; the extractor
+            # uses it for confidence inference but treats it as optional.
+            [[ -f "$pf_db" ]] && pf_extract_args+=(--scan-cache-db "$pf_db")
+            # Forward the program filter (PR2.c) so partial runs don't try
+            # to extract facts for programs that weren't parsed.
+            if [[ "$rekt_filter_active" == "true" ]]; then
+                pf_extract_args+=(--programs "$_REKT_PROGRAM_FILTER")
+            fi
+            if (cd "$REPO_ROOT" && dotnet run --project CobolToQuarkusMigration.csproj --no-build -- \
+                    "${pf_extract_args[@]}" 2>/dev/null); then
+                : # success summary already printed to stderr by the CLI
+            else
+                echo -e "  ${YELLOW}⚠️  program-facts extract failed — facts not refreshed (this run continues uncached for facts).${NC}"
+            fi
+
+            # PR2.d: opportunistic orphan prune. Only fires when the user has
+            # also asked for housekeeping (prevents surprise deletes for users
+            # who only want facts written).
+            if [[ "${_PROGRAM_FACTS_PRUNE_ORPHANS:-false}" == "true" ]]; then
+                (cd "$REPO_ROOT" && dotnet run --project CobolToQuarkusMigration.csproj --no-build -- \
+                        program-facts prune-orphans "$REPO_ROOT/output/rekt" \
+                        --staging-dir "$staging_dir" 2>/dev/null) || true
+            fi
+        else
+            echo -e "  ${YELLOW}⚠️  _PROGRAM_FACTS=true but dotnet/project not available — facts not extracted.${NC}"
+        fi
+    fi
+
     # Clean up staging dir — it lives inside source/ which is gitignored
     rm -rf "$staging_dir"
 
