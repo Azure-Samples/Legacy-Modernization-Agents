@@ -1,1735 +1,413 @@
-# Legacy Modernization Agents - COBOL to Java/C# Migration
+# Legacy Modernization Agents — COBOL → Java / C#
 
-This open source migration framework was developed to demonstrate AI Agents capabilities for converting legacy code like COBOL to Java or C# .NET. Each Agent has a persona that can be edited depending on the desired outcome.
-The migration uses Microsoft.Extensions.AI with a multi-provider architecture supporting **Azure OpenAI** (Responses API + Chat Completions), **GitHub Copilot** (PAT or CLI-based SDK), and **direct OpenAI** to analyze COBOL code and its dependencies, then convert to either Java Quarkus or C# .NET (user's choice).
+> **Production-grade AI agent framework for COBOL-to-Java-Quarkus and COBOL-to-C#-.NET conversion, grounded in deterministic static analysis (REKT) and instrumented end-to-end with semantic telemetry.**
 
-> ### 🚦 Recommended order of operations
->
-> The pipeline is deliberately split so you can **analyse first, then choose what to convert**. Run the steps in this order:
->
-> | # | Step | Command | What it does |
-> |---|------|---------|--------------|
-> | 1 | **Drop source code** | copy `*.cbl`, `*.cpy`, `*.bms`, `*.psb`, `*.dbd` into `source/` | The folder all later steps read from. |
-> | 2 | **Static analysis (REKT)** | `./doctor.sh rekt-full` | Parses every program with smojol, writes AST/CFG/data-flow JSON to `output/rekt/`, ingests into Neo4j, and starts the portal. **Do this once per source change.** |
-> | 3 | **Save the target plan** | Open the portal → **Target Architecture** tab → click **💾 Save for AI agent** | Writes `output/rekt/target-architecture.json`. Required for wave / target-component selection in step 4. |
-> | 4 | **Pick what to convert** | Portal → **🛠️ Convert…** button (or CLI flags below) | Opens the Convert modal. Dropdowns are pre-populated from the REKT catalog — pick a program, a CICS transaction, a wave, or a target component. |
-> | 5 | **Run the focused conversion** | Click **🚀 Start conversion** (or `./doctor.sh convert-only` with selector flags) | Stages just the selected files into a temp folder and runs the conversion pipeline (REKT context injection + Java/C# converter + shared-types registry). |
-> | 6 | **Inspect results** | Portal → **Mission Control → Run Output** / `output/java` / `output/csharp` | View converted code, run logs, and architecture docs. |
->
-> ### CLI quick reference
->
-> **REKT static analysis** (step 2):
-> ```bash
-> # Full pipeline: parse → ingest into Neo4j → launch portal
-> ./doctor.sh rekt-full
->
-> # Parse only (no Neo4j ingest)
-> ./doctor.sh rekt-parse
->
-> # Ingest only (after a manual parse)
-> ./doctor.sh rekt-ingest
->
-> # Check scan status
-> ./doctor.sh rekt-status
-> ```
->
-> **Convert selected programs** (steps 4 + 5):
-> ```bash
-> # Convert one program to C# — fastest path (skips RE)
-> ./doctor.sh convert-only --program ACCTMGR
->
-> # Convert to Java with full RE analysis
-> ./doctor.sh run --program ACCTMGR
->
-> # Multiple programs (OR-combined)
-> ./doctor.sh convert-only --program CUSTINQ --program RPTGEN
->
-> # By CICS transaction code (scans for EXEC CICS RETURN TRANSID / LINK PROGRAM)
-> ./doctor.sh run --transaction CT01 --include-callees
->
-> # By migration wave from target-architecture.json
-> ./doctor.sh run --wave 1 --target svc-data
->
-> # By keyword in source (whole-word, case-insensitive)
-> ./doctor.sh run --keyword CUSTOMER --min-program-score 0.75
->
-> # Convert everything a program calls (transitively)
-> ./doctor.sh convert-only --program ACCTMGR --include-callees
->
-> # Convert everything that calls into a program
-> ./doctor.sh convert-only --program ACCTMGR --include-callers
->
-> # Pure-LLM mode (skip REKT injection — A/B testing or no scan yet)
-> ./doctor.sh run --program ACCTMGR --no-rekt-context
-> ```
->
-> **Selector logic**: same flag repeated = **OR**, different flags = **AND**.
-> Example: `--program A --program B` → A or B. `--wave 1 --target svc-data` → wave 1 AND svc-data.
->
-> ### Flag reference
->
-> | Flag | Default | What it does |
-> |---|---|---|
-> | **Selector flags** (for `run` / `convert-only`) | | |
-> | `--program NAME` | — | Convert a specific program (repeatable) |
-> | `--transaction TRANID` | — | Convert programs using a CICS transaction |
-> | `--wave N` | — | Convert programs in migration wave N (needs target-architecture.json) |
-> | `--target COMPONENT` | — | Convert programs mapped to a target component (e.g. `svc-data`) |
-> | `--keyword TEXT` | — | Convert programs containing a whole-word match |
-> | `--include-callees` | off | Also convert programs the selection calls (transitively) |
-> | `--include-callers` | off | Also convert programs that call into the selection |
-> | **Quality flags** | | |
-> | `--rekt-context` | **on** | REKT structural facts + FACT-LOCKING rules + shared-types registry |
-> | `--no-rekt-context` | off | Pure-LLM mode (no REKT). For A/B testing or when no scan exists |
-> | `--fallback-to-ai` | off | Use LLM to derive structure when smojol can't parse a program |
-> | `--max-validator-retries N` | 1 | Parity validator re-prompt attempts |
-> | `--min-program-score 0.75` | 0 | Per-program parity score gate (0 = off) |
-> | `--on-low-score continue\|stop` | continue | What to do when a file misses the score |
-> | **Provider flags** | | |
-> | `--copilot-safe` | auto | Force Copilot-safe mode (small chunks, sequential) |
-> | `--copilot-unsafe` | — | Disable Copilot-safe overrides (use full chunk sizes) |
-> | `LLM_CALL_TIMEOUT_SECONDS=N` | 240 | Hang-timeout per LLM call (env var, not a flag) |
->
-> Selector mode **auto-skips standalone copybook analysis** so a one-program run finishes in minutes instead of hours.
-> Pair `convert-only` + a selector for the fastest feedback loop.
->
-> Full reference: [docs/rekt-grounded-conversion.md](docs/rekt-grounded-conversion.md).
+[![Quick Guide](https://img.shields.io/badge/Start_here-Quick_Guide-blue)](docs/quick-guide.md)
+[![Architecture](https://img.shields.io/badge/Deep_dive-Architecture-purple)](#architecture)
+[![REKT](https://img.shields.io/badge/Static_analysis-Cobol--REKT-green)](docs/rekt-grounded-conversion.md)
+[![Portal](https://img.shields.io/badge/UI-Portal-orange)](#portal)
 
-## 🎬 Portal Demo
+This framework converts COBOL codebases of any size — from a single 200-line program to enterprise estates of thousands of programs and tens of millions of lines — into modern Java (Quarkus) or C# (.NET) code. It does this by:
 
-![Portal Demo](gifdemowithgraphandreportign.gif)
+1. **Statically parsing every program** with Cobol-REKT (AST, control-flow, data-flow, dependency graph) — once per source change.
+2. **Curating a small semantic projection per program** (`output/rekt/<stem>.facts.json`) that captures the structural truth in 60–90 % fewer tokens than raw AST.
+3. **Handing that projection to a converter agent** that uses it as ground-truth context, freeing the LLM from re-discovering structure on every call and enabling reliable conversion of programs that exceed any single LLM context window.
 
-*The web portal provides real-time visualization of migration progress, dependency graphs, and AI-powered Q&A.*
+Multi-provider: **Azure OpenAI** (Responses API + Chat Completions), **GitHub Copilot** (PAT or CLI SDK), **direct OpenAI**. Built on `Microsoft.Extensions.AI`.
 
 ---
 
-> [!TIP]
-> **Two ways to use this framework:**
->
-> | Command | What it does |
-> |---|---|
-> | `./doctor.sh run` | **Run a full migration** — analyze COBOL, convert to Java/C#, generate reports, and launch the portal |
-> | `./doctor.sh reverse-eng` | **Extract business logic only** — runs RE analysis, persists results to DB, launches the portal |
-> | `./doctor.sh convert-only` | **Convert only** — skips RE; prompts whether to inject persisted RE results from a previous run |
-> | `./doctor.sh rekt-full` | **Static analysis pipeline** — parse COBOL into AST/CFG/Data, ingest into Neo4j, launch portal |
-> | `./doctor.sh portal` | **Open the portal only** — browse previous migration results, dependency graphs, and chat with your codebase at http://localhost:5028 |
->
-> Both commands handle all configuration, dependency checks, and service startup automatically.
+## 🚀 Start here
 
----
-
-## 📋 Table of Contents
-- [Quick Start](#-quick-start)
-- [Usage: doctor.sh](#-usage-doctorsh)
-- [Reverse Engineering Reports](#-reverse-engineering-reports)
-- [Portal Features](#-portal-features)
-  - [Portal Overview](#portal-overview)
-  - [AI Provider Setup, Prompt Studio & Chat](#-ai-provider-setup-prompt-studio--chat)
-  - [Cobol-REKT Static Analysis & Graph Pipeline](#-cobol-rekt-static-analysis--graph-pipeline)
-  - [AST Galaxy & AST Explorer](#-ast-galaxy--ast-explorer)
-  - [Migration Planner — Domain-Based Time Chart](#-migration-planner--domain-based-time-chart)
-- [Folder Structure](#-folder-structure)
-- [Customizing Agent Behavior](#-customizing-agent-behavior)
-- [File Splitting & Naming](#-file-splitting--naming)
-- [Architecture](#-architecture)
-  - [REKT-Grounded Conversion Pipeline](#rekt-grounded-conversion-pipeline)
-- [Smart Chunking & Token Strategy](#-smart-chunking--token-strategy)
-- [Build & Run](#-build--run)
-
----
-
-## 🚀 Quick Start
-
-> **CLI-focused guide**: See [`docs/quick-start.md`](docs/quick-start.md) for a step-by-step walkthrough of REKT scan → program selection → conversion using CLI flags.
-
-### Prerequisites
-
-| Requirement | Version | Notes |
-|-------------|---------|-------|
-| **.NET SDK** | 10.0+ | [Download](https://dotnet.microsoft.com/download) |
-| **Docker Desktop** | Latest | Must be running for Neo4j |
-| **AI Endpoint** | — | Azure endpoint + `az login`, or GitHub `gh auth login`, or API Key |
-
-### Supported AI Providers
-
-This project supports **four AI providers** with automatic model capability detection:
-
-| Provider | ServiceType | Models | Auth | Interface |
-|----------|------------|--------|------|-----------|
-| **Azure OpenAI** | `AzureOpenAI` | `gpt-5.1-codex-mini`, `gpt-5.2-chat` | API Key or `az login` (Entra ID) | `ResponsesApiClient` (Codex) + `IChatClient` |
-| **GitHub Copilot** | `GitHubCopilot` | Claude Opus/Sonnet, Codex, GPT, Grok | GitHub PAT (`GITHUB_TOKEN`) | `IChatClient` via `models.github.ai` |
-| **GitHub Copilot SDK** | `GitHubCopilotSDK` | All Copilot models | `gh auth login` (CLI) | `CopilotChatClient` via stdio |
-| **OpenAI** | `OpenAI` | GPT-4o, o3, etc. | OpenAI API key | `IChatClient` |
-
-**Model-Aware Reasoning** — The framework auto-detects model capabilities from the model ID and adapts its reasoning strategy:
-
-| Model Family | Detection | Reasoning Strategy | Applied Via |
-|-------------|-----------|-------------------|-------------|
-| **Codex/o-series** | `codex`, `o1`, `o3` in model ID | `reasoning.effort` (low/medium/high) | Responses API or `AdditionalProperties` |
-| **Claude** | `claude` in model ID | Extended thinking with `budget_tokens` | `AdditionalProperties["thinking"]` |
-| **GPT** | `gpt-4`, `gpt-5` in model ID | Standard (temperature=0.1) | `ChatOptions.Temperature` |
-| **Grok** | `grok` in model ID | Standard (temperature=0.1) | `ChatOptions.Temperature` |
-
-> **All models get the same three-tier content-aware complexity scoring** — COBOL source is analyzed for SQL, CICS, REDEFINES, etc. to determine LOW/MEDIUM/HIGH complexity. The complexity tier drives both `MaxOutputTokens` sizing and the model-specific reasoning parameter.
-
-> ⚠️ **Want to use different models?** Just change `AZURE_OPENAI_MODEL_ID` and `AZURE_OPENAI_SERVICE_TYPE`. The framework auto-detects capabilities — no code changes needed.
-
-> [!IMPORTANT]
-> **Azure OpenAI Quota Recommendation: 1M+ TPM**
-> 
-> For optimal performance, we recommend setting your Azure OpenAI model quota to **1,000,000 tokens per minute (TPM)** or higher.
-> 
-> | Quota | Experience |
-> |-------|------------|
-> | 300K TPM | Works, but slower with throttling pauses |
-> | **1M TPM** | **Recommended** - smooth parallel processing |
-> 
-> **Higher quota = faster migration.** The tool processes multiple files and chunks in parallel, so more TPM means less waiting.
-> 
-> To increase quota: Azure Portal → Your OpenAI Resource → Model deployments → Edit → Tokens per Minute
-
-#### Parallel Jobs Formula
-
-To avoid throttling (429 errors), use this formula to calculate safe parallel job limits:
-
-```
-                        TPM × SafetyFactor
-MaxParallelJobs = ─────────────────────────────────
-                  TokensPerRequest × RequestsPerMinute
-```
-
-**Where:**
-- **TPM** = Your Azure quota (tokens per minute)
-- **SafetyFactor** = 0.7 (recommended, see below)
-- **TokensPerRequest** = Input + Output tokens (~30,000 for code conversion)
-- **RequestsPerMinute** = 60 / SecondsPerRequest
-
-**Understanding SafetyFactor (0.7 = 70%):**
-
-The SafetyFactor reserves headroom below your quota limit to handle:
-
-| Why You Need Headroom | What Happens Without It |
-|----------------------|------------------------|
-| **Token estimation variance** | AI responses vary in length - a 25K estimate might actually be 35K |
-| **Burst protection** | Multiple requests completing simultaneously can spike token usage |
-| **Retry overhead** | Failed requests that retry consume additional tokens |
-| **Shared quota** | Other applications using the same Azure deployment |
-
-| SafetyFactor | Use Case |
-|--------------|----------|
-| 0.5 (50%) | Shared deployment, conservative, many retries expected |
-| **0.7 (70%)** | **Recommended** - good balance of speed and safety |
-| 0.85 (85%) | Dedicated deployment, stable workloads |
-| 0.95+ | ⚠️ Risky - expect frequent 429 throttling errors |
-
-**Example Calculation:**
-
-| Your Quota | Tokens/Request | Request Time | Safe Parallel Jobs |
-|------------|----------------|--------------|-------------------|
-| 300K TPM | 30K | 30 sec | `(300,000 × 0.7) / (30,000 × 2)` = **3-4 jobs** |
-| 1M TPM | 30K | 30 sec | `(1,000,000 × 0.7) / (30,000 × 2)` = **11-12 jobs** |
-| 2M TPM | 30K | 30 sec | `(2,000,000 × 0.7) / (30,000 × 2)` = **23 jobs** |
-
-**Configure in `appsettings.json`:**
-```json
-{
-  "ChunkingSettings": {
-    "MaxParallelChunks": 6,        // Parallel code conversion jobs
-    "MaxParallelAnalysis": 6,      // Parallel analysis jobs
-    "RateLimitSafetyFactor": 0.7,  // 70% of quota
-    "TokenBudgetPerMinute": 300000 // Match your Azure TPM quota
-  }
-}
-```
-
-> 💡 **Rule of thumb:** With 1M TPM, use `MaxParallelChunks: 6` for safe operation. Scale proportionally with your quota.
-
-### Framework: Microsoft.Extensions.AI
-
-This project uses **Microsoft.Extensions.AI** — the standard .NET AI abstraction layer.
-
-```xml
-<!-- From CobolToQuarkusMigration.csproj -->
-<PackageReference Include="Microsoft.Extensions.AI" Version="10.0.1" />
-<PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.3.0" />
-```
-
-**Why Microsoft.Extensions.AI?**
-- Standard `IChatClient` abstraction built into the .NET platform
-- Provider-agnostic — works with Azure OpenAI, GitHub Copilot SDK, and OpenAI
-- Native support for both Responses API and Chat Completions API
-- Lightweight with no framework lock-in
-
-### Setup (2 minutes)
-
-```bash
-# 1. Clone and enter
-git clone https://github.com/Azure-Samples/Legacy-Modernization-Agents.git
-cd Legacy-Modernization-Agents
-
-# 2. Configure AI provider
-cp Config/ai-config.local.env.example Config/ai-config.local.env
-# Edit: _MAIN_ENDPOINT (required), _CODE_MODEL / _CHAT_MODEL (optional)
-# Auth: use 'az login' (recommended) OR set _MAIN_API_KEY
-# See azlogin-auth-guide.md for Entra ID setup details
-
-# 3. Start services (Neo4j for dependency graphs)
-docker-compose up -d neo4j
-
-# 4. Build
-dotnet build
-
-# 5. Run migration (recommended entry point)
-./doctor.sh run
-```
-
-### Service Installation
-
-All backend services are defined in `docker-compose.yml` and managed via Docker Compose. Start them individually or all at once:
-
-```bash
-# Core services (migration + portal)
-docker-compose up -d neo4j            # Dependency graph DB (bolt://localhost:7687, HTTP: localhost:7474)
-docker-compose up -d portal           # Web portal at http://localhost:5028
-
-# Cobol-REKT services (static analysis — AST, CFG, data flow)
-docker-compose up -d cobol-rekt-neo4j # Separate Neo4j for REKT graphs (bolt://localhost:7688, HTTP: localhost:7475)
-docker-compose up -d cobol-rekt       # Java CLI — parses COBOL into AST/CFG/Data JSON
-docker-compose up -d graph-populator  # Python — ingests REKT JSON + MMA metadata into Neo4j
-
-# Start everything
-docker-compose up -d
-```
-
-| Service | Container | Ports | Purpose |
-|---------|-----------|-------|---------|
-| `neo4j` | `cobol-migration-neo4j` | 7474 (HTTP), 7687 (Bolt) | Dependency graph storage for migration |
-| `portal` | `cobol-migration-portal` | 5028 | Web UI — chat, graphs, reports, prompt studio |
-| `cobol-rekt-neo4j` | `cobol-rekt-neo4j` | 7475 (HTTP), 7688 (Bolt) | Unified graph for AST/CFG/Data flow |
-| `cobol-rekt` | `cobol-rekt` | — | Java CLI sidecar for COBOL parsing |
-| `graph-populator` | `cobol-graph-populator` | — | Python ingester for REKT JSON into Neo4j |
-
-#### Local Development (Graph Populator)
-
-To run the graph populator outside Docker:
-
-```bash
-cd tools/graph-populator
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python orchestrate.py --help
-```
-
----
-
-## 🎯 Usage: doctor.sh
-
-**Always use `./doctor.sh run` to run migrations, not `dotnet run` directly.**
-
-### Main Commands
-
-```bash
-./doctor.sh run           # Full migration: analyze → convert → launch portal
-./doctor.sh portal        # Launch web portal only (http://localhost:5028)
-./doctor.sh reverse-eng   # Extract business logic, persist to DB, launch portal
-./doctor.sh convert-only  # Conversion only; prompts to reuse persisted RE context
-```
-
-#### Business Logic Persistence and --reuse-re
-
-After every `reverse-eng` or full `run`, extracted business logic is persisted to the SQLite database. This enables three distinct conversion modes:
-
-| Mode | Command | RE context in prompts? |
-|------|---------|------------------------|
-| Full migration | `./doctor.sh run` | ✅ Yes — RE runs first, results injected automatically |
-| Pure conversion | `./doctor.sh convert-only` → answer **N** | ❌ No context |
-| Conversion + cached RE | `./doctor.sh convert-only` → answer **Y** | ✅ Yes — loads persisted results from last RE run |
-
-The `--reuse-re` flag can also be passed directly: `dotnet run -- --source ./source --skip-reverse-engineering --reuse-re`.
-
-Persisted RE results are visible in the portal — each run card has a **🔬 RE Results** button that shows per-file story/feature/rule counts and lets you delete results you are unsatisfied with.
-
-### doctor.sh run - Interactive Options
-
-When you run `./doctor.sh run`, you'll be prompted:
-
-```
-╔══════════════════════════════════════════════════════════════╗
-║   COBOL Migration - Target Language Selection                ║
-╚══════════════════════════════════════════════════════════════╝
-
-Select target language:
-  [1] Java Quarkus
-  [2] C# .NET
-
-Enter choice (1-2): 
-```
-
-After migration completes:
-```
-Migration complete! Generate report? (Y/n): Y
-Launch web portal? (Y/n): Y
-```
-
-### Speed Profile
-
-After selecting your action and target language, `doctor.sh` prompts for a **speed profile** that controls how much reasoning effort the AI model spends per file. This applies to migrations, reverse engineering, and conversion-only runs.
-
-```
-Speed Profile
-======================================
-  1) TURBO
-  2) FAST
-  3) BALANCED (default)
-  4) THOROUGH
-
-Enter choice (1-4) [default: 3]:
-```
-
-| Profile | Reasoning Effort | Max Output Tokens | Best For |
-|---------|-----------------|-------------------|----------|
-| **TURBO** | Low on ALL files, no exceptions | 65,536 | Testing, smoke runs. Speed from low reasoning effort, not token starvation. |
-| **FAST** | Low on most, medium on complex | 32,768 | Quick iterations, proof-of-concept runs. Good balance of speed and quality. |
-| **BALANCED** | Content-aware (low/medium/high based on file complexity) | 100,000 | Production migrations. Simple files get low effort, complex files get high effort. |
-| **THOROUGH** | Medium-to-high on all files | 100,000 | Critical codebases where accuracy matters more than speed. Highest token cost. |
-
-The speed profile works by setting environment variables that override the three-tier content-aware reasoning system configured in `appsettings.json`. No C# code changes are needed — the existing `Program.cs` environment variable override mechanism handles everything at startup.
-
-### Other Commands
-
-```bash
-./doctor.sh               # Health check - verify configuration
-./doctor.sh test          # Run system tests
-./doctor.sh setup         # Interactive setup wizard
-./doctor.sh chunking-health  # Check smart chunking configuration
-```
-
-### Cobol-REKT: Static Analysis Pipeline
-
-Cobol-REKT provides deep structural analysis — AST, control flow graphs (CFG), and data flow extraction — independent of the AI-driven migration. It uses a Java-based COBOL parser ([smojol-cli](https://github.com/avishek-sen-gupta/cobol-rekt)) and ingests results into a dedicated Neo4j instance.
-
-#### REKT Commands
-
-```bash
-./doctor.sh rekt          # Parse all COBOL files → AST/CFG/Data JSON in output/rekt/
-./doctor.sh rekt-ingest   # Ingest parsed JSON into the REKT Neo4j graph
-./doctor.sh rekt-full     # Full pipeline: parse → ingest → launch portal
-./doctor.sh rekt-status   # Show container status, graph node counts, output file counts
-```
-
-#### Typical Workflow
-
-```bash
-# 1. Drop COBOL files into source/
-cp *.cbl source/
-
-# 2. Run the full REKT pipeline (parse + ingest + portal)
-./doctor.sh rekt-full
-```
-
-This will:
-1. Start the `cobol-rekt` and `cobol-rekt-neo4j` containers automatically
-2. Preprocess source files for IMS/DLI compatibility if needed
-3. Parse each `.cbl` file with up to 4 fallback strategies (standard → no-dialect → raw AST → dependency-only)
-4. Ingest the resulting JSON into Neo4j at `bolt://localhost:7688`
-5. Offer to launch the web portal
-
-#### REKT Output
-
-Parsed results land in `output/rekt/<program>.cbl.report/`:
-
-```
-output/rekt/
-└── CUSTOMER.cbl.report/
-    ├── ast/        # Abstract Syntax Tree (full parse tree)
-    ├── cfg/        # Control Flow Graph (paragraph-level flow)
-    └── data/       # Data structures (WORKING-STORAGE, LINKAGE)
-```
-
-Browse the graph at http://localhost:7475 (Neo4j Browser for the REKT instance).
-
----
-
-## 📝 Reverse Engineering Reports
-
-**Reverse Engineering (RE)** extracts business knowledge from COBOL code **before** any conversion happens. This is the "understand first" phase.
-
-### What It Does
-
-The `BusinessLogicExtractorAgent` analyzes COBOL source code and produces human-readable documentation that captures:
-
-| Output | Description | Example |
-|--------|-------------|---------|
-| **Business Purpose** | What problem does this program solve? | "Processes monthly customer billing statements" |
-| **Use Cases** | CRUD operations identified | CREATE customer, UPDATE balance, VALIDATE account |
-| **Business Rules** | Validation logic as requirements | "Account number must be 10 digits" |
-| **Data Dictionary** | Field meanings in business terms | `WS-CUST-BAL` → "Customer Current Balance" |
-| **Dependencies** | What other programs/copybooks it needs | CALLS: PAYMENT.cbl, COPIES: COMMON.cpy |
-
-### Why This Helps
-
-| Benefit | How |
-|---------|-----|
-| **Knowledge Preservation** | Documents tribal knowledge before COBOL experts retire |
-| **Migration Planning** | Understand complexity before estimating conversion effort |
-| **Validation** | Business team can verify extracted rules match expectations |
-| **Onboarding** | New developers understand legacy systems without reading COBOL |
-| **Compliance** | Audit trail of business rules for regulatory requirements |
-
-### Running Reverse Engineering Only
-
-```bash
-./doctor.sh reverse-eng    # Extract business logic, persist to DB, launch portal
-```
-
-This generates `output/reverse-engineering-details.md` and persists the extracted business logic to the SQLite database. Results can be reused in a later `convert-only` run (see [Business Logic Persistence and --reuse-re](#business-logic-persistence-and---reuse-re)).
-
-### Sample Output
-
-```markdown
-# Reverse Engineering Report: CUSTOMER.cbl
-
-## Business Purpose
-Manages customer account lifecycle including creation, 
-balance updates, and account closure with audit trail.
-
-## Use Cases
-
-### Use Case 1: Create Customer Account
-**Trigger:** New customer registration request
-**Key Steps:**
-1. Validate customer data (name, address, tax ID)
-2. Generate unique account number
-3. Initialize balance to zero
-4. Write audit record
-
-### Use Case 2: Update Balance
-**Trigger:** Transaction posted to account
-**Business Rules:**
-- Balance cannot go negative without overdraft flag
-- Transactions > $10,000 require manager approval code
-
-## Business Rules
-| Rule ID | Description | Field |
-|---------|-------------|-------|
-| BR-001 | Account number must be exactly 10 digits | WS-ACCT-NUM |
-| BR-002 | Customer name is required (non-blank) | WS-CUST-NAME |
-```
-
-### Glossary Integration
-
-Add business terms to `Data/glossary.json` for better translations:
-
-```json
-{
-  "terms": [
-    { "term": "WS-CUST-BAL", "translation": "Customer Current Balance" },
-    { "term": "CALC-INT-RT", "translation": "Calculate Interest Rate" },
-    { "term": "PRCS-PMT", "translation": "Process Payment" }
-  ]
-}
-```
-
-The extractor uses these translations to produce more readable reports.
-
----
-
-## 🖥️ Portal Features
-
-Once a migration run has produced data, the portal at **http://localhost:5028** becomes a self-service control surface. The next sub-sections walk through the portal in the order a typical user encounters them — from picking a model, through chatting with the code or report, into the static-analysis pipeline that powers every dashboard, and finally the planning view that turns the analysis into a wave-by-wave migration timeline.
-
-### Portal Overview
-
-The portal at **http://localhost:5028** is organised into four columns / panels:
-
-| Panel | Contents |
+| You want to… | Read |
 |---|---|
-| **🚀 Mission Control** (left) | Provider/model picker, language target, file upload, run commands (Full Migration / RE / Convert / Resume), live run log |
-| **📋 MCP Resources** (left, below) | Live list of `insights://runs/<id>/...` URIs published by the MCP server (summary, dependencies, analyses, etc.) — updates after every run |
-| **💬 Chat History** (left, below) | ChatGPT-style sidebar — every conversation with the codebase is auto-saved (localStorage), bucketed by *Today / Yesterday / Previous 7 days / Older*, searchable, click any entry to resume |
-| **🤖 AI Chat** (centre) | Multi-turn transcript with markdown rendering, per-message scope tag (`🗄️ Database` or `📊 <report-name>`), copy buttons, pending dot animation, model + run-id metadata. Toggle **📊 Chat with RE Report** above the prompt to answer strictly from a generated reverse-engineering report instead of the migration database |
-| **📊 Dashboards** (right) | Tabbed: Architecture · Dependency Graph · Control Flow · AST Explorer · **AST Galaxy** (2D/3D, multiple view modes incl. Service Catalog Expanded 3D and Technical Expanded v2 swim-lane) · **Migration Planner** with weighted scoring, replatform recommender, editable Strategy Workbook, and live Gantt chart · **🏛️ Target Architecture** with per-program 7-Rs recommendation + AI-agent-ready JSON · Portfolio · Complexity |
-
-**Key dashboards added in v3.4:**
-
-- **AST Galaxy** — 2D (vis-network) and **3D** (3d-force-graph) views of the program-level dependency universe. View modes include *Service Catalog (Expanded)*, *Service Catalog (Expanded 3D)*, and *Technical (Expanded v2)* — a north-to-south swim-lane layout that traces communication paths cleanly across programs. Floating mode-aware legend, cancel-resume layout buttons, click-to-inspect, double-click-to-drill into the AST Explorer.
-- **Migration Planner** — interactive lowest-hanging-fruit scorer. Sliders: max LOC / complexity / SQL / CALLs / criticality. Weight sliders to bias the score. Programs are bucketed into 3 waves (lowest-hanging fruit → medium → hubs). Includes an *editable Strategy Workbook* (6 sheets) that exports to multi-sheet `.xlsx`, a **collapsible Gantt chart** wired live to workbook edits (edit a Start week / Wave / Assigned to → bar moves), and a **⇄ Replatform recommender** that flags too-hard programs as candidates for hosting on a managed COBOL runtime instead of rewriting.
-- **🏛️ Target Architecture** — industry-neutral cloud-native microservices recommendation. Maps every scanned program to a target component (web UI, API gateway, business logic / data / identity service, batch worker, reporting, event bus, relational DB, object storage, observability, shared libraries) plus a modernization strategy (Retire / Rehost / Replatform / Rearchitect / Replace), wave, complexity score, and concrete migration notes. Includes a tailored Mermaid diagram that adapts to the scanned codebase (hides empty components) with zoom + fullscreen, grouped + collapsible source-to-target mapping, and a *💾 Save for AI agent* button that persists the JSON plan to `output/rekt/target-architecture.json` for downstream conversion agents. See [`docs/target-architecture-recommendation.md`](docs/target-architecture-recommendation.md).
-- **Latest-run-per-file dedup** — every Neo4j-backed endpoint applies a "latest scan run per file" filter so dashboards never show duplicate program rows from older scans.
-
-**Portal URL:** http://localhost:5028
+| Get a converted Java file in 5 minutes | [`docs/quick-guide.md`](docs/quick-guide.md) |
+| Full step-by-step setup walkthrough | [`docs/quick-start.md`](docs/quick-start.md) |
+| Understand how REKT hands off to agents | [Architecture](#architecture) below |
+| Set up the portal UI | [`./doctor.sh portal`](#portal) below |
+| Reference all `doctor.sh` commands | [Doctor.sh reference](#doctorsh-reference) below |
 
 ---
 
-## 🤖 AI Provider Setup, Prompt Studio & Chat
+## Architecture
 
-These three browser-side features turn the portal into a full self-service control surface — pick a model, edit the agent prompts, and chat with the codebase or generated documents — without leaving the page.
+The platform is split into three orthogonal layers. Each layer can be inspected, replayed, and improved independently.
 
-### AI Provider Setup
+```mermaid
+flowchart TB
+    subgraph SRC ["📂 source/ (input)"]
+        CBL[*.cbl programs]
+        CPY[*.cpy copybooks]
+        JCL[*.jcl jobs]
+    end
 
-A modal accessible from the **🔧 Setup** button (in the *Model & Prompts* panel). It supports two providers and discovers actual models on the fly:
+    subgraph REKT ["🔬 Layer 1 — Cobol-REKT static analysis (deterministic)"]
+        PARSE[smojol parser<br/>./doctor.sh rekt-full]
+        AST[output/rekt/*.ast.json<br/>CFG + data-flow]
+        NEO[(Neo4j graph<br/>:7475)]
+        FACTS[output/rekt/*.facts.json<br/>program-facts projection]
+        PARSE --> AST
+        PARSE --> NEO
+        AST -->|program-facts extract| FACTS
+    end
 
-| Provider | Authentication | What gets discovered |
+    subgraph AGENTS ["🤖 Layer 2 — Converter agents (LLM-driven)"]
+        DEP[DependencyMapper]
+        ROUTE[SmartMigrationOrchestrator]
+        JAVA[JavaConverterAgent]
+        CSHARP[CSharpConverterAgent]
+        CHUNK_J[ChunkAwareJavaConverter]
+        CHUNK_C[ChunkAwareCSharpConverter]
+        ROUTE -->|small| JAVA
+        ROUTE -->|small| CSHARP
+        ROUTE -->|large| CHUNK_J
+        ROUTE -->|large| CHUNK_C
+    end
+
+    subgraph OUT ["📦 Layer 3 — Output + telemetry"]
+        CODE[output/java/<br/>or output/csharp/]
+        METRICS[output/.metrics/runId.jsonl<br/>projection / llm_call / quality / cache / reassembly]
+        DB[(Data/migration.db<br/>Data/benchmark.db<br/>Data/projection-cache.db)]
+    end
+
+    SRC --> PARSE
+    FACTS --> ROUTE
+    NEO -.->|portal queries| PORTAL[Portal UI<br/>:5028]
+    JAVA --> CODE
+    CSHARP --> CODE
+    CHUNK_J --> CODE
+    CHUNK_C --> CODE
+    JAVA -.-> METRICS
+    CSHARP -.-> METRICS
+    CHUNK_J -.-> METRICS
+    CHUNK_C -.-> METRICS
+    METRICS -->|ingest-metrics.py| DB
+```
+
+### Why this design beats raw "feed the whole program to an LLM"
+
+| Problem | This framework's answer |
+|---|---|
+| Large programs blow past context windows | Smart orchestrator detects size → routes to chunk-aware converter → REKT facts injected per chunk give the LLM the global picture even when it sees a slice |
+| LLM hallucinates field names, CALL targets, copybook structure | Facts JSON locks structural truth — every field, every CALL, every section comes from REKT, not from the LLM's guess |
+| Token costs scale linearly with corpus | Program-facts projection is 60–90 % smaller than raw AST → less context per call → projection-block cache makes per-chunk reuse free |
+| No way to know if generated code is correct | Compile-success quality gate (`tools/check-compile.sh`) + structured `quality_metrics` event per run; reassembly sanity (`reassembly_metrics`) catches chunk-stitching defects |
+| Cannot reproduce or debug a run | Every projection block hashed (`projectionHash`), every LLM call timed (`llm_call`), every cache decision logged (`cache_event`); replay with `python3 tools/ingest-metrics.py --report` |
+
+---
+
+## REKT-to-Agent handover (the heart of the design)
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant doctor as ./doctor.sh
+    participant REKT as Cobol-REKT
+    participant Facts as program-facts<br/>extractor
+    participant Orch as SmartMigration<br/>Orchestrator
+    participant Agent as Converter Agent<br/>(single-shot or chunked)
+    participant Cache as ProjectionCache<br/>(SQLite)
+    participant LLM as LLM provider<br/>(Azure / Copilot)
+    participant Out as output/
+
+    User->>doctor: rekt-full
+    doctor->>REKT: parse source/*.cbl
+    REKT->>doctor: AST + CFG + data-flow JSON
+    doctor->>doctor: ingest into Neo4j
+    Note over doctor: Once per source change
+
+    User->>doctor: convert-only --program X
+    doctor->>Facts: extract facts.json for X
+    Facts->>doctor: X.facts.json
+    doctor->>Orch: convert(X, facts)
+    Orch->>Orch: size analysis — chunked vs single-shot?
+    Orch->>Agent: convert(X, facts)
+    Agent->>Cache: GetOrBuild(input_hash)
+    alt cache miss
+        Cache->>Agent: build projection block (PR4)
+        Agent->>Cache: store
+    else cache hit (chunk N+1 of same program, or re-run)
+        Cache->>Agent: cached block (0 build cost)
+    end
+    Agent->>LLM: prompt(system + COBOL source + projection block)
+    LLM->>Agent: Java/C# code (streamed)
+    Agent->>Out: write *.java + emit metrics
+    Note over Agent: projection_metrics, llm_call,<br/>cache_event, (if chunked)<br/>reassembly_metrics
+```
+
+### Why the projection beats raw AST
+
+A typical `*.facts.json` is ~2 KB. The equivalent raw AST blob is 8–10 KB. The projection contains:
+
+- 01-level data groups (one per DTO/record to emit)
+- CALL targets (one per service interface to `@Inject`)
+- COPY copybook usage (for shared-type resolution)
+- SQL statements (for `@Transactional` placement)
+- BMS / IMS / CICS handlers (for transaction boundaries)
+- Confidence + warnings (so the LLM knows what REKT could not extract)
+
+Result observed across the test corpus:
+
+| Program | LoC | Raw REKT context | Projection | **Reduction** |
+|---|---:|---:|---:|---:|
+| BDSM043 | 203 | 1854 tok | 604 tok | **67 %** |
+| BDSDA23 | 236 | 5386 tok | 739 tok | **86 %** |
+| RGNB649 | 715 | 8276 tok | 883 tok | **89 %** |
+| BDSDA2F | 786 | 3086 tok | 646 tok | **79 %** |
+| BDSMFJL | 1513 | 4650 tok | 708 tok | **85 %** |
+
+Reduction scales **with** complexity — exactly the property you want for enterprise estates.
+
+---
+
+## How large programs are handled (chunked conversion)
+
+When a program exceeds the orchestrator's size budget, it's routed to a chunk-aware converter. **Crucially, the same facts.json is injected into every chunk** — the LLM always sees the global structural picture, even when it only sees a slice of the source:
+
+```mermaid
+flowchart LR
+    PROG[Large program<br/>1500+ LoC]
+    PROG --> SPLIT[Smart chunker<br/>splits on COBOL boundaries]
+    SPLIT --> C1[Chunk 1]
+    SPLIT --> C2[Chunk 2]
+    SPLIT --> CN[Chunk N]
+    FACTS[program-facts.json<br/>2 KB]
+    FACTS -.->|ProjectionCache<br/>1 build + N-1 hits| C1
+    FACTS -.-> C2
+    FACTS -.-> CN
+    C1 --> LLM[LLM]
+    C2 --> LLM
+    CN --> LLM
+    LLM --> ASM[Assembler<br/>reassembles chunks]
+    ASM --> CHECK[Reassembly sanity<br/>brace + orphan checks]
+    CHECK --> JAVA[Final .java]
+```
+
+Concrete telemetry from a 6-chunk BDSMFJL run:
+- 1 × `cache_event: miss-store` (first chunk builds projection)
+- 5 × `cache_event: hit` (subsequent chunks reuse projection — **83 % hit rate**)
+- 6 × `projection_metrics` (one per chunk, `projectionCacheHit: true` on the last 5)
+- 6 × `llm_call` (one per chunk)
+- 1 × `reassembly_metrics` (brace balance + orphan check after stitching)
+- 1 × `quality_metrics` (compile-success post-run)
+
+---
+
+## doctor.sh reference
+
+Everything ships through one script. Run `./doctor.sh help` for the full list; the essentials:
+
+### Setup & diagnostics
+
+```bash
+./doctor.sh setup        # interactive: configure AI provider, write Config/ai-config.local.env
+./doctor.sh doctor       # verify .NET, Docker, Java, auth, model deployments
+./doctor.sh test         # full system validation (build + smoke convert)
+```
+
+### REKT static analysis (run once per source change)
+
+```bash
+./doctor.sh rekt-full    # parse + ingest into Neo4j + launch portal     ← typical
+./doctor.sh rekt-parse   # parse only (no Neo4j ingest)
+./doctor.sh rekt-ingest  # ingest only (after a manual parse)
+./doctor.sh rekt-status  # what's been scanned, what's stale
+```
+
+REKT writes `output/rekt/<program>.{ast,cfg,data}.json` and ingests the same graph into Neo4j on port 7475 (browser: `http://localhost:7475`).
+
+### Conversion
+
+```bash
+# Single program (fastest path — skips reverse engineering)
+./doctor.sh convert-only --program ACCTMGR --target java
+
+# With full reverse-engineering analysis upfront
+./doctor.sh run --program ACCTMGR --target java
+
+# By migration wave (requires Target Architecture saved in portal first)
+./doctor.sh convert-only --wave 1 --target csharp
+
+# Transitive closure
+./doctor.sh convert-only --program ACCTMGR --include-callees   # everything ACCTMGR calls
+./doctor.sh convert-only --program ACCTMGR --include-callers   # everything that calls ACCTMGR
+
+# By CICS transaction code
+./doctor.sh run --transaction CT01 --include-callees
+```
+
+### Portal
+
+```bash
+./doctor.sh portal       # launch McpChatWeb at http://localhost:5028
+```
+
+The portal provides:
+- **Mission Control** — real-time run monitoring, colour-coded logs, output explorer
+- **AST Galaxy Explorer** — interactive graph visualisation of the REKT-parsed estate
+- **C4 Dashboard** — system context / container / component / code views
+- **Target Architecture** — assign programs to migration waves, save plans for agent consumption
+- **Convert modal** — pick programs/transactions/waves and trigger conversion from the UI
+- **Reverse Engineering Reports** — business purpose, business rules, use cases per program
+- **Migration Planner** — domain-based time/effort chart
+
+See [docs/quick-start.md §Portal](docs/quick-start.md) for the full walkthrough.
+
+---
+
+## Output & telemetry
+
+Per conversion run you get:
+
+- **Generated code** — `output/java/com/example/*/*.java` or `output/csharp/`
+- **Migration report** — `output/java/migration-report.md` (Markdown summary, file mapping, dependency analysis)
+- **Run record** — `Data/migration.db` row (runs table)
+- **Structured metrics** — `output/.metrics/<runId>.jsonl` with 5 event types:
+  - `projection_metrics` — projection vs raw-rekt decision + token counts + hash
+  - `llm_call` — per-call latency, completion tokens, outcome
+  - `quality_metrics` — compile success, error count, generated class count
+  - `cache_event` — hit / miss-store / bypass-disabled for the projection cache
+  - `reassembly_metrics` — brace balance + orphan check for chunked output
+- **Analytics DB** — `Data/benchmark.db` (built by `tools/ingest-metrics.py`)
+- **Projection cache** — `Data/projection-cache.db` (SQLite, hash-keyed, 80 % hit rate observed on chunked path)
+
+Run `python3 tools/ingest-metrics.py --rebuild --report` for an aggregated view across all runs.
+
+---
+
+## Configuration reference
+
+Drop a `Config/ai-config.local.env` produced by `./doctor.sh setup`. Common environment overrides:
+
+| Variable | Default | Effect |
 |---|---|---|
-| **☁️ Azure OpenAI** | API key, or Azure CLI (`az login`) → falls back to `DefaultAzureCredential` | Real deployed models in your resource via the ARM management API — deployment name, base model, version, SKU capacity |
-| **🤖 GitHub Copilot SDK** | `gh auth login` (CLI session, default) or a Personal Access Token | Every model the Copilot SDK exposes (Claude / GPT-5 / Codex / Gemini / Grok / Llama / Mistral) |
-
-The chosen provider + model is persisted to `Config/ai-config.local.env` (auto-loaded at portal startup — no need to `source` anything in your shell).
-
-![AI Provider Setup modal](docs/images/ai-provider-setup.png)
-
-The portal also auto-resolves a usable Copilot CLI binary (`Services/CopilotCliResolver.cs`) — if the SDK's NuGet build target couldn't download the binary, the portal will use a system install (`/opt/homebrew/bin/copilot`, `/usr/local/bin/copilot`, anything on `$PATH`, or `$COPILOT_CLI_PATH`).
-
-### Prompt Studio
-
-Every agent in the pipeline (`CobolAnalyzer`, `BusinessLogicExtractor`, `DependencyMapper`, `JavaConverter`, `CSharpConverter`, `ChunkAwareJavaConverter`, `ChunkAwareCSharpConverter`, plus the REKT-grounded agents `StructuralExtractor`, `ConversionParity`, `CodeReviewer`, `DataMapping`, `TestSynthesizer`, `MigrationSummary`, `DocumentationAgent`) is driven by an editable Markdown prompt under `Agents/Prompts/`. Prompt Studio gives you two paths to (re)generate all of them based on what's actually in your `source/` folder, plus three platform tools to experiment safely:
-
-| Button | Purpose |
-|---|---|
-| **ℹ️ How to use** | In-app guide explaining every other button and the recommended workflow. Click it first. |
-| **🧪 Regression** | Runs 21 static checks asserting every hard rule still appears in every prompt, every `{{include}}` resolves, and the two golden COBOL programs are intact. Green ✓ = safe; red ✗ tells you exactly which rule went missing. Smoke alarm for prompts, not a quality grade. |
-| **💰 Tokens** | Per-agent token usage parsed live from `Logs/FULL_CHAT_LOG_*.md` — Calls, Total, Mean, p50, p95, Max. Configurable window: 30 min / 1 h / 2 h / 4 h / 8 h / 1 day / 7 days. Shows which agent is the budget hog and where the expensive outliers live. |
-| **🚀 Prompt Studio** | Generate / AI-enhance all prompts based on your codebase (see modes below). |
-| **📜 History** (per prompt) | Lists every saved version (auto-archived to `Agents/Prompts/_history/` on each save, git-ignored) with a colour-coded diff vs the current file. Revert with one click. |
-| **🔍 Score** (per prompt) | AI grades the prompt 1–10 and explains what's good / weak. Opinion, not verdict — pair with 🧪 Regression. |
-| **⚡ Generate** (per prompt) | Re-analyses your source and proposes a fresh prompt for one specific agent. Heavy; use sparingly. Always 📜 History the old version first. |
-| **✏️ Edit** (per prompt) | Inline editor. Save auto-archives the previous version. |
-
-| Generation mode | Cost | Speed | What it does |
-|---|---|---|---|
-| **⚡ Quick Generate** | Free, no AI call | < 1 s | Scans source files with regex pattern matching to detect COBOL features (EXEC SQL, CICS screens, file I/O, copybooks, architecture pattern) and builds tailored prompts from templates. |
-| **🧠 AI-Enhanced Generate** | One AI call (~4K tokens) | 10–30 s | Same regex pass first, then sends actual COBOL code samples (3 largest programs + 2 largest copybooks) to the active model. The model adds domain-specific enhancements regex can't detect (naming conventions, business-logic patterns, language-specific variables, error-handling idioms) and assigns a quality score (1–10) per agent prompt. |
-
-#### Recommended workflow
-
-1. **Look first** — open the studio, check the quality scores.
-2. **🧪 Regression once** — confirm a baseline green (21 passed).
-3. **💰 Tokens** — pick the highest-spending agent. That's where edits will save real money.
-4. **✏️ Edit** — one focused change at a time.
-5. **🔍 Score** — sanity-check the edit didn't make things obviously worse.
-6. **🧪 Regression again** — if red, fix or revert via 📜 History.
-7. **Run a small conversion** (Convert modal → one program) to confirm the change helps in practice.
-8. **💰 weekly, 🧪 before every PR** — watch for drift; keep prompts strong.
-
-#### Where is the data stored?
-
-| Artefact | Location | Lifetime |
-|---|---|---|
-| Live prompt files | `Agents/Prompts/*.md` | Tracked in git |
-| Knowledge fragments | `Agents/Prompts/knowledge/*.md` | Tracked in git |
-| Saved versions | `Agents/Prompts/_history/<agent>.<UTC-timestamp>.md` | Local only — git-ignored |
-| Quality scores | `Agents/Prompts/.prompt-scores.json` | Local only — git-ignored |
-| Token usage source | `Logs/FULL_CHAT_LOG_*.md` | Local only — git-ignored |
-| Regression golden programs | `tests/prompt-regression/programs/` | Tracked in git |
-| Regression baselines | `tests/prompt-regression/baselines/baseline.json` | Tracked in git |
-
-Token usage is **parsed live** on every 💰 click — there is no separate database. If you delete the chat logs the panel will simply show "no data in window".
-
-![Prompt Studio](docs/images/prompt-studio.png)
-
-### Chat with your code, database, or RE report
-
-The chat panel is a multi-turn ChatGPT-style transcript with a localStorage-backed history sidebar (bucketed by *Today / Yesterday / Previous 7 days / Older*, searchable, click-to-resume). Above the prompt sits the **📊 Chat with RE Report** context bar — the single switch between two answer-source scopes:
-
-| Toggle state | Source the AI sees | Backend path |
-|---|---|---|
-| **OFF — Database mode** (default) | Live SQLite (migration metadata) + Neo4j (dependency graph + REKT analysis) extracts | MCP/SQLite/file-pattern code paths in `/api/chat` |
-| **ON — Report mode** | Up to 100 KB of the selected reverse-engineering report (`reverse-engineering-details.md` or any other `.md` in `output/`) | Short-circuits to a strict report-only prompt — *"answer from this report; if it doesn't say, say so explicitly"* |
-
-A purple system notice appears in the transcript whenever the scope changes, and every user/assistant bubble shows its scope tag (`🗄️ Database` or `📊 <report-name>`) so you can see at a glance which source answered each turn.
-
-![Chat with RE Report — multi-turn transcript with scope notice](docs/images/chat-with-report.png)
-
-Other transcript features: lightweight markdown (code fences, headers, lists, links), per-message **⧉ Copy**, model + run-id metadata badges, pending dot animation while the request is in flight, history sidebar `+ New` to start a fresh thread, and a multi-turn `history: [{role, content}, …]` block sent to the model so follow-ups have continuity.
-
-### Reverse Engineering Results panel
-
-The **📄 Reverse Engineering Results** button (left sidebar) opens the rendered RE report in an in-portal viewer with `⬇ Download Report` / `⧉ Copy to Clipboard` / `⟳ Refresh`. The report contains a structured walk-through of every program — purpose, key paragraphs (with COBOL snippets), called programs, COMMAREA contracts, error paths, and business-rule annotations.
-
-![Reverse Engineering Results panel](docs/images/re-report.png)
-
-Each `## SECTION` of the report is selectable as the active context for the chat (toggle above), so you can ask follow-ups against the same document the AI used to generate the analysis. The report itself is regenerated by `./doctor.sh reverse-eng` (or as part of `./doctor.sh run`), persisted under `output/reverse-engineering-details.md`, and indexed into the Migration database so previous runs stay browsable from the *Migration Run* dropdown.
+| `_USE_PROGRAM_FACTS` | unset | `true` enables the PR4 projection path (60–90 % token reduction) |
+| `_LLM_CACHE_ENABLED` | `true` | Toggle the LLM response cache |
+| `_PROJECTION_CACHE_DISABLED` | unset | `true` bypasses the PR6 projection-block cache |
+| `ENABLE_REKT_CONTEXT` | `true` | Inject REKT structural context into prompts |
+| `COPILOT_SDK_REQUEST_TIMEOUT_SECONDS` | `300` | Bound the Copilot SDK call (range 60-1800) |
+| `LLM_CALL_TIMEOUT_SECONDS` | `480` | Per-call hang timeout |
+| `COPILOT_SAFE_MODE` | auto | Force smaller chunks for the Copilot provider |
+| `COBOL_SOURCE_FOLDER` | `source` | Override input directory |
+| `MCP_AUTO_LAUNCH` | `1` | `0` disables portal auto-launch after a run |
 
 ---
 
-## 🔬 Cobol-REKT Static Analysis & Graph Pipeline
-
-The REKT pipeline gives the portal its "structured truth" about every COBOL program — independent of the AI-generated reverse-engineering report. It runs as three Docker services (defined in `docker-compose.yml`):
-
-| Service | Port | Role |
-|---|---|---|
-| `cobol-rekt` | — | Java CLI (`smojol-cli`) that parses each `.cbl/.cpy` into AST / Control-Flow / Data-flow JSON under `output/rekt/<program>.cbl.report/` |
-| `cobol-rekt-neo4j` | bolt **7688**, http **7475** | Dedicated Neo4j 5.15 (separate from the migration metadata DB) holding the unified analysis graph, with APOC + Graph Data Science plugins |
-| `graph-populator` | — | Python ingester that loads the REKT JSON + MMA metadata into Neo4j |
-
-```bash
-./doctor.sh rekt-full   # one-shot: parse → ingest → launch portal
-```
-
-The portal reads this graph through these endpoints (all dedup the latest scan run per file so old scans never inflate counts):
-
-- `/api/graph/rekt/galaxy` — programs + dependency edges (drives **AST Galaxy** and **Migration Planner**)
-- `/api/graph/rekt/galaxy-ast` — full structural AST nodes for every program
-- `/api/graph/rekt/structure?file=…` — program-level summary (sections, paragraphs, AST/SQL/CALL counts)
-- `/api/graph/rekt/ast?file=…` and `/api/graph/rekt/cfg?file=…` — per-file AST and control-flow graphs
-- `/api/graph/rekt/runs` — list of historical scan runs (the `?scanRunId=N` query param pins any of them)
-
-See [`docs/rekt-demo.md`](docs/rekt-demo.md) for an end-to-end walkthrough.
-
----
-
-## 🌌 AST Galaxy & AST Explorer
-
-The **AST Galaxy** dashboard tab visualises every program and its sub-structure as an interactive graph. It comes in 2D (vis-network) and **3D** (3d-force-graph) modes with multiple view layouts.
-
-### View modes
-
-| View | What it shows |
-|---|---|
-| **Service Catalog** | One node per program, grouped by detected business domain. Click a domain hub to drill into its members. |
-| **Service Catalog (Expanded 3D)** | Same, in 3D — nodes form a galaxy where domain clusters are visible at a glance. |
-| **Business Domains** | High-level cluster view: each program collapsed into its parent domain. |
-| **Technical (Expanded)** | Programs + their sections/paragraphs/CALL/SQL nodes with physics layout. |
-| **Technical (Expanded v2)** | Manually laid out **north-to-south swim-lane** view — one column per program, AST nodes stacked by layer, inter-program edges arched as overlay arrows. Designed for following a path of communication cleanly through dense graphs. |
-
-| Service Catalog (high-level domains) | Galaxy view (3D, programs as orbits) |
-|---|---|
-| ![Service Catalog](docs/images/ast-galaxy-service-catalog.png) | ![3D Galaxy](docs/images/ast-galaxy-3d.png) |
-
-| Domain drill-down (programs in *Customer Management*) | Business Domains cluster view |
-|---|---|
-| ![Domain drill](docs/images/ast-galaxy-domain.png) | ![Business Domains](docs/images/ast-galaxy-business-domains.png) |
-
-| Expanded view (every AST node visible) | Technical (Expanded v2) — swim-lane top-down |
-|---|---|
-| ![Expanded](docs/images/ast-galaxy-expanded.png) | ![Technical v2](docs/images/ast-galaxy-technical-v2.png) |
-
-### What you can do
-
-- **Click** a node → Inspector panel on the right shows its type, domain, line range, AST node count, SQL/CALL/PERFORM/branch counts.
-- **🔬 Open in AST Explorer** button on the Inspector → switches to the AST Explorer tab and loads the program directly.
-- **Double-click** a program node → expands its full AST tree inline.
-- **Floating legend** (top-right) is mode-aware and lists every shape, colour, and edge type currently on screen.
-- **Cancel / Resume layout** buttons stop the force simulation if it's busy with a large graph.
-- **Search** filter highlights matches; **scan run** dropdown pins a specific historical scan.
-
-### AST Explorer (per-file deep dive)
-
-The AST Explorer tab opens a single program at a time and renders its AST, control-flow, or program-structure graph (top-level dropdown). Each node shows the COBOL statement type (PERFORM / IF / DIALECT / CALL / …) plus line numbers. This is the surface you land on after the *Open in AST Explorer* drill-through from the Galaxy.
-
----
-
-## 📅 Migration Planner — Domain-Based Time Chart
-
-The **Migration Planner** tab turns the same Neo4j graph into a sliceable migration strategy. It scores every program on a weighted *ease* metric and packs them into 3 waves (lowest-hanging fruit → medium effort → hubs/hard cases). Programs are grouped by detected **business domain** so squads can be assigned per domain.
-
-### Filters & weights
-
-Drag the sliders to exclude programs above a threshold (LOC / complexity / SQL stmts / CALLs / criticality), and bias the score by re-weighting any axis 0–10. Sliders auto-grow when a fresh scan introduces larger files.
-
-![Filters and weights](docs/images/migration-planner-sliders.png)
-
-### Wave summary + program table
-
-Each row shows wave assignment, domain, LOC, complexity, SQL, CALLs, inbound/outbound deps, ease score, and a recommendation badge (`↻ REWRITE` or `⇄ REPLATFORM`). The header shows the dataset summary (`66 nodes (29 programs, 37 copybooks) · 212 dependencies · Avg 6.4 connections/node`) live from `/api/graph/rekt/galaxy`.
-
-![Migration Planner table](docs/images/migration-planner-table.png)
-
-### Live Gantt — suggested time chart
-
-Below the table, the **Migration Path — Gantt** panel renders the suggested timeline grouped by wave. Each program gets a coloured bar from its scheduled start week → end week, sorted into 3 parallel dev tracks per wave (`Dev 1 / Dev 2 / Dev 3`). Click any wave header to expand/collapse its programs. The chart is wired bidirectionally to the Strategy Workbook below — edit *Wave / Start week / End week / Assigned to* in the workbook and the bars move immediately.
-
-![Migration Planner Gantt](docs/images/migration-planner-gantt.png)
-
-### Editable Strategy Workbook → Excel export
-
-The same data is rendered as a 6-sheet editable workbook (`Summary`, `Wave Plan`, `Programs`, `Domain Breakdown`, `Per-Domain Detail`, `Replatform Candidates`, `Gantt`, `Assumptions`). Click any cell to edit — *Tab* moves to the next column, *Enter* commits. Edits override the auto-computed values and are included in the Excel export. **⬇ Export Excel** writes a single multi-sheet `.xlsx`.
-
-![Strategy Workbook](docs/images/migration-planner-workbook.png)
-
-### Replatform recommender
-
-The orange context bar above the table flags programs that are too costly to rewrite as **replatform candidates** (host the COBOL on a managed runtime — Micro Focus / OpenText, Heirloom, Raincode, GnuCOBOL, AWS Blu Insights — instead of converting). Adjustable thresholds: `ease ≤ N` OR `LOC ≥ N` OR `criticality ≥ N`. Flagged rows show a striped-orange bar in the Gantt and appear on a dedicated `Replatform Candidates` Excel sheet with trigger reasons.
-
-![Migration Planner overview with Gantt and workbook](docs/images/migration-planner-overview.png)
-
-### Effort model (defaults — all editable in the *Assumptions* sheet)
-
-| Setting | Default | Meaning |
-|---|---|---|
-| Base velocity | 500 LOC / dev / week | COBOL → Java conversion (coding + unit tests, excludes integration) |
-| Team size | 3 devs | Parallelism within a single wave |
-| Wave multipliers | W1 ×1.0, W2 ×1.5, W3 ×2.5 | Hubs/highly-coupled need more design time |
-| SQL extra effort | 5 LOC-equivalent / SQL stmt | JPA/JDBC mapping cost |
-| CALL extra effort | 20 LOC-equivalent / CALL | Integration cost between programs |
-| Integration buffer | +30% per wave | QA, integration tests, hardening |
-
----
-
----
-
-## 📁 Folder Structure
+## Project layout
 
 ```
 Legacy-Modernization-Agents/
-├── source/                    # ⬅️ DROP YOUR COBOL FILES HERE
-│   ├── CUSTOMER.cbl
-│   ├── PAYMENT.cbl
-│   └── COMMON.cpy
-│
-├── output/                    # ⬅️ GENERATED CODE APPEARS HERE
-│   ├── java/                  # Java Quarkus output
-│   │   └── com/example/generated/
-│   ├── csharp/                # C# .NET output
-│   │   └── Generated/
-│   └── rekt/                  # Cobol-REKT static analysis output
-│       └── <program>.cbl.report/
-│           ├── ast/           # Abstract Syntax Tree JSON
-│           ├── cfg/           # Control Flow Graph JSON
-│           └── data/          # Data flow JSON
-│
-├── Agents/                    # AI agent implementations
-├── Config/                    # Configuration files (gitignored secrets)
-├── Data/                      # SQLite database (migration.db)
-├── Logs/                      # Execution logs (gitignored)
-├── Mcp/                       # MCP server implementation
-├── McpChatWeb/                # Web portal (Razor Pages + REST API)
-└── tools/                     # External tooling
-    ├── cobol-rekt/            # Java CLI for COBOL parsing (Dockerized)
-    └── graph-populator/       # Python Neo4j ingester (Dockerized)
+├── doctor.sh                  ← Single entry point (setup / REKT / convert / portal / doctor)
+├── source/                    ← Drop COBOL here (.cbl, .cpy, .jcl, .bms)
+├── output/
+│   ├── rekt/                  ← REKT artifacts (AST, CFG, data, facts.json)
+│   ├── java/   or csharp/     ← Generated modern code
+│   └── .metrics/              ← Per-run JSONL telemetry stream
+├── Data/
+│   ├── migration.db           ← Run history (SQLite)
+│   ├── benchmark.db           ← Aggregated analytics
+│   └── projection-cache.db    ← PR6 projection-block cache
+├── Agents/                    ← Converter + analyzer agents (C#)
+│   ├── Infrastructure/        ← AgentBase, CopilotChatClient, ResponsesApiClient
+│   └── *Agent.cs              ← Java/C# converter, ChunkAware variants, DependencyMapper, etc.
+├── Helpers/
+│   ├── MetricsSink.cs         ← Logger-independent JSONL writer
+│   ├── RektPromptInjector.cs  ← Centralised REKT/projection prompt injection
+│   └── PromptProjections/
+│       ├── JavaConverterProjection.cs
+│       ├── CSharpConverterProjection.cs
+│       └── ProjectionCache.cs ← PR6 hash-keyed cache
+├── Processes/
+│   ├── MigrationProcess.cs    ← Single-shot orchestration
+│   ├── ChunkedMigrationProcess.cs ← Chunked path + reassembly
+│   └── SmartMigrationOrchestrator.cs ← Routes small vs large
+├── McpChatWeb/                ← Portal UI (ASP.NET, hosts AST Galaxy + Mission Control)
+├── tools/
+│   ├── ab-projection-suite.sh ← Multi-program A/B harness
+│   ├── check-compile.sh       ← Java compile quality gate
+│   ├── ingest-metrics.py      ← JSONL → SQLite + reporting
+│   ├── run-quality-gates.sh   ← Post-suite gate orchestrator
+│   └── verify-env-propagation.sh ← Smoke test before suites
+└── docs/                      ← Deep dives (see Further reading)
 ```
-
-**Workflow:**
-1. Drop COBOL files (`.cbl`, `.cpy`) into `source/`
-2. Run `./doctor.sh run`
-3. Choose target language (Java or C#)
-4. Collect generated code from `output/java/` or `output/csharp/`
 
 ---
 
-## 🛠️ Customizing Agent Behavior
-
-Each agent has a **system prompt** that defines its behavior. To customize output (e.g., DDD patterns, specific frameworks), edit these files:
-
-### Agent Prompt Locations
-
-| Agent | File | Line | What It Does |
-|-------|------|------|--------------|
-| **CobolAnalyzerAgent** | `Agents/CobolAnalyzerAgent.cs` | ~116 | Extracts structure, variables, paragraphs, SQL |
-| **BusinessLogicExtractorAgent** | `Agents/BusinessLogicExtractorAgent.cs` | ~44 | Extracts user stories, features, business rules |
-| **JavaConverterAgent** | `Agents/JavaConverterAgent.cs` | ~66 | Converts to Java Quarkus |
-| **CSharpConverterAgent** | `Agents/CSharpConverterAgent.cs` | ~64 | Converts to C# .NET |
-| **DependencyMapperAgent** | `Agents/DependencyMapperAgent.cs` | ~129 | Maps CALL/COPY/PERFORM relationships |
-| **ChunkAwareJavaConverter** | `Agents/ChunkAwareJavaConverter.cs` | ~268 | Large file chunked conversion (Java) |
-| **ChunkAwareCSharpConverter** | `Agents/ChunkAwareCSharpConverter.cs` | ~269 | Large file chunked conversion (C#) |
-
-### Example: Adding DDD Patterns
-
-To make the Java converter generate Domain-Driven Design code, edit `Agents/JavaConverterAgent.cs` around line 66:
-
-```csharp
-var systemPrompt = @"
-You are an expert in converting COBOL programs to Java with Quarkus framework.
-
-DOMAIN-DRIVEN DESIGN REQUIREMENTS:
-- Identify bounded contexts from COBOL program sections
-- Create Aggregate Roots for main business entities
-- Use Value Objects for immutable data (PIC X fields)
-- Implement Repository pattern for data access
-- Create Domain Events for state changes
-- Separate Application Services from Domain Services
-
-OUTPUT STRUCTURE:
-- domain/        → Entities, Value Objects, Aggregates
-- application/   → Application Services, DTOs
-- infrastructure/→ Repositories, External Services
-- ports/         → Interfaces (Ports & Adapters)
-
-...existing prompt content...
-";
-```
-
-Similarly for C#, edit `Agents/CSharpConverterAgent.cs`.
-
----
-
-## 📐 File Splitting & Naming
-
-### Configuration
-
-File splitting is controlled in `Config/appsettings.json`:
-
-```json
-{
-  "AssemblySettings": {
-    "SplitStrategy": "ClassPerFile",
-    "Java": {
-      "PackagePrefix": "com.example.generated",
-      "ServiceSuffix": "Service"
-    },
-    "CSharp": {
-      "NamespacePrefix": "Generated",
-      "ServiceSuffix": "Service"
-    }
-  }
-}
-```
-
-### Split Strategies
-
-| Strategy | Output |
-|----------|--------|
-| `SingleFile` | One large file with all classes |
-| `ClassPerFile` | **Default** - One file per class (recommended) |
-| `FilePerChunk` | One file per processing chunk |
-| `LayeredArchitecture` | Organized into Services/, Repositories/, Models/ |
-
-### Implementation Location
-
-The split logic is in `Models/AssemblySettings.cs`:
-
-```csharp
-public enum FileSplitStrategy
-{
-    SingleFile,           // All code in one file
-    ClassPerFile,         // One file per class (DEFAULT)
-    FilePerChunk,         // Preserves chunk boundaries
-    LayeredArchitecture   // Service/Repository/Model folders
-}
-```
-
-### Naming Conversion
-
-Naming strategies are configured in `ConversionSettings`:
-
-```json
-{
-  "ConversionSettings": {
-    "NamingStrategy": "Hybrid",
-    "PreserveLegacyNamesAsComments": true
-  }
-}
-```
-
-| Strategy | Input | Output |
-|----------|-------|--------|
-| `Hybrid` | `CALCULATE-TOTAL` | Business-meaningful name |
-| `PascalCase` | `CALCULATE-TOTAL` | `CalculateTotal` |
-| `camelCase` | `CALCULATE-TOTAL` | `calculateTotal` |
-| `Preserve` | `CALCULATE-TOTAL` | `CALCULATE_TOTAL` |
-
----
-
-## 🏗️ Architecture
-
-### REKT-Grounded Conversion Pipeline
-
-The conversion pipeline is structured in five stages. Stage 0 (static analysis)
-produces structural facts that all later stages consume, so generation,
-validation, and reporting share a single source of truth instead of relying on
-the LLM to re-derive structure each turn.
-
-Toggle the structural injection with `ENABLE_REKT_CONTEXT=true`; without it
-the converter falls back to the legacy prompt path. Quality agents (parity,
-reviewer, data-mapping) and the test/fixture agents always run when their
-inputs are available, regardless of the flag.
-
-```mermaid
-flowchart LR
-    subgraph Stage0["Stage 0 — Static analysis (Cobol-REKT)"]
-        SRC[("source/*.cbl, *.cpy<br/>*.bms, *.psb")]
-        SRC --> PREP[Preprocessor<br/>strip EXEC CICS/DLI,<br/>normalise dialect]
-        PREP --> SMOJOL[smojol parser]
-        SMOJOL --> RAW[("output/rekt/<br/>flow-ast / flow-data / deps")]
-        RAW --> NEO[(Neo4j<br/>graph)]
-        RAW --> TGT[output/rekt/<br/>target-architecture.json]
-    end
-
-    subgraph Stage1["Stage 1 — Selection &amp; context"]
-        SEL[Program selector<br/>CLI flags / Portal modal]
-        LOADER[RektContextLoader +<br/>StructuralContextProvider]
-        BMS[BmsReader]
-        IMS[ImsReaders]
-        STRUCT[StructuralExtractorAgent<br/>fallback when REKT incomplete]
-        SEL --> LOADER
-        RAW --> LOADER
-        TGT --> LOADER
-        BMS --> LOADER
-        IMS --> LOADER
-        LOADER -. when sparse .-> STRUCT
-        STRUCT --> LOADER
-    end
-
-    subgraph Stage2["Stage 2 — Conversion"]
-        CONV[Java / C# Converter<br/>prompt + REKT context block]
-        OUT[(output/java<br/>output/csharp)]
-        LOADER --> CONV
-        CONV --> OUT
-    end
-
-    subgraph Stage3["Stage 3 — Quality validation"]
-        PAR[ConversionParityAgent]
-        REV[CodeReviewerAgent]
-        DMAP[DataMappingAgent]
-        OUT --> PAR
-        OUT --> REV
-        OUT --> DMAP
-        LOADER --> PAR
-        LOADER --> DMAP
-    end
-
-    subgraph Stage4["Stage 4 — Tests &amp; fixtures"]
-        TST[TestSynthesizerAgent]
-        FIX[RegressionFixtureAgent<br/>deterministic]
-        OUT --> TST
-        OUT --> FIX
-        LOADER --> TST
-    end
-
-    subgraph Stage5["Stage 5 — Reporting"]
-        SUM[MigrationSummaryAgent]
-        DOC[DocumentationAgent]
-        PAR --> SUM
-        REV --> SUM
-        DMAP --> SUM
-        TST --> SUM
-        FIX --> SUM
-        SUM --> DOC
-        DOC --> REPORT[(reports/<br/>chat logs)]
-    end
-
-    PORTAL[McpChatWeb portal<br/>Convert modal +<br/>program search] --> SEL
-    DOCSH[doctor.sh<br/>--program / --transaction /<br/>--wave / --keyword] --> SEL
-```
-
-The component view below shows where each new helper and agent lives in the
-codebase and which artefacts cross stage boundaries.
-
-```mermaid
-flowchart TB
-    subgraph Helpers["Helpers/ — deterministic"]
-        RC[RektContext]
-        RCL[RektContextLoader]
-        SCP[StructuralContextProvider]
-        BMSR[BmsReader]
-        IMSR[ImsReaders]
-        RFA[RegressionFixtureAgent]
-    end
-
-    subgraph Agents["Agents/ — LLM-backed"]
-        SEA[StructuralExtractorAgent]
-        JCA[JavaConverterAgent]
-        CSA[CSharpConverterAgent]
-        CPA[ConversionParityAgent]
-        CRA[CodeReviewerAgent]
-        DMA[DataMappingAgent]
-        TSA[TestSynthesizerAgent]
-        MSA[MigrationSummaryAgent]
-        DOA[DocumentationAgent]
-    end
-
-    subgraph Portal["McpChatWeb/"]
-        PSS[ProgramSelectorService]
-        API["/api/programs/search<br/>/api/runs/convert"]
-        UI[convert-modal.js<br/>+ help panel]
-        UI --> API --> PSS
-    end
-
-    subgraph CLI["doctor.sh"]
-        FLAGS[--program / --transaction<br/>--wave / --target / --keyword<br/>--max-validator-retries<br/>--min-program-score]
-    end
-
-    subgraph Data["Artefacts"]
-        REKT[(output/rekt/)]
-        TARG[(target-architecture.json)]
-        OUTJ[(output/java &amp; csharp)]
-        REP[(reports/)]
-        SQL[(Data/migration.db<br/>scan runs, business logic)]
-    end
-
-    REKT --> RCL --> RC
-    TARG --> RCL
-    BMSR --> RC
-    IMSR --> RC
-    SCP --> RC
-
-    PSS --> RCL
-    FLAGS --> RCL
-
-    RC --> JCA
-    RC --> CSA
-    RC --> CPA
-    RC --> DMA
-    RC --> TSA
-    RC -. fallback .-> SEA --> RC
-
-    JCA --> OUTJ
-    CSA --> OUTJ
-
-    OUTJ --> CPA --> MSA
-    OUTJ --> CRA --> MSA
-    OUTJ --> DMA --> MSA
-    OUTJ --> TSA --> MSA
-    OUTJ --> RFA --> MSA
-    MSA --> DOA --> REP
-
-    JCA -. de-dupes LLM<br/>token-limit restart .-> JCA
-    CSA -. de-dupes LLM<br/>token-limit restart .-> CSA
-
-    JCA --> SQL
-    CSA --> SQL
-    MSA --> SQL
-```
-
-Key invariants:
-- **Provenance is tagged** — every field in `RektContext` carries
-  `None | RektPartial | RektFull | StructuralExtractor`, so downstream agents
-  know whether to trust a fact or treat it as a hypothesis.
-- **Quality agents are read-only** — they never rewrite generated code; they
-  emit scores and findings that the validator loop consumes via
-  `--max-validator-retries` and `--min-program-score`.
-- **Converter output is post-processed** — `ExtractJavaCode` /
-  `ExtractCSharpCode` detect the LLM token-limit restart pattern (two
-  `package` / `namespace` declarations) and keep the complete body.
-- **Selection is unified** — CLI flags and the portal modal both route through
-  `ProgramSelectorService`, so a search expression behaves identically in
-  either entry point.
-
-See [docs/rekt-grounded-conversion.md](docs/rekt-grounded-conversion.md) for
-the full per-agent contract, prompt locations, and provenance rules.
-
----
-
-### Hybrid Database Architecture
-
-This project uses a **dual-database approach** for optimal performance, enhanced with Regex-based deep analysis:
-
-```mermaid
-flowchart TB
-    subgraph INPUT["📁 Input"]
-        COBOL["COBOL Files<br/>source/*.cbl, *.cpy"]
-    end
-    
-    subgraph CONFIG["🔧 Configuration"]
-        SETUP_CLI["./doctor.sh setup<br/>(CLI)"]
-        SETUP_PORTAL["Portal Setup Modal<br/>(Browser)"]
-        SETUP_CLI --> CONFIG_FILE["Config/ai-config.local.env"]
-        SETUP_PORTAL --> CONFIG_FILE
-        CONFIG_FILE --> PROVIDERS
-        subgraph PROVIDERS["AI Providers"]
-            AZURE["☁️ Azure OpenAI<br/>(API Key / Entra ID)"]
-            COPILOT["🤖 GitHub Copilot SDK<br/>(CLI / PAT)"]
-        end
-    end
-
-    subgraph PROCESS["⚙️ Processing Pipeline"]
-        REGEX["Regex / Syntax Parsing<br/>(Deep SQL/Variable Extraction)"]
-        AGENTS["🤖 AI Agents<br/>(Microsoft.Extensions.AI)"]
-        ANALYZER["CobolAnalyzerAgent"]
-        EXTRACTOR["BusinessLogicExtractor"]
-        CONVERTER["Java/C# Converter"]
-        MAPPER["DependencyMapper"]
-    end
-
-    subgraph REKT["🔬 Cobol-REKT Static Analysis"]
-        REKT_CLI["cobol-rekt<br/>(Java CLI — AST/CFG/Data)"]
-        REKT_POP["graph-populator<br/>(Python — Neo4j ingester)"]
-    end
-    
-    subgraph STORAGE["💾 Hybrid Storage"]
-        SQLITE[("SQLite<br/>Data/migration.db<br/><br/>• Run metadata<br/>• File content<br/>• Raw AI analysis<br/>• Generated code")]
-        NEO4J[("Neo4j<br/>bolt://localhost:7687<br/><br/>• Dependencies<br/>• Relationship Graph<br/>• Impact Analysis")]
-        REKT_NEO4J[("Neo4j (REKT)<br/>bolt://localhost:7688<br/><br/>• AST nodes<br/>• CFG edges<br/>• Data flow")]
-    end
-    
-    subgraph OUTPUT["📦 Output"]
-        CODE["Java/C# Code<br/>output/java or output/csharp"]
-        REKT_JSON["REKT JSON<br/>output/rekt/"]
-        PORTAL["Web Portal<br/>localhost:5028<br/><br/>• Model Setup &amp; Discovery<br/>• Mission Control<br/>• Prompt Studio<br/>• Chat &amp; Graph"]
-    end
-    
-    COBOL --> REGEX
-    COBOL --> REKT_CLI
-    REGEX --> AGENTS
-    PROVIDERS --> AGENTS
-    
-    AGENTS --> ANALYZER
-    AGENTS --> EXTRACTOR
-    AGENTS --> CONVERTER
-    AGENTS --> MAPPER
-    
-    ANALYZER --> SQLITE
-    EXTRACTOR --> SQLITE
-    CONVERTER --> SQLITE
-    CONVERTER --> CODE
-    MAPPER --> NEO4J
-
-    REKT_CLI --> REKT_JSON
-    REKT_JSON --> REKT_POP
-    REKT_POP --> REKT_NEO4J
-    
-    SQLITE --> PORTAL
-    NEO4J --> PORTAL
-    REKT_NEO4J --> PORTAL
-```
-
-#### Why Two Databases?
-
-| Aspect | SQLite | Neo4j (Migration) | Neo4j (REKT) |
-|--------|--------|--------------------|--------------|
-| **Purpose** | Document storage | Relationship mapping | Static analysis graphs |
-| **Strength** | Fast queries, simple setup | Graph traversal, visualization | AST/CFG/Data flow traversal |
-| **Use Case** | "What's in this file?" | "What depends on this file?" | "What does the control flow look like?" |
-| **Query Style** | SQL SELECT | Cypher graph queries | Cypher graph queries |
-| **Port** | — | bolt://localhost:7687 | bolt://localhost:7688 |
-
-**Together:** Fast metadata access + Dependency insights + Deep structural analysis
-
-#### Why Dependency Graphs Matter
-
-The Neo4j dependency graph enables:
-- **Impact Analysis** - "If I change CUSTOMER.cbl, what else breaks?"
-- **Circular Dependency Detection** - Find problematic CALL/COPY cycles
-- **Critical File Identification** - Most-connected files = highest risk
-- **Migration Planning** - Convert files in dependency order
-- **Visual Understanding** - See relationships at a glance in the portal
-
----
-
-### Agent Pipeline
-
-The migration follows a strict **Deep Code Analysis** pipeline:
-
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant O as Orchestrator
-    participant AA as Analyzer Agent
-    participant DA as Dependency Agent
-    participant SQ as SQLite
-    participant CA as Converter Agent
-
-    U->>O: Run "analyze" (Step 1)
-    
-    rect rgb(240, 248, 255)
-        Note over O, SQ: 1. Deep Analysis Phase
-        O->>O: Determine File Type<br/>(Program vs Copybook)
-        O->>O: Regex Parse (SQL, Variables)
-        O->>SQ: Store raw metadata
-        O->>AA: Analyze Structure & Logic
-        AA->>SQ: Save Analysis Result
-    end
-    
-    rect rgb(255, 240, 245)
-        Note over O, SQ: 2. Dependency Phase
-        U->>O: Run "dependencies" (Step 2)
-        O->>DA: Resolve Calls/Includes
-        DA->>SQ: Read definitions
-        DA->>SQ: Write graph nodes
-    end
-
-    rect rgb(240, 255, 240)
-        Note over O, SQ: 3. Conversion Phase
-        U->>O: Run "convert" (Step 3)
-        O->>SQ: Fetch analysis & deps
-        O->>CA: Generate Modern Code
-        CA->>SQ: Save generated code
-    end
-```
-
-### Process Flow
-**Portal Features:** 
-- ✅ Dark theme with modern UI
-- ✅ Three-panel layout (resources/chat/graph)
-- ✅ AI-powered chat interface
-- ✅ Suggestion chips for common queries
-- ✅ Interactive dependency graph (zoom/pan/filter)
-- ✅ Multi-run queries and comparisons
-- ✅ File content analysis with line counts
-- ✅ Comprehensive data retrieval guide
-- ✅ Enhanced dependency tracking (CALL, COPY, PERFORM, EXEC, READ, WRITE, OPEN, CLOSE)
-- ✅ Migration report generation per run
-- ✅ Mermaid diagram rendering in documentation
-- ✅ Collapsible filter sections for cleaner UI
-- ✅ Edge type filtering with color-coded visualization
-- ✅ Line number context for all dependencies
-- ✅ Per-run **🔬 RE Results** button — view persisted business logic extracts and delete unsatisfactory results
-- ✅ **AI Provider Setup Modal** — connect to Azure OpenAI or GitHub Copilot SDK from the browser, discover all available models/deployments, and save config
-- ✅ **Mission Control** — start/stop/pause migrations, select provider and model, upload source files
-- ✅ **Prompt Studio** — generate, AI-enhance, and score agent prompts (works with both Azure and Copilot SDK)
-
-### Smart Chunking & Token Strategy
-
-Large COBOL files (>3,000 lines or >150K characters) are automatically split at semantic boundaries (DIVISION → SECTION → paragraph) and processed with content-aware reasoning effort. A three-tier complexity scoring system analyzes each file's COBOL patterns (EXEC SQL, CICS, REDEFINES, etc.) to dynamically allocate reasoning effort and output tokens — simple files get fast processing while complex files get thorough analysis.
-
-```mermaid
-flowchart TD
-    subgraph INPUT["📥 FILE INTAKE"]
-        A[COBOL Source File] --> B{File Size Check}
-        B -->|"≤ 3,000 lines<br>≤ 150,000 chars"| C[Single-File Processing]
-        B -->|"> 3,000 lines<br>> 150,000 chars"| D[Smart Chunking Required]
-    end
-
-    subgraph TOKEN_EST["🔢 TOKEN ESTIMATION"]
-        C --> E[TokenHelper.EstimateCobolTokens]
-        D --> E
-        E -->|"COBOL: chars ÷ 3.0"| F[Estimated Input Tokens]
-        E -->|"General: chars ÷ 3.5"| F
-    end
-
-    subgraph COMPLEXITY["🎯 THREE-TIER COMPLEXITY SCORING"]
-        F --> G[Complexity Score Calculation]
-        G -->|"Σ regex×weight + density bonuses"| H{Score Threshold}
-        H -->|"< 5"| I["🟢 LOW<br>effort: low<br>multiplier: 1.5×"]
-        H -->|"5 – 14"| J["🟡 MEDIUM<br>effort: medium<br>multiplier: 2.5×"]
-        H -->|"≥ 15"| K["🔴 HIGH<br>effort: high<br>multiplier: 3.5×"]
-    end
-
-    subgraph OUTPUT_CALC["📐 OUTPUT TOKEN CALCULATION"]
-        I --> L[estimatedOutput = input × multiplier]
-        J --> L
-        K --> L
-        L --> M["clamp(estimated, minTokens, maxTokens)"]
-        M -->|"Codex: 32,768 – 100,000"| N[Final maxOutputTokens]
-        M -->|"Chat: 16,384 – 65,536"| N
-    end
-
-    subgraph CHUNKING["✂️ SMART CHUNKING"]
-        D --> O[CobolAdapter.IdentifySemanticUnits]
-        O --> P[Divisions / Sections / Paragraphs]
-        P --> Q[SemanticUnitChunker.ChunkFileAsync]
-        Q --> R{Chunking Decision}
-        R -->|"≤ MaxLinesPerChunk"| S[Single Chunk]
-        R -->|"Semantic units found"| T["Semantic Boundary Split<br>Priority: DIVISION > SECTION > Paragraph"]
-        R -->|"No units / oversized units"| U["Line-Based Fallback<br>overlap: 300 lines"]
-    end
-
-    subgraph CONTEXT["📋 CONTEXT WINDOW MANAGEMENT"]
-        T --> V[ChunkContextManager]
-        U --> V
-        S --> V
-        V --> W["Full Detail Window<br>(last 3 chunks)"]
-        V --> X["Compressed History<br>(older → 30% size)"]
-        V --> Y["Cross-Chunk State<br>signatures + type mappings"]
-        W --> Z[ChunkContext]
-        X --> Z
-        Y --> Z
-    end
-
-    subgraph RATE_LIMIT["⏱️ DUAL RATE LIMITING"]
-        direction TB
-        Z --> AA["System A: RateLimiter<br>(Token Bucket + Semaphore)"]
-        Z --> AB["System B: RateLimitTracker<br>(Sliding Window TPM/RPM)"]
-        
-        AA --> AC{Capacity Check}
-        AB --> AC
-        AC -->|"Budget: 300K TPM × 0.7"| AD[Wait / Proceed]
-        AC -->|"Concurrency: max 3 parallel"| AD
-        AC -->|"Stagger: 2,000ms between workers"| AD
-    end
-
-    subgraph API_CALL["🤖 API CALL + ESCALATION"]
-        AD --> AE{Provider Routing}
-        AE -->|"Azure Codex<br>(ResponsesApiClient)"| AE1[Responses API Call]
-        AE -->|"GitHub/Claude/Grok/GPT<br>(IChatClient)"| AE2["Chat Completions Call<br>+ ApplyModelSpecificOptions"]
-        AE1 --> AF{Response Status}
-        AE2 --> AF2{Truncation Check}
-        AF2 -->|"FinishReason=Stop<br>No truncation signals"| AG[✅ Success]
-        AF2 -->|"FinishReason=Length<br>or text signals<br>or unclosed code blocks"| AH2["OutputTruncationException<br>① Double maxTokens<br>② Promote effort<br>③ Thrash guard"]
-        AH2 -->|"Max 2 retries"| AE2
-        AH2 -->|"All retries failed"| AI["Adaptive Re-Chunking<br>Split at semantic midpoint<br>50-line overlap"]
-        AF -->|"Complete"| AG
-        AF -->|"Reasoning Exhaustion<br>reasoning ≥ 90% of output"| AH["Escalation Loop<br>① Double maxTokens<br>② Promote effort<br>③ Thrash guard"]
-        AH -->|"Max 2 retries"| AE1
-        AH -->|"All retries failed"| AI
-        AI --> AE
-        AF -->|"429 Rate Limited"| AJ["Exponential Backoff<br>5s → 60s max<br>up to 5 retries"]
-        AJ --> AE1
-    end
-
-    subgraph RECONCILE["🔗 RECONCILIATION"]
-        AG --> AK[Record Chunk Result]
-        AK --> AL[Validate Chunk Output]
-        AL --> AM{More Chunks?}
-        AM -->|Yes| V
-        AM -->|No| AN[Reconciliation Pass]
-        AN --> AO["Merge Results<br>Resolve forward references<br>Deduplicate imports"]
-    end
-
-    subgraph FINAL["📤 FINAL OUTPUT"]
-        AO --> AP[Converted Java/C# Code]
-        AP --> AQ[Write to Output Directory]
-    end
-
-    classDef low fill:#d4edda,stroke:#28a745,color:#000
-    classDef medium fill:#fff3cd,stroke:#ffc107,color:#000
-    classDef high fill:#f8d7da,stroke:#dc3545,color:#000
-    classDef process fill:#d1ecf1,stroke:#17a2b8,color:#000
-    classDef rate fill:#e2d5f1,stroke:#6f42c1,color:#000
-
-    class I low
-    class J medium
-    class K high
-    class AA,AB,AC,AD rate
-    class AE,AF,AG,AH,AI,AJ process
-```
-
-> For detailed ASCII diagrams, constants reference tables, and complexity scoring indicator weights, see [smart-chunking-architecture.md](docs/smart-chunking-architecture.md).
-
----
-
-### 🔄 Agent Flowchart
-
-```mermaid
-flowchart TD
-  CLI[["CLI / doctor.sh\n- Loads AI config\n- Selects target language"]]
-  PORTAL_SETUP[["Portal Setup Modal\n- Connect to Azure / Copilot\n- Discover & select models\n- Save config"]]
-  
-  subgraph ANALYZE_PHASE["PHASE 1: Deep Analysis"]
-      REGEX["Regex Parsing\n(Fast SQL/Variable Extraction)"]
-      ANALYZER["CobolAnalyzerAgent\n(Structure & Logic)"]
-      SQLITE[("SQLite Storage")]
-  end
-  
-  subgraph DEPENDENCY_PHASE["PHASE 2: Dependencies"]
-      MAPPER["DependencyMapperAgent\n(Builds Graph)"]
-      NEO4J[("Neo4j Graph DB")]
-  end
-  
-  subgraph CONVERT_PHASE["PHASE 3: Conversion"]
-      FETCHER["Context Fetcher\n(Aggregates Dependencies)"]
-      CONVERTER["CodeConverterAgent\n(Java/C# Generation)"]
-      OUTPUT["Output Files"]
-  end
-
-  CLI --> REGEX
-  PORTAL_SETUP -.->|configures| CLI
-  REGEX --> SQLITE
-  REGEX --> ANALYZE_PHASE
-  
-  ANALYZER --> SQLITE
-  
-  SQLITE --> MAPPER
-  MAPPER --> NEO4J
-  
-  SQLITE --> FETCHER
-  NEO4J --> FETCHER
-  FETCHER --> CONVERTER
-  CONVERTER --> OUTPUT
-```
-
-### 🔀 Agent Responsibilities & Interactions
-
-#### Advanced Sequence Flow (Mermaid)
-
-```mermaid
-sequenceDiagram
-  participant User as 🧑 User / doctor.sh
-  participant Portal as 🌐 Portal (McpChatWeb)
-  participant CLI as CLI Runner
-  participant RE as ReverseEngineeringProcess
-  participant Analyzer as CobolAnalyzerAgent
-  participant BizLogic as BusinessLogicExtractorAgent
-  participant Migration as MigrationProcess
-  participant DepMap as DependencyMapperAgent
-  participant Converter as CodeConverterAgent (Java/C#)
-  participant Repo as HybridMigrationRepository
-  participant AI as AI Provider (Azure / Copilot SDK)
-
-  rect rgb(245, 240, 255)
-      Note over User, AI: 0. Configuration (CLI or Portal)
-      alt CLI Setup
-          User->>CLI: ./doctor.sh setup
-          CLI->>CLI: Select provider, enter credentials
-          CLI->>CLI: Write Config/ai-config.local.env
-      else Portal Setup
-          User->>Portal: Open Setup Modal (🔧)
-          Portal->>AI: Connect & discover models
-          AI-->>Portal: Available deployments/models
-          User->>Portal: Select chat + code models
-          Portal->>Portal: Write Config/ai-config.local.env
-      end
-  end
-
-  User->>CLI: select target language, concurrency flags
-  CLI->>RE: start reverse engineering
-  RE->>Analyzer: analyze COBOL files (parallel up to max-parallel)
-  Analyzer-->>RE: CobolAnalysis[]
-  RE->>BizLogic: extract business logic summaries
-  BizLogic-->>RE: BusinessLogic[]
-  RE->>Repo: persist analyses + documentation
-  RE->>Repo: persist BusinessLogic[] to business_logic table
-  RE-->>CLI: ReverseEngineeringResult (BusinessLogic[], RunId)
-  CLI->>Migration: SetBusinessLogicContext(BusinessLogic[])
-  CLI->>Migration: start migration run with latest analyses
-  Migration->>Analyzer: reuse or refresh CobolAnalysis
-  Migration->>DepMap: build dependency graph (CALL/COPY/...)
-  DepMap-->>Migration: DependencyMap
-  Migration->>Converter: convert to Java/C# with business logic context
-  Converter-->>Migration: CodeFile artifacts
-  Migration->>Repo: persist run metadata, graph edges, code files
-  Repo-->>Portal: expose MCP resources + REST APIs
-  Portal-->>User: portal UI (chat, graph, reports)
-```
-
-#### CobolAnalyzerAgent
-- **Purpose:** Deep structural analysis of COBOL files (divisions, paragraphs, copybooks, metrics).
-- **Inputs:** COBOL text from `FileHelper` or cached content.
-- **Outputs:** `CobolAnalysis` objects consumed by:
-  - `ReverseEngineeringProcess` (for documentation & glossary mapping)
-  - `DependencyMapperAgent` (seed data for relationships)
-  - `CodeConverterAgent` (guides translation prompts)
-- **Interactions:**
-  - Uses Azure OpenAI via `ResponsesApiClient` / `IChatClient` with concurrency guard.
-  - Results persisted by `SqliteMigrationRepository`.
-
-#### BusinessLogicExtractorAgent
-- **Purpose:** Convert technical analyses into business language (use cases, user stories, glossary).
-- **Inputs:** Output from `CobolAnalyzerAgent` + optional glossary.
-- **Outputs:** `BusinessLogic` records and Markdown sections used in `reverse-engineering-details.md`.
-- **Interactions:**
-  - Runs in parallel with analyzer results.
-  - Writes documentation via `FileHelper` and logs via `EnhancedLogger`.
-  - Results persisted to the `business_logic` SQLite table via `IMigrationRepository.SaveBusinessLogicAsync`, enabling reuse in subsequent `--skip-reverse-engineering --reuse-re` runs.
-
-#### DependencyMapperAgent
-- **Purpose:** Identify CALL/COPY/PERFORM/IO relationships and build graph metadata.
-- **Inputs:** COBOL files + analyses (line numbers, paragraphs).
-- **Outputs:** `DependencyMap` with nodes/edges stored in both SQLite and Neo4j.
-- **Interactions:**
-  - Feeds the McpChatWeb graph panel and run-selector APIs.
-  - Enables multi-run queries (e.g., "show me CALL tree for run 42").
-
-#### CodeConverterAgent(s)
-- **Variants:** `JavaConverterAgent` or `CSharpConverterAgent` (selected via `TargetLanguage`).
-- **Purpose:** Generate target-language code from COBOL analyses and dependency context.
-- **Inputs:**
-  - `CobolAnalysis` per file
-  - Target language settings (Quarkus vs. .NET)
-  - Migration run metadata (for logging & metrics)
-  - `BusinessLogic` records per file (user stories, features, business rules) — injected automatically from RE output in full-pipeline runs, or loaded from DB when `--reuse-re` is used
-- **Outputs:** `CodeFile` records saved under `output/java/` or `output/csharp/`.
-- **Interactions:**
-  - Concurrency guards (pipeline slots vs. AI calls) ensure Azure OpenAI limits respected.
-  - Results pushed to portal via repositories for browsing/download.
-
-### ⚡ Concurrency Notes
-- **Pipeline concurrency (`--max-parallel`)** controls how many files/chunks run simultaneously (e.g., 8).
-- **AI concurrency (`--max-ai-parallel`)** caps concurrent Azure OpenAI calls (e.g., 3) to avoid throttling.
-- Both values can be surfaced via CLI flags or environment variables to let `doctor.sh` tune runtime.
-
-### 🔄 End-to-End Data Flow
-1. `doctor.sh run` → load configs → choose target language
-2. **Source scanning** - Reads all `.cbl`/`.cpy` files from `source/`
-3. **Analysis** - `CobolAnalyzerAgent` extracts structure; `BusinessLogicExtractorAgent` generates documentation
-4. **Dependencies** - `DependencyMapperAgent` maps CALL/COPY/PERFORM relationships → Neo4j
-5. **Conversion** - `JavaConverterAgent` or `CSharpConverterAgent` generates target code → `output/`
-6. **Storage** - `HybridMigrationRepository` writes metadata to SQLite, graph edges to Neo4j
-7. **Portal** - `McpChatWeb` surfaces chat, graphs, and reports at http://localhost:5028
-
----
-
-## 🔨 Build & Run
-
-### Build Only
+## Build & run from source
 
 ```bash
-dotnet build
+git clone https://github.com/Azure-Samples/COBOL-Modernization-Agents
+cd COBOL-Modernization-Agents
+./doctor.sh setup            # configure provider
+./doctor.sh test             # build + smoke test
+./doctor.sh rekt-full        # parse your COBOL
+./doctor.sh portal           # launch UI
 ```
 
-### Run Migration (Recommended)
+Manual build:
 
 ```bash
-./doctor.sh run      # Interactive - prompts for language choice
-```
-
-**⚠️ Do NOT use `dotnet run` directly** - it bypasses the interactive menu and configuration checks.
-
-### Launch Portal Only
-
-```bash
-./doctor.sh portal   # Opens http://localhost:5028
+dotnet restore
+dotnet build CobolToQuarkusMigration.csproj
 ```
 
 ---
 
-## 🔧 Configuration Reference
+## Troubleshooting
 
-### Configuration Loading: .env vs appsettings.json
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `output/.metrics/unknown.jsonl` filling up | LLM call from agent not setting `MetricsSink.CurrentRunId` | Recent agents handle this in `ConvertAsync`; check `MigrationProcess.cs` sets it at run start |
+| Conversion produces `*Fallback.java` | Copilot SDK 5-min timeout fired | Bump `COPILOT_SDK_REQUEST_TIMEOUT_SECONDS=900` and verify it propagates with `tools/verify-env-propagation.sh` |
+| Both A/B legs produce same output | `_USE_PROGRAM_FACTS` not reaching dotnet | Portal is intercepting; use `tools/ab-projection.sh` which sets `PORTAL_LAUNCHED=true` to force direct invocation |
+| `check-compile.sh` reports orphan literals at class scope | Chunked-reassembly defect | Already fixed via class-declaration-aware extraction; if recurring, inspect `Processes/ChunkedMigrationProcess.cs::ExtractJavaClassContent` |
+| Stale Neo4j data after source change | REKT scan cache hit | `./doctor.sh rekt-full --force` or wipe `Data/rekt-scan.db` |
 
-This project uses a **layered configuration system** where `.env` files can override `appsettings.json` values.
-
-#### Config Files Explained
-
-| File | Purpose | Git Tracked? |
-|------|---------|--------------|
-| `Config/appsettings.json` | **All settings** - models, chunking, Neo4j, output paths | ✅ Yes |
-| `Config/ai-config.env` | Template defaults | ✅ Yes |
-| `Config/ai-config.local.env` | **Your secrets** - API keys, endpoints | ❌ No (gitignored) |
-
-#### What Goes Where?
-
-```
-appsettings.json          → Non-secret settings (chunking, Neo4j, file paths)
-ai-config.local.env       → Secrets (API keys, endpoints) - NEVER commit!
-```
-
-#### Loading Order (Priority)
-
-When you run `./doctor.sh run`, configuration loads in this order:
-
-```mermaid
-flowchart LR
-    A["1. appsettings.json<br/>(base config)"] --> B["2. ai-config.env<br/>(template defaults)"]
-    B --> C["3. ai-config.local.env<br/>(your overrides)"]
-    C --> D["4. Environment vars<br/>(highest priority)"]
-    
-    E["./doctor.sh setup<br/>(CLI)"] -.->|writes| C
-    F["Portal Setup Modal<br/>(Browser)"] -.->|writes| C
-    
-    style C fill:#90EE90
-    style D fill:#FFD700
-    style E fill:#4B8BBE
-    style F fill:#7C3AED
-```
-
-**Later values override earlier ones.** This means:
-- `ai-config.local.env` overrides `appsettings.json`
-- Environment variables override everything
-
-#### How doctor.sh Loads Config
-
-```bash
-# Inside doctor.sh:
-source "$REPO_ROOT/Config/load-config.sh"  # Loads the loader
-load_ai_config                              # Executes loading
-```
-
-The `load-config.sh` script:
-1. Reads `ai-config.local.env` first (your secrets)
-2. Falls back to `ai-config.env` for any unset values
-3. Exports all values as environment variables
-4. .NET app reads these env vars, which override `appsettings.json`
-
-#### Quick Reference: Key Settings
-
-| Setting | appsettings.json Location | .env Override |
-|---------|---------------------------|---------------|
-| Codex model | `AISettings.ModelId` | `_CODE_MODEL` |
-| Chat model | `AISettings.ChatModelId` | `_CHAT_MODEL` |
-| API endpoint | `AISettings.Endpoint` | `_MAIN_ENDPOINT` |
-| API key | `AISettings.ApiKey` | `_MAIN_API_KEY` |
-| Neo4j enabled | `ApplicationSettings.Neo4j.Enabled` | — |
-| Chunking | `ChunkingSettings.*` | — |
-
-> 💡 **Best Practice:** Keep secrets in `ai-config.local.env`, keep everything else in `appsettings.json`.
+See [`docs/troubleshoot.md`](docs/troubleshoot.md) for the full troubleshooting catalogue.
 
 ---
 
-### Required: Azure OpenAI
+## Further reading
 
-In `Config/ai-config.local.env`:
-```bash
-# Master Configuration
-_MAIN_ENDPOINT="https://YOUR-RESOURCE.openai.azure.com/"
-_MAIN_API_KEY="your key"   # Leave empty to use 'az login' (Entra ID) instead
-
-# Model Selection (override appsettings.json)
-_CHAT_MODEL="gpt-5.2-chat"           # For Portal Q&A
-_CODE_MODEL="gpt-5.1-codex-mini"     # For Code Conversion
-```
-
-> 💡 **Prefer keyless auth?** Run `az login` and leave `_MAIN_API_KEY` empty.
-> You need the **"Cognitive Services OpenAI User"** role on your Azure OpenAI resource.
-> See [Azure AD / Entra ID Authentication Guide](azlogin-auth-guide.md) for full instructions.
-
-### Neo4j (Dependency Graphs)
-
-In `Config/appsettings.json`:
-```json
-{
-  "ApplicationSettings": {
-    "Neo4j": {
-      "Enabled": true,
-      "Uri": "bolt://localhost:7687",
-      "Username": "neo4j",
-      "Password": "cobol-migration-2025"
-    }
-  }
-}
-```
-
-Start with: `docker-compose up -d neo4j`
-
-### Smart Chunking (Large Files)
-
-See [Parallel Jobs Formula](#parallel-jobs-formula) for chunking configuration details.
+| Topic | Doc |
+|---|---|
+| 5-minute getting started | [`docs/quick-guide.md`](docs/quick-guide.md) |
+| Full step-by-step setup | [`docs/quick-start.md`](docs/quick-start.md) |
+| REKT static-analysis pipeline | [`docs/rekt-demo.md`](docs/rekt-demo.md) |
+| REKT-grounded conversion (selectors, validators) | [`docs/rekt-grounded-conversion.md`](docs/rekt-grounded-conversion.md) |
+| Smart chunking architecture | [`docs/smart-chunking-architecture.md`](docs/smart-chunking-architecture.md) |
+| Program-facts schema (PR3) | [`docs/p3-program-facts.md`](docs/p3-program-facts.md) |
+| Java prompt projection (PR4) | [`docs/p4a-java-prompt-projection.md`](docs/p4a-java-prompt-projection.md) |
+| C# projection + auto-extract (PR4.b / PR3.b) | [`docs/p4b-csharp-projection-and-pr3b-auto-extract.md`](docs/p4b-csharp-projection-and-pr3b-auto-extract.md) |
+| A/B validation protocol + results | [`docs/p1-ab-validation-protocol.md`](docs/p1-ab-validation-protocol.md) |
+| Response cache (PR1) | [`docs/p1-response-cache.md`](docs/p1-response-cache.md) |
+| REKT scan cache (PR2) | [`docs/p2-rekt-scan-cache.md`](docs/p2-rekt-scan-cache.md) |
+| Reverse engineering architecture | [`REVERSE_ENGINEERING_ARCHITECTURE.md`](REVERSE_ENGINEERING_ARCHITECTURE.md) |
+| Target Architecture / migration waves | [`docs/target-architecture-recommendation.md`](docs/target-architecture-recommendation.md) |
+| Modernization Intelligence Portal (design) | [`docs/modernization-intelligence-portal-design.md`](docs/modernization-intelligence-portal-design.md) |
+| Custom GitHub agent onboarding | [`docs/customagent.md`](docs/customagent.md) |
+| Troubleshooting setup | [`docs/troubleshoot.md`](docs/troubleshoot.md) |
+| Changelog | [`CHANGELOG.md`](CHANGELOG.md) |
 
 ---
 
-## 📊 What Gets Generated
-
-| Input | Output |
-|-------|--------|
-| `source/CUSTOMER.cbl` | `output/java/com/example/generated/CustomerService.java` |
-| `source/PAYMENT.cbl` | `output/csharp/Generated/PaymentProcessor.cs` |
-| Analysis | `output/reverse-engineering-details.md` |
-| Report | `output/migration_report_run_X.md` |
-
----
-
-## 🆘 Troubleshooting
-
-```bash
-./doctor.sh               # Check configuration
-./doctor.sh test          # Run system tests
-./doctor.sh chunking-health  # Check chunking setup
-```
-
-| Issue | Solution |
-|-------|----------|
-| Neo4j connection refused | `docker-compose up -d neo4j` |
-| Azure API error | Check `Config/ai-config.local.env` credentials or run `az login` |
-| `./doctor.sh setup` fails with missing `ai-config.local.env.example` | Follow `docs/troubleshoot.md` |
-| No output generated | Ensure COBOL files are in `source/` |
-| Portal won't start | `lsof -ti :5028 \| xargs kill -9` then retry |
-
----
-
-## 📚 Further Reading
-
-- [Custom Agent Onboarding](docs/customagent.md) — How to add a custom GitHub agent (Copilot CLI, gh-aw workflow, or runtime LLM agent) to this framework
-- [Smart Chunking & Token Architecture](docs/smart-chunking-architecture.md) — Diagrams, constants reference, complexity scoring
-- [Smart Chunking Guide](Smart-chuncking-how%20it-works.md) — Deep technical details
-- [Architecture Documentation](REVERSE_ENGINEERING_ARCHITECTURE.md) — System design
-- [Cobol-REKT Demo](docs/rekt-demo.md) — Static-analysis pipeline walkthrough
-- [Target Architecture Recommendation](docs/target-architecture-recommendation.md) — Modernization plan view, mapping heuristics, and the JSON schema consumed by AI conversion agents
-- [REKT-grounded Conversion](docs/rekt-grounded-conversion.md) — Selector-driven `doctor.sh run`, BMS/IMS readers, quality-validation agents, env-var reference
-- [Setup Troubleshooting](docs/troubleshoot.md) — Setup failures and recovery steps for `./doctor.sh setup`
-- [Changelog](CHANGELOG.md) — Version history
-
----
-
-## ⚙️ Workflows
+## Workflows, CI & custom agents
 
 | Workflow / Agent | Trigger | Description |
 |---|---|---|
-| [Documentation Updater](.github/workflows/documentation-updater.lock.yml) | Push / PR to `main` | Checks documentation completeness and reports gaps via issues or PR comments |
-| [Documentation Audit](.github/workflows/documentation-audit.lock.yml) | Weekly schedule | Performs a full audit of project documentation for accuracy and completeness |
-| [Test Enhancer](.github/workflows/test-enhancer.lock.yml) | On demand | Agentic workflow that analyzes the codebase and proposes improvements to test coverage |
-| [Branch Reviewer](.github/agents/branch-reviewer.agent.md) | On demand (Copilot CLI) | Reviews branch changes, summarizes commits, and detects breaking changes vs. `main` |
-
-> Adding your own agent? See [Custom Agent Onboarding](docs/customagent.md) for the three supported surfaces (Copilot CLI agent · gh-aw workflow agent · runtime LLM agent).
+| [Documentation Updater](.github/workflows/documentation-updater.lock.yml) | Push / PR to `main` | Checks documentation completeness, reports gaps |
+| [Documentation Audit](.github/workflows/documentation-audit.lock.yml) | Weekly | Full audit of project documentation |
+| [Test Enhancer](.github/workflows/test-enhancer.lock.yml) | On demand | Analyzes codebase and proposes test improvements |
+| [Branch Reviewer](.github/agents/branch-reviewer.agent.md) | On demand (Copilot CLI) | Reviews branch changes, summarizes commits, detects breaking changes |
 
 ---
 
 ## Acknowledgements
 
-Collaboration between Microsoft's Global Black Belt team and [Bankdata](https://www.bankdata.dk/). See [blog post](https://aka.ms/cobol-blog).
+Collaboration between Microsoft's Global Black Belt team and [Bankdata](https://www.bankdata.dk/). See the [blog post](https://aka.ms/cobol-blog).
 
-Special thanks to [**avishek-sen-gupta/cobol-rekt**](https://github.com/avishek-sen-gupta/cobol-rekt) ([MIT-licensed](https://github.com/avishek-sen-gupta/cobol-rekt?tab=MIT-1-ov-file)) for inspiration on the static-analysis pipeline (AST, CFG, and data-flow extraction) that powers the AST Galaxy, AST Explorer, and Migration Planner views in this project.
+Special thanks to [**avishek-sen-gupta/cobol-rekt**](https://github.com/avishek-sen-gupta/cobol-rekt) ([MIT-licensed](https://github.com/avishek-sen-gupta/cobol-rekt?tab=MIT-1-ov-file)) for the static-analysis pipeline (AST, CFG, data-flow extraction) that powers AST Galaxy, AST Explorer, and the Migration Planner.
 
 ## License
 
-MIT License - Copyright (c) Microsoft Corporation.
+MIT License — Copyright © Microsoft Corporation.
