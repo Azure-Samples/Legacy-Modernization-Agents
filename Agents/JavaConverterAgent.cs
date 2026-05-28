@@ -5,6 +5,7 @@ using CobolToQuarkusMigration.Agents.Infrastructure.Caching;
 using CobolToQuarkusMigration.Agents.Interfaces;
 using CobolToQuarkusMigration.Models;
 using CobolToQuarkusMigration.Helpers;
+using CobolToQuarkusMigration.Helpers.PromptProjections;
 using System.Diagnostics;
 using System.Text;
 
@@ -149,6 +150,14 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
             // Inject REKT structural context when available — this gives the LLM
             // an authoritative section/paragraph/call/SQL/data layout instead of
             // forcing it to re-derive structure from source. Opt-in via env var.
+            //
+            // Two sources, in priority order:
+            //   1. PR4: program-facts.json projection (curated, schema-versioned).
+            //      Enabled by _USE_PROGRAM_FACTS=true AND a *.facts.json present
+            //      under output/rekt/. Replaces the raw-AST path entirely for
+            //      this program — no double-injection.
+            //   2. Raw-AST fallback via RektContextLoader (existing path).
+            //      Used when (1) is not active for this program.
             if (string.Equals(Environment.GetEnvironmentVariable("ENABLE_REKT_CONTEXT"), "true", StringComparison.OrdinalIgnoreCase))
             {
                 try
@@ -159,6 +168,33 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
                     if (d != null)
                     {
                         var srcFolder = Environment.GetEnvironmentVariable("COBOL_SOURCE_FOLDER") ?? "source";
+
+                        // ── PR4: program-facts.json projection (opt-in) ──
+                        bool factsInjected = false;
+                        if (JavaConverterProjection.IsEnabled())
+                        {
+                            var factsDir = Path.Combine(d.FullName, "output", "rekt");
+                            var facts = JavaConverterProjection.TryLoad(factsDir, cobolFile.FileName);
+                            if (facts is not null)
+                            {
+                                userPromptBuilder.AppendLine();
+                                userPromptBuilder.AppendLine(JavaConverterProjection.BuildPromptBlock(facts));
+                                Logger.LogInformation(
+                                    "[JavaConverterAgent] Injected program-facts projection for {File} (schema={Schema}, confidence={Conf}, warnings={Warn})",
+                                    cobolFile.FileName, facts.SchemaVersion, facts.Confidence, facts.Warnings.Count);
+                                factsInjected = true;
+                            }
+                            else
+                            {
+                                Logger.LogInformation(
+                                    "[JavaConverterAgent] _USE_PROGRAM_FACTS=true but no facts.json for {File} — falling back to raw-AST path",
+                                    cobolFile.FileName);
+                            }
+                        }
+
+                        // Raw-AST fallback (existing path). Only runs when the facts projection didn't fire.
+                        if (!factsInjected)
+                        {
                         var fallback = string.Equals(Environment.GetEnvironmentVariable("STRUCTURAL_FALLBACK_TO_AI"), "true", StringComparison.OrdinalIgnoreCase);
                         var provider = new StructuralContextProvider(d.FullName, srcFolder, fallbackToAi: fallback);
                         var sc = await provider.GetAsync(cobolFile.FileName);
@@ -203,6 +239,7 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
                             Logger.LogWarning("[JavaConverterAgent] ⚠️ NO REKT DATA available for {File} (provenance={Prov})",
                                 cobolFile.FileName, sc.Provenance);
                         }
+                        }   // end raw-AST fallback block
 
                         // Shared-types registry: prevent duplicate type definitions across files.
                         try
