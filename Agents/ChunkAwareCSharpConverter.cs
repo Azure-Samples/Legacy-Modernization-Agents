@@ -424,7 +424,7 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
         }
 
         // REKT structural context + shared-types registry (opt-in via ENABLE_REKT_CONTEXT).
-        await RektPromptInjector.InjectAsync(sb, "C#", chunk.SourceFile ?? "(unknown)", Logger);
+        await RektPromptInjector.InjectAsync(sb, "C#", chunk.SourceFile ?? "(unknown)", "ChunkAwareCSharpConverter", _runId, Logger);
 
         sb.AppendLine("Return ONLY C# code. No markdown blocks. No explanations.");
 

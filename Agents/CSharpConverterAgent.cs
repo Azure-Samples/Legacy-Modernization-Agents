@@ -160,18 +160,36 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
                         // ── PR4.b: program-facts.json projection (opt-in) ──
                         // Identical pattern to JavaConverterAgent (PR4.a).
                         bool factsInjected = false;
+                        int projectionTokens = 0;
                         if (CobolToQuarkusMigration.Helpers.PromptProjections.CSharpConverterProjection.IsEnabled())
                         {
                             var factsDir = Path.Combine(d.FullName, "output", "rekt");
                             var facts = CobolToQuarkusMigration.Helpers.PromptProjections.CSharpConverterProjection.TryLoad(factsDir, cobolFile.FileName);
                             if (facts is not null)
                             {
+                                var projectionBlock = CobolToQuarkusMigration.Helpers.PromptProjections.CSharpConverterProjection.BuildPromptBlock(facts);
+                                projectionTokens = TokenHelper.EstimateTokens(projectionBlock);
                                 userPromptBuilder.AppendLine();
-                                userPromptBuilder.AppendLine(
-                                    CobolToQuarkusMigration.Helpers.PromptProjections.CSharpConverterProjection.BuildPromptBlock(facts));
+                                userPromptBuilder.AppendLine(projectionBlock);
                                 Logger.LogInformation(
                                     "[CSharpConverterAgent] Injected program-facts projection for {File} (schema={Schema}, confidence={Conf}, warnings={Warn})",
                                     cobolFile.FileName, facts.SchemaVersion, facts.Confidence, facts.Warnings.Count);
+                                Logger.LogInformation(
+                                    "[CSharpConverterAgent] PROJECTION_METRICS projectionMode=projection file={File} projectionTokens={ProjTok} rawRektTokens=0 reductionPercent=n/a",
+                                    cobolFile.FileName, projectionTokens);
+                                MetricsSink.Emit(_runId?.ToString(), new
+                                {
+                                    Agent = "CSharpConverterAgent",
+                                    Event = "projection_metrics",
+                                    File = cobolFile.FileName,
+                                    TargetLanguage = "C#",
+                                    ProjectionMode = "projection",
+                                    ProjectionTokens = projectionTokens,
+                                    RawRektTokens = 0,
+                                    FactsSchema = facts.SchemaVersion,
+                                    FactsConfidence = facts.Confidence,
+                                    FactsWarnings = facts.Warnings.Count
+                                });
                                 factsInjected = true;
                             }
                             else
@@ -196,31 +214,72 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
                             || sc.Context.TargetPlan != null;
                         if (hasContext)
                         {
+                            var rektHeaderLines = new[]
+                            {
+                                "---",
+                                "REKT STRUCTURAL CONTEXT (authoritative — use this as the conversion blueprint):",
+                                "",
+                                "FACT-LOCKING RULES — read these BEFORE looking at the structural context:",
+                                "  • Treat the structural context below as GROUND TRUTH.",
+                                "  • Every method you emit must map to a section or paragraph listed in the context.",
+                                "  • Every field you emit must map to a data-structure entry in the context.",
+                                "  • Never invent new fields, methods, classes, SQL operations, or CALL targets that are not present here.",
+                                "  • If a name is unclear from the source, prefer the name in the structural context.",
+                                "  • If the structural context shows zero items for a category (e.g. no CALL targets), do NOT generate any.",
+                                "",
+                                "DATA STRUCTURE → DTO RULES:",
+                                "  • For EVERY 01-level data group below, generate a COMPLETE DTO class with ALL fields.",
+                                "  • Map PIC X→string, PIC S9V9→decimal, PIC 9 COMP-3→decimal, PIC 9 COMP→int/long.",
+                                "  • Preserve original COBOL field names (PascalCase). Do NOT simplify to fewer fields.",
+                                "  • If a group has >50 fields, still generate ALL of them.",
+                                "",
+                                "CALL TARGET → SERVICE INJECTION RULES:",
+                                "  • For EVERY CALL target below: generate an interface + constructor-injected field + method call.",
+                                "  • Do NOT inline the called program's logic.",
+                                "",
+                            };
+                            var rektBody = RektContextFormatter.ToPromptBlock(sc);
+                            var rektBlock = string.Join("\n", rektHeaderLines) + rektBody;
+                            var rawRektTokens = TokenHelper.EstimateTokens(rektBlock);
                             userPromptBuilder.AppendLine();
-                            userPromptBuilder.AppendLine("---");
-                            userPromptBuilder.AppendLine("REKT STRUCTURAL CONTEXT (authoritative — use this as the conversion blueprint):");
-                            userPromptBuilder.AppendLine();
-                            userPromptBuilder.AppendLine("FACT-LOCKING RULES — read these BEFORE looking at the structural context:");
-                            userPromptBuilder.AppendLine("  • Treat the structural context below as GROUND TRUTH.");
-                            userPromptBuilder.AppendLine("  • Every method you emit must map to a section or paragraph listed in the context.");
-                            userPromptBuilder.AppendLine("  • Every field you emit must map to a data-structure entry in the context.");
-                            userPromptBuilder.AppendLine("  • Never invent new fields, methods, classes, SQL operations, or CALL targets that are not present here.");
-                            userPromptBuilder.AppendLine("  • If a name is unclear from the source, prefer the name in the structural context.");
-                            userPromptBuilder.AppendLine("  • If the structural context shows zero items for a category (e.g. no CALL targets), do NOT generate any.");
-                            userPromptBuilder.AppendLine();
-                            userPromptBuilder.AppendLine("DATA STRUCTURE → DTO RULES:");
-                            userPromptBuilder.AppendLine("  • For EVERY 01-level data group below, generate a COMPLETE DTO class with ALL fields.");
-                            userPromptBuilder.AppendLine("  • Map PIC X→string, PIC S9V9→decimal, PIC 9 COMP-3→decimal, PIC 9 COMP→int/long.");
-                            userPromptBuilder.AppendLine("  • Preserve original COBOL field names (PascalCase). Do NOT simplify to fewer fields.");
-                            userPromptBuilder.AppendLine("  • If a group has >50 fields, still generate ALL of them.");
-                            userPromptBuilder.AppendLine();
-                            userPromptBuilder.AppendLine("CALL TARGET → SERVICE INJECTION RULES:");
-                            userPromptBuilder.AppendLine("  • For EVERY CALL target below: generate an interface + constructor-injected field + method call.");
-                            userPromptBuilder.AppendLine("  • Do NOT inline the called program's logic.");
-                            userPromptBuilder.AppendLine();
-                            userPromptBuilder.AppendLine(RektContextFormatter.ToPromptBlock(sc));
+                            foreach (var line in rektHeaderLines) userPromptBuilder.AppendLine(line);
+                            userPromptBuilder.AppendLine(rektBody);
                             Logger.LogInformation("[CSharpConverterAgent] Injected REKT context for {File} (provenance={Prov}, confidence={Conf:F2})",
                                 cobolFile.FileName, sc.Provenance, sc.Confidence);
+                            Logger.LogInformation(
+                                "[CSharpConverterAgent] PROJECTION_METRICS projectionMode=raw-rekt file={File} projectionTokens=0 rawRektTokens={RawTok} reductionPercent=n/a",
+                                cobolFile.FileName, rawRektTokens);
+                            MetricsSink.Emit(_runId?.ToString(), new
+                            {
+                                Agent = "CSharpConverterAgent",
+                                Event = "projection_metrics",
+                                File = cobolFile.FileName,
+                                TargetLanguage = "C#",
+                                ProjectionMode = "raw-rekt",
+                                ProjectionTokens = 0,
+                                RawRektTokens = rawRektTokens,
+                                RektProvenance = sc.Provenance.ToString(),
+                                RektConfidence = sc.Confidence
+                            });
+                        }
+                        else
+                        {
+                            Logger.LogWarning("[CSharpConverterAgent] ⚠️ NO REKT DATA available for {File} (provenance={Prov})",
+                                cobolFile.FileName, sc.Provenance);
+                            Logger.LogInformation(
+                                "[CSharpConverterAgent] PROJECTION_METRICS projectionMode=none file={File} projectionTokens=0 rawRektTokens=0 reductionPercent=n/a",
+                                cobolFile.FileName);
+                            MetricsSink.Emit(_runId?.ToString(), new
+                            {
+                                Agent = "CSharpConverterAgent",
+                                Event = "projection_metrics",
+                                File = cobolFile.FileName,
+                                TargetLanguage = "C#",
+                                ProjectionMode = "none",
+                                ProjectionTokens = 0,
+                                RawRektTokens = 0,
+                                RektProvenance = sc.Provenance.ToString()
+                            });
                         }
                         }   // end raw-AST fallback block
 

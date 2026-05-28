@@ -427,7 +427,7 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
         }
 
         // REKT structural context + shared-types registry (opt-in via ENABLE_REKT_CONTEXT).
-        await RektPromptInjector.InjectAsync(sb, "Java", chunk.SourceFile ?? "(unknown)", Logger);
+        await RektPromptInjector.InjectAsync(sb, "Java", chunk.SourceFile ?? "(unknown)", "ChunkAwareJavaConverter", _runId, Logger);
 
         sb.AppendLine("Return ONLY Java code. No markdown blocks. No explanations.");
 
