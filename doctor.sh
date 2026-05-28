@@ -2791,7 +2791,51 @@ print(len(lines))
     # for IMS/DL/I programs that use EXEC DLI or non-standard column formats
     local succeeded=0
     local failed=0
+    local skipped=0
     local failed_files=""
+
+    # ── PR2.b: incremental REKT scan cache (opt-in via _REKT_INCREMENTAL=true) ──
+    # When enabled, query the C# planner for a parse/skip plan, build a
+    # bash skip-set, then record outcomes via a temp manifest. Default OFF
+    # to preserve existing behaviour. See docs/p2-rekt-scan-cache.md.
+    local rekt_inc=false
+    [[ "${_REKT_INCREMENTAL:-false}" == "true" ]] && rekt_inc=true
+
+    declare -A rekt_skip_set=()
+    local rekt_manifest=""
+    if [[ "$rekt_inc" == "true" ]]; then
+        if command -v dotnet >/dev/null 2>&1 && [[ -f "$REPO_ROOT/CobolToQuarkusMigration.csproj" ]]; then
+            local rekt_db="${_REKT_SCAN_DB:-$REPO_ROOT/Data/rekt-scan.db}"
+            local rekt_plan_file
+            rekt_plan_file=$(mktemp -t rekt-scan-plan.XXXXXX)
+            rekt_manifest=$(mktemp -t rekt-scan-manifest.XXXXXX)
+            echo -e "  ${BLUE}Incremental REKT cache: planning…${NC}"
+            if (cd "$REPO_ROOT" && dotnet run --project CobolToQuarkusMigration.csproj --no-build -- \
+                    rekt-scan-cache plan "$staging_dir" \
+                    --db "$rekt_db" \
+                    --verify-artifacts-in "$REPO_ROOT/output/rekt" \
+                    > "$rekt_plan_file" 2>/dev/null); then
+                local _skip_count=0 _parse_count=0
+                while IFS=$'\t' read -r action basename reason; do
+                    [[ -z "$action" ]] && continue
+                    if [[ "$action" == "skip" ]]; then
+                        rekt_skip_set["$basename"]=1
+                        _skip_count=$((_skip_count + 1))
+                    else
+                        _parse_count=$((_parse_count + 1))
+                    fi
+                done < "$rekt_plan_file"
+                echo -e "  ${BLUE}Incremental plan: ${_parse_count} to parse, ${_skip_count} cached.${NC}"
+            else
+                echo -e "  ${YELLOW}⚠️  Incremental plan failed — falling back to full scan.${NC}"
+                rekt_inc=false
+            fi
+            rm -f "$rekt_plan_file"
+        else
+            echo -e "  ${YELLOW}⚠️  _REKT_INCREMENTAL=true but dotnet/project not available — full scan.${NC}"
+            rekt_inc=false
+        fi
+    fi
 
     # Use process substitution so succeeded/failed counters persist outside the loop
     while IFS= read -r cbl_file; do
@@ -2802,7 +2846,16 @@ print(len(lines))
         local stem="${fname%.*}"
         local err_log="$REPO_ROOT/output/rekt/${stem}.parse.log"
 
+        # PR2.b: honour the planner's skip decision.
+        if [[ "$rekt_inc" == "true" && -n "${rekt_skip_set[$fname]:-}" ]]; then
+            echo -e "  Skipping $fname ${GREEN}(cached)${NC}"
+            succeeded=$((succeeded + 1))
+            skipped=$((skipped + 1))
+            continue
+        fi
+
         echo -ne "  Parsing $fname..."
+        local parse_outcome="Failed"
 
         # Attempt 1: Standard dialect (handles CICS, SQL, standard COBOL)
         if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
@@ -2814,6 +2867,7 @@ print(len(lines))
             echo -e " ${GREEN}✅${NC}"
             rm -f "$err_log"
             succeeded=$((succeeded + 1))
+            parse_outcome="Full"
         else
             # Attempt 2: Retry without dialect JAR (for IMS/DL/I and other dialects)
             if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
@@ -2824,6 +2878,7 @@ print(len(lines))
                 echo -e " ${GREEN}✅${NC} (no-dialect mode)"
                 rm -f "$err_log"
                 succeeded=$((succeeded + 1))
+                parse_outcome="NoDialect"
             else
                 # Attempt 3: Raw AST only (tolerates more parse errors)
                 if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
@@ -2834,6 +2889,7 @@ print(len(lines))
                     echo -e " ${YELLOW}⚠️${NC} (raw AST only — complex copybooks)"
                     rm -f "$err_log"
                     succeeded=$((succeeded + 1))
+                    parse_outcome="RawAst"
                 else
                     # Attempt 4: validate + dependency (bypasses AST-writer NPE bugs)
                     # Even if validate reports minor issues, dependency extraction
@@ -2862,21 +2918,39 @@ print(len(lines))
                         [[ -n "$err_hint" ]] && echo -e "    ${YELLOW}↳ smojol: $err_hint${NC}"
                         echo -e "    ${YELLOW}↳ log: output/rekt/${stem}.parse.log${NC}"
                         succeeded=$((succeeded + 1))
+                        parse_outcome="DepsOnly"
                     else
                         echo -e " ${RED}❌${NC}"
                         echo -e "    ${RED}↳ log: output/rekt/${stem}.parse.log${NC}"
                         failed=$((failed + 1))
                         failed_files="${failed_files} ${fname}"
+                        parse_outcome="Failed"
                     fi
                 fi
             fi
         fi
+
+        # PR2.b: append outcome to manifest for batch-record after the loop.
+        if [[ "$rekt_inc" == "true" && -n "$rekt_manifest" ]]; then
+            printf '%s\t%s\n' "$fname" "$parse_outcome" >> "$rekt_manifest"
+        fi
     done < <(find "$staging_dir" -maxdepth 1 \( -name "*.cbl" -o -name "*.CBL" -o -name "*.cob" -o -name "*.COB" \) | sort)
+
+    # PR2.b: persist all outcomes in a single dotnet invocation.
+    if [[ "$rekt_inc" == "true" && -n "$rekt_manifest" && -s "$rekt_manifest" ]]; then
+        local rekt_db="${_REKT_SCAN_DB:-$REPO_ROOT/Data/rekt-scan.db}"
+        (cd "$REPO_ROOT" && dotnet run --project CobolToQuarkusMigration.csproj --no-build -- \
+                rekt-scan-cache record-batch "$rekt_manifest" \
+                --staging-dir "$staging_dir" \
+                --db "$rekt_db" >/dev/null 2>&1) || \
+            echo -e "  ${YELLOW}⚠️  Incremental cache record-batch failed (results not persisted).${NC}"
+        rm -f "$rekt_manifest"
+    fi
 
     # Clean up staging dir — it lives inside source/ which is gitignored
     rm -rf "$staging_dir"
 
-    echo -e "\n${GREEN}  Parsed: $succeeded succeeded, $failed failed${NC}"
+    echo -e "\n${GREEN}  Parsed: $succeeded succeeded ($skipped from cache), $failed failed${NC}"
     # Count degraded outputs (succeeded with warnings — deps-only or raw-AST fallbacks).
     local degraded
     degraded=$(find "$REPO_ROOT/output/rekt" -maxdepth 1 -name '*.parse.log' 2>/dev/null | wc -l | tr -d ' ')

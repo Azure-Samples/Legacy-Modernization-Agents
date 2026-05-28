@@ -144,6 +144,9 @@ internal static class Program
         var listModelsCommand = BuildListModelsCommand(loggerFactory);
         rootCommand.AddCommand(listModelsCommand);
 
+        // PR2.b — incremental REKT scan cache CLI surface.
+        rootCommand.AddCommand(CobolToQuarkusMigration.Cli.RektScanCacheCommand.Build(loggerFactory));
+
         rootCommand.SetHandler(async (string cobolSource, string javaOutput, string reverseEngineerOutput, bool reverseEngineerOnly, bool skipReverseEngineering, bool reuseRe, string configPath, bool resume) =>
         {
             await RunMigrationAsync(loggerFactory, logger, fileHelper, settingsHelper, cobolSource, javaOutput, reverseEngineerOutput, reverseEngineerOnly, skipReverseEngineering, reuseRe, configPath, resume);
