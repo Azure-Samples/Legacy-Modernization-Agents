@@ -1,0 +1,12 @@
+
+═══════════════════════════════════════════════════════════════════════════
+A/B comparison for BDSM043.cbl → java
+═══════════════════════════════════════════════════════════════════════════
+  workspace : /var/folders/l8/crhtn4452vl6__ddzvsn0ngm0000gn/T/ab-projection.XXXXXX.KNnmW6IjIL
+  source    : /Users/gustav/funpark/cobol/v.latest/Legacy-Modernization-Agents/source/BDSM043.cbl
+
+→ leg A (baseline, raw-AST) ...
+  done in 528000ms (log: /var/folders/l8/crhtn4452vl6__ddzvsn0ngm0000gn/T/ab-projection.XXXXXX.KNnmW6IjIL/baseline.log)
+→ leg B (projection, program-facts) ...
+  done in 523000ms (log: /var/folders/l8/crhtn4452vl6__ddzvsn0ngm0000gn/T/ab-projection.XXXXXX.KNnmW6IjIL/projection.log)
+Leaving workspace at /var/folders/l8/crhtn4452vl6__ddzvsn0ngm0000gn/T/ab-projection.XXXXXX.KNnmW6IjIL

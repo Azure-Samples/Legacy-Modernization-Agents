@@ -1,6 +1,7 @@
 using GitHub.Copilot.SDK;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -35,7 +36,23 @@ public sealed class CopilotChatClient : IChatClient, IAsyncDisposable
     /// Per-request timeout. Prevents infinite hangs if the SDK never fires
     /// SessionIdleEvent (e.g. auth failure, network issues).
     /// </summary>
-    private static readonly TimeSpan RequestTimeout = TimeSpan.FromMinutes(5);
+    private static TimeSpan RequestTimeout
+    {
+        get
+        {
+            const int defaultSeconds = 300;
+            const int minSeconds = 60;
+            const int maxSeconds = 1800;
+
+            var raw = Environment.GetEnvironmentVariable("COPILOT_SDK_REQUEST_TIMEOUT_SECONDS");
+            if (int.TryParse(raw, out var seconds) && seconds >= minSeconds && seconds <= maxSeconds)
+            {
+                return TimeSpan.FromSeconds(seconds);
+            }
+
+            return TimeSpan.FromSeconds(defaultSeconds);
+        }
+    }
 
     /// <summary>
     /// Creates a new CopilotChatClient.
@@ -237,12 +254,18 @@ public sealed class CopilotChatClient : IChatClient, IAsyncDisposable
         var responseBuilder = new StringBuilder();
         var done = new TaskCompletionSource();
         string? errorMessage = null;
+        var streamWatch = Stopwatch.StartNew();
+        long? firstTokenLatencyMs = null;
 
         using var _ = session.On(evt =>
         {
             switch (evt)
             {
                 case AssistantMessageEvent msg:
+                    if (firstTokenLatencyMs is null)
+                    {
+                        firstTokenLatencyMs = streamWatch.ElapsedMilliseconds;
+                    }
                     responseBuilder.Append(msg.Data.Content);
                     break;
                 case SessionErrorEvent err:
@@ -281,6 +304,14 @@ public sealed class CopilotChatClient : IChatClient, IAsyncDisposable
         }
         catch (TimeoutException)
         {
+            _logger?.LogError(
+                "CopilotChatClient metrics: model={Model} firstTokenLatencyMs={FirstTokenLatencyMs} streamDurationMs={StreamDurationMs} sdkTimeoutMs={SdkTimeoutMs} fallbackReason={FallbackReason} totalCompletionTokens={TotalCompletionTokens}",
+                model,
+                firstTokenLatencyMs ?? -1,
+                streamWatch.ElapsedMilliseconds,
+                (long)RequestTimeout.TotalMilliseconds,
+                "timeout",
+                EstimateTokens(responseBuilder.ToString()));
             _logger?.LogError("CopilotChatClient: request timed out after {Minutes}m for model {Model}", RequestTimeout.TotalMinutes, model);
             throw;
         }
@@ -289,8 +320,25 @@ public sealed class CopilotChatClient : IChatClient, IAsyncDisposable
 
         if (errorMessage != null)
         {
+            _logger?.LogWarning(
+                "CopilotChatClient metrics: model={Model} firstTokenLatencyMs={FirstTokenLatencyMs} streamDurationMs={StreamDurationMs} sdkTimeoutMs={SdkTimeoutMs} fallbackReason={FallbackReason} totalCompletionTokens={TotalCompletionTokens}",
+                model,
+                firstTokenLatencyMs ?? -1,
+                streamWatch.ElapsedMilliseconds,
+                (long)RequestTimeout.TotalMilliseconds,
+                errorMessage,
+                EstimateTokens(responseBuilder.ToString()));
             throw new InvalidOperationException($"Copilot SDK error: {errorMessage}");
         }
+
+        _logger?.LogInformation(
+            "CopilotChatClient metrics: model={Model} firstTokenLatencyMs={FirstTokenLatencyMs} streamDurationMs={StreamDurationMs} sdkTimeoutMs={SdkTimeoutMs} fallbackReason={FallbackReason} totalCompletionTokens={TotalCompletionTokens}",
+            model,
+            firstTokenLatencyMs ?? -1,
+            streamWatch.ElapsedMilliseconds,
+            (long)RequestTimeout.TotalMilliseconds,
+            "-",
+            EstimateTokens(responseBuilder.ToString()));
 
         return responseBuilder.ToString();
     }

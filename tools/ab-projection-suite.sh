@@ -24,6 +24,7 @@
 #   --programs A,B,C       comma-separated list
 #   --program-file FILE    path to a file with one program per line
 #   --target java|csharp   target language (default java)
+#   --projection-only      run only the projection leg (useful for isolating runtime issues)
 #   --output-dir DIR       results directory (default auto-named)
 #   --keep-cache           do NOT clear Data/llm-cache.db between programs
 #                          (use only when measuring cache hit-rate, not cold cost)
@@ -40,6 +41,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROGRAMS=""
 PROGRAM_FILE=""
 TARGET="java"
+PROJECTION_ONLY=false
 OUTPUT_DIR=""
 KEEP_CACHE=false
 SKIP_EXISTING=false
@@ -49,6 +51,7 @@ while [[ $# -gt 0 ]]; do
         --programs)       PROGRAMS="$2"; shift 2 ;;
         --program-file)   PROGRAM_FILE="$2"; shift 2 ;;
         --target)         TARGET="$2"; shift 2 ;;
+        --projection-only) PROJECTION_ONLY=true; shift ;;
         --output-dir)     OUTPUT_DIR="$2"; shift 2 ;;
         --keep-cache)     KEEP_CACHE=true; shift ;;
         --skip-existing)  SKIP_EXISTING=true; shift ;;
@@ -77,6 +80,10 @@ fi
 if [[ ${#PROGRAM_LIST[@]} -eq 0 ]]; then
     echo "No programs supplied. Use --programs A,B,C or --program-file LIST" >&2; exit 2
 fi
+if [[ "$PROJECTION_ONLY" == "true" && "$KEEP_CACHE" == "true" ]]; then
+    echo "Cannot combine --projection-only with --keep-cache; projection-only mode is already isolated." >&2
+    exit 2
+fi
 
 # Resolve output dir.
 if [[ -z "$OUTPUT_DIR" ]]; then
@@ -91,7 +98,11 @@ echo "program,baseline_ms,projection_ms,baseline_input_tokens,projection_input_t
 echo "═══════════════════════════════════════════════════════════════════════════"
 echo "Suite: ${#PROGRAM_LIST[@]} program(s) → $TARGET"
 echo "Output: $OUTPUT_DIR"
-echo "Cache: $([[ "$KEEP_CACHE" == "true" ]] && echo "preserved between programs (warm)" || echo "cleared between programs (cold)")"
+if [[ "$PROJECTION_ONLY" == "true" ]]; then
+    echo "Mode: projection-only"
+else
+    echo "Cache: $([[ "$KEEP_CACHE" == "true" ]] && echo "preserved between programs (warm)" || echo "cleared between programs (cold)")"
+fi
 echo "═══════════════════════════════════════════════════════════════════════════"
 echo ""
 
@@ -119,8 +130,72 @@ extract_cache_pair() {
         | awk '{print $(NF-2)"|"$(NF-1)}'
 }
 
+extract_input_tokens_from_log() {
+    local leg_log="$1"
+    
+    # Try Copilot SDK format first: "CopilotChatClient metrics: ... totalCompletionTokens=123"
+    # The SDK logs completion tokens, not input tokens separately. For compatibility,
+    # we'll extract the totalCompletionTokens and note this is output-only.
+    local sdk_tokens=$(grep -Eo 'CopilotChatClient metrics:.*totalCompletionTokens=[0-9]+' "$leg_log" 2>/dev/null | head -1 \
+        | grep -Eo 'totalCompletionTokens=[0-9]+' | grep -Eo '[0-9]+' || true)
+    
+    if [[ -n "$sdk_tokens" ]]; then
+        echo "$sdk_tokens"
+        return
+    fi
+    
+    # Fall back to Azure Responses API format: "Responses API: ~N input ..."
+    grep -E '^\s*Responses API:|^\s*Responses API completed' "$leg_log" 2>/dev/null || true \
+        | grep -Eo '~[0-9]+ input|[0-9]+ input tokens' | head -1 \
+        | grep -Eo '[0-9]+' | head -1 || true
+}
+
+extract_total_tokens_from_log() {
+    local leg_log="$1"
+    
+    # Try Copilot SDK format first: "CopilotChatClient metrics: ... totalCompletionTokens=123"
+    local sdk_tokens=$(grep -Eo 'CopilotChatClient metrics:.*totalCompletionTokens=[0-9]+' "$leg_log" 2>/dev/null | head -1 \
+        | grep -Eo 'totalCompletionTokens=[0-9]+' | grep -Eo '[0-9]+' || true)
+    
+    if [[ -n "$sdk_tokens" ]]; then
+        echo "$sdk_tokens"
+        return
+    fi
+    
+    # Fall back to Azure Responses API format: "Responses API completed ... = N tokens"
+    grep -E 'Responses API completed' "$leg_log" 2>/dev/null || true \
+        | grep -Eo '= [0-9]+ tokens' | head -1 \
+        | grep -Eo '[0-9]+' || true
+}
+
+time_ms() {
+    if command -v gdate >/dev/null 2>&1; then gdate +%s%3N
+    else date +%s000; fi
+}
+
 success_count=0
 fail_count=0
+
+run_projection_only() {
+    local program="$1" log="$2"
+    local start=$(time_ms)
+    (
+        cd "$REPO_ROOT"
+        export ENABLE_REKT_CONTEXT=true
+        export _LLM_CACHE_ENABLED=false
+        export _USE_PROGRAM_FACTS=true
+        export MCP_AUTO_LAUNCH=0
+        export LLM_CALL_TIMEOUT_SECONDS="${LLM_CALL_TIMEOUT_SECONDS:-900}"
+        export COPILOT_SDK_REQUEST_TIMEOUT_SECONDS="${COPILOT_SDK_REQUEST_TIMEOUT_SECONDS:-900}"
+        ./doctor.sh convert-only --program "$program" --target "$TARGET" --no-portal \
+            > "$log" 2>&1
+    ) || {
+        echo "FAIL: projection-only leg returned non-zero. See $log" >&2
+        return 1
+    }
+    local end=$(time_ms)
+    echo $(( end - start ))
+}
 
 for raw in "${PROGRAM_LIST[@]}"; do
     PROG="${raw%.cbl}"; PROG="${PROG%.cob}"; PROG="${PROG%.CBL}"; PROG="${PROG%.COB}"
@@ -134,39 +209,54 @@ for raw in "${PROGRAM_LIST[@]}"; do
     mkdir -p "$LEG_DIR"
     SUITE_LOG="$LEG_DIR/suite-log.txt"
 
-    if [[ "$KEEP_CACHE" != "true" ]]; then
+    if [[ "$KEEP_CACHE" != "true" && "$PROJECTION_ONLY" != "true" ]]; then
         rm -f "$REPO_ROOT/Data/llm-cache.db" \
               "$REPO_ROOT/Data/llm-cache.db-wal" \
               "$REPO_ROOT/Data/llm-cache.db-shm"
     fi
 
-    echo "→ $PROG : running A/B (target=$TARGET) ..."
-    if "$REPO_ROOT/tools/ab-projection.sh" "$PROG" --target "$TARGET" --keep-output \
-            > "$SUITE_LOG" 2>&1; then
-        WORKSPACE=$(grep -Eo 'Leaving workspace at /[^ ]+' "$SUITE_LOG" | awk '{print $NF}')
-        if [[ -n "$WORKSPACE" && -d "$WORKSPACE" ]]; then
-            cp -f "$WORKSPACE/baseline.log" "$LEG_DIR/baseline.log" 2>/dev/null || true
-            cp -f "$WORKSPACE/projection.log" "$LEG_DIR/projection.log" 2>/dev/null || true
-            rm -rf "$WORKSPACE"
+    if [[ "$PROJECTION_ONLY" == "true" ]]; then
+        echo "→ $PROG : running projection-only (target=$TARGET) ..."
+        if PROJ_MS=$(run_projection_only "$PROG" "$LEG_DIR/projection.log"); then
+            PROJ_IN=$(extract_input_tokens_from_log "$LEG_DIR/projection.log"); PROJ_IN=${PROJ_IN:-0}
+            PROJ_TOTAL=$(extract_total_tokens_from_log "$LEG_DIR/projection.log"); PROJ_TOTAL=${PROJ_TOTAL:-0}
+            echo "$PROG,0,${PROJ_MS:-0},0,${PROJ_IN:-0},0,${PROJ_TOTAL:-0},n/a,n/a,-,-,ok" >> "$CSV"
+            success_count=$((success_count + 1))
+            echo "  ✓ $PROG : projection=${PROJ_IN:-?}in/${PROJ_TOTAL:-?}tot/${PROJ_MS:-?}ms"
+        else
+            echo "$PROG,0,0,0,0,0,0,n/a,n/a,-,-,fail" >> "$CSV"
+            fail_count=$((fail_count + 1))
+            echo "  ✗ $PROG : projection-only leg failed, see $LEG_DIR/projection.log"
         fi
-
-        # Parse the final results table from suite log.
-        read -r BASE_MS PROJ_MS < <(extract_int_pair "wall clock \(ms\)" "$SUITE_LOG")
-        read -r BASE_IN PROJ_IN < <(extract_int_pair "input tokens \(primary\)" "$SUITE_LOG")
-        read -r BASE_TOTAL PROJ_TOTAL < <(extract_int_pair "total tokens \(primary\)" "$SUITE_LOG")
-        IN_PCT=$(extract_pct "input tokens \(primary\)" "$SUITE_LOG")
-        TOTAL_PCT=$(extract_pct "total tokens \(primary\)" "$SUITE_LOG")
-        CACHES=$(extract_cache_pair "$SUITE_LOG")
-        BASE_CACHE="${CACHES%|*}"
-        PROJ_CACHE="${CACHES#*|}"
-
-        echo "$PROG,${BASE_MS:-0},${PROJ_MS:-0},${BASE_IN:-0},${PROJ_IN:-0},${BASE_TOTAL:-0},${PROJ_TOTAL:-0},${IN_PCT:-n/a},${TOTAL_PCT:-n/a},${BASE_CACHE:--},${PROJ_CACHE:--},ok" >> "$CSV"
-        success_count=$((success_count + 1))
-        echo "  ✓ $PROG : baseline=${BASE_IN:-?}in/${BASE_TOTAL:-?}tot/${BASE_MS:-?}ms → projection=${PROJ_IN:-?}in/${PROJ_TOTAL:-?}tot/${PROJ_MS:-?}ms (input ${IN_PCT:-n/a}, total ${TOTAL_PCT:-n/a})"
     else
-        echo "$PROG,0,0,0,0,0,0,n/a,n/a,-,-,fail" >> "$CSV"
-        fail_count=$((fail_count + 1))
-        echo "  ✗ $PROG : leg failed, see $SUITE_LOG"
+        echo "→ $PROG : running A/B (target=$TARGET) ..."
+        if "$REPO_ROOT/tools/ab-projection.sh" "$PROG" --target "$TARGET" --keep-output \
+                > "$SUITE_LOG" 2>&1; then
+            WORKSPACE=$(grep -Eo 'Leaving workspace at /[^ ]+' "$SUITE_LOG" | awk '{print $NF}')
+            if [[ -n "$WORKSPACE" && -d "$WORKSPACE" ]]; then
+                cp -f "$WORKSPACE/baseline.log" "$LEG_DIR/baseline.log" 2>/dev/null || true
+                cp -f "$WORKSPACE/projection.log" "$LEG_DIR/projection.log" 2>/dev/null || true
+                rm -rf "$WORKSPACE"
+            fi
+
+            # Parse the final results table from suite log.
+            read -r BASE_MS PROJ_MS < <(extract_int_pair "wall clock \(ms\)" "$SUITE_LOG")
+            read -r BASE_IN PROJ_IN < <(extract_int_pair "input tokens \(primary\)" "$SUITE_LOG")
+            read -r BASE_TOTAL PROJ_TOTAL < <(extract_int_pair "total tokens \(primary\)" "$SUITE_LOG")
+            IN_PCT=$(extract_pct "input tokens \(primary\)" "$SUITE_LOG")
+            TOTAL_PCT=$(extract_pct "total tokens \(primary\)" "$SUITE_LOG")
+            CACHES=$(extract_cache_pair "$SUITE_LOG")
+            BASE_CACHE="${CACHES%|*}"
+            PROJ_CACHE="${CACHES#*|}"
+
+            echo "$PROG,${BASE_MS:-0},${PROJ_MS:-0},${BASE_IN:-0},${PROJ_IN:-0},${BASE_TOTAL:-0},${PROJ_TOTAL:-0},${IN_PCT:-n/a},${TOTAL_PCT:-n/a},${BASE_CACHE:--},${PROJ_CACHE:--},ok" >> "$CSV"
+            success_count=$((success_count + 1))
+            echo "  ✓ $PROG : baseline=${BASE_IN:-?}in/${BASE_TOTAL:-?}tot/${BASE_MS:-?}ms → projection=${PROJ_IN:-?}in/${PROJ_TOTAL:-?}tot/${PROJ_MS:-?}ms (input ${IN_PCT:-n/a}, total ${TOTAL_PCT:-n/a})"
+        else
+            echo "$PROG,0,0,0,0,0,0,n/a,n/a,-,-,fail" >> "$CSV"
+            fail_count=$((fail_count + 1))
+            echo "  ✗ $PROG : leg failed, see $SUITE_LOG"
+        fi
     fi
 done
 
@@ -176,7 +266,11 @@ done
     echo ""
     echo "- target: \`$TARGET\`"
     echo "- programs run: ${#PROGRAM_LIST[@]} (success: $success_count, fail: $fail_count)"
-    echo "- cache mode: $([[ "$KEEP_CACHE" == "true" ]] && echo "warm" || echo "cold")"
+    if [[ "$PROJECTION_ONLY" == "true" ]]; then
+        echo "- mode: projection-only"
+    else
+        echo "- cache mode: $([[ "$KEEP_CACHE" == "true" ]] && echo "warm" || echo "cold")"
+    fi
     echo "- output dir: \`$OUTPUT_DIR\`"
     echo ""
     echo "## Automated metrics"

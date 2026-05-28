@@ -179,18 +179,44 @@ PROJECTION_MS=$(run_leg projection "$PROJECTION_LOG" "$PROJECTION_OUT" true) || 
 echo "  done in ${PROJECTION_MS}ms (log: $PROJECTION_LOG)"
 
 # ── Extract metrics ──────────────────────────────────────────────────────────
-# ResponsesApiClient logs: "Responses API: ~N input + M max output = ~T total tokens"
+# Support both Responses API (Azure OpenAI) and Copilot SDK (GitHub Copilot)
+# Responses API logs: "Responses API: ~N input + M max output = ~T total tokens"
+# Copilot SDK logs: "CopilotChatClient metrics: ... totalCompletionTokens=N"
 # Pick the first line per leg (the primary call); continuations would inflate.
 extract_input_tokens() {
-    grep -E '^\s*Responses API:|^\s*Responses API completed' "$1" 2>/dev/null \
+    local log_file="$1"
+    
+    # Try Copilot SDK format first
+    local sdk_tokens=$(grep -Eo 'CopilotChatClient metrics:.*totalCompletionTokens=[0-9]+' "$log_file" 2>/dev/null | head -1 \
+        | grep -Eo 'totalCompletionTokens=[0-9]+' | grep -Eo '[0-9]+' || true)
+    if [[ -n "$sdk_tokens" ]]; then
+        echo "$sdk_tokens"
+        return
+    fi
+    
+    # Fall back to Responses API format
+    grep -E '^\s*Responses API:|^\s*Responses API completed' "$log_file" 2>/dev/null \
         | grep -Eo '~[0-9]+ input|[0-9]+ input tokens' | head -1 \
         | grep -Eo '[0-9]+' | head -1
 }
+
 extract_total_tokens() {
-    grep -E 'Responses API completed' "$1" 2>/dev/null \
+    local log_file="$1"
+    
+    # Try Copilot SDK format first
+    local sdk_tokens=$(grep -Eo 'CopilotChatClient metrics:.*totalCompletionTokens=[0-9]+' "$log_file" 2>/dev/null | head -1 \
+        | grep -Eo 'totalCompletionTokens=[0-9]+' | grep -Eo '[0-9]+' || true)
+    if [[ -n "$sdk_tokens" ]]; then
+        echo "$sdk_tokens"
+        return
+    fi
+    
+    # Fall back to Responses API format
+    grep -E 'Responses API completed' "$log_file" 2>/dev/null \
         | grep -Eo '= [0-9]+ tokens' | head -1 \
         | grep -Eo '[0-9]+'
 }
+
 extract_cache_decision() {
     grep -Eo 'LlmResponseCache.*decision=[a-z-]+' "$1" 2>/dev/null | head -1 \
         | grep -Eo 'decision=[a-z-]+' | head -1

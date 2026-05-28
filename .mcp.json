@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json.schemastore.org/mcp-config.json",
+  "name": "COBOL Migration MCP",
+  "description": "MCP configuration for COBOL to Java/C# migration project",
+  "version": "1.0.0",
+  
+  "servers": {
+    "cobol-migration": {
+      "command": "dotnet",
+      "args": ["run", "--project", "McpChatWeb/McpChatWeb.csproj"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "ASPNETCORE_URLS": "http://localhost:5028"
+      }
+    }
+  },
+
+  "tools": {
+    "migration": {
+      "description": "COBOL migration tools",
+      "commands": {
+        "run-java": {
+          "command": "./doctor.sh run",
+          "input": "1\nn\n",
+          "description": "Run migration with Java as target language"
+        },
+        "run-csharp": {
+          "command": "./doctor.sh run",
+          "input": "2\nn\n",
+          "description": "Run migration with C# as target language"
+        },
+        "status": {
+          "command": "curl -s http://localhost:5028/api/runs/latest",
+          "description": "Get latest migration run status"
+        },
+        "portal": {
+          "command": "open http://localhost:5028",
+          "description": "Open migration portal in browser"
+        }
+      }
+    },
+    "database": {
+      "description": "Database query tools",
+      "commands": {
+        "runs": {
+          "command": "sqlite3 Data/migration.db 'SELECT id, status, started_at FROM runs ORDER BY id DESC LIMIT 10;'",
+          "description": "List recent migration runs"
+        },
+        "files": {
+          "command": "sqlite3 Data/migration.db 'SELECT file_name, is_copybook FROM cobol_files WHERE run_id = (SELECT MAX(id) FROM runs);'",
+          "description": "List files in latest run"
+        }
+      }
+    }
+  },
+
+  "autoApprove": {
+    "commands": [
+      "dotnet build",
+      "dotnet run",
+      "dotnet test",
+      "./doctor.sh",
+      "curl -s http://localhost:5028/*",
+      "sqlite3 Data/migration.db *",
+      "pkill -f CobolToQuarkusMigration",
+      "pkill -f McpChatWeb",
+      "lsof -i :5028",
+      "ps aux | grep -E 'dotnet|McpChatWeb'"
+    ],
+    "patterns": [
+      "^cd\\s",
+      "^ls\\s",
+      "^cat\\s",
+      "^head\\s",
+      "^tail\\s",
+      "^grep\\s",
+      "^find\\s",
+      "^echo\\s"
+    ]
+  }
+}
