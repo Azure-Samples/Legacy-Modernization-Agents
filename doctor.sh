@@ -2792,7 +2792,37 @@ print(len(lines))
     local succeeded=0
     local failed=0
     local skipped=0
+    local filtered_out=0
     local failed_files=""
+
+    # ── PR2.c: optional program filter for targeted REKT runs ──
+    # Comma-separated list of basenames (with or without extension). When set,
+    # the parse loop only processes matching files; copybooks are still staged
+    # so resolution works. Combine with _REKT_INCREMENTAL=true for the smallest
+    # possible scan.  Example:
+    #     _REKT_PROGRAM_FILTER=BDSDA2F,BDSDA01.cbl ./doctor.sh rekt-full
+    declare -A rekt_program_filter=()
+    local rekt_filter_active=false
+    if [[ -n "${_REKT_PROGRAM_FILTER:-}" ]]; then
+        rekt_filter_active=true
+        local _f
+        IFS=',' read -ra _filter_items <<< "$_REKT_PROGRAM_FILTER"
+        for _f in "${_filter_items[@]}"; do
+            _f=$(echo "$_f" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            [[ -z "$_f" ]] && continue
+            # Accept both 'PROG' and 'PROG.cbl'. Add common-extension variants
+            # so case- and extension-insensitive matching works in the loop below.
+            rekt_program_filter["$_f"]=1
+            case "$_f" in
+                *.cbl|*.CBL|*.cob|*.COB) ;;
+                *) rekt_program_filter["${_f}.cbl"]=1
+                   rekt_program_filter["${_f}.CBL"]=1
+                   rekt_program_filter["${_f}.cob"]=1
+                   rekt_program_filter["${_f}.COB"]=1 ;;
+            esac
+        done
+        echo -e "  ${BLUE}REKT program filter: ${_REKT_PROGRAM_FILTER}${NC}"
+    fi
 
     # ── PR2.b: incremental REKT scan cache (opt-in via _REKT_INCREMENTAL=true) ──
     # When enabled, query the C# planner for a parse/skip plan, build a
@@ -2810,10 +2840,17 @@ print(len(lines))
             rekt_plan_file=$(mktemp -t rekt-scan-plan.XXXXXX)
             rekt_manifest=$(mktemp -t rekt-scan-manifest.XXXXXX)
             echo -e "  ${BLUE}Incremental REKT cache: planning…${NC}"
+            # PR2.c: forward the program filter to the planner so it only plans
+            # the targeted programs (and their dependency closure via the graph).
+            local _plan_programs_arg=()
+            if [[ "$rekt_filter_active" == "true" ]]; then
+                _plan_programs_arg=(--programs "$_REKT_PROGRAM_FILTER")
+            fi
             if (cd "$REPO_ROOT" && dotnet run --project CobolToQuarkusMigration.csproj --no-build -- \
                     rekt-scan-cache plan "$staging_dir" \
                     --db "$rekt_db" \
                     --verify-artifacts-in "$REPO_ROOT/output/rekt" \
+                    "${_plan_programs_arg[@]}" \
                     > "$rekt_plan_file" 2>/dev/null); then
                 local _skip_count=0 _parse_count=0
                 while IFS=$'\t' read -r action basename reason; do
@@ -2845,6 +2882,12 @@ print(len(lines))
         # Strip any recognised program extension (case-insensitive) to get the stem.
         local stem="${fname%.*}"
         local err_log="$REPO_ROOT/output/rekt/${stem}.parse.log"
+
+        # PR2.c: program filter — skip files not in the requested set.
+        if [[ "$rekt_filter_active" == "true" && -z "${rekt_program_filter[$fname]:-}" && -z "${rekt_program_filter[$stem]:-}" ]]; then
+            filtered_out=$((filtered_out + 1))
+            continue
+        fi
 
         # PR2.b: honour the planner's skip decision.
         if [[ "$rekt_inc" == "true" && -n "${rekt_skip_set[$fname]:-}" ]]; then
@@ -2951,6 +2994,9 @@ print(len(lines))
     rm -rf "$staging_dir"
 
     echo -e "\n${GREEN}  Parsed: $succeeded succeeded ($skipped from cache), $failed failed${NC}"
+    if [[ "$rekt_filter_active" == "true" && "$filtered_out" -gt 0 ]]; then
+        echo -e "  ${BLUE}Filter active: $filtered_out program(s) outside _REKT_PROGRAM_FILTER were skipped.${NC}"
+    fi
     # Count degraded outputs (succeeded with warnings — deps-only or raw-AST fallbacks).
     local degraded
     degraded=$(find "$REPO_ROOT/output/rekt" -maxdepth 1 -name '*.parse.log' 2>/dev/null | wc -l | tr -d ' ')
