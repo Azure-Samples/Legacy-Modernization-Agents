@@ -180,6 +180,13 @@ public class MigrationProcess
         }
         _activeRunId = runId;
 
+        // Publish runId to ambient AsyncLocal so EVERY LLM call from EVERY
+        // agent in this run (not just the 4 converter agents that explicitly
+        // know their runId) emits metrics attributed to the right run. Without
+        // this, calls from DependencyMapperAgent, CobolAnalyzerAgent etc. land
+        // in output/.metrics/unknown.jsonl with no run attribution.
+        MetricsSink.CurrentRunId = runId;
+
         // Show initial dashboard
         _enhancedLogger.ShowDashboardSummary(
             runId, 
