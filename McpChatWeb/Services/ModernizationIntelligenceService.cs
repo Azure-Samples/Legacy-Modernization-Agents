@@ -715,6 +715,236 @@ public sealed class ModernizationIntelligenceService
         return snap;
     }
 
+    // ─────────────────────────────────────────────────────────────────────
+    // Service Chain (PR-Portal-Service-Chain) — JCL → Program → Copybook
+    // visualization. The "very cool dashboard" of the modernization estate.
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Returns the full execution chain for a COBOL estate:
+    ///   JCL job ──EXEC PGM=──> COBOL program ──COPY──> Copybook
+    ///
+    /// JCL scan: simple regex on <c>EXEC PGM=NAME</c> across <c>source/**/*.JCL</c>
+    /// (the FUENTES corpus has 22 JCL files under <c>source/FUENTES/JCL/</c>).
+    /// Copybook chain: per-program <c>output/rekt/{stem}.facts.json</c> ->
+    /// <c>copybooks</c> array.
+    ///
+    /// Output includes a pre-rendered Mermaid flowchart for the entire chain
+    /// (or filtered to a single job / single program subgraph) so the frontend
+    /// can render it directly with the existing Mermaid library.
+    /// </summary>
+    public ServiceChainSnapshot GetServiceChain(string? jobFilter, string? programFilter)
+    {
+        var snap = new ServiceChainSnapshot();
+        var sourceDir = Path.Combine(_repoRoot, "source");
+        if (!Directory.Exists(sourceDir))
+        {
+            snap.Note = "source/ folder not found.";
+            return snap;
+        }
+
+        // 1. JCL scan
+        var execPgmRegex = new System.Text.RegularExpressions.Regex(
+            @"EXEC\s+PGM\s*=\s*([A-Z0-9$@#]+)",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        var jobNameRegex = new System.Text.RegularExpressions.Regex(
+            @"^//(?<name>[A-Z0-9$@#]+)\s+JOB",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Multiline);
+
+        var jclFiles = Directory.EnumerateFiles(sourceDir, "*.JCL", SearchOption.AllDirectories)
+            .Concat(Directory.EnumerateFiles(sourceDir, "*.jcl", SearchOption.AllDirectories))
+            .Where(p => !p.Contains("/.convert-", StringComparison.Ordinal)
+                     && !p.Contains("/.rekt-staging", StringComparison.Ordinal)
+                     && !p.Contains("/.preprocessed", StringComparison.Ordinal))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        // Map: program basename (without .cbl) -> set of JCL jobs referencing it
+        var pgmToJobs = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var jclPath in jclFiles)
+        {
+            string content;
+            try { content = File.ReadAllText(jclPath); } catch { continue; }
+            var jclFileName = Path.GetFileNameWithoutExtension(jclPath);
+            var jobNameMatch = jobNameRegex.Match(content);
+            var jobName = jobNameMatch.Success ? jobNameMatch.Groups["name"].Value : jclFileName;
+
+            var pgms = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (System.Text.RegularExpressions.Match m in execPgmRegex.Matches(content))
+            {
+                var pgm = m.Groups[1].Value.ToUpperInvariant();
+                // Skip system utilities — only track user COBOL programs.
+                if (IsSystemUtility(pgm)) continue;
+                pgms.Add(pgm);
+                if (!pgmToJobs.ContainsKey(pgm)) pgmToJobs[pgm] = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                pgmToJobs[pgm].Add(jobName);
+            }
+
+            snap.Jobs.Add(new JclJob(
+                JobName: jobName,
+                JclFileName: Path.GetFileName(jclPath) ?? jclFileName,
+                RelativePath: Path.GetRelativePath(_repoRoot, jclPath),
+                PrimaryPrograms: pgms.ToList()
+            ));
+        }
+
+        // 2. Per-program copybook chain — parse COPY statements directly from
+        //    the .cbl source (facts.json doesn't expose copybooks today).
+        var apps = GetApplications().ToList();
+        var copyRegex = new System.Text.RegularExpressions.Regex(
+            @"^\s*COPY\s+([A-Z0-9$@#\-_]+)",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Multiline);
+
+        foreach (var a in apps)
+        {
+            var stem = Path.GetFileNameWithoutExtension(a.Basename).ToUpperInvariant();
+            var copybooks = new List<string>();
+            // Locate the source .cbl file (recursive — handles FUENTES/SRC/* paths)
+            var srcPath = Directory.EnumerateFiles(sourceDir, a.Basename, SearchOption.AllDirectories)
+                .FirstOrDefault(p => !p.Contains("/.convert-", StringComparison.Ordinal)
+                                  && !p.Contains("/.rekt-staging", StringComparison.Ordinal)
+                                  && !p.Contains("/.preprocessed", StringComparison.Ordinal));
+            if (srcPath != null && File.Exists(srcPath))
+            {
+                try
+                {
+                    var content = File.ReadAllText(srcPath);
+                    foreach (System.Text.RegularExpressions.Match m in copyRegex.Matches(content))
+                    {
+                        var cpyName = m.Groups[1].Value.ToUpperInvariant().TrimEnd('.');
+                        if (!string.IsNullOrEmpty(cpyName)) copybooks.Add(cpyName);
+                    }
+                }
+                catch { /* fail soft */ }
+            }
+
+            var referencedByJobs = pgmToJobs.TryGetValue(stem, out var jobs) ? jobs.ToList() : new List<string>();
+
+            snap.Programs.Add(new ProgramChain(
+                Basename: a.Basename,
+                Stem: stem,
+                LinesOfCode: a.LinesOfCode,
+                Copybooks: copybooks.Distinct(StringComparer.OrdinalIgnoreCase).Where(c => !string.IsNullOrEmpty(c)).ToList(),
+                CalledByJobs: referencedByJobs,
+                ModernizationStatus: a.ModernizationStatus
+            ));
+        }
+
+        // 3. Aggregate KPIs
+        snap.TotalJobs = snap.Jobs.Count;
+        snap.TotalPrograms = snap.Programs.Count;
+        snap.TotalCopybooks = snap.Programs.SelectMany(p => p.Copybooks)
+            .Distinct(StringComparer.OrdinalIgnoreCase).Count();
+        snap.JobToProgramEdges = snap.Jobs.Sum(j => j.PrimaryPrograms.Count);
+        snap.ProgramToCopybookEdges = snap.Programs.Sum(p => p.Copybooks.Count);
+
+        // 4. Mermaid flowchart (filtered or full)
+        snap.Mermaid = BuildServiceChainMermaid(snap, jobFilter, programFilter);
+        return snap;
+    }
+
+    private static readonly HashSet<string> _systemUtilities = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "IDCAMS", "IKJEFT01", "IEFBR14", "SORT", "ICETOOL", "DFSORT",
+        "ADUUMAIN", "SYSUTCOM", "DSNUTILB", "DSNTIAUL", "IEBGENER",
+        "IEBCOPY", "IEHPROGM", "IRXJCL", "EZACFSM1"
+    };
+    private static bool IsSystemUtility(string pgm) => _systemUtilities.Contains(pgm);
+
+    /// <summary>
+    /// Build a Mermaid flowchart string showing JCL → Program → Copybook chain.
+    /// Filtered when caller passed jobFilter or programFilter — otherwise renders
+    /// the whole estate (cap at 50 nodes to keep the diagram readable).
+    /// </summary>
+    private static string BuildServiceChainMermaid(ServiceChainSnapshot snap, string? jobFilter, string? programFilter)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("flowchart LR");
+        sb.AppendLine("  classDef jobNode fill:#7c2d12,stroke:#fb923c,color:#fef3c7,rx:6,ry:6");
+        sb.AppendLine("  classDef pgmNode fill:#1e3a5f,stroke:#60a5fa,color:#e2e8f0,rx:4,ry:4");
+        sb.AppendLine("  classDef cpyNode fill:#14532d,stroke:#10b981,color:#e2e8f0");
+
+        IEnumerable<JclJob> jobs = snap.Jobs;
+        if (!string.IsNullOrEmpty(jobFilter))
+            jobs = jobs.Where(j => j.JobName.Equals(jobFilter, StringComparison.OrdinalIgnoreCase));
+
+        IEnumerable<ProgramChain> programs = snap.Programs;
+        if (!string.IsNullOrEmpty(programFilter))
+        {
+            var stem = Path.GetFileNameWithoutExtension(programFilter).ToUpperInvariant();
+            programs = programs.Where(p => p.Stem.Equals(stem, StringComparison.OrdinalIgnoreCase));
+            jobs = snap.Jobs.Where(j => j.PrimaryPrograms.Contains(stem, StringComparer.OrdinalIgnoreCase));
+        }
+
+        var renderedJobs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var renderedPgms = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var renderedCpys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        int edgeCount = 0;
+        const int maxEdges = 200;
+
+        var programByStem = snap.Programs.ToDictionary(p => p.Stem, p => p, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var job in jobs)
+        {
+            var jobId = Sanitize($"j_{job.JobName}");
+            if (renderedJobs.Add(job.JobName))
+                sb.AppendLine($"  {jobId}[\"📅 {EscapeMermaid(job.JobName)}\"]:::jobNode");
+
+            foreach (var pgm in job.PrimaryPrograms)
+            {
+                if (edgeCount >= maxEdges) break;
+                var pgmId = Sanitize($"p_{pgm}");
+                if (renderedPgms.Add(pgm))
+                    sb.AppendLine($"  {pgmId}[\"⚙ {EscapeMermaid(pgm)}\"]:::pgmNode");
+                sb.AppendLine($"  {jobId} --> {pgmId}");
+                edgeCount++;
+
+                if (programByStem.TryGetValue(pgm, out var p))
+                {
+                    foreach (var cpy in p.Copybooks)
+                    {
+                        if (edgeCount >= maxEdges) break;
+                        var cpyId = Sanitize($"c_{cpy}");
+                        if (renderedCpys.Add(cpy))
+                            sb.AppendLine($"  {cpyId}([\"📄 {EscapeMermaid(cpy)}\"]):::cpyNode");
+                        sb.AppendLine($"  {pgmId} -.-> {cpyId}");
+                        edgeCount++;
+                    }
+                }
+            }
+        }
+
+        // If filtering by program, also include the program node + its copybooks
+        // even when no job references it.
+        if (!string.IsNullOrEmpty(programFilter))
+        {
+            foreach (var p in programs)
+            {
+                var pgmId = Sanitize($"p_{p.Stem}");
+                if (renderedPgms.Add(p.Stem))
+                    sb.AppendLine($"  {pgmId}[\"⚙ {EscapeMermaid(p.Stem)}\"]:::pgmNode");
+                foreach (var cpy in p.Copybooks)
+                {
+                    if (edgeCount >= maxEdges) break;
+                    var cpyId = Sanitize($"c_{cpy}");
+                    if (renderedCpys.Add(cpy))
+                        sb.AppendLine($"  {cpyId}([\"📄 {EscapeMermaid(cpy)}\"]):::cpyNode");
+                    sb.AppendLine($"  {pgmId} -.-> {cpyId}");
+                    edgeCount++;
+                }
+            }
+        }
+
+        return sb.ToString();
+    }
+
+    private static string Sanitize(string s) =>
+        new string(s.Select(c => char.IsLetterOrDigit(c) || c == '_' ? c : '_').ToArray());
+
+    private static string EscapeMermaid(string s) =>
+        (s ?? "").Replace("\"", "'").Replace("\n", " ");
+
     private Dictionary<int, QualityRow> LoadLatestQualityByRunId()
     {
         var map = new Dictionary<int, QualityRow>();
@@ -1028,6 +1258,35 @@ public record ServiceCandidate(
     double AvgFactsConfidence,
     double CohesionScore,
     bool ReadyForExtraction);
+
+// Service Chain — JCL → Program → Copybook visualization
+
+public class ServiceChainSnapshot
+{
+    public int TotalJobs { get; set; }
+    public int TotalPrograms { get; set; }
+    public int TotalCopybooks { get; set; }
+    public int JobToProgramEdges { get; set; }
+    public int ProgramToCopybookEdges { get; set; }
+    public List<JclJob> Jobs { get; } = new();
+    public List<ProgramChain> Programs { get; } = new();
+    public string Mermaid { get; set; } = "";
+    public string? Note { get; set; }
+}
+
+public record JclJob(
+    string JobName,
+    string JclFileName,
+    string RelativePath,
+    List<string> PrimaryPrograms);
+
+public record ProgramChain(
+    string Basename,
+    string Stem,
+    int LinesOfCode,
+    List<string> Copybooks,
+    List<string> CalledByJobs,
+    string ModernizationStatus);
 
 // Migration Wave Planner (PR-Portal-P2-waves)
 

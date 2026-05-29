@@ -9039,6 +9039,11 @@ app.MapGet("/api/modernization/service-candidates",
     (McpChatWeb.Services.ModernizationIntelligenceService svc) =>
         Results.Ok(svc.GetServiceCandidates()));
 
+// PR Portal-Service-Chain: JCL → Program → Copybook overview
+app.MapGet("/api/modernization/service-chain",
+    (string? job, string? program, McpChatWeb.Services.ModernizationIntelligenceService svc) =>
+        Results.Ok(svc.GetServiceChain(job, program)));
+
 // PR Portal-P2: Migration Wave Planner (first write capability)
 app.MapGet("/api/modernization/waves",
     (McpChatWeb.Services.MigrationWaveService svc) =>

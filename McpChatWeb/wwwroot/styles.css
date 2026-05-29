@@ -8417,3 +8417,32 @@ main.three-panel-layout {
 }
 .ih-quicklinks a:hover { color: #93c5fd; text-decoration: underline; }
 .ih-muted { color: #64748b; }
+
+/* Migration Wave Planner (Phase-2 write capability) */
+.mi-wave-grid {
+  display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px;
+  min-height: 400px;
+}
+.mi-wave-col {
+  display: flex; flex-direction: column; min-height: 300px;
+  max-height: 70vh; overflow-y: auto;
+}
+.mi-wave-card {
+  background: #1e293b; border: 1px solid #334155; border-radius: 4px;
+  padding: 6px 8px; margin-bottom: 4px;
+}
+.mi-wave-card:hover { border-color: #475569; background: #1e293b; }
+
+/* Service Candidate Explorer */
+.mi-svc-row { cursor: pointer; }
+.mi-svc-row:hover { background: #1e293b; }
+.mi-svc-row.mi-svc-row-active { background: #1e3a5f; }
+
+/* Service Chain (JCL → Program → Copybook) */
+.mi-chain-layout {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+  margin-bottom: 12px;
+}
+.mi-chain-col { max-height: 480px; overflow-y: auto; }
+.mi-row-active { background: #1e3a5f !important; }
+.mi-chain-job-row:hover, .mi-chain-pgm-row:hover { background: #1e293b; }

@@ -44,6 +44,7 @@ class ModernizationIntelligenceView {
           <button class="mi-subtab mi-subtab-active" data-sub="dashboard">📊 Modernization Dashboard</button>
           <button class="mi-subtab" data-sub="applications">📚 Application Explorer</button>
           <button class="mi-subtab" data-sub="health">🩺 Dependency Health</button>
+          <button class="mi-subtab" data-sub="chain">🔗 Service Chain (JCL→Pgm→Cpy)</button>
           <button class="mi-subtab" data-sub="runtime">⏱ Runtime &amp; Conversion Intelligence</button>
           <button class="mi-subtab" data-sub="topology">🕸 Dependency Topology</button>
           <button class="mi-subtab" data-sub="flow">🌊 Semantic Flow Explorer</button>
@@ -102,6 +103,23 @@ class ModernizationIntelligenceView {
         // Auto-select first full-fidelity program
         const firstFull = (health.programs || []).find(p => p.parseFidelity === 'full');
         if (firstFull) await this._loadProgramFlow(firstFull.basename);
+      } else if (this._activeSubview === 'services') {
+        const data = await fetch('/api/modernization/service-candidates').then(r => r.json());
+        body.innerHTML = this._renderServiceCandidates(data);
+      } else if (this._activeSubview === 'waves') {
+        const [apps, waves, health] = await Promise.all([
+          fetch('/api/modernization/applications').then(r => r.json()),
+          fetch('/api/modernization/waves').then(r => r.json()),
+          fetch('/api/modernization/dependency-health').then(r => r.json()),
+        ]);
+        body.innerHTML = this._renderWavePlanner(apps, waves, health);
+        this._wireWavePlannerInteractions();
+      } else if (this._activeSubview === 'chain') {
+        const data = await fetch('/api/modernization/service-chain').then(r => r.json());
+        body.innerHTML = this._renderServiceChain(data);
+        this._wireServiceChainInteractions(data);
+        // Render the Mermaid diagram once the DOM is in place
+        setTimeout(() => this._renderMermaidIn(body), 50);
       }
     } catch (err) {
       body.innerHTML = `<div class="mi-error">Failed to load: ${this._escape(err.message)}</div>`;
@@ -920,6 +938,435 @@ class ModernizationIntelligenceView {
       window.mermaid.run({ querySelector: 'pre.mermaid', nodes: panel.querySelectorAll('pre.mermaid') });
     } catch (err) {
       console.warn('Mermaid render failed:', err);
+    }
+  }
+
+  // ────────────────────────────────────────────────────────────────────
+  // Service Candidate Explorer renderer (Phase-1 follow-on)
+  // ────────────────────────────────────────────────────────────────────
+  _renderServiceCandidates(d) {
+    const candidates = d.candidates || [];
+    if (candidates.length === 0) {
+      return `<div class="mi-empty">No service candidates available. Run a REKT scan first.</div>`;
+    }
+    const kpiRow = `
+      <div class="mi-kpi-row">
+        <div class="mi-kpi" style="border-left-color:#3b82f6;">
+          <div class="mi-kpi-value">${d.totalCandidates}</div>
+          <div class="mi-kpi-label">Candidate services</div>
+          <div class="mi-kpi-sub">domain-prefix clustering with multi-signal cohesion scoring</div>
+        </div>
+        <div class="mi-kpi" style="border-left-color:#10b981;">
+          <div class="mi-kpi-value">${d.extractionReadyCount}</div>
+          <div class="mi-kpi-label">Ready for extraction</div>
+          <div class="mi-kpi-sub">full-fidelity + boundary ≥ 70%</div>
+        </div>
+      </div>
+    `;
+
+    const rows = candidates.map(c => {
+      const ready = c.readyForExtraction
+        ? '<span class="mi-status mi-status-verified">✅ ready</span>'
+        : '<span class="mi-status mi-status-partial-fallback">⏸ blocked</span>';
+      const cohesionBand = c.cohesionScore >= 75 ? '#10b981'
+                         : c.cohesionScore >= 50 ? '#f59e0b'
+                         : '#ef4444';
+      return `<tr class="mi-svc-row" data-name="${this._escape(c.suggestedName)}">
+        <td><b>${this._escape(c.suggestedName)}</b><div class="mi-path">domain prefix: <code>${this._escape(c.domainPrefix)}*</code></div></td>
+        <td class="num">${c.memberCount}</td>
+        <td class="num">${c.totalLinesOfCode.toLocaleString()}</td>
+        <td class="num">${c.intraClusterEdges}</td>
+        <td class="num">${c.crossClusterEdges}</td>
+        <td class="num">${c.boundaryStrengthPct}%</td>
+        <td class="num"><b style="color:${cohesionBand};">${c.cohesionScore}</b></td>
+        <td class="num">${c.fullFidelityCount} / ${c.memberCount}</td>
+        <td>${ready}</td>
+      </tr>`;
+    }).join('');
+
+    // Detail panels: one per candidate listing members
+    const details = candidates.map(c => `
+      <div class="mi-card" data-svc-detail="${this._escape(c.suggestedName)}" style="display:none;">
+        <h3>${this._escape(c.suggestedName)} — ${c.memberCount} program${c.memberCount !== 1 ? 's' : ''}</h3>
+        <div class="ih-callout" style="font-size:12px;">
+          <b>Cohesion:</b> ${c.cohesionScore}/100 ·
+          <b>Boundary strength:</b> ${c.boundaryStrengthPct}% ·
+          <b>Intra/cross edges:</b> ${c.intraClusterEdges}/${c.crossClusterEdges} ·
+          <b>Avg facts confidence:</b> ${c.avgFactsConfidence}/3 ·
+          <b>Full-fidelity:</b> ${c.fullFidelityCount}/${c.memberCount} ·
+          <b>Total LoC:</b> ${c.totalLinesOfCode.toLocaleString()}
+        </div>
+        <div style="display:flex; flex-wrap:wrap; gap:4px; margin-top:8px;">
+          ${c.memberPrograms.map(m => `<code class="mi-mini" style="background:#1e293b; padding:3px 8px; border-radius:3px;">${this._escape(m)}</code>`).join('')}
+        </div>
+      </div>
+    `).join('');
+
+    return `
+      ${kpiRow}
+      <div class="mi-card mi-card-wide">
+        <h3>Service candidate ranking — by cohesion score</h3>
+        <div class="mi-muted" style="font-size:11px; margin-bottom:8px;">
+          Multi-signal heuristic: boundary strength (60%) + cluster size (20%) + facts confidence (20%).
+          Click a row to see member programs. Programs sharing CALL paths AND prefix are stronger candidates.
+        </div>
+        <table class="mi-table mi-table-dense">
+          <thead>
+            <tr>
+              <th>Suggested service</th>
+              <th>Members</th>
+              <th>Total LoC</th>
+              <th title="CALL edges WITHIN the cluster">Intra</th>
+              <th title="CALL edges OUT of the cluster">Cross</th>
+              <th>Boundary</th>
+              <th>Cohesion</th>
+              <th>Fidelity</th>
+              <th>Ready?</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <div id="mi-svc-details" style="margin-top:12px;">${details}</div>
+    `;
+  }
+
+  // ────────────────────────────────────────────────────────────────────
+  // Migration Wave Planner renderer (Phase-2 first WRITE capability)
+  // ────────────────────────────────────────────────────────────────────
+  _renderWavePlanner(apps, waveAssignments, health) {
+    // Index user wave assignments by basename
+    const userMap = {};
+    for (const w of (waveAssignments || [])) userMap[w.basename] = w;
+
+    // Build CALL-derived suggested waves (same logic as Insights Lead view):
+    // Wave 1 = leaves, Wave 2 = ≤2 callees, Wave 3 = more, Queued = blocked
+    const fidelityByName = {};
+    for (const p of (health.programs || [])) fidelityByName[p.basename] = p.parseFidelity;
+
+    const inEstate = new Set(apps.map(a => a.basename));
+
+    // Build user-vs-suggested view per program
+    const enriched = apps.map(a => {
+      const u = userMap[a.basename];
+      const fid = fidelityByName[a.basename];
+      let suggested;
+      if (fid !== 'full') suggested = -1;  // queued
+      else suggested = 1; // simple default — backend uses topology for refined version
+      return {
+        ...a,
+        userWave: u ? u.waveNumber : null,
+        userSource: u ? u.source : null,
+        userNotes: u ? u.notes : null,
+        suggestedWave: suggested,
+        parseFidelity: fid,
+      };
+    });
+
+    // Group by current wave assignment (user > suggested > unassigned)
+    const buckets = { wave1: [], wave2: [], wave3: [], queued: [], unassigned: [] };
+    for (const e of enriched) {
+      const w = e.userWave !== null ? e.userWave : null;
+      if (w === 1) buckets.wave1.push(e);
+      else if (w === 2) buckets.wave2.push(e);
+      else if (w === 3) buckets.wave3.push(e);
+      else if (w === -1 || (w === null && e.parseFidelity !== 'full')) buckets.queued.push(e);
+      else buckets.unassigned.push(e);
+    }
+
+    const totalAssigned = buckets.wave1.length + buckets.wave2.length + buckets.wave3.length;
+    const assignedPct = apps.length > 0 ? Math.round(totalAssigned * 100 / apps.length) : 0;
+
+    const kpiRow = `
+      <div class="mi-kpi-row">
+        <div class="mi-kpi" style="border-left-color:#10b981;"><div class="mi-kpi-value">${buckets.wave1.length}</div><div class="mi-kpi-label">Wave 1</div><div class="mi-kpi-sub">first to migrate</div></div>
+        <div class="mi-kpi" style="border-left-color:#f59e0b;"><div class="mi-kpi-value">${buckets.wave2.length}</div><div class="mi-kpi-label">Wave 2</div><div class="mi-kpi-sub">after Wave 1 stable</div></div>
+        <div class="mi-kpi" style="border-left-color:#fb923c;"><div class="mi-kpi-value">${buckets.wave3.length}</div><div class="mi-kpi-label">Wave 3</div><div class="mi-kpi-sub">most complex</div></div>
+        <div class="mi-kpi" style="border-left-color:#ef4444;"><div class="mi-kpi-value">${buckets.queued.length}</div><div class="mi-kpi-label">Queued</div><div class="mi-kpi-sub">blocked by missing facts</div></div>
+        <div class="mi-kpi" style="border-left-color:#475569;"><div class="mi-kpi-value">${buckets.unassigned.length}</div><div class="mi-kpi-label">Unassigned</div><div class="mi-kpi-sub">${assignedPct}% of estate planned</div></div>
+      </div>
+    `;
+
+    const renderBucket = (rows, label, color, waveNum) => `
+      <div class="mi-card mi-wave-col">
+        <h3 style="color:${color};">${label}</h3>
+        <div class="mi-muted" style="font-size:11px; margin-bottom:8px;">${rows.length} program${rows.length !== 1 ? 's' : ''}</div>
+        ${rows.length === 0 ? '<div class="mi-muted" style="padding:12px; text-align:center; font-size:11px;">drop programs here</div>'
+          : rows.sort((a,b) => a.linesOfCode - b.linesOfCode).map(r => `
+            <div class="mi-wave-card" data-basename="${this._escape(r.basename)}" data-wave="${waveNum}">
+              <div style="display:flex; justify-content:space-between; gap:6px;">
+                <b style="font-size:12px;">${this._escape(r.basename)}</b>
+                <span class="mi-muted" style="font-size:10px;">${r.linesOfCode.toLocaleString()} LoC</span>
+              </div>
+              <div style="display:flex; align-items:center; gap:6px; margin-top:4px;">
+                <select class="mi-wave-select" data-basename="${this._escape(r.basename)}" style="background:#0a0e1a; color:#cbd5e1; border:1px solid #334155; border-radius:3px; padding:2px 6px; font-size:11px; flex:1;">
+                  <option value="0" ${r.userWave === null && r.parseFidelity === 'full' ? 'selected' : ''}>Unassigned</option>
+                  <option value="1" ${r.userWave === 1 ? 'selected' : ''}>Wave 1</option>
+                  <option value="2" ${r.userWave === 2 ? 'selected' : ''}>Wave 2</option>
+                  <option value="3" ${r.userWave === 3 ? 'selected' : ''}>Wave 3</option>
+                  <option value="-1" ${r.userWave === -1 || (r.userWave === null && r.parseFidelity !== 'full') ? 'selected' : ''}>Queued/blocked</option>
+                </select>
+                ${r.userWave !== null ? `<button class="mi-wave-clear" data-basename="${this._escape(r.basename)}" title="Clear user assignment (revert to auto)" style="background:#1e293b; color:#94a3b8; border:1px solid #334155; border-radius:3px; padding:2px 6px; cursor:pointer; font-size:10px;">×</button>` : ''}
+              </div>
+              ${r.parseFidelity !== 'full' ? `<div class="mi-muted" style="font-size:10px; margin-top:3px;">⚠ deps-only (resolve copybooks first)</div>` : ''}
+            </div>
+          `).join('')}
+      </div>
+    `;
+
+    return `
+      ${kpiRow}
+      <div class="ih-callout">
+        <b>How this works:</b> change a program's wave assignment with the dropdown — it persists to <code>Data/migration-waves.db</code> via <code>POST /api/modernization/waves/{basename}</code>.
+        Wave 1 → Wave 2 → Wave 3 is the recommended order; within each wave migrate smallest-LoC first to build confidence.
+        Programs without full REKT facts are "Queued/blocked" — resolve their missing copybooks before assigning to a wave.
+      </div>
+      <div style="display:flex; gap:10px; margin-bottom:12px;">
+        <button class="mi-btn" onclick="window.modernizationIntelligenceView._autoSuggestWaves()" title="Bulk-assign Wave 1 to all full-fidelity programs, Queued to deps-only">🪄 Auto-suggest from fidelity</button>
+        <button class="mi-btn" onclick="window.modernizationIntelligenceView._clearAllWaves()" title="Remove all wave assignments (DELETE /api/modernization/waves)" style="background:#7c2d12; border-color:#ea580c; color:#fef3c7;">🗑 Clear all</button>
+        <button class="mi-btn" onclick="window.modernizationIntelligenceView._exportWavePlan()" title="Download the current wave plan as CSV">⬇ Export plan (CSV)</button>
+      </div>
+      <div class="mi-wave-grid">
+        ${renderBucket(buckets.wave1, '🚀 Wave 1 — Foundation', '#10b981', 1)}
+        ${renderBucket(buckets.wave2, '🌊 Wave 2 — Core', '#f59e0b', 2)}
+        ${renderBucket(buckets.wave3, '🌋 Wave 3 — Complex', '#fb923c', 3)}
+        ${renderBucket(buckets.queued, '⏸ Queued — Blocked', '#ef4444', -1)}
+        ${renderBucket(buckets.unassigned, '— Unassigned', '#475569', 0)}
+      </div>
+    `;
+  }
+
+  _wireWavePlannerInteractions() {
+    // Dropdown changes → POST to /api/modernization/waves/{basename}
+    this.root.querySelectorAll('.mi-wave-select').forEach(sel => {
+      sel.addEventListener('change', async () => {
+        const basename = sel.dataset.basename;
+        const wave = parseInt(sel.value, 10);
+        try {
+          await fetch(`/api/modernization/waves/${encodeURIComponent(basename)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ waveNumber: wave, notes: null }),
+          });
+          // Re-render to reflect new bucket assignment
+          this._renderActive();
+        } catch (err) {
+          alert(`Failed to save: ${err.message}`);
+        }
+      });
+    });
+    // Clear buttons → DELETE /api/modernization/waves/{basename}
+    this.root.querySelectorAll('.mi-wave-clear').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const basename = btn.dataset.basename;
+        try {
+          await fetch(`/api/modernization/waves/${encodeURIComponent(basename)}`, { method: 'DELETE' });
+          this._renderActive();
+        } catch (err) {
+          alert(`Failed to clear: ${err.message}`);
+        }
+      });
+    });
+    // Service candidate row clicks → toggle detail panel
+    this.root.querySelectorAll('.mi-svc-row').forEach(row => {
+      row.addEventListener('click', () => {
+        const name = row.dataset.name;
+        this.root.querySelectorAll('[data-svc-detail]').forEach(d => {
+          d.style.display = d.dataset.svcDetail === name ? 'block' : 'none';
+        });
+      });
+    });
+  }
+
+  async _autoSuggestWaves() {
+    if (!confirm('Auto-assign Wave 1 to all full-fidelity programs and Queued to deps-only programs? This OVERWRITES existing user assignments.')) return;
+    try {
+      const [apps, health] = await Promise.all([
+        fetch('/api/modernization/applications').then(r => r.json()),
+        fetch('/api/modernization/dependency-health').then(r => r.json()),
+      ]);
+      const fidelityMap = {};
+      for (const p of (health.programs || [])) fidelityMap[p.basename] = p.parseFidelity;
+      const promises = apps.map(a => {
+        const wave = fidelityMap[a.basename] === 'full' ? 1 : -1;
+        return fetch(`/api/modernization/waves/${encodeURIComponent(a.basename)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ waveNumber: wave, notes: 'auto-suggested' }),
+        });
+      });
+      await Promise.all(promises);
+      this._renderActive();
+    } catch (err) { alert(`Auto-suggest failed: ${err.message}`); }
+  }
+
+  async _clearAllWaves() {
+    if (!confirm('Clear ALL wave assignments? This cannot be undone.')) return;
+    try {
+      await fetch('/api/modernization/waves', { method: 'DELETE' });
+      this._renderActive();
+    } catch (err) { alert(`Clear failed: ${err.message}`); }
+  }
+
+  async _exportWavePlan() {
+    try {
+      const waves = await fetch('/api/modernization/waves').then(r => r.json());
+      const lines = ['program,wave,notes,assigned_at,source'];
+      for (const w of waves) {
+        const wave = w.waveNumber === -1 ? 'queued' : w.waveNumber === 0 ? 'unassigned' : `wave-${w.waveNumber}`;
+        const notes = (w.notes || '').replace(/[",\n]/g, ' ');
+        lines.push(`${w.basename},${wave},"${notes}",${w.assignedAt},${w.source}`);
+      }
+      const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `migration-wave-plan-${new Date().toISOString().substring(0, 10)}.csv`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) { alert(`Export failed: ${err.message}`); }
+  }
+
+  // ────────────────────────────────────────────────────────────────────
+  // Service Chain renderer — JCL → Program → Copybook overview
+  // ────────────────────────────────────────────────────────────────────
+  _renderServiceChain(d) {
+    if ((d.totalJobs || 0) === 0 && (d.totalPrograms || 0) === 0) {
+      return `<div class="mi-empty">No JCL files found. Drop <code>.jcl</code> files into <code>source/</code> and run <code>./doctor.sh rekt-full</code> for full coverage.</div>`;
+    }
+
+    const kpiRow = `
+      <div class="mi-kpi-row">
+        <div class="mi-kpi" style="border-left-color:#fb923c;">
+          <div class="mi-kpi-value">${d.totalJobs}</div>
+          <div class="mi-kpi-label">📅 JCL batch jobs</div>
+          <div class="mi-kpi-sub">discovered via EXEC PGM=</div>
+        </div>
+        <div class="mi-kpi" style="border-left-color:#60a5fa;">
+          <div class="mi-kpi-value">${d.totalPrograms}</div>
+          <div class="mi-kpi-label">⚙ COBOL programs</div>
+          <div class="mi-kpi-sub">execution targets</div>
+        </div>
+        <div class="mi-kpi" style="border-left-color:#10b981;">
+          <div class="mi-kpi-value">${d.totalCopybooks}</div>
+          <div class="mi-kpi-label">📄 Copybooks (shared structures)</div>
+          <div class="mi-kpi-sub">distinct, referenced via COPY</div>
+        </div>
+        <div class="mi-kpi" style="border-left-color:#8b5cf6;">
+          <div class="mi-kpi-value">${d.jobToProgramEdges} / ${d.programToCopybookEdges}</div>
+          <div class="mi-kpi-label">Job→Pgm / Pgm→Cpy edges</div>
+          <div class="mi-kpi-sub">execution relationships</div>
+        </div>
+      </div>
+    `;
+
+    // Sort jobs by program count desc (most impactful first)
+    const sortedJobs = [...(d.jobs || [])].sort((a, b) => b.primaryPrograms.length - a.primaryPrograms.length);
+    const jobRows = sortedJobs.map(j => `
+      <tr class="mi-chain-job-row" data-job="${this._escape(j.jobName)}">
+        <td><b>${this._escape(j.jobName)}</b></td>
+        <td><code class="mi-mini">${this._escape(j.jclFileName)}</code></td>
+        <td class="num">${j.primaryPrograms.length}</td>
+      </tr>`).join('');
+
+    // Sort programs by (jobs+copybooks) desc — most-connected first
+    const sortedPgms = [...(d.programs || [])]
+      .map(p => ({ ...p, connectivity: (p.calledByJobs?.length || 0) + (p.copybooks?.length || 0) }))
+      .sort((a, b) => b.connectivity - a.connectivity);
+    const pgmRows = sortedPgms.slice(0, 60).map(p => `
+      <tr class="mi-chain-pgm-row" data-program="${this._escape(p.basename)}">
+        <td><b>${this._escape(p.basename)}</b></td>
+        <td class="num">${p.linesOfCode.toLocaleString()}</td>
+        <td class="num">${p.calledByJobs.length}</td>
+        <td class="num">${p.copybooks.length}</td>
+        <td><span class="mi-status mi-status-${p.modernizationStatus}">${this._statusLabel(p.modernizationStatus)}</span></td>
+      </tr>`).join('');
+
+    return `
+      ${kpiRow}
+      <div class="ih-callout">
+        <b>How to read this view:</b> 📅 <i>JCL job</i> launches one or more ⚙ <i>COBOL programs</i> via <code>EXEC PGM=</code>;
+        each program then <code>COPY</code>-s one or more 📄 <i>copybooks</i> (shared data structures).
+        Click a row in either list to filter the diagram to that subgraph.
+        System utilities (IDCAMS, IKJEFT01, SORT, etc.) are excluded.
+      </div>
+
+      <div class="mi-chain-layout">
+        <div class="mi-card mi-chain-col">
+          <h3>📅 JCL jobs (${d.totalJobs})</h3>
+          <div class="mi-muted" style="font-size:11px; margin-bottom:8px;">Click to filter the chain to one job.</div>
+          <table class="mi-table mi-table-dense">
+            <thead><tr><th>Job</th><th>JCL file</th><th>Pgms</th></tr></thead>
+            <tbody>${jobRows}</tbody>
+          </table>
+        </div>
+        <div class="mi-card mi-chain-col">
+          <h3>⚙ COBOL programs (${d.totalPrograms})</h3>
+          <div class="mi-muted" style="font-size:11px; margin-bottom:8px;">Click to filter the chain to one program + its copybooks.</div>
+          <table class="mi-table mi-table-dense">
+            <thead><tr><th>Program</th><th>LoC</th><th>Jobs</th><th>Cpys</th><th>Status</th></tr></thead>
+            <tbody>${pgmRows}</tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="mi-card mi-card-wide">
+        <h3>🎨 Service-chain flowchart
+          <button class="mi-btn" id="mi-chain-reset" style="float:right; font-size:11px;" title="Show the full estate">↺ Reset filter</button>
+        </h3>
+        <div class="mi-muted" style="font-size:11px; margin-bottom:8px;">
+          Orange = JCL job · Blue = COBOL program · Green = Copybook. Solid arrow = EXEC PGM=, dashed = COPY.
+        </div>
+        <div class="mi-mermaid-container" id="mi-chain-mermaid">
+          <pre class="mermaid">${this._escape(d.mermaid || 'flowchart LR\n  empty[\"(no data)\"]')}</pre>
+        </div>
+      </div>
+
+      <div class="mi-source">
+        Sourced from <code>source/**/*.JCL</code> (regex on <code>EXEC PGM=</code>) + <code>output/rekt/*.facts.json</code> (copybook lists). System utilities filtered out.
+      </div>
+    `;
+  }
+
+  _wireServiceChainInteractions(initialData) {
+    const reloadFiltered = async (filterUrl) => {
+      const body = this.root.querySelector('#mi-body');
+      const mermContainer = body.querySelector('#mi-chain-mermaid');
+      if (mermContainer) mermContainer.innerHTML = '<div class="mi-loading">Loading filtered chain…</div>';
+      try {
+        const d = await fetch(filterUrl).then(r => r.json());
+        if (mermContainer) {
+          mermContainer.innerHTML = `<pre class="mermaid">${this._escape(d.mermaid || 'flowchart LR\n  empty[\"(no data)\"]')}</pre>`;
+          // Mermaid library needs a re-run on the newly-inserted pre.
+          setTimeout(() => this._renderMermaidIn(body), 30);
+        }
+      } catch (err) {
+        if (mermContainer) mermContainer.innerHTML = `<div class="mi-error">${this._escape(err.message)}</div>`;
+      }
+    };
+
+    this.root.querySelectorAll('.mi-chain-job-row').forEach(tr => {
+      tr.style.cursor = 'pointer';
+      tr.addEventListener('click', () => {
+        this.root.querySelectorAll('.mi-chain-job-row, .mi-chain-pgm-row').forEach(r =>
+          r.classList.toggle('mi-row-active', r === tr));
+        reloadFiltered(`/api/modernization/service-chain?job=${encodeURIComponent(tr.dataset.job)}`);
+      });
+    });
+    this.root.querySelectorAll('.mi-chain-pgm-row').forEach(tr => {
+      tr.style.cursor = 'pointer';
+      tr.addEventListener('click', () => {
+        this.root.querySelectorAll('.mi-chain-job-row, .mi-chain-pgm-row').forEach(r =>
+          r.classList.toggle('mi-row-active', r === tr));
+        reloadFiltered(`/api/modernization/service-chain?program=${encodeURIComponent(tr.dataset.program)}`);
+      });
+    });
+    const resetBtn = this.root.querySelector('#mi-chain-reset');
+    if (resetBtn) {
+      resetBtn.addEventListener('click', () => {
+        this.root.querySelectorAll('.mi-row-active').forEach(r => r.classList.remove('mi-row-active'));
+        reloadFiltered('/api/modernization/service-chain');
+      });
     }
   }
 

@@ -70,22 +70,61 @@ public sealed class RektContextLoader
         return ctx;
     }
 
+    /// <summary>
+    /// Enumerate COBOL <b>programs</b> (compilable entry points) in the source
+    /// folder. Excludes <c>.cpy</c> copybooks — those are shared structures
+    /// included via <c>COPY</c> and are never conversion targets on their own.
+    /// Use <see cref="EnumerateCopybookFiles"/> if you specifically need the
+    /// copybook inventory.
+    /// </summary>
     public List<string> EnumerateProgramFiles(string sourceFolder)
     {
         var dir = Path.Combine(_repoRoot, sourceFolder);
         if (!Directory.Exists(dir)) return new();
-        return Directory.EnumerateFiles(dir)
+        return Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories)
             .Where(p =>
             {
+                // Skip transient REKT / convert directories so we never surface
+                // the same program multiple times from staging mirrors.
+                if (p.Contains("/.convert-", StringComparison.Ordinal)
+                    || p.Contains("/.rekt-staging", StringComparison.Ordinal)
+                    || p.Contains("/.preprocessed", StringComparison.Ordinal))
+                    return false;
                 var ext = Path.GetExtension(p);
                 return ext.Equals(".cbl", StringComparison.OrdinalIgnoreCase)
-                    || ext.Equals(".cpy", StringComparison.OrdinalIgnoreCase)
-                    || ext.Equals(".CBL", StringComparison.OrdinalIgnoreCase)
-                    || ext.Equals(".CPY", StringComparison.OrdinalIgnoreCase);
+                    || ext.Equals(".cob", StringComparison.OrdinalIgnoreCase);
             })
             .Select(Path.GetFileName)
             .Where(n => n is not null)
             .Cast<string>()
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    /// <summary>
+    /// Enumerate COBOL <b>copybooks</b> (<c>.cpy</c> shared structures) — the
+    /// complement of <see cref="EnumerateProgramFiles"/>. Copybooks are
+    /// included via <c>COPY</c> directives but never converted standalone.
+    /// </summary>
+    public List<string> EnumerateCopybookFiles(string sourceFolder)
+    {
+        var dir = Path.Combine(_repoRoot, sourceFolder);
+        if (!Directory.Exists(dir)) return new();
+        return Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories)
+            .Where(p =>
+            {
+                if (p.Contains("/.convert-", StringComparison.Ordinal)
+                    || p.Contains("/.rekt-staging", StringComparison.Ordinal)
+                    || p.Contains("/.preprocessed", StringComparison.Ordinal))
+                    return false;
+                var ext = Path.GetExtension(p);
+                return ext.Equals(".cpy", StringComparison.OrdinalIgnoreCase);
+            })
+            .Select(Path.GetFileName)
+            .Where(n => n is not null)
+            .Cast<string>()
+            .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
             .ToList();
     }
