@@ -23,10 +23,11 @@ namespace McpChatWeb.Services;
 /// </para>
 ///
 /// <para>
-/// 2. <b>Locate</b> generated Java services (e.g. "OP_GAMBLING" or
-///    "OpGamblingService") back to the originating COBOL program and the
+/// 2. <b>Locate</b> generated Java/C# services (e.g. "CALC_INTEREST" or
+///    "CalcInterestService") back to the originating COBOL program and the
 ///    matching paragraph inside its facts.json — so a user can jump from
-///    the Java side back into REKT/AST.
+///    the generated code back into REKT/AST. Supports both target
+///    languages: scans output/runs/**, output/java/**, output/csharp/**.
 /// </para>
 ///
 /// <para>
@@ -306,16 +307,21 @@ public sealed class CapabilityClassifier
         var raw = query.Trim();
         var noJavaSuffix = Regex.Replace(raw, @"(Service|Handler|Repository|Controller|Manager)$", "", RegexOptions.IgnoreCase);
         var noExt = Regex.Replace(noJavaSuffix, @"\.java$", "", RegexOptions.IgnoreCase);
-        var screaming = ToScreamingSnake(noExt);                  // OpGambling → OP_GAMBLING
-        var hyphenated = screaming.Replace('_', '-');             // OP_GAMBLING → OP-GAMBLING
+        var screaming = ToScreamingSnake(noExt);                  // CalcInterest → CALC_INTEREST
+        var hyphenated = screaming.Replace('_', '-');             // CALC_INTEREST → CALC-INTEREST
         var lowered = noExt.ToLowerInvariant();
         var forms = new HashSet<string>(StringComparer.OrdinalIgnoreCase) {
             raw, noJavaSuffix, noExt, screaming, hyphenated, lowered
         };
 
-        // 1. Find matching Java files under output/runs/** and legacy output/java/**
+        // 1. Find matching generated-code files under output/runs/** and legacy
+        //    output/java/** + output/csharp/**. Restricted to source-code
+        //    extensions so we don't surface migration-report.md, logs, etc.
         var javaMatches = new List<JavaFileMatch>();
         var seenJava = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var codeExts = new HashSet<string>(StringComparer.OrdinalIgnoreCase) {
+            ".java", ".cs", ".kt", ".ts", ".scala"
+        };
         foreach (var rootDir in new[] { Path.Combine(_repoRoot, "output", "runs"),
                                         Path.Combine(_repoRoot, "output", "java"),
                                         Path.Combine(_repoRoot, "output", "csharp") })
@@ -323,6 +329,7 @@ public sealed class CapabilityClassifier
             if (!Directory.Exists(rootDir)) continue;
             foreach (var f in Directory.EnumerateFiles(rootDir, "*", SearchOption.AllDirectories))
             {
+                if (!codeExts.Contains(Path.GetExtension(f))) continue;
                 var name = Path.GetFileNameWithoutExtension(f);
                 if (!forms.Any(form => name.Contains(form, StringComparison.OrdinalIgnoreCase))) continue;
                 if (!seenJava.Add(f)) continue;
@@ -406,7 +413,7 @@ public sealed class CapabilityClassifier
 
     private static string ToScreamingSnake(string camelOrPascal)
     {
-        // OpGamblingService → OP_GAMBLING_SERVICE  ·  oP → already handled by uppering
+        // CalcInterestService → CALC_INTEREST_SERVICE  ·  cS → handled by uppering
         if (string.IsNullOrEmpty(camelOrPascal)) return "";
         var sb = new System.Text.StringBuilder();
         for (int i = 0; i < camelOrPascal.Length; i++)

@@ -1428,15 +1428,16 @@ class ModernizationIntelligenceView {
     const populated = (catalog.capabilities || []).filter(b => b.programs.length > 0);
     return `
       <div class="mi-section">
-        <h3>🔎 Service Locator — find any service back to its COBOL source</h3>
+        <h3>🔎 Service Locator — find any generated service back to its COBOL source (Java + C#)</h3>
         <p class="mi-help">
-          Type a Java class name, paragraph name, or operation (e.g. <code>OpGamblingService</code>,
-          <code>OP_GAMBLING</code>, <code>CHECK-FRAUD</code>, or just <code>BDSM043</code>).
-          The locator normalises the form across casing/styles and searches both
-          generated Java/C# files in <code>output/runs/**</code> and the original COBOL source.
+          Type a generated class name, paragraph name, or program-ID (e.g. <code>CalcInterestService</code>,
+          <code>CALC_INTEREST</code>, <code>CHECK-FRAUD</code>, or just <code>BDSM043</code>).
+          The locator normalises across casing/styles and searches generated <b>Java</b> + <b>C#</b>
+          under <code>output/runs/**</code>, <code>output/java/**</code>, <code>output/csharp/**</code>,
+          and the original COBOL source.
         </p>
         <div class="mi-locator-row">
-          <input id="mi-locator-input" type="text" placeholder="e.g. OP_GAMBLING or Bdsm043Service" class="mi-locator-input"/>
+          <input id="mi-locator-input" type="text" placeholder="e.g. CALC_INTEREST or CalcInterestService or BDSM043" class="mi-locator-input"/>
           <button id="mi-locator-btn" class="mi-btn-primary">🔎 Locate</button>
         </div>
         <div id="mi-locator-results"></div>
@@ -1531,8 +1532,8 @@ class ModernizationIntelligenceView {
       return `<div class="mi-cap-empty">
         <b>No matches for <code>${this._escape(r.query)}</code></b>
         <div class="mi-help">Tried these normalised forms: ${r.forms.map(f => `<code>${this._escape(f)}</code>`).join(', ')}</div>
-        <div class="mi-help">Tip: search by COBOL paragraph (<code>OP-GAMBLING</code>), Java class name
-        (<code>OpGamblingService</code>), or program ID (<code>BDSM043</code>).</div>
+        <div class="mi-help">Tip: search by COBOL paragraph (<code>CALC-INTEREST</code>), generated class name
+        (<code>CalcInterestService</code> — Java or C#), or program-ID (<code>BDSM043</code>).</div>
       </div>`;
     }
     return `

@@ -95,7 +95,7 @@ class VisualCockpit {
             </div>
           </div>
           <div class="vc-header-right">
-            <input id="vc-locator" type="text" placeholder="🔎 Locate service (e.g. OP_GAMBLING)" class="vc-locator-input"/>
+            <input id="vc-locator" type="text" placeholder="🔎 Locate service (e.g. CALC_INTEREST or BDSM043)" class="vc-locator-input"/>
             <span id="vc-live-badge" class="vc-live-badge" title="Auto-refreshes every ${AUTO_REFRESH_MS/1000}s while this tab is visible">
               <span class="vc-live-dot"></span>LIVE
             </span>
@@ -171,7 +171,7 @@ class VisualCockpit {
         </div>
         <button class="vc-btn" id="vc-drawer-close">✕</button>
       </div>
-      ${empty ? `<div class="vc-muted vc-pad">No matches. Try a paragraph name (OP-GAMBLING), Java class (OpGamblingService), or program-ID (BDSM043).</div>` : `
+      ${empty ? `<div class="vc-muted vc-pad">No matches. Try a paragraph name (e.g. <code>CALC-INTEREST</code>), a generated class (<code>CalcInterestService</code> — Java or C#), or a program-ID (<code>BDSM043</code>).</div>` : `
         ${r.cobolMatches.length ? `
           <div class="vc-drawer-section">
             <div class="vc-drawer-section-title">📄 COBOL programs (${r.cobolMatches.length})</div>
