@@ -108,6 +108,7 @@ function switchDashboard(tabName) {
     complexity: ['complexity-container'],
     modernization: ['modernization-intelligence-container'],
     insights: ['insights-hub-container'],
+    cockpit: ['visual-cockpit-container'],
   };
 
   // Hide everything first
@@ -204,6 +205,13 @@ function switchDashboard(tabName) {
       window.insightsHub = new InsightsHub('insights-hub-root');
     }
     window.insightsHub.loadAndRender();
+  }
+
+  if (tabName === 'cockpit') {
+    if (!window.visualCockpit) {
+      window.visualCockpit = new VisualCockpit('visual-cockpit-root');
+    }
+    window.visualCockpit.loadAndRender();
   }
 
   if (tabName === 'complexity') {
