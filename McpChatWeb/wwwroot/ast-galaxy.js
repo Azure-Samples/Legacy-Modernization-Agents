@@ -4605,6 +4605,24 @@ class ASTGalaxyView {
   }
 
   setViewMode(value) {
+    // Legacy-alias map (2026-05-29 consolidation 13 → 6 modes).
+    // Old bookmarks / saved selections get redirected to canonical mode.
+    const ALIAS = {
+      'expanded': 'clustered',
+      'expanded-v2': 'clustered',
+      'business': 'business-expanded',
+      'service-catalog-expanded': 'service-catalog',
+      'service-catalog-expanded-3d': 'service-catalog',
+      'service-catalog-v2': 'service-catalog-v3',
+      'program-map': 'clustered',
+    };
+    if (ALIAS[value]) {
+      console.log(`[ast-galaxy] mode '${value}' is deprecated → redirecting to '${ALIAS[value]}'`);
+      value = ALIAS[value];
+      // Reflect canonical choice in the dropdown if present.
+      const dd = document.getElementById('galaxy-view-mode');
+      if (dd && dd.value !== value) dd.value = value;
+    }
     this.viewMode = value;
     if (value === 'expanded' || value === 'expanded-v2' || value === 'program-map') {
       const programs = this._getSortedPrograms();

@@ -634,18 +634,18 @@
           <select id="galaxy-file-filter" onchange="galaxyView?.setFilter(this.value)" style="flex: 1; max-width: 200px; padding: 6px; background: #1e293b; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; font-size: 13px;">
             <option value="all">All files</option>
           </select>
-          <select id="galaxy-view-mode" onchange="galaxyView?.setViewMode(this.value)" style="padding: 6px; background: #1e293b; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; font-size: 13px;">
+          <!--
+            View modes consolidated 2026-05-29 (13 → 6). Removed redundant
+            variants (expanded/expanded-v2, business, service-catalog-expanded,
+            service-catalog-expanded-3d, service-catalog-v2, program-map) — they
+            were force-graph variants of the same data. Legacy aliases are
+            re-routed to canonical modes in ast-galaxy.js setViewMode().
+          -->
+          <select id="galaxy-view-mode" onchange="galaxyView?.setViewMode(this.value)" style="padding: 6px; background: #1e293b; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; font-size: 13px;" title="6 canonical view modes. For dashboard-style visuals, see 🎨 Visual Cockpit.">
             <option value="clustered">📦 Technical</option>
-            <option value="expanded">📦 Technical (Expanded)</option>
-            <option value="expanded-v2">🔽 Technical (Expanded v2 — Top-Down)</option>
-            <option value="business">🏢 Business Domains</option>
-            <option value="business-expanded">🏢 Business Domains (Expanded)</option>
+            <option value="business-expanded">🏢 Business Domains</option>
             <option value="service-catalog">📋 Service Catalog</option>
-            <option value="service-catalog-expanded">📋 Service Catalog (Expanded)</option>
-            <option value="service-catalog-expanded-3d">🧊 Service Catalog (Expanded 3D)</option>
-            <option value="service-catalog-v2">🚀 Service Catalog v2</option>
             <option value="service-catalog-v3">🎯 Modernization Radar</option>
-            <option value="program-map">📊 Programs</option>
             <option value="bian-matrix">🏦 BIAN Service Landscape</option>
             <option value="c4-model">🏗️ C4 Model</option>
           </select>

@@ -1076,6 +1076,173 @@ public sealed class ModernizationIntelligenceService
         int FallbackClassCount);
 
     private record CacheEntry(int ByteSize, int HitCount);
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Program detail drill-down (Visual Cockpit Developer scorecard click-through)
+    // ─────────────────────────────────────────────────────────────────────
+
+    public ProgramDetail? GetProgramDetail(string basename)
+    {
+        if (string.IsNullOrWhiteSpace(basename)) return null;
+        basename = basename.Trim();
+
+        // Locate the source file
+        var sourceDir = Path.Combine(_repoRoot, "source");
+        string? sourcePath = null;
+        if (Directory.Exists(sourceDir))
+        {
+            sourcePath = Directory.EnumerateFiles(sourceDir, basename, SearchOption.AllDirectories)
+                .FirstOrDefault(f => !f.Contains("/.convert-", StringComparison.Ordinal)
+                                  && !f.Contains("/.rekt-staging", StringComparison.Ordinal)
+                                  && !f.Contains("/.preprocessed", StringComparison.Ordinal));
+        }
+        if (sourcePath == null) return null;
+
+        var stem = Path.GetFileNameWithoutExtension(basename);
+        var factsPath = Path.Combine(_repoRoot, "output", "rekt", $"{stem}.facts.json");
+
+        int loc = 0;
+        try
+        {
+            var bytes = File.ReadAllBytes(sourcePath);
+            foreach (var b in bytes) if (b == (byte)'\n') loc++;
+            if (bytes.Length > 0 && bytes[^1] != (byte)'\n') loc++;
+        }
+        catch { /* skip */ }
+
+        // Facts.json — read raw + extract typed summary fields
+        string? factsRaw = null;
+        List<string> dependencies = new();
+        List<string> copybooks = new();
+        List<string> callTargets = new();
+        List<string> warnings = new();
+        int confidence = 0;
+        if (File.Exists(factsPath))
+        {
+            try
+            {
+                factsRaw = File.ReadAllText(factsPath);
+                using var doc = JsonDocument.Parse(factsRaw);
+                var root = doc.RootElement;
+                if (root.TryGetProperty("confidence", out var c)) confidence = c.GetInt32();
+                if (root.TryGetProperty("dependencies", out var d) && d.ValueKind == JsonValueKind.Array)
+                    foreach (var x in d.EnumerateArray()) dependencies.Add(x.ToString());
+                if (root.TryGetProperty("copybooks", out var cb) && cb.ValueKind == JsonValueKind.Array)
+                    foreach (var x in cb.EnumerateArray()) copybooks.Add(x.ToString());
+                if (root.TryGetProperty("callTargets", out var ct) && ct.ValueKind == JsonValueKind.Array)
+                    foreach (var x in ct.EnumerateArray()) callTargets.Add(x.ToString());
+                if (root.TryGetProperty("warnings", out var w) && w.ValueKind == JsonValueKind.Array)
+                    foreach (var x in w.EnumerateArray()) warnings.Add(x.ToString());
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug("facts.json parse failed for {Stem}: {Msg}", stem, ex.Message);
+            }
+        }
+
+        // Run history from migration.db
+        var runs = new List<ProgramRunRow>();
+        var migPath = Path.Combine(_repoRoot, "Data", "migration.db");
+        if (File.Exists(migPath))
+        {
+            try
+            {
+                using var conn = new SqliteConnection($"Data Source={migPath};Mode=ReadOnly;");
+                conn.Open();
+                using var c = conn.CreateCommand();
+                c.CommandText = @"
+                    SELECT r.id, r.started_at, r.completed_at, r.status, r.java_output, r.notes
+                      FROM runs r
+                     WHERE EXISTS (
+                       SELECT 1 FROM cobol_files cf
+                        WHERE cf.run_id = r.id AND cf.is_copybook = 0
+                          AND lower(cf.file_name) = lower($name))
+                     ORDER BY r.id DESC
+                     LIMIT 20";
+                c.Parameters.AddWithValue("$name", basename);
+                using var rd = c.ExecuteReader();
+                while (rd.Read())
+                {
+                    runs.Add(new ProgramRunRow(
+                        RunId: rd.GetInt32(0),
+                        StartedAt: rd.IsDBNull(1) ? "" : rd.GetString(1),
+                        CompletedAt: rd.IsDBNull(2) ? null : rd.GetString(2),
+                        Status: rd.IsDBNull(3) ? "" : rd.GetString(3),
+                        JavaOutput: rd.IsDBNull(4) ? null : rd.GetString(4),
+                        Notes: rd.IsDBNull(5) ? null : rd.GetString(5)
+                    ));
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug("Run history load failed for {Basename}: {Msg}", basename, ex.Message);
+            }
+        }
+
+        // Quality rows for those runs from benchmark.db
+        var quality = new Dictionary<int, QualityRow>();
+        var benchPath = Path.Combine(_repoRoot, "Data", "benchmark.db");
+        if (File.Exists(benchPath) && runs.Count > 0)
+        {
+            try
+            {
+                using var conn = new SqliteConnection($"Data Source={benchPath};Mode=ReadOnly;");
+                conn.Open();
+                foreach (var run in runs)
+                {
+                    using var c = conn.CreateCommand();
+                    c.CommandText = @"
+                        SELECT compile_success, compile_errors, generated_class_count,
+                               generated_java_lines, fallback_class_count
+                          FROM metric_events
+                         WHERE event='quality_summary' AND run_id = $rid
+                         ORDER BY rowid DESC LIMIT 1";
+                    c.Parameters.AddWithValue("$rid", run.RunId.ToString());
+                    using var rd = c.ExecuteReader();
+                    if (rd.Read())
+                    {
+                        quality[run.RunId] = new QualityRow(
+                            CompileSuccess: !rd.IsDBNull(0) && rd.GetInt32(0) == 1,
+                            CompileErrors: rd.IsDBNull(1) ? 0 : rd.GetInt32(1),
+                            GeneratedClassCount: rd.IsDBNull(2) ? 0 : rd.GetInt32(2),
+                            GeneratedJavaLines: rd.IsDBNull(3) ? 0 : rd.GetInt32(3),
+                            FallbackClassCount: rd.IsDBNull(4) ? 0 : rd.GetInt32(4));
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug("Quality drill load failed for {Basename}: {Msg}", basename, ex.Message);
+            }
+        }
+
+        var runRows = runs.Select(r => new ProgramRunDetail(
+            RunId: r.RunId,
+            StartedAt: r.StartedAt,
+            CompletedAt: r.CompletedAt,
+            Status: r.Status,
+            JavaOutput: r.JavaOutput,
+            CompileSuccess: quality.TryGetValue(r.RunId, out var q) ? q.CompileSuccess : null,
+            CompileErrors: quality.TryGetValue(r.RunId, out var q2) ? q2.CompileErrors : null,
+            GeneratedClasses: quality.TryGetValue(r.RunId, out var q3) ? q3.GeneratedClassCount : null,
+            FallbackClasses: quality.TryGetValue(r.RunId, out var q4) ? q4.FallbackClassCount : null
+        )).ToList();
+
+        return new ProgramDetail(
+            Basename: basename,
+            RelativePath: Path.GetRelativePath(_repoRoot, sourcePath),
+            LinesOfCode: loc,
+            HasFacts: factsRaw != null,
+            FactsConfidence: confidence,
+            FactsWarnings: warnings,
+            Dependencies: dependencies,
+            Copybooks: copybooks,
+            CallTargets: callTargets,
+            RunHistory: runRows
+        );
+    }
+
+    private record ProgramRunRow(int RunId, string StartedAt, string? CompletedAt, string Status, string? JavaOutput, string? Notes);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -1099,6 +1266,30 @@ public record ApplicationRow(
     int ProjectionCacheHits,
     int ProjectionCacheBytes,
     string ModernizationStatus);
+
+// Program detail drill-down (clicked from Visual Cockpit Developer scorecard)
+public record ProgramDetail(
+    string Basename,
+    string RelativePath,
+    int LinesOfCode,
+    bool HasFacts,
+    int FactsConfidence,
+    List<string> FactsWarnings,
+    List<string> Dependencies,
+    List<string> Copybooks,
+    List<string> CallTargets,
+    List<ProgramRunDetail> RunHistory);
+
+public record ProgramRunDetail(
+    int RunId,
+    string StartedAt,
+    string? CompletedAt,
+    string Status,
+    string? JavaOutput,
+    bool? CompileSuccess,
+    int? CompileErrors,
+    int? GeneratedClasses,
+    int? FallbackClasses);
 
 public class DashboardSummary
 {

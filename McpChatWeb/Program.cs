@@ -9003,6 +9003,15 @@ app.MapGet("/api/modernization/applications",
     (McpChatWeb.Services.ModernizationIntelligenceService svc) =>
         Results.Ok(svc.GetApplications().ToList()));
 
+// Visual Cockpit Developer scorecard click-through: facts + run history for one program.
+app.MapGet("/api/modernization/programs/{basename}",
+    (string basename, McpChatWeb.Services.ModernizationIntelligenceService svc) =>
+    {
+        var detail = svc.GetProgramDetail(basename);
+        return detail == null ? Results.NotFound(new { error = "program not found", basename })
+                              : Results.Ok(detail);
+    });
+
 app.MapGet("/api/modernization/dashboard",
     (McpChatWeb.Services.ModernizationIntelligenceService svc) =>
         Results.Ok(svc.GetDashboard()));

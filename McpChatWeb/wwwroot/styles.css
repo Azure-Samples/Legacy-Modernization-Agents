@@ -8574,3 +8574,118 @@ main.three-panel-layout {
   font-size: 10px; text-align: center; text-transform: uppercase;
   letter-spacing: 0.4px; font-weight: 600;
 }
+
+/* ─── Visual Cockpit Phase-3.1 additions: header, kanban, drawer ─── */
+
+.vc-scorecard[data-program] { cursor: pointer; transition: transform 0.1s, background 0.1s; }
+.vc-scorecard[data-program]:hover { transform: translateY(-1px); background: #131c30; border-color: #334155; }
+
+.vc-header-right { display: flex; align-items: center; gap: 10px; }
+
+.vc-live-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: #064e3b; color: #d1fae5; padding: 3px 8px;
+  border-radius: 10px; font-size: 10px; font-weight: 600;
+  letter-spacing: 0.6px; border: 1px solid #10b98155;
+  transition: box-shadow 0.4s, transform 0.2s;
+}
+.vc-live-dot { width: 6px; height: 6px; border-radius: 50%; background: #10b981; animation: vc-pulse 2s infinite; }
+@keyframes vc-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.5; transform: scale(0.85); }
+}
+.vc-live-flash { box-shadow: 0 0 0 3px #10b98144; transform: scale(1.08); }
+
+/* Kanban */
+.vc-kanban {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
+  margin-top: 12px;
+}
+.vc-lane {
+  background: #0a1322; border: 1px solid #1e293b; border-radius: 6px;
+  display: flex; flex-direction: column; min-height: 280px;
+}
+.vc-lane-header {
+  display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+  border-bottom: 1px solid #1e293b;
+}
+.vc-lane-emoji { font-size: 18px; }
+.vc-lane-title { font-weight: 700; font-size: 13px; color: #f8fafc; }
+.vc-lane-sub { font-size: 10px; color: #64748b; }
+.vc-lane-count {
+  margin-left: auto; background: #1e293b; color: #cbd5e1;
+  padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600;
+}
+.vc-lane-meta { padding: 4px 12px; color: #64748b; font-size: 10px; border-bottom: 1px solid #1e293b; }
+.vc-lane-body {
+  padding: 8px; flex: 1; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 6px; max-height: 580px;
+}
+.vc-lane-empty { color: #475569; font-size: 11px; text-align: center; padding: 20px 0; font-style: italic; }
+.vc-kanban-card {
+  background: #0c1424; border: 1px solid #1e293b; border-radius: 4px;
+  padding: 8px;
+}
+.vc-kanban-card-title {
+  font-weight: 600; font-size: 11px; color: #f8fafc;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.vc-kanban-card-meta {
+  display: flex; gap: 8px; margin-top: 4px; font-size: 10px; color: #94a3b8;
+  flex-wrap: wrap;
+}
+.vc-kanban-actions { margin-top: 6px; display: flex; gap: 3px; flex-wrap: wrap; }
+.vc-kanban-btn {
+  background: #1e293b; border: 1px solid #334155; color: #cbd5e1;
+  padding: 2px 6px; border-radius: 3px; font-size: 10px; cursor: pointer;
+  transition: background 0.1s;
+}
+.vc-kanban-btn:hover { background: #334155; color: #f8fafc; }
+.vc-kanban-btn:disabled { opacity: 0.5; cursor: wait; }
+
+/* Drawer (Developer scorecard drill-down) */
+.vc-drawer {
+  position: fixed; top: 80px; right: 16px; width: 560px; max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 120px); overflow-y: auto;
+  background: #0a1322; border: 1px solid #334155; border-radius: 8px;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.6); padding: 16px; z-index: 999;
+}
+.vc-drawer-header {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding-bottom: 10px; border-bottom: 1px solid #1e293b; margin-bottom: 12px;
+}
+.vc-drawer-title { font-size: 16px; font-weight: 700; color: #f8fafc; }
+.vc-drawer-sub { font-size: 11px; color: #64748b; margin-top: 2px; }
+.vc-drawer-grid {
+  display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; margin-bottom: 14px;
+}
+.vc-drawer-stat {
+  background: #0c1424; border: 1px solid #1e293b; padding: 8px 4px;
+  border-radius: 4px; text-align: center;
+}
+.vc-drawer-stat b { display: block; font-size: 16px; color: #f8fafc; }
+.vc-drawer-stat span { font-size: 9px; color: #64748b; text-transform: uppercase; letter-spacing: 0.4px; }
+.vc-drawer-section { margin-bottom: 14px; }
+.vc-drawer-section-title { font-size: 12px; font-weight: 600; color: #cbd5e1; margin-bottom: 6px; }
+.vc-drawer-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.vc-chip {
+  background: #1e293b; color: #cbd5e1; padding: 3px 8px; border-radius: 3px;
+  font-size: 11px; font-family: 'Monaco', 'Consolas', monospace;
+}
+.vc-chip-blue { background: #1e3a8a44; color: #93c5fd; }
+.vc-drawer-warnings { display: flex; flex-direction: column; gap: 4px; }
+.vc-drawer-warning {
+  background: #7c2d1244; color: #fda4af; padding: 6px 10px;
+  border-radius: 3px; font-size: 11px; border-left: 2px solid #ef4444;
+}
+.vc-drawer-table {
+  width: 100%; border-collapse: collapse; font-size: 11px;
+}
+.vc-drawer-table th {
+  background: #0c1424; color: #94a3b8; padding: 6px 4px;
+  text-align: left; border-bottom: 1px solid #1e293b;
+  font-weight: 600; font-size: 10px; text-transform: uppercase;
+}
+.vc-drawer-table td {
+  padding: 5px 4px; color: #cbd5e1; border-bottom: 1px solid #0c1424;
+}

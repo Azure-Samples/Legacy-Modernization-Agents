@@ -9,11 +9,18 @@
 //   🌐 Mission Control       — consolidated executive overview
 //   💼 Business Owner         — outcomes / risk / progress (visual)
 //   🏗 Architect              — coupling heatmap + domain map
+//   🚀 Modernization Lead     — visual Kanban (Wave 1/2/3/Queued)
 //   👨‍💻 Developer              — per-program scorecards + cache/quality sparklines
 //
 // Reuses existing /api/modernization/* + /api/graph/rekt/services endpoints.
 // Data fetched once and cached on persona switch.
+//
+// Auto-refresh: when the Visual Cockpit tab is visible, data is refreshed
+// every AUTO_REFRESH_MS so dashboards stay live during a running conversion.
+// Suspended when document is hidden to avoid wasted polling.
 // ─────────────────────────────────────────────────────────────────────────
+
+const AUTO_REFRESH_MS = 15000;
 
 class VisualCockpit {
   constructor(rootId) {
@@ -21,7 +28,59 @@ class VisualCockpit {
     if (!this.root) return;
     this._activePersona = 'mission';
     this._data = null;
+    this._autoTimer = null;
+    this._isVisible = false;
     this._renderShell();
+    this._setupAutoRefresh();
+  }
+
+  _setupAutoRefresh() {
+    // Refresh on tab/visibility change AND on browser-tab visibility change.
+    // The portal hides our root via display:none in dashboard-tabs.js when
+    // not active. We poll the inline style + the document.hidden flag.
+    const tick = () => {
+      const visible = !document.hidden &&
+        this.root && this.root.offsetParent !== null;
+      if (visible !== this._isVisible) {
+        this._isVisible = visible;
+        if (visible) this._kickAutoRefresh();
+        else this._stopAutoRefresh();
+      }
+    };
+    document.addEventListener('visibilitychange', tick);
+    // Poll inline-style visibility every 2s — cheap, covers tab switches in
+    // the portal's dashboard-tabs router which mutates display:none.
+    setInterval(tick, 2000);
+    tick();
+  }
+
+  _kickAutoRefresh() {
+    this._stopAutoRefresh();
+    this._autoTimer = setInterval(() => this._autoRefresh(), AUTO_REFRESH_MS);
+  }
+  _stopAutoRefresh() {
+    if (this._autoTimer) { clearInterval(this._autoTimer); this._autoTimer = null; }
+  }
+  async _autoRefresh() {
+    // Background refresh — invalidate cache, re-fetch, re-render in place
+    // without the loading spinner so the dashboard doesn't blink.
+    try {
+      const fresh = await this._fetchAll();
+      // Shallow-compare dashboards to skip pointless re-renders.
+      const before = JSON.stringify(this._data?.dashboard || {});
+      const after = JSON.stringify(fresh.dashboard || {});
+      this._data = fresh;
+      if (before !== after) {
+        this._renderActive();
+        this._flashLiveBadge();
+      }
+    } catch { /* silent — next tick will retry */ }
+  }
+  _flashLiveBadge() {
+    const b = this.root.querySelector('#vc-live-badge');
+    if (!b) return;
+    b.classList.add('vc-live-flash');
+    setTimeout(() => b.classList.remove('vc-live-flash'), 1200);
   }
 
   _renderShell() {
@@ -35,7 +94,12 @@ class VisualCockpit {
               <div class="vc-title-sub">At-a-glance SVG dashboards · single-screen visibility · same data, decision-grade visuals</div>
             </div>
           </div>
-          <button id="vc-refresh" class="vc-btn">⟳ Refresh</button>
+          <div class="vc-header-right">
+            <span id="vc-live-badge" class="vc-live-badge" title="Auto-refreshes every ${AUTO_REFRESH_MS/1000}s while this tab is visible">
+              <span class="vc-live-dot"></span>LIVE
+            </span>
+            <button id="vc-refresh" class="vc-btn">⟳ Refresh</button>
+          </div>
         </div>
 
         <div class="vc-persona-bar">
@@ -54,6 +118,11 @@ class VisualCockpit {
             <div class="vc-persona-label">Architect</div>
             <div class="vc-persona-sub">Coupling · domains · structure</div>
           </button>
+          <button class="vc-persona" data-persona="lead">
+            <div class="vc-persona-emoji">🚀</div>
+            <div class="vc-persona-label">Modernization Lead</div>
+            <div class="vc-persona-sub">Waves · execution · Kanban</div>
+          </button>
           <button class="vc-persona" data-persona="developer">
             <div class="vc-persona-emoji">👨‍💻</div>
             <div class="vc-persona-label">Developer</div>
@@ -62,6 +131,7 @@ class VisualCockpit {
         </div>
 
         <div id="vc-body" class="vc-body"></div>
+        <div id="vc-drawer" class="vc-drawer" style="display:none;"></div>
       </div>
     `;
     this.root.querySelectorAll('.vc-persona').forEach(btn => {
@@ -76,21 +146,24 @@ class VisualCockpit {
     if (refresh) refresh.addEventListener('click', () => { this._data = null; this.loadAndRender(); });
   }
 
+  async _fetchAll() {
+    const [dashboard, applications, health, topology, services, chain, waves] = await Promise.all([
+      fetch('/api/modernization/dashboard').then(r => r.json()),
+      fetch('/api/modernization/applications').then(r => r.json()),
+      fetch('/api/modernization/dependency-health').then(r => r.json()),
+      fetch('/api/modernization/topology').then(r => r.json()),
+      fetch('/api/graph/rekt/services').then(r => r.json()).catch(() => ({ nodes: [], edges: [] })),
+      fetch('/api/modernization/service-chain').then(r => r.json()).catch(() => null),
+      fetch('/api/modernization/waves').then(r => r.json()).catch(() => []),
+    ]);
+    return { dashboard, applications, health, topology, services, chain, waves };
+  }
+
   async loadAndRender() {
     const body = this.root.querySelector('#vc-body');
     body.innerHTML = '<div class="vc-loading">Loading…</div>';
     try {
-      if (!this._data) {
-        const [dashboard, applications, health, topology, services, chain] = await Promise.all([
-          fetch('/api/modernization/dashboard').then(r => r.json()),
-          fetch('/api/modernization/applications').then(r => r.json()),
-          fetch('/api/modernization/dependency-health').then(r => r.json()),
-          fetch('/api/modernization/topology').then(r => r.json()),
-          fetch('/api/graph/rekt/services').then(r => r.json()).catch(() => ({ nodes: [], edges: [] })),
-          fetch('/api/modernization/service-chain').then(r => r.json()).catch(() => null),
-        ]);
-        this._data = { dashboard, applications, health, topology, services, chain };
-      }
+      if (!this._data) this._data = await this._fetchAll();
       this._renderActive();
     } catch (err) {
       body.innerHTML = `<div class="vc-error">${this._esc(err.message)}</div>`;
@@ -100,10 +173,11 @@ class VisualCockpit {
   _renderActive() {
     if (!this._data) { this.loadAndRender(); return; }
     const body = this.root.querySelector('#vc-body');
-    if (this._activePersona === 'mission')   body.innerHTML = this._renderMission();
+    if (this._activePersona === 'mission')        body.innerHTML = this._renderMission();
     else if (this._activePersona === 'business')  body.innerHTML = this._renderBusiness();
     else if (this._activePersona === 'architect') body.innerHTML = this._renderArchitect();
-    else if (this._activePersona === 'developer') body.innerHTML = this._renderDeveloper();
+    else if (this._activePersona === 'lead')      { body.innerHTML = this._renderLead(); this._wireLeadInteractions(); }
+    else if (this._activePersona === 'developer') { body.innerHTML = this._renderDeveloper(); this._wireScorecardClicks(); }
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -613,7 +687,7 @@ class VisualCockpit {
                               : c.modernizationStatus === 'partial-fallback' ? '#f59e0b'
                               : c.modernizationStatus === 'compile-failing' ? '#ef4444'
                               : '#475569';
-            return `<div class="vc-scorecard" style="border-left:3px solid ${statusColor};">
+            return `<div class="vc-scorecard" data-program="${this._esc(c.basename)}" style="border-left:3px solid ${statusColor};" title="Click for full REKT facts + run history">
               <div class="vc-scorecard-title">${this._esc(c.basename)}</div>
               <div class="vc-scorecard-stats">
                 <div><b>${c.linesOfCode.toLocaleString()}</b><span>LoC</span></div>
@@ -640,8 +714,272 @@ class VisualCockpit {
       </div>
 
       <div class="vc-callout vc-callout-blue">
-        <b>👨‍💻 Developer tip:</b> Click a scorecard above (future) to drill into the program's REKT facts, run history, and recent conversion attempts.
+        <b>👨‍💻 Developer tip:</b> Click any scorecard above to drill into REKT facts, dependencies, and run history.
         High-reduction (>80%) + many cache hits = projection working as intended.
+      </div>
+    `;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 🚀 Modernization Lead — visual Kanban (Wave 1/2/3/Queued)
+  // ═══════════════════════════════════════════════════════════════════════
+  _renderLead() {
+    const { applications, waves, services } = this._data;
+
+    // Build waveMap: basename → wave number (from POST'd assignments)
+    const waveMap = {};
+    (waves || []).forEach(w => { waveMap[w.basename || w.programBasename] = w.waveNumber; });
+
+    // Auto-assign defaults for programs not yet placed.
+    //   - full-fidelity programs default to wave 1 (ready to migrate)
+    //   - converted/in-progress → wave 2
+    //   - everything else → 'queued' (blocked / not started)
+    const lanes = { 1: [], 2: [], 3: [], queued: [] };
+    for (const a of applications) {
+      let assigned = waveMap[a.basename];
+      if (assigned == null) {
+        assigned = a.modernizationStatus === 'verified' ? 1
+                 : a.modernizationStatus === 'converted' ? 2
+                 : a.modernizationStatus === 'partial-fallback' ? 2
+                 : 'queued';
+      }
+      const key = (assigned === 1 || assigned === 2 || assigned === 3) ? assigned : 'queued';
+      lanes[key].push(a);
+    }
+
+    // Sort each lane by status (verified first) then LoC ascending (build confidence early).
+    Object.values(lanes).forEach(arr => arr.sort((a, b) => {
+      const rank = s => s === 'verified' ? 0 : s === 'converted' ? 1 : s === 'partial-fallback' ? 2 : s === 'compile-failing' ? 3 : 4;
+      const dr = rank(a.modernizationStatus) - rank(b.modernizationStatus);
+      return dr !== 0 ? dr : a.linesOfCode - b.linesOfCode;
+    }));
+
+    const totalAssigned = (waves || []).length;
+    const totalLoc = applications.reduce((a, x) => a + (x.linesOfCode || 0), 0);
+    const wave1Loc = lanes[1].reduce((a, x) => a + (x.linesOfCode || 0), 0);
+    const readyCount = applications.filter(a => a.modernizationStatus === 'verified').length;
+    const blockedCount = lanes.queued.length;
+
+    return `
+      <div class="vc-section-title">🚀 Modernization Lead — Wave-Based Execution Kanban</div>
+
+      <div class="vc-tile-row">
+        <div class="vc-tile vc-tile-wide">
+          <div class="vc-tile-header">Ready to migrate</div>
+          <div class="vc-big-number" style="color:#10b981;">${readyCount}</div>
+          <div class="vc-tile-sub">programs full-fidelity</div>
+        </div>
+        <div class="vc-tile vc-tile-wide">
+          <div class="vc-tile-header">User wave assignments</div>
+          <div class="vc-big-number" style="color:#3b82f6;">${totalAssigned}</div>
+          <div class="vc-tile-sub">explicit (rest auto-suggested)</div>
+        </div>
+        <div class="vc-tile vc-tile-wide">
+          <div class="vc-tile-header">Wave 1 footprint</div>
+          <div class="vc-big-number">${wave1Loc.toLocaleString()}<span class="vc-unit">LoC</span></div>
+          <div class="vc-tile-sub">${totalLoc > 0 ? Math.round(wave1Loc * 100 / totalLoc) : 0}% of estate</div>
+        </div>
+        <div class="vc-tile vc-tile-wide">
+          <div class="vc-tile-header">Queued / blocked</div>
+          <div class="vc-big-number" style="color:${blockedCount > 0 ? '#ef4444' : '#10b981'};">${blockedCount}</div>
+          <div class="vc-tile-sub">copybook resolution required</div>
+        </div>
+      </div>
+
+      <div class="vc-kanban">
+        ${['1','2','3','queued'].map(k => this._renderKanbanLane(k, lanes[k] || lanes[parseInt(k)] || [])).join('')}
+      </div>
+
+      <div class="vc-callout vc-callout-blue">
+        <b>🚀 Execution playbook:</b> Wave 1 = leaves &amp; full-fidelity (build confidence).
+        Wave 2 = mid-coupling. Wave 3 = orchestrators / SPOFs (migrate LAST to avoid cascading risk).
+        Queued = blocked on copybooks — resolve top blockers in Business Owner view.
+        Click any card's wave button to reassign. All assignments persist in <code>Data/migration-waves.db</code>.
+      </div>
+    `;
+  }
+
+  _renderKanbanLane(key, items) {
+    const meta = {
+      '1':      { title: 'Wave 1 — Foundations',      color: '#10b981', emoji: '🟢', sub: 'leaves · full-fidelity · confidence builders' },
+      '2':      { title: 'Wave 2 — Core',             color: '#3b82f6', emoji: '🔵', sub: 'mid-coupling · proven path' },
+      '3':      { title: 'Wave 3 — Orchestrators',    color: '#8b5cf6', emoji: '🟣', sub: 'high-coupling · SPOFs · migrate LAST' },
+      'queued': { title: 'Queued',                    color: '#64748b', emoji: '⚪', sub: 'blocked on missing deps' },
+    };
+    const m = meta[String(key)];
+    const totalLoc = items.reduce((a, x) => a + (x.linesOfCode || 0), 0);
+    return `
+      <div class="vc-lane" style="border-top:3px solid ${m.color};">
+        <div class="vc-lane-header">
+          <span class="vc-lane-emoji">${m.emoji}</span>
+          <div>
+            <div class="vc-lane-title">${m.title}</div>
+            <div class="vc-lane-sub">${m.sub}</div>
+          </div>
+          <div class="vc-lane-count">${items.length}</div>
+        </div>
+        <div class="vc-lane-meta">${totalLoc.toLocaleString()} LoC</div>
+        <div class="vc-lane-body">
+          ${items.length === 0
+            ? '<div class="vc-lane-empty">no programs</div>'
+            : items.map(a => this._renderKanbanCard(a, key)).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  _renderKanbanCard(a, currentLane) {
+    const statusColor = a.modernizationStatus === 'verified' ? '#10b981'
+                      : a.modernizationStatus === 'partial-fallback' ? '#f59e0b'
+                      : a.modernizationStatus === 'compile-failing' ? '#ef4444'
+                      : a.modernizationStatus === 'converted' ? '#3b82f6'
+                      : '#475569';
+    const moves = ['1','2','3','queued'].filter(k => String(k) !== String(currentLane));
+    return `
+      <div class="vc-kanban-card" style="border-left:3px solid ${statusColor};">
+        <div class="vc-kanban-card-title">${this._esc(a.basename)}</div>
+        <div class="vc-kanban-card-meta">
+          <span><b>${a.linesOfCode.toLocaleString()}</b> LoC</span>
+          <span style="color:${statusColor};">${this._esc(a.modernizationStatus)}</span>
+          <span class="vc-muted">conf ${a.factsConfidence || 0}</span>
+        </div>
+        <div class="vc-kanban-actions">
+          ${moves.map(k => `<button class="vc-kanban-btn" data-program="${this._esc(a.basename)}" data-wave="${k}">→ ${k === 'queued' ? '⏸' : 'W' + k}</button>`).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  _wireLeadInteractions() {
+    this.root.querySelectorAll('.vc-kanban-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const program = btn.dataset.program;
+        const lane = btn.dataset.wave;
+        btn.disabled = true; btn.textContent = '…';
+        try {
+          if (lane === 'queued') {
+            // Remove explicit assignment → falls back to auto-suggestion
+            await fetch(`/api/modernization/waves/${encodeURIComponent(program)}`, { method: 'DELETE' });
+          } else {
+            await fetch(`/api/modernization/waves/${encodeURIComponent(program)}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ waveNumber: parseInt(lane), notes: 'Visual Cockpit Kanban' }),
+            });
+          }
+          // Refresh just the waves data and re-render lane
+          const fresh = await fetch('/api/modernization/waves').then(r => r.json()).catch(() => []);
+          this._data.waves = fresh;
+          this._renderActive();
+        } catch (err) {
+          btn.disabled = false;
+          btn.textContent = '↺';
+          console.error('wave assign failed', err);
+        }
+      });
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // Developer scorecard click-through → side drawer with REKT facts + run history
+  // ═══════════════════════════════════════════════════════════════════════
+  _wireScorecardClicks() {
+    this.root.querySelectorAll('.vc-scorecard[data-program]').forEach(card => {
+      card.addEventListener('click', () => {
+        const basename = card.dataset.program;
+        this._openProgramDrawer(basename);
+      });
+    });
+  }
+
+  async _openProgramDrawer(basename) {
+    const drawer = this.root.querySelector('#vc-drawer');
+    drawer.style.display = 'block';
+    drawer.innerHTML = `<div class="vc-drawer-header">
+      <div><b>${this._esc(basename)}</b> · loading detail…</div>
+      <button class="vc-btn" id="vc-drawer-close">✕</button>
+    </div>`;
+    drawer.querySelector('#vc-drawer-close').addEventListener('click', () => drawer.style.display = 'none');
+    try {
+      const d = await fetch(`/api/modernization/programs/${encodeURIComponent(basename)}`).then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      });
+      drawer.innerHTML = this._renderProgramDrawer(d);
+      drawer.querySelector('#vc-drawer-close').addEventListener('click', () => drawer.style.display = 'none');
+    } catch (err) {
+      drawer.innerHTML = `<div class="vc-drawer-header">
+        <div><b>${this._esc(basename)}</b> · <span style="color:#ef4444;">${this._esc(err.message)}</span></div>
+        <button class="vc-btn" onclick="document.getElementById('vc-drawer').style.display='none'">✕</button>
+      </div>`;
+    }
+  }
+
+  _renderProgramDrawer(d) {
+    const recentPass = d.runHistory.filter(r => r.compileSuccess === true).length;
+    const recentFail = d.runHistory.filter(r => r.compileSuccess === false).length;
+    return `
+      <div class="vc-drawer-header">
+        <div>
+          <div class="vc-drawer-title">📄 ${this._esc(d.basename)}</div>
+          <div class="vc-drawer-sub">${this._esc(d.relativePath)} · ${d.linesOfCode.toLocaleString()} LoC · facts confidence ${d.factsConfidence}/5</div>
+        </div>
+        <button class="vc-btn" id="vc-drawer-close">✕ Close</button>
+      </div>
+
+      <div class="vc-drawer-grid">
+        <div class="vc-drawer-stat"><b>${d.copybooks.length}</b><span>Copybooks</span></div>
+        <div class="vc-drawer-stat"><b>${d.callTargets.length}</b><span>CALL targets</span></div>
+        <div class="vc-drawer-stat"><b>${d.dependencies.length}</b><span>Deps</span></div>
+        <div class="vc-drawer-stat"><b>${d.factsWarnings.length}</b><span>Warnings</span></div>
+        <div class="vc-drawer-stat"><b style="color:#10b981;">${recentPass}</b><span>Pass runs</span></div>
+        <div class="vc-drawer-stat"><b style="color:#ef4444;">${recentFail}</b><span>Fail runs</span></div>
+      </div>
+
+      <div class="vc-drawer-section">
+        <div class="vc-drawer-section-title">📚 Copybooks referenced (${d.copybooks.length})</div>
+        <div class="vc-drawer-chips">
+          ${d.copybooks.length ? d.copybooks.map(c => `<span class="vc-chip">${this._esc(c)}</span>`).join('') : '<span class="vc-muted">none</span>'}
+        </div>
+      </div>
+
+      <div class="vc-drawer-section">
+        <div class="vc-drawer-section-title">🔗 CALL targets (${d.callTargets.length})</div>
+        <div class="vc-drawer-chips">
+          ${d.callTargets.length ? d.callTargets.map(c => `<span class="vc-chip vc-chip-blue">${this._esc(c)}</span>`).join('') : '<span class="vc-muted">none</span>'}
+        </div>
+      </div>
+
+      ${d.factsWarnings.length ? `
+      <div class="vc-drawer-section">
+        <div class="vc-drawer-section-title">⚠ Warnings (${d.factsWarnings.length})</div>
+        <div class="vc-drawer-warnings">
+          ${d.factsWarnings.map(w => `<div class="vc-drawer-warning">${this._esc(w)}</div>`).join('')}
+        </div>
+      </div>` : ''}
+
+      <div class="vc-drawer-section">
+        <div class="vc-drawer-section-title">📜 Run history (${d.runHistory.length})</div>
+        ${d.runHistory.length === 0 ? '<div class="vc-muted">No conversion runs recorded for this program yet.</div>' : `
+          <table class="vc-drawer-table">
+            <thead><tr><th>Run</th><th>Started</th><th>Status</th><th>Compile</th><th>Errors</th><th>Classes</th><th>Fallback</th></tr></thead>
+            <tbody>
+              ${d.runHistory.map(r => `
+                <tr>
+                  <td><b>#${r.runId}</b></td>
+                  <td>${this._esc((r.startedAt || '').replace('T',' ').substring(0,19))}</td>
+                  <td>${this._esc(r.status)}</td>
+                  <td>${r.compileSuccess === true ? '<span style="color:#10b981;">✓ pass</span>'
+                       : r.compileSuccess === false ? '<span style="color:#ef4444;">✗ fail</span>'
+                       : '<span class="vc-muted">—</span>'}</td>
+                  <td>${r.compileErrors ?? '—'}</td>
+                  <td>${r.generatedClasses ?? '—'}</td>
+                  <td>${r.fallbackClasses ?? '—'}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        `}
       </div>
     `;
   }
