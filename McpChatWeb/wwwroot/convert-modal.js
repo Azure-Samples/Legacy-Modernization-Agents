@@ -143,6 +143,13 @@
             </select></div>
 
         </div>
+        <!-- Output isolation banner — explains the per-run output folder contract -->
+        <div style="padding:10px 18px;background:#0c4a3a;border-top:1px solid #047857;font-size:11px;color:#a7f3d0;">
+          <strong style="color:#34d399;">📦 Per-run output isolation</strong>
+          — Every conversion lands in its own immutable folder
+          <code style="background:#022c22;padding:1px 5px;border-radius:3px;color:#86efac;">output/runs/&lt;runId&gt;-&lt;lang&gt;-&lt;slug&gt;-&lt;UTC&gt;/</code>
+          so prior runs are never overwritten. The path is shown when the run starts and is queryable via <code>/api/runs/managed/&lt;runId&gt;</code>.
+        </div>
         <div style="padding:12px 18px;border-top:1px solid #1e293b;display:flex;align-items:center;gap:10px;background:#1e293b22;">
           <button id="cm-preview" class="btn-small" style="background:#1e293b;border:1px solid #334155;">🔍 Preview matches</button>
           <span id="cm-preview-result" style="font-size:11px;color:#94a3b8;flex:1;"></span>
@@ -442,10 +449,24 @@
       const data = await resp.json();
       const skippedNote = data.missingFiles && data.missingFiles.length
         ? ` <span style="color:#fbbf24;">(skipped ${data.missingFiles.length} not on disk)</span>` : '';
+      // Fetch the per-run output folder via the managed-run endpoint so we
+      // can surface it immediately. Falls back gracefully if not available.
+      let outFolderHtml = '';
+      try {
+        const runData = await fetch(`/api/runs/managed/${data.runId}`).then(r => r.json());
+        const folder = runData?.info?.outputFolder;
+        if (folder) {
+          outFolderHtml = `<div style="margin-top:6px;font-size:11px;color:#86efac;">
+            📦 Output folder (immutable): <code style="background:#022c22;padding:1px 5px;border-radius:3px;">${escapeAttr(folder)}</code>
+          </div>`;
+        }
+      } catch { /* tolerated; banner just won't show the folder */ }
+
       out.innerHTML = `✓ Run <code>${data.runId}</code> started — ${data.fileCount} file(s) staged.${skippedNote}
         <button id="cm-stop-run" style="margin-left:10px;background:#7c2d12;border:1px solid #ea580c;color:#fef3c7;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:11px;"
                 onclick="stopConversionRun('${data.runId}')">⏹ Stop run</button>
-        <span style="color:#94a3b8;font-size:11px;"> Watch the Mission Control panel for progress.</span>`;
+        <span style="color:#94a3b8;font-size:11px;"> Watch the Mission Control panel for progress.</span>
+        ${outFolderHtml}`;
       out.style.color = '#10b981';
       // Auto-switch Mission Control to this run so the log panel shows output.
       if (typeof _activeRunId !== 'undefined') window._activeRunId = data.runId;
@@ -536,12 +557,15 @@
       }
       panel.style.display = 'block';
       list.innerHTML = active.map(r =>
-        `<div style="display:flex;align-items:center;gap:8px;padding:3px 0;border-bottom:1px solid #1e293b;">
+        `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid #1e293b;flex-wrap:wrap;">
           <span style="color:#10b981;">🟢</span>
           <code style="color:#e2e8f0;">${escapeAttr(r.name)}</code>
           <span style="color:#64748b;">${r.command} · ${r.targetLanguage} · PID ${r.processId || '?'}</span>
           <button style="margin-left:auto;background:#7c2d12;border:1px solid #ea580c;color:#fef3c7;border-radius:4px;padding:1px 6px;cursor:pointer;font-size:9px;"
                   onclick="stopConversionRun('${r.runId}');setTimeout(refreshJobsPanel,1000)">⏹</button>
+          ${r.outputFolder ? `<div style="flex-basis:100%;font-size:9px;color:#86efac;padding-left:20px;">
+            📦 <code style="background:#022c22;padding:0 4px;border-radius:2px;">${escapeAttr(r.outputFolder)}</code>
+          </div>` : ''}
         </div>`).join('');
     } catch { /* silent */ }
   };

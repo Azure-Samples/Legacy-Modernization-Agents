@@ -81,7 +81,8 @@ public sealed record RunStatusDto(
     DateTime StartedAt,
     DateTime? CompletedAt,
     int? ExitCode,
-    int? ProcessId
+    int? ProcessId,
+    string OutputFolder = ""
 );
 
 // ── File Upload Contracts ────────────────────────────────────────────────────

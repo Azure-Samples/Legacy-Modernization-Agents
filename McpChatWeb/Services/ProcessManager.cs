@@ -21,6 +21,15 @@ public class ManagedRun
     public int? ExitCode { get; set; }
     public int? ProcessId { get; set; }
 
+    /// <summary>
+    /// Immutable, per-run output folder (relative to repo root). Computed
+    /// when the run starts. Every run writes here instead of the shared
+    /// <c>output/java/</c> or <c>output/csharp/</c> so prior runs are never
+    /// overwritten and each run's output is independently inspectable.
+    /// Pattern: <c>output/runs/{runId}-{targetLang}-{slug}-{utcTimestamp}/</c>
+    /// </summary>
+    public string OutputFolder { get; set; } = "";
+
     // Circular buffer for last N lines of output
     private readonly List<string> _logLines = new();
     private readonly object _logLock = new();
@@ -88,6 +97,28 @@ public class ProcessManager : IDisposable
             StartedAt = DateTime.UtcNow
         };
 
+        // ── Per-run immutable output folder ──────────────────────────────
+        // Every conversion writes into its own isolated directory so prior
+        // runs are never overwritten. This is the CORE addressability change:
+        // a Convert click + 2 weeks later you can still inspect exactly what
+        // that run produced. The shared output/java and output/csharp folders
+        // are no longer used for portal runs.
+        var langSlug = targetLanguage.Equals("CSharp", StringComparison.OrdinalIgnoreCase) ? "csharp" : "java";
+        var nameSlug = Slug(run.Name);
+        var utcStamp = run.StartedAt.ToString("yyyyMMddTHHmmssZ");
+        run.OutputFolder = $"output/runs/{run.RunId}-{langSlug}-{nameSlug}-{utcStamp}";
+        var absOutputFolder = Path.Combine(_repoRoot, run.OutputFolder);
+        try { Directory.CreateDirectory(absOutputFolder); }
+        catch (Exception ex)
+        {
+            // If we can't create the folder, surface clearly and bail.
+            run.Status = "failed";
+            run.ExitCode = -1;
+            run.CompletedAt = DateTime.UtcNow;
+            run.AppendLog($"❌ Could not create per-run output folder {absOutputFolder}: {ex.Message}");
+            return run;
+        }
+
         // Build the dotnet command directly instead of going through doctor.sh
         // (doctor.sh is interactive — we bypass it for non-interactive portal use)
         var (executable, arguments) = BuildCommand(command, targetLanguage, speedProfile, sourceFolder);
@@ -111,9 +142,9 @@ public class ProcessManager : IDisposable
         psi.Environment["ENABLE_REKT_CONTEXT"] = "true";
 
         if (targetLanguage.Equals("CSharp", StringComparison.OrdinalIgnoreCase))
-            psi.Environment["CSHARP_OUTPUT_FOLDER"] = "output/csharp";
+            psi.Environment["CSHARP_OUTPUT_FOLDER"] = run.OutputFolder;
         else
-            psi.Environment["JAVA_OUTPUT_FOLDER"] = "output/java";
+            psi.Environment["JAVA_OUTPUT_FOLDER"] = run.OutputFolder;
 
         // Load AI config env files (same ones doctor.sh sources)
         // Order: local first (higher priority), then template for defaults.
@@ -474,5 +505,32 @@ public class ProcessManager : IDisposable
             if (!env.ContainsKey(key) || string.IsNullOrEmpty(env[key]))
                 env[key] = val;
         }
+    }
+
+    /// <summary>
+    /// Filesystem-safe slug from an arbitrary string. Trims to 40 chars,
+    /// keeps alphanumeric + dash, collapses runs, lowercases.
+    /// </summary>
+    private static string Slug(string s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return "run";
+        var sb = new System.Text.StringBuilder();
+        bool lastWasDash = false;
+        foreach (var c in s.ToLowerInvariant())
+        {
+            if (char.IsLetterOrDigit(c))
+            {
+                sb.Append(c);
+                lastWasDash = false;
+            }
+            else if (!lastWasDash && sb.Length > 0)
+            {
+                sb.Append('-');
+                lastWasDash = true;
+            }
+        }
+        var slug = sb.ToString().Trim('-');
+        if (slug.Length > 40) slug = slug.Substring(0, 40).TrimEnd('-');
+        return string.IsNullOrEmpty(slug) ? "run" : slug;
     }
 }

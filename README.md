@@ -259,8 +259,10 @@ See [docs/quick-start.md §Portal](docs/quick-start.md) for the full walkthrough
 
 Per conversion run you get:
 
-- **Generated code** — `output/java/com/example/*/*.java` or `output/csharp/`
-- **Migration report** — `output/java/migration-report.md` (Markdown summary, file mapping, dependency analysis)
+- **Per-run isolated output** — `output/runs/<runId>-<lang>-<slug>-<UTC>/`
+  (every Convert click lands in its own immutable folder so prior runs are never overwritten; queryable via `/api/runs/managed/<runId>`)
+- **Generated code** — `<output-folder>/com/example/*/*.java` or `csharp/`
+- **Migration report** — `<output-folder>/migration-report.md` (Markdown summary, file mapping, dependency analysis)
 - **Run record** — `Data/migration.db` row (runs table)
 - **Structured metrics** — `output/.metrics/<runId>.jsonl` with 5 event types:
   - `projection_metrics` — projection vs raw-rekt decision + token counts + hash
@@ -301,7 +303,10 @@ Legacy-Modernization-Agents/
 ├── source/                    ← Drop COBOL here (.cbl, .cpy, .jcl, .bms)
 ├── output/
 │   ├── rekt/                  ← REKT artifacts (AST, CFG, data, facts.json)
-│   ├── java/   or csharp/     ← Generated modern code
+│   ├── runs/                  ← Per-run isolated conversion output (immutable)
+│   │   └── <runId>-<lang>-<slug>-<UTC>/
+│   │       └── com/example/...
+│   ├── java/   or csharp/     ← Legacy shared folder (CLI direct invocations)
 │   └── .metrics/              ← Per-run JSONL telemetry stream
 ├── Data/
 │   ├── migration.db           ← Run history (SQLite)

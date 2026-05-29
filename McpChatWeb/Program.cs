@@ -8365,7 +8365,7 @@ app.MapGet("/api/runs/managed", (McpChatWeb.Services.ProcessManager pm) =>
 {
 	var runs = pm.GetAllRuns().Select(r => new McpChatWeb.Models.RunStatusDto(
 		r.RunId, r.Name, r.Command, r.TargetLanguage, r.SpeedProfile,
-		r.Status, r.StartedAt, r.CompletedAt, r.ExitCode, r.ProcessId));
+		r.Status, r.StartedAt, r.CompletedAt, r.ExitCode, r.ProcessId, r.OutputFolder));
 	return Results.Ok(runs);
 });
 
@@ -8378,7 +8378,7 @@ app.MapGet("/api/runs/managed/{runId}", (string runId, McpChatWeb.Services.Proce
 	{
 		info = new McpChatWeb.Models.RunStatusDto(
 			run.RunId, run.Name, run.Command, run.TargetLanguage, run.SpeedProfile,
-			run.Status, run.StartedAt, run.CompletedAt, run.ExitCode, run.ProcessId),
+			run.Status, run.StartedAt, run.CompletedAt, run.ExitCode, run.ProcessId, run.OutputFolder),
 		log = run.GetLogLines(200)
 	});
 });

@@ -467,3 +467,6 @@ Data/benchmark.db
 # PR6 projection-block cache (per-developer / per-CI ephemeral)
 Data/projection-cache.db
 Data/projection-cache.db-*
+
+# Portal per-run conversion output (immutable, per-run isolated)
+output/runs/
