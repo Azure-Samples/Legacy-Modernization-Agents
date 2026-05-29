@@ -43,7 +43,7 @@ class ModernizationIntelligenceView {
         <div class="mi-subnav">
           <button class="mi-subtab mi-subtab-active" data-sub="dashboard">📊 Modernization Dashboard</button>
           <button class="mi-subtab" data-sub="applications">📚 Application Explorer</button>
-          <button class="mi-subtab mi-subtab-disabled" disabled title="Coming in Phase-1 PR-P2">⏱ Runtime &amp; Conversion Intelligence</button>
+          <button class="mi-subtab" data-sub="runtime">⏱ Runtime &amp; Conversion Intelligence</button>
           <button class="mi-subtab mi-subtab-disabled" disabled title="Coming in Phase-1 PR-P3">🕸 Dependency Topology</button>
           <button class="mi-subtab mi-subtab-disabled" disabled title="Coming in Phase-1 PR-P3">🌊 Semantic Flow Explorer</button>
         </div>
@@ -77,6 +77,11 @@ class ModernizationIntelligenceView {
       } else if (this._activeSubview === 'applications') {
         const data = await fetch('/api/modernization/applications').then(r => r.json());
         body.innerHTML = this._renderApplications(data);
+      } else if (this._activeSubview === 'runtime') {
+        const runs = await fetch('/api/modernization/runs?limit=50').then(r => r.json());
+        body.innerHTML = this._renderRuntimeShell(runs);
+        // Auto-select most recent run
+        if (runs.length > 0) await this._loadRunTimeline(runs[0].runId);
       }
     } catch (err) {
       body.innerHTML = `<div class="mi-error">Failed to load: ${this._escape(err.message)}</div>`;
@@ -290,6 +295,153 @@ class ModernizationIntelligenceView {
       'partial-fallback': '⚠ partial (fallback)',
       'compile-failing': '❌ compile failing',
     })[s] || s;
+  }
+
+  // ────────────────────────────────────────────────────────────────────
+  // Runtime & Conversion Intelligence renderer (Phase-1 PR-P2)
+  // ────────────────────────────────────────────────────────────────────
+  _renderRuntimeShell(runs) {
+    if (!runs || runs.length === 0) {
+      return `<div class="mi-empty">No runs with telemetry yet.<br><br>Run a conversion (<code>./doctor.sh convert-only --program X</code>) and the timeline will populate from <code>output/.metrics/&lt;runId&gt;.jsonl</code>.</div>`;
+    }
+    const runRows = runs.map(r => {
+      const hitRate = r.cacheTotal > 0 ? `${Math.round(r.cacheHits * 100 / r.cacheTotal)}%` : '—';
+      const llmOk = r.llmCallCount > 0 ? `${r.llmSuccess}/${r.llmCallCount}` : '—';
+      return `<tr data-run="${this._escape(r.runId)}" class="mi-run-row">
+        <td><b>#${this._escape(r.runId)}</b></td>
+        <td>${r.eventCount}</td>
+        <td>${llmOk}</td>
+        <td>${r.projectionEventCount}</td>
+        <td>${hitRate}</td>
+        <td class="mi-muted">${this._escape((r.firstEventTs || '').substring(0,19))}</td>
+      </tr>`;
+    }).join('');
+
+    return `
+      <div class="mi-runtime-layout">
+        <div class="mi-card mi-runs-panel">
+          <h3>Recent runs</h3>
+          <table class="mi-table mi-table-dense mi-runs-table">
+            <thead><tr><th>Run</th><th>Events</th><th>LLM ok</th><th>Proj</th><th>Cache</th><th>Time (UTC)</th></tr></thead>
+            <tbody>${runRows}</tbody>
+          </table>
+        </div>
+        <div id="mi-timeline-panel" class="mi-timeline-panel">
+          <div class="mi-loading">Select a run on the left.</div>
+        </div>
+      </div>
+    `;
+  }
+
+  async _loadRunTimeline(runId) {
+    // Highlight selected row
+    this.root.querySelectorAll('.mi-run-row').forEach(tr => {
+      tr.classList.toggle('mi-run-row-active', tr.dataset.run === runId);
+      tr.onclick = () => this._loadRunTimeline(tr.dataset.run);
+    });
+    const panel = this.root.querySelector('#mi-timeline-panel');
+    panel.innerHTML = '<div class="mi-loading">Loading timeline…</div>';
+    try {
+      const t = await fetch(`/api/modernization/runs/${encodeURIComponent(runId)}/timeline`).then(r => r.json());
+      panel.innerHTML = this._renderTimeline(t);
+    } catch (err) {
+      panel.innerHTML = `<div class="mi-error">Failed: ${this._escape(err.message)}</div>`;
+    }
+  }
+
+  _renderTimeline(t) {
+    if (t.note) {
+      return `<div class="mi-card"><h3>Run #${this._escape(t.runId)}</h3><div class="mi-empty">${this._escape(t.note)}</div></div>`;
+    }
+    const totalSec = (t.totalDurationMs / 1000).toFixed(1);
+    const chips = Object.entries(t.eventCounts || {}).map(([ev, n]) => {
+      return `<span class="mi-chip mi-chip-${this._eventColor(ev)}">${this._escape(ev)} <b>${n}</b></span>`;
+    }).join('');
+
+    // Build a horizontal timeline-bar visualisation.
+    const total = Math.max(t.totalDurationMs, 1);
+    const bars = t.events.map((e, i) => {
+      const leftPct = (e.offsetMs * 100 / total).toFixed(1);
+      const duration = (e.durationMs || 0);
+      const widthPct = duration > 0 ? Math.max(0.5, (duration * 100 / total)).toFixed(1) : 0.4;
+      const color = this._eventColor(e.event);
+      const tipParts = [`+${e.offsetMs}ms`, e.event];
+      if (e.agent) tipParts.push(`agent=${e.agent}`);
+      if (e.outcome) tipParts.push(`outcome=${e.outcome}`);
+      if (e.durationMs) tipParts.push(`${e.durationMs}ms`);
+      if (e.completionTokens) tipParts.push(`${e.completionTokens}tok`);
+      if (e.projectionMode) tipParts.push(`proj=${e.projectionMode}`);
+      if (e.decision) tipParts.push(`cache=${e.decision}`);
+      return `<div class="mi-tl-bar mi-tl-bar-${color}" data-idx="${i}"
+                   style="left:${leftPct}%; width:${widthPct}%;"
+                   title="${this._escape(tipParts.join(' · '))}"></div>`;
+    }).join('');
+
+    // Tabular details below the timeline
+    const rows = t.events.map(e => {
+      const cells = [];
+      cells.push(`<td class="num">+${e.offsetMs}ms</td>`);
+      cells.push(`<td>${this._eventBadge(e.event)}</td>`);
+      cells.push(`<td>${this._escape(e.agent || '')}</td>`);
+      const detail = this._timelineEventDetail(e);
+      cells.push(`<td>${detail}</td>`);
+      return `<tr>${cells.join('')}</tr>`;
+    }).join('');
+
+    return `
+      <div class="mi-card">
+        <h3>Run #${this._escape(t.runId)} · ${totalSec}s · ${t.events.length} events</h3>
+        <div class="mi-tl-chips">${chips}</div>
+        <div class="mi-tl-track">${bars}</div>
+        <div class="mi-tl-axis">
+          <span>0</span><span>¼</span><span>½</span><span>¾</span><span>${totalSec}s</span>
+        </div>
+        <table class="mi-table mi-table-dense" style="margin-top:14px;">
+          <thead><tr><th style="width:80px;">Offset</th><th style="width:140px;">Event</th><th style="width:200px;">Agent</th><th>Detail</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  _timelineEventDetail(e) {
+    const parts = [];
+    if (e.outcome) parts.push(this._outcomeBadge(e.outcome));
+    if (e.projectionMode) parts.push(`<span class="mi-mini">proj=<b>${this._escape(e.projectionMode)}</b></span>`);
+    if (e.decision) parts.push(this._cacheBadge(e.decision));
+    if (e.durationMs) parts.push(`<span class="mi-mini">${e.durationMs}ms stream</span>`);
+    if (e.completionTokens) parts.push(`<span class="mi-mini">${e.completionTokens} tokens</span>`);
+    if (e.projectionTokens) parts.push(`<span class="mi-mini">${e.projectionTokens} proj-tok</span>`);
+    if (e.rawRektTokens) parts.push(`<span class="mi-mini">${e.rawRektTokens} rekt-tok</span>`);
+    if (e.compileSuccess === true) parts.push('<span class="mi-ok">✅ compile</span>');
+    if (e.compileSuccess === false) parts.push('<span class="mi-bad">❌ compile</span>');
+    if (e.braceImbalance !== null && e.braceImbalance !== undefined) {
+      const cls = e.braceImbalance === 0 ? 'mi-ok' : 'mi-bad';
+      parts.push(`<span class="${cls}">braces ${e.braceImbalance}</span>`);
+    }
+    if (e.file) parts.push(`<code class="mi-path">${this._escape(this._shortFile(e.file))}</code>`);
+    return parts.join(' &middot; ') || '<span class="mi-muted">—</span>';
+  }
+
+  _shortFile(p) {
+    if (!p) return '';
+    const parts = p.split('/');
+    return parts.length > 2 ? `…/${parts.slice(-2).join('/')}` : p;
+  }
+
+  _eventColor(ev) {
+    return ({
+      'llm_call': 'purple',
+      'projection_metrics': 'blue',
+      'cache_event': 'green',
+      'quality_metrics': 'yellow',
+      'reassembly_metrics': 'orange',
+      'continuation_event': 'red',
+    })[ev] || 'gray';
+  }
+
+  _eventBadge(ev) {
+    return `<span class="mi-chip mi-chip-${this._eventColor(ev)}">${this._escape(ev)}</span>`;
   }
 
   _outcomeBadge(o) {

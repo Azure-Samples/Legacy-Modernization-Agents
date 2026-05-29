@@ -297,6 +297,157 @@ public sealed class ModernizationIntelligenceService
     }
 
     // ─────────────────────────────────────────────────────────────────────
+    // Runtime & Conversion Intelligence (PR-Portal-P2)
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// All runs that have at least one metric event, ordered most-recent first.
+    /// Used by the runs picker in Runtime & Conversion Intelligence.
+    /// </summary>
+    public IEnumerable<RunSummaryRow> GetRuns(int limit = 50)
+    {
+        var dbPath = Path.Combine(_repoRoot, "Data", "benchmark.db");
+        if (!File.Exists(dbPath)) yield break;
+        SqliteConnection? conn = null;
+        try
+        {
+            conn = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly;");
+            conn.Open();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug("GetRuns open failed: {Msg}", ex.Message);
+            yield break;
+        }
+
+        using (conn)
+        {
+            using var c = conn.CreateCommand();
+            c.CommandText = @"
+                SELECT run_id,
+                       MIN(ts) AS first_ts,
+                       MAX(ts) AS last_ts,
+                       COUNT(*) AS event_count,
+                       SUM(CASE WHEN event='llm_call' THEN 1 ELSE 0 END) AS llm_calls,
+                       SUM(CASE WHEN event='projection_metrics' THEN 1 ELSE 0 END) AS projection_events,
+                       SUM(CASE WHEN event='cache_event'
+                                 AND json_extract(payload_json,'$.decision')='hit'
+                                THEN 1 ELSE 0 END) AS cache_hits,
+                       SUM(CASE WHEN event='cache_event' THEN 1 ELSE 0 END) AS cache_total,
+                       SUM(CASE WHEN event='llm_call'
+                                 AND json_extract(payload_json,'$.outcome')='success'
+                                THEN 1 ELSE 0 END) AS llm_success,
+                       SUM(CASE WHEN event='llm_call'
+                                 AND json_extract(payload_json,'$.outcome')!='success'
+                                THEN 1 ELSE 0 END) AS llm_fail
+                  FROM metric_events
+                 WHERE run_id != 'unknown'
+                 GROUP BY run_id
+                 ORDER BY CAST(run_id AS INTEGER) DESC
+                 LIMIT $lim";
+            c.Parameters.AddWithValue("$lim", limit);
+            using var r = c.ExecuteReader();
+            while (r.Read())
+            {
+                yield return new RunSummaryRow(
+                    RunId: r.GetString(0),
+                    FirstEventTs: r.IsDBNull(1) ? "" : r.GetString(1),
+                    LastEventTs: r.IsDBNull(2) ? "" : r.GetString(2),
+                    EventCount: r.GetInt32(3),
+                    LlmCallCount: r.IsDBNull(4) ? 0 : r.GetInt32(4),
+                    ProjectionEventCount: r.IsDBNull(5) ? 0 : r.GetInt32(5),
+                    CacheHits: r.IsDBNull(6) ? 0 : r.GetInt32(6),
+                    CacheTotal: r.IsDBNull(7) ? 0 : r.GetInt32(7),
+                    LlmSuccess: r.IsDBNull(8) ? 0 : r.GetInt32(8),
+                    LlmFail: r.IsDBNull(9) ? 0 : r.GetInt32(9)
+                );
+            }
+        }
+    }
+
+    /// <summary>
+    /// Full per-run event timeline. Reads <c>output/.metrics/{runId}.jsonl</c>
+    /// directly (newer/safer than benchmark.db which may lag the ingester).
+    /// Each event is returned with timing offset from the first event so the
+    /// frontend can render a Gantt/timeline visualisation.
+    /// </summary>
+    public RunTimeline GetRunTimeline(string runId)
+    {
+        var timeline = new RunTimeline { RunId = runId };
+        var jsonl = Path.Combine(_repoRoot, "output", ".metrics", $"{runId}.jsonl");
+        if (!File.Exists(jsonl))
+        {
+            timeline.Note = $"No timeline available — {jsonl} does not exist";
+            return timeline;
+        }
+
+        DateTime? first = null;
+        try
+        {
+            foreach (var line in File.ReadAllLines(jsonl))
+            {
+                var trimmed = line.Trim();
+                if (trimmed.Length == 0) continue;
+                JsonDocument doc;
+                try { doc = JsonDocument.Parse(trimmed); }
+                catch { continue; }
+
+                using (doc)
+                {
+                    var root = doc.RootElement;
+                    var ts = root.TryGetProperty("ts", out var tsEl) ? tsEl.GetString() : null;
+                    DateTime? tsParsed = null;
+                    if (DateTime.TryParse(ts, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var parsed))
+                        tsParsed = parsed;
+                    if (first == null && tsParsed != null) first = tsParsed;
+                    var offsetMs = (tsParsed != null && first != null)
+                        ? (long)(tsParsed.Value - first.Value).TotalMilliseconds
+                        : 0;
+
+                    timeline.Events.Add(new TimelineEvent(
+                        Timestamp: ts ?? "",
+                        OffsetMs: offsetMs,
+                        Event: root.TryGetProperty("event", out var ev) ? ev.GetString() ?? "?" : "?",
+                        Agent: root.TryGetProperty("agent", out var ag) ? ag.GetString() : null,
+                        File: root.TryGetProperty("file", out var fl) ? fl.GetString() : null,
+                        Outcome: root.TryGetProperty("outcome", out var oc) ? oc.GetString() : null,
+                        ProjectionMode: root.TryGetProperty("projectionMode", out var pm) ? pm.GetString() : null,
+                        Decision: root.TryGetProperty("decision", out var dc) ? dc.GetString() : null,
+                        DurationMs: root.TryGetProperty("streamDurationMs", out var sd) && sd.ValueKind == JsonValueKind.Number ? sd.GetInt64() : (long?)null,
+                        CompletionTokens: root.TryGetProperty("completionTokens", out var ct) && ct.ValueKind == JsonValueKind.Number ? ct.GetInt32() : (int?)null,
+                        ProjectionTokens: root.TryGetProperty("projectionTokens", out var pt) && pt.ValueKind == JsonValueKind.Number ? pt.GetInt32() : (int?)null,
+                        RawRektTokens: root.TryGetProperty("rawRektTokens", out var rt) && rt.ValueKind == JsonValueKind.Number ? rt.GetInt32() : (int?)null,
+                        CompileSuccess: root.TryGetProperty("compileSuccess", out var cs) && cs.ValueKind == JsonValueKind.True ? true :
+                                        root.TryGetProperty("compileSuccess", out var cs2) && cs2.ValueKind == JsonValueKind.False ? false : (bool?)null,
+                        BraceImbalance: root.TryGetProperty("braceImbalance", out var bi) && bi.ValueKind == JsonValueKind.Number ? bi.GetInt32() : (int?)null,
+                        PayloadJson: trimmed
+                    ));
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            timeline.Note = $"Timeline read failed: {ex.Message}";
+            return timeline;
+        }
+
+        if (timeline.Events.Count > 0)
+        {
+            var last = timeline.Events.Last().OffsetMs;
+            timeline.TotalDurationMs = last;
+            timeline.FirstEventTs = timeline.Events.First().Timestamp;
+            timeline.LastEventTs = timeline.Events.Last().Timestamp;
+        }
+
+        // Sub-rollups for chips at the top of the timeline view
+        foreach (var e in timeline.Events)
+        {
+            timeline.EventCounts[e.Event] = timeline.EventCounts.GetValueOrDefault(e.Event) + 1;
+        }
+        return timeline;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
     // Helpers
     // ─────────────────────────────────────────────────────────────────────
 
@@ -487,3 +638,45 @@ public record QualitySummaryRow(
     int FallbackClasses,
     int InjectAnnotations,
     string Timestamp);
+
+// Runtime & Conversion Intelligence DTOs
+
+public record RunSummaryRow(
+    string RunId,
+    string FirstEventTs,
+    string LastEventTs,
+    int EventCount,
+    int LlmCallCount,
+    int ProjectionEventCount,
+    int CacheHits,
+    int CacheTotal,
+    int LlmSuccess,
+    int LlmFail);
+
+public class RunTimeline
+{
+    public string RunId { get; set; } = "";
+    public string FirstEventTs { get; set; } = "";
+    public string LastEventTs { get; set; } = "";
+    public long TotalDurationMs { get; set; }
+    public List<TimelineEvent> Events { get; } = new();
+    public Dictionary<string, int> EventCounts { get; } = new();
+    public string? Note { get; set; }
+}
+
+public record TimelineEvent(
+    string Timestamp,
+    long OffsetMs,
+    string Event,
+    string? Agent,
+    string? File,
+    string? Outcome,
+    string? ProjectionMode,
+    string? Decision,
+    long? DurationMs,
+    int? CompletionTokens,
+    int? ProjectionTokens,
+    int? RawRektTokens,
+    bool? CompileSuccess,
+    int? BraceImbalance,
+    string PayloadJson);

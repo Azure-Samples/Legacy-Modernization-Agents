@@ -9005,6 +9005,15 @@ app.MapGet("/api/modernization/dashboard",
     (McpChatWeb.Services.ModernizationIntelligenceService svc) =>
         Results.Ok(svc.GetDashboard()));
 
+// PR Portal-P2: Runtime & Conversion Intelligence
+app.MapGet("/api/modernization/runs",
+    (McpChatWeb.Services.ModernizationIntelligenceService svc, int? limit) =>
+        Results.Ok(svc.GetRuns(limit ?? 50).ToList()));
+
+app.MapGet("/api/modernization/runs/{runId}/timeline",
+    (string runId, McpChatWeb.Services.ModernizationIntelligenceService svc) =>
+        Results.Ok(svc.GetRunTimeline(runId)));
+
 app.Run();
 
 // Expand {{include path}} directives in prompt markdown. Mirrors PromptLoader.ExpandIncludes

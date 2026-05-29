@@ -8211,3 +8211,52 @@ main.three-panel-layout {
   font-size: 11px; color: #64748b;
 }
 .mi-source code { color: #94a3b8; }
+
+/* Runtime & Conversion Intelligence (Phase-1 PR-P2) */
+.mi-runtime-layout {
+  display: grid; grid-template-columns: 360px 1fr; gap: 12px;
+  min-height: 500px;
+}
+.mi-runs-panel { max-height: 700px; overflow-y: auto; }
+.mi-runs-table tbody tr { cursor: pointer; }
+.mi-runs-table tbody tr:hover { background: #1e293b; }
+.mi-run-row-active { background: #1e3a5f !important; }
+
+.mi-timeline-panel { min-width: 0; }
+
+.mi-tl-chips { margin: 8px 0 12px; display: flex; flex-wrap: wrap; gap: 6px; }
+.mi-chip {
+  display: inline-block; padding: 2px 8px; border-radius: 10px;
+  font-size: 11px; background: #1e293b; color: #cbd5e1;
+}
+.mi-chip-blue   { background: #1e3a5f; color: #93c5fd; }
+.mi-chip-purple { background: #4c1d95; color: #c4b5fd; }
+.mi-chip-green  { background: #14532d; color: #86efac; }
+.mi-chip-yellow { background: #78350f; color: #fcd34d; }
+.mi-chip-orange { background: #7c2d12; color: #fdba74; }
+.mi-chip-red    { background: #7f1d1d; color: #fca5a5; }
+.mi-chip-gray   { background: #1e293b; color: #94a3b8; }
+
+.mi-tl-track {
+  position: relative; height: 32px; background: #0c1424;
+  border: 1px solid #1e293b; border-radius: 4px; margin-top: 4px;
+}
+.mi-tl-bar {
+  position: absolute; top: 4px; height: 24px; min-width: 3px;
+  background: #475569; border-radius: 2px;
+  border: 1px solid rgba(255,255,255,0.1);
+  transition: filter 0.15s;
+}
+.mi-tl-bar:hover { filter: brightness(1.4); }
+.mi-tl-bar-blue   { background: #3b82f6; }
+.mi-tl-bar-purple { background: #8b5cf6; }
+.mi-tl-bar-green  { background: #10b981; }
+.mi-tl-bar-yellow { background: #f59e0b; }
+.mi-tl-bar-orange { background: #fb923c; }
+.mi-tl-bar-red    { background: #ef4444; }
+
+.mi-tl-axis {
+  display: flex; justify-content: space-between; padding: 4px 2px 0;
+  font-size: 10px; color: #64748b;
+}
+.mi-mini { font-size: 11px; color: #cbd5e1; }
