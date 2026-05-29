@@ -9014,6 +9014,12 @@ app.MapGet("/api/modernization/runs/{runId}/timeline",
     (string runId, McpChatWeb.Services.ModernizationIntelligenceService svc) =>
         Results.Ok(svc.GetRunTimeline(runId)));
 
+// PR Portal-P3: Dependency Topology (semantic overlay on existing Neo4j graph).
+// Frontend cross-references this with /api/graph/rekt/services for nodes+edges.
+app.MapGet("/api/modernization/topology",
+    (McpChatWeb.Services.ModernizationIntelligenceService svc) =>
+        Results.Ok(svc.GetTopology()));
+
 app.Run();
 
 // Expand {{include path}} directives in prompt markdown. Mirrors PromptLoader.ExpandIncludes

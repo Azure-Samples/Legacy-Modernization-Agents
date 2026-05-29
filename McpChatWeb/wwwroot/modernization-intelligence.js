@@ -44,8 +44,8 @@ class ModernizationIntelligenceView {
           <button class="mi-subtab mi-subtab-active" data-sub="dashboard">📊 Modernization Dashboard</button>
           <button class="mi-subtab" data-sub="applications">📚 Application Explorer</button>
           <button class="mi-subtab" data-sub="runtime">⏱ Runtime &amp; Conversion Intelligence</button>
-          <button class="mi-subtab mi-subtab-disabled" disabled title="Coming in Phase-1 PR-P3">🕸 Dependency Topology</button>
-          <button class="mi-subtab mi-subtab-disabled" disabled title="Coming in Phase-1 PR-P3">🌊 Semantic Flow Explorer</button>
+          <button class="mi-subtab" data-sub="topology">🕸 Dependency Topology</button>
+          <button class="mi-subtab mi-subtab-disabled" disabled title="Coming in Phase-1 PR-P3 follow-up">🌊 Semantic Flow Explorer</button>
         </div>
         <div id="mi-body" class="mi-body"></div>
       </div>
@@ -82,6 +82,13 @@ class ModernizationIntelligenceView {
         body.innerHTML = this._renderRuntimeShell(runs);
         // Auto-select most recent run
         if (runs.length > 0) await this._loadRunTimeline(runs[0].runId);
+      } else if (this._activeSubview === 'topology') {
+        const [topology, services] = await Promise.all([
+          fetch('/api/modernization/topology').then(r => r.json()),
+          fetch('/api/graph/rekt/services').then(r => r.json()).catch(() => ({ nodes: [], edges: [] })),
+        ]);
+        body.innerHTML = this._renderTopology(topology, services);
+        this._wireTopologyInteractions(topology, services);
       }
     } catch (err) {
       body.innerHTML = `<div class="mi-error">Failed to load: ${this._escape(err.message)}</div>`;
@@ -442,6 +449,201 @@ class ModernizationIntelligenceView {
 
   _eventBadge(ev) {
     return `<span class="mi-chip mi-chip-${this._eventColor(ev)}">${this._escape(ev)}</span>`;
+  }
+
+  // ────────────────────────────────────────────────────────────────────
+  // Dependency Topology renderer (Phase-1 PR-P3)
+  // ────────────────────────────────────────────────────────────────────
+  _renderTopology(topology, services) {
+    if (!topology || !topology.nodes || topology.nodes.length === 0) {
+      return `<div class="mi-empty">No topology data available. Run <code>./doctor.sh rekt-full</code> to populate the graph.</div>`;
+    }
+
+    // Build dependency indexes from services edges (CALL type).
+    const edges = (services && services.edges) || [];
+    const upstream = {};   // who calls X (basename → [caller])
+    const downstream = {}; // who X calls (basename → [callee])
+    for (const e of edges) {
+      const s = e.source, t = e.target;
+      if (!s || !t) continue;
+      (downstream[s] = downstream[s] || []).push({ target: t, type: e.type });
+      (upstream[t] = upstream[t] || []).push({ source: s, type: e.type });
+    }
+
+    // Index modernization nodes by basename for fast lookup.
+    const miByBasename = {};
+    for (const n of topology.nodes) miByBasename[n.id] = n;
+
+    // Build a unified inventory: merge topology nodes with services nodes
+    // (services may include programs not in source/ that REKT discovered via
+    // CALL targets — keep them so the impact analysis is complete).
+    const allIds = new Set([
+      ...topology.nodes.map(n => n.id),
+      ...(services?.nodes || []).map(n => n.id),
+    ]);
+
+    const items = [];
+    for (const id of allIds) {
+      const mi = miByBasename[id];
+      const svc = (services?.nodes || []).find(n => n.id === id);
+      const up = (upstream[id] || []).length;
+      const down = (downstream[id] || []).length;
+      items.push({
+        id,
+        loc: mi?.linesOfCode || svc?.lineCount || 0,
+        hasFacts: mi?.hasFacts || false,
+        status: mi?.modernizationStatus || 'not-in-source',
+        compileSuccess: mi?.compileSuccess,
+        cacheHits: mi?.projectionCacheHits || 0,
+        latestRunId: mi?.latestRunId,
+        upstreamCount: up,
+        downstreamCount: down,
+        impactScore: up + down,
+      });
+    }
+    // Sort by impact (most connected first) for triage value.
+    items.sort((a, b) => b.impactScore - a.impactScore || b.loc - a.loc);
+
+    const verified = items.filter(x => x.compileSuccess === true).length;
+    const facts = items.filter(x => x.hasFacts).length;
+    const totalEdges = edges.length;
+
+    const kpiRow = `
+      <div class="mi-kpi-row">
+        <div class="mi-kpi"><div class="mi-kpi-value">${items.length}</div><div class="mi-kpi-label">Programs in topology</div><div class="mi-kpi-sub">union of source/ + REKT graph</div></div>
+        <div class="mi-kpi"><div class="mi-kpi-value">${totalEdges}</div><div class="mi-kpi-label">CALL edges</div><div class="mi-kpi-sub">from Neo4j services graph</div></div>
+        <div class="mi-kpi"><div class="mi-kpi-value">${facts}</div><div class="mi-kpi-label">REKT-ready</div><div class="mi-kpi-sub">have facts.json</div></div>
+        <div class="mi-kpi"><div class="mi-kpi-value">${verified}</div><div class="mi-kpi-label">Compile-verified</div><div class="mi-kpi-sub">passed quality gate</div></div>
+      </div>
+    `;
+
+    const rows = items.slice(0, 200).map(x => {
+      const statusBadge = `<span class="mi-status mi-status-${x.status}">${this._statusLabel(x.status)}</span>`;
+      const factsCell = x.hasFacts ? '<span class="mi-ok">✓</span>' : '<span class="mi-muted">—</span>';
+      const compileCell = x.compileSuccess === true ? '<span class="mi-ok">✅</span>'
+        : x.compileSuccess === false ? '<span class="mi-bad">❌</span>' : '<span class="mi-muted">—</span>';
+      return `<tr class="mi-topo-row" data-id="${this._escape(x.id)}">
+        <td><b>${this._escape(x.id)}</b></td>
+        <td class="num">${x.loc.toLocaleString()}</td>
+        <td class="num">${x.upstreamCount}</td>
+        <td class="num">${x.downstreamCount}</td>
+        <td class="num">${x.impactScore}</td>
+        <td>${factsCell}</td>
+        <td>${compileCell}</td>
+        <td class="num">${x.cacheHits}</td>
+        <td>${statusBadge}</td>
+      </tr>`;
+    }).join('');
+
+    return `
+      ${kpiRow}
+      <div class="mi-topology-layout">
+        <div class="mi-card mi-topo-list">
+          <h3>Programs by modernization-impact score</h3>
+          <div class="mi-muted" style="font-size:11px; margin-bottom:8px;">
+            impact = upstream callers + downstream callees. Click a row for migration impact analysis.
+          </div>
+          <table class="mi-table mi-table-dense">
+            <thead>
+              <tr>
+                <th>Program</th>
+                <th>LoC</th>
+                <th title="Programs that CALL this one">↑ Callers</th>
+                <th title="Programs CALLed by this one">↓ Callees</th>
+                <th>Impact</th>
+                <th>Facts</th>
+                <th>Compile</th>
+                <th>Cache</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+        <div id="mi-topo-detail" class="mi-card mi-topo-detail">
+          <div class="mi-empty">Select a program on the left to see its dependency impact.</div>
+        </div>
+      </div>
+    `;
+  }
+
+  _wireTopologyInteractions(topology, services) {
+    const edges = (services && services.edges) || [];
+    const miByBasename = {};
+    for (const n of topology.nodes) miByBasename[n.id] = n;
+
+    const buildClosure = (id, direction, depth = 4) => {
+      const visited = new Set();
+      const out = [];
+      const traverse = (cur, hops) => {
+        if (visited.has(cur) || hops > depth) return;
+        visited.add(cur);
+        const neighbours = direction === 'upstream'
+          ? edges.filter(e => e.target === cur).map(e => e.source)
+          : edges.filter(e => e.source === cur).map(e => e.target);
+        for (const n of neighbours) {
+          if (!visited.has(n)) out.push({ id: n, hops });
+          traverse(n, hops + 1);
+        }
+      };
+      traverse(id, 1);
+      return out;
+    };
+
+    this.root.querySelectorAll('.mi-topo-row').forEach(tr => {
+      tr.onclick = () => {
+        const id = tr.dataset.id;
+        this.root.querySelectorAll('.mi-topo-row').forEach(r =>
+          r.classList.toggle('mi-topo-row-active', r.dataset.id === id));
+        const detail = this.root.querySelector('#mi-topo-detail');
+        const mi = miByBasename[id];
+        const callers = buildClosure(id, 'upstream');
+        const callees = buildClosure(id, 'downstream');
+
+        const callerRows = callers.length === 0
+          ? '<tr><td colspan="3" class="mi-muted">no upstream callers</td></tr>'
+          : callers.map(c => {
+            const cmi = miByBasename[c.id];
+            const stat = cmi ? `<span class="mi-status mi-status-${cmi.modernizationStatus}">${this._statusLabel(cmi.modernizationStatus)}</span>` : '<span class="mi-muted">not-in-source</span>';
+            return `<tr><td><code>${this._escape(c.id)}</code></td><td class="num">${c.hops}</td><td>${stat}</td></tr>`;
+          }).join('');
+
+        const calleeRows = callees.length === 0
+          ? '<tr><td colspan="3" class="mi-muted">no downstream callees</td></tr>'
+          : callees.map(c => {
+            const cmi = miByBasename[c.id];
+            const stat = cmi ? `<span class="mi-status mi-status-${cmi.modernizationStatus}">${this._statusLabel(cmi.modernizationStatus)}</span>` : '<span class="mi-muted">not-in-source</span>';
+            return `<tr><td><code>${this._escape(c.id)}</code></td><td class="num">${c.hops}</td><td>${stat}</td></tr>`;
+          }).join('');
+
+        detail.innerHTML = `
+          <h3>${this._escape(id)} — migration impact</h3>
+          ${mi ? `<div style="margin-bottom:12px;">
+            <span class="mi-mini">LoC: <b>${mi.linesOfCode.toLocaleString()}</b></span> &middot;
+            <span class="mi-mini">Facts: <b>${mi.hasFacts ? '✓' : '—'}</b></span> &middot;
+            <span class="mi-mini">Cache hits: <b>${mi.projectionCacheHits}</b></span> &middot;
+            <span class="mi-status mi-status-${mi.modernizationStatus}">${this._statusLabel(mi.modernizationStatus)}</span>
+          </div>` : '<div class="mi-muted" style="margin-bottom:12px;">Not present in source/ — discovered as a CALL target.</div>'}
+
+          <h4 style="color:#60a5fa; margin:12px 0 6px; font-size:12px; text-transform:uppercase; letter-spacing:0.5px;">↑ Upstream callers (transitive, max depth 4) — ${callers.length}</h4>
+          <table class="mi-table mi-table-dense">
+            <thead><tr><th>Caller</th><th>Hops</th><th>Status</th></tr></thead>
+            <tbody>${callerRows}</tbody>
+          </table>
+
+          <h4 style="color:#60a5fa; margin:16px 0 6px; font-size:12px; text-transform:uppercase; letter-spacing:0.5px;">↓ Downstream callees (transitive, max depth 4) — ${callees.length}</h4>
+          <table class="mi-table mi-table-dense">
+            <thead><tr><th>Callee</th><th>Hops</th><th>Status</th></tr></thead>
+            <tbody>${calleeRows}</tbody>
+          </table>
+
+          <div class="mi-source" style="margin-top:14px;">
+            Dependency edges sourced from <code>/api/graph/rekt/services</code> (Neo4j CALL relationships).
+            Modernization status from <code>/api/modernization/topology</code>.
+          </div>
+        `;
+      };
+    });
   }
 
   _outcomeBadge(o) {

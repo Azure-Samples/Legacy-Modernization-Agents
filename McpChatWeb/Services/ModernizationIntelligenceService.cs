@@ -448,8 +448,39 @@ public sealed class ModernizationIntelligenceService
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // Helpers
+    // Dependency Topology (PR-Portal-P3) — semantic overlay on existing graph
     // ─────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Combines the existing Neo4j services graph (nodes + CALL edges) with
+    /// per-program modernization state from the other read paths. Frontend
+    /// uses this to drive a layered architecture view + migration impact
+    /// analysis without re-querying multiple endpoints.
+    /// </summary>
+    public TopologySnapshot GetTopology()
+    {
+        var snap = new TopologySnapshot();
+        // Build inventory-aligned overlay first (reuse the same data the
+        // Application Explorer surfaces).
+        var apps = GetApplications().ToList();
+        var byBasename = apps.ToDictionary(a => a.Basename, a => a, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var a in apps)
+        {
+            snap.Nodes.Add(new TopologyNode(
+                Id: a.Basename,
+                Kind: "program",
+                LinesOfCode: a.LinesOfCode,
+                HasFacts: a.HasFacts,
+                FactsConfidence: a.FactsConfidence,
+                LatestRunId: a.LatestRunId,
+                CompileSuccess: a.LatestCompileSuccess,
+                ProjectionCacheHits: a.ProjectionCacheHits,
+                ModernizationStatus: a.ModernizationStatus
+            ));
+        }
+        return snap;
+    }
 
     private Dictionary<int, QualityRow> LoadLatestQualityByRunId()
     {
@@ -680,3 +711,22 @@ public record TimelineEvent(
     bool? CompileSuccess,
     int? BraceImbalance,
     string PayloadJson);
+
+// Dependency Topology DTOs (Phase-1 PR-P3)
+
+public record TopologyNode(
+    string Id,
+    string Kind,             // "program" or "copybook"
+    int LinesOfCode,
+    bool HasFacts,
+    int FactsConfidence,
+    int? LatestRunId,
+    bool? CompileSuccess,
+    int ProjectionCacheHits,
+    string ModernizationStatus);
+
+public class TopologySnapshot
+{
+    public List<TopologyNode> Nodes { get; } = new();
+    public string? Note { get; set; }
+}

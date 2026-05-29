@@ -8260,3 +8260,15 @@ main.three-panel-layout {
   font-size: 10px; color: #64748b;
 }
 .mi-mini { font-size: 11px; color: #cbd5e1; }
+
+/* Dependency Topology (Phase-1 PR-P3) */
+.mi-topology-layout {
+  display: grid; grid-template-columns: 1fr 380px; gap: 12px;
+  min-height: 500px;
+}
+.mi-topo-list { max-height: 720px; overflow-y: auto; }
+.mi-topo-row { cursor: pointer; }
+.mi-topo-row:hover { background: #1e293b; }
+.mi-topo-row-active { background: #1e3a5f !important; }
+.mi-topo-detail { max-height: 720px; overflow-y: auto; }
+.mi-status-not-in-source { background: #1e293b; color: #64748b; }
