@@ -50,6 +50,7 @@ class ModernizationIntelligenceView {
           <button class="mi-subtab" data-sub="flow">🌊 Semantic Flow Explorer</button>
           <button class="mi-subtab" data-sub="services">🧩 Service Candidates</button>
           <button class="mi-subtab" data-sub="waves">🚀 Migration Wave Planner</button>
+          <button class="mi-subtab" data-sub="capabilities">🎯 Capabilities &amp; Locator</button>
         </div>
         <div id="mi-body" class="mi-body"></div>
       </div>
@@ -120,6 +121,10 @@ class ModernizationIntelligenceView {
         this._wireServiceChainInteractions(data);
         // Render the Mermaid diagram once the DOM is in place
         setTimeout(() => this._renderMermaidIn(body), 50);
+      } else if (this._activeSubview === 'capabilities') {
+        const catalog = await fetch('/api/modernization/capabilities').then(r => r.json());
+        body.innerHTML = this._renderCapabilities(catalog);
+        this._wireCapabilitiesInteractions();
       }
     } catch (err) {
       body.innerHTML = `<div class="mi-error">Failed to load: ${this._escape(err.message)}</div>`;
@@ -1413,6 +1418,165 @@ class ModernizationIntelligenceView {
     } catch (err) {
       alert(`Failed to generate shopping list: ${err.message}`);
     }
+  }
+
+  // ────────────────────────────────────────────────────────────────────
+  // 🎯 Capabilities & Service Locator
+  // ────────────────────────────────────────────────────────────────────
+  _renderCapabilities(catalog) {
+    const total = (catalog.capabilities || []).reduce((a, b) => a + b.programs.length, 0);
+    const populated = (catalog.capabilities || []).filter(b => b.programs.length > 0);
+    return `
+      <div class="mi-section">
+        <h3>🔎 Service Locator — find any service back to its COBOL source</h3>
+        <p class="mi-help">
+          Type a Java class name, paragraph name, or operation (e.g. <code>OpGamblingService</code>,
+          <code>OP_GAMBLING</code>, <code>CHECK-FRAUD</code>, or just <code>BDSM043</code>).
+          The locator normalises the form across casing/styles and searches both
+          generated Java/C# files in <code>output/runs/**</code> and the original COBOL source.
+        </p>
+        <div class="mi-locator-row">
+          <input id="mi-locator-input" type="text" placeholder="e.g. OP_GAMBLING or Bdsm043Service" class="mi-locator-input"/>
+          <button id="mi-locator-btn" class="mi-btn-primary">🔎 Locate</button>
+        </div>
+        <div id="mi-locator-results"></div>
+      </div>
+
+      <div class="mi-section">
+        <h3>🎯 Business Capabilities — REKT-driven discovery (${populated.length} active · ${total} classifications)</h3>
+        <p class="mi-help">
+          Each program is scored against the keyword dictionary in <code>Data/capabilities.json</code>
+          using paragraph names, CALL targets, SQL tables, data groups and copybook names from REKT facts.
+          Multi-label: a program can serve multiple capabilities.
+          Edit <code>Data/capabilities.json</code> and refresh to add or tune capabilities.
+        </p>
+
+        <div class="mi-cap-grid">
+          ${populated.map(b => this._renderCapabilityCard(b)).join('')}
+        </div>
+
+        ${catalog.unclassified.length > 0 ? `
+          <div class="mi-cap-unclassified">
+            <h4>⚪ Unclassified (${catalog.unclassified.length} programs)</h4>
+            <p class="mi-help">
+              No keyword hits — likely candidates for a new capability entry, or programs
+              that are pure technical plumbing. Consider adding keywords to
+              <code>Data/capabilities.json</code> if any of these belong to a business domain.
+            </p>
+            <div class="mi-cap-chips">
+              ${catalog.unclassified.map(b => `<span class="mi-chip">${this._escape(b)}</span>`).join('')}
+            </div>
+          </div>` : ''}
+      </div>
+    `;
+  }
+
+  _renderCapabilityCard(bucket) {
+    const top = bucket.programs.slice(0, 6);
+    const more = Math.max(0, bucket.programs.length - top.length);
+    return `
+      <div class="mi-cap-card" data-cap="${this._escape(bucket.id)}">
+        <div class="mi-cap-header">
+          <span class="mi-cap-emoji">${bucket.emoji}</span>
+          <div>
+            <div class="mi-cap-title">${this._escape(bucket.display)}</div>
+            <div class="mi-cap-sub">${bucket.programs.length} programs${bucket.bian.length ? ` · BIAN: ${bucket.bian.map(this._escape).join(', ')}` : ''}</div>
+          </div>
+        </div>
+        <table class="mi-cap-table">
+          <tbody>
+            ${top.map(p => `
+              <tr>
+                <td><code>${this._escape(p.basename)}</code></td>
+                <td><span class="mi-cap-conf" style="background:${this._capColor(p.confidence)};">conf ${(p.confidence * 100).toFixed(0)}%</span></td>
+                <td class="mi-cap-hits" title="${this._escape(p.hits.slice(0, 5).map(h => `${h.source}:${h.match} (${h.keyword})`).join('\n'))}">
+                  ${p.hits.slice(0, 3).map(h => `<span class="mi-chip mi-chip-tiny" title="${this._escape(h.source + ': ' + h.keyword)}">${this._escape(h.match)}</span>`).join(' ')}
+                </td>
+              </tr>`).join('')}
+            ${more > 0 ? `<tr><td colspan="3" class="mi-muted">… and ${more} more</td></tr>` : ''}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  _capColor(conf) {
+    if (conf >= 0.75) return '#10b98144';
+    if (conf >= 0.5) return '#f59e0b44';
+    return '#64748b44';
+  }
+
+  _wireCapabilitiesInteractions() {
+    const input = this.root.querySelector('#mi-locator-input');
+    const btn = this.root.querySelector('#mi-locator-btn');
+    const results = this.root.querySelector('#mi-locator-results');
+    if (!input || !btn || !results) return;
+    const run = async () => {
+      const q = input.value.trim();
+      if (!q) return;
+      results.innerHTML = '<div class="mi-loading">🔎 Searching…</div>';
+      try {
+        const r = await fetch(`/api/modernization/locate?q=${encodeURIComponent(q)}`).then(x => x.json());
+        results.innerHTML = this._renderLocatorResults(r);
+      } catch (err) {
+        results.innerHTML = `<div class="mi-error">${this._escape(err.message)}</div>`;
+      }
+    };
+    btn.addEventListener('click', run);
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') run(); });
+  }
+
+  _renderLocatorResults(r) {
+    if (r.javaMatches.length === 0 && r.cobolMatches.length === 0) {
+      return `<div class="mi-cap-empty">
+        <b>No matches for <code>${this._escape(r.query)}</code></b>
+        <div class="mi-help">Tried these normalised forms: ${r.forms.map(f => `<code>${this._escape(f)}</code>`).join(', ')}</div>
+        <div class="mi-help">Tip: search by COBOL paragraph (<code>OP-GAMBLING</code>), Java class name
+        (<code>OpGamblingService</code>), or program ID (<code>BDSM043</code>).</div>
+      </div>`;
+    }
+    return `
+      <div class="mi-locator-results">
+        ${r.cobolMatches.length > 0 ? `
+        <div class="mi-locator-section">
+          <h4>📄 COBOL source matches (${r.cobolMatches.length})</h4>
+          <table class="mi-table">
+            <thead><tr><th>Program</th><th>Path</th><th>Matched paragraphs</th><th>Actions</th></tr></thead>
+            <tbody>
+              ${r.cobolMatches.map(m => `
+                <tr>
+                  <td><b>${this._escape(m.basename)}</b>${m.programIdMatch ? ' <span class="mi-chip mi-chip-tiny">PROGRAM-ID</span>' : ''}${m.basenameMatch ? ' <span class="mi-chip mi-chip-tiny mi-chip-blue">basename</span>' : ''}</td>
+                  <td><code>${this._escape(m.relativePath)}</code></td>
+                  <td>${m.matchedParagraphs.length === 0 ? '<span class="mi-muted">—</span>' : m.matchedParagraphs.map(p => `<span class="mi-chip mi-chip-tiny mi-chip-green">${this._escape(p)}</span>`).join(' ')}</td>
+                  <td>
+                    <button class="mi-link-btn" onclick="window.location.hash='ast-galaxy'; document.getElementById('galaxy-file-filter') && (document.getElementById('galaxy-file-filter').value='${this._escape(m.basename)}', galaxyView?.setFilter('${this._escape(m.basename)}'));">🌌 AST</button>
+                    ${m.factsPath ? `<a class="mi-link-btn" href="/${this._escape(m.factsPath)}" target="_blank">📄 facts</a>` : ''}
+                  </td>
+                </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>` : ''}
+
+        ${r.javaMatches.length > 0 ? `
+        <div class="mi-locator-section">
+          <h4>☕ Generated code matches (${r.javaMatches.length})</h4>
+          <table class="mi-table">
+            <thead><tr><th>File</th><th>Path</th><th>Run folder</th><th>Language</th></tr></thead>
+            <tbody>
+              ${r.javaMatches.map(j => `
+                <tr>
+                  <td><b>${this._escape(j.fileName)}</b></td>
+                  <td><code>${this._escape(j.path)}</code></td>
+                  <td>${j.runFolder ? `<code class="mi-chip mi-chip-tiny">${this._escape(j.runFolder)}</code>` : '<span class="mi-muted">legacy</span>'}</td>
+                  <td>${this._escape(j.language)}</td>
+                </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>` : ''}
+
+        <div class="mi-help">Forms tried: ${r.forms.map(f => `<code>${this._escape(f)}</code>`).join(', ')}</div>
+      </div>
+    `;
   }
 
   _escape(s) {

@@ -171,6 +171,8 @@ builder.Services.AddOpenApi();
 builder.Services.AddSingleton<McpChatWeb.Services.ModernizationIntelligenceService>();
 // PR Portal-P2: Migration Wave Planner (first write capability)
 builder.Services.AddSingleton<McpChatWeb.Services.MigrationWaveService>();
+// REKT-driven business-capability classifier + service locator
+builder.Services.AddSingleton<McpChatWeb.Services.CapabilityClassifier>();
 
 var app = builder.Build();
 
@@ -9075,6 +9077,16 @@ app.MapDelete("/api/modernization/waves",
         var n = svc.ClearAll();
         return Results.Ok(new { cleared = n });
     });
+
+// Capability discovery (REKT-driven business-capability classifier)
+app.MapGet("/api/modernization/capabilities",
+    (McpChatWeb.Services.CapabilityClassifier svc) =>
+        Results.Ok(svc.GetCapabilities()));
+
+// Service Locator (Java/COBOL name → source program + paragraph)
+app.MapGet("/api/modernization/locate",
+    (string q, McpChatWeb.Services.CapabilityClassifier svc) =>
+        Results.Ok(svc.Locate(q ?? "")));
 
 app.Run();
 

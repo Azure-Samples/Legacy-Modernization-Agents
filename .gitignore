@@ -110,6 +110,9 @@ reverse-engineering-output/
 
 # SQLite migration database (Contains all run data, persists locally)
 Data/
+!Data/.gitkeep
+!Data/glossary.json
+!Data/capabilities.json
 Data/migration.db
 Data/migration.db-*
 *.db

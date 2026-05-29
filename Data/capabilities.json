@@ -1,0 +1,117 @@
+{
+  "_doc": "Capability dictionary for REKT-driven business-capability discovery. Edit freely — the classifier auto-reloads on every request. Keywords match case-insensitively as substrings against paragraph names (weight 3), CALL targets (weight 2), data group names (weight 2), copybook names (weight 1), SQL table names (weight 2), and source-file paragraph headers (weight 3). Confidence = min(1, totalScore / 8).",
+  "capabilities": [
+    {
+      "id": "gambling",
+      "emoji": "🃏",
+      "display": "Gambling & Betting",
+      "keywords": ["gambl", "betting", "bett", "wager", "casino", "sportsbook", "odds"],
+      "bian": ["Wagering Account", "Gaming Transaction"]
+    },
+    {
+      "id": "fraud",
+      "emoji": "🛡",
+      "display": "Fraud Detection",
+      "keywords": ["fraud", "suspicious", "abnormal", "anomaly", "dispute", "chargeback", "frd"],
+      "bian": ["Fraud Detection", "Fraud Resolution"]
+    },
+    {
+      "id": "aml",
+      "emoji": "🚨",
+      "display": "Anti-Money-Laundering",
+      "keywords": ["aml", "moneylaund", "laundering", "suspicious-act", "ctr", "str", "sar"],
+      "bian": ["Financial Crime"]
+    },
+    {
+      "id": "sanctions",
+      "emoji": "🚫",
+      "display": "Sanctions Screening",
+      "keywords": ["sanction", "ofac", "embargo", "watchlist", "blacklist", "screen", "pep"],
+      "bian": ["Sanctions Screening"]
+    },
+    {
+      "id": "kyc",
+      "emoji": "🆔",
+      "display": "KYC / Customer Onboarding",
+      "keywords": ["kyc", "onboard", "identif", "ident-verif", "knowyour", "duedilig", "cdd"],
+      "bian": ["Customer Behavioral Insights", "Party Authentication"]
+    },
+    {
+      "id": "payment",
+      "emoji": "💳",
+      "display": "Payment Processing",
+      "keywords": ["pay", "payment", "remit", "transfer", "wire", "ach", "sepa", "swift"],
+      "bian": ["Payment Order", "Payment Execution"]
+    },
+    {
+      "id": "settlement",
+      "emoji": "📋",
+      "display": "Settlement & Clearing",
+      "keywords": ["settle", "settlmnt", "clearing", "reconcil", "matching"],
+      "bian": ["Settlement", "Reconciliation"]
+    },
+    {
+      "id": "loan",
+      "emoji": "🏦",
+      "display": "Loan & Credit",
+      "keywords": ["loan", "credit", "borrow", "lend", "mortgage", "amortiz"],
+      "bian": ["Consumer Loan", "Credit Risk Management"]
+    },
+    {
+      "id": "account",
+      "emoji": "📒",
+      "display": "Account Management",
+      "keywords": ["accnt", "account", "balance", "balanc", "ledger", "posting"],
+      "bian": ["Customer Position", "Account Recovery"]
+    },
+    {
+      "id": "card",
+      "emoji": "💳",
+      "display": "Card Operations",
+      "keywords": ["card", "pan", "atm", "pos", "interchange"],
+      "bian": ["Card Authorization", "Card Capture"]
+    },
+    {
+      "id": "treasury",
+      "emoji": "🏛",
+      "display": "Treasury & Liquidity",
+      "keywords": ["treasury", "liquid", "fx", "foreignexch", "interest-rate", "ccyrate"],
+      "bian": ["Treasury", "Liquidity Management"]
+    },
+    {
+      "id": "tax",
+      "emoji": "🧾",
+      "display": "Tax & Withholding",
+      "keywords": ["tax", "withhold", "vat", "withholding", "fatca", "crs"],
+      "bian": ["Tax Handling"]
+    },
+    {
+      "id": "reporting",
+      "emoji": "📊",
+      "display": "Reporting & Regulatory",
+      "keywords": ["report", "regulator", "submission", "filing", "audit"],
+      "bian": ["Regulatory Reporting"]
+    },
+    {
+      "id": "error-handling",
+      "emoji": "⚠",
+      "display": "Error & Exception Handling",
+      "keywords": ["error", "fejl", "exception", "fault", "abend", "diagnost"],
+      "bian": []
+    },
+    {
+      "id": "batch-orchestration",
+      "emoji": "⚙",
+      "display": "Batch Job Orchestration",
+      "keywords": ["batch", "job", "schedule", "trigger", "step"],
+      "bian": []
+    },
+    {
+      "id": "infrastructure",
+      "emoji": "🔧",
+      "display": "Infrastructure / Plumbing",
+      "keywords": ["init", "term", "cleanup", "dispatch", "router", "wrapper", "common", "shared", "util"],
+      "bian": []
+    }
+  ]
+}

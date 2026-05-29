@@ -95,6 +95,7 @@ class VisualCockpit {
             </div>
           </div>
           <div class="vc-header-right">
+            <input id="vc-locator" type="text" placeholder="🔎 Locate service (e.g. OP_GAMBLING)" class="vc-locator-input"/>
             <span id="vc-live-badge" class="vc-live-badge" title="Auto-refreshes every ${AUTO_REFRESH_MS/1000}s while this tab is visible">
               <span class="vc-live-dot"></span>LIVE
             </span>
@@ -144,6 +145,61 @@ class VisualCockpit {
     });
     const refresh = this.root.querySelector('#vc-refresh');
     if (refresh) refresh.addEventListener('click', () => { this._data = null; this.loadAndRender(); });
+    const locator = this.root.querySelector('#vc-locator');
+    if (locator) {
+      locator.addEventListener('keydown', async (e) => {
+        if (e.key !== 'Enter') return;
+        const q = locator.value.trim();
+        if (!q) return;
+        try {
+          const r = await fetch(`/api/modernization/locate?q=${encodeURIComponent(q)}`).then(x => x.json());
+          this._openLocatorDrawer(q, r);
+        } catch (err) { console.error('locate failed', err); }
+      });
+    }
+  }
+
+  _openLocatorDrawer(q, r) {
+    const drawer = this.root.querySelector('#vc-drawer');
+    drawer.style.display = 'block';
+    const empty = (r.javaMatches.length === 0 && r.cobolMatches.length === 0);
+    drawer.innerHTML = `
+      <div class="vc-drawer-header">
+        <div>
+          <div class="vc-drawer-title">🔎 Locate: <code>${this._esc(q)}</code></div>
+          <div class="vc-drawer-sub">${r.cobolMatches.length} COBOL · ${r.javaMatches.length} generated · forms: ${r.forms.map(f => this._esc(f)).join(', ')}</div>
+        </div>
+        <button class="vc-btn" id="vc-drawer-close">✕</button>
+      </div>
+      ${empty ? `<div class="vc-muted vc-pad">No matches. Try a paragraph name (OP-GAMBLING), Java class (OpGamblingService), or program-ID (BDSM043).</div>` : `
+        ${r.cobolMatches.length ? `
+          <div class="vc-drawer-section">
+            <div class="vc-drawer-section-title">📄 COBOL programs (${r.cobolMatches.length})</div>
+            ${r.cobolMatches.map(m => `
+              <div class="vc-locator-row-result">
+                <div><b>${this._esc(m.basename)}</b> <span class="vc-muted">${this._esc(m.relativePath)}</span></div>
+                ${m.matchedParagraphs.length ? `<div class="vc-drawer-chips">${m.matchedParagraphs.map(p => `<span class="vc-chip">${this._esc(p)}</span>`).join('')}</div>` : ''}
+                <div style="margin-top:4px;">
+                  <button class="vc-btn vc-btn-sm" data-cobol-detail="${this._esc(m.basename)}">📦 Open scorecard</button>
+                </div>
+              </div>`).join('')}
+          </div>` : ''}
+        ${r.javaMatches.length ? `
+          <div class="vc-drawer-section">
+            <div class="vc-drawer-section-title">☕ Generated code (${r.javaMatches.length})</div>
+            ${r.javaMatches.map(j => `
+              <div class="vc-locator-row-result">
+                <div><b>${this._esc(j.fileName)}</b></div>
+                <div class="vc-muted" style="font-size:10px;">${this._esc(j.path)}</div>
+                ${j.runFolder ? `<div style="margin-top:2px;"><span class="vc-chip vc-chip-blue">run: ${this._esc(j.runFolder)}</span></div>` : ''}
+              </div>`).join('')}
+          </div>` : ''}
+      `}
+    `;
+    drawer.querySelector('#vc-drawer-close').addEventListener('click', () => drawer.style.display = 'none');
+    drawer.querySelectorAll('[data-cobol-detail]').forEach(btn => {
+      btn.addEventListener('click', () => this._openProgramDrawer(btn.dataset.cobolDetail));
+    });
   }
 
   async _fetchAll() {
