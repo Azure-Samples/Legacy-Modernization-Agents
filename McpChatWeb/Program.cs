@@ -9020,6 +9020,18 @@ app.MapGet("/api/modernization/topology",
     (McpChatWeb.Services.ModernizationIntelligenceService svc) =>
         Results.Ok(svc.GetTopology()));
 
+// PR Portal-Enterprise-P0: Dependency Health (copybook resolution + estate coverage).
+app.MapGet("/api/modernization/dependency-health",
+    (McpChatWeb.Services.ModernizationIntelligenceService svc) =>
+        Results.Ok(svc.GetDependencyHealth()));
+
+// PR Portal-Phase1-Flow: Semantic Flow per program (delegated to existing
+// /api/graph/rekt/structure for the section/paragraph data — this endpoint
+// surfaces which programs are flow-eligible).
+app.MapGet("/api/modernization/flow/{basename}",
+    (string basename, McpChatWeb.Services.ModernizationIntelligenceService svc) =>
+        Results.Ok(svc.GetProgramFlow(basename)));
+
 app.Run();
 
 // Expand {{include path}} directives in prompt markdown. Mirrors PromptLoader.ExpandIncludes

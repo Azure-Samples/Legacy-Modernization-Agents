@@ -8272,3 +8272,30 @@ main.three-panel-layout {
 .mi-topo-row-active { background: #1e3a5f !important; }
 .mi-topo-detail { max-height: 720px; overflow-y: auto; }
 .mi-status-not-in-source { background: #1e293b; color: #64748b; }
+
+/* Semantic Flow Explorer (Phase-1 final) */
+.mi-flow-layout {
+  display: grid; grid-template-columns: 360px 1fr; gap: 12px;
+  min-height: 600px;
+}
+.mi-flow-picker { max-height: 720px; overflow-y: auto; }
+.mi-flow-row { cursor: pointer; }
+.mi-flow-row:hover { background: #1e293b; }
+.mi-flow-row-active { background: #1e3a5f !important; }
+.mi-flow-detail { max-height: 720px; overflow-y: auto; }
+.mi-flow-section {
+  margin: 8px 0; padding: 8px 10px;
+  background: #0c1424; border: 1px solid #1e293b; border-radius: 4px;
+}
+.mi-flow-section > summary {
+  cursor: pointer; padding: 4px 0; font-size: 13px; color: #cbd5e1;
+  user-select: none;
+}
+.mi-flow-section > summary:hover { color: #f8fafc; }
+.mi-mermaid-container {
+  background: #fff; padding: 12px; border-radius: 4px;
+  overflow-x: auto; max-height: 500px;
+}
+.mi-mermaid-container pre.mermaid {
+  background: transparent; border: none; padding: 0; color: #111;
+}

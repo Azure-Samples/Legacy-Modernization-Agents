@@ -482,6 +482,118 @@ public sealed class ModernizationIntelligenceService
         return snap;
     }
 
+    // ─────────────────────────────────────────────────────────────────────
+    // Dependency Health (PR-Portal-P0-enterprise) — copybook resolution
+    // & estate-readiness scoring
+    // ─────────────────────────────────────────────────────────────────────
+
+    public DependencyHealthSnapshot GetDependencyHealth()
+    {
+        var snap = new DependencyHealthSnapshot();
+        var rektDir = Path.Combine(_repoRoot, "output", "rekt");
+        if (!Directory.Exists(rektDir))
+        {
+            snap.Note = $"REKT output dir not found: {rektDir}. Run ./doctor.sh rekt-full first.";
+            return snap;
+        }
+
+        // Parse missing-copybooks.txt
+        var missingFile = Path.Combine(rektDir, "missing-copybooks.txt");
+        if (File.Exists(missingFile))
+        {
+            foreach (var raw in File.ReadAllLines(missingFile))
+            {
+                var line = raw.Trim();
+                if (line.Length == 0 || line.StartsWith("#")) continue;
+                var tab = line.IndexOf('\t');
+                if (tab < 0) continue;
+                var cpy = line.Substring(0, tab).Trim();
+                var rest = line.Substring(tab + 1).Trim();
+                const string prefix = "referenced by:";
+                var listIdx = rest.IndexOf(prefix, StringComparison.OrdinalIgnoreCase);
+                var refs = listIdx >= 0
+                    ? rest.Substring(listIdx + prefix.Length).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList()
+                    : new List<string>();
+                snap.MissingCopybooks.Add(new MissingCopybookRow(cpy, refs));
+            }
+        }
+
+        // Per-program parse fidelity
+        var apps = GetApplications().ToList();
+        foreach (var a in apps)
+        {
+            var stem = Path.GetFileNameWithoutExtension(a.Basename);
+            var reportDir = Path.Combine(rektDir, $"{a.Basename}.report");
+            var depsJson = Path.Combine(rektDir, $"{stem}-deps.json");
+
+            var hasReport = Directory.Exists(reportDir);
+            var hasDepsOnly = File.Exists(depsJson) && !hasReport;
+            var fidelity = hasReport ? "full" : hasDepsOnly ? "deps-only" : "not-parsed";
+
+            int missingForThis = snap.MissingCopybooks.Count(m => m.ReferencedBy.Contains(a.Basename, StringComparer.OrdinalIgnoreCase));
+
+            snap.Programs.Add(new ProgramHealthRow(
+                Basename: a.Basename,
+                LinesOfCode: a.LinesOfCode,
+                ParseFidelity: fidelity,
+                FactsConfidence: a.FactsConfidence,
+                FactsWarnings: a.FactsWarnings,
+                MissingCopybookCount: missingForThis,
+                HasReport: hasReport,
+                HasDepsOnly: hasDepsOnly,
+                ModernizationStatus: a.ModernizationStatus
+            ));
+        }
+
+        // Estate-level KPIs
+        snap.TotalPrograms = snap.Programs.Count;
+        snap.FullFidelityCount = snap.Programs.Count(p => p.ParseFidelity == "full");
+        snap.DepsOnlyCount = snap.Programs.Count(p => p.ParseFidelity == "deps-only");
+        snap.NotParsedCount = snap.Programs.Count(p => p.ParseFidelity == "not-parsed");
+        snap.CoveragePct = snap.TotalPrograms > 0
+            ? Math.Round(snap.FullFidelityCount * 100.0 / snap.TotalPrograms, 1)
+            : 0;
+
+        snap.TotalMissingCopybooks = snap.MissingCopybooks.Count;
+        snap.ProgramsBlockedByMissing = snap.MissingCopybooks
+            .SelectMany(m => m.ReferencedBy)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
+
+        // Readiness = full-fidelity weighted heavier than deps-only.
+        if (snap.TotalPrograms > 0)
+        {
+            double weighted = snap.FullFidelityCount * 1.0 + snap.DepsOnlyCount * 0.25;
+            snap.ReadinessScore = Math.Round(weighted * 100.0 / snap.TotalPrograms, 1);
+        }
+        return snap;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Semantic Flow (PR-Portal-P1-flow) — per-program flow summary
+    // ─────────────────────────────────────────────────────────────────────
+
+    public FlowSnapshot GetProgramFlow(string basename)
+    {
+        var snap = new FlowSnapshot { Basename = basename };
+        var rektDir = Path.Combine(_repoRoot, "output", "rekt");
+        var reportDir = Path.Combine(rektDir, $"{basename}.report");
+        if (!Directory.Exists(reportDir))
+        {
+            snap.Note = $"No .report directory for {basename} — program likely parsed deps-only.";
+            return snap;
+        }
+        var flowAstDir = Path.Combine(reportDir, "flow_ast");
+        snap.HasFlowAst = Directory.Exists(flowAstDir);
+        snap.HasCfg = Directory.Exists(Path.Combine(reportDir, "cfg"));
+        snap.HasDataStructures = Directory.Exists(Path.Combine(reportDir, "data_structures"));
+        if (snap.HasFlowAst)
+        {
+            try { snap.FlowAstFiles = Directory.GetFiles(flowAstDir, "*.json").Length; } catch { }
+        }
+        return snap;
+    }
+
     private Dictionary<int, QualityRow> LoadLatestQualityByRunId()
     {
         var map = new Dictionary<int, QualityRow>();
@@ -728,5 +840,47 @@ public record TopologyNode(
 public class TopologySnapshot
 {
     public List<TopologyNode> Nodes { get; } = new();
+    public string? Note { get; set; }
+}
+
+// Dependency Health (PR-Portal-P0-enterprise)
+
+public class DependencyHealthSnapshot
+{
+    public int TotalPrograms { get; set; }
+    public int FullFidelityCount { get; set; }
+    public int DepsOnlyCount { get; set; }
+    public int NotParsedCount { get; set; }
+    public double CoveragePct { get; set; }
+    public int TotalMissingCopybooks { get; set; }
+    public int ProgramsBlockedByMissing { get; set; }
+    public double ReadinessScore { get; set; }
+    public List<MissingCopybookRow> MissingCopybooks { get; } = new();
+    public List<ProgramHealthRow> Programs { get; } = new();
+    public string? Note { get; set; }
+}
+
+public record MissingCopybookRow(string Copybook, List<string> ReferencedBy);
+
+public record ProgramHealthRow(
+    string Basename,
+    int LinesOfCode,
+    string ParseFidelity,    // "full" | "deps-only" | "not-parsed"
+    int FactsConfidence,
+    int FactsWarnings,
+    int MissingCopybookCount,
+    bool HasReport,
+    bool HasDepsOnly,
+    string ModernizationStatus);
+
+// Semantic Flow Explorer
+
+public class FlowSnapshot
+{
+    public string Basename { get; set; } = "";
+    public bool HasFlowAst { get; set; }
+    public bool HasCfg { get; set; }
+    public bool HasDataStructures { get; set; }
+    public int FlowAstFiles { get; set; }
     public string? Note { get; set; }
 }

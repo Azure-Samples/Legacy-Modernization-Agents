@@ -43,9 +43,10 @@ class ModernizationIntelligenceView {
         <div class="mi-subnav">
           <button class="mi-subtab mi-subtab-active" data-sub="dashboard">📊 Modernization Dashboard</button>
           <button class="mi-subtab" data-sub="applications">📚 Application Explorer</button>
+          <button class="mi-subtab" data-sub="health">🩺 Dependency Health</button>
           <button class="mi-subtab" data-sub="runtime">⏱ Runtime &amp; Conversion Intelligence</button>
           <button class="mi-subtab" data-sub="topology">🕸 Dependency Topology</button>
-          <button class="mi-subtab mi-subtab-disabled" disabled title="Coming in Phase-1 PR-P3 follow-up">🌊 Semantic Flow Explorer</button>
+          <button class="mi-subtab" data-sub="flow">🌊 Semantic Flow Explorer</button>
         </div>
         <div id="mi-body" class="mi-body"></div>
       </div>
@@ -89,6 +90,16 @@ class ModernizationIntelligenceView {
         ]);
         body.innerHTML = this._renderTopology(topology, services);
         this._wireTopologyInteractions(topology, services);
+      } else if (this._activeSubview === 'health') {
+        const data = await fetch('/api/modernization/dependency-health').then(r => r.json());
+        body.innerHTML = this._renderDependencyHealth(data);
+      } else if (this._activeSubview === 'flow') {
+        // Load the dependency health snapshot to populate the flow-eligible program picker.
+        const health = await fetch('/api/modernization/dependency-health').then(r => r.json());
+        body.innerHTML = this._renderFlowShell(health);
+        // Auto-select first full-fidelity program
+        const firstFull = (health.programs || []).find(p => p.parseFidelity === 'full');
+        if (firstFull) await this._loadProgramFlow(firstFull.basename);
       }
     } catch (err) {
       body.innerHTML = `<div class="mi-error">Failed to load: ${this._escape(err.message)}</div>`;
@@ -644,6 +655,264 @@ class ModernizationIntelligenceView {
         `;
       };
     });
+  }
+
+  // ────────────────────────────────────────────────────────────────────
+  // Dependency Health renderer (PR-Portal-P0-enterprise)
+  // ────────────────────────────────────────────────────────────────────
+  _renderDependencyHealth(d) {
+    if (d.note) {
+      return `<div class="mi-empty">${this._escape(d.note)}</div>`;
+    }
+    const scoreColor = d.readinessScore >= 75 ? '#10b981'
+                     : d.readinessScore >= 40 ? '#f59e0b'
+                     : '#ef4444';
+    const kpi = (label, value, sub, color) => `
+      <div class="mi-kpi" style="border-left-color:${color || '#475569'};">
+        <div class="mi-kpi-value">${value}</div>
+        <div class="mi-kpi-label">${label}</div>
+        <div class="mi-kpi-sub">${sub || ''}</div>
+      </div>`;
+
+    const kpiRow = `
+      <div class="mi-kpi-row">
+        ${kpi('Estate readiness', `${d.readinessScore}%`,
+              `Full×1.0 + Deps×0.25 weighted across ${d.totalPrograms} programs`,
+              scoreColor)}
+        ${kpi('Full fidelity', `${d.fullFidelityCount} / ${d.totalPrograms}`,
+              `${d.coveragePct}% complete AST coverage`,
+              '#10b981')}
+        ${kpi('Deps-only', d.depsOnlyCount,
+              'partial coverage — missing copybooks limit fidelity',
+              '#f59e0b')}
+        ${kpi('Missing copybooks', d.totalMissingCopybooks,
+              `blocks ${d.programsBlockedByMissing} programs`,
+              '#ef4444')}
+      </div>
+    `;
+
+    // Sort missing copybooks by reference count (most impactful first)
+    const sortedMissing = [...(d.missingCopybooks || [])]
+      .sort((a, b) => (b.referencedBy?.length || 0) - (a.referencedBy?.length || 0));
+
+    const missingRows = sortedMissing.map(m => `
+      <tr>
+        <td><code><b>${this._escape(m.copybook)}</b></code></td>
+        <td class="num">${m.referencedBy.length}</td>
+        <td>
+          ${m.referencedBy.slice(0, 5).map(p => `<code class="mi-mini">${this._escape(p)}</code>`).join(' ')}
+          ${m.referencedBy.length > 5 ? `<span class="mi-muted">+${m.referencedBy.length - 5} more</span>` : ''}
+        </td>
+      </tr>`).join('') || '<tr><td colspan="3" class="mi-muted">No missing copybooks — full estate coverage.</td></tr>';
+
+    // Per-program health, sorted: not-parsed first, then deps-only, then full
+    const fidelityOrder = { 'not-parsed': 0, 'deps-only': 1, 'full': 2 };
+    const sortedPrograms = [...(d.programs || [])]
+      .sort((a, b) => (fidelityOrder[a.parseFidelity] ?? 99) - (fidelityOrder[b.parseFidelity] ?? 99)
+                   || b.linesOfCode - a.linesOfCode);
+    const programRows = sortedPrograms.map(p => {
+      const fidelityBadge = this._fidelityBadge(p.parseFidelity);
+      const missing = p.missingCopybookCount > 0
+        ? `<span class="mi-bad">${p.missingCopybookCount}</span>`
+        : '<span class="mi-ok">0</span>';
+      return `<tr>
+        <td><b>${this._escape(p.basename)}</b></td>
+        <td class="num">${p.linesOfCode.toLocaleString()}</td>
+        <td>${fidelityBadge}</td>
+        <td class="num">${p.factsConfidence}</td>
+        <td class="num">${p.factsWarnings}</td>
+        <td>${missing}</td>
+        <td><span class="mi-status mi-status-${p.modernizationStatus}">${this._statusLabel(p.modernizationStatus)}</span></td>
+      </tr>`;
+    }).join('');
+
+    return `
+      ${kpiRow}
+      <div class="mi-card mi-card-wide">
+        <h3>Missing copybooks — sorted by impact</h3>
+        <div class="mi-muted" style="font-size:11px; margin-bottom:8px;">
+          Provide these in <code>source/</code> to elevate referencing programs from deps-only to full-fidelity REKT analysis.
+          Each resolution increases readiness score and enables high-confidence projection.
+        </div>
+        <table class="mi-table">
+          <thead><tr><th>Copybook</th><th>Programs blocked</th><th>Referenced by</th></tr></thead>
+          <tbody>${missingRows}</tbody>
+        </table>
+      </div>
+      <div class="mi-card mi-card-wide">
+        <h3>Program-level dependency health</h3>
+        <table class="mi-table mi-table-dense">
+          <thead>
+            <tr>
+              <th>Program</th>
+              <th>LoC</th>
+              <th>Parse fidelity</th>
+              <th>Facts conf</th>
+              <th>Warn</th>
+              <th>Missing cpys</th>
+              <th>Modernization status</th>
+            </tr>
+          </thead>
+          <tbody>${programRows}</tbody>
+        </table>
+      </div>
+      <div class="mi-source">
+        Sourced from <code>output/rekt/missing-copybooks.txt</code> + <code>output/rekt/*.report/</code> + <code>output/rekt/*-deps.json</code>.
+        Re-run <code>./doctor.sh rekt-full</code> after adding copybooks to refresh.
+      </div>
+    `;
+  }
+
+  _fidelityBadge(f) {
+    if (f === 'full') return '<span class="mi-status mi-status-verified">✅ full</span>';
+    if (f === 'deps-only') return '<span class="mi-status mi-status-partial-fallback">⚠ deps-only</span>';
+    return '<span class="mi-status mi-status-not-started">— not parsed</span>';
+  }
+
+  // ────────────────────────────────────────────────────────────────────
+  // Semantic Flow Explorer renderer (Phase-1 final view)
+  // ────────────────────────────────────────────────────────────────────
+  _renderFlowShell(health) {
+    const programs = (health.programs || []).filter(p => p.parseFidelity === 'full');
+    if (programs.length === 0) {
+      return `<div class="mi-empty">No full-fidelity programs available. Resolve missing copybooks (see Dependency Health) or run <code>./doctor.sh rekt-full</code> first.</div>`;
+    }
+    const rows = programs.sort((a, b) => b.linesOfCode - a.linesOfCode).map(p => `
+      <tr data-prog="${this._escape(p.basename)}" class="mi-flow-row">
+        <td><b>${this._escape(p.basename)}</b></td>
+        <td class="num">${p.linesOfCode.toLocaleString()}</td>
+        <td class="num">${p.factsConfidence}</td>
+        <td><span class="mi-status mi-status-${p.modernizationStatus}">${this._statusLabel(p.modernizationStatus)}</span></td>
+      </tr>`).join('');
+
+    return `
+      <div class="mi-flow-layout">
+        <div class="mi-card mi-flow-picker">
+          <h3>Flow-eligible programs (${programs.length})</h3>
+          <div class="mi-muted" style="font-size:11px; margin-bottom:8px;">
+            Only full-fidelity programs (those with complete REKT AST) can produce flow diagrams.
+          </div>
+          <table class="mi-table mi-table-dense">
+            <thead><tr><th>Program</th><th>LoC</th><th>Conf</th><th>Status</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+        <div id="mi-flow-detail" class="mi-card mi-flow-detail">
+          <div class="mi-empty">Select a program on the left to render its semantic flow.</div>
+        </div>
+      </div>
+    `;
+  }
+
+  async _loadProgramFlow(basename) {
+    this.root.querySelectorAll('.mi-flow-row').forEach(tr => {
+      tr.classList.toggle('mi-flow-row-active', tr.dataset.prog === basename);
+      tr.onclick = () => this._loadProgramFlow(tr.dataset.prog);
+    });
+    const panel = this.root.querySelector('#mi-flow-detail');
+    panel.innerHTML = '<div class="mi-loading">Loading flow…</div>';
+    try {
+      // Use the EXISTING /api/graph/rekt/structure endpoint for the
+      // section/paragraph data + the EXISTING /api/graph/rekt/mermaid for
+      // the pre-rendered flow diagram. No graph engine duplication.
+      const [structure, mermaidPayload] = await Promise.all([
+        fetch(`/api/graph/rekt/structure?file=${encodeURIComponent(basename)}`).then(r => r.json()).catch(() => null),
+        fetch(`/api/graph/rekt/mermaid?file=${encodeURIComponent(basename)}`).then(r => r.json()).catch(() => null),
+      ]);
+      // mermaid endpoint returns { type, file, program, mermaid: "..." } — extract.
+      const mermaidText = (mermaidPayload && typeof mermaidPayload === 'object')
+        ? (mermaidPayload.mermaid || '')
+        : '';
+      panel.innerHTML = this._renderFlowDetail(basename, structure, mermaidText);
+      this._renderMermaidIn(panel);
+    } catch (err) {
+      panel.innerHTML = `<div class="mi-error">Failed: ${this._escape(err.message)}</div>`;
+    }
+  }
+
+  _renderFlowDetail(basename, structure, mermaidText) {
+    if (!structure || !structure.sections || structure.sections.length === 0) {
+      return `<div class="mi-card">
+        <h3>${this._escape(basename)}</h3>
+        <div class="mi-empty">No structural sections found in REKT output.</div>
+      </div>`;
+    }
+    const sections = structure.sections;
+    const totalStmts = sections.reduce((a, s) => a + (s.stmtCount || 0), 0);
+    const totalPerforms = sections.reduce((a, s) => a + (s.performCount || 0), 0);
+    const totalCalls = sections.reduce((a, s) => a + (s.callCount || 0), 0);
+    const totalSql = sections.reduce((a, s) => a + (s.sqlCount || 0), 0);
+    const totalBranch = sections.reduce((a, s) => a + (s.branchCount || 0), 0);
+
+    const kpiRow = `
+      <div class="mi-kpi-row" style="margin-bottom:12px;">
+        <div class="mi-kpi"><div class="mi-kpi-value">${sections.length}</div><div class="mi-kpi-label">Sections</div></div>
+        <div class="mi-kpi"><div class="mi-kpi-value">${totalStmts}</div><div class="mi-kpi-label">Statements</div></div>
+        <div class="mi-kpi"><div class="mi-kpi-value">${totalPerforms}</div><div class="mi-kpi-label">PERFORMs</div></div>
+        <div class="mi-kpi"><div class="mi-kpi-value">${totalCalls}</div><div class="mi-kpi-label">CALLs</div></div>
+        <div class="mi-kpi"><div class="mi-kpi-value">${totalSql}</div><div class="mi-kpi-label">SQL ops</div></div>
+        <div class="mi-kpi"><div class="mi-kpi-value">${totalBranch}</div><div class="mi-kpi-label">Branches</div></div>
+      </div>
+    `;
+
+    // Group by section, list paragraphs underneath
+    const grouped = {};
+    for (const s of sections) {
+      const key = s.sectionName || '(unnamed)';
+      if (!grouped[key]) grouped[key] = [];
+      grouped[key].push(s);
+    }
+    const sectionBlocks = Object.entries(grouped).map(([sec, rows]) => {
+      const paras = rows.map(r => `
+        <tr>
+          <td><code>${this._escape(r.paraName || r.sectionName || '?')}</code></td>
+          <td class="num">${r.stmtCount || 0}</td>
+          <td class="num">${r.performCount || 0}</td>
+          <td class="num">${r.callCount || 0}</td>
+          <td class="num">${r.sqlCount || 0}</td>
+          <td class="num">${r.moveCount || 0}</td>
+          <td class="num">${r.branchCount || 0}</td>
+        </tr>`).join('');
+      return `<details class="mi-flow-section" open>
+        <summary><b>${this._escape(sec)}</b> · ${rows.length} paragraph(s)</summary>
+        <table class="mi-table mi-table-dense">
+          <thead><tr><th>Paragraph</th><th>Stmts</th><th>PERF</th><th>CALL</th><th>SQL</th><th>MOVE</th><th>BR</th></tr></thead>
+          <tbody>${paras}</tbody>
+        </table>
+      </details>`;
+    }).join('');
+
+    // Pre-rendered Mermaid block (if available)
+    const mermaidBlock = mermaidText && mermaidText.trim().length > 0
+      ? `<div class="mi-card" style="margin-top:12px;">
+          <h3>Flow diagram (Mermaid, from REKT CFG)</h3>
+          <div class="mi-mermaid-container">
+            <pre class="mermaid">${this._escape(mermaidText)}</pre>
+          </div>
+        </div>`
+      : '';
+
+    return `
+      <div class="mi-card">
+        <h3>${this._escape(basename)} — semantic flow</h3>
+        ${kpiRow}
+        ${sectionBlocks}
+        <div class="mi-source">
+          Sourced from <code>/api/graph/rekt/structure</code> (sections + paragraphs) and
+          <code>/api/graph/rekt/mermaid</code> (CFG diagram).
+        </div>
+      </div>
+      ${mermaidBlock}
+    `;
+  }
+
+  _renderMermaidIn(panel) {
+    if (typeof window.mermaid === 'undefined') return;
+    try {
+      window.mermaid.run({ querySelector: 'pre.mermaid', nodes: panel.querySelectorAll('pre.mermaid') });
+    } catch (err) {
+      console.warn('Mermaid render failed:', err);
+    }
   }
 
   _outcomeBadge(o) {
