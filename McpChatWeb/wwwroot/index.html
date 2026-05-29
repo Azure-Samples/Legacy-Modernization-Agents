@@ -392,6 +392,7 @@
         <button class="dashboard-tab" data-tab="migration" onclick="switchDashboard('migration')">🎯 Migration Planner</button>
         <button class="dashboard-tab" data-tab="target-arch" onclick="switchDashboard('target-arch')">🏛️ Target Architecture</button>
         <button class="dashboard-tab" data-tab="modernization" onclick="switchDashboard('modernization')" title="Modernization Intelligence — portfolio-centric workspace beside the engineering AST views">🧭 Modernization Intelligence</button>
+        <button class="dashboard-tab" data-tab="insights" onclick="switchDashboard('insights')" title="Insights Hub — persona-driven decision surfaces over the same modernization data">🎯 Insights</button>
         <button class="dashboard-tab" onclick="openConvertModal({})" title="Open the focused-conversion modal — pick programs/transactions/waves to convert" style="margin-left:auto;background:#065f46;border:1px solid #10b981;color:#fff;">🛠️ Convert…</button>
         <button class="dashboard-tab" data-tab="portfolio" onclick="switchDashboard('portfolio')">Portfolio</button>
         <button class="dashboard-tab" data-tab="complexity" onclick="switchDashboard('complexity')">Readiness</button>
@@ -772,6 +773,11 @@
       <!-- Modernization Intelligence (Phase-1: Application Explorer + Modernization Dashboard) -->
       <div id="modernization-intelligence-container" class="dashboard-panel" style="display: none;">
         <div id="modernization-intelligence-root" style="height:100%;overflow:auto;background:#0a0e1a;"></div>
+      </div>
+
+      <!-- Insights Hub (Phase-2: persona-driven decision surfaces) -->
+      <div id="insights-hub-container" class="dashboard-panel" style="display: none;">
+        <div id="insights-hub-root" style="height:100%;overflow:auto;background:#0a0e1a;"></div>
       </div>
 
       <!-- Complexity / Readiness (hidden by default) -->
@@ -1522,6 +1528,7 @@ curl http://localhost:5028/api/data-retrieval-guide</code></pre>
   <script src="migration-planner.js?v=20260504j"></script>
   <script src="target-architecture.js?v=20260518g"></script>
   <script src="modernization-intelligence.js?v=20260528a"></script>
+  <script src="insights-hub.js?v=20260529a"></script>
   <script src="convert-modal.js?v=20260519i"></script>
   <script src="dashboard-tabs.js?v=20260518b"></script>
   <script src="chat-history.js?v=20260505e"></script>

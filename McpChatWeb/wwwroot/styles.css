@@ -8299,3 +8299,121 @@ main.three-panel-layout {
 .mi-mermaid-container pre.mermaid {
   background: transparent; border: none; padding: 0; color: #111;
 }
+
+/* ────────────────────────────────────────────────────────────────────── */
+/* Insights Hub (Phase-2)                                                  */
+/* ────────────────────────────────────────────────────────────────────── */
+
+.ih-shell { padding: 16px; color: #e2e8f0; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
+
+.ih-header {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 16px; padding-bottom: 12px;
+  border-bottom: 1px solid #1e293b;
+}
+.ih-title { display: flex; align-items: center; gap: 12px; }
+.ih-icon { font-size: 28px; }
+.ih-title-main { font-size: 18px; font-weight: 600; color: #f8fafc; }
+.ih-title-sub { font-size: 12px; color: #94a3b8; margin-top: 2px; }
+.ih-actions { display: flex; gap: 8px; }
+.ih-btn {
+  background: #1e293b; border: 1px solid #475569; color: #e2e8f0;
+  padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px;
+}
+.ih-btn:hover { background: #334155; }
+
+.ih-persona-bar {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+  margin-bottom: 20px;
+}
+.ih-persona {
+  background: #0f172a; border: 1px solid #1e293b; border-radius: 6px;
+  padding: 14px 12px; cursor: pointer; color: #cbd5e1;
+  text-align: center; transition: all 0.15s;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.ih-persona:hover { background: #1e293b; border-color: #475569; }
+.ih-persona-active {
+  background: #1e3a5f !important; border-color: #60a5fa !important; color: #f8fafc;
+}
+.ih-persona-emoji { font-size: 28px; }
+.ih-persona-label { font-size: 13px; font-weight: 600; }
+.ih-persona-sub { font-size: 10px; color: #64748b; }
+.ih-persona-active .ih-persona-sub { color: #cbd5e1; }
+
+.ih-body { min-height: 200px; }
+.ih-loading { padding: 60px; text-align: center; color: #94a3b8; }
+.ih-error { padding: 16px; background: #7f1d1d; color: #fee2e2; border-radius: 4px; }
+
+.ih-section-title {
+  font-size: 14px; color: #60a5fa; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.5px; margin-bottom: 12px; padding-bottom: 8px;
+  border-bottom: 1px solid #1e293b;
+}
+
+.ih-kpi-row {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px; margin-bottom: 16px;
+}
+.ih-kpi {
+  background: #0f172a; border: 1px solid #1e293b; border-left: 3px solid #475569;
+  padding: 14px 16px; border-radius: 4px;
+}
+.ih-kpi-value { font-size: 28px; font-weight: 700; color: #f8fafc; line-height: 1; }
+.ih-kpi-label { font-size: 12px; color: #cbd5e1; margin-top: 6px; }
+.ih-kpi-sub { font-size: 11px; color: #64748b; margin-top: 4px; }
+
+.ih-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  gap: 12px; margin-bottom: 16px;
+}
+.ih-card {
+  background: #0f172a; border: 1px solid #1e293b; border-radius: 4px; padding: 14px;
+}
+.ih-card h3 {
+  margin: 0 0 8px; font-size: 13px; color: #60a5fa; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.4px;
+}
+
+.ih-callout {
+  background: #0c1424; border-left: 3px solid #60a5fa;
+  padding: 12px 16px; margin-bottom: 16px; border-radius: 0 4px 4px 0;
+  font-size: 13px; color: #cbd5e1;
+}
+.ih-cta {
+  background: #14532d; border-left: 3px solid #10b981;
+  padding: 14px 16px; margin-top: 16px; border-radius: 0 4px 4px 0;
+}
+.ih-cta h4 {
+  margin: 0 0 6px; font-size: 13px; color: #86efac; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.4px;
+}
+.ih-cta p { margin: 0; color: #cbd5e1; font-size: 13px; line-height: 1.5; }
+
+.ih-pill {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 11px; font-weight: 600; min-width: 36px; text-align: center;
+}
+.ih-pill-red    { background: #7f1d1d; color: #fca5a5; }
+.ih-pill-orange { background: #7c2d12; color: #fdba74; }
+.ih-pill-yellow { background: #78350f; color: #fcd34d; }
+.ih-pill-green  { background: #14532d; color: #86efac; }
+
+.ih-bar {
+  display: flex; height: 18px; background: #0c1424;
+  border-radius: 9px; overflow: hidden; margin-top: 8px;
+}
+.ih-bar-seg { height: 100%; }
+
+.ih-quicklinks {
+  list-style: none; padding: 0; margin: 0;
+}
+.ih-quicklinks li {
+  padding: 6px 0; border-bottom: 1px dashed #1e293b;
+}
+.ih-quicklinks li:last-child { border-bottom: none; }
+.ih-quicklinks a {
+  color: #60a5fa; text-decoration: none; font-size: 13px;
+}
+.ih-quicklinks a:hover { color: #93c5fd; text-decoration: underline; }
+.ih-muted { color: #64748b; }

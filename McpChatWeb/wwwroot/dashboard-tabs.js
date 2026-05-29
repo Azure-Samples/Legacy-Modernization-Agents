@@ -107,6 +107,7 @@ function switchDashboard(tabName) {
     portfolio: ['portfolio-container'],
     complexity: ['complexity-container'],
     modernization: ['modernization-intelligence-container'],
+    insights: ['insights-hub-container'],
   };
 
   // Hide everything first
@@ -196,6 +197,13 @@ function switchDashboard(tabName) {
       window.modernizationIntelligenceView = new ModernizationIntelligenceView('modernization-intelligence-root');
     }
     window.modernizationIntelligenceView.loadAndRender();
+  }
+
+  if (tabName === 'insights') {
+    if (!window.insightsHub) {
+      window.insightsHub = new InsightsHub('insights-hub-root');
+    }
+    window.insightsHub.loadAndRender();
   }
 
   if (tabName === 'complexity') {
