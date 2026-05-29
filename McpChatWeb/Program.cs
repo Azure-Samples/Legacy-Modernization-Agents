@@ -169,6 +169,8 @@ builder.Services.AddOpenApi();
 
 // PR Portal-P1: Modernization Intelligence (read-only over existing DBs/artifacts)
 builder.Services.AddSingleton<McpChatWeb.Services.ModernizationIntelligenceService>();
+// PR Portal-P2: Migration Wave Planner (first write capability)
+builder.Services.AddSingleton<McpChatWeb.Services.MigrationWaveService>();
 
 var app = builder.Build();
 
@@ -9031,6 +9033,34 @@ app.MapGet("/api/modernization/dependency-health",
 app.MapGet("/api/modernization/flow/{basename}",
     (string basename, McpChatWeb.Services.ModernizationIntelligenceService svc) =>
         Results.Ok(svc.GetProgramFlow(basename)));
+
+// PR Portal-P2: Service Candidate Explorer (formal bounded-context inference)
+app.MapGet("/api/modernization/service-candidates",
+    (McpChatWeb.Services.ModernizationIntelligenceService svc) =>
+        Results.Ok(svc.GetServiceCandidates()));
+
+// PR Portal-P2: Migration Wave Planner (first write capability)
+app.MapGet("/api/modernization/waves",
+    (McpChatWeb.Services.MigrationWaveService svc) =>
+        Results.Ok(svc.GetAll().ToList()));
+
+app.MapPost("/api/modernization/waves/{basename}",
+    (string basename, WaveAssignmentRequest req, McpChatWeb.Services.MigrationWaveService svc) =>
+        Results.Ok(svc.Upsert(basename, req.WaveNumber, req.Notes, "user")));
+
+app.MapDelete("/api/modernization/waves/{basename}",
+    (string basename, McpChatWeb.Services.MigrationWaveService svc) =>
+    {
+        var n = svc.RemoveProgram(basename);
+        return Results.Ok(new { removed = n });
+    });
+
+app.MapDelete("/api/modernization/waves",
+    (McpChatWeb.Services.MigrationWaveService svc) =>
+    {
+        var n = svc.ClearAll();
+        return Results.Ok(new { cleared = n });
+    });
 
 app.Run();
 

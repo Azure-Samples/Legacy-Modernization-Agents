@@ -47,6 +47,8 @@ class ModernizationIntelligenceView {
           <button class="mi-subtab" data-sub="runtime">⏱ Runtime &amp; Conversion Intelligence</button>
           <button class="mi-subtab" data-sub="topology">🕸 Dependency Topology</button>
           <button class="mi-subtab" data-sub="flow">🌊 Semantic Flow Explorer</button>
+          <button class="mi-subtab" data-sub="services">🧩 Service Candidates</button>
+          <button class="mi-subtab" data-sub="waves">🚀 Migration Wave Planner</button>
         </div>
         <div id="mi-body" class="mi-body"></div>
       </div>
@@ -729,7 +731,13 @@ class ModernizationIntelligenceView {
     return `
       ${kpiRow}
       <div class="mi-card mi-card-wide">
-        <h3>Missing copybooks — sorted by impact</h3>
+        <h3>Missing copybooks — sorted by impact
+          <button class="ih-btn" style="float:right; font-size:11px;"
+                  onclick="window.modernizationIntelligenceView._downloadCopybookShoppingList()"
+                  title="Download a plain-text shopping list to hand to the source-of-truth team">
+            ⬇ Export shopping list
+          </button>
+        </h3>
         <div class="mi-muted" style="font-size:11px; margin-bottom:8px;">
           Provide these in <code>source/</code> to elevate referencing programs from deps-only to full-fidelity REKT analysis.
           Each resolution increases readiness score and enables high-confidence projection.
@@ -927,6 +935,39 @@ class ModernizationIntelligenceView {
     if (d === 'bypass-disabled') return '<span class="mi-muted">⏸ bypass</span>';
     return `<span class="mi-muted">${this._escape(d)}</span>`;
   }
+  async _downloadCopybookShoppingList() {
+    // Re-fetch fresh so the list reflects current state, not the cached snapshot.
+    try {
+      const d = await fetch('/api/modernization/dependency-health').then(r => r.json());
+      const missing = (d.missingCopybooks || []).sort((a, b) => b.referencedBy.length - a.referencedBy.length);
+      const lines = [];
+      lines.push('# Missing COBOL Copybooks — Modernization Intelligence shopping list');
+      lines.push(`# Generated: ${new Date().toISOString()}`);
+      lines.push(`# Estate readiness: ${d.readinessScore}% — resolve these to lift coverage.`);
+      lines.push('#');
+      lines.push('# Format: COPYBOOK_NAME    <programs_blocked>    <comma-separated programs>');
+      lines.push('# Order: most-impactful first (highest blast radius).');
+      lines.push('#');
+      for (const m of missing) {
+        lines.push(`${m.copybook.padEnd(16)}\t${String(m.referencedBy.length).padStart(3)} programs\t${m.referencedBy.join(', ')}`);
+      }
+      lines.push('');
+      lines.push(`# Total: ${missing.length} unresolved copybooks blocking ${d.programsBlockedByMissing} programs.`);
+      lines.push(`# After acquiring: drop *.cpy files into source/ and re-run ./doctor.sh rekt-full.`);
+      const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `missing-copybooks-shopping-list-${new Date().toISOString().substring(0, 10)}.txt`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert(`Failed to generate shopping list: ${err.message}`);
+    }
+  }
+
   _escape(s) {
     if (s == null) return '';
     return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
