@@ -355,10 +355,13 @@ class VisualCockpit {
 
   /** Coupling heatmap N×N matrix from edge list. */
   _heatmap(programs, edges, opts = {}) {
-    const cell = opts.cellSize || 12;
+    // Auto-shrink cells when matrix is large so it stays readable.
+    // Large matrices (>30) drop to 8px cells; small (<12) get 14px for clarity.
     const cols = programs.length;
+    const autoCell = cols > 50 ? 6 : cols > 30 ? 8 : cols > 18 ? 10 : cols > 12 ? 12 : 14;
+    const cell = opts.cellSize || autoCell;
     const labelW = opts.labelWidth || 100;
-    const labelH = opts.labelHeight || 70;
+    const labelH = opts.labelHeight || (cols > 30 ? 90 : 70);
     const matrixSize = cols * cell;
     const w = labelW + matrixSize + 10;
     const h = labelH + matrixSize + 10;
@@ -592,7 +595,10 @@ class VisualCockpit {
       .sort((a, b) => b.total - a.total);
 
     // Heatmap matrix of top-N coupled programs
-    const topCoupled = couplingItems.slice(0, 18).map(c => c.name);
+    // #14: heatmap is now zoomable. Default to top 18 for legibility, but
+    // user can expand via the size slider (rendered just below the heatmap).
+    const heatmapLimit = this._heatmapLimit || 18;
+    const topCoupled = couplingItems.slice(0, Math.min(heatmapLimit, couplingItems.length)).map(c => c.name);
 
     // Domain clusters (4-letter prefix)
     const domains = {};
@@ -636,9 +642,24 @@ class VisualCockpit {
 
       <div class="vc-grid">
         <div class="vc-tile vc-tile-wide-2">
-          <div class="vc-tile-header">🔥 Coupling heatmap — top ${topCoupled.length} most-connected programs</div>
+          <div class="vc-tile-header">🔥 Coupling heatmap — top ${topCoupled.length} most-connected programs of ${couplingItems.length}</div>
           <div class="vc-tile-sub">Cells show CALL relationships. Intensity = call count. Hover for details.</div>
-          ${topCoupled.length ? this._heatmap(topCoupled, edges) : '<div class="vc-muted vc-pad">No CALL edges yet — run REKT scan</div>'}
+          <div class="vc-heatmap-scroll">
+            ${topCoupled.length ? this._heatmap(topCoupled, edges) : '<div class="vc-muted vc-pad">No CALL edges yet — run REKT scan</div>'}
+          </div>
+          ${couplingItems.length > 18 ? `
+            <div class="vc-heatmap-controls">
+              <label>Show top
+                <input type="range" min="6" max="${Math.min(couplingItems.length, 120)}" step="2"
+                       value="${heatmapLimit}" id="vc-heatmap-zoom"
+                       oninput="document.getElementById('vc-heatmap-zoom-val').textContent=this.value;"
+                       onchange="window.visualCockpit?._setHeatmapLimit(parseInt(this.value));"
+                       style="vertical-align:middle;width:200px;"/>
+                <b id="vc-heatmap-zoom-val">${heatmapLimit}</b> / ${couplingItems.length} programs
+              </label>
+              <button class="vc-btn vc-btn-sm" onclick="window.visualCockpit?._setHeatmapLimit(${couplingItems.length});">show all</button>
+              <button class="vc-btn vc-btn-sm" onclick="window.visualCockpit?._setHeatmapLimit(18);">reset</button>
+            </div>` : ''}
         </div>
       </div>
 
@@ -1043,6 +1064,12 @@ class VisualCockpit {
   _esc(s) {
     if (s == null) return '';
     return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  /** #14 heatmap zoom — re-renders the Architect persona with a new limit. */
+  _setHeatmapLimit(n) {
+    this._heatmapLimit = Math.max(4, Math.min(n, 200));
+    if (this._activePersona === 'architect') this._renderActive();
   }
 }
 

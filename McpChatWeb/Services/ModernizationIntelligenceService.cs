@@ -448,6 +448,104 @@ public sealed class ModernizationIntelligenceService
     }
 
     // ─────────────────────────────────────────────────────────────────────
+    // Compile-failure inspector (#8) — lists generated files for a run
+    // and parses any compile log into structured per-file errors.
+    // ─────────────────────────────────────────────────────────────────────
+
+    public CompileDetail GetCompileDetail(string runId)
+    {
+        var detail = new CompileDetail { RunId = runId };
+
+        // Locate the run's per-run output folder under output/runs/{runId}-*
+        var runsRoot = Path.Combine(_repoRoot, "output", "runs");
+        string? folder = null;
+        if (Directory.Exists(runsRoot))
+        {
+            folder = Directory.EnumerateDirectories(runsRoot, $"{runId}*")
+                .FirstOrDefault();
+        }
+        // Fall back to the shared legacy folders if the run pre-dates per-run isolation
+        if (folder == null)
+        {
+            foreach (var legacy in new[] {
+                Path.Combine(_repoRoot, "output", "java"),
+                Path.Combine(_repoRoot, "output", "csharp")
+            })
+            {
+                if (Directory.Exists(legacy)) { folder = legacy; break; }
+            }
+        }
+        if (folder == null) return detail;
+
+        detail.OutputFolder = Path.GetRelativePath(_repoRoot, folder);
+
+        // List source files (cap 50, biggest first), include preview lines for the UI
+        var codeExts = new HashSet<string>(StringComparer.OrdinalIgnoreCase) {
+            ".java", ".cs", ".kt", ".ts", ".scala"
+        };
+        var files = Directory.EnumerateFiles(folder, "*", SearchOption.AllDirectories)
+            .Where(p => codeExts.Contains(Path.GetExtension(p)))
+            .Take(50)
+            .Select(p => new FileInfo(p))
+            .ToList();
+
+        // Parse compile log if present (typical names: compile.log, check-compile.log)
+        var errorsByFile = new Dictionary<string, List<CompileError>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var logName in new[] { "compile.log", "check-compile.log", "javac.log", "dotnet-build.log" })
+        {
+            var logPath = Path.Combine(folder, logName);
+            if (!File.Exists(logPath)) continue;
+            try
+            {
+                var lines = File.ReadAllLines(logPath);
+                // javac: "<path>:<line>: error: <msg>"  ·  csc/dotnet: "<path>(<line>,<col>): error <code>: <msg>"
+                var javacRx = new System.Text.RegularExpressions.Regex(@"^(.+?):(\d+):\s*(?:error|ERROR):\s*(.+)$");
+                var dotnetRx = new System.Text.RegularExpressions.Regex(@"^(.+?)\((\d+),\d+\):\s*(?:error|ERROR)\s+\w+:\s*(.+)$");
+                foreach (var ln in lines)
+                {
+                    var m1 = javacRx.Match(ln);
+                    var m  = m1.Success ? m1 : dotnetRx.Match(ln);
+                    if (!m.Success) continue;
+                    var fileName = Path.GetFileName(m.Groups[1].Value.Trim());
+                    if (!errorsByFile.ContainsKey(fileName))
+                        errorsByFile[fileName] = new List<CompileError>();
+                    errorsByFile[fileName].Add(new CompileError(
+                        File: fileName,
+                        Line: int.TryParse(m.Groups[2].Value, out var n) ? n : null,
+                        Message: m.Groups[3].Value.Trim()
+                    ));
+                }
+            }
+            catch { /* fail-soft */ }
+        }
+
+        // Sort files: failing first, then by size desc
+        var fileInfos = files.Select(fi =>
+        {
+            string content = "";
+            try { content = File.ReadAllText(fi.FullName); } catch { /* skip unreadable */ }
+            var fileName = fi.Name;
+            errorsByFile.TryGetValue(fileName, out var errs);
+            return new CompileFile(
+                FileName: fileName,
+                Path: Path.GetRelativePath(_repoRoot, fi.FullName),
+                LineCount: content.Count(c => c == '\n') + 1,
+                Content: content.Length > 200000 ? content.Substring(0, 200000) + "\n... (truncated)" : content,
+                HasError: errs?.Count > 0,
+                ErrorCount: errs?.Count ?? 0
+            );
+        })
+        .OrderByDescending(f => f.HasError)
+        .ThenByDescending(f => f.ErrorCount)
+        .ThenByDescending(f => f.LineCount)
+        .ToList();
+
+        detail.Files = fileInfos;
+        detail.Errors = errorsByFile.SelectMany(kv => kv.Value).ToList();
+        return detail;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
     // Dependency Topology (PR-Portal-P3) — semantic overlay on existing graph
     // ─────────────────────────────────────────────────────────────────────
 
@@ -1290,6 +1388,17 @@ public record ProgramRunDetail(
     int? CompileErrors,
     int? GeneratedClasses,
     int? FallbackClasses);
+
+// #8 Compile-failure inspector
+public class CompileDetail
+{
+    public string RunId { get; set; } = "";
+    public string? OutputFolder { get; set; }
+    public List<CompileFile> Files { get; set; } = new();
+    public List<CompileError> Errors { get; set; } = new();
+}
+public record CompileFile(string FileName, string Path, int LineCount, string Content, bool HasError, int ErrorCount);
+public record CompileError(string File, int? Line, string Message);
 
 public class DashboardSummary
 {

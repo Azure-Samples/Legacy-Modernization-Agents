@@ -1,3 +1,53 @@
+/* ═══════════════════════════════════════════════════════════════════
+   DESIGN TOKENS (added 2026-05-31 · #17 consistent colors foundation)
+   Use these via var(--token) in all NEW styles. Existing literal hex
+   values are kept as-is to avoid a giant migration churn; replace
+   them piecewise as files are touched.
+   ═══════════════════════════════════════════════════════════════════ */
+:root {
+  /* ─── Status colors (canonical) ─── */
+  --color-success:        #10b981;
+  --color-success-bg:     rgba(16, 185, 129, 0.16);
+  --color-success-border: rgba(16, 185, 129, 0.4);
+  --color-warn:           #f59e0b;
+  --color-warn-bg:        rgba(245, 158, 11, 0.16);
+  --color-warn-border:    rgba(245, 158, 11, 0.4);
+  --color-fail:           #ef4444;
+  --color-fail-bg:        rgba(239, 68, 68, 0.16);
+  --color-fail-border:    rgba(239, 68, 68, 0.4);
+  --color-info:           #3b82f6;
+  --color-info-bg:        rgba(59, 130, 246, 0.16);
+  --color-info-border:    rgba(59, 130, 246, 0.4);
+  --color-accent-purple:  #a855f7;
+  --color-accent-cyan:    #38bdf8;
+  --color-accent-orange:  #fb923c;
+
+  /* ─── Trend colors (used by trend arrows, deltas) ─── */
+  --color-trend-up:       #10b981;
+  --color-trend-down:     #ef4444;
+  --color-trend-flat:     #94a3b8;
+
+  /* ─── Surface colors (panels, cards, deep backgrounds) ─── */
+  --bg-deep:              #030712;
+  --bg-panel:             #0a1322;
+  --bg-card:              #0c1424;
+  --bg-card-hover:        #131c30;
+  --bg-input:             #1e293b;
+  --border-subtle:        #1e293b;
+  --border-default:       #334155;
+  --border-strong:        #475569;
+
+  /* ─── Text ─── */
+  --text-primary:         #f8fafc;
+  --text-secondary:       #cbd5e1;
+  --text-muted:           #94a3b8;
+  --text-disabled:        #64748b;
+
+  /* ─── Numbers / accents (KPI tiles, gauges) ─── */
+  --num-positive:         #fbbf24;   /* amber — money / cost-attention */
+  --num-large:            #f8fafc;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -8762,3 +8812,113 @@ main.three-panel-layout {
 .mi-svc-row { cursor: pointer; transition: background 0.1s; }
 .mi-svc-row:hover { background: rgba(59, 130, 246, 0.1); }
 .mi-svc-row-active { background: rgba(59, 130, 246, 0.22); border-left: 3px solid #3b82f6; }
+
+/* #14 heatmap zoom + scroll */
+.vc-heatmap-scroll {
+  max-height: 70vh; overflow: auto;
+  background: var(--bg-deep); border-radius: 4px; padding: 6px;
+}
+.vc-heatmap-controls {
+  margin-top: 10px; display: flex; align-items: center; gap: 12px;
+  font-size: 12px; color: var(--text-secondary); flex-wrap: wrap;
+}
+.vc-heatmap-controls input[type=range] { accent-color: var(--color-info); }
+.vc-heatmap-controls b { color: var(--color-info); }
+
+/* #12 portal-wide auto-refresh "live" indicator pip */
+.portal-auto-pip {
+  position: absolute; top: 12px; right: 12px; z-index: 50;
+  background: var(--bg-card); color: var(--color-success);
+  padding: 3px 9px; border-radius: 12px; font-size: 10px; font-weight: 600;
+  border: 1px solid var(--color-success-border);
+  opacity: 0.6; transition: opacity 0.4s, transform 0.2s, box-shadow 0.4s;
+  letter-spacing: 0.6px; pointer-events: none;
+}
+.portal-auto-pip-flash {
+  opacity: 1; transform: scale(1.1);
+  box-shadow: 0 0 0 3px var(--color-success-bg);
+}
+
+/* #8 compile-failure deep-link */
+.mi-tl-row-fail { cursor: pointer; transition: background 0.1s; }
+.mi-tl-row-fail:hover { background: var(--color-fail-bg); }
+.mi-tl-row-fail td:first-child::before { content: "▶ "; color: var(--color-fail); font-weight: 700; }
+
+.mi-modal {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 1000;
+  display: none; align-items: flex-start; justify-content: center;
+  padding: 40px 20px; overflow-y: auto;
+}
+.mi-modal-card {
+  background: var(--bg-panel); border: 1px solid var(--border-default);
+  border-radius: 8px; padding: 18px; max-width: 800px; width: 100%;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+}
+.mi-modal-card-wide { max-width: 1400px; }
+.mi-modal-header {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  gap: 16px; margin-bottom: 14px; padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.mi-modal-title { font-size: 16px; font-weight: 700; color: var(--text-primary); }
+.mi-modal-sub { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.mi-modal-body { max-height: 70vh; overflow-y: auto; }
+
+.mi-compile-grid { display: grid; grid-template-columns: 280px 1fr; gap: 12px; }
+.mi-compile-sidebar {
+  background: var(--bg-card); border: 1px solid var(--border-subtle);
+  border-radius: 4px; padding: 8px; max-height: 65vh; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.mi-compile-folder {
+  font-size: 9px; color: var(--text-muted); padding: 4px 6px;
+  border-bottom: 1px solid var(--border-subtle); margin-bottom: 4px;
+}
+.mi-compile-file {
+  background: transparent; border: 1px solid transparent;
+  color: var(--text-secondary); padding: 6px 10px; border-radius: 3px;
+  text-align: left; cursor: pointer; font-size: 11px; transition: background 0.1s;
+}
+.mi-compile-file:hover { background: var(--bg-input); }
+.mi-compile-file-active {
+  background: var(--color-info-bg); border-color: var(--color-info-border);
+  color: var(--text-primary);
+}
+.mi-compile-file-name { font-weight: 600; }
+.mi-compile-file-meta { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
+
+.mi-compile-main { min-width: 0; }
+.mi-compile-source-header {
+  background: var(--bg-card); padding: 6px 10px; border-radius: 3px 3px 0 0;
+  font-size: 11px; color: var(--text-muted);
+}
+.mi-compile-source {
+  background: var(--bg-deep); border: 1px solid var(--border-subtle);
+  border-top: 0; border-radius: 0 0 3px 3px;
+  max-height: 55vh; overflow: auto; padding: 0; margin: 0;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 11px;
+}
+.mi-compile-source code { display: block; }
+.mi-compile-line { display: flex; gap: 8px; padding: 1px 0; }
+.mi-compile-line-error {
+  background: var(--color-fail-bg); border-left: 2px solid var(--color-fail);
+}
+.mi-compile-lineno {
+  flex: 0 0 50px; text-align: right; color: var(--text-disabled);
+  padding-right: 8px; user-select: none; border-right: 1px solid var(--border-subtle);
+}
+.mi-compile-linetext { color: var(--text-secondary); white-space: pre; }
+.mi-compile-line-error .mi-compile-linetext { color: var(--text-primary); }
+
+.mi-compile-errors {
+  background: var(--bg-card); border: 1px solid var(--color-fail-border);
+  border-radius: 4px; padding: 10px; margin-top: 10px;
+}
+.mi-compile-errors h4 { margin: 0 0 8px 0; color: var(--color-fail); font-size: 13px; }
+.mi-compile-error {
+  background: var(--bg-deep); padding: 6px 10px; border-radius: 3px;
+  margin-bottom: 4px; font-size: 11px; border-left: 2px solid var(--color-fail);
+}
+.mi-compile-error code { color: var(--color-accent-cyan); font-size: 11px; }
+.mi-compile-error b { color: var(--color-fail); margin-left: 4px; }
+.mi-compile-error div { color: var(--text-secondary); margin-top: 3px; font-family: monospace; }

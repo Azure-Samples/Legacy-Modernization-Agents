@@ -7085,18 +7085,91 @@ app.MapGet("/api/prompts/token-usage", (int? minutes, int? days) =>
 			return sorted[idx];
 		}
 
+		// ─── Cost estimation (#5 cost calculator) ────────────────────
+		// Look up the active model from Config/ai-config.local.env, then
+		// match against Data/llm-pricing.json. Assume a 60/40 input/output
+		// token split as a conservative default since the logs don't
+		// distinguish prompt vs completion tokens.
+		string activeModel = "";
+		try
+		{
+			var cfgPath = Path.Combine(repoRoot, "Config", "ai-config.local.env");
+			if (File.Exists(cfgPath))
+			{
+				// Two-pass: collect all KEY=VALUE first, then expand $VAR references.
+				var vars = new Dictionary<string, string>(StringComparer.Ordinal);
+				var rx = new System.Text.RegularExpressions.Regex(@"^\s*([A-Z_][A-Z0-9_]*)\s*=\s*""?([^""]+?)""?\s*$");
+				foreach (var ln in File.ReadLines(cfgPath))
+				{
+					var m = rx.Match(ln);
+					if (m.Success) vars[m.Groups[1].Value] = m.Groups[2].Value;
+				}
+				if (vars.TryGetValue("AZURE_OPENAI_MODEL_ID", out var raw))
+				{
+					activeModel = raw;
+					// Expand ${VAR} or $VAR references (one level of substitution)
+					var refRx = new System.Text.RegularExpressions.Regex(@"\$\{?([A-Z_][A-Z0-9_]*)\}?");
+					activeModel = refRx.Replace(activeModel, m =>
+						vars.TryGetValue(m.Groups[1].Value, out var v) ? v : m.Value);
+				}
+			}
+		}
+		catch { /* fail-soft */ }
+
+		double inputPerM = 2.50, outputPerM = 10.00;
+		string priceModelLabel = "Default (no pricing match)";
+		try
+		{
+			var pricingPath = Path.Combine(repoRoot, "Data", "llm-pricing.json");
+			if (File.Exists(pricingPath))
+			{
+				using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(pricingPath));
+				var root = doc.RootElement;
+				bool matched = false;
+				if (root.TryGetProperty("models", out var modelsEl))
+				{
+					foreach (var el in modelsEl.EnumerateArray())
+					{
+						var matcher = el.GetProperty("modelMatcher").GetString() ?? "";
+						if (!string.IsNullOrEmpty(activeModel) &&
+						    activeModel.Contains(matcher, StringComparison.OrdinalIgnoreCase))
+						{
+							inputPerM = el.GetProperty("input").GetDouble();
+							outputPerM = el.GetProperty("output").GetDouble();
+							priceModelLabel = el.GetProperty("displayName").GetString() ?? matcher;
+							matched = true; break;
+						}
+					}
+				}
+				if (!matched && root.TryGetProperty("_fallback", out var fb))
+				{
+					inputPerM = fb.GetProperty("input").GetDouble();
+					outputPerM = fb.GetProperty("output").GetDouble();
+					priceModelLabel = fb.GetProperty("displayName").GetString() ?? priceModelLabel;
+				}
+			}
+		}
+		catch { /* fail-soft */ }
+
+		// 60% input / 40% output split is a reasonable estimate for migration
+		// agents — conversion prompts are large, output is structured code.
+		double CostForTokens(long tokens) =>
+			(tokens * 0.60 * inputPerM + tokens * 0.40 * outputPerM) / 1_000_000.0;
+
 		var agents = perAgent.Select(kv =>
 		{
 			var sorted = kv.Value.OrderBy(x => x).ToList();
+			var total = sorted.Sum();
 			return new
 			{
 				agent = kv.Key,
 				calls = sorted.Count,
-				total = sorted.Sum(),
+				total,
 				mean  = (int)Math.Round(sorted.Average()),
 				p50   = Percentile(sorted, 0.50),
 				p95   = Percentile(sorted, 0.95),
 				max   = sorted.Last(),
+				estimatedCostUsd = Math.Round(CostForTokens(total), 4),
 			};
 		})
 		.OrderByDescending(a => a.total)
@@ -7107,7 +7180,17 @@ app.MapGet("/api/prompts/token-usage", (int? minutes, int? days) =>
 			windowMinutes,
 			filesScanned = files.Count,
 			source = "Logs/FULL_CHAT_LOG_*.md (parsed in-memory; no separate datastore)",
-			agents
+			agents,
+			pricing = new
+			{
+				activeModel = string.IsNullOrEmpty(activeModel) ? "(unknown)" : activeModel,
+				priceModelLabel,
+				inputUsdPerMillion = inputPerM,
+				outputUsdPerMillion = outputPerM,
+				assumedSplit = "60% input / 40% output",
+				totalEstimatedUsd = Math.Round(agents.Sum(a => a.estimatedCostUsd), 4),
+				note = "Pricing config: Data/llm-pricing.json — edit + refresh, no rebuild needed."
+			}
 		});
 	}
 	catch (Exception ex)
@@ -9026,6 +9109,11 @@ app.MapGet("/api/modernization/runs",
 app.MapGet("/api/modernization/runs/{runId}/timeline",
     (string runId, McpChatWeb.Services.ModernizationIntelligenceService svc) =>
         Results.Ok(svc.GetRunTimeline(runId)));
+
+// #8 compile-failure inspector — generated files + parsed compile errors for one run
+app.MapGet("/api/modernization/runs/{runId}/compile-detail",
+    (string runId, McpChatWeb.Services.ModernizationIntelligenceService svc) =>
+        Results.Ok(svc.GetCompileDetail(runId)));
 
 // PR Portal-P3: Dependency Topology (semantic overlay on existing Neo4j graph).
 // Frontend cross-references this with /api/graph/rekt/services for nodes+edges.

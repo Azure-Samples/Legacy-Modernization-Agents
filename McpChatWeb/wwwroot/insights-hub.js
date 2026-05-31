@@ -24,6 +24,8 @@ class InsightsHub {
     this._activePersona = 'business';
     this._data = null;  // shared snapshot across personas
     this._renderShell();
+    // #12: auto-refresh — every 30s while this surface is visible
+    PortalAutoRefresh?.attach(this, 30000);
   }
 
   _renderShell() {

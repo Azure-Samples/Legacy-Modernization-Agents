@@ -23,6 +23,8 @@ class ModernizationIntelligenceView {
     if (!this.root) return;
     this._activeSubview = 'dashboard';
     this._renderShell();
+    // #12: auto-refresh — every 30s while this surface is visible
+    PortalAutoRefresh?.attach(this, 30000);
   }
 
   _renderShell() {
@@ -388,9 +390,118 @@ class ModernizationIntelligenceView {
     try {
       const t = await fetch(`/api/modernization/runs/${encodeURIComponent(runId)}/timeline`).then(r => r.json());
       panel.innerHTML = this._renderTimeline(t);
+      // #8: wire compile-failure deep-link rows
+      panel.querySelectorAll('.mi-tl-row-fail').forEach(row => {
+        row.addEventListener('click', () => this._openCompileInspector(row.dataset.runid));
+      });
     } catch (err) {
       panel.innerHTML = `<div class="mi-error">Failed: ${this._escape(err.message)}</div>`;
     }
+  }
+
+  /** #8 compile-failure deep link — opens a modal with the broken generated file. */
+  async _openCompileInspector(runId) {
+    let modal = document.getElementById('mi-compile-modal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'mi-compile-modal';
+      modal.className = 'mi-modal';
+      document.body.appendChild(modal);
+    }
+    modal.style.display = 'flex';
+    modal.innerHTML = `
+      <div class="mi-modal-card mi-modal-card-wide">
+        <div class="mi-modal-header">
+          <div>
+            <div class="mi-modal-title">🔴 Compile failure inspector — Run #${this._escape(runId)}</div>
+            <div class="mi-modal-sub">Loading generated files + compile log…</div>
+          </div>
+          <button class="mi-btn" onclick="document.getElementById('mi-compile-modal').style.display='none';">✕ Close</button>
+        </div>
+        <div id="mi-compile-body" class="mi-modal-body"><div class="mi-loading">Loading…</div></div>
+      </div>
+    `;
+    try {
+      const d = await fetch(`/api/modernization/runs/${encodeURIComponent(runId)}/compile-detail`).then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      });
+      const body = modal.querySelector('#mi-compile-body');
+      body.innerHTML = this._renderCompileDetail(d);
+    } catch (err) {
+      modal.querySelector('#mi-compile-body').innerHTML =
+        `<div class="mi-error">Failed: ${this._escape(err.message)}</div>`;
+    }
+  }
+
+  _renderCompileDetail(d) {
+    if (!d.outputFolder) {
+      return `<div class="mi-empty">No output folder found for run #${this._escape(d.runId)}.
+        The run completed before per-run isolated folders were introduced, or the folder was deleted.</div>`;
+    }
+    const fileList = (d.files || []).map((f, i) => `
+      <button class="mi-compile-file ${i === 0 ? 'mi-compile-file-active' : ''}"
+              data-idx="${i}" onclick="window.modernizationIntelligenceView._showCompileFile(${i})">
+        <div class="mi-compile-file-name">${this._escape(f.fileName)}</div>
+        <div class="mi-compile-file-meta">${f.lineCount} lines${f.hasError ? ` · <b style="color:var(--color-fail);">${f.errorCount} err</b>` : ''}</div>
+      </button>
+    `).join('');
+    this._compileFiles = d.files || [];
+    this._compileErrors = d.errors || [];
+    const firstFile = (d.files || [])[0];
+    return `
+      <div class="mi-compile-grid">
+        <div class="mi-compile-sidebar">
+          <div class="mi-compile-folder"><code>${this._escape(d.outputFolder)}</code></div>
+          ${fileList || '<div class="mi-muted vc-pad">No generated files in this run\'s folder.</div>'}
+        </div>
+        <div class="mi-compile-main">
+          <div id="mi-compile-source">
+            ${firstFile ? this._renderCompileSource(firstFile, this._compileErrors) :
+              '<div class="mi-muted vc-pad">Pick a file to view its source.</div>'}
+          </div>
+          ${d.errors && d.errors.length > 0 ? `
+            <div class="mi-compile-errors">
+              <h4>⚠ Compile errors (${d.errors.length})</h4>
+              ${d.errors.slice(0, 20).map(e => `
+                <div class="mi-compile-error">
+                  <code>${this._escape(e.file || '?')}</code>
+                  ${e.line ? `<b>:line ${e.line}</b>` : ''}
+                  <div>${this._escape(e.message || '')}</div>
+                </div>
+              `).join('')}
+            </div>` : '<div class="mi-muted vc-pad">No structured compile errors found (compile-quality log may use a different format).</div>'}
+        </div>
+      </div>
+    `;
+  }
+
+  _renderCompileSource(file, errors) {
+    const errorLines = new Set((errors || []).filter(e => e.file === file.fileName && e.line).map(e => e.line));
+    const lines = (file.content || '').split('\n');
+    return `
+      <div class="mi-compile-source-header">
+        <code>${this._escape(file.path)}</code> · ${lines.length} lines
+        ${errorLines.size ? `<span style="color:var(--color-fail); margin-left:8px;">${errorLines.size} flagged line${errorLines.size === 1 ? '' : 's'}</span>` : ''}
+      </div>
+      <pre class="mi-compile-source"><code>${lines.map((ln, i) => {
+        const lineNum = i + 1;
+        const isErr = errorLines.has(lineNum);
+        return `<div class="mi-compile-line ${isErr ? 'mi-compile-line-error' : ''}">` +
+          `<span class="mi-compile-lineno">${lineNum}</span>` +
+          `<span class="mi-compile-linetext">${this._escape(ln) || '&nbsp;'}</span>` +
+          `</div>`;
+      }).join('')}</code></pre>
+    `;
+  }
+
+  _showCompileFile(idx) {
+    const f = this._compileFiles[idx];
+    if (!f) return;
+    document.querySelectorAll('.mi-compile-file').forEach((el, i) =>
+      el.classList.toggle('mi-compile-file-active', i === idx));
+    document.getElementById('mi-compile-source').innerHTML =
+      this._renderCompileSource(f, this._compileErrors);
   }
 
   _renderTimeline(t) {
@@ -422,14 +533,19 @@ class ModernizationIntelligenceView {
     }).join('');
 
     // Tabular details below the timeline
-    const rows = t.events.map(e => {
+    const rows = t.events.map((e, idx) => {
       const cells = [];
       cells.push(`<td class="num">+${e.offsetMs}ms</td>`);
       cells.push(`<td>${this._eventBadge(e.event)}</td>`);
       cells.push(`<td>${this._escape(e.agent || '')}</td>`);
       const detail = this._timelineEventDetail(e);
       cells.push(`<td>${detail}</td>`);
-      return `<tr>${cells.join('')}</tr>`;
+      // #8: compile-failure rows are clickable → opens the broken file viewer
+      const isCompileFail = e.event === 'quality_metrics' && e.compileSuccess === false;
+      const rowAttrs = isCompileFail
+        ? ` class="mi-tl-row-fail" data-runid="${this._escape(t.runId)}" data-idx="${idx}" title="Click to inspect the failing generated file"`
+        : '';
+      return `<tr${rowAttrs}>${cells.join('')}</tr>`;
     }).join('');
 
     return `
