@@ -366,17 +366,221 @@ class ModernizationIntelligenceView {
     return `
       <div class="mi-runtime-layout">
         <div class="mi-card mi-runs-panel">
-          <h3>Recent runs</h3>
+          <div class="mi-runs-header">
+            <h3 style="margin:0;">Recent runs</h3>
+            <button id="mi-compare-runs-btn" class="mi-btn mi-btn-sm"
+                    onclick="window.modernizationIntelligenceView._openRunCompareDialog();"
+                    title="Pick two runs to compare side-by-side">⇄ Compare A/B</button>
+          </div>
           <table class="mi-table mi-table-dense mi-runs-table">
             <thead><tr><th>Run</th><th>Events</th><th>LLM ok</th><th>Proj</th><th>Cache</th><th>Time (UTC)</th></tr></thead>
             <tbody>${runRows}</tbody>
           </table>
         </div>
         <div id="mi-timeline-panel" class="mi-timeline-panel">
-          <div class="mi-loading">Select a run on the left.</div>
+          <div class="mi-loading">Select a run on the left, or click <b>⇄ Compare A/B</b> to compare two runs.</div>
         </div>
       </div>
     `;
+  }
+
+  // ────────────────────────────────────────────────────────────────────
+  // #1 Run comparison — side-by-side A/B diff
+  // ────────────────────────────────────────────────────────────────────
+  async _openRunCompareDialog() {
+    // Pick from the rendered runs table; offer the latest run as A and the second-latest as B by default
+    const rows = Array.from(this.root.querySelectorAll('.mi-run-row'));
+    const runIds = rows.map(r => r.dataset.run);
+    if (runIds.length < 2) {
+      alert('Need at least 2 runs with telemetry to compare. Run another conversion first.');
+      return;
+    }
+    const a = runIds[0], b = runIds[1];
+    const opts = runIds.map(r => `<option value="${this._escape(r)}">#${this._escape(r)}</option>`).join('');
+    let modal = document.getElementById('mi-compare-modal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'mi-compare-modal';
+      modal.className = 'mi-modal';
+      document.body.appendChild(modal);
+      modal.addEventListener('click', (e) => {
+        if (e.target === modal) modal.style.display = 'none';
+      });
+    }
+    modal.style.display = 'flex';
+    modal.innerHTML = `
+      <div class="mi-modal-card mi-modal-card-wide" onclick="event.stopPropagation();">
+        <div class="mi-modal-header">
+          <div>
+            <div class="mi-modal-title">⇄ Run comparison (A/B)</div>
+            <div class="mi-modal-sub">Side-by-side delta of two runs — answers "did my prompt / model / config change help?"</div>
+          </div>
+          <button class="mi-btn" onclick="document.getElementById('mi-compare-modal').style.display='none';">✕ Close</button>
+        </div>
+        <div class="mi-compare-pickers">
+          <label>Run A (baseline) <select id="mi-cmp-a">${opts}</select></label>
+          <label>Run B (compare against A) <select id="mi-cmp-b">${opts}</select></label>
+          <button class="mi-btn mi-btn-primary" onclick="window.modernizationIntelligenceView._runComparison();">Run comparison →</button>
+        </div>
+        <div id="mi-compare-body" class="mi-modal-body"><div class="mi-muted vc-pad">Pick A and B, then click "Run comparison →"</div></div>
+      </div>
+    `;
+    document.getElementById('mi-cmp-a').value = a;
+    document.getElementById('mi-cmp-b').value = b;
+    // Auto-trigger the comparison so the user sees something immediately
+    this._runComparison();
+  }
+
+  async _runComparison() {
+    const a = document.getElementById('mi-cmp-a').value;
+    const b = document.getElementById('mi-cmp-b').value;
+    const body = document.getElementById('mi-compare-body');
+    if (a === b) { body.innerHTML = '<div class="mi-error">Pick two different runs.</div>'; return; }
+    body.innerHTML = '<div class="mi-loading">Loading…</div>';
+    try {
+      const [tA, tB] = await Promise.all([
+        fetch(`/api/modernization/runs/${encodeURIComponent(a)}/timeline`).then(r => r.json()),
+        fetch(`/api/modernization/runs/${encodeURIComponent(b)}/timeline`).then(r => r.json()),
+      ]);
+      body.innerHTML = this._renderCompare(a, b, tA, tB);
+    } catch (err) {
+      body.innerHTML = `<div class="mi-error">Failed: ${this._escape(err.message)}</div>`;
+    }
+  }
+
+  _renderCompare(idA, idB, tA, tB) {
+    // KPI extraction
+    const kpis = (t) => {
+      const evs = t.events || [];
+      const llm = evs.filter(e => e.event === 'llm_call');
+      const cache = evs.filter(e => e.event === 'cache_event');
+      const cacheHits = cache.filter(e => e.decision === 'hit').length;
+      const llmSuccess = llm.filter(e => e.outcome === 'success').length;
+      const proj = evs.filter(e => e.event === 'projection_metrics');
+      const quality = evs.filter(e => e.event === 'quality_metrics');
+      const compileGate = quality[quality.length - 1];
+      const tokens = llm.reduce((s, e) => s + (e.completionTokens || 0), 0);
+      const avgRedPct = proj.length === 0 ? null : Math.round(proj
+        .filter(e => e.rawRektTokens && e.projectionTokens)
+        .reduce((s, e, _, a) => s + ((e.rawRektTokens - e.projectionTokens) / e.rawRektTokens * 100 / a.length), 0));
+      return {
+        totalSec:        (t.totalDurationMs / 1000).toFixed(1),
+        eventCount:      evs.length,
+        llmCalls:        llm.length,
+        llmSuccess,
+        cacheHitRate:    cache.length ? Math.round(cacheHits * 100 / cache.length) : null,
+        projectionCount: proj.length,
+        projectionAvgRedPct: avgRedPct,
+        outputTokens:    tokens,
+        compilePass:     compileGate ? compileGate.compileSuccess : null,
+        compileErrors:   compileGate ? (compileGate.braceImbalance || 0) : 0,
+      };
+    };
+    const A = kpis(tA), B = kpis(tB);
+    const delta = (a, b, unit = '', goodIsLower = false) => {
+      if (a == null || b == null) return '<span class="mi-muted">—</span>';
+      const diff = b - a;
+      if (diff === 0) return `<span class="mi-muted">=</span>`;
+      const positive = diff > 0;
+      const isGood = goodIsLower ? !positive : positive;
+      const color = isGood ? 'var(--color-success)' : 'var(--color-fail)';
+      const arrow = positive ? '▲' : '▼';
+      const pct = a !== 0 ? Math.round(diff * 100 / Math.abs(a)) : 0;
+      return `<span style="color:${color};font-weight:600;">${arrow} ${positive ? '+' : ''}${diff}${unit} ${pct ? `(${positive ? '+' : ''}${pct}%)` : ''}</span>`;
+    };
+    const compileBadge = (v) => v === true ? '<span style="color:var(--color-success);">✅ pass</span>'
+                                : v === false ? '<span style="color:var(--color-fail);">❌ fail</span>'
+                                : '<span class="mi-muted">no gate</span>';
+    return `
+      <div class="mi-cmp-grid">
+        <table class="mi-cmp-table">
+          <thead><tr>
+            <th>Metric</th>
+            <th class="mi-cmp-a">Run A · #${this._escape(idA)}</th>
+            <th class="mi-cmp-b">Run B · #${this._escape(idB)}</th>
+            <th>Δ (B - A)</th>
+            <th>Verdict</th>
+          </tr></thead>
+          <tbody>
+            <tr>
+              <td>Total duration</td>
+              <td>${A.totalSec}s</td>
+              <td>${B.totalSec}s</td>
+              <td>${delta(parseFloat(A.totalSec), parseFloat(B.totalSec), 's', true)}</td>
+              <td class="mi-muted">lower = faster</td>
+            </tr>
+            <tr>
+              <td>Telemetry events</td>
+              <td>${A.eventCount}</td>
+              <td>${B.eventCount}</td>
+              <td>${delta(A.eventCount, B.eventCount, '', true)}</td>
+              <td class="mi-muted">fewer = simpler path</td>
+            </tr>
+            <tr>
+              <td>LLM calls (success / total)</td>
+              <td>${A.llmSuccess} / ${A.llmCalls}</td>
+              <td>${B.llmSuccess} / ${B.llmCalls}</td>
+              <td>${delta(A.llmCalls, B.llmCalls, '', true)}</td>
+              <td class="mi-muted">fewer = less chunking</td>
+            </tr>
+            <tr>
+              <td>Output tokens generated</td>
+              <td>${A.outputTokens.toLocaleString()}</td>
+              <td>${B.outputTokens.toLocaleString()}</td>
+              <td>${delta(A.outputTokens, B.outputTokens, '', true)}</td>
+              <td class="mi-muted">fewer = more concise</td>
+            </tr>
+            <tr>
+              <td>Cache hit rate</td>
+              <td>${A.cacheHitRate ?? '—'}${A.cacheHitRate != null ? '%' : ''}</td>
+              <td>${B.cacheHitRate ?? '—'}${B.cacheHitRate != null ? '%' : ''}</td>
+              <td>${delta(A.cacheHitRate, B.cacheHitRate, '%')}</td>
+              <td class="mi-muted">higher = better reuse</td>
+            </tr>
+            <tr>
+              <td>Projection events</td>
+              <td>${A.projectionCount}</td>
+              <td>${B.projectionCount}</td>
+              <td>${delta(A.projectionCount, B.projectionCount, '', true)}</td>
+              <td class="mi-muted">stable = same chunks</td>
+            </tr>
+            <tr>
+              <td>Avg projection reduction</td>
+              <td>${A.projectionAvgRedPct ?? '—'}${A.projectionAvgRedPct != null ? '%' : ''}</td>
+              <td>${B.projectionAvgRedPct ?? '—'}${B.projectionAvgRedPct != null ? '%' : ''}</td>
+              <td>${delta(A.projectionAvgRedPct, B.projectionAvgRedPct, '%')}</td>
+              <td class="mi-muted">higher = denser context</td>
+            </tr>
+            <tr>
+              <td>Compile gate</td>
+              <td>${compileBadge(A.compilePass)}</td>
+              <td>${compileBadge(B.compilePass)}</td>
+              <td>${A.compilePass === B.compilePass ? '<span class="mi-muted">=</span>'
+                  : (B.compilePass === true ? '<span style="color:var(--color-success);font-weight:600;">🎉 newly passing</span>'
+                     : '<span style="color:var(--color-fail);font-weight:600;">⚠ regressed</span>')}</td>
+              <td class="mi-muted">pass = the win</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="mi-cmp-verdict">
+          <h4>Bottom line</h4>
+          ${this._compareVerdict(A, B)}
+        </div>
+      </div>
+    `;
+  }
+
+  _compareVerdict(A, B) {
+    const points = [];
+    if (A.compilePass === false && B.compilePass === true)  points.push('<li>🎉 <b>B fixed the compile failure.</b> Whatever changed (prompt, model, config) is worth keeping.</li>');
+    if (A.compilePass === true  && B.compilePass === false) points.push('<li>⚠ <b>B regressed the compile gate.</b> Revert or investigate immediately.</li>');
+    if (B.llmCalls < A.llmCalls)                            points.push('<li>📉 B used <b>${a}</b> fewer LLM calls — likely better projection or chunking.</li>'.replace('${a}', A.llmCalls - B.llmCalls));
+    if (B.cacheHitRate != null && A.cacheHitRate != null && B.cacheHitRate > A.cacheHitRate + 5) points.push('<li>💾 Cache hit rate improved by <b>${a}%</b> — your projection determinism is paying off.</li>'.replace('${a}', B.cacheHitRate - A.cacheHitRate));
+    if (parseFloat(B.totalSec) < parseFloat(A.totalSec) * 0.8) points.push('<li>⚡ B is <b>${a}% faster</b> end-to-end.</li>'.replace('${a}', Math.round((1 - parseFloat(B.totalSec) / parseFloat(A.totalSec)) * 100)));
+    if (B.outputTokens > A.outputTokens * 1.3) points.push('<li>💰 B generated <b>${a}% more output tokens</b> — check whether the model started padding or whether the program is truly larger.</li>'.replace('${a}', Math.round((B.outputTokens / A.outputTokens - 1) * 100)));
+    if (points.length === 0) return '<p class="mi-muted">No significant difference between the two runs across the tracked metrics.</p>';
+    return `<ul>${points.join('')}</ul>`;
   }
 
   async _loadRunTimeline(runId) {
@@ -463,10 +667,69 @@ class ModernizationIntelligenceView {
     this._compileFiles = d.files || [];
     this._compileErrors = d.errors || [];
     const firstFile = (d.files || [])[0];
+    const isLegacy = d.outputFolder === 'output/java' || d.outputFolder === 'output/csharp';
+    const errCount = (d.errors || []).length;
     return `
+      <details class="mi-compile-help" ${errCount === 0 ? 'open' : ''}>
+        <summary>ℹ️ What is this inspector and how do I use it? <span class="mi-muted">(click to expand)</span></summary>
+        <div class="mi-compile-help-body">
+          <p><b>Purpose.</b> When a <code>quality_metrics</code> event in the Runtime timeline reports
+          <span class="mi-bad">❌ compile</span>, this inspector lets you look directly at the generated
+          code that failed to compile — without leaving the portal. It's the bridge between
+          <i>"the agent produced something"</i> and <i>"is the something actually valid Java/C#?"</i>.</p>
+
+          <p><b>What you see.</b></p>
+          <ul>
+            <li><b>Output folder</b> (top of left pane) — the per-run isolated folder under
+              <code>output/runs/{runId}-…/</code> for new runs, or the legacy shared
+              <code>output/java</code> / <code>output/csharp</code> for runs before per-run isolation
+              shipped.${isLegacy ? ' <b style="color:var(--color-warn);">⚠ Run #' + this._escape(d.runId) + ' is a legacy run — you\'re seeing the shared folder, which contains files from many runs, not just this one.</b>' : ''}</li>
+            <li><b>File list (left)</b> — every generated <code>.java</code>/<code>.cs</code>/
+              <code>.kt</code>/<code>.ts</code>/<code>.scala</code> file in that folder. Files with
+              compile errors float to the top, marked with a red error count.</li>
+            <li><b>Source viewer (right)</b> — click a file to view its full source with line numbers.
+              Lines flagged by the compile log are highlighted red.</li>
+            <li><b>Compile errors panel (bottom right)</b> — structured errors parsed from
+              <code>compile.log</code>, <code>check-compile.log</code>, <code>javac.log</code>, or
+              <code>dotnet-build.log</code> if present in the run folder. Cross-references back to
+              each file/line.</li>
+          </ul>
+
+          <p><b>How to use it for debugging a failure.</b></p>
+          <ol>
+            <li>Find the file with the red error badge in the left pane (failing files are at the top).</li>
+            <li>Click it — the source viewer scrolls in.</li>
+            <li>Look at the red-highlighted lines. Common chunked-conversion bugs:
+              <ul>
+                <li><b>Bare <code>return</code> outside a method</b> → chunk boundary fell mid-method</li>
+                <li><b>Missing <code>}</code> or extra <code>}</code></b> → brace stitching broke</li>
+                <li><b>Duplicate class declarations</b> → SharedTypeRegistry not consulted (CS0101 in C#)</li>
+                <li><b>Unresolved symbol</b> → a CALL target wasn't included in the conversion scope</li>
+              </ul>
+            </li>
+            <li>The compile errors panel at the bottom right gives the exact compiler message if a log was found.</li>
+          </ol>
+
+          ${errCount === 0 && !isLegacy ? `
+          <p class="mi-muted"><b>No structured errors right now</b> because the compile-quality gate ran but
+          didn't emit a parseable log to this folder. Likely the gate is using a different log destination,
+          or the run actually passed at the file level (but the <code>quality_metrics</code> event was
+          flagged for a different reason). Try opening the largest files and looking for visually obvious
+          syntax breaks (mismatched braces, stray <code>return</code>).</p>` : ''}
+
+          ${errCount === 0 && isLegacy ? `
+          <p class="mi-muted"><b>Why no error highlights?</b> Run #${this._escape(d.runId)} predates the
+          per-run isolated output folder feature, so it dumped files into the shared
+          <code>output/java</code>/<code>output/csharp</code> folder. There's no per-run compile log
+          here to parse. Re-run the conversion using a recent build and the new run's folder will
+          contain a dedicated compile.log that this inspector can highlight.</p>` : ''}
+        </div>
+      </details>
+
       <div class="mi-compile-grid">
         <div class="mi-compile-sidebar">
-          <div class="mi-compile-folder"><code>${this._escape(d.outputFolder)}</code></div>
+          <div class="mi-compile-folder">📁 <code>${this._escape(d.outputFolder)}</code></div>
+          <div class="mi-compile-count">${(d.files || []).length} file${(d.files || []).length === 1 ? '' : 's'} · ${errCount} error${errCount === 1 ? '' : 's'}</div>
           ${fileList || '<div class="mi-muted vc-pad">No generated files in this run\'s folder.</div>'}
         </div>
         <div class="mi-compile-main">
@@ -484,7 +747,7 @@ class ModernizationIntelligenceView {
                   <div>${this._escape(e.message || '')}</div>
                 </div>
               `).join('')}
-            </div>` : '<div class="mi-muted vc-pad">No structured compile errors found (compile-quality log may use a different format).</div>'}
+            </div>` : ''}
         </div>
       </div>
     `;
@@ -1713,8 +1976,8 @@ class ModernizationIntelligenceView {
                   <td><code>${this._escape(m.relativePath)}</code></td>
                   <td>${m.matchedParagraphs.length === 0 ? '<span class="mi-muted">—</span>' : m.matchedParagraphs.map(p => `<span class="mi-chip mi-chip-tiny mi-chip-green">${this._escape(p)}</span>`).join(' ')}</td>
                   <td>
-                    <button class="mi-link-btn" onclick="window.location.hash='ast-galaxy'; document.getElementById('galaxy-file-filter') && (document.getElementById('galaxy-file-filter').value='${this._escape(m.basename)}', galaxyView?.setFilter('${this._escape(m.basename)}'));">🌌 AST</button>
-                    ${m.factsPath ? `<a class="mi-link-btn" href="/${this._escape(m.factsPath)}" target="_blank">📄 facts</a>` : ''}
+                    ${PortalProgramActions.buttons(m.basename)}
+                    ${m.factsPath ? `<a class="ppa-btn" href="/${this._escape(m.factsPath)}" target="_blank" title="View raw facts.json">📄 facts</a>` : ''}
                   </td>
                 </tr>`).join('')}
             </tbody>

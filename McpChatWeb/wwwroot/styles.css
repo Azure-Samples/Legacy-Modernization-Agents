@@ -8941,3 +8941,91 @@ main.three-panel-layout {
 
 /* #12 ensure the shell containers anchor the absolutely-positioned LIVE pip */
 .mi-shell, .ih-shell, .vc-shell { position: relative; }
+
+/* #8 compile inspector — help panel */
+.mi-compile-help {
+  background: var(--bg-card); border: 1px solid var(--color-info-border);
+  border-radius: 6px; padding: 8px 14px; margin-bottom: 12px;
+}
+.mi-compile-help > summary {
+  cursor: pointer; color: var(--color-info); font-weight: 600;
+  font-size: 12px; padding: 4px 0; user-select: none; list-style: none;
+}
+.mi-compile-help > summary::-webkit-details-marker { display: none; }
+.mi-compile-help[open] > summary { margin-bottom: 8px; border-bottom: 1px solid var(--border-subtle); }
+.mi-compile-help-body { font-size: 12px; color: var(--text-secondary); line-height: 1.6; }
+.mi-compile-help-body p { margin: 8px 0; }
+.mi-compile-help-body ul, .mi-compile-help-body ol { margin: 4px 0 4px 18px; padding: 0; }
+.mi-compile-help-body li { margin: 3px 0; }
+.mi-compile-help-body code { background: var(--bg-deep); padding: 1px 5px; border-radius: 3px; font-size: 11px; color: var(--color-accent-cyan); }
+.mi-compile-help-body b { color: var(--text-primary); }
+.mi-compile-count {
+  font-size: 10px; color: var(--text-muted); padding: 2px 6px;
+  margin-bottom: 6px; border-bottom: 1px solid var(--border-subtle);
+}
+
+/* #1 run-comparison modal */
+.mi-runs-header {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 8px;
+}
+.mi-compare-pickers {
+  display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+  padding: 10px 12px; background: var(--bg-card);
+  border: 1px solid var(--border-subtle); border-radius: 4px;
+  margin-bottom: 12px; font-size: 12px;
+}
+.mi-compare-pickers label {
+  display: flex; align-items: center; gap: 6px; color: var(--text-secondary);
+}
+.mi-compare-pickers select {
+  background: var(--bg-deep); color: var(--text-primary);
+  border: 1px solid var(--border-default); border-radius: 3px;
+  padding: 4px 8px; font-family: monospace; font-size: 12px;
+}
+.mi-cmp-grid { display: flex; flex-direction: column; gap: 14px; }
+.mi-cmp-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.mi-cmp-table th {
+  background: var(--bg-input); color: var(--color-info);
+  text-align: left; padding: 8px 10px;
+}
+.mi-cmp-table th.mi-cmp-a { color: #c4b5fd; }
+.mi-cmp-table th.mi-cmp-b { color: #6ee7b7; }
+.mi-cmp-table td {
+  padding: 6px 10px; border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+}
+.mi-cmp-table td:first-child { color: var(--text-primary); font-weight: 600; }
+.mi-cmp-verdict {
+  background: var(--bg-card); border: 1px solid var(--color-info-border);
+  border-radius: 6px; padding: 12px 16px; color: var(--text-secondary);
+  font-size: 13px;
+}
+.mi-cmp-verdict h4 { margin: 0 0 8px 0; color: var(--color-info); font-size: 14px; }
+.mi-cmp-verdict ul { margin: 0; padding-left: 20px; }
+.mi-cmp-verdict li { margin: 6px 0; line-height: 1.5; }
+.mi-cmp-verdict b { color: var(--text-primary); }
+.mi-btn-sm { padding: 4px 10px; font-size: 11px; }
+
+/* #6 universal program-action CTAs */
+.ppa-actions { display: inline-flex; gap: 4px; flex-wrap: nowrap; }
+.ppa-btn {
+  background: var(--bg-input); border: 1px solid var(--border-default);
+  color: var(--text-secondary); padding: 3px 9px; border-radius: 3px;
+  font-size: 11px; cursor: pointer; transition: background 0.1s, color 0.1s;
+  white-space: nowrap;
+}
+.ppa-btn:hover { background: var(--bg-card-hover); color: var(--text-primary); }
+.ppa-btn-convert:hover { color: var(--color-success); border-color: var(--color-success-border); }
+.ppa-btn-ast:hover     { color: var(--color-info);    border-color: var(--color-info-border); }
+.ppa-btn-scorecard:hover { color: var(--color-accent-purple); border-color: rgba(168,85,247,0.4); }
+
+.ppa-toast {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(40px);
+  background: var(--bg-card); border: 1px solid var(--color-info-border);
+  color: var(--text-primary); padding: 10px 18px; border-radius: 6px;
+  font-size: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  opacity: 0; pointer-events: none; transition: opacity 0.2s, transform 0.2s;
+  z-index: 10600;
+}
+.ppa-toast-show { opacity: 1; transform: translateX(-50%) translateY(0); }
