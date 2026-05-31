@@ -107,6 +107,7 @@ class ModernizationIntelligenceView {
       } else if (this._activeSubview === 'services') {
         const data = await fetch('/api/modernization/service-candidates').then(r => r.json());
         body.innerHTML = this._renderServiceCandidates(data);
+        this._wireServiceCandidatesInteractions();
       } else if (this._activeSubview === 'waves') {
         const [apps, waves, health] = await Promise.all([
           fetch('/api/modernization/applications').then(r => r.json()),
@@ -1172,13 +1173,45 @@ class ModernizationIntelligenceView {
         }
       });
     });
-    // Service candidate row clicks → toggle detail panel
-    this.root.querySelectorAll('.mi-svc-row').forEach(row => {
+    // Service candidate row clicks → toggle detail panel (also wired separately
+    // from the 'services' subview path; this duplicate kept for safety when
+    // the Wave Planner shows service-candidate rows in its sidebar).
+    this._wireServiceCandidatesInteractions();
+  }
+
+  /**
+   * Wires click-to-expand for service-candidate rows in the 'services'
+   * subview. Each row toggles a detail panel below the table; clicking
+   * the active row again collapses it. Also scrolls the detail into view
+   * and highlights the active row.
+   */
+  _wireServiceCandidatesInteractions() {
+    const rows = this.root.querySelectorAll('.mi-svc-row');
+    if (rows.length === 0) return;
+    rows.forEach(row => {
+      // Only wire once.
+      if (row.dataset.wired === '1') return;
+      row.dataset.wired = '1';
+      row.style.cursor = 'pointer';
       row.addEventListener('click', () => {
         const name = row.dataset.name;
+        // Find current state — second click on active row collapses
+        const detail = this.root.querySelector(`[data-svc-detail="${CSS.escape(name)}"]`);
+        const wasOpen = detail && detail.style.display === 'block';
+
+        // Reset all rows + panels
+        this.root.querySelectorAll('.mi-svc-row').forEach(r =>
+          r.classList.toggle('mi-svc-row-active', false));
         this.root.querySelectorAll('[data-svc-detail]').forEach(d => {
-          d.style.display = d.dataset.svcDetail === name ? 'block' : 'none';
+          d.style.display = 'none';
         });
+
+        if (!wasOpen && detail) {
+          detail.style.display = 'block';
+          row.classList.add('mi-svc-row-active');
+          // Scroll the detail card into view so the user actually sees the change
+          setTimeout(() => detail.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 50);
+        }
       });
     });
   }

@@ -8758,3 +8758,7 @@ main.three-panel-layout {
 }
 .vc-btn-sm { padding: 3px 8px; font-size: 11px; }
 .vc-pad { padding: 16px; }
+
+.mi-svc-row { cursor: pointer; transition: background 0.1s; }
+.mi-svc-row:hover { background: rgba(59, 130, 246, 0.1); }
+.mi-svc-row-active { background: rgba(59, 130, 246, 0.22); border-left: 3px solid #3b82f6; }
