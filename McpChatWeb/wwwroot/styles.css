@@ -8861,8 +8861,8 @@ main.three-panel-layout {
 .mi-tl-row-fail td:first-child::before { content: "▶ "; color: var(--color-fail); font-weight: 700; }
 
 .mi-modal {
-  position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 1000;
-  display: none; align-items: flex-start; justify-content: center;
+  position: fixed; inset: 0; background: rgba(0,0,0,0.75); z-index: 10500;
+  display: none; align-items: center; justify-content: center;
   padding: 40px 20px; overflow-y: auto;
 }
 .mi-modal-card {

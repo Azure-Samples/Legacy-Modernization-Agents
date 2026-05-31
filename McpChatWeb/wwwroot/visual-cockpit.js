@@ -642,24 +642,26 @@ class VisualCockpit {
 
       <div class="vc-grid">
         <div class="vc-tile vc-tile-wide-2">
-          <div class="vc-tile-header">🔥 Coupling heatmap — top ${topCoupled.length} most-connected programs of ${couplingItems.length}</div>
+          <div class="vc-tile-header">🔥 Coupling heatmap — showing top ${topCoupled.length} of ${couplingItems.length} most-connected programs</div>
           <div class="vc-tile-sub">Cells show CALL relationships. Intensity = call count. Hover for details.</div>
-          <div class="vc-heatmap-scroll">
-            ${topCoupled.length ? this._heatmap(topCoupled, edges) : '<div class="vc-muted vc-pad">No CALL edges yet — run REKT scan</div>'}
-          </div>
+
           ${couplingItems.length > 0 ? `
-            <div class="vc-heatmap-controls">
-              <label>Show top
+            <div class="vc-heatmap-controls" style="margin-bottom:8px; margin-top:6px;">
+              <label>📏 Show top
                 <input type="range" min="6" max="${Math.min(Math.max(couplingItems.length, 18), 200)}" step="2"
                        value="${heatmapLimit}" id="vc-heatmap-zoom"
                        oninput="document.getElementById('vc-heatmap-zoom-val').textContent=this.value;"
                        onchange="window.visualCockpit?._setHeatmapLimit(parseInt(this.value));"
-                       style="vertical-align:middle;width:200px;"/>
-                <b id="vc-heatmap-zoom-val">${heatmapLimit}</b> / ${couplingItems.length} programs
+                       style="vertical-align:middle;width:240px; accent-color:var(--color-info);"/>
+                <b id="vc-heatmap-zoom-val" style="color:var(--color-info);">${heatmapLimit}</b> / ${couplingItems.length}
               </label>
-              <button class="vc-btn vc-btn-sm" onclick="window.visualCockpit?._setHeatmapLimit(${couplingItems.length});">show all</button>
-              <button class="vc-btn vc-btn-sm" onclick="window.visualCockpit?._setHeatmapLimit(18);">reset</button>
+              <button class="vc-btn vc-btn-sm" onclick="window.visualCockpit?._setHeatmapLimit(${couplingItems.length});">show all (${couplingItems.length})</button>
+              <button class="vc-btn vc-btn-sm" onclick="window.visualCockpit?._setHeatmapLimit(18);">reset (18)</button>
             </div>` : ''}
+
+          <div class="vc-heatmap-scroll">
+            ${topCoupled.length ? this._heatmap(topCoupled, edges) : '<div class="vc-muted vc-pad">No CALL edges yet — run REKT scan</div>'}
+          </div>
         </div>
       </div>
 

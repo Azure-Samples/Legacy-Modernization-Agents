@@ -407,16 +407,23 @@ class ModernizationIntelligenceView {
       modal.id = 'mi-compile-modal';
       modal.className = 'mi-modal';
       document.body.appendChild(modal);
+      // Close on backdrop click + Escape key
+      modal.addEventListener('click', (e) => {
+        if (e.target === modal) this._closeCompileInspector();
+      });
+      this._escHandler = (e) => { if (e.key === 'Escape') this._closeCompileInspector(); };
     }
+    document.addEventListener('keydown', this._escHandler);
+    document.body.style.overflow = 'hidden';   // lock scroll behind modal
     modal.style.display = 'flex';
     modal.innerHTML = `
-      <div class="mi-modal-card mi-modal-card-wide">
+      <div class="mi-modal-card mi-modal-card-wide" onclick="event.stopPropagation();">
         <div class="mi-modal-header">
           <div>
             <div class="mi-modal-title">🔴 Compile failure inspector — Run #${this._escape(runId)}</div>
             <div class="mi-modal-sub">Loading generated files + compile log…</div>
           </div>
-          <button class="mi-btn" onclick="document.getElementById('mi-compile-modal').style.display='none';">✕ Close</button>
+          <button class="mi-btn" onclick="window.modernizationIntelligenceView._closeCompileInspector();">✕ Close (Esc)</button>
         </div>
         <div id="mi-compile-body" class="mi-modal-body"><div class="mi-loading">Loading…</div></div>
       </div>
@@ -432,6 +439,13 @@ class ModernizationIntelligenceView {
       modal.querySelector('#mi-compile-body').innerHTML =
         `<div class="mi-error">Failed: ${this._escape(err.message)}</div>`;
     }
+  }
+
+  _closeCompileInspector() {
+    const modal = document.getElementById('mi-compile-modal');
+    if (modal) modal.style.display = 'none';
+    document.body.style.overflow = '';
+    if (this._escHandler) document.removeEventListener('keydown', this._escHandler);
   }
 
   _renderCompileDetail(d) {
