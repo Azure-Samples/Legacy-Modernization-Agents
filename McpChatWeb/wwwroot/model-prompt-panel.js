@@ -1112,6 +1112,11 @@ window.showTokenUsage = function () {
           💡 <strong>Why percentiles, not just average?</strong> A single 100k-token call can drag the Mean up by thousands while not telling you anything about the typical call.
           The median (p50) tells you the everyday cost; p95 / Max tell you about the tail. Always read them together.
         </p>
+        <p style="margin:6px 0 0 0;font-size:11px;color:#94a3b8;">
+          💰 <strong>Cost column shown only for per-token providers</strong> (Azure OpenAI / OpenAI direct).
+          <strong>GitHub Copilot</strong> is billed per-seat ($/user/month), so token counts are displayed for capacity tracking
+          but the $-conversion column is hidden — you'd be paying the same regardless of token volume.
+        </p>
       </div>
     </details>
 
@@ -1153,27 +1158,39 @@ window.loadTokenUsage = async function () {
     const fmt = n => Number(n).toLocaleString();
     const fmtUsd = n => '$' + Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     const p = data.pricing || {};
+    const isPerSeat = p.costsHidden === true;
+
     target.innerHTML = `
       <div style="color:#94a3b8;font-size:11px;margin-bottom:8px;">Scanned ${data.filesScanned} chat log(s) within the last ${minutes} minute(s).</div>
 
-      ${p.activeModel ? `
+      ${isPerSeat ? `
+      <div style="background:rgba(168,85,247,0.16); border:1px solid rgba(168,85,247,0.4); border-radius:6px; padding:10px 12px; margin-bottom:10px; font-size:12px;">
+        <div style="display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:10px;">
+          <div>
+            <b style="color:#c084fc;">🪪 ${escapeHtml(p.provider)} — per-seat billing</b>
+            <span style="color:#94a3b8;"> · model: <code>${escapeHtml(p.activeModel)}</code></span>
+          </div>
+          <div style="font-size:11px; color:#94a3b8;">${escapeHtml(p.billingModel)}</div>
+        </div>
+        <div style="color:#cbd5e1; font-size:11px; margin-top:6px;">${escapeHtml(p.note)}</div>
+      </div>` : (p.activeModel ? `
       <div style="background:var(--color-info-bg, rgba(59,130,246,0.16)); border:1px solid var(--color-info-border, rgba(59,130,246,0.4)); border-radius:6px; padding:10px 12px; margin-bottom:10px; font-size:12px;">
         <div style="display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:10px;">
           <div>
             <b style="color:#93c5fd;">💵 Estimated cost</b>
-            <span style="color:#94a3b8;"> · model: <code>${escapeHtml(p.activeModel)}</code> → <code>${escapeHtml(p.priceModelLabel)}</code> · ${escapeHtml(p.assumedSplit)}</span>
+            <span style="color:#94a3b8;"> · ${escapeHtml(p.provider || '')} · model: <code>${escapeHtml(p.activeModel)}</code> → <code>${escapeHtml(p.priceModelLabel)}</code> · ${escapeHtml(p.assumedSplit)}</span>
           </div>
           <div style="font-size:18px; color:#fbbf24; font-weight:700;">${fmtUsd(p.totalEstimatedUsd || 0)}</div>
         </div>
         <div style="color:#64748b; font-size:10px; margin-top:4px;">Rates: ${fmtUsd(p.inputUsdPerMillion)}/M input · ${fmtUsd(p.outputUsdPerMillion)}/M output. Edit <code>Data/llm-pricing.json</code> + refresh to change.</div>
-      </div>` : ''}
+      </div>` : '')}
 
       <table style="width:100%;border-collapse:collapse;font-size:12px;">
         <thead><tr style="background:#1e293b;color:#93c5fd;">
           <th style="text-align:left;padding:6px 10px;">Agent</th>
           <th style="text-align:right;padding:6px 10px;" title="Number of times this agent was invoked in the selected window.">Calls</th>
           <th style="text-align:right;padding:6px 10px;" title="Sum of all input + output tokens across every call. This is the actual spend per agent.">Total</th>
-          <th style="text-align:right;padding:6px 10px;" title="Estimated USD cost = (60% × input rate + 40% × output rate) applied to Total tokens. Hover Total for actual count.">Cost</th>
+          ${isPerSeat ? '' : '<th style="text-align:right;padding:6px 10px;" title="Estimated USD cost = (60% × input rate + 40% × output rate) applied to Total tokens. Hover Total for actual count.">Cost</th>'}
           <th style="text-align:right;padding:6px 10px;" title="Average tokens per call (Total ÷ Calls). Pulled up by outliers — compare against p50.">Mean</th>
           <th style="text-align:right;padding:6px 10px;" title="p50 = median. Half of all calls used at most this many tokens. Robust to outliers — the 'typical' call size.">p50</th>
           <th style="text-align:right;padding:6px 10px;" title="p95 = 95th percentile. 95% of calls used at most this many tokens, the worst 5% used more. This is where cost spikes hide.">p95</th>
@@ -1184,7 +1201,7 @@ window.loadTokenUsage = async function () {
             <td style="padding:6px 10px;color:#e2e8f0;">${escapeHtml(a.agent)}</td>
             <td style="padding:6px 10px;text-align:right;color:#cbd5e1;">${a.calls}</td>
             <td style="padding:6px 10px;text-align:right;color:#fbbf24;font-weight:600;">${fmt(a.total)}</td>
-            <td style="padding:6px 10px;text-align:right;color:#10b981;font-weight:600;">${fmtUsd(a.estimatedCostUsd || 0)}</td>
+            ${isPerSeat ? '' : `<td style="padding:6px 10px;text-align:right;color:#10b981;font-weight:600;">${fmtUsd(a.estimatedCostUsd || 0)}</td>`}
             <td style="padding:6px 10px;text-align:right;color:#cbd5e1;">${fmt(a.mean)}</td>
             <td style="padding:6px 10px;text-align:right;color:#cbd5e1;">${fmt(a.p50)}</td>
             <td style="padding:6px 10px;text-align:right;color:#cbd5e1;">${fmt(a.p95)}</td>

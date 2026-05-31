@@ -7086,11 +7086,13 @@ app.MapGet("/api/prompts/token-usage", (int? minutes, int? days) =>
 		}
 
 		// ─── Cost estimation (#5 cost calculator) ────────────────────
-		// Look up the active model from Config/ai-config.local.env, then
-		// match against Data/llm-pricing.json. Assume a 60/40 input/output
-		// token split as a conservative default since the logs don't
-		// distinguish prompt vs completion tokens.
+		// Only meaningful for per-token providers (Azure OpenAI / OpenAI).
+		// GitHub Copilot is billed per-seat ($/user/month) so we expose token
+		// counts for capacity tracking but skip the $-conversion entirely —
+		// showing $-numbers under Copilot would be misleading since the user
+		// isn't paying per-token regardless of how many they consume.
 		string activeModel = "";
+		string serviceType = "";
 		try
 		{
 			var cfgPath = Path.Combine(repoRoot, "Config", "ai-config.local.env");
@@ -7104,6 +7106,8 @@ app.MapGet("/api/prompts/token-usage", (int? minutes, int? days) =>
 					var m = rx.Match(ln);
 					if (m.Success) vars[m.Groups[1].Value] = m.Groups[2].Value;
 				}
+				vars.TryGetValue("AZURE_OPENAI_SERVICE_TYPE", out serviceType!);
+				serviceType ??= "";
 				if (vars.TryGetValue("AZURE_OPENAI_MODEL_ID", out var raw))
 				{
 					activeModel = raw;
@@ -7116,44 +7120,50 @@ app.MapGet("/api/prompts/token-usage", (int? minutes, int? days) =>
 		}
 		catch { /* fail-soft */ }
 
+		// GitHub Copilot is per-seat. Skip $-conversion entirely.
+		bool isCopilot = serviceType.Contains("Copilot", StringComparison.OrdinalIgnoreCase);
+
 		double inputPerM = 2.50, outputPerM = 10.00;
 		string priceModelLabel = "Default (no pricing match)";
-		try
+		bool pricingMatched = false;
+		if (!isCopilot)
 		{
-			var pricingPath = Path.Combine(repoRoot, "Data", "llm-pricing.json");
-			if (File.Exists(pricingPath))
+			try
 			{
-				using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(pricingPath));
-				var root = doc.RootElement;
-				bool matched = false;
-				if (root.TryGetProperty("models", out var modelsEl))
+				var pricingPath = Path.Combine(repoRoot, "Data", "llm-pricing.json");
+				if (File.Exists(pricingPath))
 				{
-					foreach (var el in modelsEl.EnumerateArray())
+					using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(pricingPath));
+					var root = doc.RootElement;
+					if (root.TryGetProperty("models", out var modelsEl))
 					{
-						var matcher = el.GetProperty("modelMatcher").GetString() ?? "";
-						if (!string.IsNullOrEmpty(activeModel) &&
-						    activeModel.Contains(matcher, StringComparison.OrdinalIgnoreCase))
+						foreach (var el in modelsEl.EnumerateArray())
 						{
-							inputPerM = el.GetProperty("input").GetDouble();
-							outputPerM = el.GetProperty("output").GetDouble();
-							priceModelLabel = el.GetProperty("displayName").GetString() ?? matcher;
-							matched = true; break;
+							var matcher = el.GetProperty("modelMatcher").GetString() ?? "";
+							if (!string.IsNullOrEmpty(activeModel) &&
+								activeModel.Contains(matcher, StringComparison.OrdinalIgnoreCase))
+							{
+								inputPerM = el.GetProperty("input").GetDouble();
+								outputPerM = el.GetProperty("output").GetDouble();
+								priceModelLabel = el.GetProperty("displayName").GetString() ?? matcher;
+								pricingMatched = true; break;
+							}
 						}
 					}
-				}
-				if (!matched && root.TryGetProperty("_fallback", out var fb))
-				{
-					inputPerM = fb.GetProperty("input").GetDouble();
-					outputPerM = fb.GetProperty("output").GetDouble();
-					priceModelLabel = fb.GetProperty("displayName").GetString() ?? priceModelLabel;
+					if (!pricingMatched && root.TryGetProperty("_fallback", out var fb))
+					{
+						inputPerM = fb.GetProperty("input").GetDouble();
+						outputPerM = fb.GetProperty("output").GetDouble();
+						priceModelLabel = fb.GetProperty("displayName").GetString() ?? priceModelLabel;
+					}
 				}
 			}
+			catch { /* fail-soft */ }
 		}
-		catch { /* fail-soft */ }
 
 		// 60% input / 40% output split is a reasonable estimate for migration
 		// agents — conversion prompts are large, output is structured code.
-		double CostForTokens(long tokens) =>
+		double CostForTokens(long tokens) => isCopilot ? 0 :
 			(tokens * 0.60 * inputPerM + tokens * 0.40 * outputPerM) / 1_000_000.0;
 
 		var agents = perAgent.Select(kv =>
@@ -7169,11 +7179,30 @@ app.MapGet("/api/prompts/token-usage", (int? minutes, int? days) =>
 				p50   = Percentile(sorted, 0.50),
 				p95   = Percentile(sorted, 0.95),
 				max   = sorted.Last(),
-				estimatedCostUsd = Math.Round(CostForTokens(total), 4),
+				estimatedCostUsd = isCopilot ? (double?)null : Math.Round(CostForTokens(total), 4),
 			};
 		})
 		.OrderByDescending(a => a.total)
 		.ToList();
+
+		object pricingBlock = isCopilot
+			? new {
+				provider = "GitHub Copilot",
+				activeModel = string.IsNullOrEmpty(activeModel) ? "(unknown)" : activeModel,
+				billingModel = "per-seat (subscription)",
+				note = "Token counts are shown for capacity / usage tracking. GitHub Copilot is billed per user per month, so per-call $ conversion does not apply.",
+				costsHidden = true
+			}
+			: (object)new {
+				provider = string.IsNullOrEmpty(serviceType) ? "(unknown — pricing assumed)" : serviceType,
+				activeModel = string.IsNullOrEmpty(activeModel) ? "(unknown)" : activeModel,
+				priceModelLabel,
+				inputUsdPerMillion = inputPerM,
+				outputUsdPerMillion = outputPerM,
+				assumedSplit = "60% input / 40% output",
+				totalEstimatedUsd = Math.Round(agents.Sum(a => a.estimatedCostUsd ?? 0), 4),
+				note = "Pricing config: Data/llm-pricing.json — edit + refresh, no rebuild needed."
+			};
 
 		return Results.Ok(new
 		{
@@ -7181,16 +7210,7 @@ app.MapGet("/api/prompts/token-usage", (int? minutes, int? days) =>
 			filesScanned = files.Count,
 			source = "Logs/FULL_CHAT_LOG_*.md (parsed in-memory; no separate datastore)",
 			agents,
-			pricing = new
-			{
-				activeModel = string.IsNullOrEmpty(activeModel) ? "(unknown)" : activeModel,
-				priceModelLabel,
-				inputUsdPerMillion = inputPerM,
-				outputUsdPerMillion = outputPerM,
-				assumedSplit = "60% input / 40% output",
-				totalEstimatedUsd = Math.Round(agents.Sum(a => a.estimatedCostUsd), 4),
-				note = "Pricing config: Data/llm-pricing.json — edit + refresh, no rebuild needed."
-			}
+			pricing = pricingBlock
 		});
 	}
 	catch (Exception ex)

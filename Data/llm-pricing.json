@@ -1,0 +1,18 @@
+{
+  "_doc": "Per-model LLM pricing for the Token Usage cost calculator. Prices are USD per 1,000,000 tokens (input/output split). ONLY includes providers that bill per-token — Azure OpenAI and direct OpenAI. GitHub Copilot SDK is billed per-seat ($/user/month) so token counts are surfaced for capacity tracking, not cost — the portal detects SERVICE_TYPE=GitHubCopilot and hides the cost calculator automatically.",
+  "_currency": "USD",
+  "_unit": "per_million_tokens",
+  "models": [
+    { "modelMatcher": "gpt-5",   "displayName": "GPT-5",      "input": 2.50,  "output": 10.00 },
+    { "modelMatcher": "gpt-4.1", "displayName": "GPT-4.1",    "input": 2.00,  "output": 8.00 },
+    { "modelMatcher": "gpt-4o",  "displayName": "GPT-4o",     "input": 2.50,  "output": 10.00 },
+    { "modelMatcher": "o3",      "displayName": "OpenAI o3",  "input": 15.00, "output": 60.00 },
+    { "modelMatcher": "codex",   "displayName": "GPT-Codex",  "input": 1.50,  "output": 6.00 }
+  ],
+  "_fallback": {
+    "displayName": "Default (no model match)",
+    "input": 2.50,
+    "output": 10.00,
+    "_note": "Used when no modelMatcher matches the active Azure OpenAI / OpenAI model — conservative GPT-5-equivalent rate."
+  }
+}
