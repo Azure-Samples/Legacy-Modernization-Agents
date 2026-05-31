@@ -9054,3 +9054,34 @@ main.three-panel-layout {
 .mi-cap-suggestion-header {
   display: flex; align-items: center; gap: 10px;
 }
+
+/* #7 persona shortcut bar — friendly front door above the workspace tabs */
+.persona-bar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 14px; background: var(--bg-panel);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.persona-bar-label {
+  font-size: 12px; color: var(--text-muted);
+  font-weight: 600; margin-right: 4px;
+}
+.persona-pill {
+  background: var(--bg-card); border: 1px solid var(--border-default);
+  color: var(--text-secondary); padding: 5px 12px; border-radius: 14px;
+  font-size: 12px; cursor: pointer;
+  transition: background 0.1s, border-color 0.1s, color 0.1s, transform 0.1s;
+  white-space: nowrap;
+}
+.persona-pill:hover {
+  background: var(--bg-card-hover); color: var(--text-primary);
+  transform: translateY(-1px);
+}
+.persona-business:hover  { border-color: var(--color-warn-border);   color: var(--color-warn); }
+.persona-architect:hover { border-color: rgba(168,85,247,0.4);       color: var(--color-accent-purple); }
+.persona-lead:hover      { border-color: var(--color-success-border); color: var(--color-success); }
+.persona-developer:hover { border-color: var(--color-info-border);   color: var(--color-info); }
+.persona-mission:hover   { border-color: rgba(56,189,248,0.4);       color: var(--color-accent-cyan); }
+.persona-pill-active {
+  background: var(--color-info-bg); border-color: var(--color-info-border);
+  color: var(--text-primary); font-weight: 600;
+}

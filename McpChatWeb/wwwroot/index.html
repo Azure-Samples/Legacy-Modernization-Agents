@@ -381,6 +381,26 @@
         <button id="expand-graph-btn" class="btn-small" title="Expand View" style="background: 334155; color: white; border: 1px solid #475569;">⛶ Expand</button>
       </div>
 
+      <!-- #7 Persona shortcut bar — pick who you are, jump straight to the right surface -->
+      <div class="persona-bar" id="persona-bar">
+        <span class="persona-bar-label" title="Click a persona to jump to the most-relevant view + persona + subview for that role">👋 I'm a:</span>
+        <button class="persona-pill persona-business"
+                onclick="PortalPersona.go('business');"
+                title="Visual Cockpit → Business Owner: outcomes, blockers, ROI">💼 Business Owner</button>
+        <button class="persona-pill persona-architect"
+                onclick="PortalPersona.go('architect');"
+                title="Visual Cockpit → Architect: coupling, domains, service hubs">🏗 Architect</button>
+        <button class="persona-pill persona-lead"
+                onclick="PortalPersona.go('lead');"
+                title="Visual Cockpit → Modernization Lead: wave Kanban, execution plan">🚀 Modernization Lead</button>
+        <button class="persona-pill persona-developer"
+                onclick="PortalPersona.go('developer');"
+                title="Visual Cockpit → Developer: per-program scorecards, run history">👨‍💻 Developer</button>
+        <button class="persona-pill persona-mission"
+                onclick="PortalPersona.go('mission');"
+                title="Visual Cockpit → Mission Control: consolidated all-signals overview">🌐 Everything</button>
+      </div>
+
       <!-- Dashboard Tabs — drill-down: Architecture → Dependencies → Control Flow → AST -->
       <div class="dashboard-tabs" id="dashboard-tabs">
         <button class="dashboard-tab" data-tab="services" onclick="switchDashboard('services')">🏗️ Architecture</button>
@@ -1545,6 +1565,7 @@ curl http://localhost:5028/api/data-retrieval-guide</code></pre>
   <script src="target-architecture.js?v=20260518g"></script>
   <script src="portal-auto-refresh.js?v=20260531b"></script>
   <script src="portal-program-actions.js?v=20260531a"></script>
+  <script src="portal-persona.js?v=20260531a"></script>
   <script src="modernization-intelligence.js?v=20260531c"></script>
   <script src="insights-hub.js?v=20260531b"></script>
   <script src="visual-cockpit.js?v=20260531c"></script>
