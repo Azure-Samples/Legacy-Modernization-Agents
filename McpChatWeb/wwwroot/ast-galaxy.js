@@ -42,6 +42,12 @@ class ASTGalaxyView {
   get _isBusinessMode() { return this.viewMode === 'business' || this.viewMode === 'business-expanded' || this.viewMode === 'service-catalog' || this.viewMode === 'service-catalog-expanded' || this.viewMode === 'service-catalog-expanded-3d' || this.viewMode === 'service-catalog-v2' || this.viewMode === 'service-catalog-v3'; }
   get _isServiceCatalogMode() { return this.viewMode === 'service-catalog' || this.viewMode === 'service-catalog-expanded' || this.viewMode === 'service-catalog-expanded-3d' || this.viewMode === 'service-catalog-v2' || this.viewMode === 'service-catalog-v3'; }
   get _isServiceCatalogExpanded() { return this.viewMode === 'service-catalog-expanded' || this.viewMode === 'service-catalog-expanded-3d'; }
+  // V2 swim-lane modes — vertical column per program with AST children stacked
+  // beneath the hub and cross-program edges arched over the lanes.
+  // 'program-flow' is the user-facing canonical name; 'expanded-v2' is the
+  // historical internal name kept for compatibility with all the `isV2`
+  // checks already scattered through this file.
+  get _isV2Lanes() { return this.viewMode === 'expanded-v2' || this.viewMode === 'program-flow'; }
   // Modes that render pure HTML — vis.js must be skipped for these
   get _isHtmlMode() { return this.viewMode === 'bian-matrix'; }
 
@@ -147,13 +153,8 @@ class ASTGalaxyView {
       } else if (this.viewMode === 'c4-model') {
         this._buildC4VisData();
         this._renderVisNetworkInternal(container);
-      } else if (this.viewMode === 'program-flow') {
-        // Async: needs service-chain data for copybook edges
-        this._buildProgramFlowVisData().then(() => {
-          this._renderVisNetworkInternal(container);
-        });
-        return; // skip the synchronous render path below
       } else if (this.viewMode === 'jcl-flow') {
+        // Async: needs service-chain data for JCL→Pgm→Cpy chain
         this._buildJclFlowVisData().then(() => {
           this._renderVisNetworkInternal(container);
         });
@@ -256,7 +257,7 @@ class ASTGalaxyView {
     // call/branch paths. Drops MOVE/COMPUTE/DISPLAY/EXIT noise that doesn't
     // contribute to a top-down communication trace.
     const V2_KEY_STMT_TYPES = new Set(['PERFORM', 'CALL', 'CallStatement', 'DIALECT', 'DIALECT_CONTAINER']);
-    const isV2 = this.viewMode === 'expanded-v2';
+    const isV2 = this._isV2Lanes;
     const KEY_TYPES_FOR_THIS_VIEW = isV2 ? V2_KEY_STMT_TYPES : KEY_STMT_TYPES;
     const MAX_STMTS_PER_PROG = isV2 ? 12 : 30;
     const isClustered = this.viewMode === 'clustered';
@@ -1053,7 +1054,7 @@ class ASTGalaxyView {
     container.innerHTML = '';
 
     const totalNodes = this.nodes.length;
-    const isV2 = this.viewMode === 'expanded-v2';
+    const isV2 = this._isV2Lanes;
 
     // ── EXPANDED V2 — manual swim-lane positioning ───────────────────
     // Each program is its own vertical north-south column. Nodes stack
@@ -1689,11 +1690,14 @@ class ASTGalaxyView {
       this._render3DServiceCatalogV2(container);
     } else if (this.viewMode === 'service-catalog-v3') {
       this._render3DModernizationRadar(container);
-    } else if (this.viewMode === 'program-flow' || this.viewMode === 'jcl-flow') {
+    } else if (this.viewMode === 'jcl-flow') {
       this._render3DFlow(container);
     } else if (this._isBusinessMode) {
       this._render3DBusiness(container);
     } else {
+      // program-flow (v2 swim-lane), clustered, expanded, expanded-v2 — all
+      // fall through here. The technical 3D renderer reads from this.nodes
+      // which was built by _buildVisData() with the v2 layout already applied.
       this._render3DTechnical(container);
     }
 
@@ -4019,8 +4023,8 @@ class ASTGalaxyView {
     const isRadar = mode === 'service-catalog-v3';
     const isV2 = mode === 'service-catalog-v2';
     // Technical views show raw AST node types & shapes prominently
-    const isTechnical = mode === 'clustered' || mode === 'expanded' || mode === 'expanded-v2';
-    const isV2Technical = mode === 'expanded-v2';
+    const isTechnical = mode === 'clustered' || mode === 'expanded' || mode === 'expanded-v2' || mode === 'program-flow';
+    const isV2Technical = mode === 'expanded-v2' || mode === 'program-flow';
     // Views that draw individual AST sub-nodes (sections/paragraphs/actions)
     const showsAstNodes = isTechnical || isSCExpanded || mode === 'business-expanded';
 
@@ -4637,12 +4641,12 @@ class ASTGalaxyView {
     // Old bookmarks / saved selections get redirected to canonical mode.
     const ALIAS = {
       'expanded': 'clustered',
-      'expanded-v2': 'clustered',
+      'expanded-v2': 'program-flow',
       'business': 'business-expanded',
       'service-catalog-expanded': 'service-catalog',
       'service-catalog-expanded-3d': 'service-catalog',
       'service-catalog-v2': 'service-catalog-v3',
-      'program-map': 'clustered',
+      'program-map': 'program-flow',
     };
     if (ALIAS[value]) {
       console.log(`[ast-galaxy] mode '${value}' is deprecated → redirecting to '${ALIAS[value]}'`);
@@ -4653,7 +4657,7 @@ class ASTGalaxyView {
     }
     this.viewMode = value;
     this._refreshFlowToggleVisibility();
-    if (value === 'expanded' || value === 'expanded-v2' || value === 'program-map') {
+    if (value === 'expanded' || value === 'expanded-v2' || value === 'program-flow' || value === 'program-map') {
       const programs = this._getSortedPrograms();
       for (const p of programs) this._expandedClusters.add(p.program);
     } else if (value === 'business') {
@@ -5434,18 +5438,17 @@ class ASTGalaxyView {
   // ═══════════════════════════════════════════════════════════════════
 
   /**
-   * Shared 3D renderer for both flow modes. Takes the vis.DataSet that the
-   * 2D builders produced (with hand-laid {x, y} positions) and lifts every
-   * node onto a Z-plane keyed on its node type, so the user can rotate and
-   * see JCL/Program/Copybook layers separated in depth.
+   * Shared 3D renderer for the JCL-flow mode (3-column layered).
+   * Takes the vis.DataSet that the 2D builder produced (with hand-laid
+   * {x, y} positions) and lifts every node onto a Z-plane keyed on its
+   * node type, so the user can rotate and see JCL/Program/Copybook
+   * layers separated in depth.
+   *
+   * Note: program-flow uses the v2 swim-lane layout which is handled
+   * by the regular technical-expanded 3D path, not here.
    */
   async _render3DFlow(container) {
-    // Build 2D data first so positions exist
-    if (this.viewMode === 'program-flow') {
-      await this._buildProgramFlowVisData();
-    } else {
-      await this._buildJclFlowVisData();
-    }
+    await this._buildJclFlowVisData();
     if (!this.nodes) return;
 
     const zForType = (t) => {
@@ -5514,19 +5517,16 @@ class ASTGalaxyView {
   _refreshFlowToggleVisibility() {
     const wrap = document.getElementById('galaxy-flow-toggles');
     if (!wrap) return;
-    const isFlow = this.viewMode === 'program-flow' || this.viewMode === 'jcl-flow';
-    wrap.style.display = isFlow ? 'inline-flex' : 'none';
-    // Per-mode toggle visibility
-    const pflowSel = document.getElementById('galaxy-pflow-dir');
-    const jclChk   = document.getElementById('galaxy-jcl-utils');
-    if (pflowSel) pflowSel.parentElement.style.display = ''; // always visible inside wrap
-    if (pflowSel) pflowSel.style.display = (this.viewMode === 'program-flow') ? '' : 'none';
-    if (jclChk)   jclChk.closest('label').style.display  = (this.viewMode === 'jcl-flow')   ? 'inline-flex' : 'none';
+    // Only jcl-flow has a toggle today (utilities checkbox).
+    // program-flow uses the v2 swim-lane layout which has no per-mode toggle.
+    const showRow = this.viewMode === 'jcl-flow';
+    wrap.style.display = showRow ? 'inline-flex' : 'none';
   }
 
   setProgramFlowDirection(value) {
+    // Retained for backward compat with old bookmarks — the v2 swim-lane
+    // shows both call directions natively via the arched cross-lane arrows.
     this._programFlowDirection = value;
-    if (this.viewMode === 'program-flow') this._rebuildAndRender();
   }
 
   /**
@@ -5562,157 +5562,6 @@ class ASTGalaxyView {
   setJclShowUtilities(checked) {
     this._jclShowUtilities = !!checked;
     if (this.viewMode === 'jcl-flow') this._rebuildAndRender();
-  }
-
-  // ──────────────────────────────────────────────────────────────────
-  // 🎯 Program-Centric Flow
-  // For every program (or just the file-filter selection): a hub with
-  // its callees fanning right + callers fanning left + copybooks below.
-  // Direction toggle: both | downstream (callees only) | upstream (callers only)
-  // ──────────────────────────────────────────────────────────────────
-  async _buildProgramFlowVisData() {
-    const chain = await this._loadServiceChainData();
-    const programs = (this.galaxyData?.programs || []).filter(p => !p.isCopybook);
-    const edges = this.galaxyData?.edges || [];
-    const norm = s => (s || '').replace(/\.cbl$/i, '').toUpperCase();
-
-    // Filter: respect file-filter dropdown (single program) or render all
-    let activePrograms = programs;
-    if (this.filter && this.filter !== 'all') {
-      const want = norm(this.filter);
-      activePrograms = programs.filter(p => norm(p.program) === want);
-    }
-
-    const direction = this._programFlowDirection;          // both | downstream | upstream
-    const nodeList = [];
-    const edgeList = [];
-    const seen = new Set();
-
-    // Layout: each program gets a 200px-tall row. Within a row:
-    //   Callers      Hub        Callees
-    //   (left)     (center)     (right)
-    //                ↓
-    //             Copybooks
-    const ROW_H = 280;
-    const HUB_X = 0;
-    const HUB_Y_BASE = 0;
-    const FANOUT_X = 320;
-    const STACK_Y = 60;
-    const COPY_Y  = 110;
-
-    activePrograms.forEach((p, rowIdx) => {
-      const pname = norm(p.program);
-      const hubId = `pflow_hub_${pname}_${rowIdx}`;
-      const hubY = HUB_Y_BASE + rowIdx * ROW_H;
-
-      nodeList.push({
-        id: hubId,
-        label: pname,
-        x: HUB_X, y: hubY, fixed: { x: true, y: true },
-        shape: 'box', size: 28,
-        color: { background: '#1e3a8a', border: '#60a5fa', highlight: { background: '#1e3a8a', border: '#fff' } },
-        font: { color: '#f8fafc', size: 14, multi: false }, borderWidth: 3,
-        margin: { top: 8, bottom: 8, left: 14, right: 14 },
-        title: `${pname}\nLOC: ${(p.lineCount || 0).toLocaleString()} · CALLs: ${p.callCount || 0} · SQL: ${p.sqlCount || 0}`,
-        _data: { ...p, displayName: pname, nodeType: 'PROGRAM', program: p.program },
-      });
-
-      // Callees (downstream): edges where source === this program
-      if (direction === 'both' || direction === 'downstream') {
-        const callees = edges.filter(e => norm(e.source) === pname).map(e => norm(e.target));
-        const uniq = [...new Set(callees)].slice(0, 12);
-        uniq.forEach((tgt, i) => {
-          const nid = `pflow_call_${pname}_${tgt}_${rowIdx}`;
-          if (!seen.has(nid)) {
-            seen.add(nid);
-            const yOffset = (i - (uniq.length - 1) / 2) * 36;
-            nodeList.push({
-              id: nid, label: tgt,
-              x: FANOUT_X, y: hubY + yOffset, fixed: { x: true, y: true },
-              shape: 'box', size: 14,
-              color: { background: '#0c4a6e', border: '#38bdf8' },
-              font: { color: '#e0f2fe', size: 10 }, borderWidth: 1,
-              margin: { top: 4, bottom: 4, left: 8, right: 8 },
-              title: `${tgt} (callee of ${pname})`,
-              _data: { displayName: tgt, nodeType: 'PROGRAM', program: tgt + '.cbl' },
-            });
-          }
-          edgeList.push({
-            from: hubId, to: nid,
-            arrows: { to: { enabled: true, scaleFactor: 0.5 } },
-            color: { color: '#38bdf8', opacity: 0.7 }, width: 1,
-            label: 'CALL', font: { color: '#64748b', size: 8, align: 'middle', strokeWidth: 0 },
-          });
-        });
-      }
-
-      // Callers (upstream): edges where target === this program
-      if (direction === 'both' || direction === 'upstream') {
-        const callers = edges.filter(e => norm(e.target) === pname).map(e => norm(e.source));
-        const uniq = [...new Set(callers)].slice(0, 12);
-        uniq.forEach((src, i) => {
-          const nid = `pflow_caller_${pname}_${src}_${rowIdx}`;
-          if (!seen.has(nid)) {
-            seen.add(nid);
-            const yOffset = (i - (uniq.length - 1) / 2) * 36;
-            nodeList.push({
-              id: nid, label: src,
-              x: -FANOUT_X, y: hubY + yOffset, fixed: { x: true, y: true },
-              shape: 'box', size: 14,
-              color: { background: '#581c87', border: '#c084fc' },
-              font: { color: '#f3e8ff', size: 10 }, borderWidth: 1,
-              margin: { top: 4, bottom: 4, left: 8, right: 8 },
-              title: `${src} (caller of ${pname})`,
-              _data: { displayName: src, nodeType: 'PROGRAM', program: src + '.cbl' },
-            });
-          }
-          edgeList.push({
-            from: nid, to: hubId,
-            arrows: { to: { enabled: true, scaleFactor: 0.5 } },
-            color: { color: '#c084fc', opacity: 0.6 }, width: 1,
-            label: 'CALL', font: { color: '#64748b', size: 8, align: 'middle', strokeWidth: 0 },
-          });
-        });
-      }
-
-      // Copybooks (below the hub) — always shown
-      const cpys = (chain.pgmToCpy[pname] || chain.pgmToCpy[pname + '.CBL'] || []).slice(0, 10);
-      cpys.forEach((cpy, i) => {
-        const cid = `pflow_cpy_${pname}_${cpy}_${rowIdx}`;
-        if (!seen.has(cid)) {
-          seen.add(cid);
-          const xOffset = (i - (cpys.length - 1) / 2) * 90;
-          nodeList.push({
-            id: cid, label: cpy.replace(/\.cpy$/i, ''),
-            x: HUB_X + xOffset, y: hubY + COPY_Y, fixed: { x: true, y: true },
-            shape: 'box', size: 10,
-            color: { background: '#7c2d12', border: '#fb923c' },
-            font: { color: '#ffedd5', size: 9 }, borderWidth: 1,
-            margin: { top: 3, bottom: 3, left: 6, right: 6 },
-            title: `${cpy} (copybook used by ${pname})`,
-            _data: { displayName: cpy, nodeType: 'COPYBOOK', program: cpy },
-          });
-        }
-        edgeList.push({
-          from: hubId, to: cid,
-          arrows: { to: { enabled: true, scaleFactor: 0.4 } },
-          color: { color: '#fb923c', opacity: 0.5 }, width: 0.8, dashes: [3, 3],
-          label: 'COPY', font: { color: '#64748b', size: 7, align: 'middle', strokeWidth: 0 },
-        });
-      });
-    });
-
-    if (activePrograms.length === 0) {
-      nodeList.push({
-        id: 'pflow_empty', label: 'No programs match the current filter\nPick a program or "all" in the file filter',
-        x: 0, y: 0, fixed: { x: true, y: true },
-        shape: 'box', size: 20,
-        color: { background: '#1f2937', border: '#475569' }, font: { color: '#94a3b8', size: 12 },
-      });
-    }
-
-    this.nodes = new vis.DataSet(nodeList);
-    this.edges = new vis.DataSet(edgeList);
   }
 
   // ──────────────────────────────────────────────────────────────────
