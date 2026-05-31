@@ -9088,10 +9088,56 @@ app.MapGet("/api/modernization/capabilities",
     (McpChatWeb.Services.CapabilityClassifier svc) =>
         Results.Ok(svc.GetCapabilities()));
 
+// Raw capabilities.json (read) — used by the in-portal editor (#15)
+app.MapGet("/api/modernization/capabilities/raw", () =>
+{
+    var path = Path.Combine(ResolveRepoRoot(), "Data", "capabilities.json");
+    if (!File.Exists(path)) return Results.NotFound(new { error = "capabilities.json not found" });
+    return Results.Content(File.ReadAllText(path), "application/json");
+});
+
+// Raw capabilities.json (write) — used by the in-portal editor (#15)
+// Validates that the body is JSON with a 'capabilities' array; rejects otherwise.
+app.MapPut("/api/modernization/capabilities/raw", async (HttpContext http) =>
+{
+    using var reader = new StreamReader(http.Request.Body);
+    var body = await reader.ReadToEndAsync();
+    if (string.IsNullOrWhiteSpace(body))
+        return Results.BadRequest(new { error = "empty body" });
+    try
+    {
+        using var doc = System.Text.Json.JsonDocument.Parse(body);
+        if (!doc.RootElement.TryGetProperty("capabilities", out var caps) ||
+            caps.ValueKind != System.Text.Json.JsonValueKind.Array)
+            return Results.BadRequest(new { error = "JSON must contain a 'capabilities' array" });
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { error = "invalid JSON", message = ex.Message });
+    }
+    var path = Path.Combine(ResolveRepoRoot(), "Data", "capabilities.json");
+    // Safety: snapshot current file before overwrite (mirrors prompt-archive pattern)
+    if (File.Exists(path))
+    {
+        var historyDir = Path.Combine(ResolveRepoRoot(), "Data", "_history");
+        Directory.CreateDirectory(historyDir);
+        var ts = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
+        var snap = Path.Combine(historyDir, $"capabilities.{ts}.json");
+        File.Copy(path, snap, overwrite: false);
+    }
+    await File.WriteAllTextAsync(path, body);
+    return Results.Ok(new { saved = true, bytes = body.Length, path = "Data/capabilities.json" });
+});
+
 // Service Locator (Java/COBOL name → source program + paragraph)
 app.MapGet("/api/modernization/locate",
     (string q, McpChatWeb.Services.CapabilityClassifier svc) =>
         Results.Ok(svc.Locate(q ?? "")));
+
+// #9 Semantic search — intent → ranked programs
+app.MapGet("/api/modernization/semantic-search",
+    (string q, int? limit, McpChatWeb.Services.CapabilityClassifier svc) =>
+        Results.Ok(svc.SemanticSearch(q ?? "", limit ?? 20)));
 
 app.Run();
 

@@ -9029,3 +9029,19 @@ main.three-panel-layout {
   z-index: 10600;
 }
 .ppa-toast-show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* #15 capabilities editor modal */
+.mi-cap-edit-toolbar {
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  margin-bottom: 8px; padding: 8px 10px;
+  background: var(--bg-card); border-radius: 4px;
+}
+.mi-cap-edit-area {
+  width: 100%; min-height: 55vh; max-height: 65vh;
+  background: var(--bg-deep); color: var(--text-primary);
+  border: 1px solid var(--border-default); border-radius: 4px;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 12px;
+  padding: 12px; resize: vertical; line-height: 1.5;
+  tab-size: 2;
+}
+.mi-cap-edit-area:focus { outline: none; border-color: var(--color-info); }

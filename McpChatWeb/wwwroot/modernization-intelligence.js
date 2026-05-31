@@ -1870,13 +1870,32 @@ class ModernizationIntelligenceView {
       </div>
 
       <div class="mi-section">
+        <h3>🧠 Semantic Search — find anything by intent, not just name</h3>
+        <p class="mi-help">
+          Type what you're <em>looking for</em> in plain English (e.g. <code>interest accrual</code>,
+          <code>customer onboarding</code>, <code>fraud detection</code>). The search expands your
+          query against the capability dictionary, then ranks every COBOL program by hits on
+          paragraph names, CALL targets, SQL tables, data groups, copybooks, AND raw source text
+          (catches keywords in comments).
+        </p>
+        <div class="mi-locator-row">
+          <input id="mi-semantic-input" type="text" placeholder="e.g. interest accrual · customer onboarding · payment settlement" class="mi-locator-input"/>
+          <button id="mi-semantic-btn" class="mi-btn-primary">🧠 Search by intent</button>
+        </div>
+        <div id="mi-semantic-results"></div>
+      </div>
+
+      <div class="mi-section">
         <h3>🎯 Business Capabilities — REKT-driven discovery (${populated.length} active · ${total} classifications)</h3>
         <p class="mi-help">
           Each program is scored against the keyword dictionary in <code>Data/capabilities.json</code>
           using paragraph names, CALL targets, SQL tables, data groups and copybook names from REKT facts.
           Multi-label: a program can serve multiple capabilities.
-          Edit <code>Data/capabilities.json</code> and refresh to add or tune capabilities.
         </p>
+        <div style="margin: 10px 0;">
+          <button class="mi-btn" onclick="window.modernizationIntelligenceView._openCapabilityEditor();">✏️ Edit capabilities dictionary</button>
+          <span class="mi-help" style="margin-left:10px;">Edit, validate, and save without leaving the portal. Auto-snapshots the previous version to <code>Data/_history/</code>.</span>
+        </div>
 
         <div class="mi-cap-grid">
           ${populated.map(b => this._renderCapabilityCard(b)).join('')}
@@ -1951,6 +1970,181 @@ class ModernizationIntelligenceView {
     };
     btn.addEventListener('click', run);
     input.addEventListener('keydown', e => { if (e.key === 'Enter') run(); });
+
+    // #9 semantic search
+    const semInput = this.root.querySelector('#mi-semantic-input');
+    const semBtn = this.root.querySelector('#mi-semantic-btn');
+    const semResults = this.root.querySelector('#mi-semantic-results');
+    if (semInput && semBtn && semResults) {
+      const runSem = async () => {
+        const q = semInput.value.trim();
+        if (!q) return;
+        semResults.innerHTML = '<div class="mi-loading">🧠 Searching by intent…</div>';
+        try {
+          const r = await fetch(`/api/modernization/semantic-search?q=${encodeURIComponent(q)}`).then(x => x.json());
+          semResults.innerHTML = this._renderSemanticResults(r);
+        } catch (err) {
+          semResults.innerHTML = `<div class="mi-error">${this._escape(err.message)}</div>`;
+        }
+      };
+      semBtn.addEventListener('click', runSem);
+      semInput.addEventListener('keydown', e => { if (e.key === 'Enter') runSem(); });
+    }
+  }
+
+  _renderSemanticResults(r) {
+    if (!r.programs || r.programs.length === 0) {
+      return `<div class="mi-cap-empty">
+        <b>No programs match "<code>${this._escape(r.query)}</code>"</b>
+        <div class="mi-help">Tokens tried: ${(r.tokens || []).map(t => `<code>${this._escape(t)}</code>`).join(', ') || '<i>(none — query too short)</i>'}</div>
+        <div class="mi-help">Tip: try broader terms ("interest" instead of "interest accrual calculations") or check the capability dictionary.</div>
+      </div>`;
+    }
+    return `
+      <div style="margin-bottom:10px; font-size:11px; color:var(--text-muted);">
+        Tokens: ${(r.tokens || []).map(t => `<code>${this._escape(t)}</code>`).join(' · ')}
+        ${r.matchedCapabilities.length > 0 ? `· Expanded via capability${r.matchedCapabilities.length === 1 ? '' : 'ies'}: ${r.matchedCapabilities.map(c => `<b>${this._escape(c)}</b>`).join(', ')}` : ''}
+        · Expanded keywords (${r.expandedKeywords.length}): <span class="mi-muted">${(r.expandedKeywords || []).slice(0, 12).map(k => this._escape(k)).join(', ')}${r.expandedKeywords.length > 12 ? '…' : ''}</span>
+      </div>
+      <table class="mi-table mi-table-dense">
+        <thead><tr><th>Program</th><th class="num">Score</th><th>Top hits</th><th>Actions</th></tr></thead>
+        <tbody>
+          ${r.programs.map(p => `
+            <tr>
+              <td><code>${this._escape(p.basename)}</code></td>
+              <td class="num"><b style="color:var(--color-info);">${p.score.toFixed(1)}</b></td>
+              <td>
+                ${p.hits.slice(0, 5).map(h =>
+                  `<span class="mi-chip mi-chip-tiny" title="source=${this._escape(h.source)} · keyword=${this._escape(h.keyword)}">${this._escape(h.match)}</span>`
+                ).join(' ')}
+              </td>
+              <td>${PortalProgramActions.buttons(p.basename)}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+  }
+
+  // ────────────────────────────────────────────────────────────────────
+  // #15 In-portal capabilities.json editor
+  // ────────────────────────────────────────────────────────────────────
+  async _openCapabilityEditor() {
+    let modal = document.getElementById('mi-cap-edit-modal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'mi-cap-edit-modal';
+      modal.className = 'mi-modal';
+      document.body.appendChild(modal);
+      modal.addEventListener('click', (e) => {
+        if (e.target === modal) modal.style.display = 'none';
+      });
+    }
+    modal.style.display = 'flex';
+    modal.innerHTML = `
+      <div class="mi-modal-card mi-modal-card-wide" onclick="event.stopPropagation();">
+        <div class="mi-modal-header">
+          <div>
+            <div class="mi-modal-title">✏️ Edit Data/capabilities.json</div>
+            <div class="mi-modal-sub">Add or tune business capabilities. Save validates JSON + snapshots prev version to <code>Data/_history/</code>.</div>
+          </div>
+          <button class="mi-btn" onclick="document.getElementById('mi-cap-edit-modal').style.display='none';">✕ Close</button>
+        </div>
+        <div class="mi-cap-edit-toolbar">
+          <button class="mi-btn mi-btn-primary" onclick="window.modernizationIntelligenceView._saveCapabilities();">💾 Save & re-classify</button>
+          <button class="mi-btn" onclick="window.modernizationIntelligenceView._validateCapabilitiesJson();">✓ Validate JSON</button>
+          <button class="mi-btn" onclick="window.modernizationIntelligenceView._addCapabilityTemplate();">➕ Add new capability template</button>
+          <span id="mi-cap-edit-status" class="mi-help" style="margin-left:auto;"></span>
+        </div>
+        <textarea id="mi-cap-edit-area" class="mi-cap-edit-area" spellcheck="false">Loading…</textarea>
+        <div class="mi-help" style="margin-top:8px;font-size:11px;">
+          <b>Schema:</b> each capability needs <code>id</code>, <code>emoji</code>, <code>display</code>, and a
+          <code>keywords</code> array. Keywords match against paragraph names (×3), CALL targets (×2),
+          SQL tables (×2), data groups (×2), copybook names (×1). Short keywords (&lt; 5 chars) require
+          a token-boundary match to avoid false positives like <code>str</code> inside <code>TRATAR</code>.
+          Optional <code>bian</code> array maps to BIAN service domains.
+        </div>
+      </div>
+    `;
+    const area = document.getElementById('mi-cap-edit-area');
+    try {
+      const raw = await fetch('/api/modernization/capabilities/raw').then(r => r.text());
+      area.value = raw;
+    } catch (err) {
+      area.value = `// Failed to load: ${err.message}`;
+    }
+  }
+
+  _validateCapabilitiesJson() {
+    const area = document.getElementById('mi-cap-edit-area');
+    const status = document.getElementById('mi-cap-edit-status');
+    try {
+      const d = JSON.parse(area.value);
+      if (!Array.isArray(d.capabilities))
+        throw new Error("missing 'capabilities' array at root");
+      const ids = new Set();
+      for (const c of d.capabilities) {
+        if (!c.id) throw new Error("a capability is missing 'id'");
+        if (ids.has(c.id)) throw new Error(`duplicate id: ${c.id}`);
+        ids.add(c.id);
+        if (!Array.isArray(c.keywords) || c.keywords.length === 0)
+          throw new Error(`capability '${c.id}' has empty 'keywords' — add at least one keyword`);
+      }
+      status.innerHTML = `<span style="color:var(--color-success);">✓ Valid · ${d.capabilities.length} capabilities, ${[...ids].length} unique IDs</span>`;
+      return true;
+    } catch (err) {
+      status.innerHTML = `<span style="color:var(--color-fail);">✗ ${this._escape(err.message)}</span>`;
+      return false;
+    }
+  }
+
+  async _saveCapabilities() {
+    if (!this._validateCapabilitiesJson()) return;
+    const area = document.getElementById('mi-cap-edit-area');
+    const status = document.getElementById('mi-cap-edit-status');
+    status.innerHTML = '<span class="mi-muted">Saving…</span>';
+    try {
+      const resp = await fetch('/api/modernization/capabilities/raw', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: area.value,
+      });
+      const result = await resp.json();
+      if (!resp.ok) throw new Error(result.error || `HTTP ${resp.status}`);
+      status.innerHTML = `<span style="color:var(--color-success);">✓ Saved ${result.bytes} bytes · prev version snapshotted to Data/_history/. Re-classifying…</span>`;
+      // Trigger a re-render of the capabilities subview
+      setTimeout(async () => {
+        document.getElementById('mi-cap-edit-modal').style.display = 'none';
+        const catalog = await fetch('/api/modernization/capabilities').then(r => r.json());
+        const body = this.root.querySelector('#mi-body') || this.root.querySelector('.mi-body');
+        if (body) body.innerHTML = this._renderCapabilities(catalog);
+        this._wireCapabilitiesInteractions();
+      }, 1200);
+    } catch (err) {
+      status.innerHTML = `<span style="color:var(--color-fail);">✗ Save failed: ${this._escape(err.message)}</span>`;
+    }
+  }
+
+  _addCapabilityTemplate() {
+    const area = document.getElementById('mi-cap-edit-area');
+    try {
+      const d = JSON.parse(area.value);
+      d.capabilities.push({
+        id: 'NEW_CAPABILITY',
+        emoji: '🆕',
+        display: 'New Capability',
+        keywords: ['add', 'your', 'keywords', 'here'],
+        bian: [],
+      });
+      area.value = JSON.stringify(d, null, 2);
+      // Scroll to the bottom so the new entry is visible
+      area.scrollTop = area.scrollHeight;
+      document.getElementById('mi-cap-edit-status').innerHTML =
+        '<span style="color:var(--color-info);">➕ Template added at the bottom — edit the id, emoji, display, and keywords before saving.</span>';
+    } catch (err) {
+      document.getElementById('mi-cap-edit-status').innerHTML =
+        `<span style="color:var(--color-fail);">✗ Can't add template — fix JSON first: ${this._escape(err.message)}</span>`;
+    }
   }
 
   _renderLocatorResults(r) {

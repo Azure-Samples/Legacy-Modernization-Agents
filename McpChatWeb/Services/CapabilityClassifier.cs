@@ -298,6 +298,111 @@ public sealed class CapabilityClassifier
     // Service Locator — name → Java file + COBOL program + paragraph
     // ─────────────────────────────────────────────────────────────────────
 
+    // ─────────────────────────────────────────────────────────────────────
+    // #9 Semantic Search — intent → ranked programs
+    // ─────────────────────────────────────────────────────────────────────
+    public SemanticSearchResult SemanticSearch(string query, int limit = 20)
+    {
+        var result = new SemanticSearchResult { Query = query };
+        if (string.IsNullOrWhiteSpace(query)) return result;
+
+        // Tokenize: split on whitespace, drop tiny tokens, lowercase
+        var tokens = System.Text.RegularExpressions.Regex
+            .Split(query.Trim(), @"[\s,;]+")
+            .Where(t => t.Length >= 3)
+            .Select(t => t.ToLowerInvariant())
+            .Distinct()
+            .ToList();
+        if (tokens.Count == 0) return result;
+        result.Tokens = tokens;
+
+        // Also expand by matching tokens against the capability dictionary —
+        // if the user says "fraud", we should pick up programs hit by ANY
+        // keyword in the fraud capability (e.g. "suspicious", "chargeback").
+        var dict = LoadDictionary();
+        var expandedKeywords = new HashSet<string>(tokens, StringComparer.OrdinalIgnoreCase);
+        var matchedCapabilities = new List<string>();
+        foreach (var cap in dict)
+        {
+            var capMatch = tokens.Any(t =>
+                cap.Id.Contains(t, StringComparison.OrdinalIgnoreCase) ||
+                cap.Display.Contains(t, StringComparison.OrdinalIgnoreCase));
+            if (capMatch)
+            {
+                matchedCapabilities.Add(cap.Display);
+                foreach (var kw in cap.Keywords) expandedKeywords.Add(kw);
+            }
+        }
+        result.MatchedCapabilities = matchedCapabilities;
+        result.ExpandedKeywords = expandedKeywords.ToList();
+
+        // Score every program against the expanded keyword set
+        var sourceDir = Path.Combine(_repoRoot, "source");
+        var factsDir = Path.Combine(_repoRoot, "output", "rekt");
+        if (!Directory.Exists(sourceDir)) return result;
+
+        var scored = new List<SemanticHit>();
+        foreach (var cbl in Directory.EnumerateFiles(sourceDir, "*.cbl", SearchOption.AllDirectories)
+            .Where(f => !f.Contains("/.convert-", StringComparison.Ordinal)
+                     && !f.Contains("/.rekt-staging", StringComparison.Ordinal)
+                     && !f.Contains("/.preprocessed", StringComparison.Ordinal)))
+        {
+            var basename = Path.GetFileName(cbl);
+            var stem = Path.GetFileNameWithoutExtension(cbl);
+            var factsPath = Path.Combine(factsDir, $"{stem}.facts.json");
+            var signals = ExtractSignals(cbl, factsPath);
+
+            double score = 0;
+            var hits = new List<CapabilityHit>();
+            foreach (var kw in expandedKeywords)
+            {
+                foreach (var p in signals.ParagraphsFromFacts.Concat(signals.ParagraphsFromSource))
+                    if (TokenMatch(p, kw))
+                    { score += 3; hits.Add(new CapabilityHit("paragraph", p, kw)); }
+                foreach (var c in signals.CallTargets)
+                    if (TokenMatch(c, kw))
+                    { score += 2; hits.Add(new CapabilityHit("call", c, kw)); }
+                foreach (var t in signals.SqlTables)
+                    if (TokenMatch(t, kw))
+                    { score += 2; hits.Add(new CapabilityHit("sql-table", t, kw)); }
+                foreach (var g in signals.DataGroups)
+                    if (TokenMatch(g, kw))
+                    { score += 2; hits.Add(new CapabilityHit("data-group", g, kw)); }
+                foreach (var cb in signals.Copybooks)
+                    if (TokenMatch(cb, kw))
+                    { score += 1; hits.Add(new CapabilityHit("copybook", cb, kw)); }
+            }
+            // Also raw substring match against the .cbl contents (filename + comments)
+            // for tokens >= 5 chars — catches free-text intents like "interest accrual"
+            // that might only appear in COBOL comments.
+            try
+            {
+                var text = File.ReadAllText(cbl);
+                foreach (var kw in expandedKeywords.Where(k => k.Length >= 5))
+                {
+                    var count = System.Text.RegularExpressions.Regex.Matches(text, kw,
+                        System.Text.RegularExpressions.RegexOptions.IgnoreCase).Count;
+                    if (count > 0)
+                    {
+                        score += 0.5 * count;
+                        hits.Add(new CapabilityHit("source-text", $"{count}× '{kw}' in source", kw));
+                    }
+                }
+            }
+            catch { /* fail-soft */ }
+
+            if (score <= 0) continue;
+            scored.Add(new SemanticHit(
+                Basename: basename,
+                Score: score,
+                Hits: hits.Take(8).ToList()
+            ));
+        }
+
+        result.Programs = scored.OrderByDescending(s => s.Score).Take(limit).ToList();
+        return result;
+    }
+
     public LocatorResult Locate(string query)
     {
         var result = new LocatorResult { Query = query };
@@ -472,3 +577,14 @@ public record CobolProgramMatch(
     bool ProgramIdMatch,
     bool BasenameMatch,
     string? FactsPath);
+
+// #9 Semantic search DTOs
+public class SemanticSearchResult
+{
+    public string Query { get; set; } = "";
+    public List<string> Tokens { get; set; } = new();
+    public List<string> ExpandedKeywords { get; set; } = new();
+    public List<string> MatchedCapabilities { get; set; } = new();
+    public List<SemanticHit> Programs { get; set; } = new();
+}
+public record SemanticHit(string Basename, double Score, List<CapabilityHit> Hits);
