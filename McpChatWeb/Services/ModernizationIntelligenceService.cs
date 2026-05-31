@@ -733,7 +733,7 @@ public sealed class ModernizationIntelligenceService
     /// (or filtered to a single job / single program subgraph) so the frontend
     /// can render it directly with the existing Mermaid library.
     /// </summary>
-    public ServiceChainSnapshot GetServiceChain(string? jobFilter, string? programFilter)
+    public ServiceChainSnapshot GetServiceChain(string? jobFilter, string? programFilter, bool includeUtilities = false)
     {
         var snap = new ServiceChainSnapshot();
         var sourceDir = Path.Combine(_repoRoot, "source");
@@ -774,8 +774,8 @@ public sealed class ModernizationIntelligenceService
             foreach (System.Text.RegularExpressions.Match m in execPgmRegex.Matches(content))
             {
                 var pgm = m.Groups[1].Value.ToUpperInvariant();
-                // Skip system utilities — only track user COBOL programs.
-                if (IsSystemUtility(pgm)) continue;
+                // Skip system utilities by default; toggle includeUtilities=true via API to surface them.
+                if (!includeUtilities && IsSystemUtility(pgm)) continue;
                 pgms.Add(pgm);
                 if (!pgmToJobs.ContainsKey(pgm)) pgmToJobs[pgm] = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 pgmToJobs[pgm].Add(jobName);

@@ -27,6 +27,16 @@ class ASTGalaxyView {
     this._c4Level = 1;          // C4 model level: 1=Context, 2=Containers, 3=Components
     this._c4SelectedProg = null; // program selected for L3 drill
     this._bianShowCopybooks = false;
+    // Flow-mode state (program-flow + jcl-flow)
+    this._programFlowDirection = 'both';   // 'both' | 'downstream' | 'upstream'
+    this._jclShowUtilities = false;         // include SORT / IDCAMS / IEBGENER etc.
+    this._serviceChainCache = null;         // populated lazily from /api/modernization/service-chain
+    // Default-blocked JCL utility program names — match service-chain backend filter.
+    this._systemUtilities = new Set([
+      'IDCAMS','IKJEFT01','IKJEFT1A','IKJEFT1B','IEFBR14','SORT','ICETOOL','DFSORT',
+      'ADUUMAIN','SYSUTCOM','DSNUTILB','DSNTIAUL','IEBGENER','IEBCOPY','IEHPROGM',
+      'IRXJCL','EZACFSM1'
+    ]);
   }
 
   get _isBusinessMode() { return this.viewMode === 'business' || this.viewMode === 'business-expanded' || this.viewMode === 'service-catalog' || this.viewMode === 'service-catalog-expanded' || this.viewMode === 'service-catalog-expanded-3d' || this.viewMode === 'service-catalog-v2' || this.viewMode === 'service-catalog-v3'; }
@@ -131,11 +141,23 @@ class ASTGalaxyView {
       }
 
       this._populateFileFilter();
+      this._refreshFlowToggleVisibility();
       if (this._isHtmlMode) {
         this._renderHtmlMode(container);
       } else if (this.viewMode === 'c4-model') {
         this._buildC4VisData();
         this._renderVisNetworkInternal(container);
+      } else if (this.viewMode === 'program-flow') {
+        // Async: needs service-chain data for copybook edges
+        this._buildProgramFlowVisData().then(() => {
+          this._renderVisNetworkInternal(container);
+        });
+        return; // skip the synchronous render path below
+      } else if (this.viewMode === 'jcl-flow') {
+        this._buildJclFlowVisData().then(() => {
+          this._renderVisNetworkInternal(container);
+        });
+        return;
       } else if (this.viewMode === 'service-catalog-v3') {
         this._buildModernizationRadarVisData();
       } else if (this._isServiceCatalogMode) {
@@ -1667,6 +1689,8 @@ class ASTGalaxyView {
       this._render3DServiceCatalogV2(container);
     } else if (this.viewMode === 'service-catalog-v3') {
       this._render3DModernizationRadar(container);
+    } else if (this.viewMode === 'program-flow' || this.viewMode === 'jcl-flow') {
+      this._render3DFlow(container);
     } else if (this._isBusinessMode) {
       this._render3DBusiness(container);
     } else {
@@ -1685,6 +1709,8 @@ class ASTGalaxyView {
       'program-map': '📊 Programs',
       'bian-matrix': '🏦 BIAN Service Landscape',
       'c4-model': '🏗️ C4 Model',
+      'program-flow': '🎯 Program-Centric Flow',
+      'jcl-flow': '🗂 JCL & Batch Flow',
     };
     const label = document.createElement('div');
     label.style.cssText = 'position:absolute;top:10px;left:10px;z-index:20;padding:6px 14px;background:rgba(3,7,18,0.85);color:#e2e8f0;border:1px solid #475569;border-radius:6px;font-size:13px;font-weight:600;pointer-events:none;backdrop-filter:blur(4px);';
@@ -4009,6 +4035,8 @@ class ASTGalaxyView {
       'service-catalog-expanded-3d': '🧊 Service Catalog (Expanded 3D)',
       'service-catalog-v2': '🚀 Service Catalog v2',
       'service-catalog-v3': '🎯 Modernization Radar',
+      'program-flow': '🎯 Program-Centric Flow',
+      'jcl-flow': '🗂 JCL & Batch Flow',
     };
     const dim = is3D ? '🧊 3D' : '2D';
 
@@ -4624,6 +4652,7 @@ class ASTGalaxyView {
       if (dd && dd.value !== value) dd.value = value;
     }
     this.viewMode = value;
+    this._refreshFlowToggleVisibility();
     if (value === 'expanded' || value === 'expanded-v2' || value === 'program-map') {
       const programs = this._getSortedPrograms();
       for (const p of programs) this._expandedClusters.add(p.program);
@@ -4697,6 +4726,8 @@ class ASTGalaxyView {
       this._expandedClusters.clear();
       this._c4Level = 1;
       this._c4SelectedProg = null;
+    } else if (value === 'program-flow' || value === 'jcl-flow') {
+      this._expandedClusters.clear();
     } else if (value === 'program-map') {
       this._expandedClusters.clear();
     } else {
@@ -5394,6 +5425,470 @@ class ASTGalaxyView {
     document.getElementById('galaxy-2d-legend')?.remove();
     document.getElementById('galaxy-3d-legend')?.remove();
     document.querySelector('.galaxy-v2-lanes')?.remove();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // FLOW MODES — Program-Centric Flow + JCL & Batch Flow
+  // Both modes use deterministic fixed-position layouts (no physics) so
+  // the visual structure is stable and screenshot-friendly.
+  // ═══════════════════════════════════════════════════════════════════
+
+  /**
+   * Shared 3D renderer for both flow modes. Takes the vis.DataSet that the
+   * 2D builders produced (with hand-laid {x, y} positions) and lifts every
+   * node onto a Z-plane keyed on its node type, so the user can rotate and
+   * see JCL/Program/Copybook layers separated in depth.
+   */
+  async _render3DFlow(container) {
+    // Build 2D data first so positions exist
+    if (this.viewMode === 'program-flow') {
+      await this._buildProgramFlowVisData();
+    } else {
+      await this._buildJclFlowVisData();
+    }
+    if (!this.nodes) return;
+
+    const zForType = (t) => {
+      if (t === 'JCL_JOB')   return -120;
+      if (t === 'PROGRAM')   return 0;
+      if (t === 'COPYBOOK')  return 120;
+      return 0;
+    };
+    const colorForType = (t) => {
+      if (t === 'JCL_JOB')  return '#a855f7';
+      if (t === 'PROGRAM')  return '#60a5fa';
+      if (t === 'COPYBOOK') return '#fb923c';
+      return '#94a3b8';
+    };
+
+    const nodes3d = [];
+    const idMap = new Map();
+    this.nodes.forEach(n => {
+      const t = n._data?.nodeType || 'PROGRAM';
+      const z = zForType(t);
+      nodes3d.push({
+        id: n.id,
+        name: typeof n.label === 'string' ? n.label : String(n.label || n.id),
+        val: (n.size || 12) * 0.6,
+        color: colorForType(t),
+        // Pre-position; 3d-force-graph respects fx/fy/fz when present.
+        fx: (n.x || 0) * 0.4,
+        fy: (n.y || 0) * 0.4,
+        fz: z,
+        _meta: n._data,
+      });
+      idMap.set(n.id, true);
+    });
+
+    const links3d = [];
+    this.edges.forEach(e => {
+      if (!idMap.has(e.from) || !idMap.has(e.to)) return;
+      links3d.push({
+        source: e.from, target: e.to,
+        color: (e.color && e.color.color) || '#94a3b8',
+        label: e.label || '',
+      });
+    });
+
+    const w = container.offsetWidth || 800;
+    const h = container.offsetHeight || 600;
+    const graph = ForceGraph3D()(container)
+      .graphData({ nodes: nodes3d, links: links3d })
+      .width(w).height(h)
+      .backgroundColor('#030712')
+      .nodeLabel(n => `${n.name}\n${n._meta?.nodeType || ''}`)
+      .nodeRelSize(4)
+      .linkColor(l => l.color)
+      .linkOpacity(0.45)
+      .linkDirectionalArrowLength(3)
+      .linkDirectionalArrowRelPos(0.95)
+      .linkWidth(0.6);
+    // Disable physics so our fx/fy/fz positions hold
+    graph.d3Force('charge', null);
+    graph.d3Force('center', null);
+    graph.d3Force('link', null);
+    this.graph3d = graph;
+  }
+
+  /** Show/hide the flow-mode toggle row in the controls bar. */
+  _refreshFlowToggleVisibility() {
+    const wrap = document.getElementById('galaxy-flow-toggles');
+    if (!wrap) return;
+    const isFlow = this.viewMode === 'program-flow' || this.viewMode === 'jcl-flow';
+    wrap.style.display = isFlow ? 'inline-flex' : 'none';
+    // Per-mode toggle visibility
+    const pflowSel = document.getElementById('galaxy-pflow-dir');
+    const jclChk   = document.getElementById('galaxy-jcl-utils');
+    if (pflowSel) pflowSel.parentElement.style.display = ''; // always visible inside wrap
+    if (pflowSel) pflowSel.style.display = (this.viewMode === 'program-flow') ? '' : 'none';
+    if (jclChk)   jclChk.closest('label').style.display  = (this.viewMode === 'jcl-flow')   ? 'inline-flex' : 'none';
+  }
+
+  setProgramFlowDirection(value) {
+    this._programFlowDirection = value;
+    if (this.viewMode === 'program-flow') this._rebuildAndRender();
+  }
+
+  /**
+   * Lazy-fetch + cache the service-chain payload that backs both flow modes.
+   * Cache is keyed on the includeUtilities flag so toggling refetches once.
+   * Returns { jobs: [...], programs: [...], program→copybooks map }.
+   */
+  async _loadServiceChainData() {
+    const includeUtil = !!this._jclShowUtilities;
+    if (this._serviceChainCache && this._serviceChainCacheKey === includeUtil) {
+      return this._serviceChainCache;
+    }
+    try {
+      const url = `/api/modernization/service-chain?includeUtilities=${includeUtil}`;
+      const r = await fetch(url);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      const pgmToCpy = {};
+      for (const p of (d.programs || [])) {
+        pgmToCpy[(p.basename || '').toUpperCase()] = p.copybooks || [];
+      }
+      this._serviceChainCache = { jobs: d.jobs || [], programs: d.programs || [], pgmToCpy };
+      this._serviceChainCacheKey = includeUtil;
+      return this._serviceChainCache;
+    } catch (err) {
+      console.warn('[ast-galaxy] service-chain fetch failed:', err.message);
+      this._serviceChainCache = { jobs: [], programs: [], pgmToCpy: {} };
+      this._serviceChainCacheKey = includeUtil;
+      return this._serviceChainCache;
+    }
+  }
+
+  setJclShowUtilities(checked) {
+    this._jclShowUtilities = !!checked;
+    if (this.viewMode === 'jcl-flow') this._rebuildAndRender();
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // 🎯 Program-Centric Flow
+  // For every program (or just the file-filter selection): a hub with
+  // its callees fanning right + callers fanning left + copybooks below.
+  // Direction toggle: both | downstream (callees only) | upstream (callers only)
+  // ──────────────────────────────────────────────────────────────────
+  async _buildProgramFlowVisData() {
+    const chain = await this._loadServiceChainData();
+    const programs = (this.galaxyData?.programs || []).filter(p => !p.isCopybook);
+    const edges = this.galaxyData?.edges || [];
+    const norm = s => (s || '').replace(/\.cbl$/i, '').toUpperCase();
+
+    // Filter: respect file-filter dropdown (single program) or render all
+    let activePrograms = programs;
+    if (this.filter && this.filter !== 'all') {
+      const want = norm(this.filter);
+      activePrograms = programs.filter(p => norm(p.program) === want);
+    }
+
+    const direction = this._programFlowDirection;          // both | downstream | upstream
+    const nodeList = [];
+    const edgeList = [];
+    const seen = new Set();
+
+    // Layout: each program gets a 200px-tall row. Within a row:
+    //   Callers      Hub        Callees
+    //   (left)     (center)     (right)
+    //                ↓
+    //             Copybooks
+    const ROW_H = 280;
+    const HUB_X = 0;
+    const HUB_Y_BASE = 0;
+    const FANOUT_X = 320;
+    const STACK_Y = 60;
+    const COPY_Y  = 110;
+
+    activePrograms.forEach((p, rowIdx) => {
+      const pname = norm(p.program);
+      const hubId = `pflow_hub_${pname}_${rowIdx}`;
+      const hubY = HUB_Y_BASE + rowIdx * ROW_H;
+
+      nodeList.push({
+        id: hubId,
+        label: pname,
+        x: HUB_X, y: hubY, fixed: { x: true, y: true },
+        shape: 'box', size: 28,
+        color: { background: '#1e3a8a', border: '#60a5fa', highlight: { background: '#1e3a8a', border: '#fff' } },
+        font: { color: '#f8fafc', size: 14, multi: false }, borderWidth: 3,
+        margin: { top: 8, bottom: 8, left: 14, right: 14 },
+        title: `${pname}\nLOC: ${(p.lineCount || 0).toLocaleString()} · CALLs: ${p.callCount || 0} · SQL: ${p.sqlCount || 0}`,
+        _data: { ...p, displayName: pname, nodeType: 'PROGRAM', program: p.program },
+      });
+
+      // Callees (downstream): edges where source === this program
+      if (direction === 'both' || direction === 'downstream') {
+        const callees = edges.filter(e => norm(e.source) === pname).map(e => norm(e.target));
+        const uniq = [...new Set(callees)].slice(0, 12);
+        uniq.forEach((tgt, i) => {
+          const nid = `pflow_call_${pname}_${tgt}_${rowIdx}`;
+          if (!seen.has(nid)) {
+            seen.add(nid);
+            const yOffset = (i - (uniq.length - 1) / 2) * 36;
+            nodeList.push({
+              id: nid, label: tgt,
+              x: FANOUT_X, y: hubY + yOffset, fixed: { x: true, y: true },
+              shape: 'box', size: 14,
+              color: { background: '#0c4a6e', border: '#38bdf8' },
+              font: { color: '#e0f2fe', size: 10 }, borderWidth: 1,
+              margin: { top: 4, bottom: 4, left: 8, right: 8 },
+              title: `${tgt} (callee of ${pname})`,
+              _data: { displayName: tgt, nodeType: 'PROGRAM', program: tgt + '.cbl' },
+            });
+          }
+          edgeList.push({
+            from: hubId, to: nid,
+            arrows: { to: { enabled: true, scaleFactor: 0.5 } },
+            color: { color: '#38bdf8', opacity: 0.7 }, width: 1,
+            label: 'CALL', font: { color: '#64748b', size: 8, align: 'middle', strokeWidth: 0 },
+          });
+        });
+      }
+
+      // Callers (upstream): edges where target === this program
+      if (direction === 'both' || direction === 'upstream') {
+        const callers = edges.filter(e => norm(e.target) === pname).map(e => norm(e.source));
+        const uniq = [...new Set(callers)].slice(0, 12);
+        uniq.forEach((src, i) => {
+          const nid = `pflow_caller_${pname}_${src}_${rowIdx}`;
+          if (!seen.has(nid)) {
+            seen.add(nid);
+            const yOffset = (i - (uniq.length - 1) / 2) * 36;
+            nodeList.push({
+              id: nid, label: src,
+              x: -FANOUT_X, y: hubY + yOffset, fixed: { x: true, y: true },
+              shape: 'box', size: 14,
+              color: { background: '#581c87', border: '#c084fc' },
+              font: { color: '#f3e8ff', size: 10 }, borderWidth: 1,
+              margin: { top: 4, bottom: 4, left: 8, right: 8 },
+              title: `${src} (caller of ${pname})`,
+              _data: { displayName: src, nodeType: 'PROGRAM', program: src + '.cbl' },
+            });
+          }
+          edgeList.push({
+            from: nid, to: hubId,
+            arrows: { to: { enabled: true, scaleFactor: 0.5 } },
+            color: { color: '#c084fc', opacity: 0.6 }, width: 1,
+            label: 'CALL', font: { color: '#64748b', size: 8, align: 'middle', strokeWidth: 0 },
+          });
+        });
+      }
+
+      // Copybooks (below the hub) — always shown
+      const cpys = (chain.pgmToCpy[pname] || chain.pgmToCpy[pname + '.CBL'] || []).slice(0, 10);
+      cpys.forEach((cpy, i) => {
+        const cid = `pflow_cpy_${pname}_${cpy}_${rowIdx}`;
+        if (!seen.has(cid)) {
+          seen.add(cid);
+          const xOffset = (i - (cpys.length - 1) / 2) * 90;
+          nodeList.push({
+            id: cid, label: cpy.replace(/\.cpy$/i, ''),
+            x: HUB_X + xOffset, y: hubY + COPY_Y, fixed: { x: true, y: true },
+            shape: 'box', size: 10,
+            color: { background: '#7c2d12', border: '#fb923c' },
+            font: { color: '#ffedd5', size: 9 }, borderWidth: 1,
+            margin: { top: 3, bottom: 3, left: 6, right: 6 },
+            title: `${cpy} (copybook used by ${pname})`,
+            _data: { displayName: cpy, nodeType: 'COPYBOOK', program: cpy },
+          });
+        }
+        edgeList.push({
+          from: hubId, to: cid,
+          arrows: { to: { enabled: true, scaleFactor: 0.4 } },
+          color: { color: '#fb923c', opacity: 0.5 }, width: 0.8, dashes: [3, 3],
+          label: 'COPY', font: { color: '#64748b', size: 7, align: 'middle', strokeWidth: 0 },
+        });
+      });
+    });
+
+    if (activePrograms.length === 0) {
+      nodeList.push({
+        id: 'pflow_empty', label: 'No programs match the current filter\nPick a program or "all" in the file filter',
+        x: 0, y: 0, fixed: { x: true, y: true },
+        shape: 'box', size: 20,
+        color: { background: '#1f2937', border: '#475569' }, font: { color: '#94a3b8', size: 12 },
+      });
+    }
+
+    this.nodes = new vis.DataSet(nodeList);
+    this.edges = new vis.DataSet(edgeList);
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // 🗂 JCL & Batch Flow
+  // Three-column Sankey-style: JCL Jobs (left) → Programs (middle) → Copybooks (right)
+  // Toggle: include or hide system utilities (SORT, IDCAMS, etc.)
+  // ──────────────────────────────────────────────────────────────────
+  async _buildJclFlowVisData() {
+    const chain = await this._loadServiceChainData();
+    const norm  = s => (s || '').replace(/\.cbl$/i, '').toUpperCase();
+
+    const nodeList = [];
+    const edgeList = [];
+    const seenCpys = new Map();   // copybook → node id
+    const seenPgms = new Map();   // program  → node id
+
+    // Filter jobs/programs: drop pure-utility chains unless toggle is on
+    const filterUtil = (programs) => programs.filter(p => {
+      const stem = norm(p.basename || p);
+      return this._jclShowUtilities || !this._systemUtilities.has(stem);
+    });
+
+    const jobs = (chain.jobs || []).filter(j => {
+      if (this._jclShowUtilities) return true;
+      // Drop jobs that only execute utilities
+      const real = (j.programs || []).filter(p => !this._systemUtilities.has(norm(p)));
+      return real.length > 0;
+    });
+
+    if (jobs.length === 0) {
+      nodeList.push({
+        id: 'jcl_empty',
+        label: 'No JCL jobs found\nDrop *.JCL files into source/ and re-run rekt-full',
+        x: 0, y: 0, fixed: { x: true, y: true },
+        shape: 'box', size: 22,
+        color: { background: '#1f2937', border: '#475569' }, font: { color: '#94a3b8', size: 12 },
+      });
+      this.nodes = new vis.DataSet(nodeList);
+      this.edges = new vis.DataSet(edgeList);
+      return;
+    }
+
+    // ── COLUMNS ───────────────────────────────────────────────────
+    const COL_JCL_X  = -700;
+    const COL_PGM_X  = 0;
+    const COL_CPY_X  = 700;
+    const ROW_GAP    = 56;
+
+    // Pre-compute the unified program list (across all jobs) so vertical
+    // spacing is stable regardless of which job is being read first.
+    const allPrograms = new Set();
+    for (const j of jobs) {
+      for (const p of (j.programs || [])) {
+        const stem = norm(p);
+        if (!this._jclShowUtilities && this._systemUtilities.has(stem)) continue;
+        allPrograms.add(stem);
+      }
+    }
+    const programArr = [...allPrograms].sort();
+    const programYIndex = {};
+    programArr.forEach((pn, i) => { programYIndex[pn] = i; });
+    const pgmCount = programArr.length;
+    const pgmCenter = (pgmCount - 1) / 2;
+
+    // ── JCL nodes (left) ──────────────────────────────────────────
+    const jobYIndex = {};
+    jobs.forEach((j, i) => { jobYIndex[j.jobName] = i; });
+    const jobCenter = (jobs.length - 1) / 2;
+
+    jobs.forEach((j, i) => {
+      const id = `jcl_${j.jobName}`;
+      const programs = (j.programs || []).filter(p => this._jclShowUtilities || !this._systemUtilities.has(norm(p)));
+      nodeList.push({
+        id, label: j.jobName,
+        x: COL_JCL_X, y: (i - jobCenter) * ROW_GAP, fixed: { x: true, y: true },
+        shape: 'box', size: 18,
+        color: { background: '#3b0764', border: '#a855f7' },
+        font: { color: '#f3e8ff', size: 11 }, borderWidth: 2,
+        margin: { top: 6, bottom: 6, left: 10, right: 10 },
+        title: `JCL Job: ${j.jobName}\nExecutes ${programs.length} program(s)${j.path ? '\nFile: ' + j.path : ''}`,
+        _data: { displayName: j.jobName, nodeType: 'JCL_JOB', programs },
+      });
+
+      // ── Program nodes (middle) — only create once per program ──
+      programs.forEach(pgm => {
+        const stem = norm(pgm);
+        let pid = seenPgms.get(stem);
+        if (!pid) {
+          pid = `pgm_${stem}`;
+          seenPgms.set(stem, pid);
+          const isUtil = this._systemUtilities.has(stem);
+          nodeList.push({
+            id: pid, label: stem,
+            x: COL_PGM_X, y: (programYIndex[stem] - pgmCenter) * ROW_GAP, fixed: { x: true, y: true },
+            shape: 'box', size: 14,
+            color: {
+              background: isUtil ? '#3f3f46' : '#1e3a8a',
+              border:     isUtil ? '#71717a' : '#60a5fa',
+            },
+            font: { color: isUtil ? '#a1a1aa' : '#dbeafe', size: 10 }, borderWidth: 1,
+            margin: { top: 4, bottom: 4, left: 8, right: 8 },
+            title: `Program: ${stem}${isUtil ? '\n(system utility)' : ''}`,
+            _data: { displayName: stem, nodeType: 'PROGRAM', program: stem + '.cbl' },
+          });
+        }
+        // Edge: JCL → Program
+        edgeList.push({
+          from: id, to: pid,
+          arrows: { to: { enabled: true, scaleFactor: 0.45 } },
+          color: { color: '#a855f7', opacity: 0.5 }, width: 0.9,
+          label: 'EXEC', font: { color: '#64748b', size: 8, align: 'middle', strokeWidth: 0 },
+          smooth: { type: 'cubicBezier', forceDirection: 'horizontal', roundness: 0.4 },
+        });
+      });
+    });
+
+    // ── Copybooks (right) — derived from chain.programs ───────────
+    const cpyArr = [];
+    for (const [stem, pid] of seenPgms.entries()) {
+      const cpys = chain.pgmToCpy[stem] || chain.pgmToCpy[stem + '.CBL'] || [];
+      for (const cpy of cpys) {
+        if (!seenCpys.has(cpy)) {
+          cpyArr.push(cpy);
+          seenCpys.set(cpy, `cpy_${cpy}`);
+        }
+      }
+    }
+    cpyArr.sort();
+    const cpyCenter = (cpyArr.length - 1) / 2;
+    cpyArr.forEach((cpy, i) => {
+      const cid = seenCpys.get(cpy);
+      nodeList.push({
+        id: cid, label: cpy.replace(/\.cpy$/i, ''),
+        x: COL_CPY_X, y: (i - cpyCenter) * ROW_GAP, fixed: { x: true, y: true },
+        shape: 'box', size: 11,
+        color: { background: '#7c2d12', border: '#fb923c' },
+        font: { color: '#ffedd5', size: 9 }, borderWidth: 1,
+        margin: { top: 3, bottom: 3, left: 6, right: 6 },
+        title: `Copybook: ${cpy}`,
+        _data: { displayName: cpy, nodeType: 'COPYBOOK', program: cpy },
+      });
+    });
+
+    // Edges: Program → Copybook
+    for (const [stem, pid] of seenPgms.entries()) {
+      const cpys = chain.pgmToCpy[stem] || chain.pgmToCpy[stem + '.CBL'] || [];
+      for (const cpy of cpys) {
+        const cid = seenCpys.get(cpy);
+        if (!cid) continue;
+        edgeList.push({
+          from: pid, to: cid,
+          arrows: { to: { enabled: true, scaleFactor: 0.4 } },
+          color: { color: '#fb923c', opacity: 0.35 }, width: 0.7, dashes: [3, 3],
+          label: 'COPY', font: { color: '#64748b', size: 7, align: 'middle', strokeWidth: 0 },
+          smooth: { type: 'cubicBezier', forceDirection: 'horizontal', roundness: 0.3 },
+        });
+      }
+    }
+
+    // ── Column headers ───────────────────────────────────────────
+    const headerY = -((Math.max(jobs.length, pgmCount, cpyArr.length) / 2) * ROW_GAP) - 50;
+    const header = (id, x, label, bg, brd) => ({
+      id, label, x, y: headerY, fixed: { x: true, y: true },
+      shape: 'box', size: 18,
+      color: { background: bg, border: brd },
+      font: { color: '#f8fafc', size: 13, bold: true }, borderWidth: 2,
+      margin: { top: 8, bottom: 8, left: 14, right: 14 },
+    });
+    nodeList.push(
+      header('hdr_jcl', COL_JCL_X, `🗂 JCL Jobs (${jobs.length})`,      '#3b0764', '#a855f7'),
+      header('hdr_pgm', COL_PGM_X, `📦 Programs (${seenPgms.size})`,    '#1e3a8a', '#60a5fa'),
+      header('hdr_cpy', COL_CPY_X, `📚 Copybooks (${cpyArr.length})`,   '#7c2d12', '#fb923c'),
+    );
+
+    this.nodes = new vis.DataSet(nodeList);
+    this.edges = new vis.DataSet(edgeList);
   }
 
   _esc(s) { return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }

@@ -9052,8 +9052,8 @@ app.MapGet("/api/modernization/service-candidates",
 
 // PR Portal-Service-Chain: JCL → Program → Copybook overview
 app.MapGet("/api/modernization/service-chain",
-    (string? job, string? program, McpChatWeb.Services.ModernizationIntelligenceService svc) =>
-        Results.Ok(svc.GetServiceChain(job, program)));
+    (string? job, string? program, bool? includeUtilities, McpChatWeb.Services.ModernizationIntelligenceService svc) =>
+        Results.Ok(svc.GetServiceChain(job, program, includeUtilities ?? false)));
 
 // PR Portal-P2: Migration Wave Planner (first write capability)
 app.MapGet("/api/modernization/waves",

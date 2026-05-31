@@ -641,14 +641,28 @@
             were force-graph variants of the same data. Legacy aliases are
             re-routed to canonical modes in ast-galaxy.js setViewMode().
           -->
-          <select id="galaxy-view-mode" onchange="galaxyView?.setViewMode(this.value)" style="padding: 6px; background: #1e293b; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; font-size: 13px;" title="6 canonical view modes. For dashboard-style visuals, see 🎨 Visual Cockpit.">
+          <select id="galaxy-view-mode" onchange="galaxyView?.setViewMode(this.value)" style="padding: 6px; background: #1e293b; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; font-size: 13px;" title="6 canonical view modes + 2 flow modes. For dashboard-style visuals, see 🎨 Visual Cockpit.">
             <option value="clustered">📦 Technical</option>
             <option value="business-expanded">🏢 Business Domains</option>
             <option value="service-catalog">📋 Service Catalog</option>
             <option value="service-catalog-v3">🎯 Modernization Radar</option>
             <option value="bian-matrix">🏦 BIAN Service Landscape</option>
             <option value="c4-model">🏗️ C4 Model</option>
+            <option value="program-flow">🎯 Program-Centric Flow</option>
+            <option value="jcl-flow">🗂 JCL &amp; Batch Flow</option>
           </select>
+          <!-- Flow-mode toggles: shown only for the flow modes via _refreshFlowToggleVisibility() -->
+          <span id="galaxy-flow-toggles" style="display:none; gap:6px; align-items:center;">
+            <select id="galaxy-pflow-dir" onchange="galaxyView?.setProgramFlowDirection(this.value)" title="Program-Flow direction" style="padding: 6px; background: #1e293b; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; font-size: 12px;">
+              <option value="both" selected>↔ Both (callers + callees)</option>
+              <option value="downstream">→ Callees only</option>
+              <option value="upstream">← Callers only</option>
+            </select>
+            <label style="font-size:12px; color:#cbd5e1; display:inline-flex; align-items:center; gap:4px; padding:5px 8px; background:#1e293b; border:1px solid #475569; border-radius:6px;">
+              <input id="galaxy-jcl-utils" type="checkbox" onchange="galaxyView?.setJclShowUtilities(this.checked)" style="margin:0;"/>
+              Include system utilities (SORT, IDCAMS, IEBGENER…)
+            </label>
+          </span>
           <select id="galaxy-show-filter" onchange="galaxyView?.setShowFilter(this.value)" style="padding: 6px; background: #1e293b; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; font-size: 13px;">
             <option value="all">Show: All</option>
             <option value="programs">Programs Only</option>
