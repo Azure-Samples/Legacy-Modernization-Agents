@@ -1906,10 +1906,19 @@ class ModernizationIntelligenceView {
             <h4>⚪ Unclassified (${catalog.unclassified.length} programs)</h4>
             <p class="mi-help">
               No keyword hits — likely candidates for a new capability entry, or programs
-              that are pure technical plumbing. Consider adding keywords to
-              <code>Data/capabilities.json</code> if any of these belong to a business domain.
+              that are pure technical plumbing.
             </p>
-            <div class="mi-cap-chips">
+            <div style="margin: 8px 0;">
+              <button class="mi-btn mi-btn-primary"
+                      onclick="window.modernizationIntelligenceView._suggestKeywords();">
+                🧠 Suggest capabilities from these programs
+              </button>
+              <span class="mi-help" style="margin-left:10px;">
+                Analyses paragraph names, data groups, copybook names, CALL targets, AND COBOL comments to propose new capability dictionary entries.
+              </span>
+            </div>
+            <div id="mi-cap-suggestions"></div>
+            <div class="mi-cap-chips" style="margin-top:8px;">
               ${catalog.unclassified.map(b => `<span class="mi-chip">${this._escape(b)}</span>`).join('')}
             </div>
           </div>` : ''}
@@ -2198,6 +2207,104 @@ class ModernizationIntelligenceView {
         <div class="mi-help">Forms tried: ${r.forms.map(f => `<code>${this._escape(f)}</code>`).join(', ')}</div>
       </div>
     `;
+  }
+
+  // ────────────────────────────────────────────────────────────────────
+  // #10 LLM-style keyword suggester (deterministic; uses paragraph + group
+  // + copybook + comment tokens to propose new capabilities)
+  // ────────────────────────────────────────────────────────────────────
+  async _suggestKeywords() {
+    const panel = document.getElementById('mi-cap-suggestions');
+    if (!panel) return;
+    panel.innerHTML = '<div class="mi-loading">🧠 Analysing paragraph names, data groups, copybooks and COBOL comments…</div>';
+    try {
+      const r = await fetch('/api/modernization/capability-suggestions').then(x => x.json());
+      if (r.note) {
+        panel.innerHTML = `<div class="mi-empty">${this._escape(r.note)}</div>`;
+        return;
+      }
+      if (!r.suggestions || r.suggestions.length === 0) {
+        panel.innerHTML = `<div class="mi-empty">
+          No clear clusters in the ${r.unclassifiedCount} unclassified programs.
+          They may share no distinctive vocabulary — likely pure infrastructure or
+          deps-only programs without enough facts.
+        </div>`;
+        return;
+      }
+      panel.innerHTML = `
+        <div class="mi-section" style="border:1px solid var(--color-info-border); padding:12px; border-radius:6px; background:var(--bg-card); margin-top:10px;">
+          <h4 style="margin:0 0 8px 0; color:var(--color-info);">🧠 Suggested capabilities (${r.suggestions.length})</h4>
+          <p class="mi-help" style="margin:0 0 10px 0;">
+            Click <b>+ Add to dictionary</b> on any suggestion to drop it into the capabilities editor.
+            The dictionary stays open so you can review + save in one go.
+          </p>
+          ${r.suggestions.map((s, i) => `
+            <div class="mi-cap-suggestion" data-idx="${i}">
+              <div class="mi-cap-suggestion-header">
+                <span style="font-size:18px;">🆕</span>
+                <div>
+                  <b style="color:var(--text-primary); font-size:13px;">${this._escape(s.suggestedDisplay)}</b>
+                  <span class="mi-muted" style="font-size:11px;"> · id <code>${this._escape(s.suggestedId)}</code> · seed token <code>${this._escape(s.seedToken)}</code></span>
+                </div>
+                <button class="mi-btn mi-btn-sm" style="margin-left:auto;"
+                        onclick='window.modernizationIntelligenceView._addSuggestionToDictionary(${JSON.stringify(s).replace(/'/g, "\\'")});'>
+                  + Add to dictionary
+                </button>
+              </div>
+              <div style="margin-top:6px;">
+                <span class="mi-muted" style="font-size:11px;">Proposed keywords:</span>
+                ${s.keywords.map(k => `<span class="mi-chip mi-chip-tiny" style="background:var(--color-info-bg); color:var(--color-info);">${this._escape(k)}</span>`).join(' ')}
+              </div>
+              <div style="margin-top:4px;">
+                <span class="mi-muted" style="font-size:11px;">Would classify <b>${s.members.length}</b> program${s.members.length === 1 ? '' : 's'}:</span>
+                ${s.members.slice(0, 6).map(m => `<span class="mi-chip mi-chip-tiny">${this._escape(m)}</span>`).join(' ')}
+                ${s.members.length > 6 ? `<span class="mi-muted">… +${s.members.length - 6} more</span>` : ''}
+              </div>
+            </div>
+          `).join('')}
+          ${r.stillUnclassified && r.stillUnclassified.length > 0 ? `
+            <p class="mi-muted" style="margin-top:10px; font-size:11px;">
+              <b>${r.stillUnclassified.length}</b> program${r.stillUnclassified.length === 1 ? '' : 's'} would remain unclassified
+              even after adopting all suggestions — these likely share no distinctive vocabulary
+              and may need manual review.
+            </p>` : ''}
+        </div>
+      `;
+    } catch (err) {
+      panel.innerHTML = `<div class="mi-error">${this._escape(err.message)}</div>`;
+    }
+  }
+
+  /**
+   * Insert a suggested capability into the capabilities.json editor.
+   * Opens the editor if it isn't already open.
+   */
+  async _addSuggestionToDictionary(suggestion) {
+    let modal = document.getElementById('mi-cap-edit-modal');
+    if (!modal || modal.style.display === 'none') {
+      await this._openCapabilityEditor();
+      // Wait for editor to load file content
+      await new Promise(r => setTimeout(r, 800));
+    }
+    const area = document.getElementById('mi-cap-edit-area');
+    if (!area) return;
+    try {
+      const d = JSON.parse(area.value);
+      d.capabilities.push({
+        id: suggestion.suggestedId,
+        emoji: '🆕',
+        display: suggestion.suggestedDisplay,
+        keywords: suggestion.keywords,
+        bian: [],
+      });
+      area.value = JSON.stringify(d, null, 2);
+      area.scrollTop = area.scrollHeight;
+      document.getElementById('mi-cap-edit-status').innerHTML =
+        `<span style="color:var(--color-success);">✓ Added "${this._escape(suggestion.suggestedDisplay)}" to the dictionary. Tweak the emoji/id/keywords if needed, then click <b>Save & re-classify</b>.</span>`;
+    } catch (err) {
+      document.getElementById('mi-cap-edit-status').innerHTML =
+        `<span style="color:var(--color-fail);">✗ Can't add — JSON parse error: ${this._escape(err.message)}</span>`;
+    }
   }
 
   _escape(s) {

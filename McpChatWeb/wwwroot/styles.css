@@ -9045,3 +9045,12 @@ main.three-panel-layout {
   tab-size: 2;
 }
 .mi-cap-edit-area:focus { outline: none; border-color: var(--color-info); }
+
+/* #10 capability suggester */
+.mi-cap-suggestion {
+  background: var(--bg-deep); border: 1px solid var(--border-subtle);
+  border-radius: 4px; padding: 10px 12px; margin-bottom: 6px;
+}
+.mi-cap-suggestion-header {
+  display: flex; align-items: center; gap: 10px;
+}

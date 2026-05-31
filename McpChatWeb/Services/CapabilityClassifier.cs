@@ -299,6 +299,169 @@ public sealed class CapabilityClassifier
     // ─────────────────────────────────────────────────────────────────────
 
     // ─────────────────────────────────────────────────────────────────────
+    // #10 Keyword suggester — propose dictionary additions for unclassified
+    // programs. Deterministic: extracts the most distinctive tokens from
+    // paragraph names + data groups + copybook names + COBOL source content
+    // (incl. comments), clusters by shared tokens, and proposes one new
+    // capability per cluster with ready-to-paste keyword arrays.
+    // ─────────────────────────────────────────────────────────────────────
+    public KeywordSuggestionResult SuggestKeywords()
+    {
+        var result = new KeywordSuggestionResult();
+        var catalog = GetCapabilities();
+        var unclassified = catalog.Unclassified;
+        result.UnclassifiedCount = unclassified.Count;
+        if (unclassified.Count == 0)
+        {
+            result.Note = "No unclassified programs — every program already matches at least one capability. Nothing to suggest.";
+            return result;
+        }
+
+        var sourceDir = Path.Combine(_repoRoot, "source");
+        var factsDir = Path.Combine(_repoRoot, "output", "rekt");
+        if (!Directory.Exists(sourceDir)) return result;
+
+        // Existing keywords we should NOT propose again (case-insensitive set)
+        var existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var bucket in catalog.Capabilities)
+        {
+            // We don't store keywords on the bucket directly; reload dict
+        }
+        foreach (var cap in LoadDictionary())
+            foreach (var kw in cap.Keywords) existing.Add(kw);
+
+        // Per-program token bag (from paragraphs + groups + copybooks + source text)
+        var programTokens = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+        var tokenCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+        // Common COBOL noise tokens we should never propose as keywords
+        var noise = new HashSet<string>(StringComparer.OrdinalIgnoreCase) {
+            "init", "main", "start", "end", "exit", "begin", "stop",
+            "para", "pro", "proc", "section", "perform", "call", "move",
+            "set", "if", "else", "when", "evaluate", "compute", "add",
+            "subtract", "multiply", "divide", "data", "file", "record",
+            "open", "close", "read", "write", "rewrite", "delete",
+            "ws", "lk", "tmp", "temp", "aux", "var", "value", "values",
+            "filler", "redefines", "occurs", "depending", "indexed",
+            "pic", "picture", "comp", "display", "binary", "packed",
+            "true", "false", "high", "low", "spaces", "zeros", "zeroes",
+            "the", "and", "for", "with", "from", "into", "this", "that",
+            "have", "has", "will", "shall", "must", "should", "would",
+            "rutina", "proc01", "proc02", "proc03",  // Spanish FUENTES noise
+            "para01", "para02", "para03",
+        };
+
+        foreach (var basename in unclassified)
+        {
+            var stem = Path.GetFileNameWithoutExtension(basename);
+            var cblPath = Directory.EnumerateFiles(sourceDir, basename, SearchOption.AllDirectories)
+                .FirstOrDefault(f => !f.Contains("/.convert-", StringComparison.Ordinal)
+                                  && !f.Contains("/.rekt-staging", StringComparison.Ordinal)
+                                  && !f.Contains("/.preprocessed", StringComparison.Ordinal));
+            if (cblPath == null) continue;
+            var factsPath = Path.Combine(factsDir, $"{stem}.facts.json");
+            var signals = ExtractSignals(cblPath, factsPath);
+
+            var bag = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var allLabels = signals.ParagraphsFromFacts
+                .Concat(signals.ParagraphsFromSource)
+                .Concat(signals.DataGroups)
+                .Concat(signals.Copybooks)
+                .Concat(signals.CallTargets);
+
+            foreach (var label in allLabels)
+            {
+                foreach (var tok in System.Text.RegularExpressions.Regex.Split(label, @"[^A-Za-z]+"))
+                {
+                    if (tok.Length < 4 || tok.Length > 20) continue;
+                    var lower = tok.ToLowerInvariant();
+                    if (noise.Contains(lower)) continue;
+                    if (existing.Contains(lower)) continue;
+                    // Strip common COBOL prefixes/suffixes
+                    var trimmed = lower
+                        .TrimStart('w', 's', 'l', 'k')  // ws-, lk-, etc.
+                        .TrimEnd('s', 'r')              // plural/repeat
+                        ;
+                    if (trimmed.Length < 4) continue;
+                    bag.Add(lower);
+                }
+            }
+
+            // Pull comment text from .cbl source — COBOL comments start with * in col 7
+            try
+            {
+                var lines = File.ReadAllLines(cblPath);
+                foreach (var ln in lines.Take(500))  // first 500 lines is usually enough
+                {
+                    if (ln.Length < 7 || (ln.Length >= 7 && ln[6] != '*')) continue;
+                    foreach (var tok in System.Text.RegularExpressions.Regex.Split(ln, @"[^A-Za-z]+"))
+                    {
+                        if (tok.Length < 5 || tok.Length > 20) continue;
+                        var lower = tok.ToLowerInvariant();
+                        if (noise.Contains(lower)) continue;
+                        if (existing.Contains(lower)) continue;
+                        bag.Add(lower);
+                    }
+                }
+            }
+            catch { /* fail-soft */ }
+
+            programTokens[basename] = bag;
+            foreach (var t in bag)
+                tokenCounts[t] = tokenCounts.GetValueOrDefault(t, 0) + 1;
+        }
+
+        // Find tokens that recur in >= 2 unclassified programs but not too commonly
+        // (a token appearing in EVERY program is too generic).
+        var maxOccurrence = (int)Math.Ceiling(unclassified.Count * 0.7);
+        var seedTokens = tokenCounts
+            .Where(kv => kv.Value >= 2 && kv.Value <= maxOccurrence)
+            .OrderByDescending(kv => kv.Value)
+            .ThenBy(kv => kv.Key.Length)
+            .Take(40)
+            .Select(kv => kv.Key)
+            .ToList();
+
+        // Greedy cluster: group programs that share token, suggest one capability per cluster
+        var clusters = new List<KeywordCluster>();
+        var assignedPrograms = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var seed in seedTokens)
+        {
+            var members = programTokens
+                .Where(kv => !assignedPrograms.Contains(kv.Key) && kv.Value.Contains(seed))
+                .Select(kv => kv.Key)
+                .ToList();
+            if (members.Count < 2) continue;
+            // Collect supporting keywords that frequently co-occur with the seed in these members
+            var co = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var m in members)
+                foreach (var t in programTokens[m])
+                    if (t != seed) co[t] = co.GetValueOrDefault(t, 0) + 1;
+            var supportingKeywords = co
+                .Where(kv => kv.Value >= Math.Max(2, members.Count / 2))
+                .OrderByDescending(kv => kv.Value)
+                .Take(6)
+                .Select(kv => kv.Key)
+                .ToList();
+            clusters.Add(new KeywordCluster(
+                SeedToken: seed,
+                SuggestedId: seed.ToUpperInvariant(),
+                SuggestedDisplay: char.ToUpper(seed[0]) + seed.Substring(1).ToLowerInvariant(),
+                Keywords: new[] { seed }.Concat(supportingKeywords).Take(8).ToList(),
+                Members: members
+            ));
+            foreach (var m in members) assignedPrograms.Add(m);
+            if (clusters.Count >= 10) break;
+        }
+
+        result.Suggestions = clusters;
+        result.StillUnclassified = unclassified
+            .Where(p => !assignedPrograms.Contains(p))
+            .ToList();
+        return result;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
     // #9 Semantic Search — intent → ranked programs
     // ─────────────────────────────────────────────────────────────────────
     public SemanticSearchResult SemanticSearch(string query, int limit = 20)
@@ -588,3 +751,18 @@ public class SemanticSearchResult
     public List<SemanticHit> Programs { get; set; } = new();
 }
 public record SemanticHit(string Basename, double Score, List<CapabilityHit> Hits);
+
+// #10 Keyword suggester DTOs
+public class KeywordSuggestionResult
+{
+    public int UnclassifiedCount { get; set; }
+    public string? Note { get; set; }
+    public List<KeywordCluster> Suggestions { get; set; } = new();
+    public List<string> StillUnclassified { get; set; } = new();
+}
+public record KeywordCluster(
+    string SeedToken,
+    string SuggestedId,
+    string SuggestedDisplay,
+    List<string> Keywords,
+    List<string> Members);

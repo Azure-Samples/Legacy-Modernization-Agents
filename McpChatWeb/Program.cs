@@ -9139,6 +9139,11 @@ app.MapGet("/api/modernization/semantic-search",
     (string q, int? limit, McpChatWeb.Services.CapabilityClassifier svc) =>
         Results.Ok(svc.SemanticSearch(q ?? "", limit ?? 20)));
 
+// #10 Keyword suggester — propose dictionary additions for the unclassified bucket
+app.MapGet("/api/modernization/capability-suggestions",
+    (McpChatWeb.Services.CapabilityClassifier svc) =>
+        Results.Ok(svc.SuggestKeywords()));
+
 app.Run();
 
 // Expand {{include path}} directives in prompt markdown. Mirrors PromptLoader.ExpandIncludes
