@@ -647,10 +647,10 @@ class VisualCockpit {
           <div class="vc-heatmap-scroll">
             ${topCoupled.length ? this._heatmap(topCoupled, edges) : '<div class="vc-muted vc-pad">No CALL edges yet — run REKT scan</div>'}
           </div>
-          ${couplingItems.length > 18 ? `
+          ${couplingItems.length > 0 ? `
             <div class="vc-heatmap-controls">
               <label>Show top
-                <input type="range" min="6" max="${Math.min(couplingItems.length, 120)}" step="2"
+                <input type="range" min="6" max="${Math.min(Math.max(couplingItems.length, 18), 200)}" step="2"
                        value="${heatmapLimit}" id="vc-heatmap-zoom"
                        oninput="document.getElementById('vc-heatmap-zoom-val').textContent=this.value;"
                        onchange="window.visualCockpit?._setHeatmapLimit(parseInt(this.value));"

@@ -8825,18 +8825,34 @@ main.three-panel-layout {
 .vc-heatmap-controls input[type=range] { accent-color: var(--color-info); }
 .vc-heatmap-controls b { color: var(--color-info); }
 
-/* #12 portal-wide auto-refresh "live" indicator pip */
+/* #12 portal-wide auto-refresh "live" indicator pip — always visible while
+   the surface is focussed; pulses green when data actually changes. */
 .portal-auto-pip {
   position: absolute; top: 12px; right: 12px; z-index: 50;
-  background: var(--bg-card); color: var(--color-success);
-  padding: 3px 9px; border-radius: 12px; font-size: 10px; font-weight: 600;
+  background: var(--bg-card); padding: 4px 10px; border-radius: 12px;
+  font-size: 10px; font-weight: 600; letter-spacing: 0.5px;
   border: 1px solid var(--color-success-border);
-  opacity: 0.6; transition: opacity 0.4s, transform 0.2s, box-shadow 0.4s;
-  letter-spacing: 0.6px; pointer-events: none;
+  color: var(--color-success);
+  display: inline-flex; align-items: center; gap: 6px;
+  pointer-events: none;
+  transition: background 0.4s, transform 0.2s, box-shadow 0.4s;
 }
+.portal-pip-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--color-success);
+  box-shadow: 0 0 6px var(--color-success);
+  animation: portal-pip-pulse 2.4s infinite ease-in-out;
+}
+.portal-pip-label { color: var(--text-secondary); font-size: 10px; }
 .portal-auto-pip-flash {
-  opacity: 1; transform: scale(1.1);
-  box-shadow: 0 0 0 3px var(--color-success-bg);
+  background: var(--color-success-bg);
+  transform: scale(1.08);
+  box-shadow: 0 0 0 4px var(--color-success-bg);
+}
+.portal-auto-pip-flash .portal-pip-label { color: var(--color-success); }
+@keyframes portal-pip-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.5; transform: scale(0.7); }
 }
 
 /* #8 compile-failure deep-link */
@@ -8922,3 +8938,6 @@ main.three-panel-layout {
 .mi-compile-error code { color: var(--color-accent-cyan); font-size: 11px; }
 .mi-compile-error b { color: var(--color-fail); margin-left: 4px; }
 .mi-compile-error div { color: var(--text-secondary); margin-top: 3px; font-family: monospace; }
+
+/* #12 ensure the shell containers anchor the absolutely-positioned LIVE pip */
+.mi-shell, .ih-shell, .vc-shell { position: relative; }

@@ -113,7 +113,6 @@ Data/
 !Data/.gitkeep
 !Data/glossary.json
 !Data/capabilities.json
-!Data/llm-pricing.json
 Data/migration.db
 Data/migration.db-*
 *.db

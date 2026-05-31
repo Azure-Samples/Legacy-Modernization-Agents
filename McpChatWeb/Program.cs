@@ -7085,132 +7085,29 @@ app.MapGet("/api/prompts/token-usage", (int? minutes, int? days) =>
 			return sorted[idx];
 		}
 
-		// ─── Cost estimation (#5 cost calculator) ────────────────────
-		// Only meaningful for per-token providers (Azure OpenAI / OpenAI).
-		// GitHub Copilot is billed per-seat ($/user/month) so we expose token
-		// counts for capacity tracking but skip the $-conversion entirely —
-		// showing $-numbers under Copilot would be misleading since the user
-		// isn't paying per-token regardless of how many they consume.
-		string activeModel = "";
-		string serviceType = "";
-		try
-		{
-			var cfgPath = Path.Combine(repoRoot, "Config", "ai-config.local.env");
-			if (File.Exists(cfgPath))
-			{
-				// Two-pass: collect all KEY=VALUE first, then expand $VAR references.
-				var vars = new Dictionary<string, string>(StringComparer.Ordinal);
-				var rx = new System.Text.RegularExpressions.Regex(@"^\s*([A-Z_][A-Z0-9_]*)\s*=\s*""?([^""]+?)""?\s*$");
-				foreach (var ln in File.ReadLines(cfgPath))
-				{
-					var m = rx.Match(ln);
-					if (m.Success) vars[m.Groups[1].Value] = m.Groups[2].Value;
-				}
-				vars.TryGetValue("AZURE_OPENAI_SERVICE_TYPE", out serviceType!);
-				serviceType ??= "";
-				if (vars.TryGetValue("AZURE_OPENAI_MODEL_ID", out var raw))
-				{
-					activeModel = raw;
-					// Expand ${VAR} or $VAR references (one level of substitution)
-					var refRx = new System.Text.RegularExpressions.Regex(@"\$\{?([A-Z_][A-Z0-9_]*)\}?");
-					activeModel = refRx.Replace(activeModel, m =>
-						vars.TryGetValue(m.Groups[1].Value, out var v) ? v : m.Value);
-				}
-			}
-		}
-		catch { /* fail-soft */ }
-
-		// GitHub Copilot is per-seat. Skip $-conversion entirely.
-		bool isCopilot = serviceType.Contains("Copilot", StringComparison.OrdinalIgnoreCase);
-
-		double inputPerM = 2.50, outputPerM = 10.00;
-		string priceModelLabel = "Default (no pricing match)";
-		bool pricingMatched = false;
-		if (!isCopilot)
-		{
-			try
-			{
-				var pricingPath = Path.Combine(repoRoot, "Data", "llm-pricing.json");
-				if (File.Exists(pricingPath))
-				{
-					using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(pricingPath));
-					var root = doc.RootElement;
-					if (root.TryGetProperty("models", out var modelsEl))
-					{
-						foreach (var el in modelsEl.EnumerateArray())
-						{
-							var matcher = el.GetProperty("modelMatcher").GetString() ?? "";
-							if (!string.IsNullOrEmpty(activeModel) &&
-								activeModel.Contains(matcher, StringComparison.OrdinalIgnoreCase))
-							{
-								inputPerM = el.GetProperty("input").GetDouble();
-								outputPerM = el.GetProperty("output").GetDouble();
-								priceModelLabel = el.GetProperty("displayName").GetString() ?? matcher;
-								pricingMatched = true; break;
-							}
-						}
-					}
-					if (!pricingMatched && root.TryGetProperty("_fallback", out var fb))
-					{
-						inputPerM = fb.GetProperty("input").GetDouble();
-						outputPerM = fb.GetProperty("output").GetDouble();
-						priceModelLabel = fb.GetProperty("displayName").GetString() ?? priceModelLabel;
-					}
-				}
-			}
-			catch { /* fail-soft */ }
-		}
-
-		// 60% input / 40% output split is a reasonable estimate for migration
-		// agents — conversion prompts are large, output is structured code.
-		double CostForTokens(long tokens) => isCopilot ? 0 :
-			(tokens * 0.60 * inputPerM + tokens * 0.40 * outputPerM) / 1_000_000.0;
-
 		var agents = perAgent.Select(kv =>
 		{
 			var sorted = kv.Value.OrderBy(x => x).ToList();
-			var total = sorted.Sum();
 			return new
 			{
 				agent = kv.Key,
 				calls = sorted.Count,
-				total,
+				total = sorted.Sum(),
 				mean  = (int)Math.Round(sorted.Average()),
 				p50   = Percentile(sorted, 0.50),
 				p95   = Percentile(sorted, 0.95),
 				max   = sorted.Last(),
-				estimatedCostUsd = isCopilot ? (double?)null : Math.Round(CostForTokens(total), 4),
 			};
 		})
 		.OrderByDescending(a => a.total)
 		.ToList();
-
-		object pricingBlock = isCopilot
-			? new {
-				provider = "GitHub Copilot",
-				activeModel = string.IsNullOrEmpty(activeModel) ? "(unknown)" : activeModel,
-				billingModel = "per-seat (subscription)",
-				note = "Token counts are shown for capacity / usage tracking. GitHub Copilot is billed per user per month, so per-call $ conversion does not apply.",
-				costsHidden = true
-			}
-			: (object)new {
-				provider = string.IsNullOrEmpty(serviceType) ? "(unknown — pricing assumed)" : serviceType,
-				activeModel = string.IsNullOrEmpty(activeModel) ? "(unknown)" : activeModel,
-				priceModelLabel,
-				inputUsdPerMillion = inputPerM,
-				outputUsdPerMillion = outputPerM,
-				assumedSplit = "60% input / 40% output",
-				totalEstimatedUsd = Math.Round(agents.Sum(a => a.estimatedCostUsd ?? 0), 4),
-				note = "Pricing config: Data/llm-pricing.json — edit + refresh, no rebuild needed."
-			};
 
 		return Results.Ok(new
 		{
 			windowMinutes,
 			filesScanned = files.Count,
 			source = "Logs/FULL_CHAT_LOG_*.md (parsed in-memory; no separate datastore)",
-			agents,
-			pricing = pricingBlock
+			agents
 		});
 	}
 	catch (Exception ex)
