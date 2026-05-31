@@ -9,6 +9,110 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Modernization Intelligence Portal — full persona-driven surface stack (May 2026)
+
+Five major portal phases shipped on top of the existing AST Galaxy / Migration Planner foundation. Each surface is additive — AST Galaxy and Migration Planner remain unchanged. All new views read existing artifacts (`Data/*.db`, `output/.metrics/*.jsonl`, `output/rekt/*.facts.json`, Neo4j) — no new data collection.
+
+**🧭 Modernization Intelligence workspace** (Phase-1) — new top-level tab with 10 read-only subviews:
+- **📊 Modernization Dashboard** — compile success / projection reduction / cache hit rate / retries / continuation amplification / orchestration latency
+- **📚 Application Explorer** — per-program inventory with LoC, facts confidence, dependency count, latest compile state, projection cache hits, modernization-status badge
+- **🩺 Dependency Health** — full vs deps-only programs, missing copybook leaderboard, readiness score, top blockers (powers the "Top investment unlocks" widget)
+- **⏱ Runtime & Conversion Intelligence** — per-run timeline of `projection_metrics` / `llm_call` / `cache_event` / `quality_summary` / `reassembly_metrics` / `continuation_event` from the MetricsSink pipeline
+- **🕸 Dependency Topology** — layered architecture overlays on top of REKT/Neo4j nodes
+- **🌊 Semantic Flow Explorer** — PERFORM chains, transaction flows, swimlane diagrams from facts.json
+- **🔗 Service Chain (JCL→Pgm→Cpy)** — Mermaid flowchart traced from `source/**/*.JCL` (`EXEC PGM=`) to `.cbl` programs to `COPY` references. Filterable by job or program. 22 JCL jobs · 43 programs · 89 distinct copybooks · 219 Pgm→Cpy edges on FUENTES corpus.
+- **🧩 Service Candidates** — bounded-context inference using cohesion (60% boundary strength + 20% cluster size + 20% facts confidence) + ready-for-extraction flag
+- **🚀 Migration Wave Planner** — first WRITE capability: persists user wave assignments to `Data/migration-waves.db` (POST/DELETE round-trip). Auto-suggest button + clear all + JSON export
+- **🎯 Capabilities & Service Locator** — REKT-driven business-capability discovery + name→source resolver (see below)
+
+**🎯 Insights Hub workspace** (Phase-2) — composed-narrative views per persona:
+- 💼 Business Owner · 🏗 Enterprise Architect · 🚀 Modernization Lead · 👨‍💻 Developer
+- Same data as Modernization Intelligence, presented as decision-grade tables + callouts rather than raw subviews
+
+**🎨 Visual Cockpit workspace** (Phase-3 + 3.1) — highly-visual single-screen SVG dashboards, **zero chart library**:
+- **5 personas**: 🌐 Mission Control · 💼 Business Owner · 🏗 Architect · 🚀 Modernization Lead · 👨‍💻 Developer
+- **Reusable SVG primitives**: half-circle gauge, donut + legend, horizontal bars, status grid (one cell per program, sized by LoC), N×N coupling heatmap with intensity fills, sparklines
+- **Mission Control**: 4 gauges (readiness / cache / compile / LLM) + status donut + LoC bars + estate-status grid
+- **Business Owner**: 2 big gauges + active-blocker count + top-5 investment-unlock bars + risk heatmap with green CTA callout
+- **Architect**: 4 KPI tiles + 18×18 coupling heatmap matrix + domain clusters + service hubs + SPOFs
+- **Modernization Lead**: 4-lane Kanban (Wave 1 / Wave 2 / Wave 3 / Queued) with per-card wave-reassignment buttons → POST/DELETE `/api/modernization/waves/{basename}` (persists to `Data/migration-waves.db`). Auto-suggests defaults (verified→W1, converted→W2, blocked→Queued).
+- **Developer**: 5 KPI tiles incl. compile/error sparklines + 12 clickable per-program scorecards (open side drawer with full REKT facts + last-20 run history + warnings)
+- **Live auto-refresh badge** — pulsing 🟢 LIVE dot. Polls `/api/modernization/*` every 15 s while panel is visible (smart visibility detection covers both `document.hidden` and dashboard-router `display:none`). Re-renders only when dashboard JSON actually changes; flashes the badge on update.
+- **🔎 Service Locator search box** in the cockpit header — Enter opens a drawer with COBOL + generated-code matches and click-through to the Developer scorecard
+
+**🎯 Capability Discovery + Service Locator** (REKT-driven business intelligence) — `McpChatWeb/Services/CapabilityClassifier.cs`:
+- **Deterministic capability classifier** — no LLM cost. Multi-label scoring against the dictionary in `Data/capabilities.json`:
+  - paragraph names from `facts.controlFlow.performChains` + raw `.cbl` paragraph headers (weight 3)
+  - CALL targets (weight 2)
+  - SQL table names (weight 2)
+  - data group names (weight 2)
+  - copybook names (weight 1)
+  - Confidence = `min(1, score / 8)`
+  - Short keywords (<5 chars) require **token-boundary** match — fixes false positives like `str` inside `TRATAR` or `pos` inside `REPOSICIONAR`
+  - Dictionary auto-reloads on every request; ships with 16 starter capabilities: fraud, AML, sanctions, KYC, payment, settlement, loan, account, card, treasury, tax, reporting, error-handling, batch-orchestration, infrastructure, gambling (edit `Data/capabilities.json` and refresh — no rebuild)
+- **Service Locator** — `GET /api/modernization/locate?q=<name>` normalises any of `CalcInterestService` / `CALC_INTEREST` / `calc-interest` / `BDSM043` across casing and hyphen/underscore styles. Searches generated **Java + C# + Kotlin + TypeScript + Scala** under `output/runs/**`, `output/java/**`, `output/csharp/**`, AND original COBOL source for paragraph headers, PROGRAM-ID, or basename matches.
+- Two endpoints: `GET /api/modernization/capabilities`, `GET /api/modernization/locate?q=<name>`
+
+#### Per-run output isolation — immutable, never overwrites
+
+- `McpChatWeb/Services/ProcessManager.cs` — every conversion run now produces an isolated `output/runs/{runId}-{lang}-{slug}-{utc}/` folder. `JAVA_OUTPUT_FOLDER` / `CSHARP_OUTPUT_FOLDER` env vars set per-run; fail-hard if directory creation fails (never silently fall back to shared folder).
+- Slug helper produces filesystem-safe lowercase-hyphenated ≤40-char path components.
+- `RunStatusDto.OutputFolder` exposed via `/api/runs/managed/{runId}` so the UI can deep-link.
+- Convert modal shows a green isolation banner + post-start folder display + active-runs panel folder display.
+- `.gitignore` excludes `output/runs/`.
+
+#### Convert modal — copybook / program separation fix
+
+- `Helpers/RektContextLoader.cs` split `EnumerateProgramFiles` (`.cbl`/`.cob` only, recursive, skips `.convert-*` / `.rekt-staging` / `.preprocessed`) from new `EnumerateCopybookFiles` (`.cpy` only). Previously the Convert modal's "Programs" dropdown leaked copybooks because in COBOL programs are entry points and copybooks are shared structures included via COPY — they should never be selectable as conversion targets.
+
+#### AST Galaxy — view-mode consolidation (13 → 6 canonical modes)
+
+- `McpChatWeb/wwwroot/index.html` dropdown reduced to: 📦 Technical · 🏢 Business Domains · 📋 Service Catalog · 🎯 Modernization Radar · 🏦 BIAN · 🏗️ C4 Model.
+- Removed redundant variants: `expanded`, `expanded-v2`, `business`, `service-catalog-expanded`, `service-catalog-expanded-3d`, `service-catalog-v2`, `program-map`. They were all force-graph variants of the same data.
+- `ast-galaxy.js` `setViewMode()` gained a legacy-alias map → old bookmarks/saved selections automatically redirect to canonical modes and the dropdown is updated.
+
+#### Backend service additions
+
+- `McpChatWeb/Services/ModernizationIntelligenceService.cs` (~870 LoC) — backend for all 10 Modernization Intelligence subviews. Read-only over `Data/migration.db` (run history) + `Data/benchmark.db` (MetricsSink events) + `Data/projection-cache.db` (hit counts) + `source/` (COBOL inventory recursive) + `output/rekt/*.facts.json` (per-program facts). Fail-soft on missing DBs/files. `GetServiceChain(jobFilter, programFilter)` builds the JCL→Pgm→Cpy chain. `GetServiceCandidates()` infers bounded contexts. `GetProgramDetail(basename)` powers the Developer scorecard drawer with facts.json fields + run history + per-run quality.
+- `McpChatWeb/Services/MigrationWaveService.cs` (~180 LoC) — first WRITE capability. Persists wave assignments to `Data/migration-waves.db` (WAL + busy_timeout, schema v1). Schema: `wave_assignment(id, program_basename, wave_number, notes, assigned_at_utc, source)`. Latest row per basename is active.
+- `McpChatWeb/Services/CapabilityClassifier.cs` (~480 LoC) — see Capability section above.
+
+#### New endpoints added in this phase
+
+```
+GET    /api/modernization/applications
+GET    /api/modernization/dashboard
+GET    /api/modernization/runs
+GET    /api/modernization/runs/{runId}/timeline
+GET    /api/modernization/topology
+GET    /api/modernization/dependency-health
+GET    /api/modernization/flow/{basename}
+GET    /api/modernization/service-candidates
+GET    /api/modernization/service-chain[?job=X|?program=Y]
+GET    /api/modernization/programs/{basename}      ← scorecard drill-down
+GET    /api/modernization/capabilities             ← capability classifier
+GET    /api/modernization/locate?q=<name>          ← service locator
+GET    /api/modernization/waves
+POST   /api/modernization/waves/{basename}         ← wave assignment (write)
+DELETE /api/modernization/waves/{basename}
+DELETE /api/modernization/waves
+```
+
+#### Frontend additions
+
+- `McpChatWeb/wwwroot/modernization-intelligence.js` — 10 subview renderers + interaction handlers including Service Chain Mermaid wiring, Wave Planner CRUD, Service Candidate renderer, Capabilities & Locator search
+- `McpChatWeb/wwwroot/insights-hub.js` — Phase-2 composed-narrative persona views
+- `McpChatWeb/wwwroot/visual-cockpit.js` (~875 LoC) — Phase-3 SVG dashboards + Lead Kanban + scorecard drawer + auto-refresh + locator drawer
+- `McpChatWeb/wwwroot/dashboard-tabs.js` — top-level routing for the four persona surfaces
+- `McpChatWeb/wwwroot/convert-modal.js` — per-run output isolation banner + folder display
+- `McpChatWeb/wwwroot/styles.css` — `mi-*`, `ih-*`, `vc-*` rule families (~300 lines total added across phases)
+
+#### Docs
+
+- `docs/quick-guide.md` rewritten — fast quick-start with the four portal surfaces, persona table, and updated REKT→portal data-flow diagram
+- `README.md` — fast quick-start added at the top of the file before the existing deep-dive content; agent orchestration diagram updated to show REKT facts + projection cache + per-run isolation feeding into the portal
+
+
 #### Conversion-quality + speed improvements (May 2026 v2)
 
 - `Helpers/SharedTypeRegistry.cs` + `SharedTypeRegistryHolder` — deterministic pre-pass that scans `source/`, finds copybooks referenced by ≥2 programs, and emits a "DO NOT REDECLARE — these types already exist" block into every converter prompt. Closes the **CS0101 / duplicate-class** failure mode that hit the 65-file C# batch (5 duplicate type definitions in `CobolMigration.Models`).

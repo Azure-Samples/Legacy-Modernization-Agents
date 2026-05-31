@@ -1,7 +1,51 @@
-4# Legacy Modernization Agents - COBOL to Java/C# Migration
+# Legacy Modernization Agents — COBOL → Java / C# Migration + Modernization Intelligence Portal
 
-This open source migration framework was developed to demonstrate AI Agents capabilities for converting legacy code like COBOL to Java or C# .NET. Each Agent has a persona that can be edited depending on the desired outcome.
-The migration uses Microsoft.Extensions.AI with a multi-provider architecture supporting **Azure OpenAI** (Responses API + Chat Completions), **GitHub Copilot** (PAT or CLI-based SDK), and **direct OpenAI** to analyze COBOL code and its dependencies, then convert to either Java Quarkus or C# .NET (user's choice).
+This open-source framework converts legacy COBOL to Java (Quarkus) or C# (.NET) and exposes a full **Modernization Intelligence Portal** (4 persona-driven workspaces) on top of the same data. Each agent has a persona prompt you can edit. The migration uses **Microsoft.Extensions.AI** with a multi-provider architecture supporting **Azure OpenAI** (Responses API + Chat Completions), **GitHub Copilot** (PAT or CLI-based SDK), and **direct OpenAI**.
+
+---
+
+## ⚡ Fast Quick-Start (3 commands · 5 minutes)
+
+```bash
+./doctor.sh setup                                       # 1. configure provider (Azure / Copilot — interactive)
+./doctor.sh rekt-full                                   # 2. static analysis: REKT → Neo4j → portal at :5028
+./doctor.sh convert-only --program BDSM043 --target java  # 3. convert one program with REKT context injection
+```
+
+Converted code lands in **`output/runs/{runId}-java-…/com/example/…/`** — every run gets its own immutable folder so you never overwrite history. Telemetry → `output/.metrics/<runId>.jsonl`. Portal stays running on **<http://localhost:5028>**.
+
+For a deeper walkthrough of every portal surface, see **[`docs/quick-guide.md`](docs/quick-guide.md)**.
+
+### The four portal surfaces
+
+| Surface | Audience | Answers | New in |
+|---|---|---|---|
+| 🎨 **Visual Cockpit** | Anyone | "Where is the program at right now?" — single-screen SVG dashboards (gauges, heatmaps, Kanban, scorecards) with **live auto-refresh** | Phase-3 |
+| 🧭 **Modernization Intelligence** | Engineers / analysts | "Show me the data" — 10 read-only subviews incl. Dependency Health, Service Chain, Wave Planner, **Capabilities & Locator** | Phase-1 |
+| 🎯 **Insights Hub** | Decision makers | Composed-narrative views per persona (Business Owner · Architect · Lead · Developer) | Phase-2 |
+| 🌌 **AST Galaxy** | Engineers | Force-graph (2D/3D), 6 canonical view modes (Technical · Business Domains · Service Catalog · Modernization Radar · BIAN · C4) | consolidated |
+
+```mermaid
+flowchart LR
+    SRC[source/**/*.cbl<br/>recursive incl. subfolders]
+    SRC -->|rekt-full| REKT[REKT parser smojol]
+    REKT --> FACTS[output/rekt/<br/>*.facts.json]
+    REKT --> NEO[Neo4j :7475<br/>AST + CFG + data]
+    FACTS -->|projection<br/>60-90% smaller| CONV[Converter agent<br/>Java / C#]
+    CONV --> RUN[output/runs/{runId}-…/<br/>isolated per-run]
+    CONV --> METRICS[output/.metrics/<br/>runId.jsonl]
+    METRICS -->|ingest-metrics.py| BENCH[(Data/benchmark.db)]
+    RUN --> PORTAL
+    NEO --> PORTAL
+    FACTS --> PORTAL
+    BENCH --> PORTAL
+    PORTAL[Portal :5028] --> COCKPIT[🎨 Visual Cockpit<br/>5 personas · live SVG]
+    PORTAL --> MI[🧭 Modernization Intelligence<br/>10 subviews]
+    PORTAL --> INSIGHTS[🎯 Insights Hub<br/>persona narratives]
+    PORTAL --> GALAXY[🌌 AST Galaxy<br/>6 view modes]
+```
+
+---
 
 > ### 🚦 Recommended order of operations
 >
@@ -70,11 +114,13 @@ The migration uses Microsoft.Extensions.AI with a multi-provider architecture su
 ---
 
 ## 📋 Table of Contents
+- [⚡ Fast Quick-Start](#-fast-quick-start-3-commands--5-minutes)
 - [Quick Start](#-quick-start)
 - [Usage: doctor.sh](#-usage-doctorsh)
 - [Reverse Engineering Reports](#-reverse-engineering-reports)
 - [Portal Features](#-portal-features)
   - [Portal Overview](#portal-overview)
+  - [🎨 Modernization Intelligence Surfaces (Phase-1 → Phase-3)](#-modernization-intelligence-surfaces-phase-1--phase-3)
   - [AI Provider Setup, Prompt Studio & Chat](#-ai-provider-setup-prompt-studio--chat)
   - [Cobol-REKT Static Analysis & Graph Pipeline](#-cobol-rekt-static-analysis--graph-pipeline)
   - [AST Galaxy & AST Explorer](#-ast-galaxy--ast-explorer)
@@ -508,6 +554,107 @@ The portal at **http://localhost:5028** is organised into four columns / panels:
 - **Latest-run-per-file dedup** — every Neo4j-backed endpoint applies a "latest scan run per file" filter so dashboards never show duplicate program rows from older scans.
 
 **Portal URL:** http://localhost:5028
+
+---
+
+## 🎨 Modernization Intelligence Surfaces (Phase-1 → Phase-3)
+
+On top of the original AST Galaxy + Migration Planner foundation, the portal now ships **four persona-driven workspaces**. All four read the same underlying data (`Data/*.db`, `output/.metrics/*.jsonl`, `output/rekt/*.facts.json`, Neo4j) — they just frame it for different decisions. Each surface is additive — none replaces another.
+
+### 🎨 Visual Cockpit — single-screen SVG dashboards (5 personas, live)
+
+Highly visual at-a-glance dashboards. Pure inline SVG primitives (gauges, donuts, heatmaps, sparklines, Kanban) — **zero chart library**.
+
+| Persona | What it shows |
+|---|---|
+| 🌐 **Mission Control** | 4 gauges (readiness · cache · compile · LLM success) + status donut + estate-status grid (one cell per program, sized by LoC) + top-LoC bar + executive summary |
+| 💼 **Business Owner** | 2 big gauges (progress · readiness) + active-blocker count + **top-5 investment unlocks** (copybooks that would unlock the most programs) + risk heatmap + green CTA |
+| 🏗 **Architect** | 4 KPI tiles + **18×18 coupling heatmap matrix** + domain clusters + service hubs (downstream count) + single-points-of-failure (upstream count) |
+| 🚀 **Modernization Lead** | **4-lane Kanban** (Wave 1 / Wave 2 / Wave 3 / Queued) with per-card wave-reassignment buttons. Auto-suggests defaults (verified→W1, converted→W2, blocked→Queued). Persists to `Data/migration-waves.db`. |
+| 👨‍💻 **Developer** | 5 KPI tiles incl. compile/error sparklines + **12 clickable per-program scorecards** opening a side drawer with full REKT facts + last-20 run history |
+
+**Live auto-refresh** — a pulsing 🟢 LIVE badge polls `/api/modernization/*` every 15 s while the panel is visible. Pauses when the panel is hidden. Re-renders only when dashboard JSON actually changes.
+
+**🔎 Service Locator search box** in the cockpit header — type any name (e.g. `CALC_INTEREST`, `CalcInterestService`, or `BDSM043`), press Enter → drawer with COBOL + generated-code matches + click-through to the Developer scorecard.
+
+### 🧭 Modernization Intelligence — 10 read-only data subviews
+
+The "show me the data" workspace. All read-only; one is read-write (Wave Planner).
+
+| Subview | Purpose |
+|---|---|
+| 📊 Modernization Dashboard | compile success · projection reduction · cache hit rate · retries · continuation amplification · orchestration latency |
+| 📚 Application Explorer | per-program inventory: LoC, facts confidence, deps, latest compile, projection-cache hits, status badge |
+| 🩺 Dependency Health | full-fidelity vs deps-only, missing copybook leaderboard, readiness score, top blockers |
+| 🔗 Service Chain (JCL→Pgm→Cpy) | Mermaid flowchart from `EXEC PGM=…` in JCL → programs → `COPY` references. Filterable by job or program. |
+| ⏱ Runtime & Conversion Intelligence | per-run timeline of `projection_metrics` / `llm_call` / `cache_event` / `quality_summary` / `reassembly_metrics` / `continuation_event` |
+| 🕸 Dependency Topology | layered architecture overlays on top of REKT/Neo4j |
+| 🌊 Semantic Flow Explorer | PERFORM chains, transaction flows, swimlanes from facts.json |
+| 🧩 Service Candidates | bounded-context inference (cohesion = 60% boundary + 20% cluster size + 20% facts confidence) + ready-for-extraction flag |
+| 🚀 Migration Wave Planner | **first WRITE capability** — persists wave assignments to `Data/migration-waves.db` |
+| 🎯 Capabilities & Service Locator | see next section |
+
+### 🎯 Capabilities & Service Locator — REKT-driven business intelligence
+
+**Capability Discovery** — deterministic, no LLM cost. Each COBOL program is multi-label-classified against the dictionary in `Data/capabilities.json`:
+
+| Signal | Weight |
+|---|---|
+| Paragraph names (`controlFlow.performChains` + raw `.cbl` paragraph headers) | ×3 |
+| CALL targets | ×2 |
+| SQL table names | ×2 |
+| Data group names | ×2 |
+| Copybook names | ×1 |
+
+Confidence = `min(1, totalScore / 8)`. Short keywords (<5 chars) require **token-boundary match** to avoid false positives. Ships with 16 starter capabilities (fraud, AML, sanctions, KYC, payment, settlement, loan, account, card, treasury, tax, reporting, error-handling, batch-orchestration, infrastructure, gambling) — fully editable, auto-reloads on each request, no rebuild needed.
+
+**Service Locator** — normalises any of `CalcInterestService` / `CALC_INTEREST` / `calc-interest` / `BDSM043` across casing and hyphen/underscore styles. Searches generated **Java + C# + Kotlin + TypeScript + Scala** under `output/runs/**`, `output/java/**`, `output/csharp/**`, AND original COBOL source for paragraph headers, PROGRAM-ID, or basename matches. Same locator powers the cockpit search box.
+
+### 🎯 Insights Hub — composed persona narratives (Phase-2)
+
+A narrative layer over the same data — answers persona-specific questions rather than exposing raw subviews. Four personas: 💼 Business Owner · 🏗 Enterprise Architect · 🚀 Modernization Lead · 👨‍💻 Developer.
+
+### 🌌 AST Galaxy — engineering force-graph (consolidated to 6 modes)
+
+The original force-directed graph workspace. View modes consolidated from 13 → 6 canonical modes (legacy aliases auto-redirect, no broken bookmarks):
+
+📦 Technical · 🏢 Business Domains · 📋 Service Catalog · 🎯 Modernization Radar · 🏦 BIAN Service Landscape · 🏗️ C4 Model
+
+### Per-run output isolation
+
+Every conversion run now produces an **isolated, immutable** folder:
+
+```
+output/runs/{runId}-{lang}-{slug}-{utc}/
+├── com/example/…/<Program>Service.java   (or .cs)
+├── migration-report.md
+├── migration-conversation-log.md
+├── dependency-map.json
+└── dependency-diagram.md
+```
+
+`JAVA_OUTPUT_FOLDER` / `CSHARP_OUTPUT_FOLDER` env vars are set per-run; failure to create the directory **hard-fails the run** (never silently falls back to a shared folder). The Convert modal shows the resolved folder live, the active-runs panel exposes the folder path, and `RunStatusDto.OutputFolder` is in every `/api/runs/managed/{runId}` response so the UI can deep-link.
+
+### New endpoints (added across Phase-1 → Phase-3.1)
+
+```
+GET    /api/modernization/applications
+GET    /api/modernization/dashboard
+GET    /api/modernization/runs
+GET    /api/modernization/runs/{runId}/timeline
+GET    /api/modernization/topology
+GET    /api/modernization/dependency-health
+GET    /api/modernization/flow/{basename}
+GET    /api/modernization/service-candidates
+GET    /api/modernization/service-chain[?job=X|?program=Y]
+GET    /api/modernization/programs/{basename}      ← scorecard drill-down
+GET    /api/modernization/capabilities             ← capability classifier
+GET    /api/modernization/locate?q=<name>          ← service locator
+GET    /api/modernization/waves
+POST   /api/modernization/waves/{basename}         ← wave assignment (write)
+DELETE /api/modernization/waves/{basename}
+DELETE /api/modernization/waves
+```
 
 ---
 
@@ -1332,41 +1479,82 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  CLI[["CLI / doctor.sh\n- Loads AI config\n- Selects target language"]]
-  PORTAL_SETUP[["Portal Setup Modal\n- Connect to Azure / Copilot\n- Discover & select models\n- Save config"]]
-  
-  subgraph ANALYZE_PHASE["PHASE 1: Deep Analysis"]
-      REGEX["Regex Parsing\n(Fast SQL/Variable Extraction)"]
-      ANALYZER["CobolAnalyzerAgent\n(Structure & Logic)"]
-      SQLITE[("SQLite Storage")]
-  end
-  
-  subgraph DEPENDENCY_PHASE["PHASE 2: Dependencies"]
-      MAPPER["DependencyMapperAgent\n(Builds Graph)"]
-      NEO4J[("Neo4j Graph DB")]
-  end
-  
-  subgraph CONVERT_PHASE["PHASE 3: Conversion"]
-      FETCHER["Context Fetcher\n(Aggregates Dependencies)"]
-      CONVERTER["CodeConverterAgent\n(Java/C# Generation)"]
-      OUTPUT["Output Files"]
+  CLI[["CLI / doctor.sh<br/>or Portal Convert modal"]]
+  SETUP[["Provider Setup<br/>Azure / Copilot / OpenAI<br/>Config/ai-config.local.env"]]
+
+  subgraph SCAN_PHASE["PHASE 0: REKT Static Scan (one-shot per source change)"]
+      SMOJOL["smojol CLI<br/>AST + CFG + data-flow"]
+      FACTS[("output/rekt/<br/>*.facts.json")]
+      NEO[("Neo4j :7475<br/>AST + CFG + data graph")]
   end
 
+  subgraph ANALYZE_PHASE["PHASE 1: Reverse Engineering"]
+      REGEX["Regex pre-pass<br/>(SQL / vars)"]
+      ANALYZER["CobolAnalyzerAgent<br/>(structure + logic)"]
+      BIZLOGIC["BusinessLogicExtractorAgent<br/>(intent summaries)"]
+      SQLITE[("Data/migration.db<br/>run history")]
+  end
+
+  subgraph DEPENDENCY_PHASE["PHASE 2: Dependencies"]
+      MAPPER["DependencyMapperAgent<br/>(CALL / COPY / EXEC SQL)"]
+  end
+
+  subgraph CONVERT_PHASE["PHASE 3: REKT-Grounded Conversion"]
+      INJECT["RektPromptInjector<br/>+ SharedTypeRegistry<br/>+ FACT-LOCKING rules"]
+      PROJ[("Data/projection-cache.db<br/>~80% hit rate")]
+      CONVERTER["JavaConverter /<br/>CSharpConverter<br/>(single-shot or chunked)"]
+      PARITY["ConversionParity +<br/>CodeReviewer +<br/>TestSynthesizer"]
+      OUTRUN["output/runs/{runId}-{lang}-…/<br/>ISOLATED per-run folder"]
+  end
+
+  subgraph TELEMETRY["Telemetry pipeline"]
+      JSONL[("output/.metrics/<br/>{runId}.jsonl")]
+      BENCH[("Data/benchmark.db<br/>(ingester)")]
+  end
+
+  subgraph PORTAL["🌐 Portal :5028 — Modernization Intelligence Surfaces"]
+      COCK["🎨 Visual Cockpit<br/>5 personas · live SVG"]
+      MI["🧭 Modernization Intelligence<br/>10 subviews + Capabilities + Locator"]
+      HUB["🎯 Insights Hub<br/>persona narratives"]
+      AST["🌌 AST Galaxy<br/>6 canonical view modes"]
+      WAVES[("Data/migration-waves.db<br/>WRITE — user assignments")]
+  end
+
+  CLI --> SCAN_PHASE
+  SETUP -.->|configures| CLI
+  SCAN_PHASE --> NEO
+  SCAN_PHASE --> FACTS
+
   CLI --> REGEX
-  PORTAL_SETUP -.->|configures| CLI
-  REGEX --> SQLITE
-  REGEX --> ANALYZE_PHASE
-  
+  REGEX --> ANALYZER
   ANALYZER --> SQLITE
-  
+  ANALYZER --> BIZLOGIC
+  BIZLOGIC --> SQLITE
   SQLITE --> MAPPER
-  MAPPER --> NEO4J
-  
-  SQLITE --> FETCHER
-  NEO4J --> FETCHER
-  FETCHER --> CONVERTER
-  CONVERTER --> OUTPUT
+
+  FACTS --> INJECT
+  SQLITE --> INJECT
+  MAPPER --> INJECT
+  INJECT --> CONVERTER
+  PROJ <--> CONVERTER
+  CONVERTER --> PARITY
+  PARITY --> OUTRUN
+  CONVERTER --> JSONL
+  JSONL --> BENCH
+
+  NEO --> PORTAL
+  FACTS --> PORTAL
+  SQLITE --> PORTAL
+  BENCH --> PORTAL
+  OUTRUN --> PORTAL
+  PROJ --> PORTAL
+  WAVES <--> COCK
+  WAVES <--> MI
 ```
+
+**How to read it**: PHASE 0 (REKT scan) runs once per source change and writes both raw `.facts.json` (per program) and a Neo4j graph. PHASES 1–3 happen on every conversion run. REKT facts + the shared-types registry are injected into the converter prompt (closing the duplicate-class failure mode). Output lands in an **immutable per-run folder** so history is never overwritten. Telemetry streams to JSONL, gets ingested into `benchmark.db`, and powers every dashboard in the portal. The Wave Planner (Modernization Lead persona) is the only WRITE path — it persists to `Data/migration-waves.db`.
+
+
 
 ### 🔀 Agent Responsibilities & Interactions
 
