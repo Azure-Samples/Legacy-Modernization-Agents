@@ -1059,6 +1059,62 @@ window.showTokenUsage = function () {
   document.getElementById('psr-title').textContent = '💰 Token usage';
   document.getElementById('psr-modal').style.display = 'flex';
   out.innerHTML = `
+    <details style="margin-bottom:12px;background:#0a0e1a;border:1px solid #334155;border-radius:6px;">
+      <summary style="cursor:pointer;padding:8px 12px;color:#93c5fd;font-size:12px;font-weight:600;user-select:none;">
+        ℹ️ How to read this table (click to expand)
+      </summary>
+      <div style="padding:0 12px 12px 12px;font-size:12px;color:#cbd5e1;line-height:1.6;">
+        <p style="margin:8px 0 6px 0;">
+          Every row aggregates token usage for one agent across all of its calls in the selected window.
+          Token counts come from the LLM provider's own usage reports embedded in <code>Logs/FULL_CHAT_LOG_*.md</code>.
+          <strong>You pay per token</strong>, so these columns are effectively cost columns.
+        </p>
+        <table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:6px;">
+          <thead><tr style="background:#1e293b;color:#93c5fd;">
+            <th style="text-align:left;padding:4px 8px;">Column</th>
+            <th style="text-align:left;padding:4px 8px;">What it means</th>
+            <th style="text-align:left;padding:4px 8px;">When to care</th>
+          </tr></thead>
+          <tbody>
+            <tr style="border-bottom:1px solid #1e293b;">
+              <td style="padding:4px 8px;color:#fbbf24;font-weight:600;">Calls</td>
+              <td style="padding:4px 8px;">How many times the agent was invoked in the window.</td>
+              <td style="padding:4px 8px;">High <em>Calls</em> + low <em>Mean</em> = a chatty agent (e.g. <code>DependencyMapperAgent</code> with 256 small calls). High Calls + high Mean = the budget hog.</td>
+            </tr>
+            <tr style="border-bottom:1px solid #1e293b;">
+              <td style="padding:4px 8px;color:#fbbf24;font-weight:600;">Total</td>
+              <td style="padding:4px 8px;">Sum of all tokens (input + output) across every call.</td>
+              <td style="padding:4px 8px;">This is the actual <strong>spend per agent</strong>. Sort by this column to find where the money goes.</td>
+            </tr>
+            <tr style="border-bottom:1px solid #1e293b;">
+              <td style="padding:4px 8px;color:#fbbf24;font-weight:600;">Mean</td>
+              <td style="padding:4px 8px;">Average tokens per call (Total ÷ Calls). Pulled up by outliers.</td>
+              <td style="padding:4px 8px;">Compare against p50 — if Mean ≫ p50, a few huge calls are skewing the average.</td>
+            </tr>
+            <tr style="border-bottom:1px solid #1e293b;">
+              <td style="padding:4px 8px;color:#fbbf24;font-weight:600;">p50 (median)</td>
+              <td style="padding:4px 8px;">Half of all calls used ≤ this many tokens. Robust to outliers.</td>
+              <td style="padding:4px 8px;">The "typical" call size. If p50 is stable but Mean keeps climbing, you have a long-tail problem.</td>
+            </tr>
+            <tr style="border-bottom:1px solid #1e293b;">
+              <td style="padding:4px 8px;color:#fbbf24;font-weight:600;">p95</td>
+              <td style="padding:4px 8px;">95% of calls used ≤ this many tokens. The worst 5% are above this line.</td>
+              <td style="padding:4px 8px;"><strong>This is where cost spikes hide.</strong> A p95 of 11,086 vs p50 of 5,130 means 5% of calls are <em>2× the typical size</em>. Investigate those.</td>
+            </tr>
+            <tr>
+              <td style="padding:4px 8px;color:#fbbf24;font-weight:600;">Max</td>
+              <td style="padding:4px 8px;">The single largest call observed.</td>
+              <td style="padding:4px 8px;">Max ≈ p95 means the tail is short. Max ≫ p95 means there's one runaway call — probably a very large COBOL program or a continuation chain.</td>
+            </tr>
+          </tbody>
+        </table>
+        <p style="margin:10px 0 4px 0;font-size:11px;color:#94a3b8;">
+          💡 <strong>Why percentiles, not just average?</strong> A single 100k-token call can drag the Mean up by thousands while not telling you anything about the typical call.
+          The median (p50) tells you the everyday cost; p95 / Max tell you about the tail. Always read them together.
+        </p>
+      </div>
+    </details>
+
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;font-size:12px;color:#cbd5e1;flex-wrap:wrap;">
       <label>Window:</label>
       <select id="tok-window" style="background:#0a0e1a;border:1px solid #334155;color:#e2e8f0;border-radius:6px;padding:4px 8px;">
@@ -1100,12 +1156,12 @@ window.loadTokenUsage = async function () {
       <table style="width:100%;border-collapse:collapse;font-size:12px;">
         <thead><tr style="background:#1e293b;color:#93c5fd;">
           <th style="text-align:left;padding:6px 10px;">Agent</th>
-          <th style="text-align:right;padding:6px 10px;">Calls</th>
-          <th style="text-align:right;padding:6px 10px;">Total</th>
-          <th style="text-align:right;padding:6px 10px;">Mean</th>
-          <th style="text-align:right;padding:6px 10px;">p50</th>
-          <th style="text-align:right;padding:6px 10px;">p95</th>
-          <th style="text-align:right;padding:6px 10px;">Max</th>
+          <th style="text-align:right;padding:6px 10px;" title="Number of times this agent was invoked in the selected window.">Calls</th>
+          <th style="text-align:right;padding:6px 10px;" title="Sum of all input + output tokens across every call. This is the actual spend per agent.">Total</th>
+          <th style="text-align:right;padding:6px 10px;" title="Average tokens per call (Total ÷ Calls). Pulled up by outliers — compare against p50.">Mean</th>
+          <th style="text-align:right;padding:6px 10px;" title="p50 = median. Half of all calls used at most this many tokens. Robust to outliers — the 'typical' call size.">p50</th>
+          <th style="text-align:right;padding:6px 10px;" title="p95 = 95th percentile. 95% of calls used at most this many tokens, the worst 5% used more. This is where cost spikes hide.">p95</th>
+          <th style="text-align:right;padding:6px 10px;" title="The single largest call observed in the window.">Max</th>
         </tr></thead>
         <tbody>${data.agents.map(a => `
           <tr style="border-bottom:1px solid #1e293b;">
