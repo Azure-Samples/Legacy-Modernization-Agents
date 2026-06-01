@@ -96,6 +96,9 @@ source/.preprocessed/
 !source/CUSTOMER-DATA.cpy
 !source/CUSTOMER-DISPLAY.cbl
 !source/CUSTOMER-INQUIRY.cbl
+# Bundled system copybooks (SQLCA, …) shipped to unblock Db2 programs
+# in environments where Eclipse-LSP-COBOL does not auto-inject them.
+!tools/system-copybooks/*.cpy
 
 # Generated Output (Contains converted business logic and reverse engineering results)
 output/*
