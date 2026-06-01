@@ -942,6 +942,40 @@ done < <(find "$SOURCE_DIR" \
     ! -path "*/.convert-*/*" \
     -print0)
 
+# ─── Phase 3.5: Ship bundled system copybooks (SQLCA, etc.) ─────────
+# Some "system" copybooks (SQLCA, DFHCOMMAREA, …) are normally provided
+# by the host compiler or by Eclipse-LSP-COBOL's auto-inject. In CLI
+# mode smojol does NOT auto-inject them, so any program with
+# `EXEC SQL INCLUDE SQLCA` or `COPY SQLCA` fails with MISSING_COPYBOOK
+# and is forced into deps-only mode. To unblock the common case we ship
+# real, IBM-public definitions in tools/system-copybooks/ and copy them
+# into .preprocessed/ unless the user supplied their own.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SYS_CPY_DIR="$SCRIPT_DIR/system-copybooks"
+sys_count=0
+if [[ -d "$SYS_CPY_DIR" ]]; then
+    while IFS= read -r -d '' sys_cpy; do
+        sys_name=$(basename "$sys_cpy")
+        sys_base=$(echo "$sys_name" | sed 's/\.[^.]*$//' | tr '[:lower:]' '[:upper:]')
+        # If user has a real copybook of the same name in source/, prefer theirs
+        user_match=$(find "$SOURCE_DIR" \
+            \( -iname "${sys_base}.cpy" -o -iname "${sys_base}.CPY" -o -iname "${sys_base}.cpb" \) \
+            -type f \
+            ! -path "*/.rekt-staging/*" \
+            ! -path "*/.preprocessed/*" \
+            ! -path "*/.convert-*/*" \
+            | head -1)
+        if [[ -n "$user_match" ]]; then continue; fi
+        # Don't clobber an already-preprocessed version
+        if [[ -f "$PREPROC_DIR/$sys_name" ]]; then continue; fi
+        cp "$sys_cpy" "$PREPROC_DIR/$sys_name"
+        sys_count=$((sys_count + 1))
+    done < <(find "$SYS_CPY_DIR" -maxdepth 1 -type f \( -name "*.cpy" -o -name "*.CPY" \) -print0)
+fi
+if [[ "$sys_count" -gt 0 ]]; then
+    echo "  Shipped $sys_count bundled system copybook(s) (e.g. SQLCA) → $PREPROC_DIR/"
+fi
+
 # ─── Phase 4: Auto-stub missing copybooks ────────────────────────────
 # smojol/Eclipse-LSP-COBOL treats unresolved COPY targets as fatal errors,
 # which forces the affected program into deps-only mode (no AST). For
