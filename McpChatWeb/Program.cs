@@ -8849,12 +8849,40 @@ app.MapPost("/api/runs/convert", (System.Text.Json.JsonElement body,
 		var stagingDir = Path.Combine(repoRoot, "source", stagingName);
 		Directory.CreateDirectory(stagingDir);
 
+		// Build a lookup map: basename → real on-disk path (recursive scan).
+		// Handles three cases:
+		//   1. Standard .cbl/.cob in any subfolder (FUENTES/SRC/, KRO-cobol-master 2/, etc.)
+		//   2. IBM PDS-style files named UGRBOXP.AKTIV.SRC(KROD006) — selector
+		//      surfaces them as KROD006.cbl; the actual file lives elsewhere.
+		//   3. Copybooks in any subfolder for the companion-copy step below.
+		var sourceRoot = Path.Combine(repoRoot, "source");
+		var pdsRx = new System.Text.RegularExpressions.Regex(@"\.SRC\(([A-Z0-9$@#]+)\)$",
+			System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+		var realPathByBasename = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		foreach (var p in Directory.EnumerateFiles(sourceRoot, "*", SearchOption.AllDirectories))
+		{
+			if (p.Contains("/.convert-", StringComparison.Ordinal)
+				|| p.Contains("/.rekt-staging", StringComparison.Ordinal)
+				|| p.Contains("/.preprocessed", StringComparison.Ordinal)) continue;
+			var name = Path.GetFileName(p);
+			if (name is null) continue;
+			// Standard name → use as-is
+			if (!realPathByBasename.ContainsKey(name)) realPathByBasename[name] = p;
+			// IBM PDS naming → also index by MEMBER.cbl synthetic name
+			var pdsm = pdsRx.Match(name);
+			if (pdsm.Success)
+			{
+				var synthetic = pdsm.Groups[1].Value.ToUpperInvariant() + ".cbl";
+				if (!realPathByBasename.ContainsKey(synthetic))
+					realPathByBasename[synthetic] = p;
+			}
+		}
+
 		var missing = new List<string>();
 		var staged = new List<string>();
 		foreach (var f in res.Files)
 		{
-			var srcPath = Path.Combine(repoRoot, "source", f);
-			if (File.Exists(srcPath))
+			if (realPathByBasename.TryGetValue(f, out var srcPath) && File.Exists(srcPath))
 			{
 				File.Copy(srcPath, Path.Combine(stagingDir, f), overwrite: true);
 				staged.Add(f);
@@ -8881,9 +8909,15 @@ app.MapPost("/api/runs/convert", (System.Text.Json.JsonElement body,
 		}
 
 		// Optional companion copybooks that the converter may need.
-		// We also copy every .cpy in source/ so referenced copybooks resolve.
-		foreach (var cpy in Directory.EnumerateFiles(Path.Combine(repoRoot, "source"), "*.cpy"))
+		// Recursive scan so copybooks in FUENTES/CPY_REGISTRO, KRO-cobol-master 2,
+		// etc. all get staged. Last write wins on duplicate basenames (safe — no
+		// real-world clashes observed on the FUENTES + KRO corpora).
+		foreach (var cpy in Directory.EnumerateFiles(sourceRoot, "*.cpy", SearchOption.AllDirectories)
+			.Concat(Directory.EnumerateFiles(sourceRoot, "*.CPY", SearchOption.AllDirectories)))
 		{
+			if (cpy.Contains("/.convert-", StringComparison.Ordinal)
+				|| cpy.Contains("/.rekt-staging", StringComparison.Ordinal)
+				|| cpy.Contains("/.preprocessed", StringComparison.Ordinal)) continue;
 			var name = Path.GetFileName(cpy);
 			if (string.IsNullOrEmpty(name)) continue;
 			var dst = Path.Combine(stagingDir, name);

@@ -76,27 +76,83 @@ public sealed class RektContextLoader
     /// included via <c>COPY</c> and are never conversion targets on their own.
     /// Use <see cref="EnumerateCopybookFiles"/> if you specifically need the
     /// copybook inventory.
+    ///
+    /// <para>
+    /// Detects three naming conventions:
+    /// </para>
+    /// <list type="bullet">
+    /// <item><b>Standard:</b> <c>foo.cbl</c> / <c>foo.cob</c> (case-insensitive).</item>
+    /// <item><b>IBM mainframe PDS export:</b> <c>UGRBOXP.AKTIV.SRC(KROD006)</c> —
+    /// real Danish bank source. The "extension" is <c>.SRC(MEMBER)</c>. We
+    /// detect any file whose name ends with <c>SRC(NAME)</c> and surface it
+    /// as <c>NAME.cbl</c> so the rest of the pipeline treats it as a normal
+    /// COBOL program.</item>
+    /// <item><b>Content-based:</b> any extensionless file or non-standard
+    /// extension whose first 50 lines contain <c>PROGRAM-ID</c> is treated as
+    /// a COBOL program. Cheap heuristic, catches one-offs.</item>
+    /// </list>
     /// </summary>
     public List<string> EnumerateProgramFiles(string sourceFolder)
     {
         var dir = Path.Combine(_repoRoot, sourceFolder);
         if (!Directory.Exists(dir)) return new();
-        return Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories)
-            .Where(p =>
+        // IBM PDS pattern: anything ending in SRC(MEMBER)  →  surface as MEMBER.cbl
+        var pdsRx = new System.Text.RegularExpressions.Regex(@"\.SRC\(([A-Z0-9$@#]+)\)$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        // Generic copybook extensions we should never treat as programs
+        var copybookExts = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ".cpy", ".cpb" };
+
+        var results = new List<string>();
+        foreach (var p in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
+        {
+            // Skip transient REKT / convert directories so we never surface
+            // the same program multiple times from staging mirrors.
+            if (p.Contains("/.convert-", StringComparison.Ordinal)
+                || p.Contains("/.rekt-staging", StringComparison.Ordinal)
+                || p.Contains("/.preprocessed", StringComparison.Ordinal))
+                continue;
+            var name = Path.GetFileName(p);
+            if (name is null) continue;
+            var ext = Path.GetExtension(p);
+
+            // 1. Standard extension
+            if (ext.Equals(".cbl", StringComparison.OrdinalIgnoreCase)
+                || ext.Equals(".cob", StringComparison.OrdinalIgnoreCase))
             {
-                // Skip transient REKT / convert directories so we never surface
-                // the same program multiple times from staging mirrors.
-                if (p.Contains("/.convert-", StringComparison.Ordinal)
-                    || p.Contains("/.rekt-staging", StringComparison.Ordinal)
-                    || p.Contains("/.preprocessed", StringComparison.Ordinal))
-                    return false;
-                var ext = Path.GetExtension(p);
-                return ext.Equals(".cbl", StringComparison.OrdinalIgnoreCase)
-                    || ext.Equals(".cob", StringComparison.OrdinalIgnoreCase);
-            })
-            .Select(Path.GetFileName)
-            .Where(n => n is not null)
-            .Cast<string>()
+                results.Add(name);
+                continue;
+            }
+            // Don't try to misinterpret copybook files
+            if (copybookExts.Contains(ext)) continue;
+
+            // 2. IBM PDS export: extract the member name in SRC(NAME) → surface as NAME.cbl
+            var pdsMatch = pdsRx.Match(name);
+            if (pdsMatch.Success)
+            {
+                var memberName = pdsMatch.Groups[1].Value.ToUpperInvariant();
+                results.Add(memberName + ".cbl");
+                continue;
+            }
+
+            // 3. Content-based detection — extensionless or unknown-ext files
+            //    whose first 50 lines contain PROGRAM-ID. Cheap heuristic.
+            if (string.IsNullOrEmpty(ext) || ext.Length > 5)
+            {
+                try
+                {
+                    var head = string.Join("\n", File.ReadLines(p).Take(50));
+                    if (head.Contains("PROGRAM-ID", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Use the file name as-is + .cbl tag so downstream tooling
+                        // treats it as COBOL.
+                        results.Add(Path.GetFileNameWithoutExtension(name) + ".cbl");
+                    }
+                }
+                catch { /* skip unreadable */ }
+            }
+        }
+
+        return results
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
             .ToList();
