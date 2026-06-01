@@ -770,6 +770,60 @@ public class {{className}} {
                 hasPkg, hasClass, opens, closes);
             EnhancedLogger?.LogBehindTheScenes("TRUNCATION_DETECTED", "WARNING",
                 $"package={hasPkg}, class={hasClass}, braces={opens}/{closes}");
+
+            // Replace the silent-empty file with a self-documenting stub so the
+            // developer immediately sees what went wrong when they open the file
+            // instead of a deceptive 0-byte "success".
+            //
+            // We only do this when the output is essentially unusable — no class
+            // keyword at all (i.e. LLM returned 0 tokens, plain prose, or a code
+            // fence that didn't contain Java). Truncated-but-mostly-valid output
+            // is left alone so the existing chunked-conversion path can salvage it.
+            if (!hasClass || input.Trim().Length < 40)
+            {
+                var trimmedReason =
+                    !hasClass && !hasPkg && opens == 0
+                        ? "EMPTY_LLM_RESPONSE — model returned no usable output (often: hit output-token budget, REKT context missing for deps-only programs, or provider rate-limit)."
+                    : !hasClass
+                        ? "NO_CLASS_KEYWORD — model emitted prose or a non-Java code block."
+                    : "BRACE_IMBALANCE — opens=" + opens + " closes=" + closes + ".";
+
+                var stub = new System.Text.StringBuilder();
+                stub.AppendLine("// ════════════════════════════════════════════════════════════════════");
+                stub.AppendLine("// ⚠ CONVERSION DID NOT PRODUCE USABLE JAVA");
+                stub.AppendLine("// ════════════════════════════════════════════════════════════════════");
+                stub.AppendLine("// This file is a placeholder. The LLM responded but the response did");
+                stub.AppendLine("// not contain a usable Java class. The pipeline is NOT pretending this");
+                stub.AppendLine("// conversion succeeded — it kept the file so the Modernization");
+                stub.AppendLine("// Intelligence dashboards can show the failure.");
+                stub.AppendLine("//");
+                stub.AppendLine("// Reason: " + trimmedReason);
+                stub.AppendLine("//");
+                stub.AppendLine("// What to do");
+                stub.AppendLine("// ──────────");
+                stub.AppendLine("// 1. Check the run timeline in the portal");
+                stub.AppendLine("//      🧭 Modernization Intelligence → ⏱ Runtime & Conversion Intelligence");
+                stub.AppendLine("//    Click the ❌ quality_metrics row to open the compile-failure inspector.");
+                stub.AppendLine("//");
+                stub.AppendLine("// 2. If 'NO REKT DATA' warning appears, the source program is deps-only.");
+                stub.AppendLine("//    Resolve the missing copybooks in 🩺 Dependency Health and re-scan");
+                stub.AppendLine("//    so the program gets full-fidelity facts.json before re-converting.");
+                stub.AppendLine("//");
+                stub.AppendLine("// 3. If the LLM returned 0 tokens, the provider likely hit its output-token");
+                stub.AppendLine("//    budget. Re-run with chunking (lower --copilot-safe thresholds) OR");
+                stub.AppendLine("//    switch to Azure OpenAI which has a higher per-call budget.");
+                stub.AppendLine("//");
+                stub.AppendLine("// 4. Look at the migration-conversation-log.md in this run folder for the");
+                stub.AppendLine("//    raw prompt + (empty) response from the model.");
+                stub.AppendLine("// ════════════════════════════════════════════════════════════════════");
+                stub.AppendLine();
+                stub.AppendLine("// Original 'output' from the LLM is preserved below as a code comment");
+                stub.AppendLine("// for debugging. If empty, the model returned nothing.");
+                stub.AppendLine("/*");
+                stub.AppendLine(string.IsNullOrWhiteSpace(input) ? "(no output)" : input);
+                stub.AppendLine("*/");
+                return stub.ToString();
+            }
         }
 
         return input;

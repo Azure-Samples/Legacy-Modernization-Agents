@@ -485,6 +485,67 @@ public class MigrationProcess
         report.AppendLine($"- **Average Dependencies per Program**: {dependencyMap.Metrics.AverageDependenciesPerProgram:F1}");
         report.AppendLine();
 
+        // ── Quality check on the generated files ────────────────────────────
+        // Surface conversions that produced unusable output (truncated, empty,
+        // or stub placeholders from the converter agents). The pipeline can't
+        // outright fail the run because some files may be salvageable, but the
+        // report needs to call out which ones are broken so the user doesn't
+        // assume everything worked just because the run hit "completed".
+        var brokenFiles = new List<(string cobol, string javaPath, string reason)>();
+        foreach (var gf in generatedFiles)
+        {
+            try
+            {
+                var filePath = gf.FilePath;
+                if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath)) continue;
+                var size = new FileInfo(filePath).Length;
+                if (size == 0)
+                {
+                    brokenFiles.Add((gf.OriginalCobolFileName ?? "?", filePath, "0-byte file — LLM returned no output"));
+                    continue;
+                }
+                if (size < 200)
+                {
+                    var head = File.ReadAllText(filePath);
+                    if (head.Contains("CONVERSION DID NOT PRODUCE USABLE", StringComparison.Ordinal))
+                        brokenFiles.Add((gf.OriginalCobolFileName ?? "?", filePath, "Stub placeholder — see file header for diagnosis"));
+                    else if (!head.Contains("class ", StringComparison.Ordinal))
+                        brokenFiles.Add((gf.OriginalCobolFileName ?? "?", filePath, "No 'class' keyword — non-Java output"));
+                }
+                else
+                {
+                    // Larger files: check for stub markers (converter wrote a structured stub)
+                    var first500 = File.ReadAllText(filePath).Substring(0, Math.Min(500, (int)size));
+                    if (first500.Contains("⚠ CONVERSION DID NOT PRODUCE USABLE", StringComparison.Ordinal))
+                        brokenFiles.Add((gf.OriginalCobolFileName ?? "?", filePath, "Stub placeholder — LLM output was unusable"));
+                }
+            }
+            catch { /* fail-soft on file inspection */ }
+        }
+
+        if (brokenFiles.Count > 0)
+        {
+            report.AppendLine("## ⚠ Quality Warning — Unusable Conversions");
+            report.AppendLine();
+            report.AppendLine($"**{brokenFiles.Count} of {generatedFiles.Count} generated file(s) are stubs or empty.** These conversions did not produce usable {langName} code. The pipeline kept the files so failures are visible in the Modernization Intelligence portal dashboards, but **you should not assume they are ready to compile**.");
+            report.AppendLine();
+            report.AppendLine($"| COBOL Source | Generated File | Problem |");
+            report.AppendLine($"|--------------|----------------|---------|");
+            foreach (var (cobol, path, reason) in brokenFiles.Take(20))
+            {
+                var rel = Path.GetFileName(path);
+                report.AppendLine($"| {cobol} | {rel} | {reason} |");
+            }
+            report.AppendLine();
+            report.AppendLine("**Likely causes and fixes:**");
+            report.AppendLine("- **Deps-only source program** — REKT couldn't fully parse the COBOL (missing copybooks or dialect issues). Open 🩺 Dependency Health, resolve top missing copybooks, re-run `./doctor.sh rekt-full`, then re-convert.");
+            report.AppendLine("- **LLM hit output-token budget** — Re-run with chunking (lower `--copilot-safe` thresholds) or switch from GitHub Copilot SDK to Azure OpenAI which has a higher per-call budget.");
+            report.AppendLine("- **Provider rate-limit / timeout** — wait a minute and re-run.");
+            report.AppendLine();
+            report.AppendLine($"Open each stub file in your editor — the header comment explains the specific failure mode for that conversion.");
+            report.AppendLine();
+        }
+
         // File mapping section
         report.AppendLine("## 🗂️ File Mapping");
         report.AppendLine($"| COBOL File | {langName} File | Type |");

@@ -600,6 +600,53 @@ public class {{className}}
                 hasNs, hasClass, opens, closes);
             EnhancedLogger?.LogBehindTheScenes("TRUNCATION_DETECTED", "WARNING",
                 $"namespace={hasNs}, class={hasClass}, braces={opens}/{closes}");
+
+            // Write a self-documenting stub instead of an empty/garbled file
+            // (mirrors the JavaConverterAgent behaviour). Only triggers when
+            // the output is essentially unusable (no class keyword OR <40 chars).
+            if (!hasClass || input.Trim().Length < 40)
+            {
+                var reason =
+                    !hasClass && !hasNs && opens == 0
+                        ? "EMPTY_LLM_RESPONSE — model returned no usable output (often: hit output-token budget, REKT context missing for deps-only programs, or provider rate-limit)."
+                    : !hasClass
+                        ? "NO_CLASS_KEYWORD — model emitted prose or a non-C# code block."
+                    : "BRACE_IMBALANCE — opens=" + opens + " closes=" + closes + ".";
+
+                var stub = new System.Text.StringBuilder();
+                stub.AppendLine("// ════════════════════════════════════════════════════════════════════");
+                stub.AppendLine("// ⚠ CONVERSION DID NOT PRODUCE USABLE C#");
+                stub.AppendLine("// ════════════════════════════════════════════════════════════════════");
+                stub.AppendLine("// This file is a placeholder. The LLM responded but the response did");
+                stub.AppendLine("// not contain a usable C# class. The pipeline is NOT pretending this");
+                stub.AppendLine("// conversion succeeded — it kept the file so the Modernization");
+                stub.AppendLine("// Intelligence dashboards can show the failure.");
+                stub.AppendLine("//");
+                stub.AppendLine("// Reason: " + reason);
+                stub.AppendLine("//");
+                stub.AppendLine("// What to do");
+                stub.AppendLine("// ──────────");
+                stub.AppendLine("// 1. Check the run timeline in the portal");
+                stub.AppendLine("//      🧭 Modernization Intelligence → ⏱ Runtime & Conversion Intelligence");
+                stub.AppendLine("//    Click the ❌ quality_metrics row to open the compile-failure inspector.");
+                stub.AppendLine("//");
+                stub.AppendLine("// 2. If 'NO REKT DATA' warning appears, the source program is deps-only.");
+                stub.AppendLine("//    Resolve the missing copybooks in 🩺 Dependency Health and re-scan");
+                stub.AppendLine("//    so the program gets full-fidelity facts.json before re-converting.");
+                stub.AppendLine("//");
+                stub.AppendLine("// 3. If the LLM returned 0 tokens, the provider likely hit its output-token");
+                stub.AppendLine("//    budget. Re-run with chunking OR switch to Azure OpenAI.");
+                stub.AppendLine("//");
+                stub.AppendLine("// 4. Look at the migration-conversation-log.md in this run folder for the");
+                stub.AppendLine("//    raw prompt + (empty) response from the model.");
+                stub.AppendLine("// ════════════════════════════════════════════════════════════════════");
+                stub.AppendLine();
+                stub.AppendLine("// Original 'output' from the LLM is preserved below as a code comment.");
+                stub.AppendLine("/*");
+                stub.AppendLine(string.IsNullOrWhiteSpace(input) ? "(no output)" : input);
+                stub.AppendLine("*/");
+                return stub.ToString();
+            }
         }
 
         return input;
