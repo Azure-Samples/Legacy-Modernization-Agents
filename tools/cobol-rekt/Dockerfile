@@ -12,6 +12,13 @@ WORKDIR /build
 RUN git clone --recurse-submodules --depth 1 --branch v0.1.0-RC6 \
     https://github.com/avishek-sen-gupta/cobol-rekt.git .
 
+# Apply local leniency patches (see ./patches/README.md for rationale)
+COPY patches/ /build/patches/
+RUN set -e; for p in /build/patches/*.patch; do \
+        echo ">> Applying $p"; \
+        git apply --verbose "$p"; \
+    done
+
 # Build (skip tests + checkstyle for faster image)
 RUN mvn clean verify -Dmaven.test.skip=true -Dcheckstyle.skip=true -q
 
