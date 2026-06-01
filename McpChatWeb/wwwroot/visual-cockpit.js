@@ -64,6 +64,21 @@ class VisualCockpit {
   async _autoRefresh() {
     // Background refresh — invalidate cache, re-fetch, re-render in place
     // without the loading spinner so the dashboard doesn't blink.
+    //
+    // CRITICAL: skip rendering when the user has anything open (drawer,
+    // typing in search) — otherwise the entire panel gets nuked every 15s
+    // and any drill-down they're inspecting disappears. The LIVE badge
+    // still ticks so the user sees the surface is monitored.
+    const drawer = this.root.querySelector('.vc-drawer');
+    const drawerOpen = drawer && drawer.style.display === 'block';
+    const active = document.activeElement;
+    const typing = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA');
+    if (drawerOpen || typing) {
+      // Silent skip — just touch the badge timestamp so it doesn't go stale.
+      const badge = this.root.querySelector('#vc-live-badge');
+      if (badge) badge._lastTs = Date.now();
+      return;
+    }
     try {
       const fresh = await this._fetchAll();
       // Shallow-compare dashboards to skip pointless re-renders.

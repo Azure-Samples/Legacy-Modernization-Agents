@@ -23,7 +23,55 @@ window.PortalAutoRefresh = {
     let timer = null;
     let isVisible = false;
 
+    /**
+     * Check if it's safe to re-render. We must NOT re-render when:
+     *   - any modal is open (would blow away the modal content)
+     *   - any input/textarea/select has focus (user is typing)
+     *   - the user is hovering over a tooltip or expandable detail
+     *   - explicit opt-out: any element with [data-refresh="pause"] is visible
+     * If unsafe, we still fetch fresh data silently into the cache so a future
+     * tick can re-render without an extra round-trip, but we skip the visual
+     * swap. The LIVE pip tick stays alive so the user sees the surface is
+     * still being monitored.
+     */
+    const isSafeToRender = () => {
+      // 1. Modal open anywhere on the page (matches .mi-modal, .ih-modal,
+      //    .vc-drawer, .modal, [role=dialog] — common modal/drawer classes)
+      const openModalSelectors = [
+        '.mi-modal', '.ih-modal',
+        '.vc-drawer', '#psr-modal',
+        '[role="dialog"]', '.modal-open', '.modal[style*="display: flex"]',
+        '#mi-compile-modal[style*="display: flex"]',
+        '#mi-compare-modal[style*="display: flex"]',
+        '#mi-cap-edit-modal[style*="display: flex"]',
+      ];
+      for (const sel of openModalSelectors) {
+        const els = document.querySelectorAll(sel);
+        for (const el of els) {
+          // visible = either explicit display flex or in DOM with offsetParent
+          if (el.style.display === 'flex' || el.style.display === 'block' ||
+              (el.offsetParent !== null && el.style.display !== 'none')) return false;
+        }
+      }
+      // 2. Active text editing
+      const active = document.activeElement;
+      if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT')) {
+        // Don't pause for read-only quick filters — only when actually typing
+        if (active.type !== 'checkbox' && active.type !== 'radio' && !active.readOnly) return false;
+      }
+      // 3. Explicit pause flag on any element under instance.root (lets
+      //    individual subviews opt out — e.g. expanded service-candidate row)
+      if (instance.root.querySelector('[data-refresh="pause"]')) return false;
+      return true;
+    };
+
     const refresh = async () => {
+      if (!isSafeToRender()) {
+        // Silently bump the timestamp so the LIVE pip ticks correctly, but
+        // don't fetch + render. Cheap.
+        PortalAutoRefresh._touchIndicator(instance.root);
+        return;
+      }
       try {
         const before = JSON.stringify(instance._data || instance._lastSnapshot || '');
         if (typeof instance.loadAndRender === 'function') {
@@ -31,7 +79,6 @@ window.PortalAutoRefresh = {
           await instance.loadAndRender();
         }
         const after = JSON.stringify(instance._data || instance._lastSnapshot || '');
-        // Always update timestamp + tick; flash green only when data changed.
         PortalAutoRefresh._updateIndicator(instance.root, before && after && before !== after);
       } catch { /* fail-soft */ }
     };
@@ -42,7 +89,6 @@ window.PortalAutoRefresh = {
       if (visible !== isVisible) {
         isVisible = visible;
         if (visible) {
-          // Install/show the pip immediately so the user knows refresh is wired
           PortalAutoRefresh._updateIndicator(instance.root, false, intervalMs);
           if (timer) clearInterval(timer);
           timer = setInterval(refresh, intervalMs);
@@ -70,7 +116,6 @@ window.PortalAutoRefresh = {
       pip.className = 'portal-auto-pip';
       pip.innerHTML = '<span class="portal-pip-dot"></span><span class="portal-pip-label">LIVE</span>';
       root.appendChild(pip);
-      // tick the "last refreshed" timestamp every second
       pip._lastTs = Date.now();
       pip._intervalLabel = setInterval(() => {
         const ago = Math.floor((Date.now() - pip._lastTs) / 1000);
@@ -88,6 +133,12 @@ window.PortalAutoRefresh = {
       pip.classList.add('portal-auto-pip-flash');
       setTimeout(() => pip.classList.remove('portal-auto-pip-flash'), 1500);
     }
+  },
+
+  /** Bump just the timestamp (used when refresh is skipped due to user interaction). */
+  _touchIndicator(root) {
+    const pip = root.querySelector('.portal-auto-pip');
+    if (pip) pip._lastTs = Date.now();
   },
 
   _hideIndicator(root) {
