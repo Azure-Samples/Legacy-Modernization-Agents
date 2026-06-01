@@ -46,6 +46,21 @@ with open('$cpy', 'r', encoding='latin-1') as f:
 
 original = content
 
+# Strip Endevor-style audit stamps (DD.MM.YY) at end of line. Same as
+# the .cbl block. Run BEFORE any whitespace transformation so the stamp
+# is recognisable by its trailing-whitespace context.
+import re as _r_stamp
+_audit_rx = _r_stamp.compile(r'\s+\d{2}\.\d{2}\.\d{2}\s*\$')
+def _strip_audit_stamps(text):
+    out = []
+    for line in text.split('\n'):
+        if len(line) >= 7 and line[6] == '*':
+            out.append(line); continue
+        out.append(_audit_rx.sub('', line))
+    return '\n'.join(out)
+
+content = _strip_audit_stamps(content)
+
 # Strip trailing sequence numbers embedded in the content area
 # Some files have cols 73-80 seq numbers that bleed into cols 8-72
 # (e.g., '001600 01 DB2FEJL REDEFINES SQLCA.           00000160')
@@ -109,19 +124,33 @@ content = re.sub(
 content = re.sub(r'\bCOMP-2\b', 'PIC X(8)', content)
 content = re.sub(r'\bCOMP-1\b', 'PIC X(4)', content)
 
-# Enforce column 72 limit: shrink interior whitespace on overlong lines
+# Enforce column 72 limit: handle two cases differently
+#   Case A: cols 73+ contain a mainframe timestamp/seq number/version stamp
+#           (digits, dots, dashes, slashes only) — TRUNCATE at col 72.
+#           This is the standard COBOL fixed-format treatment of the
+#           "identification area" (cols 73-80). The text doesn't belong
+#           to the program — it's a code-versioning audit trail.
+#   Case B: cols 73+ contain actual code that overflowed (rare) — fall
+#           back to whitespace compression to fit content into 72 cols.
 def enforce_col72(text):
     out_lines = []
+    # Anything in cols 73+ that's only digits/dots/dashes/slashes/colons/spaces
+    # is treated as an audit stamp and dropped.
+    stamp_rx = _re_module.compile(r'^[0-9.\-:/ ]+\s*$')
     for line in text.split('\n'):
         raw = line.rstrip()
         if len(raw) > 72 and not raw.lstrip().startswith('*'):
-            # Compress runs of multiple spaces (keeping at least 1)
-            import re as _re
-            compressed = _re.sub(r'(\S)(  +)(\S)', lambda m: m.group(1) + ' ' * max(1, len(m.group(2)) - (len(raw) - 72)) + m.group(3), raw)
+            tail = raw[72:]
+            if stamp_rx.match(tail):
+                # Case A — drop the audit stamp
+                out_lines.append(raw[:72].rstrip())
+                continue
+            # Case B — overflow is real code, try to compress whitespace
+            compressed = _re_module.sub(r'(\S)(  +)(\S)', lambda m: m.group(1) + ' ' * max(1, len(m.group(2)) - (len(raw) - 72)) + m.group(3), raw)
             if len(compressed) > 72:
                 # More aggressive: shrink ALL multi-space runs
                 while len(compressed) > 72:
-                    compressed = _re.sub(r'(  +)', lambda m: ' ' * max(1, len(m.group(1)) - 1), compressed, count=1)
+                    compressed = _re_module.sub(r'(  +)', lambda m: ' ' * max(1, len(m.group(1)) - 1), compressed, count=1)
                     if '  ' not in compressed:
                         break
             out_lines.append(compressed)
@@ -129,7 +158,28 @@ def enforce_col72(text):
             out_lines.append(line)
     return '\n'.join(out_lines)
 
+# Import re once at module scope for enforce_col72
+import re as _re_module
 content = enforce_col72(content)
+
+# Strip Endevor-style audit stamps that appear at end-of-line. These show
+# up in old mainframe code as a date in DD.MM.YY or HH.MM.SS format after
+# a statement-terminating period:
+#     05 CTA-LEER-REGISTRO  PIC X(6) VALUE 'LEER'.    12.02.16
+#     05 WS-VAL             PIC X.                    15.08.20
+# After enforce_col72 compresses whitespace, these stamps end up inside
+# the 1-72 program area and become "Extraneous input" tokens that crash
+# the parser. Drop them — they are pure audit metadata, not COBOL.
+content = _re_module.sub(
+    r'(\.)\s+(\d{1,4}[.\-/]\d{1,2}[.\-/]\d{1,4})\s*$',
+    r'\1', content, flags=_re_module.MULTILINE)
+# Also strip stamps that follow other tokens (no period before), e.g.:
+#     PIC X.   12.02.16     ← caught above
+#     COPY FOO.   12.02.16  ← also caught above
+# But also bare stamps at end of line (no preceding period):
+content = _re_module.sub(
+    r'\s{2,}(\d{1,4}[.\-/]\d{1,2}[.\-/]\d{1,4})\s*$',
+    '', content, flags=_re_module.MULTILINE)
 
 # Rename consecutive FILLER REDEFINES of the same field to unique names.
 # smojol parser chokes on >10 consecutive FILLER REDEFINES of one field.
@@ -836,6 +886,30 @@ def fix_string_no_end_string(text):
 
 content = fix_string_no_end_string(content)
 
+# Strip Endevor-style mainframe audit stamps that appear at end-of-line.
+# These show up in old z/OS code as a date in DD.MM.YY format after any
+# token — even with just one trailing space (the original 73-80 column
+# 'identification area' bled into program area when read in free format):
+#     05 CTA-LEER-REGISTRO  PIC X(6) VALUE 'LEER'.    12.02.16
+#     MOVE CTN-155027   TO COD-AVIERROR-QPIPCCAB 12.02.16
+#     WHERE COD_PAISOALF = :DCLTKYGHLPE.LPE-COD-PAISOALF 15.08.20
+# Strict pattern (exactly two digits, dot, two digits, dot, two digits)
+# preceded by whitespace and ending the line — won't false-positive on
+# real COBOL numerics. Skip comment lines (col 7 = '*').
+#
+# Bash inside heredoc eats unescaped \$, so we use \\\$ to get \$ in py.
+import re as _r_stamp
+_audit_rx = _r_stamp.compile(r'\s+\d{2}\.\d{2}\.\d{2}\s*\$')
+def _strip_audit_stamps(text):
+    out = []
+    for line in text.split('\n'):
+        if len(line) >= 7 and line[6] == '*':
+            out.append(line); continue
+        out.append(_audit_rx.sub('', line))
+    return '\n'.join(out)
+
+content = _strip_audit_stamps(content)
+
 if content != original:
     with open('$PREPROC_DIR/$fname', 'w', encoding='latin-1') as f:
         f.write(content)
@@ -878,3 +952,90 @@ done < <(find "$SOURCE_DIR" \
     ! -path "*/.rekt-staging/*" \
     ! -path "*/.preprocessed/*" \
     -print0)
+
+# ─── Phase 4: Auto-stub missing copybooks ────────────────────────────
+# smojol/Eclipse-LSP-COBOL treats unresolved COPY targets as fatal errors,
+# which forces the affected program into deps-only mode (no AST). For
+# enterprise estates where many copybooks live on the mainframe and can't
+# easily be exported, this means 30+ programs fail parsing.
+#
+# This phase generates a minimal stub .cpy file in the .preprocessed/
+# directory for every COPY target that isn't already satisfied by a real
+# file in source/. The stubs contain valid COBOL: a single PIC X(1) field
+# wrapped in a 01-level group so they parse cleanly without polluting
+# data semantics. The converter prompt can later note that stubs were
+# used so the LLM falls back to source-based field inference.
+#
+# To opt OUT: REKT_NO_STUB_COPYBOOKS=true ./doctor.sh rekt-full
+# ─────────────────────────────────────────────────────────────────────
+if [[ "${REKT_NO_STUB_COPYBOOKS:-false}" != "true" ]]; then
+    # Collect all COPY targets referenced anywhere in the source tree
+    # (case-insensitive; strip surrounding quotes; uppercase for matching).
+    referenced=$($PYTHON - "$SOURCE_DIR" <<'PYEOF'
+import os, re, sys
+src = sys.argv[1]
+# Avoid escaped quotes inside the regex — use a character class instead
+# so the bash heredoc parser doesn't get confused. Match COPY <NAME> with
+# optional surrounding single or double quote.
+rx_copy = re.compile(
+    r"^\s*COPY\s+[\"']?([A-Z0-9$@#\-_]+)[\"']?",
+    re.IGNORECASE | re.MULTILINE)
+names = set()
+for root, dirs, files in os.walk(src):
+    # Skip transient directories
+    if "/.rekt-staging" in root or "/.preprocessed" in root or "/.convert-" in root:
+        continue
+    for f in files:
+        if not f.lower().endswith((".cbl", ".cob", ".cpy")): continue
+        try:
+            with open(os.path.join(root, f), "r", encoding="utf-8", errors="ignore") as fp:
+                for m in rx_copy.finditer(fp.read()):
+                    names.add(m.group(1).upper())
+        except: pass
+print("\n".join(sorted(names)))
+PYEOF
+)
+
+    # Build the set of already-satisfied copybook basenames (uppercase, no ext)
+    satisfied=$(find "$SOURCE_DIR" \
+        \( -name "*.cpy" -o -name "*.CPY" -o -name "*.cpb" \) \
+        -type f \
+        ! -path "*/.rekt-staging/*" \
+        ! -path "*/.preprocessed/*" \
+        ! -path "*/.convert-*/*" \
+        -exec basename {} \; \
+        | sed 's/\.[^.]*$//' \
+        | tr '[:lower:]' '[:upper:]' \
+        | sort -u)
+
+    stub_count=0
+    while IFS= read -r name; do
+        [[ -z "$name" ]] && continue
+        # Skip if a real copybook exists
+        if echo "$satisfied" | grep -qFx "$name"; then continue; fi
+        # Skip if a stub already exists from a previous run
+        stub_path="$PREPROC_DIR/${name}.cpy"
+        if [[ -f "$stub_path" ]]; then continue; fi
+
+        # Generate a minimal stub. The marker comment is recognisable so
+        # downstream tooling can flag programs that depend on stubs.
+        cat > "$stub_path" <<EOF
+      *>───────────────────────────────────────────────────────────────
+      *> AUTO-GENERATED STUB COPYBOOK for ${name}
+      *> Real copybook was not found in source/.
+      *> This stub satisfies the COPY directive so smojol can produce
+      *> full-fidelity AST instead of falling into deps-only mode.
+      *> Field semantics are unknown — the converter should derive them
+      *> from source context (paragraph names, MOVE statements).
+      *>───────────────────────────────────────────────────────────────
+       01  ${name:0:25}-STUB.
+           05  ${name:0:23}-VAL PIC X(1).
+EOF
+        stub_count=$((stub_count + 1))
+    done <<< "$referenced"
+
+    if [[ "$stub_count" -gt 0 ]]; then
+        echo "  Generated $stub_count stub copybook(s) for unresolved COPY targets → $PREPROC_DIR/"
+        echo "  (Set REKT_NO_STUB_COPYBOOKS=true to opt out)"
+    fi
+fi

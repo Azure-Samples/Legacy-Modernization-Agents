@@ -2659,6 +2659,24 @@ run_rekt_parse() {
         ! -path "*/.rekt-staging/*" \
         ! -path "*/.preprocessed/*")
 
+    # NEW: also stage auto-generated stub copybooks from .preprocessed/. The
+    # preprocessor creates a stub .cpy for every COPY target that isn't backed
+    # by a real file in source/. Without these, smojol bails out with
+    # "missing copybook" fatal errors and falls into deps-only mode for the
+    # affected programs. We stage them AFTER real copybooks so a real .cpy
+    # always wins on basename collision.
+    if [[ -d "$preprocessed_dir" ]]; then
+        while IFS= read -r stub_cpy; do
+            local stub_name
+            stub_name="$(basename "$stub_cpy")"
+            local stub_target="$staging_dir/$stub_name"
+            # Don't overwrite a real copybook that was already staged
+            if [[ ! -f "$stub_target" ]]; then
+                cp "$stub_cpy" "$stub_target" 2>/dev/null || true
+            fi
+        done < <(find "$preprocessed_dir" -maxdepth 1 \( -name "*.cpy" -o -name "*.CPY" \) -type f 2>/dev/null)
+    fi
+
     # Collect all COBOL programs (recursive) → flat staging dir so --srcDir stays constant
     while IFS= read -r cblfile; do
         stage_input_file "$cblfile"
