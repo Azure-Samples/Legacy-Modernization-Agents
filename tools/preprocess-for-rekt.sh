@@ -46,21 +46,6 @@ with open('$cpy', 'r', encoding='latin-1') as f:
 
 original = content
 
-# Strip Endevor-style audit stamps (DD.MM.YY) at end of line. Same as
-# the .cbl block. Run BEFORE any whitespace transformation so the stamp
-# is recognisable by its trailing-whitespace context.
-import re as _r_stamp
-_audit_rx = _r_stamp.compile(r'\s+\d{2}\.\d{2}\.\d{2}\s*\$')
-def _strip_audit_stamps(text):
-    out = []
-    for line in text.split('\n'):
-        if len(line) >= 7 and line[6] == '*':
-            out.append(line); continue
-        out.append(_audit_rx.sub('', line))
-    return '\n'.join(out)
-
-content = _strip_audit_stamps(content)
-
 # Strip trailing sequence numbers embedded in the content area
 # Some files have cols 73-80 seq numbers that bleed into cols 8-72
 # (e.g., '001600 01 DB2FEJL REDEFINES SQLCA.           00000160')
@@ -128,8 +113,8 @@ content = re.sub(r'\bCOMP-1\b', 'PIC X(4)', content)
 #   Case A: cols 73+ contain a mainframe timestamp/seq number/version stamp
 #           (digits, dots, dashes, slashes only) — TRUNCATE at col 72.
 #           This is the standard COBOL fixed-format treatment of the
-#           "identification area" (cols 73-80). The text doesn't belong
-#           to the program — it's a code-versioning audit trail.
+#           identification area (cols 73-80). The text does not belong
+#           to the program — it is a code-versioning audit trail.
 #   Case B: cols 73+ contain actual code that overflowed (rare) — fall
 #           back to whitespace compression to fit content into 72 cols.
 def enforce_col72(text):
@@ -168,7 +153,7 @@ content = enforce_col72(content)
 #     05 CTA-LEER-REGISTRO  PIC X(6) VALUE 'LEER'.    12.02.16
 #     05 WS-VAL             PIC X.                    15.08.20
 # After enforce_col72 compresses whitespace, these stamps end up inside
-# the 1-72 program area and become "Extraneous input" tokens that crash
+# the 1-72 program area and become Extraneous-input tokens that crash
 # the parser. Drop them — they are pure audit metadata, not COBOL.
 content = _re_module.sub(
     r'(\.)\s+(\d{1,4}[.\-/]\d{1,2}[.\-/]\d{1,4})\s*$',
@@ -260,6 +245,8 @@ done < <(find "$SOURCE_DIR" \
     -type f \
     ! -path "*/.rekt-staging/*" \
     ! -path "*/.preprocessed/*" \
+    ! -path "*/.convert-*/*" \
+    ! -path "*/.convert-*/*" \
     -print0)
 
 # ─── Phase 2: Preprocess ALL programs (.cbl, .cob) ──────────────────
@@ -922,6 +909,7 @@ done < <(find "$SOURCE_DIR" \
     -type f \
     ! -path "*/.rekt-staging/*" \
     ! -path "*/.preprocessed/*" \
+    ! -path "*/.convert-*/*" \
     -print0)
 
 total=$((cbl_count + cpy_count))
@@ -951,6 +939,7 @@ done < <(find "$SOURCE_DIR" \
     -type f \
     ! -path "*/.rekt-staging/*" \
     ! -path "*/.preprocessed/*" \
+    ! -path "*/.convert-*/*" \
     -print0)
 
 # ─── Phase 4: Auto-stub missing copybooks ────────────────────────────
@@ -969,6 +958,12 @@ done < <(find "$SOURCE_DIR" \
 # To opt OUT: REKT_NO_STUB_COPYBOOKS=true ./doctor.sh rekt-full
 # ─────────────────────────────────────────────────────────────────────
 if [[ "${REKT_NO_STUB_COPYBOOKS:-false}" != "true" ]]; then
+    # System copybooks that smojol/Eclipse-LSP-COBOL handles natively or that
+    # the runtime provides — we must NOT stub these because our minimal stub
+    # would override the real built-in definition and break programs that
+    # depend on the proper field layout (e.g. SQLCA has SQLCODE, SQLSTATE,
+    # SQLERRD, etc. — programs read SQLCODE constantly).
+    system_copybooks_pattern="^(SQLCA|SQLDA|SQLD2|DFHCOMMAREA|DFHEIB|DFHBMSCA|EIBAID|EIBCALEN|DSNHLI|DSNTIAR)$"
     # Collect all COPY targets referenced anywhere in the source tree
     # (case-insensitive; strip surrounding quotes; uppercase for matching).
     referenced=$($PYTHON - "$SOURCE_DIR" <<'PYEOF'
@@ -1002,6 +997,7 @@ PYEOF
         -type f \
         ! -path "*/.rekt-staging/*" \
         ! -path "*/.preprocessed/*" \
+    ! -path "*/.convert-*/*" \
         ! -path "*/.convert-*/*" \
         -exec basename {} \; \
         | sed 's/\.[^.]*$//' \
@@ -1013,6 +1009,9 @@ PYEOF
         [[ -z "$name" ]] && continue
         # Skip if a real copybook exists
         if echo "$satisfied" | grep -qFx "$name"; then continue; fi
+        # Skip system copybooks (smojol/runtime provides them; our stub
+        # would override and break programs that read SQLCODE etc.)
+        if [[ "$name" =~ $system_copybooks_pattern ]]; then continue; fi
         # Skip if a stub already exists from a previous run
         stub_path="$PREPROC_DIR/${name}.cpy"
         if [[ -f "$stub_path" ]]; then continue; fi
