@@ -1,0 +1,35 @@
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/BuildBaseModelTask.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/BuildBaseModelTask.java
+@@ -18,8 +18,10 @@ import org.smojol.toolkit.task.AnalysisTask;
+ import org.smojol.toolkit.task.AnalysisTaskResult;
+ 
+ import java.io.IOException;
++import java.util.logging.Logger;
+ 
+ public class BuildBaseModelTask implements AnalysisTask {
++    private static final Logger LOGGER = Logger.getLogger(BuildBaseModelTask.class.getName());
+     private final ParsePipeline pipeline;
+     private final IdProvider idProvider;
+ 
+@@ -33,6 +35,21 @@ public class BuildBaseModelTask implements AnalysisTask {
+         try {
+             CobolEntityNavigator navigator = pipeline.parse();
+             CobolParser.ProcedureDivisionBodyContext rawAST = navigator.procedureDivisionBody(navigator.getRoot());
++            // Local patch (Azure-Samples/COBOL-Modernization-Agents):
++            // Programs that are COPY-only stubs (their body lives in a
++            // missing copybook) or partial parses can leave rawAST
++            // null. Upstream NPEs in BuildSerialisableASTTask. Emit a
++            // degenerate model so the file still appears in Neo4j as
++            // a CobolFile with its declared COPY dependencies, and so
++            // downstream tasks (WRITE_FLOW_AST, WRITE_CFG) can skip
++            // gracefully.
++            if (rawAST == null) {
++                LOGGER.warning("No PROCEDURE DIVISION body in parse tree — emitting degenerate base model (Azure-Samples local patch).");
++                CobolDataStructure emptyDS = pipeline.getDataStructures();
++                SmojolSymbolTable emptyST = new SmojolSymbolTable(emptyDS, new SymbolReferenceBuilder(idProvider));
++                return AnalysisTaskResult.OK("BUILD_SEED_MODEL",
++                    new BaseAnalysisModel(navigator, null, emptyDS, emptyST, null, null));
++            }
+             CobolContextAugmentedTreeNode serialisableAST = new BuildSerialisableASTTask().run(rawAST, navigator);
+             CobolDataStructure dataStructures = pipeline.getDataStructures();
+ //            FlowchartBuilder flowcharter = pipeline.flowcharter();
