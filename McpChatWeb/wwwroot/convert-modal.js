@@ -84,8 +84,9 @@
 
           <!-- Scan-vs-source banner (populated by populateDropdowns) -->
           <div id="cm-scan-banner" style="grid-column:1/3;display:none;padding:10px 12px;border-radius:6px;font-size:12px;color:#fef3c7;"></div>
+          <div id="cm-fidelity-hint" style="grid-column:1/3;display:none;padding:10px 12px;border-radius:6px;font-size:12px;color:#fef3c7;line-height:1.6;"></div>
 
-          <div><label class="cm-lab">Programs <span class="cm-q" title="Pick from the dropdown of programs found in the current scan. Comma-separated; each name OR-combines with the next.">?</span></label>
+          <div><label class="cm-lab">Programs <span class="cm-q" title="Pick from the dropdown of programs found in the current scan. Comma-separated; each name OR-combines with the next. Programs marked ⚠ deps-only lack full REKT facts and will auto-enable AI fallback.">?</span></label>
             <input id="cm-programs" type="text" placeholder="click to pick — e.g. CRECUST, COCRDSLC" class="cm-in" list="cm-programs-list" autocomplete="off">
             <datalist id="cm-programs-list"></datalist>
             <div id="cm-programs-count" class="cm-hint">Loading catalog…</div></div>
@@ -239,10 +240,67 @@
         el.dataset.csv = existing.join(', ');
         el.value = el.dataset.csv;
         el.dataset.lastValue = el.value;
+        // Re-check fidelity hint after each pick
+        if (id === 'cm-programs') refreshFidelityHint();
       });
       // On manual edit, sync the csv shadow.
-      el.addEventListener('blur', () => { el.dataset.csv = el.value; });
+      el.addEventListener('blur', () => {
+        el.dataset.csv = el.value;
+        if (id === 'cm-programs') refreshFidelityHint();
+      });
     });
+
+    // Live "any picked program is deps-only?" check — auto-toggles AI fallback
+    // and shows a banner explaining what's happening.
+    function refreshFidelityHint() {
+      const input = document.getElementById('cm-programs');
+      const hint = document.getElementById('cm-fidelity-hint');
+      const fallback = document.getElementById('cm-fallback');
+      if (!input || !hint || !_catalogCache) return;
+      const picked = (input.value || '').split(',').map(s => s.trim()).filter(Boolean);
+      if (picked.length === 0) { hint.style.display = 'none'; return; }
+      const catalog = _catalogCache.programs || [];
+      // Match against catalog (case-insensitive; strip .cbl if user typed it)
+      const findEntry = (name) => {
+        const n = name.replace(/\.cbl$/i, '').toLowerCase();
+        return catalog.find(p =>
+          p.name.toLowerCase() === name.toLowerCase() ||
+          p.name.toLowerCase().replace(/\.cbl$/, '') === n);
+      };
+      const entries = picked.map(findEntry).filter(Boolean);
+      if (entries.length === 0) { hint.style.display = 'none'; return; }
+      const depsOnly = entries.filter(e => e.parseFidelity === 'deps-only');
+      const notParsed = entries.filter(e => e.parseFidelity === 'not-parsed');
+      const full = entries.filter(e => e.parseFidelity === 'full');
+      if (depsOnly.length === 0 && notParsed.length === 0) {
+        hint.style.display = 'block';
+        hint.style.background = '#064e3b';
+        hint.style.border = '1px solid #10b981';
+        hint.innerHTML = `<b style="color:#86efac;">✓ Full-fidelity REKT facts available</b> for all ${full.length} picked program(s). Conversion will use structural context — best quality.`;
+        return;
+      }
+      // Has deps-only or not-parsed programs — auto-enable AI fallback
+      if (fallback && !fallback.checked) {
+        fallback.checked = true;
+        fallback.dataset.autoEnabled = '1';
+      }
+      hint.style.display = 'block';
+      hint.style.background = '#78350f';
+      hint.style.border = '1px solid #f59e0b';
+      const depsList = depsOnly.slice(0, 4).map(p => p.name.replace(/\.cbl$/i, '')).join(', ');
+      const moreDeps = depsOnly.length > 4 ? ` (+${depsOnly.length - 4} more)` : '';
+      hint.innerHTML = `
+        <b style="color:#fde68a;">⚠ ${depsOnly.length + notParsed.length} of ${entries.length} picked program(s) lack full REKT facts</b>
+        ${depsOnly.length > 0 ? `<br>• <b>Deps-only</b>: <code>${depsList}</code>${moreDeps}` : ''}
+        ${notParsed.length > 0 ? `<br>• <b>Not parsed</b>: <code>${notParsed.slice(0,4).map(p => p.name).join(', ')}</code>` : ''}
+        <br>
+        <span style="color:#fcd34d;">✓ <b>AI fallback auto-enabled</b></span> — the converter will use the LLM to synthesise structure from raw source. Costs extra tokens; results cached.
+        <br>
+        <span style="color:#fbbf24; font-size:11px;">💡 For best quality, resolve the missing copybooks first (see 🩺 Dependency Health in Modernization Intelligence) then re-scan.</span>
+      `;
+    }
+    // Expose so populateDropdowns can call after refresh
+    window._cmRefreshFidelityHint = refreshFidelityHint;
   }
 
   // ── Catalog cache + loader ────────────────────────────────────────────
@@ -311,6 +369,10 @@
     progList.innerHTML = (cat.programs || []).map(p => {
       const parts = [];
       if (!p.availableInSource) parts.push('⚠ not in source/');
+      // NEW: fidelity badge so user sees deps-only programs before picking
+      if (p.parseFidelity === 'deps-only') parts.push(`⚠ deps-only${p.missingCopybookCount > 0 ? ` (${p.missingCopybookCount} missing cpy)` : ''} — needs AI fallback`);
+      else if (p.parseFidelity === 'not-parsed') parts.push('⚠ not parsed — run REKT first');
+      else if (p.parseFidelity === 'full') parts.push('✓ full-fidelity');
       if (p.wave > 0)        parts.push(`wave ${p.wave}`);
       if (p.targetComponent) parts.push(p.targetComponent);
       if (p.lineCount > 0)   parts.push(`${p.lineCount} LOC`);
@@ -322,10 +384,19 @@
       const value = p.availableInSource ? p.name : `${p.name} ⚠`;
       return `<option value="${escapeAttr(value)}">${escapeAttr(p.name + label)}</option>`;
     }).join('');
-    document.getElementById('cm-programs-count').textContent =
+    // Per-fidelity tally so user sees REKT health up front
+    const programs = cat.programs || [];
+    const full = programs.filter(p => p.parseFidelity === 'full').length;
+    const deps = programs.filter(p => p.parseFidelity === 'deps-only').length;
+    const noScan = programs.filter(p => !p.parseFidelity || p.parseFidelity === 'unknown' || p.parseFidelity === 'not-parsed').length;
+    const fidelityBits = [];
+    if (full > 0)   fidelityBits.push(`<span style="color:#10b981;">✓ ${full} full</span>`);
+    if (deps > 0)   fidelityBits.push(`<span style="color:#f59e0b;">⚠ ${deps} deps-only</span>`);
+    if (noScan > 0) fidelityBits.push(`<span style="color:#94a3b8;">— ${noScan} not parsed</span>`);
+    document.getElementById('cm-programs-count').innerHTML =
       cat.missingFromSource > 0
-        ? `${(cat.programs || []).length} program(s) in scan · ${cat.missingFromSource} not on disk`
-        : `${(cat.programs || []).length} program(s) in this scan`;
+        ? `${programs.length} program(s) · ${fidelityBits.join(' · ')} · ${cat.missingFromSource} not on disk`
+        : `${programs.length} program(s) · ${fidelityBits.join(' · ')}`;
 
     // Transactions — show how many programs each transaction belongs to.
     const tranList = document.getElementById('cm-transactions-list');

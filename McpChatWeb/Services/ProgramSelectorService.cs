@@ -307,6 +307,53 @@ public sealed class ProgramSelectorService
             if (!string.IsNullOrEmpty(stem)) planByStem[stem] = plan;
         }
 
+        // ── Pre-compute REKT parse fidelity per stem ────────────────────────
+        // Mirrors the logic in ModernizationIntelligenceService.GetDependencyHealth.
+        // We do this once up front so the dropdown can show ⚠ on deps-only programs
+        // and the Convert modal can auto-enable AI-fallback when needed.
+        var rektDir = Path.Combine(_repoRoot, "output", "rekt");
+        var fidelityByStem = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var missingByStem = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        if (Directory.Exists(rektDir))
+        {
+            // Build the set of unresolved COPY targets and which programs each blocks
+            var missingFile = Path.Combine(rektDir, "missing-copybooks.txt");
+            var perProgramBlockers = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            if (File.Exists(missingFile))
+            {
+                try
+                {
+                    foreach (var line in File.ReadAllLines(missingFile))
+                    {
+                        // Format: "COPYBOOK\treferenced by: X.cbl, Y.cbl"
+                        var refIdx = line.IndexOf("referenced by:", StringComparison.OrdinalIgnoreCase);
+                        if (refIdx < 0) continue;
+                        var refList = line.Substring(refIdx + "referenced by:".Length);
+                        foreach (var raw in refList.Split(','))
+                        {
+                            var name = raw.Trim();
+                            if (string.IsNullOrEmpty(name)) continue;
+                            var st = Path.GetFileNameWithoutExtension(name);
+                            perProgramBlockers[st] = perProgramBlockers.GetValueOrDefault(st, 0) + 1;
+                        }
+                    }
+                }
+                catch { /* fail-soft */ }
+            }
+
+            foreach (var f in allFiles)
+            {
+                var stem = Path.GetFileNameWithoutExtension(f);
+                var reportDir = Path.Combine(rektDir, $"{f}.report");
+                var depsJson = Path.Combine(rektDir, $"{stem}-deps.json");
+                var hasReport = Directory.Exists(reportDir);
+                var hasDeps = File.Exists(depsJson) && !hasReport;
+                fidelityByStem[stem] = hasReport ? "full" : hasDeps ? "deps-only" : "not-parsed";
+                if (perProgramBlockers.TryGetValue(stem, out var blockers))
+                    missingByStem[stem] = blockers;
+            }
+        }
+
         // Union of file lists: live source + any historical scan-run programs the
         // caller wants surfaced. We mark each entry with availableInSource so the
         // UI can warn the user when a scanned program is no longer on disk.
@@ -335,6 +382,11 @@ public sealed class ProgramSelectorService
         {
             var entry = new CatalogProgram { Name = f, AvailableInSource = sourceSet.Contains(f) };
             var stem = Path.GetFileNameWithoutExtension(f);
+
+            // Wire fidelity + missing-copybook count from the pre-computed maps
+            entry.ParseFidelity = fidelityByStem.GetValueOrDefault(stem, "unknown");
+            entry.MissingCopybookCount = missingByStem.GetValueOrDefault(stem, 0);
+
             if (!string.IsNullOrEmpty(stem) && planByStem.TryGetValue(stem, out var plan))
             {
                 entry.Wave = plan.Wave;
@@ -413,6 +465,10 @@ public sealed class CatalogProgram
     public string Pattern { get; set; } = "";
     public HashSet<string> Transactions { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public int LineCount { get; set; }
+    // NEW: REKT fidelity so the UI can warn before the user picks a program
+    public string ParseFidelity { get; set; } = "unknown";   // "full" | "deps-only" | "not-parsed"
+    public int MissingCopybookCount { get; set; }              // # unresolved COPY targets
+    public bool NeedsAiFallback => ParseFidelity != "full";    // convenience for the UI
 }
 
 public sealed class CatalogTransaction
