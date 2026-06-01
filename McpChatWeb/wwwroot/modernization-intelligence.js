@@ -103,7 +103,11 @@ class ModernizationIntelligenceView {
         // Load the dependency health snapshot to populate the flow-eligible program picker.
         const health = await fetch('/api/modernization/dependency-health').then(r => r.json());
         body.innerHTML = this._renderFlowShell(health);
-        // Auto-select first full-fidelity program
+        // Wire ALL .mi-flow-row clicks (full + deps-only)
+        body.querySelectorAll('.mi-flow-row').forEach(tr => {
+          tr.onclick = () => this._loadProgramFlow(tr.dataset.prog);
+        });
+        // Auto-select first full-fidelity program if any
         const firstFull = (health.programs || []).find(p => p.parseFidelity === 'full');
         if (firstFull) await this._loadProgramFlow(firstFull.basename);
       } else if (this._activeSubview === 'services') {
@@ -1198,11 +1202,100 @@ class ModernizationIntelligenceView {
   // Semantic Flow Explorer renderer (Phase-1 final view)
   // ────────────────────────────────────────────────────────────────────
   _renderFlowShell(health) {
-    const programs = (health.programs || []).filter(p => p.parseFidelity === 'full');
-    if (programs.length === 0) {
-      return `<div class="mi-empty">No full-fidelity programs available. Resolve missing copybooks (see Dependency Health) or run <code>./doctor.sh rekt-full</code> first.</div>`;
+    const fullPrograms = (health.programs || []).filter(p => p.parseFidelity === 'full');
+    const depsOnlyPrograms = (health.programs || []).filter(p => p.parseFidelity === 'deps-only');
+
+    // Build the empty-state explanation when there are 0 full-fidelity programs
+    if (fullPrograms.length === 0) {
+      const totalPrograms = (health.programs || []).length;
+      const missingCount = (health.missingCopybooks || []).length;
+      const topBlockers = (health.missingCopybooks || [])
+        .slice()
+        .sort((a, b) => (b.referencedBy?.length || 0) - (a.referencedBy?.length || 0))
+        .slice(0, 5);
+
+      return `
+        <div class="mi-card mi-flow-empty">
+          <h3>🌊 Semantic Flow Explorer — no full-fidelity programs available</h3>
+
+          <div class="mi-flow-empty-banner">
+            <b>The Flow Explorer needs full-fidelity REKT parsing</b> — specifically the
+            <code>controlFlow.performChains</code> array in <code>output/rekt/&lt;program&gt;.facts.json</code>.
+            None of your ${totalPrograms} program${totalPrograms === 1 ? '' : 's'} parsed at that level
+            after the last <code>rekt-full</code> scan.
+          </div>
+
+          <h4>What happened in the scan?</h4>
+          <p class="mi-help" style="font-size:12px;">
+            <b>${depsOnlyPrograms.length} of ${totalPrograms} programs parsed in deps-only mode.</b>
+            That means smojol (the REKT parser) extracted CALL and COPY relationships
+            but couldn't build the full AST tree. Two common causes:
+          </p>
+          <ul class="mi-help" style="font-size:12px;">
+            <li><b>Missing copybooks</b> — ${missingCount} unresolved COPY target${missingCount === 1 ? '' : 's'} in your source.
+                Without copybook definitions, smojol can't resolve data structures the program depends on,
+                so it gives up on the full AST.</li>
+            <li><b>Dialect / parser limitations</b> — smojol struggles with certain Spanish FUENTES /
+                IBM dialect constructs (look for <code>Cannot invoke "Token.getLine()" because "ctx.stop" is null</code>
+                in the parse logs — that's a known smojol bug).</li>
+          </ul>
+
+          ${topBlockers.length > 0 ? `
+          <h4 style="margin-top:16px;">🎯 Top ${topBlockers.length} copybooks to resolve first (highest leverage)</h4>
+          <table class="mi-table mi-table-dense" style="margin-top:6px;">
+            <thead><tr><th>Copybook</th><th>Referenced by</th><th>Unlock impact</th></tr></thead>
+            <tbody>
+              ${topBlockers.map(b => `
+                <tr>
+                  <td><code>${this._escape(b.copybook)}</code></td>
+                  <td>${(b.referencedBy || []).slice(0, 4).map(r => `<span class="mi-chip mi-chip-tiny">${this._escape(r)}</span>`).join(' ')}${(b.referencedBy || []).length > 4 ? ` <span class="mi-muted">+${b.referencedBy.length - 4} more</span>` : ''}</td>
+                  <td><b style="color:var(--color-success);">+${(b.referencedBy || []).length}</b> program${(b.referencedBy || []).length === 1 ? '' : 's'}</td>
+                </tr>`).join('')}
+            </tbody>
+          </table>
+          ` : ''}
+
+          <h4 style="margin-top:16px;">What you can still do right now</h4>
+          <ol class="mi-help" style="font-size:12px;">
+            <li><b>Open <a href="#" onclick="document.querySelector('[data-sub=&quot;health&quot;]')?.click(); return false;">🩺 Dependency Health</a></b>
+                to see the full missing-copybook list and download a shopping-list CSV
+                you can hand to the source-of-truth team.</li>
+            <li><b>Use the <a href="#" onclick="document.querySelector('[data-sub=&quot;chain&quot;]')?.click(); return false;">🔗 Service Chain</a> view</b>
+                instead — it works on deps-only programs (uses JCL + COPY parsing, not the full AST).</li>
+            <li><b>Use the deps-only CALL flow below</b> — even without full AST, we can render
+                the program-to-program CALL graph from the <code>-deps.json</code> files.</li>
+            <li><b>Re-run the scan with the missing copybooks</b> in <code>source/</code> and the
+                Flow Explorer will populate automatically.</li>
+          </ol>
+
+          ${depsOnlyPrograms.length > 0 ? `
+          <h4 style="margin-top:20px;">🧩 Deps-only CALL graph (fallback view)</h4>
+          <p class="mi-help" style="font-size:12px;">
+            Pick a program below to see its <b>CALL graph from the <code>-deps.json</code> file</b>.
+            This is the structural skeleton; the full procedural flow needs full-fidelity parsing.
+          </p>
+          <table class="mi-table mi-table-dense">
+            <thead><tr><th>Program</th><th>LoC</th><th>Missing deps</th><th>Status</th></tr></thead>
+            <tbody>
+              ${depsOnlyPrograms.sort((a, b) => b.linesOfCode - a.linesOfCode).slice(0, 30).map(p => `
+                <tr data-prog="${this._escape(p.basename)}" class="mi-flow-row" style="cursor:pointer;">
+                  <td><b>${this._escape(p.basename)}</b></td>
+                  <td class="num">${p.linesOfCode.toLocaleString()}</td>
+                  <td class="num">${p.missingCopybookCount > 0 ? `<span style="color:var(--color-warn);">${p.missingCopybookCount}</span>` : '<span class="mi-muted">0</span>'}</td>
+                  <td><span class="mi-status mi-status-${p.modernizationStatus}">${this._statusLabel(p.modernizationStatus)}</span></td>
+                </tr>`).join('')}
+            </tbody>
+          </table>
+          <div id="mi-flow-detail" class="mi-card" style="margin-top:12px;">
+            <div class="mi-empty">Pick a program above for its deps-only CALL graph.</div>
+          </div>
+          ` : ''}
+        </div>
+      `;
     }
-    const rows = programs.sort((a, b) => b.linesOfCode - a.linesOfCode).map(p => `
+
+    // Normal full-fidelity path
+    const rows = fullPrograms.sort((a, b) => b.linesOfCode - a.linesOfCode).map(p => `
       <tr data-prog="${this._escape(p.basename)}" class="mi-flow-row">
         <td><b>${this._escape(p.basename)}</b></td>
         <td class="num">${p.linesOfCode.toLocaleString()}</td>
@@ -1213,9 +1306,10 @@ class ModernizationIntelligenceView {
     return `
       <div class="mi-flow-layout">
         <div class="mi-card mi-flow-picker">
-          <h3>Flow-eligible programs (${programs.length})</h3>
+          <h3>Flow-eligible programs (${fullPrograms.length})</h3>
           <div class="mi-muted" style="font-size:11px; margin-bottom:8px;">
             Only full-fidelity programs (those with complete REKT AST) can produce flow diagrams.
+            ${depsOnlyPrograms.length > 0 ? `${depsOnlyPrograms.length} deps-only programs are hidden — see Dependency Health to unblock them.` : ''}
           </div>
           <table class="mi-table mi-table-dense">
             <thead><tr><th>Program</th><th>LoC</th><th>Conf</th><th>Status</th></tr></thead>
@@ -1237,22 +1331,100 @@ class ModernizationIntelligenceView {
     const panel = this.root.querySelector('#mi-flow-detail');
     panel.innerHTML = '<div class="mi-loading">Loading flow…</div>';
     try {
-      // Use the EXISTING /api/graph/rekt/structure endpoint for the
-      // section/paragraph data + the EXISTING /api/graph/rekt/mermaid for
-      // the pre-rendered flow diagram. No graph engine duplication.
-      const [structure, mermaidPayload] = await Promise.all([
+      const [structure, mermaidPayload, depsOnly] = await Promise.all([
         fetch(`/api/graph/rekt/structure?file=${encodeURIComponent(basename)}`).then(r => r.json()).catch(() => null),
         fetch(`/api/graph/rekt/mermaid?file=${encodeURIComponent(basename)}`).then(r => r.json()).catch(() => null),
+        // Service chain endpoint gives us callees + copybooks for deps-only programs
+        fetch(`/api/modernization/service-chain?program=${encodeURIComponent(basename)}`).then(r => r.json()).catch(() => null),
       ]);
-      // mermaid endpoint returns { type, file, program, mermaid: "..." } — extract.
       const mermaidText = (mermaidPayload && typeof mermaidPayload === 'object')
-        ? (mermaidPayload.mermaid || '')
-        : '';
-      panel.innerHTML = this._renderFlowDetail(basename, structure, mermaidText);
+        ? (mermaidPayload.mermaid || '') : '';
+      const hasFullFlow = structure && structure.sections && structure.sections.length > 0;
+
+      if (hasFullFlow) {
+        panel.innerHTML = this._renderFlowDetail(basename, structure, mermaidText);
+      } else {
+        // Fall back to deps-only CALL graph
+        panel.innerHTML = this._renderDepsOnlyFlow(basename, depsOnly);
+      }
       this._renderMermaidIn(panel);
     } catch (err) {
       panel.innerHTML = `<div class="mi-error">Failed: ${this._escape(err.message)}</div>`;
     }
+  }
+
+  /** Deps-only fallback: render CALL + COPY graph from service-chain data. */
+  _renderDepsOnlyFlow(basename, chainData) {
+    const stem = basename.replace(/\.cbl$/i, '');
+    const programEntry = (chainData?.programs || []).find(p =>
+      (p.basename || '').toUpperCase() === basename.toUpperCase() ||
+      (p.basename || '').toUpperCase() === stem.toUpperCase() + '.CBL');
+    const copybooks = programEntry?.copybooks || [];
+    const callees = programEntry?.calls || [];
+    const jobsExecuting = (chainData?.jobs || [])
+      .filter(j => (j.primaryPrograms || []).some(p => p.toUpperCase() === stem.toUpperCase()))
+      .map(j => j.jobName);
+
+    // Build a Mermaid graph from what we have
+    let mermaid = `flowchart LR\n  PGM["📦 ${stem}"]:::self\n`;
+    let counter = 0;
+    for (const job of jobsExecuting.slice(0, 10)) {
+      counter++;
+      mermaid += `  J${counter}["🗂 ${job}"]:::jcl\n  J${counter} -->|EXEC| PGM\n`;
+    }
+    for (const callee of callees.slice(0, 12)) {
+      counter++;
+      mermaid += `  C${counter}["📦 ${callee}"]:::callee\n  PGM -->|CALL| C${counter}\n`;
+    }
+    for (const cpy of copybooks.slice(0, 20)) {
+      counter++;
+      mermaid += `  Y${counter}["📚 ${cpy.replace(/\.cpy$/i, '')}"]:::copy\n  PGM -.->|COPY| Y${counter}\n`;
+    }
+    mermaid += `  classDef self fill:#1e3a8a,stroke:#60a5fa,color:#f8fafc\n`;
+    mermaid += `  classDef jcl fill:#3b0764,stroke:#a855f7,color:#f3e8ff\n`;
+    mermaid += `  classDef callee fill:#064e3b,stroke:#10b981,color:#d1fae5\n`;
+    mermaid += `  classDef copy fill:#7c2d12,stroke:#fb923c,color:#ffedd5\n`;
+
+    return `
+      <div class="mi-card">
+        <h3>${this._escape(basename)} <span class="mi-chip mi-chip-tiny mi-chip-warn" style="background:var(--color-warn-bg);color:var(--color-warn);">deps-only · partial fidelity</span></h3>
+
+        <div class="mi-flow-empty-banner" style="margin: 10px 0; font-size: 12px;">
+          <b>Full AST not available</b> — this program parsed in deps-only mode. The view below
+          shows the <b>structural skeleton</b> (executing JCL jobs, CALL targets, COPY references)
+          but not the procedural flow (PERFORM chains, IF branches, SQL statements).
+          Resolve missing copybooks in <a href="#" onclick="document.querySelector('[data-sub=&quot;health&quot;]')?.click(); return false;">🩺 Dependency Health</a>
+          to unlock the full flow.
+        </div>
+
+        <div class="mi-kpi-row" style="margin: 12px 0;">
+          <div class="mi-kpi"><div class="mi-kpi-value">${jobsExecuting.length}</div><div class="mi-kpi-label">JCL Jobs</div></div>
+          <div class="mi-kpi"><div class="mi-kpi-value">${callees.length}</div><div class="mi-kpi-label">CALL targets</div></div>
+          <div class="mi-kpi"><div class="mi-kpi-value">${copybooks.length}</div><div class="mi-kpi-label">Copybooks</div></div>
+        </div>
+
+        ${counter > 0 ? `
+          <h4>Structural skeleton (Mermaid)</h4>
+          <div class="mi-mermaid-wrap"><pre class="mermaid">${this._escape(mermaid)}</pre></div>
+        ` : '<div class="mi-muted vc-pad">No JCL, CALL, or COPY relationships found for this program.</div>'}
+
+        ${jobsExecuting.length > 0 ? `
+          <h4>🗂 Executing JCL jobs (${jobsExecuting.length})</h4>
+          <div>${jobsExecuting.map(j => `<span class="mi-chip">${this._escape(j)}</span>`).join(' ')}</div>` : ''}
+
+        ${callees.length > 0 ? `
+          <h4>📦 CALL targets (${callees.length})</h4>
+          <div>${callees.map(c => `<span class="mi-chip mi-chip-green">${this._escape(c)}</span>`).join(' ')}</div>` : ''}
+
+        ${copybooks.length > 0 ? `
+          <h4>📚 Copybooks (${copybooks.length})</h4>
+          <div>${copybooks.map(c => `<span class="mi-chip">${this._escape(c)}</span>`).join(' ')}</div>` : ''}
+
+        <div style="margin-top:12px;">
+          ${PortalProgramActions.buttons(basename, { compact: false })}
+        </div>
+      </div>
+    `;
   }
 
   _renderFlowDetail(basename, structure, mermaidText) {

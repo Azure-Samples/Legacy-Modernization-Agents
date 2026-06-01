@@ -9085,3 +9085,18 @@ main.three-panel-layout {
   background: var(--color-info-bg); border-color: var(--color-info-border);
   color: var(--text-primary); font-weight: 600;
 }
+
+/* Better empty state for Semantic Flow when no full-fidelity programs exist */
+.mi-flow-empty { padding: 16px 20px; }
+.mi-flow-empty h3 { margin: 0 0 12px 0; color: var(--text-primary); font-size: 14px; }
+.mi-flow-empty h4 { margin: 14px 0 6px 0; color: var(--color-info); font-size: 13px; }
+.mi-flow-empty-banner {
+  background: var(--color-warn-bg); border: 1px solid var(--color-warn-border);
+  color: var(--text-primary); padding: 10px 14px; border-radius: 4px;
+  font-size: 12px; line-height: 1.5;
+}
+.mi-flow-empty-banner b { color: var(--color-warn); }
+.mi-flow-empty ol, .mi-flow-empty ul { margin: 6px 0 6px 22px; padding: 0; }
+.mi-flow-empty li { margin: 4px 0; line-height: 1.5; }
+.mi-chip-warn { background: var(--color-warn-bg); color: var(--color-warn); }
+.mi-mermaid-wrap { background: var(--bg-deep); padding: 12px; border-radius: 4px; overflow-x: auto; }
