@@ -1066,26 +1066,44 @@ internal static class Program
             aiSettings.ModelId = modelId;
         }
 
-        // Chat deployment (for gpt-5.1-chat models via Chat Completions API)
+        // Chat deployment (for gpt-5.1-chat models via Chat Completions API).
+        // Cascade rule: if AZURE_OPENAI_CHAT_ENDPOINT isn't set, fall back
+        // to AZURE_OPENAI_ENDPOINT (single-deployment scenarios). Without
+        // this, ChatEndpoint stays at the placeholder from appsettings.json
+        // ("https://your-endpoint.cognitiveservices.azure.com/") and chat
+        // clients hit DNS failures.
         var chatEndpoint = Environment.GetEnvironmentVariable("AZURE_OPENAI_CHAT_ENDPOINT");
+        if (string.IsNullOrEmpty(chatEndpoint))
+            chatEndpoint = Environment.GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT");
         if (!string.IsNullOrEmpty(chatEndpoint))
         {
             aiSettings.ChatEndpoint = chatEndpoint;
         }
+        else if (!string.IsNullOrEmpty(aiSettings.ChatEndpoint) && aiSettings.ChatEndpoint.Contains("your-"))
+        {
+            // Last-resort guard: never let a placeholder endpoint survive.
+            aiSettings.ChatEndpoint = aiSettings.Endpoint;
+        }
 
         var chatApiKey = Environment.GetEnvironmentVariable("AZURE_OPENAI_CHAT_API_KEY");
+        if (string.IsNullOrEmpty(chatApiKey))
+            chatApiKey = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_KEY");
         if (!string.IsNullOrEmpty(chatApiKey))
         {
             aiSettings.ChatApiKey = chatApiKey;
         }
 
         var chatDeploymentName = Environment.GetEnvironmentVariable("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME");
+        if (string.IsNullOrEmpty(chatDeploymentName))
+            chatDeploymentName = Environment.GetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT_NAME");
         if (!string.IsNullOrEmpty(chatDeploymentName))
         {
             aiSettings.ChatDeploymentName = chatDeploymentName;
         }
 
         var chatModelId = Environment.GetEnvironmentVariable("AZURE_OPENAI_CHAT_MODEL_ID");
+        if (string.IsNullOrEmpty(chatModelId))
+            chatModelId = Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL_ID");
         if (!string.IsNullOrEmpty(chatModelId))
         {
             aiSettings.ChatModelId = chatModelId;

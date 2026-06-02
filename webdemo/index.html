@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>COBOL → Java/.NET Conversion Demo Portal</title>
+<style>
+  :root {
+    --bg: #0b1220;
+    --panel: #111a2e;
+    --panel-2: #1a2540;
+    --text: #d6e1f6;
+    --muted: #87a0c8;
+    --accent: #4ea1ff;
+    --accent-2: #8be58e;
+    --warn: #f1c453;
+    --java: #ed8b00;
+    --dotnet: #5c2d91;
+    --cobol: #00a89a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text);
+    min-height: 100vh;
+  }
+  header {
+    padding: 18px 24px;
+    background: linear-gradient(90deg, #0b1220, #142042);
+    border-bottom: 1px solid #1f2c4a;
+  }
+  header h1 { margin: 0; font-size: 22px; }
+  header .sub { color: var(--muted); font-size: 13px; margin-top: 4px; }
+
+  main { padding: 18px 24px 80px; max-width: 1400px; margin: 0 auto; }
+
+  .program-card {
+    background: var(--panel);
+    border: 1px solid #1f2c4a;
+    border-radius: 10px;
+    padding: 18px;
+    margin-bottom: 22px;
+  }
+  .program-card h2 { margin: 0 0 6px; font-size: 18px; }
+  .program-card .meta { color: var(--muted); font-size: 13px; margin-bottom: 12px; }
+
+  .endpoint-row {
+    display: flex; align-items: center; gap: 12px;
+    background: var(--panel-2); padding: 8px 12px;
+    border-radius: 6px; margin-bottom: 14px;
+    font-family: SF Mono, Menlo, Consolas, monospace; font-size: 13px;
+  }
+  .pill {
+    padding: 2px 8px; border-radius: 4px; font-weight: 600;
+    font-size: 11px; letter-spacing: .5px;
+  }
+  .pill-post { background: #244e3a; color: #8be58e; }
+  .pill-java { background: rgba(237,139,0,0.18); color: var(--java); }
+  .pill-dotnet { background: rgba(92,45,145,0.28); color: #b896e5; }
+  .pill-cobol { background: rgba(0,168,154,0.18); color: var(--cobol); }
+
+  .tab-bar { display: flex; gap: 4px; margin: 8px 0 0; }
+  .tab {
+    padding: 6px 14px; background: var(--panel-2); color: var(--muted);
+    border: none; border-radius: 6px 6px 0 0; cursor: pointer;
+    font-size: 13px; font-family: inherit;
+  }
+  .tab.active { color: var(--text); background: #233357; }
+  .tab-content {
+    background: #233357; padding: 12px; border-radius: 0 6px 6px 6px;
+    margin-bottom: 14px;
+  }
+  pre {
+    margin: 0; padding: 10px; background: #050a16;
+    border-radius: 4px; max-height: 360px; overflow: auto;
+    font-family: SF Mono, Menlo, Consolas, monospace; font-size: 12px;
+    line-height: 1.42; color: #c7d4ed;
+    white-space: pre;
+  }
+
+  .try-it {
+    background: var(--panel-2); padding: 12px; border-radius: 6px;
+  }
+  .try-it label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .try-it textarea {
+    width: 100%; min-height: 110px; background: #050a16; color: #c7d4ed;
+    border: 1px solid #1f2c4a; border-radius: 4px; padding: 8px;
+    font-family: SF Mono, Menlo, Consolas, monospace; font-size: 12px;
+  }
+  .try-it button {
+    margin-top: 8px; padding: 7px 14px; background: var(--accent); color: #0b1220;
+    border: none; border-radius: 4px; cursor: pointer; font-weight: 600;
+  }
+  .try-it button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .try-it .resp {
+    margin-top: 10px; background: #050a16; padding: 10px; border-radius: 4px;
+    font-family: SF Mono, Menlo, Consolas, monospace; font-size: 12px;
+    color: #c7d4ed; max-height: 260px; overflow: auto; white-space: pre;
+  }
+  .resp.err { color: #ff8b8b; }
+  .resp.ok-tag { color: var(--accent-2); }
+
+  .catalog-status {
+    padding: 6px 10px; background: var(--panel-2); border-radius: 6px;
+    font-size: 12px; color: var(--muted); margin-bottom: 12px;
+  }
+  .catalog-status.err { color: #ff8b8b; }
+</style>
+</head>
+<body>
+<header>
+  <h1>COBOL → Java/.NET Conversion Demo Portal</h1>
+  <div class="sub">
+    Two programs converted from full-fidelity REKT-scanned COBOL into Quarkus
+    services and ASP.NET Core sealed classes. The mock REST layer wraps each
+    program so this portal can exercise them end-to-end.
+  </div>
+</header>
+<main>
+  <div id="catalog-status" class="catalog-status">Loading endpoint catalog…</div>
+  <div id="programs"></div>
+</main>
+
+<script>
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") node.className = v;
+    else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+    else node.setAttribute(k, v);
+  }
+  for (const c of children) {
+    if (c == null) continue;
+    if (typeof c === "string") node.appendChild(document.createTextNode(c));
+    else node.appendChild(c);
+  }
+  return node;
+}
+
+async function loadSource(path) {
+  try {
+    const resp = await fetch(path);
+    if (!resp.ok) return `// could not load ${path} (HTTP ${resp.status})`;
+    return await resp.text();
+  } catch (e) {
+    return `// error fetching ${path}: ${e.message}`;
+  }
+}
+
+function tabBar(panels, container) {
+  const bar = el("div", { class: "tab-bar" });
+  const slots = panels.map((p, i) => {
+    const tab = el("button", { class: "tab" + (i === 0 ? " active" : "") }, p.label);
+    tab.addEventListener("click", () => {
+      bar.querySelectorAll(".tab").forEach(b => b.classList.remove("active"));
+      tab.classList.add("active");
+      content.innerHTML = "";
+      content.appendChild(p.render());
+    });
+    bar.appendChild(tab);
+    return tab;
+  });
+  const content = el("div", { class: "tab-content" });
+  content.appendChild(panels[0].render());
+  container.appendChild(bar);
+  container.appendChild(content);
+}
+
+function renderProgram(prog) {
+  const card = el("div", { class: "program-card" });
+  card.appendChild(el("h2", {}, `${prog.id} — ${prog.name}`));
+  card.appendChild(el("div", { class: "meta" }, prog.language));
+
+  const ep = prog.restEndpoint;
+  const row = el("div", { class: "endpoint-row" },
+    el("span", { class: "pill pill-post" }, ep.method),
+    el("code", {}, ep.path),
+    el("span", {}, " — " + ep.summary)
+  );
+  card.appendChild(row);
+
+  // Source-code tabs
+  const tabHolder = el("div");
+  card.appendChild(tabHolder);
+
+  tabBar([
+    {
+      label: "🟧 Java (Quarkus)",
+      render: () => {
+        const wrap = el("div");
+        wrap.appendChild(el("div", { class: "meta" },
+          `class ${prog.java.className} — entry ${prog.java.entryMethod}`));
+        const pre = el("pre", {}, "Loading…");
+        wrap.appendChild(pre);
+        loadSource(prog.java.file).then(t => { pre.textContent = t; });
+        return wrap;
+      }
+    },
+    {
+      label: "🟦 .NET (ASP.NET Core)",
+      render: () => {
+        const wrap = el("div");
+        wrap.appendChild(el("div", { class: "meta" },
+          `class ${prog.dotnet.className} — entry ${prog.dotnet.entryMethod}`));
+        const pre = el("pre", {}, "Loading…");
+        wrap.appendChild(pre);
+        loadSource(prog.dotnet.file).then(t => { pre.textContent = t; });
+        return wrap;
+      }
+    },
+    {
+      label: "🟪 Original COBOL",
+      render: () => {
+        const wrap = el("div");
+        wrap.appendChild(el("div", { class: "meta" },
+          `IBM mainframe — ${prog.cobolFile}`));
+        const pre = el("pre", {}, "Loading…");
+        wrap.appendChild(pre);
+        loadSource(prog.cobolFile).then(t => { pre.textContent = t; });
+        return wrap;
+      }
+    },
+    {
+      label: "🛰 Try the REST API",
+      render: () => {
+        const wrap = el("div", { class: "try-it" });
+        wrap.appendChild(el("label", {}, `Request body — ${ep.method} ${ep.path}`));
+        const ta = el("textarea", {});
+        ta.value = JSON.stringify(ep.requestExample, null, 2);
+        wrap.appendChild(ta);
+        const btn = el("button", {}, "Send request");
+        const respDiv = el("div", { class: "resp" }, "(response will appear here)");
+        btn.addEventListener("click", async () => {
+          btn.disabled = true;
+          btn.textContent = "Sending…";
+          respDiv.classList.remove("err", "ok-tag");
+          try {
+            const r = await fetch(ep.path, {
+              method: ep.method,
+              headers: { "Content-Type": "application/json" },
+              body: ta.value
+            });
+            const txt = await r.text();
+            respDiv.classList.add(r.ok ? "ok-tag" : "err");
+            respDiv.textContent = `HTTP ${r.status}\n\n` + (() => {
+              try { return JSON.stringify(JSON.parse(txt), null, 2); }
+              catch { return txt; }
+            })();
+          } catch (e) {
+            respDiv.classList.add("err");
+            respDiv.textContent = "Network error: " + e.message +
+              "\n\nIs mock-server.py running on the same port as this page?";
+          } finally {
+            btn.disabled = false;
+            btn.textContent = "Send request";
+          }
+        });
+        wrap.appendChild(btn);
+        wrap.appendChild(respDiv);
+        return wrap;
+      }
+    }
+  ], tabHolder);
+
+  return card;
+}
+
+(async function init() {
+  const status = document.getElementById("catalog-status");
+  const container = document.getElementById("programs");
+  try {
+    const resp = await fetch("/api/endpoints");
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    const catalog = await resp.json();
+    status.textContent =
+      `Catalog generated ${catalog.generatedAt} — ${catalog.programs.length} program(s).`;
+    catalog.programs.forEach(p => container.appendChild(renderProgram(p)));
+  } catch (e) {
+    status.classList.add("err");
+    status.textContent =
+      "Could not load /api/endpoints — start the mock server with `python3 webdemo/mock-server.py` and reload. Error: " + e.message;
+  }
+})();
+</script>
+</body>
+</html>
