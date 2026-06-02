@@ -306,62 +306,146 @@ public sealed class ModernizationIntelligenceService
     /// </summary>
     public IEnumerable<RunSummaryRow> GetRuns(int limit = 50)
     {
+        // Union two sources so the picker always shows the freshest runs:
+        //   (a) benchmark.db   — ingested metric_events  (rich stats)
+        //   (b) output/.metrics/*.jsonl — raw sink files (fallback for runs
+        //       the ingester hasn't picked up yet — was capping the UI at 64)
+        // Newer files override DB rows for the same RunId.
+        var byRunId = new Dictionary<string, RunSummaryRow>(StringComparer.OrdinalIgnoreCase);
+
+        // (a) DB
         var dbPath = Path.Combine(_repoRoot, "Data", "benchmark.db");
-        if (!File.Exists(dbPath)) yield break;
-        SqliteConnection? conn = null;
+        if (File.Exists(dbPath))
+        {
+            SqliteConnection? conn = null;
+            try
+            {
+                conn = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly;");
+                conn.Open();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug("GetRuns open failed: {Msg}", ex.Message);
+            }
+
+            if (conn != null)
+            {
+                using (conn)
+                {
+                    using var c = conn.CreateCommand();
+                    c.CommandText = @"
+                        SELECT run_id,
+                               MIN(ts) AS first_ts,
+                               MAX(ts) AS last_ts,
+                               COUNT(*) AS event_count,
+                               SUM(CASE WHEN event='llm_call' THEN 1 ELSE 0 END) AS llm_calls,
+                               SUM(CASE WHEN event='projection_metrics' THEN 1 ELSE 0 END) AS projection_events,
+                               SUM(CASE WHEN event='cache_event'
+                                         AND json_extract(payload_json,'$.decision')='hit'
+                                        THEN 1 ELSE 0 END) AS cache_hits,
+                               SUM(CASE WHEN event='cache_event' THEN 1 ELSE 0 END) AS cache_total,
+                               SUM(CASE WHEN event='llm_call'
+                                         AND json_extract(payload_json,'$.outcome')='success'
+                                        THEN 1 ELSE 0 END) AS llm_success,
+                               SUM(CASE WHEN event='llm_call'
+                                         AND json_extract(payload_json,'$.outcome')!='success'
+                                        THEN 1 ELSE 0 END) AS llm_fail
+                          FROM metric_events
+                         WHERE run_id != 'unknown'
+                         GROUP BY run_id";
+                    using var r = c.ExecuteReader();
+                    while (r.Read())
+                    {
+                        var runId = r.GetString(0);
+                        byRunId[runId] = new RunSummaryRow(
+                            RunId: runId,
+                            FirstEventTs: r.IsDBNull(1) ? "" : r.GetString(1),
+                            LastEventTs: r.IsDBNull(2) ? "" : r.GetString(2),
+                            EventCount: r.GetInt32(3),
+                            LlmCallCount: r.IsDBNull(4) ? 0 : r.GetInt32(4),
+                            ProjectionEventCount: r.IsDBNull(5) ? 0 : r.GetInt32(5),
+                            CacheHits: r.IsDBNull(6) ? 0 : r.GetInt32(6),
+                            CacheTotal: r.IsDBNull(7) ? 0 : r.GetInt32(7),
+                            LlmSuccess: r.IsDBNull(8) ? 0 : r.GetInt32(8),
+                            LlmFail: r.IsDBNull(9) ? 0 : r.GetInt32(9)
+                        );
+                    }
+                }
+            }
+        }
+
+        // (b) raw .metrics sink files (catch runs not yet ingested)
+        var metricsDir = Path.Combine(_repoRoot, "output", ".metrics");
+        if (Directory.Exists(metricsDir))
+        {
+            foreach (var jsonl in Directory.EnumerateFiles(metricsDir, "*.jsonl"))
+            {
+                var runId = Path.GetFileNameWithoutExtension(jsonl);
+                if (string.IsNullOrWhiteSpace(runId) || runId.Equals("unknown", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (byRunId.ContainsKey(runId)) continue; // DB row wins
+                var summary = SummarizeMetricsFile(runId, jsonl);
+                if (summary != null) byRunId[runId] = summary;
+            }
+        }
+
+        return byRunId.Values
+            .OrderByDescending(r => RunIdSortKey(r.RunId))
+            .ThenByDescending(r => r.LastEventTs, StringComparer.Ordinal)
+            .Take(Math.Max(1, limit))
+            .ToList();
+    }
+
+    private static long RunIdSortKey(string runId)
+    {
+        // Numeric run IDs (1, 2, 64, 79, …) sort numerically; non-numeric IDs
+        // (GUIDs, timestamped slugs) sort by string fallback so newest naturally
+        // appears at the top when prefixed with a timestamp.
+        if (long.TryParse(runId, out var n)) return n;
+        return long.MaxValue / 2; // bubble unknown-format IDs above old numeric ones
+    }
+
+    private RunSummaryRow? SummarizeMetricsFile(string runId, string path)
+    {
         try
         {
-            conn = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly;");
-            conn.Open();
+            int eventCount = 0, llm = 0, proj = 0, cacheHit = 0, cacheTotal = 0, llmSuccess = 0, llmFail = 0;
+            string firstTs = "", lastTs = "";
+            foreach (var line in File.ReadLines(path))
+            {
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                JsonDocument doc;
+                try { doc = JsonDocument.Parse(line); } catch { continue; }
+                using (doc)
+                {
+                    var root = doc.RootElement;
+                    eventCount++;
+                    var ts = root.TryGetProperty("ts", out var tsEl) ? tsEl.GetString() ?? "" : "";
+                    if (eventCount == 1) firstTs = ts;
+                    if (!string.IsNullOrEmpty(ts)) lastTs = ts;
+                    var ev = root.TryGetProperty("event", out var evEl) ? evEl.GetString() : null;
+                    if (ev == "llm_call")
+                    {
+                        llm++;
+                        if (root.TryGetProperty("payload", out var pl) && pl.TryGetProperty("outcome", out var oc)
+                            && oc.GetString() == "success") llmSuccess++; else llmFail++;
+                    }
+                    else if (ev == "projection_metrics") proj++;
+                    else if (ev == "cache_event")
+                    {
+                        cacheTotal++;
+                        if (root.TryGetProperty("payload", out var pl) && pl.TryGetProperty("decision", out var dec)
+                            && dec.GetString() == "hit") cacheHit++;
+                    }
+                }
+            }
+            if (eventCount == 0) return null;
+            return new RunSummaryRow(runId, firstTs, lastTs, eventCount, llm, proj, cacheHit, cacheTotal, llmSuccess, llmFail);
         }
         catch (Exception ex)
         {
-            _logger.LogDebug("GetRuns open failed: {Msg}", ex.Message);
-            yield break;
-        }
-
-        using (conn)
-        {
-            using var c = conn.CreateCommand();
-            c.CommandText = @"
-                SELECT run_id,
-                       MIN(ts) AS first_ts,
-                       MAX(ts) AS last_ts,
-                       COUNT(*) AS event_count,
-                       SUM(CASE WHEN event='llm_call' THEN 1 ELSE 0 END) AS llm_calls,
-                       SUM(CASE WHEN event='projection_metrics' THEN 1 ELSE 0 END) AS projection_events,
-                       SUM(CASE WHEN event='cache_event'
-                                 AND json_extract(payload_json,'$.decision')='hit'
-                                THEN 1 ELSE 0 END) AS cache_hits,
-                       SUM(CASE WHEN event='cache_event' THEN 1 ELSE 0 END) AS cache_total,
-                       SUM(CASE WHEN event='llm_call'
-                                 AND json_extract(payload_json,'$.outcome')='success'
-                                THEN 1 ELSE 0 END) AS llm_success,
-                       SUM(CASE WHEN event='llm_call'
-                                 AND json_extract(payload_json,'$.outcome')!='success'
-                                THEN 1 ELSE 0 END) AS llm_fail
-                  FROM metric_events
-                 WHERE run_id != 'unknown'
-                 GROUP BY run_id
-                 ORDER BY CAST(run_id AS INTEGER) DESC
-                 LIMIT $lim";
-            c.Parameters.AddWithValue("$lim", limit);
-            using var r = c.ExecuteReader();
-            while (r.Read())
-            {
-                yield return new RunSummaryRow(
-                    RunId: r.GetString(0),
-                    FirstEventTs: r.IsDBNull(1) ? "" : r.GetString(1),
-                    LastEventTs: r.IsDBNull(2) ? "" : r.GetString(2),
-                    EventCount: r.GetInt32(3),
-                    LlmCallCount: r.IsDBNull(4) ? 0 : r.GetInt32(4),
-                    ProjectionEventCount: r.IsDBNull(5) ? 0 : r.GetInt32(5),
-                    CacheHits: r.IsDBNull(6) ? 0 : r.GetInt32(6),
-                    CacheTotal: r.IsDBNull(7) ? 0 : r.GetInt32(7),
-                    LlmSuccess: r.IsDBNull(8) ? 0 : r.GetInt32(8),
-                    LlmFail: r.IsDBNull(9) ? 0 : r.GetInt32(9)
-                );
-            }
+            _logger.LogDebug("SummarizeMetricsFile({Path}) failed: {Msg}", path, ex.Message);
+            return null;
         }
     }
 
@@ -564,7 +648,11 @@ public sealed class ModernizationIntelligenceService
         // Build inventory-aligned overlay first (reuse the same data the
         // Application Explorer surfaces).
         var apps = GetApplications().ToList();
-        var byBasename = apps.ToDictionary(a => a.Basename, a => a, StringComparer.OrdinalIgnoreCase);
+        // Inventory scans (source/, webdemo/sources/cobol/, .preprocessed/) can
+        // legitimately surface the same Basename twice — keep the first.
+        var byBasename = apps
+            .GroupBy(a => a.Basename, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
 
         foreach (var a in apps)
         {
@@ -719,7 +807,9 @@ public sealed class ModernizationIntelligenceService
         // Gather inputs from existing sources (no new data collection)
         var apps = GetApplications().ToList();
         var topology = GetTopology();
-        var byBasename = topology.Nodes.ToDictionary(n => n.Id, n => n, StringComparer.OrdinalIgnoreCase);
+        var byBasename = topology.Nodes
+            .GroupBy(n => n.Id, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
 
         // Build CALL adjacency from existing graph endpoint (we re-query the
         // raw services graph the same way the topology view does). For
@@ -897,9 +987,11 @@ public sealed class ModernizationIntelligenceService
             @"^\s*COPY\s+([A-Z0-9$@#\-_]+)",
             System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Multiline);
 
+        var seenStems = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var a in apps)
         {
             var stem = Path.GetFileNameWithoutExtension(a.Basename).ToUpperInvariant();
+            if (!seenStems.Add(stem)) continue; // collapse duplicate basenames from multiple source roots
             var copybooks = new List<string>();
             // Locate the source .cbl file (recursive — handles FUENTES/SRC/* paths)
             var srcPath = Directory.EnumerateFiles(sourceDir, a.Basename, SearchOption.AllDirectories)
@@ -984,7 +1076,11 @@ public sealed class ModernizationIntelligenceService
         int edgeCount = 0;
         const int maxEdges = 200;
 
-        var programByStem = snap.Programs.ToDictionary(p => p.Stem, p => p, StringComparer.OrdinalIgnoreCase);
+        // Duplicate stems can occur when the same .cbl basename is staged in
+        // multiple roots (e.g. source/ + webdemo/sources/cobol/) — collapse them.
+        var programByStem = snap.Programs
+            .GroupBy(p => p.Stem, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
 
         foreach (var job in jobs)
         {

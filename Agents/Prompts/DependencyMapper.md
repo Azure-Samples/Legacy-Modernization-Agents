@@ -1,8 +1,10 @@
 ## SECTION: System
 
 Map dependencies across the COBOL codebase:
-- **32** programs: representative online services, orchestration handlers, authorization services, and supporting utilities
-- **187** copybooks: representative request/response contracts, table layouts, shared SQL structures, and common utility copybooks
+- **128** programs: BDSMFJL.cbl, RGNB649.cbl, BDSM043.cbl, BDSDA23.cbl, BDSDA2F.cbl, KYGGR005.cbl, KYGFR002.cbl, KYGHR001.cbl, KYGHR002.cbl, KYGHBFEC.cbl, T6604700.cbl, KYGHR003.cbl, KYGHGB03.cbl, T66040A1.cbl, KYGHB076.cbl
+  ... and 113 more
+- **387** copybooks: CPY_TKYG.cpy, DB2_TKYG.cpy, DCL_TKYG.cpy, ORACLE_T.cpy, BDSISTDW.cpy, KROD002K.cpy, MEDPCTRL.cpy, KROD022I.cpy, BDSSTYR1.cpy, AADI002.cpy, BDSISEQI.cpy, MSGI909.cpy, KROD022K.cpy, KROD002I.cpy, MSGI908.cpy
+  ... and 372 more
 
 ## Dependency Types to Map
 1. **COPY dependencies** — which programs include which copybooks (COPY statements).
@@ -12,19 +14,6 @@ Map dependencies across the COBOL codebase:
 
 ## Output Format
 Generate a Mermaid dependency diagram AND a structured table listing all relationships.
-
-## Domain-Specific Conversion Guidance
-- De-duplicate program names in the inventory when source discovery produces repeats. Build the graph from unique program identifiers.
-- Treat commented preprocessor markers like `*01 -COPY ... -PRE ...` as real COPY dependencies with prefixing information. Post-expansion listings may otherwise under-report shared schema dependencies.
-- Distinguish dependency types clearly:
-  1. Service CALL dependencies
-  2. Shared commarea/copybook schema dependencies
-  3. Database table dependencies
-  4. Optional or boilerplate file definitions that may not imply runtime file use
-- Seed the graph from any observed orchestrator and authorization call chains, but describe them generically when preparing public output.
-- Show shared commarea copybooks as hubs when they define request, error, and response payloads reused across programs.
-- Mark runtime-use confidence for file dependencies so boilerplate FILE SECTION declarations do not overstate filesystem coupling.
-- Also show semantic dependencies on origin or mode fields when those values alter behavior even without introducing new CALLs.
 
 ## SECTION: User
 
@@ -45,11 +34,13 @@ Generate a Mermaid diagram AND a structured dependency table.
 
 ## SECTION: MermaidSystem
 
+
 You are an expert in creating Mermaid diagrams for software architecture visualization. 
 Create a clear, well-organized Mermaid flowchart for COBOL program dependencies.
 Return only the Mermaid diagram code, no additional text.
 
 ## SECTION: MermaidUser
+
 
 Create a Mermaid diagram for the following COBOL dependency structure:
 
@@ -63,6 +54,7 @@ Total: {{TotalPrograms}} programs, {{TotalCopybooks}} copybooks
 
 ## SECTION: AnalysisSystem
 
+
 You are an expert COBOL dependency analyzer. Analyze the provided COBOL code structure and identify:
 1. Data flow dependencies between copybooks
 2. Potential circular dependencies
@@ -70,6 +62,7 @@ You are an expert COBOL dependency analyzer. Analyze the provided COBOL code str
 Provide a brief analysis.
 
 ## SECTION: AnalysisUser
+
 
 Analyze the dependency structure of this COBOL project:
 

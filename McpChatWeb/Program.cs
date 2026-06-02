@@ -244,6 +244,30 @@ if (app.Environment.IsDevelopment())
 	app.MapOpenApi();
 }
 
+// Global JSON exception handler — without this, an unhandled exception in any
+// /api/* endpoint returns text/plain "System.ArgumentException: …" which the
+// frontend's `res.json()` parser blows up on ("Unexpected token 'S', …").
+app.Use(async (ctx, next) =>
+{
+    try { await next(); }
+    catch (Exception ex)
+    {
+        var logger = ctx.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("ApiException");
+        logger?.LogError(ex, "Unhandled exception in {Method} {Path}", ctx.Request.Method, ctx.Request.Path);
+        if (ctx.Response.HasStarted) throw;
+        ctx.Response.Clear();
+        ctx.Response.StatusCode = 500;
+        ctx.Response.ContentType = "application/json; charset=utf-8";
+        var payload = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            error = ex.GetType().Name,
+            message = ex.Message,
+            path = ctx.Request.Path.Value,
+        });
+        await ctx.Response.WriteAsync(payload);
+    }
+});
+
 app.UseDefaultFiles();
 app.UseStaticFiles();
 

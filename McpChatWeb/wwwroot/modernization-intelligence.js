@@ -85,7 +85,7 @@ class ModernizationIntelligenceView {
         const data = await fetch('/api/modernization/applications').then(r => r.json());
         body.innerHTML = this._renderApplications(data);
       } else if (this._activeSubview === 'runtime') {
-        const runs = await fetch('/api/modernization/runs?limit=50').then(r => r.json());
+        const runs = await fetch('/api/modernization/runs?limit=1000').then(r => r.json());
         body.innerHTML = this._renderRuntimeShell(runs);
         // Auto-select most recent run
         if (runs.length > 0) await this._loadRunTimeline(runs[0].runId);
