@@ -2272,6 +2272,7 @@ class ModernizationIntelligenceView {
         <div class="mi-locator-row">
           <input id="mi-semantic-input" type="text" placeholder="e.g. interest accrual · customer onboarding · payment settlement" class="mi-locator-input"/>
           <button id="mi-semantic-btn" class="mi-btn-primary">🧠 Search by intent</button>
+          <button id="mi-semantic-ai-btn" class="mi-btn" title="Use the configured LLM to expand your query with related COBOL/business terms before searching">🪄 Expand with AI</button>
         </div>
         <div id="mi-semantic-results"></div>
       </div>
@@ -2383,38 +2384,114 @@ class ModernizationIntelligenceView {
         try {
           const r = await fetch(`/api/modernization/semantic-search?q=${encodeURIComponent(q)}`).then(x => x.json());
           semResults.innerHTML = this._renderSemanticResults(r);
+          // Wire tab switching (innerHTML strips inline <script>)
+          semResults.querySelectorAll('[data-sem-tab]').forEach(btn => {
+            btn.addEventListener('click', () => {
+              const uid = btn.getAttribute('data-sem-uid');
+              const key = btn.getAttribute('data-sem-tab');
+              semResults.querySelectorAll(`[data-sem-tab][data-sem-uid="${uid}"]`).forEach(b => b.classList.toggle('active', b === btn));
+              semResults.querySelectorAll(`[data-sem-panel][data-sem-uid="${uid}"]`).forEach(p => {
+                p.style.display = p.getAttribute('data-sem-panel') === key ? '' : 'none';
+              });
+            });
+          });
         } catch (err) {
           semResults.innerHTML = `<div class="mi-error">${this._escape(err.message)}</div>`;
         }
       };
       semBtn.addEventListener('click', runSem);
       semInput.addEventListener('keydown', e => { if (e.key === 'Enter') runSem(); });
+
+      // 🪄 LLM expansion — POST to /semantic-search/expand, append returned
+      // keywords to the input, then re-run the search.
+      const aiBtn = this.root.querySelector('#mi-semantic-ai-btn');
+      if (aiBtn) {
+        aiBtn.addEventListener('click', async () => {
+          const q = semInput.value.trim();
+          if (!q) { semInput.focus(); return; }
+          const orig = aiBtn.textContent;
+          aiBtn.textContent = '🪄 Expanding…';
+          aiBtn.disabled = true;
+          try {
+            const r = await fetch('/api/modernization/semantic-search/expand', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ query: q })
+            }).then(x => x.json());
+            const kws = (r.expanded || []).slice(0, 12);
+            if (kws.length === 0) {
+              semResults.innerHTML = `<div class="mi-cap-empty">
+                <b>AI expansion returned no terms</b>
+                <div class="mi-help">${this._escape(r.note || '')}</div>
+              </div>`;
+            } else {
+              // Append expanded keywords to the query, dedupe
+              const seen = new Set(q.toLowerCase().split(/\s+/));
+              const extras = kws.filter(k => !seen.has(k.toLowerCase()));
+              semInput.value = (q + ' ' + extras.join(' ')).trim();
+              semResults.innerHTML = `<div class="mi-help" style="margin:6px 0 10px;">
+                🪄 <b>AI (${this._escape(r.source || 'llm')})</b> added ${extras.length} term(s):
+                ${extras.map(k => `<code>${this._escape(k)}</code>`).join(' ')}
+              </div>`;
+              await runSem();
+            }
+          } catch (err) {
+            semResults.innerHTML = `<div class="mi-error">AI expand failed: ${this._escape(err.message)}</div>`;
+          } finally {
+            aiBtn.textContent = orig;
+            aiBtn.disabled = false;
+          }
+        });
+      }
     }
   }
 
   _renderSemanticResults(r) {
-    if (!r.programs || r.programs.length === 0) {
-      return `<div class="mi-cap-empty">
-        <b>No programs match "<code>${this._escape(r.query)}</code>"</b>
-        <div class="mi-help">Tokens tried: ${(r.tokens || []).map(t => `<code>${this._escape(t)}</code>`).join(', ') || '<i>(none — query too short)</i>'}</div>
-        <div class="mi-help">Tip: try broader terms ("interest" instead of "interest accrual calculations") or check the capability dictionary.</div>
+    const hasAny =
+      (r.programs && r.programs.length > 0) ||
+      (r.paragraphMatches && r.paragraphMatches.length > 0) ||
+      (r.copybookMatches && r.copybookMatches.length > 0) ||
+      (r.sourceSnippets && r.sourceSnippets.length > 0);
+
+    const header = `
+      <div style="margin-bottom:10px; font-size:11px; color:var(--text-muted);">
+        Scanned <b>${r.programsScanned || 0}</b> programs · <b>${r.copybooksScanned || 0}</b> copybooks ·
+        Tokens: ${(r.tokens || []).map(t => `<code>${this._escape(t)}</code>`).join(' · ') || '<i>(none)</i>'}
+        ${r.matchedCapabilities && r.matchedCapabilities.length > 0 ? ` · via capability: ${r.matchedCapabilities.map(c => `<b>${this._escape(c)}</b>`).join(', ')}` : ''}
+        · Expanded keywords (${(r.expandedKeywords || []).length}):
+        <span class="mi-muted">${(r.expandedKeywords || []).slice(0, 16).map(k => this._escape(k)).join(', ')}${(r.expandedKeywords || []).length > 16 ? '…' : ''}</span>
+      </div>`;
+
+    if (!hasAny) {
+      return header + `<div class="mi-cap-empty">
+        <b>No matches for "<code>${this._escape(r.query)}</code>"</b>
+        <div class="mi-help">Try broader terms, or click <b>🪄 Expand with AI</b> to add related vocabulary.</div>
       </div>`;
     }
-    return `
-      <div style="margin-bottom:10px; font-size:11px; color:var(--text-muted);">
-        Tokens: ${(r.tokens || []).map(t => `<code>${this._escape(t)}</code>`).join(' · ')}
-        ${r.matchedCapabilities.length > 0 ? `· Expanded via capability${r.matchedCapabilities.length === 1 ? '' : 'ies'}: ${r.matchedCapabilities.map(c => `<b>${this._escape(c)}</b>`).join(', ')}` : ''}
-        · Expanded keywords (${r.expandedKeywords.length}): <span class="mi-muted">${(r.expandedKeywords || []).slice(0, 12).map(k => this._escape(k)).join(', ')}${r.expandedKeywords.length > 12 ? '…' : ''}</span>
-      </div>
+
+    const np = (r.programs || []).length;
+    const npa = (r.paragraphMatches || []).length;
+    const ncb = (r.copybookMatches || []).length;
+    const nsn = (r.sourceSnippets || []).length;
+    const nd = (r.byDomain || []).length;
+    const uid = 'sem-' + Math.random().toString(36).slice(2, 8);
+
+    const tab = (key, label, count, active = false) => `
+      <button class="mi-sem-tab ${active ? 'active' : ''}" data-sem-tab="${key}" data-sem-uid="${uid}">
+        ${label} <span class="mi-sem-count">${count}</span>
+      </button>`;
+
+    const programsPanel = `
       <table class="mi-table mi-table-dense">
-        <thead><tr><th>Program</th><th class="num">Score</th><th>Top hits</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Program</th><th>Domain</th><th class="num">Score</th><th>Top hits</th><th>Actions</th></tr></thead>
         <tbody>
-          ${r.programs.map(p => `
+          ${(r.programs || []).map(p => `
             <tr>
               <td><code>${this._escape(p.basename)}</code></td>
+              <td>${p.capability ? `<span class="mi-chip mi-chip-tiny" title="${this._escape((p.bianDomains || []).join(', '))}">${this._escape(p.capability)}</span>` : '<span class="mi-muted">—</span>'}</td>
               <td class="num"><b style="color:var(--color-info);">${p.score.toFixed(1)}</b></td>
               <td>
-                ${p.hits.slice(0, 5).map(h =>
+                ${(p.hits || []).slice(0, 5).map(h =>
                   `<span class="mi-chip mi-chip-tiny" title="source=${this._escape(h.source)} · keyword=${this._escape(h.keyword)}">${this._escape(h.match)}</span>`
                 ).join(' ')}
               </td>
@@ -2422,7 +2499,77 @@ class ModernizationIntelligenceView {
             </tr>
           `).join('')}
         </tbody>
-      </table>
+      </table>`;
+
+    const paragraphsPanel = npa === 0 ? '<div class="mi-help">No paragraph-name matches.</div>' : `
+      <table class="mi-table mi-table-dense">
+        <thead><tr><th>Paragraph</th><th>In program</th><th>Matched keyword</th></tr></thead>
+        <tbody>
+          ${r.paragraphMatches.map(p => `
+            <tr>
+              <td><code>${this._escape(p.name)}</code></td>
+              <td><code>${this._escape(p.program)}</code></td>
+              <td><span class="mi-chip mi-chip-tiny">${this._escape(p.keyword)}</span></td>
+            </tr>`).join('')}
+        </tbody>
+      </table>`;
+
+    const copybooksPanel = ncb === 0 ? '<div class="mi-help">No copybook matches.</div>' : `
+      <table class="mi-table mi-table-dense">
+        <thead><tr><th>Copybook</th><th>Match type</th><th>Keyword</th></tr></thead>
+        <tbody>
+          ${r.copybookMatches.map(c => `
+            <tr>
+              <td><code>${this._escape(c.name)}</code></td>
+              <td><span class="mi-muted">${this._escape(c.kind)}</span></td>
+              <td><span class="mi-chip mi-chip-tiny">${this._escape(c.keyword)}</span></td>
+            </tr>`).join('')}
+        </tbody>
+      </table>`;
+
+    const snippetsPanel = nsn === 0 ? '<div class="mi-help">No source-text matches.</div>' : `
+      <div class="mi-sem-snippets">
+        ${r.sourceSnippets.map(s => `
+          <div class="mi-sem-snippet">
+            <div class="mi-sem-snippet-hdr">
+              <code>${this._escape(s.program)}</code>
+              <span class="mi-muted">:line ${s.lineNumber}</span>
+              <span class="mi-chip mi-chip-tiny">${this._escape(s.keyword)}</span>
+            </div>
+            <pre class="mi-sem-snippet-code">${this._escape(s.text)}</pre>
+            ${s.context ? `<pre class="mi-sem-snippet-ctx">${this._escape(s.context)}</pre>` : ''}
+          </div>`).join('')}
+      </div>`;
+
+    const domainPanel = nd === 0 ? '<div class="mi-help">No programs classified into a capability for this query.</div>' : `
+      <div class="mi-sem-domains">
+        ${r.byDomain.map(d => `
+          <div class="mi-sem-domain">
+            <div class="mi-sem-domain-hdr">
+              <span class="mi-cap-emoji">${d.emoji || '📦'}</span>
+              <b>${this._escape(d.capability)}</b>
+              <span class="mi-muted">· ${d.programs.length} program(s)</span>
+              ${(d.bian || []).length > 0 ? `<span class="mi-muted"> · BIAN: ${d.bian.map(b => this._escape(b)).join(', ')}</span>` : ''}
+            </div>
+            <div class="mi-sem-domain-body">
+              ${d.programs.map(p => `<span class="mi-chip mi-chip-tiny"><code>${this._escape(p)}</code></span>`).join(' ')}
+            </div>
+          </div>`).join('')}
+      </div>`;
+
+    return header + `
+      <div class="mi-sem-tabs" data-sem-uid="${uid}">
+        ${tab('programs', '📦 Programs', np, true)}
+        ${tab('paragraphs', '🧩 Paragraphs', npa)}
+        ${tab('copybooks', '📋 Copybooks', ncb)}
+        ${tab('snippets', '📜 Snippets', nsn)}
+        ${tab('domains', '🏷 By Domain', nd)}
+      </div>
+      <div class="mi-sem-panel" data-sem-panel="programs" data-sem-uid="${uid}">${programsPanel}</div>
+      <div class="mi-sem-panel" data-sem-panel="paragraphs" data-sem-uid="${uid}" style="display:none;">${paragraphsPanel}</div>
+      <div class="mi-sem-panel" data-sem-panel="copybooks" data-sem-uid="${uid}" style="display:none;">${copybooksPanel}</div>
+      <div class="mi-sem-panel" data-sem-panel="snippets" data-sem-uid="${uid}" style="display:none;">${snippetsPanel}</div>
+      <div class="mi-sem-panel" data-sem-panel="domains" data-sem-uid="${uid}" style="display:none;">${domainPanel}</div>
     `;
   }
 

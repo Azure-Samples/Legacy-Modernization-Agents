@@ -9119,3 +9119,80 @@ main.three-panel-layout {
 .mi-flow-empty li { margin: 4px 0; line-height: 1.5; }
 .mi-chip-warn { background: var(--color-warn-bg); color: var(--color-warn); }
 .mi-mermaid-wrap { background: var(--bg-deep); padding: 12px; border-radius: 4px; overflow-x: auto; }
+
+/* 🧠 Semantic search — tabbed result buckets */
+.mi-sem-tabs {
+  display: flex;
+  gap: 4px;
+  margin: 10px 0 8px;
+  border-bottom: 1px solid var(--border-subtle, #2a3340);
+  flex-wrap: wrap;
+}
+.mi-sem-tab {
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+  color: var(--text-muted, #94a3b8);
+  padding: 6px 12px;
+  border-radius: 6px 6px 0 0;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+}
+.mi-sem-tab:hover { background: var(--bg-elev, #1a2030); color: var(--text-primary, #e2e8f0); }
+.mi-sem-tab.active {
+  background: var(--bg-elev, #1a2030);
+  border-color: var(--border-subtle, #2a3340);
+  color: var(--color-info, #38bdf8);
+  border-bottom: 2px solid var(--color-info, #38bdf8);
+  margin-bottom: -1px;
+}
+.mi-sem-tab .mi-sem-count {
+  display: inline-block;
+  background: rgba(56, 189, 248, 0.15);
+  color: var(--color-info, #38bdf8);
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 10px;
+  margin-left: 4px;
+  font-weight: 600;
+}
+.mi-sem-panel { padding: 6px 0; }
+
+.mi-sem-snippets { display: flex; flex-direction: column; gap: 8px; }
+.mi-sem-snippet {
+  background: var(--bg-elev, #1a2030);
+  border-left: 3px solid var(--color-info, #38bdf8);
+  border-radius: 4px;
+  padding: 8px 10px;
+}
+.mi-sem-snippet-hdr {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 11px; margin-bottom: 4px;
+}
+.mi-sem-snippet-code {
+  margin: 0; padding: 4px 6px;
+  background: rgba(0,0,0,0.25);
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  white-space: pre-wrap;
+  color: var(--text-primary, #e2e8f0);
+  border-radius: 3px;
+}
+.mi-sem-snippet-ctx {
+  margin: 4px 0 0; padding: 2px 6px;
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  color: var(--text-muted, #64748b);
+  white-space: pre-wrap;
+  opacity: 0.75;
+}
+
+.mi-sem-domains { display: flex; flex-direction: column; gap: 10px; }
+.mi-sem-domain {
+  background: var(--bg-elev, #1a2030);
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+.mi-sem-domain-hdr { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 13px; }
+.mi-sem-domain-body { display: flex; flex-wrap: wrap; gap: 4px; }

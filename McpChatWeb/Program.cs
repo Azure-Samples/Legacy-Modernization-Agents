@@ -9197,12 +9197,89 @@ app.MapGet("/api/modernization/semantic-search",
     (string q, int? limit, McpChatWeb.Services.CapabilityClassifier svc) =>
         Results.Ok(svc.SemanticSearch(q ?? "", limit ?? 20)));
 
+// #9b Semantic search — LLM-powered query expansion. Given a free-text
+// intent ("calculate fees and charges"), return ~10 related keywords the
+// caller can OR into the next search. Falls back to capability-dictionary
+// matches if no AI provider is configured.
+app.MapPost("/api/modernization/semantic-search/expand",
+    async (SemanticExpandRequest req, McpChatWeb.Services.CapabilityClassifier svc) =>
+    {
+        var query = (req?.Query ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(query))
+            return Results.Ok(new { query, expanded = Array.Empty<string>(), source = "empty", note = "Query was empty." });
+
+        // Try the configured chat model first.
+        var (client, modelUsed, err) = McpChatWeb.Services.PromptStudioAI.CreateClient();
+        if (client != null)
+        {
+            try
+            {
+                var prompt =
+                    "You are a search-term expander for a COBOL modernization tool.\n" +
+                    "The user is searching a corpus of mainframe COBOL programs for a business intent.\n" +
+                    "Return a JSON object with one field 'keywords' — an array of 8-12 short, distinct\n" +
+                    "terms that are likely to appear in COBOL source code, paragraph names, copybook names,\n" +
+                    "SQL table names, or comments related to the user's intent. Mix business terms,\n" +
+                    "common COBOL abbreviations (e.g. CALC, INT, BAL, CUST, ACCT, TRAN), and short\n" +
+                    "domain synonyms. Prefer single tokens (no spaces). Lowercase. No explanation.\n\n" +
+                    $"User intent: \"{query}\"\n\n" +
+                    "Respond with strict JSON only, e.g. {\"keywords\":[\"interest\",\"calc\",\"accrual\",\"bal\",\"int\",\"rate\",\"days\"]}";
+
+                var messages = new List<Microsoft.Extensions.AI.ChatMessage>
+                {
+                    new(Microsoft.Extensions.AI.ChatRole.User, prompt)
+                };
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                var resp = await client.GetResponseAsync(messages, cancellationToken: cts.Token);
+                var text = resp?.Text ?? "";
+                // Extract the JSON blob (model may wrap in ```json … ``` fences)
+                var jsonMatch = System.Text.RegularExpressions.Regex.Match(text,
+                    @"\{[^{}]*\""keywords""\s*:\s*\[[^\]]*\][^{}]*\}",
+                    System.Text.RegularExpressions.RegexOptions.Singleline);
+                string? jsonText = jsonMatch.Success ? jsonMatch.Value : null;
+                if (jsonText != null)
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(jsonText);
+                    if (doc.RootElement.TryGetProperty("keywords", out var arr) && arr.ValueKind == System.Text.Json.JsonValueKind.Array)
+                    {
+                        var kws = arr.EnumerateArray()
+                            .Select(e => e.GetString() ?? "")
+                            .Where(s => !string.IsNullOrWhiteSpace(s))
+                            .Select(s => s.Trim().ToLowerInvariant())
+                            .Where(s => s.Length >= 2 && s.Length <= 30)
+                            .Distinct()
+                            .Take(15)
+                            .ToList();
+                        return Results.Ok(new { query, expanded = kws, source = $"llm:{modelUsed}" });
+                    }
+                }
+                return Results.Ok(new { query, expanded = Array.Empty<string>(), source = $"llm:{modelUsed}", note = "Model returned unparseable response.", raw = text });
+            }
+            catch (Exception ex)
+            {
+                return Results.Ok(new { query, expanded = Array.Empty<string>(), source = "llm-error", note = $"LLM call failed: {ex.Message}" });
+            }
+        }
+
+        // Fallback: deterministic expansion via the capability dictionary.
+        var fallback = svc.SemanticSearch(query, 0);
+        return Results.Ok(new
+        {
+            query,
+            expanded = fallback.ExpandedKeywords.Where(k => !fallback.Tokens.Contains(k, StringComparer.OrdinalIgnoreCase)).ToList(),
+            source = "fallback-dictionary",
+            note = err ?? "No AI provider configured — used capability dictionary expansion."
+        });
+    });
+
 // #10 Keyword suggester — propose dictionary additions for the unclassified bucket
 app.MapGet("/api/modernization/capability-suggestions",
     (McpChatWeb.Services.CapabilityClassifier svc) =>
         Results.Ok(svc.SuggestKeywords()));
 
 app.Run();
+
+
 
 // Expand {{include path}} directives in prompt markdown. Mirrors PromptLoader.ExpandIncludes
 // so the Prompt Studio UI shows the same fully-rendered text the runtime sees.
@@ -9630,3 +9707,6 @@ string BuildUserPromptTemplate(string promptId, HashSet<string> features, int pr
 
 	return sb.ToString();
 }
+
+
+public record SemanticExpandRequest(string Query);

@@ -504,12 +504,27 @@ public sealed class CapabilityClassifier
         var factsDir = Path.Combine(_repoRoot, "output", "rekt");
         if (!Directory.Exists(sourceDir)) return result;
 
+        // Build program → capability lookup so each search hit can be tagged
+        // with the service domain it belongs to. We classify once up front
+        // rather than re-extracting signals per program.
+        var capCatalog = GetCapabilities();
+        var progToCap = new Dictionary<string, (string Display, string Emoji, List<string> Bian)>(StringComparer.OrdinalIgnoreCase);
+        foreach (var bucket in capCatalog.Capabilities)
+            foreach (var prog in bucket.Programs)
+                if (!progToCap.ContainsKey(prog.Basename))
+                    progToCap[prog.Basename] = (bucket.Display, bucket.Emoji, bucket.Bian ?? new List<string>());
+
         var scored = new List<SemanticHit>();
+        var paragraphMatches = new List<ItemHit>();
+        var snippetHits = new List<SnippetHit>();
+        int programsScanned = 0;
+
         foreach (var cbl in Directory.EnumerateFiles(sourceDir, "*.cbl", SearchOption.AllDirectories)
             .Where(f => !f.Contains("/.convert-", StringComparison.Ordinal)
                      && !f.Contains("/.rekt-staging", StringComparison.Ordinal)
                      && !f.Contains("/.preprocessed", StringComparison.Ordinal)))
         {
+            programsScanned++;
             var basename = Path.GetFileName(cbl);
             var stem = Path.GetFileNameWithoutExtension(cbl);
             var factsPath = Path.Combine(factsDir, $"{stem}.facts.json");
@@ -517,11 +532,20 @@ public sealed class CapabilityClassifier
 
             double score = 0;
             var hits = new List<CapabilityHit>();
+            // De-dupe per-program paragraph hits so each (paragraph, keyword)
+            // pair is recorded once on the global ParagraphMatches feed.
+            var seenParaKey = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var kw in expandedKeywords)
             {
                 foreach (var p in signals.ParagraphsFromFacts.Concat(signals.ParagraphsFromSource))
                     if (TokenMatch(p, kw))
-                    { score += 3; hits.Add(new CapabilityHit("paragraph", p, kw)); }
+                    {
+                        score += 3;
+                        hits.Add(new CapabilityHit("paragraph", p, kw));
+                        var key = $"{p}|{kw}";
+                        if (seenParaKey.Add(key))
+                            paragraphMatches.Add(new ItemHit(p, basename, kw, "paragraph"));
+                    }
                 foreach (var c in signals.CallTargets)
                     if (TokenMatch(c, kw))
                     { score += 2; hits.Add(new CapabilityHit("call", c, kw)); }
@@ -537,14 +561,32 @@ public sealed class CapabilityClassifier
             }
             // Also raw substring match against the .cbl contents (filename + comments)
             // for tokens >= 5 chars — catches free-text intents like "interest accrual"
-            // that might only appear in COBOL comments.
+            // that might only appear in COBOL comments. Captures line context too.
             try
             {
-                var text = File.ReadAllText(cbl);
+                var lines = File.ReadAllLines(cbl);
+                var perKwSnippets = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
                 foreach (var kw in expandedKeywords.Where(k => k.Length >= 5))
                 {
-                    var count = System.Text.RegularExpressions.Regex.Matches(text, kw,
-                        System.Text.RegularExpressions.RegexOptions.IgnoreCase).Count;
+                    int count = 0;
+                    for (int i = 0; i < lines.Length; i++)
+                    {
+                        if (lines[i].IndexOf(kw, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                        count++;
+                        // Cap snippets per (file, keyword) so the response stays small
+                        if (!perKwSnippets.TryGetValue(kw, out var got) || got < 2)
+                        {
+                            perKwSnippets[kw] = got + 1;
+                            var ctxBefore = i > 0 ? lines[i - 1].TrimEnd() : "";
+                            var ctxAfter = i < lines.Length - 1 ? lines[i + 1].TrimEnd() : "";
+                            snippetHits.Add(new SnippetHit(
+                                Program: basename,
+                                LineNumber: i + 1,
+                                Keyword: kw,
+                                Text: lines[i].TrimEnd(),
+                                Context: $"{ctxBefore}\n{ctxAfter}"));
+                        }
+                    }
                     if (count > 0)
                     {
                         score += 0.5 * count;
@@ -555,14 +597,82 @@ public sealed class CapabilityClassifier
             catch { /* fail-soft */ }
 
             if (score <= 0) continue;
+            string? capDisplay = null;
+            List<string>? bianList = null;
+            if (progToCap.TryGetValue(basename, out var capInfo))
+            {
+                capDisplay = $"{capInfo.Emoji} {capInfo.Display}";
+                bianList = capInfo.Bian;
+            }
             scored.Add(new SemanticHit(
                 Basename: basename,
                 Score: score,
-                Hits: hits.Take(8).ToList()
+                Hits: hits.Take(8).ToList(),
+                Capability: capDisplay,
+                BianDomains: bianList
             ));
         }
 
+        // Also scan copybooks (.cpy) — they often carry the semantic load
+        // (data structures named "ACCOUNT-BALANCE", "INTEREST-RATE", etc.)
+        // and were previously invisible to the searcher.
+        var copybookMatches = new List<ItemHit>();
+        int copybooksScanned = 0;
+        foreach (var cpy in Directory.EnumerateFiles(sourceDir, "*.cpy", SearchOption.AllDirectories)
+            .Where(f => !f.Contains("/.convert-", StringComparison.Ordinal)
+                     && !f.Contains("/.rekt-staging", StringComparison.Ordinal)
+                     && !f.Contains("/.preprocessed", StringComparison.Ordinal)))
+        {
+            copybooksScanned++;
+            var cpyName = Path.GetFileName(cpy);
+            string content;
+            try { content = File.ReadAllText(cpy); } catch { continue; }
+            foreach (var kw in expandedKeywords)
+            {
+                // Filename match
+                if (TokenMatch(cpyName, kw))
+                {
+                    copybookMatches.Add(new ItemHit(cpyName, "—", kw, "copybook-name"));
+                    continue;
+                }
+                // Content match (token boundary for short keywords)
+                if (kw.Length >= 4 && System.Text.RegularExpressions.Regex.IsMatch(
+                        content, $@"\b{System.Text.RegularExpressions.Regex.Escape(kw)}\b",
+                        System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                {
+                    copybookMatches.Add(new ItemHit(cpyName, "—", kw, "copybook-content"));
+                }
+            }
+        }
+
+        result.ProgramsScanned = programsScanned;
+        result.CopybooksScanned = copybooksScanned;
         result.Programs = scored.OrderByDescending(s => s.Score).Take(limit).ToList();
+        result.ParagraphMatches = paragraphMatches.Take(80).ToList();
+        result.CopybookMatches = copybookMatches
+            .GroupBy(c => c.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First())
+            .Take(40).ToList();
+        result.SourceSnippets = snippetHits.Take(40).ToList();
+
+        // Group matching programs by capability/domain so users see
+        // "what service area does my query touch?"
+        result.ByDomain = result.Programs
+            .Where(p => !string.IsNullOrEmpty(p.Capability))
+            .GroupBy(p => p.Capability!)
+            .Select(g =>
+            {
+                var anyProg = g.First().Basename;
+                var info = progToCap.TryGetValue(anyProg, out var ci) ? ci : (Display: g.Key, Emoji: "", Bian: new List<string>());
+                return new DomainGroup(
+                    Capability: g.Key,
+                    Emoji: info.Emoji,
+                    Bian: info.Bian,
+                    Programs: g.Select(p => p.Basename).ToList());
+            })
+            .OrderByDescending(d => d.Programs.Count)
+            .ToList();
+
         return result;
     }
 
@@ -749,8 +859,17 @@ public class SemanticSearchResult
     public List<string> ExpandedKeywords { get; set; } = new();
     public List<string> MatchedCapabilities { get; set; } = new();
     public List<SemanticHit> Programs { get; set; } = new();
+    public List<ItemHit> ParagraphMatches { get; set; } = new();
+    public List<ItemHit> CopybookMatches { get; set; } = new();
+    public List<SnippetHit> SourceSnippets { get; set; } = new();
+    public List<DomainGroup> ByDomain { get; set; } = new();
+    public int CopybooksScanned { get; set; }
+    public int ProgramsScanned { get; set; }
 }
-public record SemanticHit(string Basename, double Score, List<CapabilityHit> Hits);
+public record SemanticHit(string Basename, double Score, List<CapabilityHit> Hits, string? Capability = null, List<string>? BianDomains = null);
+public record ItemHit(string Name, string Program, string Keyword, string Kind);
+public record SnippetHit(string Program, int LineNumber, string Keyword, string Text, string? Context);
+public record DomainGroup(string Capability, string Emoji, List<string> Bian, List<string> Programs);
 
 // #10 Keyword suggester DTOs
 public class KeywordSuggestionResult
