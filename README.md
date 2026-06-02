@@ -4,17 +4,111 @@ This open-source framework converts legacy COBOL to Java (Quarkus) or C# (.NET) 
 
 ---
 
-## ⚡ Fast Quick-Start (3 commands · 5 minutes)
+## ⚡ Fast Quick-Start (TL;DR · 5 minutes)
 
 ```bash
 ./doctor.sh setup                                       # 1. configure provider (Azure / Copilot — interactive)
-./doctor.sh rekt-full                                   # 2. static analysis: REKT → Neo4j → portal at :5028
-./doctor.sh convert-only --program SAMPLE001 --target java  # 3. convert one program with REKT context injection
+./doctor.sh rekt-full                                   # 2. static analysis + portal at :5028 (dashboards + data)
+# 3. (optional but recommended) tune agent prompts — see "Edit prompts first" below
+./doctor.sh convert-only --program SAMPLE001 --target java  # 4. convert one program with REKT context injection
 ```
 
-Converted code lands in **`output/runs/{runId}-java-…/com/example/…/`** — every run gets its own immutable folder so you never overwrite history. Telemetry → `output/.metrics/<runId>.jsonl`. Portal stays running on **<http://localhost:5028>**.
+**Step 2 is where the value lands first.** `rekt-full` runs the smojol parser over every `.cbl` / `.cpy` / `.bms` / `.psb` / `.dbd` under `source/`, writes structural facts to `output/rekt/*.facts.json`, ingests the AST + CFG + data-flow graph into Neo4j, and launches the portal on **<http://localhost:5028>**. The four workspaces (Visual Cockpit · Modernization Intelligence · Insights Hub · AST Galaxy) are immediately usable — you can browse the estate, see dependency health, search by intent, and decide what to convert before spending a single LLM token. Re-run `rekt-full` only when source changes.
 
-For a deeper walkthrough of every portal surface, see **[`docs/quick-guide.md`](docs/quick-guide.md)**.
+### 📝 Edit prompts first (highly recommended before step 4)
+
+Every agent has an editable persona prompt. Tweaking them is the single highest-leverage way to improve output quality for *your* corpus (naming conventions, target framework, business glossary, compliance constraints).
+
+| Where | How |
+|---|---|
+| 🎛 **Prompt Studio** (in-portal) | Portal → **Prompt Studio** tab. Edit, A/B-test, version, and revert prompts live. Changes hot-reload — no rebuild. |
+| 📁 **Files directly** | Edit `Agents/Prompts/*.md` (one Markdown file per agent). Same effect; pair with git for review. |
+
+See [Customizing Agent Behavior](#-customizing-agent-behavior) and [Prompt Studio](#prompt-studio) for the full editing workflow.
+
+### 🎯 Step 4: pick what to convert
+
+The selector flags below are repeatable — **same flag = OR, different flags = AND**. Pair any with `convert-only` for the fastest feedback loop (skips RE re-run when results already cached) or with `run` for the full RE + conversion pipeline.
+
+```bash
+# One specific program (you saw its score in the portal)
+./doctor.sh convert-only --program SAMPLE001 --target java
+
+# A whole CICS transaction (resolves via EXEC CICS RETURN TRANSID / LINK PROGRAM)
+./doctor.sh run --transaction CT01 --include-callees --target java
+
+# A migration wave from target-architecture.json (saved from the portal)
+./doctor.sh run --wave 1 --target-component svc-data --target csharp
+
+# Everything matching a business keyword in source
+./doctor.sh run --keyword CUSTOMER --min-program-score 0.75 --target java
+
+# A program plus everything it calls (transitive closure)
+./doctor.sh convert-only --program SAMPLE001 --include-callees --target java
+
+# Pure-LLM mode (no REKT injection — A/B comparison or no scan yet)
+./doctor.sh convert-only --program SAMPLE001 --no-rekt-context
+```
+
+Output → **`output/runs/{runId}-{lang}-…/com/example/…/`** — every run gets its own immutable folder; history is never overwritten. Telemetry → `output/.metrics/<runId>.jsonl`.
+
+### 🤖 What each agent does (1-line each — full details in the [Agent Flowchart](#-agent-flowchart))
+
+| Agent | One-liner |
+|---|---|
+| **CobolAnalyzerAgent** | Deep structural analysis — divisions, paragraphs, copybooks, CALL/PERFORM/SQL/IO metrics. Drives every downstream agent. |
+| **BusinessLogicExtractorAgent** | Converts technical analysis into business language — use cases, user stories, glossary terms. Powers the RE report. |
+| **DependencyMapperAgent** | Builds the CALL / COPY / PERFORM / EXEC SQL graph in SQLite + Neo4j. Backs the dependency views and CALL-tree selectors. |
+| **RektPromptInjector** | Wraps the REKT `facts.json` + shared-types registry + FACT-LOCKING rules into the converter prompt — closes the duplicate-class failure mode. |
+| **JavaConverterAgent / CSharpConverterAgent** | Generates target-language code. Single-shot for small programs, chunked + reassembled for large ones. Hits the projection cache (~80% hit rate). |
+| **ConversionParityAgent** | Re-reads the generated code and scores it against the original COBOL facts (paragraph coverage, SQL fidelity, CALL fan-out). |
+| **CodeReviewerAgent** | Static review pass for compile-blocking issues, missing imports, obvious bugs. |
+| **TestSynthesizerAgent** | Generates unit tests + a parity harness from the BusinessLogic + facts. |
+
+The full agent topology — including the Phase-0 REKT scan, the per-phase data stores, the projection cache, and the Wave Planner write-path — is in the [**🔄 Agent Flowchart**](#-agent-flowchart) and the [**🔀 Agent Responsibilities & Interactions**](#-agent-responsibilities--interactions) Mermaid sequence diagram further down.
+
+---
+
+> ### 🚦 Recommended order of operations (deeper detail — already covered above; this is the full reference)
+>
+> | # | Step | Command | What it does |
+> |---|------|---------|--------------|
+> | 1 | **Drop source code** | copy `*.cbl`, `*.cpy`, `*.bms`, `*.psb`, `*.dbd` into `source/` | The folder all later steps read from. |
+> | 2 | **Static analysis (REKT)** | `./doctor.sh rekt-full` | Parses every program with smojol, writes AST/CFG/data-flow JSON to `output/rekt/`, ingests into Neo4j, and starts the portal. **Do this once per source change.** |
+> | 3 | **Save the target plan** | Open the portal → **Target Architecture** tab → click **💾 Save for AI agent** | Writes `output/rekt/target-architecture.json`. Required for wave / target-component selection in step 4. |
+> | 4 | **Pick what to convert** | Portal → **🛠️ Convert…** button (or CLI flags below) | Opens the Convert modal. Dropdowns are pre-populated from the REKT catalog — pick a program, a CICS transaction, a wave, or a target component. |
+> | 5 | **Run the focused conversion** | Click **🚀 Start conversion** (or `./doctor.sh run` with selector flags) | Stages just the selected files into a temp folder and runs the full migration pipeline (RE + REKT context injection + Java/C# converter + parity validator + tests + reports). |
+> | 6 | **Inspect results** | Portal → **Migration Monitor** / **Reverse Engineering Results** / `output/java` / `output/csharp` | View converted code, parity scores, generated tests, and architecture docs. |
+>
+> **Equivalent CLI for step 4 + 5** — same selector, no portal needed. Works with both `run` (full pipeline incl. RE) and `convert-only` (skips RE, much faster when you already have RE results):
+> ```bash
+> # Convert one program — fastest path when RE already done
+> ./doctor.sh convert-only --program SAMPLE006
+>
+> # By CICS transaction (scans source for EXEC CICS RETURN TRANSID / LINK PROGRAM)
+> ./doctor.sh run --transaction CT01 --include-callees
+>
+> # By migration wave from target-architecture.json
+> ./doctor.sh run --wave 1 --target svc-data
+>
+> # By keyword in source
+> ./doctor.sh run --keyword CUSTOMER --min-program-score 0.75
+>
+> # Pure-LLM mode (skip REKT injection — A/B testing or no scan yet)
+> ./doctor.sh run --program SAMPLE006 --no-rekt-context
+> ```
+> Each flag is repeatable; **same flag = OR, different flags = AND**. Add `--include-callees` / `--include-callers` to walk the CALL graph.
+>
+> Selector mode **auto-skips standalone copybook analysis** (the converter still reads `.cpy` content as COPY context) so a one-program run finishes in minutes instead of hours. Pair `convert-only` + a selector + `--reuse-re` (when prompted) for the fastest possible feedback loop.
+>
+> **Skip step 2** if you only want to convert without REKT context (legacy behaviour): pass `--no-rekt-context` or run `./doctor.sh run` without any selector. The conversion will still work — it just won't have the REKT structural facts and shared-types registry injected, and the wave / target / transaction selectors won't have anything to resolve against.
+>
+> | Flag | Default | What it does |
+> |---|---|---|
+> | `--rekt-context` | **on** | Force-enable REKT injection (FACT-LOCKING rules + structural facts + shared-types registry). Recommended whenever you've run `rekt-full`. |
+> | `--no-rekt-context` | off | Disable REKT injection. Pure-LLM mode. Faster per call; lower fidelity; risk of duplicate-type errors on multi-file batches. Use when comparing prompts or when REKT data isn't available. |
+>
+> Full reference: [docs/rekt-grounded-conversion.md](docs/rekt-grounded-conversion.md).
 
 ### The four portal surfaces
 
