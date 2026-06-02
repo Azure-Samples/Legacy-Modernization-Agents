@@ -199,16 +199,22 @@ class ModernizationIntelligenceView {
         <td class="num">${n}</td>
       </tr>`).join('') || '<tr><td colspan="2" class="mi-muted">no cache_event yet</td></tr>';
 
-    const qualityRows = (d.recentQuality || []).map(q => `
+    const qualityRows = (d.recentQuality || []).map(q => {
+      const isMeasured = q.measured !== false;
+      const statusCell = isMeasured
+        ? (q.compileSuccess ? '<span class="mi-ok">✅ pass</span>' : '<span class="mi-bad">❌ fail</span>')
+        : '<span class="mi-muted" title="No compile gate ran — invoke tools/check-compile.sh to record one">⏸ not measured</span>';
+      return `
       <tr>
         <td><code>${this._escape(q.runId)}</code></td>
-        <td>${q.compileSuccess ? '<span class="mi-ok">✅ pass</span>' : '<span class="mi-bad">❌ fail</span>'}</td>
-        <td class="num">${q.compileErrors}</td>
+        <td>${statusCell}</td>
+        <td class="num">${isMeasured ? q.compileErrors : '—'}</td>
         <td class="num">${q.generatedClasses}</td>
         <td class="num">${q.generatedLines}</td>
         <td class="num">${q.fallbackClasses}</td>
         <td class="num">${q.injectAnnotations}</td>
-      </tr>`).join('') || '<tr><td colspan="7" class="mi-muted">no quality_metrics yet</td></tr>';
+      </tr>`;
+    }).join('') || '<tr><td colspan="7" class="mi-muted">no quality_metrics yet</td></tr>';
 
     return `
       ${headlineKpis}

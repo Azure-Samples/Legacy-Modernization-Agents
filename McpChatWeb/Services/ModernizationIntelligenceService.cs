@@ -241,7 +241,7 @@ public sealed class ModernizationIntelligenceService
                 }
             }
 
-            // Latest quality metrics (last 5 runs)
+            // Latest quality metrics (last 5 runs that emitted a quality gate)
             using (var c = conn.CreateCommand())
             {
                 c.CommandText = @"
@@ -272,6 +272,69 @@ public sealed class ModernizationIntelligenceService
                 }
             }
 
+            // Backfill: walk output/runs/* for the newest run folders that
+            // produced code but did NOT have check-compile.sh invoked (no
+            // quality_metrics event). Surface them with Measured=false so the
+            // UI shows "not measured" instead of falsely flagging them as
+            // failing. Without this, the widget appears stuck at runId 64
+            // forever after the conversion-only / portal-driven runs.
+            try
+            {
+                var measuredRunIds = new HashSet<string>(
+                    summary.RecentQuality.Select(q => q.RunId),
+                    StringComparer.OrdinalIgnoreCase);
+                var runsDir = Path.Combine(_repoRoot, "output", "runs");
+                if (Directory.Exists(runsDir))
+                {
+                    var folderRuns = Directory.EnumerateDirectories(runsDir)
+                        .Select(d => new
+                        {
+                            Dir = d,
+                            Name = Path.GetFileName(d),
+                            Stamp = Directory.GetLastWriteTimeUtc(d)
+                        })
+                        .OrderByDescending(x => x.Stamp)
+                        .Take(20)
+                        .ToList();
+
+                    foreach (var fr in folderRuns)
+                    {
+                        var runId = ExtractRunIdFromFolderName(fr.Name);
+                        if (string.IsNullOrEmpty(runId)) continue;
+                        if (measuredRunIds.Contains(runId)) continue;
+
+                        var (classCount, lineCount, fallbackCount, injectCount) = SummarizeGeneratedCode(fr.Dir);
+                        if (classCount == 0) continue; // skip empty run folders
+
+                        summary.RecentQuality.Add(new QualitySummaryRow(
+                            RunId: runId,
+                            CompileSuccess: false,
+                            CompileErrors: 0,
+                            GeneratedClasses: classCount,
+                            GeneratedLines: lineCount,
+                            FallbackClasses: fallbackCount,
+                            InjectAnnotations: injectCount,
+                            Timestamp: fr.Stamp.ToString("o", CultureInfo.InvariantCulture),
+                            Measured: false
+                        ));
+                        measuredRunIds.Add(runId);
+                        if (summary.RecentQuality.Count >= 12) break;
+                    }
+                    // Sort newest-first: prefer Timestamp desc, fall back to RunIdSortKey
+                    var sorted = summary.RecentQuality
+                        .OrderByDescending(q => q.Timestamp, StringComparer.Ordinal)
+                        .ThenByDescending(q => RunIdSortKey(q.RunId))
+                        .Take(10)
+                        .ToList();
+                    summary.RecentQuality.Clear();
+                    summary.RecentQuality.AddRange(sorted);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug("Quality backfill failed: {Msg}", ex.Message);
+            }
+
             // Derived headline metrics
             summary.TotalEvents = summary.EventCountsByType.Values.Sum();
             var hits = summary.CacheDecisionCounts.TryGetValue("hit", out var h) ? h : 0;
@@ -280,8 +343,13 @@ public sealed class ModernizationIntelligenceService
             var llmTotal = summary.LlmCallOutcomes.Sum(o => o.Count);
             var llmSuccess = summary.LlmCallOutcomes.Where(o => o.Outcome == "success").Sum(o => o.Count);
             summary.LlmSuccessRatePct = llmTotal > 0 ? Math.Round(llmSuccess * 100.0 / llmTotal, 1) : 0;
-            var compileRuns = summary.RecentQuality.Count;
-            var compileOk = summary.RecentQuality.Count(q => q.CompileSuccess);
+            // Compile pass % must only consider rows where check-compile.sh
+            // actually ran (Measured=true). Otherwise newer conversion-only
+            // runs (where no compile gate was invoked) would falsely deflate
+            // the rate to 0%.
+            var measured = summary.RecentQuality.Where(q => q.Measured).ToList();
+            var compileRuns = measured.Count;
+            var compileOk = measured.Count(q => q.CompileSuccess);
             summary.RecentCompileSuccessPct = compileRuns > 0 ? Math.Round(compileOk * 100.0 / compileRuns, 1) : 0;
             summary.AvgContextReductionPct = summary.ContextReduction.Count > 0
                 ? Math.Round(summary.ContextReduction.Average(r => r.ReductionPct), 1)
@@ -403,6 +471,54 @@ public sealed class ModernizationIntelligenceService
         // appears at the top when prefixed with a timestamp.
         if (long.TryParse(runId, out var n)) return n;
         return long.MaxValue / 2; // bubble unknown-format IDs above old numeric ones
+    }
+
+    private static string ExtractRunIdFromFolderName(string folderName)
+    {
+        // Folder patterns supported (created by ProcessManager.cs):
+        //   {YYYY-MM-DD}_{HH-mm-ss}_{tag}-{lang}-{slug}-{utcStamp}   ← timestamped (CLI/portal)
+        //   {runId}-{lang}-{slug}-{utcStamp}                          ← legacy GUID/numeric runId
+        // For the timestamped form, the in-folder "tag" is not a unique runId
+        // (e.g. "demo", "cli"), so we use the localStamp itself as the runId —
+        // that's what users see in `ls output/runs/` and it sorts correctly.
+        if (string.IsNullOrWhiteSpace(folderName)) return "";
+
+        if (folderName.Length > 20 && folderName[4] == '-' && folderName[7] == '-' && folderName[10] == '_'
+            && folderName[13] == '-' && folderName[16] == '-' && folderName[19] == '_')
+        {
+            // Use the timestamp prefix as the runId so each timestamped folder
+            // gets a unique, sortable, human-readable identifier.
+            return folderName.Substring(0, 19);
+        }
+
+        // Legacy form: runId is everything up to the first dash.
+        var dashIdx = folderName.IndexOf('-');
+        return dashIdx > 0 ? folderName.Substring(0, dashIdx) : folderName;
+    }
+
+    private static (int classes, int lines, int fallback, int inject) SummarizeGeneratedCode(string runDir)
+    {
+        int classes = 0, lines = 0, fallback = 0, inject = 0;
+        try
+        {
+            var codeFiles = Directory.EnumerateFiles(runDir, "*.java", SearchOption.AllDirectories)
+                .Concat(Directory.EnumerateFiles(runDir, "*.cs", SearchOption.AllDirectories));
+            foreach (var f in codeFiles)
+            {
+                classes++;
+                try
+                {
+                    var text = File.ReadAllText(f);
+                    lines += text.Count(c => c == '\n') + 1;
+                    if (text.Contains("@Inject", StringComparison.Ordinal)) inject++;
+                    if (text.Contains("LLM returned empty output", StringComparison.OrdinalIgnoreCase)
+                        || text.Contains("FALLBACK STUB", StringComparison.OrdinalIgnoreCase)) fallback++;
+                }
+                catch { /* skip unreadable */ }
+            }
+        }
+        catch { /* skip unreadable run dir */ }
+        return (classes, lines, fallback, inject);
     }
 
     private RunSummaryRow? SummarizeMetricsFile(string runId, string path)
@@ -1530,7 +1646,8 @@ public record QualitySummaryRow(
     int GeneratedLines,
     int FallbackClasses,
     int InjectAnnotations,
-    string Timestamp);
+    string Timestamp,
+    bool Measured = true);
 
 // Runtime & Conversion Intelligence DTOs
 
