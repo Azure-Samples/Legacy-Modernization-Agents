@@ -2273,6 +2273,10 @@ class ModernizationIntelligenceView {
           <input id="mi-semantic-input" type="text" placeholder="e.g. interest accrual · customer onboarding · payment settlement" class="mi-locator-input"/>
           <button id="mi-semantic-btn" class="mi-btn-primary">🧠 Search by intent</button>
           <button id="mi-semantic-ai-btn" class="mi-btn" title="Use the configured LLM to expand your query with related COBOL/business terms before searching">🪄 Expand with AI</button>
+          <button id="mi-semantic-clear-btn" class="mi-btn" title="Clear query and resume the 30s auto-refresh">✕ Clear</button>
+        </div>
+        <div class="mi-help" style="margin-top:4px; font-size:10px;">
+          ⏸ Auto-refresh pauses while you have a query or results — clear to resume.
         </div>
         <div id="mi-semantic-results"></div>
       </div>
@@ -2381,6 +2385,10 @@ class ModernizationIntelligenceView {
         const q = semInput.value.trim();
         if (!q) return;
         semResults.innerHTML = '<div class="mi-loading">🧠 Searching by intent…</div>';
+        // Pause the 30s auto-refresh while results are visible so a tick
+        // doesn't re-render the subview and wipe the query + results.
+        const semSection = semInput.closest('.mi-section');
+        if (semSection) semSection.setAttribute('data-refresh', 'pause');
         try {
           const r = await fetch(`/api/modernization/semantic-search?q=${encodeURIComponent(q)}`).then(x => x.json());
           semResults.innerHTML = this._renderSemanticResults(r);
@@ -2401,6 +2409,27 @@ class ModernizationIntelligenceView {
       };
       semBtn.addEventListener('click', runSem);
       semInput.addEventListener('keydown', e => { if (e.key === 'Enter') runSem(); });
+      // Pause auto-refresh as soon as the user starts typing or has content
+      // in the box — clear the pause flag (and any results) when they empty it.
+      const updatePause = () => {
+        const section = semInput.closest('.mi-section');
+        if (!section) return;
+        const hasContent = semInput.value.trim().length > 0 || semResults.innerHTML.trim().length > 0;
+        if (hasContent) section.setAttribute('data-refresh', 'pause');
+        else section.removeAttribute('data-refresh');
+      };
+      semInput.addEventListener('input', updatePause);
+
+      const clearBtn = this.root.querySelector('#mi-semantic-clear-btn');
+      if (clearBtn) {
+        clearBtn.addEventListener('click', () => {
+          semInput.value = '';
+          semResults.innerHTML = '';
+          const section = semInput.closest('.mi-section');
+          if (section) section.removeAttribute('data-refresh');
+          semInput.focus();
+        });
+      }
 
       // 🪄 LLM expansion — POST to /semantic-search/expand, append returned
       // keywords to the input, then re-run the search.
