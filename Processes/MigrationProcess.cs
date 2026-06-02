@@ -354,22 +354,27 @@ public class MigrationProcess
                 var javaFile = javaFiles[i];
 
                 // Save with correct extension based on actual file type
+                string savedPath;
                 if (javaFile is JavaFile jf && targetLang == TargetLanguage.Java)
                 {
                     // Java files use JavaFile-specific save method
-                    await _fileHelper.SaveJavaFileAsync(jf, javaOutputFolder);
+                    savedPath = await _fileHelper.SaveJavaFileAsync(jf, javaOutputFolder);
                 }
                 else if (javaFile is CodeFile codeFile)
                 {
                     // C# or other CodeFiles use generic save with explicit extension
-                    await _fileHelper.SaveCodeFileAsync(codeFile, javaOutputFolder, fileExtension);
+                    savedPath = await _fileHelper.SaveCodeFileAsync(codeFile, javaOutputFolder, fileExtension);
                 }
                 else
                 {
                     // Fallback shouldn't happen, but handle gracefully
                     _logger.LogWarning("Unexpected file type: {Type} for {FileName}", javaFile.GetType().Name, javaFile.FileName);
-                    await _fileHelper.SaveCodeFileAsync((CodeFile)javaFile, javaOutputFolder, fileExtension);
+                    savedPath = await _fileHelper.SaveCodeFileAsync((CodeFile)javaFile, javaOutputFolder, fileExtension);
                 }
+                // Capture the on-disk path so the post-run quality check can
+                // re-open each file and surface 0-byte / stub outputs in the
+                // migration report instead of silently passing them through.
+                if (javaFile is CodeFile asCode) asCode.FilePath = savedPath;
 
                 _enhancedLogger.ShowProgressBar(i + 1, javaFiles.Count, $"Saving {saveLangName} files");
                 _enhancedLogger.LogBehindTheScenes("FILE_OUTPUT", "CODE_FILE_SAVED",

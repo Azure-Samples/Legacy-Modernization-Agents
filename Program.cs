@@ -502,6 +502,16 @@ internal static class Program
             LoadEnvironmentVariables();
             OverrideSettingsFromEnvironment(settings);
 
+            // CLI arguments take precedence over env/config so a user
+            // running `dotnet run -- --source ./foo --java-output ./bar`
+            // actually targets ./foo and ./bar (previously these flags
+            // were silently dropped because RunMigrationAsync only read
+            // settings.ApplicationSettings.* set by config/env).
+            if (!string.IsNullOrWhiteSpace(cobolSource))
+                settings.ApplicationSettings.CobolSourceFolder = cobolSource;
+            if (!string.IsNullOrWhiteSpace(javaOutput) && javaOutput != "output")
+                settings.ApplicationSettings.JavaOutputFolder = javaOutput;
+
             if (string.IsNullOrEmpty(settings.ApplicationSettings.CobolSourceFolder))
             {
                 logger.LogError("COBOL source folder not specified. Use --source option or set in config file.");

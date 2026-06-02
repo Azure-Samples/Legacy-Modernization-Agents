@@ -154,6 +154,55 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
             }
 
             javaCode = ExtractJavaCode(javaCode);
+
+            // Empty / unusable response guard. The chunk path used to mark
+            // Success=true with ConvertedCode="" when Copilot dropped the
+            // response (0 tokens / timeout), which led to 0-byte .java
+            // files on disk. Match the JavaConverterAgent.ExtractJavaCode
+            // behaviour: emit a self-documenting stub so the developer
+            // sees the diagnosis when they open the file. Mark Success=false
+            // so the assembly phase flags the chunk in the migration report.
+            var hasPkg = javaCode.Contains("package ", StringComparison.Ordinal);
+            var hasClass = javaCode.Contains("class ", StringComparison.Ordinal);
+            var opens = javaCode.Count(c => c == '{');
+            var closes = javaCode.Count(c => c == '}');
+            if (string.IsNullOrWhiteSpace(javaCode) || (!hasPkg && !hasClass) || (opens == 0 && closes == 0))
+            {
+                var reason = string.IsNullOrWhiteSpace(javaCode)
+                    ? "EMPTY_LLM_RESPONSE — model returned no usable output (likely Copilot SDK timeout / 0-token response). Re-run with ENABLE_REKT_CONTEXT=true and a smaller chunk threshold."
+                    : "NO_JAVA_STRUCTURE — model emitted prose or non-Java content. Re-run with full REKT context enabled.";
+
+                var stubBuilder = new System.Text.StringBuilder();
+                stubBuilder.AppendLine("// ════════════════════════════════════════════════════════════════════");
+                stubBuilder.AppendLine("// ⚠ CHUNK CONVERSION DID NOT PRODUCE USABLE JAVA");
+                stubBuilder.AppendLine("// ════════════════════════════════════════════════════════════════════");
+                stubBuilder.AppendLine("// Source COBOL: " + chunk.SourceFile);
+                stubBuilder.AppendLine("// Chunk: " + (chunk.ChunkIndex + 1) + "/" + context.TotalChunks
+                                       + " (lines " + chunk.StartLine + "-" + chunk.EndLine + ")");
+                stubBuilder.AppendLine("// Reason: " + reason);
+                stubBuilder.AppendLine("//");
+                stubBuilder.AppendLine("// What to do");
+                stubBuilder.AppendLine("// ──────────");
+                stubBuilder.AppendLine("// 1. Verify ENABLE_REKT_CONTEXT=true in the environment.");
+                stubBuilder.AppendLine("// 2. Confirm full-fidelity REKT artifacts exist under");
+                stubBuilder.AppendLine("//    output/rekt/" + System.IO.Path.GetFileNameWithoutExtension(chunk.SourceFile) + ".cbl.report/");
+                stubBuilder.AppendLine("// 3. Re-run the conversion for just this program.");
+                stubBuilder.AppendLine("// ════════════════════════════════════════════════════════════════════");
+
+                Logger.LogWarning("[ChunkAwareJavaConverter] Empty/unusable chunk output for {File} chunk {Idx} — writing diagnostic stub",
+                    chunk.SourceFile, chunk.ChunkIndex);
+
+                return new ChunkConversionResult
+                {
+                    ChunkIndex = chunk.ChunkIndex,
+                    SourceFile = chunk.SourceFile,
+                    Success = false,
+                    ErrorMessage = reason,
+                    ConvertedCode = stubBuilder.ToString(),
+                    ProcessingTimeMs = stopwatch.ElapsedMilliseconds
+                };
+            }
+
             var definedMethods = ExtractDefinedMethods(javaCode);
 
             return new ChunkConversionResult

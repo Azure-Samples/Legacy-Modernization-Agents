@@ -26,7 +26,9 @@ public class ManagedRun
     /// when the run starts. Every run writes here instead of the shared
     /// <c>output/java/</c> or <c>output/csharp/</c> so prior runs are never
     /// overwritten and each run's output is independently inspectable.
-    /// Pattern: <c>output/runs/{runId}-{targetLang}-{slug}-{utcTimestamp}/</c>
+    /// Pattern: <c>output/runs/{localTimestamp}_{runId}-{targetLang}-{slug}-{utcTimestamp}/</c>
+    /// (local timestamp first so the folder is easy to spot in
+    /// chronological listings.)
     /// </summary>
     public string OutputFolder { get; set; } = "";
 
@@ -103,10 +105,15 @@ public class ProcessManager : IDisposable
         // a Convert click + 2 weeks later you can still inspect exactly what
         // that run produced. The shared output/java and output/csharp folders
         // are no longer used for portal runs.
+        //
+        // Folder name puts a LOCAL-TIME human-readable timestamp at the FRONT
+        // so `ls output/runs/` sorts chronologically by glance and users can
+        // find the folder they just kicked off without scanning UTC stamps.
         var langSlug = targetLanguage.Equals("CSharp", StringComparison.OrdinalIgnoreCase) ? "csharp" : "java";
         var nameSlug = Slug(run.Name);
+        var localStamp = run.StartedAt.ToLocalTime().ToString("yyyy-MM-dd_HH-mm-ss");
         var utcStamp = run.StartedAt.ToString("yyyyMMddTHHmmssZ");
-        run.OutputFolder = $"output/runs/{run.RunId}-{langSlug}-{nameSlug}-{utcStamp}";
+        run.OutputFolder = $"output/runs/{localStamp}_{run.RunId}-{langSlug}-{nameSlug}-{utcStamp}";
         var absOutputFolder = Path.Combine(_repoRoot, run.OutputFolder);
         try { Directory.CreateDirectory(absOutputFolder); }
         catch (Exception ex)
@@ -122,6 +129,14 @@ public class ProcessManager : IDisposable
         // Build the dotnet command directly instead of going through doctor.sh
         // (doctor.sh is interactive — we bypass it for non-interactive portal use)
         var (executable, arguments) = BuildCommand(command, targetLanguage, speedProfile, sourceFolder);
+
+        // ── Rebuild guard ─────────────────────────────────────────────
+        // BuildCommand uses --no-build for speed. If any *.cs file under
+        // the main project is newer than the compiled DLL the user thinks
+        // they're running the latest converter code but they aren't —
+        // empty Java files, missing stub-writer logic, stale agents.
+        // Detect that staleness here and rebuild once before the run.
+        EnsureMainProjectFresh(run);
 
         var psi = new ProcessStartInfo
         {
@@ -508,8 +523,88 @@ public class ProcessManager : IDisposable
     }
 
     /// <summary>
-    /// Filesystem-safe slug from an arbitrary string. Trims to 40 chars,
-    /// keeps alphanumeric + dash, collapses runs, lowercases.
+    /// Ensure the main CobolToQuarkusMigration project is built with all
+    /// current source changes before the run starts. We use `--no-build`
+    /// for speed, so a stale DLL would silently ship old converter code
+    /// (typical symptom: 0-byte Java files because the stub-writer fix
+    /// landed in source but never made it into the running binary).
+    ///
+    /// Rebuild only when ANY *.cs file under the main project is newer
+    /// than the compiled DLL — keeps the fast path fast and adds ~3-8 s
+    /// on the rare run that needs it.
+    /// </summary>
+    private void EnsureMainProjectFresh(ManagedRun run)
+    {
+        try
+        {
+            var project = Path.Combine(_repoRoot, "CobolToQuarkusMigration.csproj");
+            var dll = Path.Combine(_repoRoot, "bin", "Debug", "net10.0", "CobolToQuarkusMigration.dll");
+            if (!File.Exists(project)) return;
+
+            DateTime dllStamp = File.Exists(dll)
+                ? File.GetLastWriteTimeUtc(dll)
+                : DateTime.MinValue;
+
+            // Scan top-level *.cs source directories for any file newer
+            // than the DLL. Skip generated/build folders.
+            var sourceDirs = new[] { "Agents", "Helpers", "Processes", "Models", "Services", "Prompts", "Telemetry" };
+            bool stale = false;
+            foreach (var rel in sourceDirs)
+            {
+                var dir = Path.Combine(_repoRoot, rel);
+                if (!Directory.Exists(dir)) continue;
+                foreach (var f in Directory.EnumerateFiles(dir, "*.cs", SearchOption.AllDirectories))
+                {
+                    if (File.GetLastWriteTimeUtc(f) > dllStamp) { stale = true; break; }
+                }
+                if (stale) break;
+            }
+            // Also include the root .cs files (Program.cs etc.)
+            if (!stale)
+            {
+                foreach (var f in Directory.EnumerateFiles(_repoRoot, "*.cs", SearchOption.TopDirectoryOnly))
+                {
+                    if (File.GetLastWriteTimeUtc(f) > dllStamp) { stale = true; break; }
+                }
+            }
+
+            if (!stale) return;
+
+            run.AppendLog("🔨 Source code newer than CobolToQuarkusMigration.dll — rebuilding before run...");
+            var build = new ProcessStartInfo
+            {
+                FileName = "dotnet",
+                Arguments = $"build \"{project}\" -c Debug --nologo -v minimal",
+                WorkingDirectory = _repoRoot,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            using var p = Process.Start(build);
+            if (p == null) { run.AppendLog("⚠️  dotnet build did not start; continuing with possibly-stale DLL"); return; }
+            var stdout = p.StandardOutput.ReadToEnd();
+            var stderr = p.StandardError.ReadToEnd();
+            p.WaitForExit();
+            if (p.ExitCode != 0)
+            {
+                run.AppendLog($"❌ dotnet build failed (exit {p.ExitCode}); aborting run.");
+                if (!string.IsNullOrWhiteSpace(stderr)) run.AppendLog(stderr.TrimEnd());
+                if (!string.IsNullOrWhiteSpace(stdout)) run.AppendLog(stdout.TrimEnd());
+                throw new InvalidOperationException($"dotnet build of CobolToQuarkusMigration.csproj failed with exit code {p.ExitCode}.");
+            }
+            run.AppendLog("✅ Rebuild complete.");
+        }
+        catch (InvalidOperationException) { throw; }
+        catch (Exception ex)
+        {
+            // Don't block the run on detection errors — log and proceed.
+            run.AppendLog($"⚠️  Could not verify build freshness: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Generates a URL/folder-safe slug from a free-form run name.
     /// </summary>
     private static string Slug(string s)
     {

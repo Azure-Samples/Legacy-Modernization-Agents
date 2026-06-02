@@ -456,12 +456,15 @@ public sealed class ModernizationIntelligenceService
     {
         var detail = new CompileDetail { RunId = runId };
 
-        // Locate the run's per-run output folder under output/runs/{runId}-*
+        // Locate the run's per-run output folder under output/runs/.
+        // Folder pattern changed mid-life to put a local timestamp at the
+        // FRONT (output/runs/{localStamp}_{runId}-…), so search both legacy
+        // ({runId}-*) and new (*{runId}*) layouts.
         var runsRoot = Path.Combine(_repoRoot, "output", "runs");
         string? folder = null;
         if (Directory.Exists(runsRoot))
         {
-            folder = Directory.EnumerateDirectories(runsRoot, $"{runId}*")
+            folder = Directory.EnumerateDirectories(runsRoot, $"*{runId}*")
                 .FirstOrDefault();
         }
         // Fall back to the shared legacy folders if the run pre-dates per-run isolation
