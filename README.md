@@ -6,6 +6,25 @@ This open-source framework converts legacy COBOL to Java (Quarkus) or C# (.NET) 
 
 ## ⚡ Fast Quick-Start (TL;DR · 5 minutes)
 
+> ### 🎯 Targeted conversion is a first-class design choice
+>
+> This repo **deliberately does not convert your entire `source/` folder by default**. Instead, the workflow is:
+>
+> 1. Run `./doctor.sh rekt-full` once — REKT statically analyses everything and lights up the portal so you can *see* the estate.
+> 2. Use the REKT-backed selectors (`--program` · `--transaction` · `--wave` · `--keyword` · `--target-component`) to pick **only what you actually want to convert** right now.
+>
+> Why this matters:
+> - **Token spend stays bounded.** A full-corpus conversion can burn six-figure token counts before you've validated a single output. A targeted run typically costs 30k–100k tokens and finishes in minutes.
+> - **Iteration is cheap.** Tune a prompt → re-convert one program → review diff → repeat. Same loop on the whole estate would take hours.
+> - **Parity is verifiable.** A 5-program wave is reviewable by a human; a 500-program batch is not.
+> - **Bulk conversion is still possible** — drop all selectors and run `./doctor.sh run` against the whole folder when you're ready. But that should be a deliberate "press the big red button" decision, not the default.
+>
+> #### 🪙 Watch token usage live
+>
+> The portal's **Token usage** panel parses `Logs/FULL_CHAT_LOG_*.md` in real time (no DB) and breaks calls + tokens (total / mean / p50 / p95 / max) down per agent. Use it to spot which agent is dominating cost, catch a runaway chunked converter, or compare a tuned prompt against the previous one. Window selector goes from the last hour up to all-time.
+>
+> ![Token usage panel](docs/images/token-usage.png)
+
 ```bash
 ./doctor.sh setup                                       # 1. configure provider (Azure / Copilot — interactive)
 ./doctor.sh rekt-full                                   # 2. static analysis + portal at :5028 (dashboards + data)
