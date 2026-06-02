@@ -5,7 +5,7 @@ using Xunit;
 namespace CobolToQuarkusMigration.Tests.Helpers;
 
 /// <summary>
-/// Regression coverage for the nested-source-directory bug: <c>source/FUENTES/src/X.cbl</c>
+/// Regression coverage for the nested-source-directory bug: <c>source/sources/src/X.cbl</c>
 /// was previously invisible to <c>resolve-programs.py</c> and <c>FileHelper</c>. P0
 /// fixed both; this test pins the C# half so the regression cannot return silently.
 /// </summary>
@@ -17,13 +17,13 @@ public class NestedDiscoveryTests
         var root = Path.Combine(Path.GetTempPath(), "nestdisc-" + Guid.NewGuid().ToString("N"));
         try
         {
-            Directory.CreateDirectory(Path.Combine(root, "FUENTES", "src", "subA"));
-            Directory.CreateDirectory(Path.Combine(root, "FUENTES", "src", "subB"));
-            Directory.CreateDirectory(Path.Combine(root, "FUENTES", "cpy"));
+            Directory.CreateDirectory(Path.Combine(root, "sources", "src", "subA"));
+            Directory.CreateDirectory(Path.Combine(root, "sources", "src", "subB"));
+            Directory.CreateDirectory(Path.Combine(root, "sources", "cpy"));
 
-            File.WriteAllText(Path.Combine(root, "FUENTES", "src", "subA", "A.cbl"), "");
-            File.WriteAllText(Path.Combine(root, "FUENTES", "src", "subB", "B.cob"), "");
-            File.WriteAllText(Path.Combine(root, "FUENTES", "cpy", "BOOK.cpy"), "");
+            File.WriteAllText(Path.Combine(root, "sources", "src", "subA", "A.cbl"), "");
+            File.WriteAllText(Path.Combine(root, "sources", "src", "subB", "B.cob"), "");
+            File.WriteAllText(Path.Combine(root, "sources", "cpy", "BOOK.cpy"), "");
 
             var programs = SourceTypeRegistry.EnumerateProgramFiles(root).ToList();
             programs.Should().HaveCount(2);

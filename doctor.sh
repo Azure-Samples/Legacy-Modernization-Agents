@@ -2823,7 +2823,7 @@ print(len(lines))
     # the parse loop only processes matching files; copybooks are still staged
     # so resolution works. Combine with _REKT_INCREMENTAL=true for the smallest
     # possible scan.  Example:
-    #     _REKT_PROGRAM_FILTER=BDSDA2F,BDSDA01.cbl ./doctor.sh rekt-full
+    #     _REKT_PROGRAM_FILTER=SAMPLE002,SAMPLE004.cbl ./doctor.sh rekt-full
     #
     # bash 3.2 (macOS default) does not support associative arrays, so we
     # store the set as a space-delimited string and test membership with

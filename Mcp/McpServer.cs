@@ -1189,7 +1189,7 @@ public sealed class McpServer
                 try 
                 {
                     // 1. Try case-insensitive fuzzy search for fileName*
-                    // This handles Bdsda10i -> BDSDA10I.cpy or Bdsda10i.cbl
+                    // This handles Sample005 -> SAMPLE005.cpy or Sample005.cbl
                     var matches = Directory.GetFiles(dir, $"{fileName}*", new EnumerationOptions 
                     { 
                         MatchCasing = MatchCasing.CaseInsensitive,

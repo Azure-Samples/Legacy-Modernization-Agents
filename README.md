@@ -9,7 +9,7 @@ This open-source framework converts legacy COBOL to Java (Quarkus) or C# (.NET) 
 ```bash
 ./doctor.sh setup                                       # 1. configure provider (Azure / Copilot — interactive)
 ./doctor.sh rekt-full                                   # 2. static analysis: REKT → Neo4j → portal at :5028
-./doctor.sh convert-only --program BDSM043 --target java  # 3. convert one program with REKT context injection
+./doctor.sh convert-only --program SAMPLE001 --target java  # 3. convert one program with REKT context injection
 ```
 
 Converted code lands in **`output/runs/{runId}-java-…/com/example/…/`** — every run gets its own immutable folder so you never overwrite history. Telemetry → `output/.metrics/<runId>.jsonl`. Portal stays running on **<http://localhost:5028>**.
@@ -63,7 +63,7 @@ flowchart LR
 > **Equivalent CLI for step 4 + 5** — same selector, no portal needed. Works with both `run` (full pipeline incl. RE) and `convert-only` (skips RE, much faster when you already have RE results):
 > ```bash
 > # Convert one program — fastest path when RE already done
-> ./doctor.sh convert-only --program BDSMFJL
+> ./doctor.sh convert-only --program SAMPLE006
 >
 > # By CICS transaction (scans source for EXEC CICS RETURN TRANSID / LINK PROGRAM)
 > ./doctor.sh run --transaction CT01 --include-callees
@@ -75,7 +75,7 @@ flowchart LR
 > ./doctor.sh run --keyword CUSTOMER --min-program-score 0.75
 >
 > # Pure-LLM mode (skip REKT injection — A/B testing or no scan yet)
-> ./doctor.sh run --program BDSMFJL --no-rekt-context
+> ./doctor.sh run --program SAMPLE006 --no-rekt-context
 > ```
 > Each flag is repeatable; **same flag = OR, different flags = AND**. Add `--include-callees` / `--include-callers` to walk the CALL graph.
 >
@@ -575,11 +575,13 @@ Highly visual at-a-glance dashboards. Pure inline SVG primitives (gauges, donuts
 
 **Live auto-refresh** — a pulsing 🟢 LIVE badge polls `/api/modernization/*` every 15 s while the panel is visible. Pauses when the panel is hidden. Re-renders only when dashboard JSON actually changes.
 
-**🔎 Service Locator search box** in the cockpit header — type any name (e.g. `CALC_INTEREST`, `CalcInterestService`, or `BDSM043`), press Enter → drawer with COBOL + generated-code matches + click-through to the Developer scorecard.
+**🔎 Service Locator search box** in the cockpit header — type any name (e.g. `CALC_INTEREST`, `CalcInterestService`, or `SAMPLE001`), press Enter → drawer with COBOL + generated-code matches + click-through to the Developer scorecard.
 
 ### 🧭 Modernization Intelligence — 10 read-only data subviews
 
-The "show me the data" workspace. All read-only; one is read-write (Wave Planner).
+![Modernization Intelligence tab bar](docs/images/modernization-intelligence-tabs.png)
+
+The "show me the data" workspace. A single header strip exposes every subview as a tab — Modernization Dashboard, Application Explorer, Dependency Health, Service Chain (JCL→Pgm→Cpy), Runtime & Conversion Intelligence, Dependency Topology, Semantic Flow Explorer, Service Candidates, Migration Wave Planner, Capabilities & Locator. All tabs share the same underlying data (REKT facts, MetricsSink JSONL, projection cache, Neo4j). A pulsing **🟢 LIVE** badge in the top-right confirms the panel is polling for fresh data. All read-only; one is read-write (Wave Planner).
 
 | Subview | Purpose |
 |---|---|
@@ -593,6 +595,22 @@ The "show me the data" workspace. All read-only; one is read-write (Wave Planner
 | 🧩 Service Candidates | bounded-context inference (cohesion = 60% boundary + 20% cluster size + 20% facts confidence) + ready-for-extraction flag |
 | 🚀 Migration Wave Planner | **first WRITE capability** — persists wave assignments to `Data/migration-waves.db` |
 | 🎯 Capabilities & Service Locator | see next section |
+
+### 🧠 Semantic Search — find anything by intent, not just name
+
+![Semantic Search panel](docs/images/semantic-search.png)
+
+Type what you're *looking for* in plain English (e.g. `interest accrual`, `customer onboarding`, `fraud detection`, `gambling`). The query is **expanded against the capability dictionary** in `Data/capabilities.json` — a hit on the `gambling` token, for instance, fans out into `gambl`, `betting`, `bett`, `wager`, `casino`, `sportsbook`, `odds` and is tagged as capability **Gambling & Betting**. Every COBOL program and copybook from the most recent REKT scan is then ranked by hits on:
+
+| Surface | Weight |
+|---|---|
+| Paragraph names (from REKT control-flow) | high |
+| CALL targets | high |
+| SQL table / column names | medium |
+| Data group / copybook names | medium |
+| Raw source text (catches keywords in comments) | low |
+
+Results are grouped under five tabs — **Programs · Paragraphs · Copybooks · Snippets · By Domain** — with per-tab counts, so a search for `gambling` against a banking corpus can correctly return 4 programs / 0 paragraphs / 0 copybooks / 12 snippets / 1 domain. Click any result to deep-link into the AST Explorer or the Capabilities tab. The **Expand with AI** button passes the query + matched snippets to the configured LLM for natural-language reasoning about *what* the code does (intent / business meaning) — useful when the keyword expansion isn't enough. Auto-refresh pauses while typing so live demos don't lose the query mid-presentation.
 
 ### 🎯 Capabilities & Service Locator — REKT-driven business intelligence
 
@@ -608,7 +626,7 @@ The "show me the data" workspace. All read-only; one is read-write (Wave Planner
 
 Confidence = `min(1, totalScore / 8)`. Short keywords (<5 chars) require **token-boundary match** to avoid false positives. Ships with 16 starter capabilities (fraud, AML, sanctions, KYC, payment, settlement, loan, account, card, treasury, tax, reporting, error-handling, batch-orchestration, infrastructure, gambling) — fully editable, auto-reloads on each request, no rebuild needed.
 
-**Service Locator** — normalises any of `CalcInterestService` / `CALC_INTEREST` / `calc-interest` / `BDSM043` across casing and hyphen/underscore styles. Searches generated **Java + C# + Kotlin + TypeScript + Scala** under `output/runs/**`, `output/java/**`, `output/csharp/**`, AND original COBOL source for paragraph headers, PROGRAM-ID, or basename matches. Same locator powers the cockpit search box.
+**Service Locator** — normalises any of `CalcInterestService` / `CALC_INTEREST` / `calc-interest` / `SAMPLE001` across casing and hyphen/underscore styles. Searches generated **Java + C# + Kotlin + TypeScript + Scala** under `output/runs/**`, `output/java/**`, `output/csharp/**`, AND original COBOL source for paragraph headers, PROGRAM-ID, or basename matches. Same locator powers the cockpit search box.
 
 ### 🎯 Insights Hub — composed persona narratives (Phase-2)
 
@@ -781,13 +799,16 @@ The **AST Galaxy** dashboard tab visualises every program and its sub-structure 
 
 ### View modes
 
+The Galaxy ships with **6 canonical view modes** (legacy aliases auto-redirect):
+
 | View | What it shows |
 |---|---|
-| **Service Catalog** | One node per program, grouped by detected business domain. Click a domain hub to drill into its members. |
-| **Service Catalog (Expanded 3D)** | Same, in 3D — nodes form a galaxy where domain clusters are visible at a glance. |
-| **Business Domains** | High-level cluster view: each program collapsed into its parent domain. |
-| **Technical (Expanded)** | Programs + their sections/paragraphs/CALL/SQL nodes with physics layout. |
-| **Technical (Expanded v2)** | Manually laid out **north-to-south swim-lane** view — one column per program, AST nodes stacked by layer, inter-program edges arched as overlay arrows. Designed for following a path of communication cleanly through dense graphs. |
+| 📦 **Technical** | Programs + their sections/paragraphs/CALL/SQL nodes with physics layout. Also available as **Technical (Expanded v2)** — manually laid out north-to-south swim-lane view, one column per program, AST nodes stacked by layer, inter-program edges arched as overlay arrows. |
+| 🏢 **Business Domains** | High-level cluster view: each program collapsed into its parent domain. |
+| 📋 **Service Catalog** | One node per program, grouped by detected business domain. Click a domain hub to drill into its members. Also available in **3D** (3d-force-graph) where domain clusters are visible at a glance. |
+| 🎯 **Modernization Radar** | Programs plotted by readiness / risk axes — quick triage of what's safe vs. blocked. |
+| 🏦 **BIAN Service Landscape** | Maps every program against the BIAN v14.0 Service Domains. See screenshot below. |
+| 🏗️ **C4 Model** | L1 System Context → L2 Containers → L3 Components. See screenshot below. |
 
 | Service Catalog (high-level domains) | Galaxy view (3D, programs as orbits) |
 |---|---|
@@ -800,6 +821,18 @@ The **AST Galaxy** dashboard tab visualises every program and its sub-structure 
 | Expanded view (every AST node visible) | Technical (Expanded v2) — swim-lane top-down |
 |---|---|
 | ![Expanded](docs/images/ast-galaxy-expanded.png) | ![Technical v2](docs/images/ast-galaxy-technical-v2.png) |
+
+#### 🏦 BIAN Service Landscape
+
+![BIAN Service Landscape](docs/images/ast-galaxy-bian.png)
+
+Maps every program against the **BIAN v14.0** Service Landscape (Banking Industry Architecture Network). Each chip is a BIAN Service Domain (e.g. `CurrentAccount`, `CustomerAgreement`, `FundTransfer`, `CardTransactionSwitch`, `RegulatoryReporting`, `ITSystemAdministration`) grouped under its parent Business Area (*Operations & Execution*, *Risk & Compliance*, *Business Support*). Mapping uses exact-match against banking program-naming conventions (paragraph headers + CALL targets + SQL tables + data groups). Visual cues: 🔵 = SQL-heavy, 🟠 = CALL-heavy. Click a chip → Inspector; double-click → opens that program in the AST Explorer. Domains with `no programs mapped` are shown deliberately so gaps are visible — useful for portfolio coverage analysis.
+
+#### 🏗️ C4 Model
+
+![C4 Model L2 Containers](docs/images/c4-model-l2.png)
+
+Renders the estate as a **C4 model** with three drill levels — **L1 · System Context** (the COBOL system as a single box surrounded by its actors and external systems), **L2 · Containers** (one COBOL container per workload class — Online/CICS, Business Logic, Batch Processing, Shared Data — each annotated with program count + total LoC, all wired into a central DB2 / VSAM data store via labelled `sql` / `calls` edges, see screenshot), and **L3 · Components** (programs as components, edges = `CALL` / `COPY` / `EXEC SQL`). Useful for architecture-review decks where the force-graph is too dense to read.
 
 ### What you can do
 
@@ -1515,8 +1548,9 @@ flowchart TD
   subgraph PORTAL["🌐 Portal :5028 — Modernization Intelligence Surfaces"]
       COCK["🎨 Visual Cockpit<br/>5 personas · live SVG"]
       MI["🧭 Modernization Intelligence<br/>10 subviews + Capabilities + Locator"]
+      SEM["🧠 Semantic Search<br/>intent → programs / paragraphs /<br/>copybooks / snippets / domains"]
       HUB["🎯 Insights Hub<br/>persona narratives"]
-      AST["🌌 AST Galaxy<br/>6 canonical view modes"]
+      AST["🌌 AST Galaxy<br/>6 modes incl. BIAN + C4"]
       WAVES[("Data/migration-waves.db<br/>WRITE — user assignments")]
   end
 
@@ -1548,6 +1582,8 @@ flowchart TD
   BENCH --> PORTAL
   OUTRUN --> PORTAL
   PROJ --> PORTAL
+  FACTS --> SEM
+  SQLITE --> SEM
   WAVES <--> COCK
   WAVES <--> MI
 ```

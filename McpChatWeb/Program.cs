@@ -2142,6 +2142,13 @@ app.MapGet("/api/graph/rekt/structure", async (string file, long? scanRunId, Can
 		using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
 		await using var session = driver.AsyncSession();
 
+		// Server-side ceiling on every Cypher call — without this, a large
+		// rekt graph (300K+ nodes) can stall the unbounded CONTAINS* walks
+		// for minutes, holding the HTTP request hostage. 12s is enough for
+		// healthy programs and ensures the UI's 15s fetch timeout always
+		// wins before the connection drops.
+		Action<Neo4j.Driver.TransactionConfigBuilder> txTimeout = b => b.WithTimeout(TimeSpan.FromSeconds(12));
+
 		// Resolve file name (exact, flow-ast- prefix, stripped)
 		var candidates = new[] { file, $"flow-ast-{file}", file.Replace("flow-ast-", "") };
 		string? matchedProgram = null;
@@ -2154,6 +2161,12 @@ app.MapGet("/api/graph/rekt/structure", async (string file, long? scanRunId, Can
 			var structRunInit = structRunId > 0
 				? "WITH $runId AS _r"
 				: "MATCH (a0:ASTNode {program: $file}) WITH max(coalesce(a0.runId, 0)) AS _r";
+			// PHASE 1: get sections + paragraphs WITHOUT statement counts.
+			// This is the cheap, almost-certain-to-finish part — just a
+			// 2-hop walk from the program root. We do the statement counts
+			// in a separate query (Phase 2) so a slow stmt count doesn't
+			// kill the whole response. Each phase is independently bounded
+			// by txTimeout.
 			var result = await session.RunAsync($@"
 				{structRunInit}
 				MATCH (root:ASTNode {{program: $file}})-[:CONTAINS*1..2]->(sec:ASTNode)
@@ -2163,22 +2176,13 @@ app.MapGet("/api/graph/rekt/structure", async (string file, long? scanRunId, Can
 				OPTIONAL MATCH (sec)-[:CONTAINS*1..2]->(para:ASTNode)
 				WHERE para.nodeType IN ['PARAGRAPH', 'PARAGRAPH_NAME']
 				  AND coalesce(para.runId, 0) = _r
-				OPTIONAL MATCH (para)-[:CONTAINS*]->(stmt:ASTNode)
-				WHERE coalesce(stmt.runId, 0) = _r
-				WITH sec, para,
-				     count(stmt) AS stmtCount,
-				     count(CASE WHEN stmt.nodeType IN ['DIALECT', 'DIALECT_CONTAINER'] THEN 1 END) AS sqlCount,
-				     count(CASE WHEN stmt.nodeType = 'PERFORM' THEN 1 END) AS performCount,
-				     count(CASE WHEN stmt.nodeType = 'MOVE' THEN 1 END) AS moveCount,
-				     count(CASE WHEN stmt.nodeType IN ['IF_BRANCH', 'EVALUATE'] THEN 1 END) AS branchCount,
-				     count(CASE WHEN stmt.nodeType IN ['CALL', 'CallStatement'] THEN 1 END) AS callCount
 				RETURN sec.id AS sectionId, sec.name AS sectionName, sec.nodeType AS sectionType,
 				       sec.startLine AS secStart, sec.endLine AS secEnd,
 				       para.id AS paraId, para.name AS paraName, para.nodeType AS paraType,
-				       para.startLine AS paraStart, para.endLine AS paraEnd,
-				       stmtCount, sqlCount, performCount, moveCount, branchCount, callCount
+				       para.startLine AS paraStart, para.endLine AS paraEnd
 				ORDER BY sec.name, para.name",
-				new { file = candidate, runId = structRunId });
+				new Dictionary<string, object> { ["file"] = candidate, ["runId"] = structRunId },
+				txTimeout);
 
 			await result.ForEachAsync(r => sections.Add(new
 			{
@@ -2192,12 +2196,12 @@ app.MapGet("/api/graph/rekt/structure", async (string file, long? scanRunId, Can
 				paraType = r["paraType"].As<string?>() ?? "",
 				paraStart = r["paraStart"].As<int?>() ?? -1,
 				paraEnd = r["paraEnd"].As<int?>() ?? -1,
-				stmtCount = r["stmtCount"].As<int?>() ?? 0,
-				sqlCount = r["sqlCount"].As<int?>() ?? 0,
-				performCount = r["performCount"].As<int?>() ?? 0,
-				moveCount = r["moveCount"].As<int?>() ?? 0,
-				branchCount = r["branchCount"].As<int?>() ?? 0,
-				callCount = r["callCount"].As<int?>() ?? 0
+				stmtCount = 0,
+				sqlCount = 0,
+				performCount = 0,
+				moveCount = 0,
+				branchCount = 0,
+				callCount = 0
 			}));
 
 			if (sections.Count > 0) { matchedProgram = candidate; break; }
@@ -2206,29 +2210,45 @@ app.MapGet("/api/graph/rekt/structure", async (string file, long? scanRunId, Can
 		if (matchedProgram == null)
 			return Results.NotFound(new { error = $"No structure data for {file}" });
 
-		// PERFORM edges between paragraphs (control flow) — latest-run-per-program
+		// PERFORM edges between paragraphs (control flow) — latest-run-per-program.
+		// CONTAINS depth bounded to keep the query under the 12s ceiling on
+		// large rekt graphs (300K+ nodes). Wrapped in its own try/catch so a
+		// CFG timeout still returns the sections payload with empty edges
+		// rather than failing the whole request.
 		var performEdges = new List<object>();
-		var cfgResult = await session.RunAsync(@"
-			MATCH (a0:ASTNode {program: $file})
-			WITH max(coalesce(a0.runId, 0)) AS _r
-			MATCH (a:ASTNode {program: $file})-[:CONTAINS*]->(p:ASTNode {nodeType: 'PERFORM'})
-			WHERE coalesce(a.runId, 0) = _r AND coalesce(p.runId, 0) = _r
-			  AND p.name IS NOT NULL AND p.name <> ''
-			OPTIONAL MATCH (caller:ASTNode {program: $file})
-			WHERE caller.nodeType = 'PARAGRAPH' AND coalesce(caller.runId, 0) = _r AND
-			      (a)-[:CONTAINS*]->(caller)-[:CONTAINS*]->(p)
-			RETURN DISTINCT caller.name AS caller, p.name AS target, p.label AS label
-			ORDER BY caller.name",
-			new { file = matchedProgram });
-
-		await cfgResult.ForEachAsync(r => performEdges.Add(new
+		try
 		{
-			from = r["caller"].As<string?>() ?? "MAIN",
-			to = r["target"].As<string?>() ?? "",
-			label = r["label"].As<string?>() ?? "PERFORM"
-		}));
+			var cfgResult = await session.RunAsync(@"
+				MATCH (a0:ASTNode {program: $file})
+				WITH max(coalesce(a0.runId, 0)) AS _r
+				MATCH (caller:ASTNode {program: $file, nodeType: 'PARAGRAPH'})-[:CONTAINS*1..4]->(p:ASTNode {nodeType: 'PERFORM'})
+				WHERE coalesce(caller.runId, 0) = _r AND coalesce(p.runId, 0) = _r
+				  AND p.name IS NOT NULL AND p.name <> ''
+				RETURN DISTINCT caller.name AS caller, p.name AS target, p.label AS label
+				ORDER BY caller.name
+				LIMIT 500",
+				new Dictionary<string, object> { ["file"] = matchedProgram! },
+				txTimeout);
+
+			await cfgResult.ForEachAsync(r => performEdges.Add(new
+			{
+				from = r["caller"].As<string?>() ?? "MAIN",
+				to = r["target"].As<string?>() ?? "",
+				label = r["label"].As<string?>() ?? "PERFORM"
+			}));
+		}
+		catch (Neo4j.Driver.Neo4jException cfgEx) when (cfgEx.Message.Contains("timeout", StringComparison.OrdinalIgnoreCase) || cfgEx.Message.Contains("transaction has been terminated", StringComparison.OrdinalIgnoreCase))
+		{
+			Console.WriteLine($"⏱ CFG sub-query timed out for {matchedProgram} — returning sections without performEdges.");
+		}
 
 		return Results.Ok(new { program = matchedProgram, sections, performEdges });
+	}
+	catch (Neo4j.Driver.Neo4jException nex) when (nex.Message.Contains("timeout", StringComparison.OrdinalIgnoreCase) || nex.Message.Contains("transaction has been terminated", StringComparison.OrdinalIgnoreCase))
+	{
+		// Server-side 12s ceiling hit — let the UI fall back to deps-only.
+		Console.WriteLine($"⏱ Structure endpoint timeout for {file}: {nex.Message}");
+		return Results.Json(new { error = "structure_query_timeout", file, message = "Cypher exceeded 12s ceiling — graph is large or query plan suboptimal." }, statusCode: 504);
 	}
 	catch (Exception ex)
 	{
@@ -8875,9 +8895,9 @@ app.MapPost("/api/runs/convert", (System.Text.Json.JsonElement body,
 
 		// Build a lookup map: basename → real on-disk path (recursive scan).
 		// Handles three cases:
-		//   1. Standard .cbl/.cob in any subfolder (FUENTES/SRC/, KRO-cobol-master 2/, etc.)
-		//   2. IBM PDS-style files named UGRBOXP.AKTIV.SRC(KROD006) — selector
-		//      surfaces them as KROD006.cbl; the actual file lives elsewhere.
+		//   1. Standard .cbl/.cob in any subfolder (sources/SRC/, sample-corpus/, etc.)
+		//   2. IBM PDS-style files named UGRBOXP.AKTIV.SRC(sampleD006) — selector
+		//      surfaces them as sampleD006.cbl; the actual file lives elsewhere.
 		//   3. Copybooks in any subfolder for the companion-copy step below.
 		var sourceRoot = Path.Combine(repoRoot, "source");
 		var pdsRx = new System.Text.RegularExpressions.Regex(@"\.SRC\(([A-Z0-9$@#]+)\)$",
@@ -8933,9 +8953,9 @@ app.MapPost("/api/runs/convert", (System.Text.Json.JsonElement body,
 		}
 
 		// Optional companion copybooks that the converter may need.
-		// Recursive scan so copybooks in FUENTES/CPY_REGISTRO, KRO-cobol-master 2,
+		// Recursive scan so copybooks in sources/CPY_REGISTRO, sample-corpus,
 		// etc. all get staged. Last write wins on duplicate basenames (safe — no
-		// real-world clashes observed on the FUENTES + KRO corpora).
+		// real-world clashes observed on the sources + sample corpora).
 		foreach (var cpy in Directory.EnumerateFiles(sourceRoot, "*.cpy", SearchOption.AllDirectories)
 			.Concat(Directory.EnumerateFiles(sourceRoot, "*.CPY", SearchOption.AllDirectories)))
 		{

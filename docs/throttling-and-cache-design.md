@@ -524,7 +524,7 @@ The community-reported `--program X` bug has the same root cause as multi-source
 - Preserve original directory structure in `source/.rekt-staging/` so copybook resolution by relative path still works.
 - `--program X` reads the discovery index built in Track 1; no separate code path.
 
-Net result: `source/FUENTES/src/X.cbl` works the same as `source/X.cbl`, and `--program X --include-callees` works without a prior full-corpus REKT run if the dependency closure is small (see Track 5).
+Net result: `source/corpus/src/X.cbl` works the same as `source/X.cbl`, and `--program X --include-callees` works without a prior full-corpus REKT run if the dependency closure is small (see Track 5).
 
 #### Track 3 — preprocessor hardening
 
@@ -560,8 +560,8 @@ flowchart LR
 
 ```json
 {
-  "program_id": "BDSDA2F",
-  "summary": { "loc": 791, "paragraphs": 42, "called_programs": ["BDCOMMIC"], "calls_in": ["BDSDA01"] },
+  "program_id": "SAMPLE002",
+  "summary": { "loc": 791, "paragraphs": 42, "called_programs": ["SHARED001"], "calls_in": ["SAMPLE004"] },
   "io": {
     "files": [ { "name": "CUSTFILE", "access": "I-O", "record_layout": "BDCSEQII" } ],
     "screens": [],
@@ -570,7 +570,7 @@ flowchart LR
   },
   "data": {
     "groups": [ { "name": "WS-CUSTOMER", "fields": 12, "redefines": false } ],
-    "copybooks_used": ["BDCOMMIC","BDCSEQII"]
+    "copybooks_used": ["SHARED001","BDCSEQII"]
   },
   "control_flow": {
     "entry_points": ["MAIN-PARA"],

@@ -46,12 +46,12 @@ public class SourceTypeRegistryTests
         var root = Path.Combine(Path.GetTempPath(), "stnr-" + Guid.NewGuid().ToString("N"));
         try
         {
-            Directory.CreateDirectory(Path.Combine(root, "FUENTES", "src"));
+            Directory.CreateDirectory(Path.Combine(root, "sources", "src"));
             Directory.CreateDirectory(Path.Combine(root, ".rekt-staging"));
 
             File.WriteAllText(Path.Combine(root, "flat.cbl"), "");
-            File.WriteAllText(Path.Combine(root, "FUENTES", "src", "nested.cob"), "");
-            File.WriteAllText(Path.Combine(root, "FUENTES", "src", "book.cpy"), "");
+            File.WriteAllText(Path.Combine(root, "sources", "src", "nested.cob"), "");
+            File.WriteAllText(Path.Combine(root, "sources", "src", "book.cpy"), "");
             File.WriteAllText(Path.Combine(root, ".rekt-staging", "should-be-skipped.cbl"), "");
 
             var programs = SourceTypeRegistry.EnumerateProgramFiles(root).ToList();

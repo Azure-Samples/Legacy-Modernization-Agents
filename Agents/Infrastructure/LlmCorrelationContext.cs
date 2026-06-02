@@ -12,7 +12,7 @@ namespace CobolToQuarkusMigration.Agents.Infrastructure;
 /// Use a <c>using</c> block:
 /// </para>
 /// <code>
-/// using var _ = LlmCorrelationContext.Begin(runId: "rekt-202605271200", correlationId: "convert:BDSDA2F");
+/// using var _ = LlmCorrelationContext.Begin(runId: "rekt-202605271200", correlationId: "convert:SAMPLE002");
 /// await client.GetResponseAsync(...);
 /// </code>
 /// <para>

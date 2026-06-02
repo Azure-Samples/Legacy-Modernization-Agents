@@ -1086,7 +1086,7 @@ public class ChunkedMigrationProcess
         // contains internal '{...}' pairs (array initializers, method bodies),
         // because IndexOf finds the array's opening brace and the body gets
         // truncated to just the array elements — producing orphan literals at
-        // class scope after reassembly (seen in Bdsda2f.java where
+        // class scope after reassembly (seen in Sample002.java where
         // `new String[]{` was lost, leaving `"UKENDT", "UKENDT", ...; }; `
         // dangling at line 12). Detect the actual class declaration first.
         var classDeclRegex = new System.Text.RegularExpressions.Regex(
@@ -1435,7 +1435,7 @@ public class ChunkedMigrationProcess
     /// <summary>
     /// Detect statements at class scope that aren't field/method declarations
     /// — the canonical signature of a chunked-reassembly bug (e.g. the
-    /// orphan <c>"UKENDT", "UKENDT", ...; };</c> we saw in Bdsda2f.java).
+    /// orphan <c>"UKENDT", "UKENDT", ...; };</c> we saw in Sample002.java).
     /// Heuristic: lines starting with a quote, a number, or <c>return</c>
     /// when the depth-from-class-opening-brace is exactly 1 and we're not
     /// inside a method body.

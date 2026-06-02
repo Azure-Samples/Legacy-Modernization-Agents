@@ -1249,7 +1249,7 @@ class ModernizationIntelligenceView {
             <li><b>Missing copybooks</b> — ${missingCount} unresolved COPY target${missingCount === 1 ? '' : 's'} in your source.
                 Without copybook definitions, smojol can't resolve data structures the program depends on,
                 so it gives up on the full AST.</li>
-            <li><b>Dialect / parser limitations</b> — smojol struggles with certain Spanish FUENTES /
+            <li><b>Dialect / parser limitations</b> — smojol struggles with certain Spanish corpus /
                 IBM dialect constructs (look for <code>Cannot invoke "Token.getLine()" because "ctx.stop" is null</code>
                 in the parse logs — that's a known smojol bug).</li>
           </ul>
@@ -1344,22 +1344,47 @@ class ModernizationIntelligenceView {
     });
     const panel = this.root.querySelector('#mi-flow-detail');
     panel.innerHTML = '<div class="mi-loading">Loading flow…</div>';
+    // Per-request timeout — the structure endpoint can stall on a large
+    // rekt graph (300K+ nodes). We don't want one slow fetch to leave the
+    // user staring at "Loading flow…" forever, so each call is wrapped in
+    // an AbortController that trips after 15s and resolves to null. The
+    // renderer then falls back to the deps-only view automatically.
+    const fetchWithTimeout = (url, ms = 15000) => {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), ms);
+      return fetch(url, { signal: ctrl.signal })
+        .then(r => r.json())
+        .catch(err => ({ __timeout: err && err.name === 'AbortError', __error: err && err.message }))
+        .finally(() => clearTimeout(t));
+    };
     try {
       const [structure, mermaidPayload, depsOnly] = await Promise.all([
-        fetch(`/api/graph/rekt/structure?file=${encodeURIComponent(basename)}`).then(r => r.json()).catch(() => null),
-        fetch(`/api/graph/rekt/mermaid?file=${encodeURIComponent(basename)}`).then(r => r.json()).catch(() => null),
-        // Service chain endpoint gives us callees + copybooks for deps-only programs
-        fetch(`/api/modernization/service-chain?program=${encodeURIComponent(basename)}`).then(r => r.json()).catch(() => null),
+        fetchWithTimeout(`/api/graph/rekt/structure?file=${encodeURIComponent(basename)}`, 20000),
+        fetchWithTimeout(`/api/graph/rekt/mermaid?file=${encodeURIComponent(basename)}`, 20000),
+        fetchWithTimeout(`/api/modernization/service-chain?program=${encodeURIComponent(basename)}`, 10000),
       ]);
-      const mermaidText = (mermaidPayload && typeof mermaidPayload === 'object')
+      const structOk = structure && !structure.__timeout && !structure.__error && !structure.error;
+      const mermaidOk = mermaidPayload && !mermaidPayload.__timeout && !mermaidPayload.__error;
+      const mermaidText = (mermaidOk && typeof mermaidPayload === 'object')
         ? (mermaidPayload.mermaid || '') : '';
-      const hasFullFlow = structure && structure.sections && structure.sections.length > 0;
+      const hasFullFlow = structOk && structure.sections && structure.sections.length > 0;
+      const timedOut = (structure && (structure.__timeout || structure.error === 'structure_query_timeout'))
+        || (mermaidPayload && mermaidPayload.__timeout);
 
       if (hasFullFlow) {
         panel.innerHTML = this._renderFlowDetail(basename, structure, mermaidText, depsOnly);
       } else {
-        // Fall back to deps-only CALL graph
-        panel.innerHTML = this._renderDepsOnlyFlow(basename, depsOnly);
+        // Fall back to deps-only CALL graph. Surface the timeout to the user
+        // so they know the structure endpoint stalled rather than this being
+        // a genuinely deps-only program.
+        let banner = '';
+        if (timedOut) {
+          banner = `<div class="mi-help" style="background:rgba(245,158,11,0.12);border-left:3px solid #f59e0b;padding:8px 10px;margin-bottom:10px;">
+            ⏱ <b>Structure query timed out after 15s</b> — the Neo4j rekt graph is large and the section-by-section walk didn't return in time.
+            Showing the CALL/copybook view instead. Try the <b>Refresh</b> button to retry, or check the portal logs.
+          </div>`;
+        }
+        panel.innerHTML = banner + this._renderDepsOnlyFlow(basename, depsOnly);
       }
       this._renderMermaidIn(panel);
       // Make callee chips clickable — jump to that program in the picker.
@@ -2248,13 +2273,13 @@ class ModernizationIntelligenceView {
         <h3>🔎 Service Locator — find any generated service back to its COBOL source (Java + C#)</h3>
         <p class="mi-help">
           Type a generated class name, paragraph name, or program-ID (e.g. <code>CalcInterestService</code>,
-          <code>CALC_INTEREST</code>, <code>CHECK-FRAUD</code>, or just <code>BDSM043</code>).
+          <code>CALC_INTEREST</code>, <code>CHECK-FRAUD</code>, or just <code>SAMPLE001</code>).
           The locator normalises across casing/styles and searches generated <b>Java</b> + <b>C#</b>
           under <code>output/runs/**</code>, <code>output/java/**</code>, <code>output/csharp/**</code>,
           and the original COBOL source.
         </p>
         <div class="mi-locator-row">
-          <input id="mi-locator-input" type="text" placeholder="e.g. CALC_INTEREST or CalcInterestService or BDSM043" class="mi-locator-input"/>
+          <input id="mi-locator-input" type="text" placeholder="e.g. CALC_INTEREST or CalcInterestService or SAMPLE001" class="mi-locator-input"/>
           <button id="mi-locator-btn" class="mi-btn-primary">🔎 Locate</button>
         </div>
         <div id="mi-locator-results"></div>
@@ -2729,7 +2754,7 @@ class ModernizationIntelligenceView {
         <b>No matches for <code>${this._escape(r.query)}</code></b>
         <div class="mi-help">Tried these normalised forms: ${r.forms.map(f => `<code>${this._escape(f)}</code>`).join(', ')}</div>
         <div class="mi-help">Tip: search by COBOL paragraph (<code>CALC-INTEREST</code>), generated class name
-        (<code>CalcInterestService</code> — Java or C#), or program-ID (<code>BDSM043</code>).</div>
+        (<code>CalcInterestService</code> — Java or C#), or program-ID (<code>SAMPLE001</code>).</div>
       </div>`;
     }
     return `

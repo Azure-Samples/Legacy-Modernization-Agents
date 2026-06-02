@@ -15,8 +15,8 @@
 # Run BEFORE the full A/B suite to catch env-propagation regressions cheaply.
 #
 # Usage:
-#   tools/verify-env-propagation.sh BDSM043
-#   tools/verify-env-propagation.sh BDSM043 --timeout 900
+#   tools/verify-env-propagation.sh SAMPLE001
+#   tools/verify-env-propagation.sh SAMPLE001 --timeout 900
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 

@@ -61,7 +61,7 @@ The compose service mounts `./source` (read-only) and `./output/rekt`.
 ## Patches
 
 See [`patches/README.md`](./patches/README.md) for a per-patch rationale.
-Net effect on an enterprise corpus (FUENTES, ~65 programs): **deps-only
+Net effect on an enterprise corpus (sources, ~65 programs): **deps-only
 parses drop from 38/65 to 5–8/65**, recovering full AST/CFG/Data fidelity
 for the remaining programs.
 

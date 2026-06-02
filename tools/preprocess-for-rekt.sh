@@ -33,7 +33,7 @@ fi
 # ─── Phase 1: Preprocess copybooks (.cpy) ───────────────────────────
 # Resolve pseudo-text tokens :TOKEN: → XTOKEN and add FILLER to anonymous entries
 cpy_count=0
-# Recursive find so nested layouts (source/FUENTES/cpy/, etc.) are picked up.
+# Recursive find so nested layouts (source/corpus/cpy/, etc.) are picked up.
 # -print0 / read -d '' avoids issues with paths containing whitespace.
 while IFS= read -r -d '' cpy; do
     fname=$(basename "$cpy")
@@ -190,11 +190,11 @@ content = re.sub(
     flags=re.MULTILINE
 )
 
-# Comment out section labels in procedure-division BDSDA* copybooks (without I suffix).
+# Comment out section labels in procedure-division SAMPLE* copybooks (without I suffix).
 # These inline code copybooks define sections that cause parse errors when included
 # inside an existing section/paragraph in the host program.
 bname = '$fname'.upper()
-if bname.startswith('BDSDA') and not bname.endswith('I.CPY'):
+if bname.startswith('SAMPLE') and not bname.endswith('I.CPY'):
     content = re.sub(
         r'^(\s*\d{0,6})( )([A-Z][A-Z0-9-]+\s+SECTION\s*\.\s*)$',
         r'\1*\3',
@@ -437,7 +437,7 @@ def enforce_col72(text):
             out_lines.append(line)
     return '\n'.join(out_lines)
 
-# Pre-step: Fix RGNB649 PERFORM UNTIL with 88-level conditions BEFORE col72 enforcement.
+# Pre-step: Fix REPORT001 PERFORM UNTIL with 88-level conditions BEFORE col72 enforcement.
 # smojol ConditionVisitor NPE on 88-level condition names in PERFORM UNTIL.
 # Replace with explicit comparisons; split into continuation line to stay within col72.
 # Also handle already-transformed form (idempotent, in case preprocessed file was copied back).
@@ -559,7 +559,7 @@ content = content.replace('INTRTI-PIC X(4) USAGE', 'INTRTI-PICX4')
 content = content.replace('INTRTI-PIC X(4)', 'INTRTI-PICX4')
 content = content.replace('INTRTI-PICX4 USAGE', 'INTRTI-PICX4')
 
-# 17. Fix BDSMFJL colon STRING literals: 'PRG-POS-x ':' → 'PRG-POS-x :'
+# 17. Fix SAMPLE006 colon STRING literals: 'PRG-POS-x ':' → 'PRG-POS-x :'
 #     The standalone ':' literal is mis-tokenized as a DB2 host variable prefix
 #     Pattern: 'PRG-POS-N '':' → merge into single literal 'PRG-POS-N :'
 content = re.sub(
@@ -568,7 +568,7 @@ content = re.sub(
     content
 )
 
-# 18. Fix RGNB649: insert CONTINUE after IF BDC-FI01-OK when THEN body
+# 18. Fix REPORT001: insert CONTINUE after IF BDC-FI01-OK when THEN body
 #     is empty (only comments before ELSE) to avoid extraneous ELSE error
 content = re.sub(
     r'(IF\s+BDC-FI01-OK)((\s*\n(?:\s{0,6}\*[^\n]*)*)(\s*\n\s+ELSE))',

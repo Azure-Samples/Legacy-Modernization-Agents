@@ -11,8 +11,8 @@
 #   tools/ab-projection.sh <program-basename> [--target java|csharp] [--keep-output]
 #
 # Examples:
-#   tools/ab-projection.sh BDSDA2F
-#   tools/ab-projection.sh BDSDA2F --target csharp --keep-output
+#   tools/ab-projection.sh SAMPLE002
+#   tools/ab-projection.sh SAMPLE002 --target csharp --keep-output
 #
 # Prerequisites (any one of these missing → script exits 2 with the reason):
 #   • dotnet project built (CobolToQuarkusMigration.csproj)

@@ -105,7 +105,7 @@ business-logic context, which the projection does not change.
 ## Remaining technical debt (delta from PR3)
 
 1. **Other agents not yet wired** — C# converter (PR4.b), reverse-engineering, architecture, BIAN tagger. Each is a small repeat of this PR with the same `IsEnabled` / `TryLoad` / `BuildPromptBlock` shape; PR4.b can copy 90% of the JavaConverterProjection code.
-2. **No live-run validation in CI** — projection contents tested deterministically, but the actual LLM output quality vs. raw-AST path is a manual A/B comparison. Recommend one warm + one cold run of `BDSDA2F` with `_USE_PROGRAM_FACTS=true` before declaring victory.
+2. **No live-run validation in CI** — projection contents tested deterministically, but the actual LLM output quality vs. raw-AST path is a manual A/B comparison. Recommend one warm + one cold run of `SAMPLE002` with `_USE_PROGRAM_FACTS=true` before declaring victory.
 3. **Projection does not yet differentiate by `Confidence`** — a `Low`-confidence facts file produces the same block as a `High`-confidence one (just with the confidence value displayed). Future improvement: degrade gracefully (e.g. add a "PROCEED WITH CAUTION" note) when confidence is `Low`.
 4. **Doctor.sh does not auto-run `program-facts extract`** after `rekt-full` yet — the facts files only appear when the user runs the CLI explicitly. PR3.b can mechanise this (`_PROGRAM_FACTS=true` env var → after-parse hook).
 5. **No metric on cache-hit rate by projection-vs-raw** — both paths share the same cache, so observed hit rates aren't broken out. Add a tag to the cache log if needed.
@@ -130,7 +130,7 @@ Validation recommendation before PR4.b: one warm A/B comparison run.
 ```sh
 # A) baseline (no facts)
 ENABLE_REKT_CONTEXT=true _LLM_CACHE_ENABLED=true \
-  ./doctor.sh convert-only --program BDSDA2F --target java
+  ./doctor.sh convert-only --program SAMPLE002 --target java
 
 # generate facts
 dotnet ... program-facts extract source/.rekt-staging \
@@ -138,7 +138,7 @@ dotnet ... program-facts extract source/.rekt-staging \
 
 # B) projection (with facts)
 ENABLE_REKT_CONTEXT=true _USE_PROGRAM_FACTS=true _LLM_CACHE_ENABLED=true \
-  ./doctor.sh convert-only --program BDSDA2F --target java
+  ./doctor.sh convert-only --program SAMPLE002 --target java
 ```
 
 Compare: token counts in the API call log, generated Java structure, runtime

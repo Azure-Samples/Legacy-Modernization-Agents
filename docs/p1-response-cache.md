@@ -153,7 +153,7 @@ re-run of the 22-program test corpus where no prompts changed:
 - Warm cache, single source file changed: ~95% reduction (only the changed file's calls invalidate).
 - Warm cache, prompt template version bumped: 0% (intentional — prompt change = behaviour change).
 
-At ~46K tokens per single-shot conversion of BDSDA2F, a single cache hit saves the
+At ~46K tokens per single-shot conversion of SAMPLE002, a single cache hit saves the
 full call. At today's typical iteration loop (5–10 re-runs per converter prompt tuning
 session), this is the largest single source of waste removed by P1.
 
@@ -241,7 +241,7 @@ The biggest token-reduction lever.
     "identitySchemeVersion": "v1-basename",
     "basename": "PROG.cbl",
     "stem": "PROG",
-    "relativePath": "FUENTES/src/PROG.cbl",
+    "relativePath": "corpus/src/PROG.cbl",
     "sourceHash": "sha256...",
     "summary": { ... },
     "io": { ... },

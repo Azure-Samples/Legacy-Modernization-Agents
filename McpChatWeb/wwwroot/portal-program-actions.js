@@ -9,7 +9,7 @@
 //
 // This helper exposes a single function that takes a program basename and
 // renders a compact action menu, plus a launcher for the Convert modal.
-// Pages call: <button onclick="PortalProgramActions.menu(this, 'BDSM043.cbl')">⋯ Actions</button>
+// Pages call: <button onclick="PortalProgramActions.menu(this, 'SAMPLE001.cbl')">⋯ Actions</button>
 // ─────────────────────────────────────────────────────────────────────────
 
 window.PortalProgramActions = {

@@ -33,7 +33,7 @@ The downstream pipeline already surfaces error counts via
 the migration report flags affected programs as "reduced fidelity" so
 the user is not misled about AST quality.
 
-**Net effect on FUENTES estate:** deps-only programs drop from 38/65
+**Net effect on corpus estate:** deps-only programs drop from 38/65
 to an expected 5–8/65.
 
 ## 0002-null-safe-data-division.patch
@@ -51,7 +51,7 @@ a `NullPointerException` deep inside extraction.
 warning and continue with system globals only when no DATA DIVISION is
 present.
 
-**Affected programs in FUENTES estate:** KYGHO003/008/010/011,
+**Affected programs in corpus estate:** KYGHO003/008/010/011,
 KYGHT003/008/010/011 (8 programs).
 
 ## 0003-null-safe-entry-name.patch
@@ -65,7 +65,7 @@ ANTLR couldn't bind a name to the token), the chain NPEs.
 
 **Fix.** Return the sentinel string `[FILLER]` instead of NPEing.
 
-**Affected programs in FUENTES estate:** T66017J1 (1 program, plus
+**Affected programs in corpus estate:** BATCH001 (1 program, plus
 others where the NPE occurred mid-build).
 
 ## 0004-tolerate-unknown-class-condition.patch
@@ -84,7 +84,7 @@ so the AST/CFG still ship. The class-condition expression appears in the
 AST so the LLM converter can re-derive the real semantics from the
 program's `SPECIAL-NAMES CLASS …` declaration.
 
-**Affected programs in FUENTES estate:** KYGHB077 (1 program).
+**Affected programs in corpus estate:** CUST001 (1 program).
 
 ## 0005-skip-null-ast-children.patch
 
@@ -99,7 +99,7 @@ statements that the parser inserted error tokens for). Result: NPE.
 **Fix.** Skip null children with a `continue`; the rest of the AST is still
 serialised.
 
-**Affected programs in FUENTES estate:** KYGHO003/008/010/011,
+**Affected programs in corpus estate:** KYGHO003/008/010/011,
 KYGHT003/008/010/011 (8 programs).
 
 ## 0006-safe-data-spec.patch
@@ -114,4 +114,4 @@ intermediates, USAGE-only entries, IMS/CICS dialect-rewritten entries).
 is available, logging a warning. Memory layout still resolves and downstream
 code continues.
 
-**Affected programs in FUENTES estate:** T66017J1 (1 program).
+**Affected programs in corpus estate:** BATCH001 (1 program).

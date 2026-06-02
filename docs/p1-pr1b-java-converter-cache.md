@@ -103,19 +103,19 @@ scope for unit tests; the recommended path is:
 # Cold run — populate cache
 _LLM_CACHE_ENABLED=true \
 _LLM_CACHE_DB=Data/llm-cache.db \
-./doctor.sh convert-only --program BDSDA2F --target java
+./doctor.sh convert-only --program SAMPLE002 --target java
 
 # Warm run — same inputs, same prompt template version
 _LLM_CACHE_ENABLED=true \
-./doctor.sh convert-only --program BDSDA2F --target java
+./doctor.sh convert-only --program SAMPLE002 --target java
 
-# Expect: "Cache HIT for BDSDA2F.cbl (age=…s, hits=1, key=…)" log line
+# Expect: "Cache HIT for SAMPLE002.cbl (age=…s, hits=1, key=…)" log line
 # Expect: total LLM tokens for this program = 0 on the warm run
 ```
 
 ## Token reduction estimate (real run, projected)
 
-Single-shot conversion of BDSDA2F (790 LoC) historically costs ~46K input
+Single-shot conversion of SAMPLE002 (790 LoC) historically costs ~46K input
 tokens + ~12K output tokens. After this PR with the cache enabled:
 
 | Scenario | Tokens saved | LLM calls saved |

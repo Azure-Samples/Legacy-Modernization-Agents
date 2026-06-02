@@ -72,7 +72,7 @@ public sealed class ModernizationIntelligenceService
             int loc = 0;
             try
             {
-                // Match `wc -l` semantics: count line-feeds only. FUENTES corpus
+                // Match `wc -l` semantics: count line-feeds only. sources corpus
                 // has files with scattered CR + LF (not paired CRLF); .NET's
                 // File.ReadAllLines + universal-newline parsing would double-
                 // count every line by splitting on both terminators independently.
@@ -1032,7 +1032,7 @@ public sealed class ModernizationIntelligenceService
     ///   JCL job ──EXEC PGM=──> COBOL program ──COPY──> Copybook
     ///
     /// JCL scan: simple regex on <c>EXEC PGM=NAME</c> across <c>source/**/*.JCL</c>
-    /// (the FUENTES corpus has 22 JCL files under <c>source/FUENTES/JCL/</c>).
+    /// (the sources corpus has 22 JCL files under <c>source/sources/JCL/</c>).
     /// Copybook chain: per-program <c>output/rekt/{stem}.facts.json</c> ->
     /// <c>copybooks</c> array.
     ///
@@ -1109,7 +1109,7 @@ public sealed class ModernizationIntelligenceService
             var stem = Path.GetFileNameWithoutExtension(a.Basename).ToUpperInvariant();
             if (!seenStems.Add(stem)) continue; // collapse duplicate basenames from multiple source roots
             var copybooks = new List<string>();
-            // Locate the source .cbl file (recursive — handles FUENTES/SRC/* paths)
+            // Locate the source .cbl file (recursive — handles sources/SRC/* paths)
             var srcPath = Directory.EnumerateFiles(sourceDir, a.Basename, SearchOption.AllDirectories)
                 .FirstOrDefault(p => !p.Contains("/.convert-", StringComparison.Ordinal)
                                   && !p.Contains("/.rekt-staging", StringComparison.Ordinal)

@@ -347,7 +347,7 @@ public sealed class CapabilityClassifier
             "true", "false", "high", "low", "spaces", "zeros", "zeroes",
             "the", "and", "for", "with", "from", "into", "this", "that",
             "have", "has", "will", "shall", "must", "should", "would",
-            "rutina", "proc01", "proc02", "proc03",  // Spanish FUENTES noise
+            "rutina", "proc01", "proc02", "proc03",  // example noise tokens
             "para01", "para02", "para03",
         };
 

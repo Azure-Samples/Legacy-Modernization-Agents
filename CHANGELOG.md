@@ -20,7 +20,7 @@ Five major portal phases shipped on top of the existing AST Galaxy / Migration P
 - **⏱ Runtime & Conversion Intelligence** — per-run timeline of `projection_metrics` / `llm_call` / `cache_event` / `quality_summary` / `reassembly_metrics` / `continuation_event` from the MetricsSink pipeline
 - **🕸 Dependency Topology** — layered architecture overlays on top of REKT/Neo4j nodes
 - **🌊 Semantic Flow Explorer** — PERFORM chains, transaction flows, swimlane diagrams from facts.json
-- **🔗 Service Chain (JCL→Pgm→Cpy)** — Mermaid flowchart traced from `source/**/*.JCL` (`EXEC PGM=`) to `.cbl` programs to `COPY` references. Filterable by job or program. 22 JCL jobs · 43 programs · 89 distinct copybooks · 219 Pgm→Cpy edges on FUENTES corpus.
+- **🔗 Service Chain (JCL→Pgm→Cpy)** — Mermaid flowchart traced from `source/**/*.JCL` (`EXEC PGM=`) to `.cbl` programs to `COPY` references. Filterable by job or program. 22 JCL jobs · 43 programs · 89 distinct copybooks · 219 Pgm→Cpy edges on corpus corpus.
 - **🧩 Service Candidates** — bounded-context inference using cohesion (60% boundary strength + 20% cluster size + 20% facts confidence) + ready-for-extraction flag
 - **🚀 Migration Wave Planner** — first WRITE capability: persists user wave assignments to `Data/migration-waves.db` (POST/DELETE round-trip). Auto-suggest button + clear all + JSON export
 - **🎯 Capabilities & Service Locator** — REKT-driven business-capability discovery + name→source resolver (see below)
@@ -50,7 +50,7 @@ Five major portal phases shipped on top of the existing AST Galaxy / Migration P
   - Confidence = `min(1, score / 8)`
   - Short keywords (<5 chars) require **token-boundary** match — fixes false positives like `str` inside `TRATAR` or `pos` inside `REPOSICIONAR`
   - Dictionary auto-reloads on every request; ships with 16 starter capabilities: fraud, AML, sanctions, KYC, payment, settlement, loan, account, card, treasury, tax, reporting, error-handling, batch-orchestration, infrastructure, gambling (edit `Data/capabilities.json` and refresh — no rebuild)
-- **Service Locator** — `GET /api/modernization/locate?q=<name>` normalises any of `CalcInterestService` / `CALC_INTEREST` / `calc-interest` / `BDSM043` across casing and hyphen/underscore styles. Searches generated **Java + C# + Kotlin + TypeScript + Scala** under `output/runs/**`, `output/java/**`, `output/csharp/**`, AND original COBOL source for paragraph headers, PROGRAM-ID, or basename matches.
+- **Service Locator** — `GET /api/modernization/locate?q=<name>` normalises any of `CalcInterestService` / `CALC_INTEREST` / `calc-interest` / `SAMPLE001` across casing and hyphen/underscore styles. Searches generated **Java + C# + Kotlin + TypeScript + Scala** under `output/runs/**`, `output/java/**`, `output/csharp/**`, AND original COBOL source for paragraph headers, PROGRAM-ID, or basename matches.
 - Two endpoints: `GET /api/modernization/capabilities`, `GET /api/modernization/locate?q=<name>`
 
 #### Per-run output isolation — immutable, never overwrites

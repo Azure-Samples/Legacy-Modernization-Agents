@@ -15,7 +15,7 @@ public class ProgramFactsSchemaTests
         {
             Basename = "PROG.cbl",
             Stem = "PROG",
-            RelativePath = "FUENTES/src/PROG.cbl",
+            RelativePath = "sources/src/PROG.cbl",
             SourceHash = "deadbeef",
             Confidence = FactConfidence.High,
             Warnings = new[] { "w1", "w2" },
@@ -55,7 +55,7 @@ public class ProgramFactsSchemaTests
         parsed!.SchemaVersion.Should().Be(1);
         parsed.IdentitySchemeVersion.Should().Be("v1-basename");
         parsed.Basename.Should().Be("PROG.cbl");
-        parsed.RelativePath.Should().Be("FUENTES/src/PROG.cbl");
+        parsed.RelativePath.Should().Be("sources/src/PROG.cbl");
         parsed.SourceHash.Should().Be("deadbeef");
         parsed.Confidence.Should().Be(FactConfidence.High);
         parsed.Warnings.Should().BeEquivalentTo(new[] { "w1", "w2" });

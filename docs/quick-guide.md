@@ -18,7 +18,7 @@ For deep-dive references, see the other files in [`docs/`](.).
 ./doctor.sh rekt-full
 
 # 3. Convert one program (REKT facts auto-injected into the LLM prompt)
-./doctor.sh convert-only --program BDSM043 --target java
+./doctor.sh convert-only --program SAMPLE001 --target java
 ```
 
 Converted Java lands in `output/runs/{runId}-java-…/com/example/…/` (per-run isolated folder — never overwrites). Conversion telemetry streams to `output/.metrics/<runId>.jsonl`. The portal stays running on <http://localhost:5028>.
@@ -42,7 +42,7 @@ flowchart LR
     I --> J[🎨 Visual Cockpit<br/>🧭 Modernization Intelligence<br/>🎯 Insights Hub<br/>🌌 AST Galaxy]
 ```
 
-- `rekt-full` runs once per source change. It **recursively** scans `source/**` (subfolders supported — verified for `FUENTES/SRC/`, `FUENTES/TRX/`, etc.), parses every program, ingests into Neo4j, and writes per-program facts.
+- `rekt-full` runs once per source change. It **recursively** scans `source/**` (subfolders supported — verified for `corpus/SRC/`, `corpus/TRX/`, etc.), parses every program, ingests into Neo4j, and writes per-program facts.
 - Each subsequent `convert-only` reuses those facts. A converter agent receives the **program-facts projection** (a 60–90 % smaller prompt than raw AST), routes through the appropriate single-shot or chunked path, and emits Java/C# plus structured telemetry — in a brand-new isolated `output/runs/{runId}-…/` folder so you never lose history.
 - The portal reads the same graph + metrics for four persona-driven surfaces (cockpit / intelligence / insights / AST galaxy).
 
@@ -80,9 +80,9 @@ flowchart LR
 | Goal | Command |
 |---|---|
 | Open the portal UI | `./doctor.sh portal` then <http://localhost:5028> |
-| Convert to C# instead of Java | `./doctor.sh convert-only --program BDSM043 --target csharp` |
+| Convert to C# instead of Java | `./doctor.sh convert-only --program SAMPLE001 --target csharp` |
 | Convert several programs | `./doctor.sh convert-only --program A --program B --program C` |
-| Convert everything called by a program | `./doctor.sh convert-only --program BDSM043 --include-callees` |
+| Convert everything called by a program | `./doctor.sh convert-only --program SAMPLE001 --include-callees` |
 | Convert a migration wave | `./doctor.sh convert-only --wave 1 --target java` |
 | Diagnose setup or connectivity | `./doctor.sh doctor` |
 | Check what changed in REKT scan | `./doctor.sh rekt-status` |

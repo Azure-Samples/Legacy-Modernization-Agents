@@ -28,9 +28,9 @@ manually before the projection leg).
 ### Usage
 
 ```sh
-tools/ab-projection.sh BDSDA2F                     # Java by default
-tools/ab-projection.sh BDSDA2F --target csharp
-tools/ab-projection.sh BDSDA2F --keep-output       # retain workspace
+tools/ab-projection.sh SAMPLE002                     # Java by default
+tools/ab-projection.sh SAMPLE002 --target csharp
+tools/ab-projection.sh SAMPLE002 --keep-output       # retain workspace
 ```
 
 ### Preconditions enforced (exit 2 with explicit message)
@@ -54,8 +54,8 @@ Recommended sequence for a credible measurement:
 
 ```sh
 rm -f Data/llm-cache.db   # cold
-tools/ab-projection.sh BDSDA2F             # populates facts + cache
-tools/ab-projection.sh BDSDA2F             # warm — second run hits cache
+tools/ab-projection.sh SAMPLE002             # populates facts + cache
+tools/ab-projection.sh SAMPLE002             # warm — second run hits cache
 ```
 
 ## 2. C# converter projection — `PR4.b`
@@ -133,12 +133,12 @@ _REKT_INCREMENTAL=true _PROGRAM_FACTS=true _PROGRAM_FACTS_PRUNE_ORPHANS=true \
   ./doctor.sh rekt-full
 
 # Targeted re-scan + facts for one program (with closure copybooks)
-_REKT_INCREMENTAL=true _REKT_PROGRAM_FILTER=BDSDA2F _PROGRAM_FACTS=true \
+_REKT_INCREMENTAL=true _REKT_PROGRAM_FILTER=SAMPLE002 _PROGRAM_FACTS=true \
   ./doctor.sh rekt-full
 
 # Then the projection becomes useful for that one program:
 ENABLE_REKT_CONTEXT=true _USE_PROGRAM_FACTS=true _LLM_CACHE_ENABLED=true \
-  ./doctor.sh convert-only --program BDSDA2F --target java
+  ./doctor.sh convert-only --program SAMPLE002 --target java
 ```
 
 ## Files modified (this session)

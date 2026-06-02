@@ -217,7 +217,7 @@ For each program: copy the template, fill in the cells, replace `?` with
 - **Operator**: assistant (Copilot CLI session, on operator's machine)
 - **Model (code)**: `claude-opus-4.6-1m`
 - **Provider**: `github-copilot-sdk` (GitHub Copilot SDK)
-- **Programs attempted**: BDSM043 (single-program smoke before broader suite)
+- **Programs attempted**: SAMPLE001 (single-program smoke before broader suite)
 - **Cache state**: cold (`Data/llm-cache.db` cleared)
 - **Output dir**: `tools/ab-results-smoke/`
 
@@ -244,7 +244,7 @@ data as raw-AST in fewer tokens — the architecture works.
 Agent: JavaConverterAgent
 [Human → AI] Tokens: 8,244
 [AI → Human] Tokens: 0      ← empty response
-[FILE_OUTPUT] CODE_FILE_SAVED → Saved Bdsm043.java (0 chars)
+[FILE_OUTPUT] CODE_FILE_SAVED → Saved Sample001.java (0 chars)
 ```
 
 Identical empty-response behaviour on the baseline leg (10,264 in, 0 out). The
@@ -267,7 +267,7 @@ in this session — see the checkpoint history.
 These are model / SDK questions, not P1-architecture questions:
 
 1. **Try a different model on the same provider.** Configure `_CODE_MODEL=claude-opus-4.7` (or `claude-sonnet-4.5`) via `doctor.sh setup` and rerun the suite. If non-`opus-4.6-1m` models produce content, the issue is model-specific.
-2. **Try Azure OpenAI provider.** The PR1.b cache key already namespaces by provider so cached entries from each leg are isolated. Switch back to `_CODE_MODEL=gpt-5.3-codex` (Azure) and rerun. Earlier in this session a single-shot Java conversion of BDSDA2F via Azure+codex worked (790 LOC, 10 classes, 18 methods).
+2. **Try Azure OpenAI provider.** The PR1.b cache key already namespaces by provider so cached entries from each leg are isolated. Switch back to `_CODE_MODEL=gpt-5.3-codex` (Azure) and rerun. Earlier in this session a single-shot Java conversion of SAMPLE002 via Azure+codex worked (790 LOC, 10 classes, 18 methods).
 3. **Check Copilot SDK with a minimal prompt.** Verify the SDK adapter is not silently dropping large responses. A 1-prompt CLI test against `claude-opus-4.6-1m` outside the converter flow would isolate this.
 4. **Inspect Copilot SDK telemetry / `~/.copilot/` logs.** The model may be hitting an internal cap or content filter that silently truncates to empty.
 
@@ -290,11 +290,11 @@ confirmed on a model that returns content.
 
 ### Files retained for inspection
 
-- `tools/ab-results-smoke/BDSM043/baseline.log` — full doctor.sh stdout for raw-AST leg.
-- `tools/ab-results-smoke/BDSM043/projection.log` — full doctor.sh stdout for projection leg.
+- `tools/ab-results-smoke/SAMPLE001/baseline.log` — full doctor.sh stdout for raw-AST leg.
+- `tools/ab-results-smoke/SAMPLE001/projection.log` — full doctor.sh stdout for projection leg.
 - `Logs/FULL_CHAT_LOG_2026-05-28_10-48-12.md` — baseline chat (empty assistant response).
 - `Logs/FULL_CHAT_LOG_2026-05-28_10-56-48.md` — projection chat (empty assistant response).
-- `output/rekt/BDSM043.facts.json` — facts file used by the projection leg (confidence=High, 4 groups, 1 callee).
+- `output/rekt/SAMPLE001.facts.json` — facts file used by the projection leg (confidence=High, 4 groups, 1 callee).
 
 #### If refinement needed, what to change
 
@@ -332,7 +332,7 @@ average wall-time delta       : __%
 
 ### Suite metadata
 - **Model**: claude-opus-4.6 (Copilot SDK via gh PAT)
-- **Programs**: BDSM043 (203 LoC), BDSDA23 (236), RGNB649 (715), BDSDA2F (786), BDSMFJL (1513)
+- **Programs**: SAMPLE001 (203 LoC), SAMPLE003 (236), REPORT001 (715), SAMPLE002 (786), SAMPLE006 (1513)
 - **Cache**: cleared between programs (cold)
 - **Outcome**: 5/5 ok, 0 failed
 - **Suite wall**: ~50 minutes (16:07–16:57 local)
@@ -341,16 +341,16 @@ average wall-time delta       : __%
 
 | Program | LoC | raw-REKT ctx tok | projection ctx tok | **ctx reduction** | baseline wall | projection wall | wall Δ |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| BDSM043 | 203 | 1854 | 604 | **67.4%** | 172s | 163s | -5% |
-| BDSDA23 | 236 | 5386 | 739 | **86.3%** | 158s | 169s | +7% |
-| RGNB649 | 715 | 8276 | 883 | **89.3%** | 248s | 205s | -17% |
-| BDSDA2F | 786 | (chunked path) | (chunked path) | n/a | 285s | 254s | -11% |
-| BDSMFJL | 1513 | (chunked path) | (chunked path) | n/a | 653s | 667s | +2% |
+| SAMPLE001 | 203 | 1854 | 604 | **67.4%** | 172s | 163s | -5% |
+| SAMPLE003 | 236 | 5386 | 739 | **86.3%** | 158s | 169s | +7% |
+| REPORT001 | 715 | 8276 | 883 | **89.3%** | 248s | 205s | -17% |
+| SAMPLE002 | 786 | (chunked path) | (chunked path) | n/a | 285s | 254s | -11% |
+| SAMPLE006 | 1513 | (chunked path) | (chunked path) | n/a | 653s | 667s | +2% |
 
 Notes:
 - Context-token numbers (`raw-REKT ctx tok` / `projection ctx tok`) come from
   the new `MetricsSink` JSONL writer at `output/.metrics/{runId}.jsonl`.
-- BDSDA2F and BDSMFJL go through the chunked converter agent, not
+- SAMPLE002 and SAMPLE006 go through the chunked converter agent, not
   `JavaConverterAgent`, so they don't emit `projection_metrics` events. Their
   wall-clock numbers come from the suite log; PR4.c is needed to extend
   projection support into the chunked path.
@@ -418,18 +418,18 @@ Fixes delivered:
 ### Files retained for inspection
 
 - `tools/ab-results-20260528-160733/suite-summary.md` — suite output
-- `tools/ab-results-20260528-160733/{BDSM043,BDSDA23,RGNB649,BDSDA2F,BDSMFJL}/*.log` — per-leg logs
+- `tools/ab-results-20260528-160733/{SAMPLE001,SAMPLE003,REPORT001,SAMPLE002,SAMPLE006}/*.log` — per-leg logs
 - `output/.metrics/{29..38}.jsonl` — runtime projection metrics
 - `output/java/com/example/{something,generated}/*.java` — 28 generated Java files
 - `Data/migration.db` runs 29-38 — completed conversion records
 
 ### Next steps (out of scope for this validation)
 
-1. **PR4.c**: extend projection to the chunked converter agent (so BDSDA2F /
-   BDSMFJL also benefit) and then to `CSharpConverterAgent`.
+1. **PR4.c**: extend projection to the chunked converter agent (so SAMPLE002 /
+   SAMPLE006 also benefit) and then to `CSharpConverterAgent`.
 2. **Observability**: fix the .NET Console logger flush at process exit
    (`loggerFactory.Dispose()` in `Program.cs` finally block) so the LLM-side
    metrics columns also populate.
-3. **Cleanup**: investigate the 0-byte `Bdsm043.java` / `Bdsda23.java`
+3. **Cleanup**: investigate the 0-byte `Sample001.java` / `Sample23.java`
    leftover files; trace which writer-selection code path produces them
    under failure.

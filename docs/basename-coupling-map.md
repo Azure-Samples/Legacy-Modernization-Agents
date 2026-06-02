@@ -102,7 +102,7 @@ hashed path-derived id), the work breaks into three waves:
 
 ### Wave 2 — Producers
 1. Populator (`Tools/graph-populator/populator.py`): change `_make_uid` to hash `relative_path`; keep old `uid` as `legacy_uid` on the node so old reports keep linking.
-2. Staging (`doctor.sh`, `preprocess-for-rekt.sh`): preserve subdirs in the staging dir, e.g. `staging/FUENTES/src/X.cbl`. Update the smojol `--srcDir` to the staging root and **pass the staged relative path** (smojol resolves COPY by walking `--copyBooksDir`; verify copybook resolution still works with subdirs — this is the riskiest piece).
+2. Staging (`doctor.sh`, `preprocess-for-rekt.sh`): preserve subdirs in the staging dir, e.g. `staging/sources/src/X.cbl`. Update the smojol `--srcDir` to the staging root and **pass the staged relative path** (smojol resolves COPY by walking `--copyBooksDir`; verify copybook resolution still works with subdirs — this is the riskiest piece).
 3. REKT output naming: change `<stem>-deps.json` → `<relPathHash>-deps.json`. Add a manifest `output/rekt/index.json` mapping `relPathHash → { relativePath, stem }` so existing tooling can resolve.
 4. resolve-programs.py: emit `relativePath` lines, document the change in `--help`, and add a `--legacy-basenames` flag for one release.
 

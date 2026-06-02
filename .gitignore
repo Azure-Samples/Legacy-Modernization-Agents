@@ -479,3 +479,7 @@ Data/projection-cache.db-*
 
 # Portal per-run conversion output (immutable, per-run isolated)
 output/runs/
+
+# A/B test run outputs (may contain customer data)
+tools/ab-results-*/
+Agents/Prompts/.prompt-scores.json
