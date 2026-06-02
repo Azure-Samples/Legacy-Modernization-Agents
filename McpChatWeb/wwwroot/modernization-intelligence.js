@@ -134,7 +134,15 @@ class ModernizationIntelligenceView {
         this._wireCapabilitiesInteractions();
       }
     } catch (err) {
-      body.innerHTML = `<div class="mi-error">Failed to load: ${this._escape(err.message)}</div>`;
+      // "Failed to fetch" typically means the portal was restarted while the
+      // tab was open. Show a retry button instead of a dead-end message.
+      body.innerHTML = `
+        <div class="mi-error">
+          <div><b>Failed to load:</b> ${this._escape(err.message)}</div>
+          <button class="mi-btn" id="mi-retry-btn" style="margin-top:8px;">↻ Retry</button>
+        </div>`;
+      const btn = body.querySelector('#mi-retry-btn');
+      if (btn) btn.onclick = () => this._render();
     }
   }
 
@@ -1348,12 +1356,24 @@ class ModernizationIntelligenceView {
       const hasFullFlow = structure && structure.sections && structure.sections.length > 0;
 
       if (hasFullFlow) {
-        panel.innerHTML = this._renderFlowDetail(basename, structure, mermaidText);
+        panel.innerHTML = this._renderFlowDetail(basename, structure, mermaidText, depsOnly);
       } else {
         // Fall back to deps-only CALL graph
         panel.innerHTML = this._renderDepsOnlyFlow(basename, depsOnly);
       }
       this._renderMermaidIn(panel);
+      // Make callee chips clickable — jump to that program in the picker.
+      panel.querySelectorAll('.mi-chip-callee[data-callee]').forEach(chip => {
+        chip.onclick = () => {
+          const target = chip.dataset.callee;
+          // Try .cbl variant first
+          const candidates = [target, `${target}.cbl`, `${target}.CBL`];
+          for (const c of candidates) {
+            const row = this.root.querySelector(`.mi-flow-row[data-prog="${c}"]`);
+            if (row) { row.click(); row.scrollIntoView({ block: 'center', behavior: 'smooth' }); return; }
+          }
+        };
+      });
     } catch (err) {
       panel.innerHTML = `<div class="mi-error">Failed: ${this._escape(err.message)}</div>`;
     }
@@ -1433,86 +1453,279 @@ class ModernizationIntelligenceView {
     `;
   }
 
-  _renderFlowDetail(basename, structure, mermaidText) {
+  _renderFlowDetail(basename, structure, mermaidText, depsOnly) {
     if (!structure || !structure.sections || structure.sections.length === 0) {
       return `<div class="mi-card">
         <h3>${this._escape(basename)}</h3>
         <div class="mi-empty">No structural sections found in REKT output.</div>
       </div>`;
     }
-    const sections = structure.sections;
-    const totalStmts = sections.reduce((a, s) => a + (s.stmtCount || 0), 0);
-    const totalPerforms = sections.reduce((a, s) => a + (s.performCount || 0), 0);
-    const totalCalls = sections.reduce((a, s) => a + (s.callCount || 0), 0);
-    const totalSql = sections.reduce((a, s) => a + (s.sqlCount || 0), 0);
-    const totalBranch = sections.reduce((a, s) => a + (s.branchCount || 0), 0);
+
+    // ── 1. Clean & dedupe paragraphs ─────────────────────────────────────
+    // REKT emits noisy entries like "NAME: …" duplicates and single-token
+    // identifiers ("E", "V") from misparsed MOVE arguments. Filter them so
+    // the migration engineer sees real paragraphs only.
+    const seen = new Set();
+    const paragraphs = [];
+    for (const s of structure.sections) {
+      const name = (s.paraName || s.sectionName || '').trim();
+      if (!name) continue;
+      if (name.startsWith('NAME:')) continue;
+      if (name.length <= 2 && !/^\d/.test(name)) continue; // skip "E", "V"
+      if (seen.has(name.toUpperCase())) continue;
+      seen.add(name.toUpperCase());
+      paragraphs.push({
+        name,
+        stmts: s.stmtCount || 0,
+        perform: s.performCount || 0,
+        call: s.callCount || 0,
+        sql: s.sqlCount || 0,
+        move: s.moveCount || 0,
+        branch: s.branchCount || 0,
+      });
+    }
+
+    // ── 2. Roll-up KPIs over the de-duped paragraphs ─────────────────────
+    const total = paragraphs.reduce((a, p) => ({
+      stmts: a.stmts + p.stmts, perform: a.perform + p.perform,
+      call: a.call + p.call, sql: a.sql + p.sql, branch: a.branch + p.branch,
+    }), { stmts: 0, perform: 0, call: 0, sql: 0, branch: 0 });
 
     const kpiRow = `
       <div class="mi-kpi-row" style="margin-bottom:12px;">
-        <div class="mi-kpi"><div class="mi-kpi-value">${sections.length}</div><div class="mi-kpi-label">Sections</div></div>
-        <div class="mi-kpi"><div class="mi-kpi-value">${totalStmts}</div><div class="mi-kpi-label">Statements</div></div>
-        <div class="mi-kpi"><div class="mi-kpi-value">${totalPerforms}</div><div class="mi-kpi-label">PERFORMs</div></div>
-        <div class="mi-kpi"><div class="mi-kpi-value">${totalCalls}</div><div class="mi-kpi-label">CALLs</div></div>
-        <div class="mi-kpi"><div class="mi-kpi-value">${totalSql}</div><div class="mi-kpi-label">SQL ops</div></div>
-        <div class="mi-kpi"><div class="mi-kpi-value">${totalBranch}</div><div class="mi-kpi-label">Branches</div></div>
-      </div>
-    `;
+        <div class="mi-kpi"><div class="mi-kpi-value">${paragraphs.length}</div><div class="mi-kpi-label">Paragraphs</div></div>
+        <div class="mi-kpi"><div class="mi-kpi-value">${total.stmts}</div><div class="mi-kpi-label">Statements</div></div>
+        <div class="mi-kpi"><div class="mi-kpi-value">${total.perform}</div><div class="mi-kpi-label">PERFORMs</div></div>
+        <div class="mi-kpi"><div class="mi-kpi-value">${total.call}</div><div class="mi-kpi-label">CALLs</div></div>
+        <div class="mi-kpi"><div class="mi-kpi-value">${total.sql}</div><div class="mi-kpi-label">SQL ops</div></div>
+        <div class="mi-kpi"><div class="mi-kpi-value">${total.branch}</div><div class="mi-kpi-label">Branches</div></div>
+      </div>`;
 
-    // Group by section, list paragraphs underneath
-    const grouped = {};
-    for (const s of sections) {
-      const key = s.sectionName || '(unnamed)';
-      if (!grouped[key]) grouped[key] = [];
-      grouped[key].push(s);
-    }
-    const sectionBlocks = Object.entries(grouped).map(([sec, rows]) => {
-      const paras = rows.map(r => `
-        <tr>
-          <td><code>${this._escape(r.paraName || r.sectionName || '?')}</code></td>
-          <td class="num">${r.stmtCount || 0}</td>
-          <td class="num">${r.performCount || 0}</td>
-          <td class="num">${r.callCount || 0}</td>
-          <td class="num">${r.sqlCount || 0}</td>
-          <td class="num">${r.moveCount || 0}</td>
-          <td class="num">${r.branchCount || 0}</td>
-        </tr>`).join('');
-      return `<details class="mi-flow-section" open>
-        <summary><b>${this._escape(sec)}</b> · ${rows.length} paragraph(s)</summary>
+    // ── 3. Complexity ranking (migration-risk hotspots) ──────────────────
+    // Weighted score gives more weight to branches/SQL/calls — these are
+    // the constructs that cost the most translator effort & test coverage.
+    const scored = paragraphs.map(p => ({
+      ...p,
+      complexity: p.stmts + 3 * p.branch + 2 * p.sql + 2 * p.perform + 2 * p.call,
+    })).sort((a, b) => b.complexity - a.complexity);
+    const topK = scored.slice(0, 8);
+    const maxScore = Math.max(1, topK[0]?.complexity || 1);
+    const complexityBlock = `
+      <div class="mi-card" style="margin-top:12px;">
+        <h3>🔥 Migration-risk hotspots <span class="mi-muted" style="font-size:11px;">(top ${topK.length} by complexity)</span></h3>
+        <table class="mi-table mi-table-dense">
+          <thead><tr><th>Paragraph</th><th class="num">Score</th><th>Profile</th><th class="num">Stmts</th><th class="num">SQL</th><th class="num">Branch</th><th class="num">PERFORM</th><th class="num">CALL</th></tr></thead>
+          <tbody>${topK.map(p => `
+            <tr>
+              <td><code>${this._escape(p.name)}</code></td>
+              <td class="num"><b>${p.complexity}</b></td>
+              <td><div class="mi-bar-track" style="width:80px;height:6px;background:#1e293b;border-radius:3px;overflow:hidden;">
+                <div style="width:${Math.round(100 * p.complexity / maxScore)}%;height:100%;background:linear-gradient(90deg,#10b981,#f59e0b,#ef4444);"></div>
+              </div></td>
+              <td class="num">${p.stmts}</td>
+              <td class="num">${p.sql > 0 ? `<span style="color:#a78bfa;">${p.sql}</span>` : 0}</td>
+              <td class="num">${p.branch > 0 ? `<span style="color:#fb923c;">${p.branch}</span>` : 0}</td>
+              <td class="num">${p.perform}</td>
+              <td class="num">${p.call > 0 ? `<span style="color:#34d399;">${p.call}</span>` : 0}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+        <div class="mi-muted" style="font-size:11px;margin-top:6px;">
+          <b>Score</b> = stmts + 3×branches + 2×(SQL + PERFORM + CALL). Higher = more reviewer effort.
+        </div>
+      </div>`;
+
+    // ── 4. PERFORM tree built from performEdges (cleaner than raw Mermaid)
+    // The REKT-emitted mermaid contains duplicate node declarations and
+    // mangled labels (e.g. "PERFORM120000-V" instead of "120000-VALIDACION-DATO").
+    // We rebuild it client-side from the structured edges + paragraph names.
+    const performTreeBlock = this._renderPerformTree(structure.performEdges || [], paragraphs);
+
+    // ── 5. Outbound CALLs (from service-chain data we already fetched) ──
+    const stem = basename.replace(/\.cbl$/i, '').toUpperCase();
+    const callees = (() => {
+      const me = (depsOnly?.programs || []).find(p =>
+        (p.stem || '').toUpperCase() === stem ||
+        (p.basename || '').toUpperCase().replace(/\.CBL$/, '') === stem);
+      return me?.callees || me?.calls || [];
+    })();
+    const jobsExecuting = (depsOnly?.jobs || [])
+      .filter(j => (j.primaryPrograms || []).some(p => p.toUpperCase() === stem))
+      .map(j => j.jobName);
+    const externalBlock = (callees.length > 0 || jobsExecuting.length > 0) ? `
+      <div class="mi-card" style="margin-top:12px;">
+        <h3>🔗 External wiring</h3>
+        <div class="mi-grid mi-grid-2">
+          <div>
+            <h4 style="margin:0 0 6px;">📅 Executed by JCL (${jobsExecuting.length})</h4>
+            ${jobsExecuting.length > 0
+              ? jobsExecuting.slice(0, 20).map(j => `<span class="mi-chip mi-chip-tiny">${this._escape(j)}</span>`).join(' ')
+              : '<div class="mi-muted">No JCL references found.</div>'}
+          </div>
+          <div>
+            <h4 style="margin:0 0 6px;">📞 CALLs to other programs (${callees.length})</h4>
+            ${callees.length > 0
+              ? callees.slice(0, 20).map(c => `<span class="mi-chip mi-chip-tiny mi-chip-callee" style="background:#064e3b;color:#d1fae5;cursor:pointer;" data-callee="${this._escape(c)}">${this._escape(c)}</span>`).join(' ')
+              : '<div class="mi-muted">No subprogram CALLs found.</div>'}
+          </div>
+        </div>
+      </div>` : '';
+
+    // ── 6. Full paragraph reference (collapsed by default) ──────────────
+    const paraRows = paragraphs.map(p => `
+      <tr>
+        <td><code>${this._escape(p.name)}</code></td>
+        <td class="num">${p.stmts}</td>
+        <td class="num">${p.perform}</td>
+        <td class="num">${p.call}</td>
+        <td class="num">${p.sql}</td>
+        <td class="num">${p.move}</td>
+        <td class="num">${p.branch}</td>
+      </tr>`).join('');
+    const fullTableBlock = `
+      <details class="mi-flow-section" style="margin-top:12px;">
+        <summary><b>All ${paragraphs.length} paragraphs</b> — click to expand</summary>
         <table class="mi-table mi-table-dense">
           <thead><tr><th>Paragraph</th><th>Stmts</th><th>PERF</th><th>CALL</th><th>SQL</th><th>MOVE</th><th>BR</th></tr></thead>
-          <tbody>${paras}</tbody>
+          <tbody>${paraRows}</tbody>
         </table>
       </details>`;
-    }).join('');
-
-    // Pre-rendered Mermaid block (if available)
-    const mermaidBlock = mermaidText && mermaidText.trim().length > 0
-      ? `<div class="mi-card" style="margin-top:12px;">
-          <h3>Flow diagram (Mermaid, from REKT CFG)</h3>
-          <div class="mi-mermaid-container">
-            <pre class="mermaid">${this._escape(mermaidText)}</pre>
-          </div>
-        </div>`
-      : '';
 
     return `
       <div class="mi-card">
         <h3>${this._escape(basename)} — semantic flow</h3>
         ${kpiRow}
-        ${sectionBlocks}
+        ${performTreeBlock}
+        ${complexityBlock}
+        ${externalBlock}
+        ${fullTableBlock}
         <div class="mi-source">
-          Sourced from <code>/api/graph/rekt/structure</code> (sections + paragraphs) and
-          <code>/api/graph/rekt/mermaid</code> (CFG diagram).
+          Sourced from <code>/api/graph/rekt/structure</code> (paragraphs + performEdges) and
+          <code>/api/modernization/service-chain</code> (JCL + CALL targets).
         </div>
       </div>
-      ${mermaidBlock}
     `;
+  }
+
+  /**
+   * Render a clean PERFORM chain — both as a Mermaid graph and an indented
+   * tree. The raw REKT mermaid output has duplicate declarations and
+   * mangled labels, so we rebuild it from the structured edges using the
+   * authoritative paragraph names.
+   */
+  _renderPerformTree(performEdges, paragraphs) {
+    if (!performEdges || performEdges.length === 0) {
+      return '<div class="mi-muted" style="margin:8px 0 12px;">No PERFORM edges in this program.</div>';
+    }
+    const paraNameUpper = new Set(paragraphs.map(p => p.name.toUpperCase()));
+
+    // Normalize edge targets: REKT emits "PERFORM120000-V"; we want
+    // "120000-VALIDACION-DATOS" (look up in the paragraph index).
+    const normalize = (raw) => {
+      if (!raw) return null;
+      let s = String(raw).trim().toUpperCase();
+      if (s.startsWith('PERFORM')) s = s.substring(7).trim();
+      // Strip leading separators
+      s = s.replace(/^[:\-\s]+/, '');
+      if (!s) return null;
+      // Try exact match
+      if (paraNameUpper.has(s)) return s;
+      // Try prefix match (REKT truncates labels at 30 chars)
+      for (const p of paraNameUpper) {
+        if (p.startsWith(s) || s.startsWith(p)) return p;
+      }
+      return s;
+    };
+
+    const cleanEdges = [];
+    const seenEdge = new Set();
+    for (const e of performEdges) {
+      const from = normalize(e.from);
+      const to = normalize(e.to);
+      if (!from || !to || from === to) continue;
+      const key = `${from}→${to}`;
+      if (seenEdge.has(key)) continue;
+      seenEdge.add(key);
+      cleanEdges.push({ from, to });
+    }
+    if (cleanEdges.length === 0) {
+      return '<div class="mi-muted" style="margin:8px 0 12px;">PERFORM edges could not be resolved against known paragraphs.</div>';
+    }
+
+    // Build the indented tree rooted at MAIN (or whichever node has no incoming edges).
+    const outgoing = new Map();
+    const incoming = new Set();
+    for (const e of cleanEdges) {
+      if (!outgoing.has(e.from)) outgoing.set(e.from, []);
+      outgoing.get(e.from).push(e.to);
+      incoming.add(e.to);
+    }
+    const roots = [...new Set(cleanEdges.map(e => e.from))].filter(n => !incoming.has(n));
+    if (roots.length === 0) roots.push(cleanEdges[0].from); // cycle fallback
+
+    const visited = new Set();
+    const buildTree = (node, depth) => {
+      if (depth > 6) return `<li class="mi-muted">… (depth limit)</li>`;
+      if (visited.has(node)) return `<li><code>${this._escape(node)}</code> <span class="mi-muted">(↩ already shown)</span></li>`;
+      visited.add(node);
+      const kids = outgoing.get(node) || [];
+      const inner = kids.length > 0
+        ? `<ul>${kids.map(k => buildTree(k, depth + 1)).join('')}</ul>` : '';
+      return `<li><code>${this._escape(node)}</code> ${kids.length > 0 ? `<span class="mi-muted">(${kids.length})</span>` : ''}${inner}</li>`;
+    };
+    const treeHtml = `<ul class="mi-perform-tree">${roots.map(r => buildTree(r, 0)).join('')}</ul>`;
+
+    // Mermaid: rebuild with safe IDs
+    const safeId = (n) => 'P_' + n.replace(/[^A-Z0-9]/gi, '_').substring(0, 30);
+    const allNodes = new Set();
+    cleanEdges.forEach(e => { allNodes.add(e.from); allNodes.add(e.to); });
+    let mermaid = 'flowchart TD\n';
+    mermaid += '  classDef root fill:#1e40af,stroke:#60a5fa,color:#f8fafc\n';
+    mermaid += '  classDef leaf fill:#059669,stroke:#34d399,color:#e2e8f0\n';
+    for (const n of allNodes) {
+      const cls = roots.includes(n) ? 'root' : 'leaf';
+      mermaid += `  ${safeId(n)}["${n.replace(/"/g, "'")}"]:::${cls}\n`;
+    }
+    for (const e of cleanEdges) {
+      mermaid += `  ${safeId(e.from)} --> ${safeId(e.to)}\n`;
+    }
+
+    return `
+      <div class="mi-card" style="margin-top:12px;">
+        <h3>🌊 PERFORM chain <span class="mi-muted" style="font-size:11px;">(${cleanEdges.length} edges, ${allNodes.size} paragraphs)</span></h3>
+        <div class="mi-grid mi-grid-2">
+          <div>
+            <h4 style="margin:0 0 6px;font-size:12px;">Execution tree (root → leaves)</h4>
+            ${treeHtml}
+          </div>
+          <div>
+            <h4 style="margin:0 0 6px;font-size:12px;">Diagram</h4>
+            <div class="mi-mermaid-container">
+              <pre class="mermaid">${this._escape(mermaid)}</pre>
+            </div>
+          </div>
+        </div>
+      </div>`;
   }
 
   _renderMermaidIn(panel) {
     if (typeof window.mermaid === 'undefined') return;
+    // Only render nodes that are actually attached + visible. Mermaid's layout
+    // step calls getBoundingClientRect() on inner elements; if the user clicks
+    // a different sub-tab mid-render those nodes get detached and mermaid
+    // throws "Cannot read properties of null (reading 'getBoundingClientRect')".
+    const nodes = Array.from(panel.querySelectorAll('pre.mermaid'))
+      .filter(n => n.isConnected && n.offsetParent !== null && (n.textContent || '').trim().length > 0);
+    if (nodes.length === 0) return;
     try {
-      window.mermaid.run({ querySelector: 'pre.mermaid', nodes: panel.querySelectorAll('pre.mermaid') });
+      const p = window.mermaid.run({ nodes });
+      // mermaid.run() is async — if the user switches tabs (detaching the
+      // node) while it is laying out the SVG, the inner getBoundingClientRect
+      // call rejects with a TypeError. Swallow it: the render was abandoned
+      // by user navigation, not a real failure.
+      if (p && typeof p.catch === 'function') {
+        p.catch(err => console.debug('Mermaid render aborted:', err?.message || err));
+      }
     } catch (err) {
       console.warn('Mermaid render failed:', err);
     }
