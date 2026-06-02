@@ -1,91 +1,22 @@
 {
-  "$comment": "Endpoint catalog auto-derived from the converted COBOL programs. Each program is exposed by mock-server.py as a REST resource. Inputs match the COBOL PROCEDURE DIVISION USING clause; outputs match the SALIDA/return structures detected by the converter.",
-  "generatedAt": "2026-06-02",
-  "programs": [
-    {
-      "id": "KYGHG003",
-      "name": "Consulta de Límites y Disponibles",
-      "language": "Spanish (BBVA card-limits service)",
-      "cobolFile": "sources/cobol/KYGHG003.cbl",
-      "java": {
-        "file": "sources/java/kyghg003/Kyghg003Service.java",
-        "className": "com.example.something.Kyghg003Service",
-        "entryMethod": "execute(Qpejcaqa, Kyght003Entrada, Kyght003Salida)",
-        "framework": "Quarkus (@ApplicationScoped)"
-      },
-      "dotnet": {
-        "file": "sources/dotnet/kyghg003/Kyghg003.cs",
-        "className": "Kyghg003Service",
-        "entryMethod": "ExecuteAsync(QpejcaqaStub, Kyght003Entrada, Kyght003Salida)",
-        "framework": "ASP.NET Core (sealed class)"
-      },
+  "$comment": "Endpoint catalog for the COBOL → Java/.NET conversion demo portal. This file starts empty — populate it after running the Convert workflow in McpChatWeb on your own COBOL corpus. Each entry maps one converted program to its Java/.NET artefacts and a mock REST endpoint that mock-server.py exposes.",
+  "generatedAt": null,
+  "programs": [],
+  "$schema": {
+    "programs[]": {
+      "id": "<PROGRAM-ID, e.g. CUSTLKUP>",
+      "name": "<human-readable description>",
+      "language": "<source language tag, e.g. 'COBOL (synthetic sample)'>",
+      "cobolFile": "sources/cobol/<file>.cbl",
+      "java":   { "file": "sources/java/<dir>/<File>.java",   "className": "<FQCN>",  "entryMethod": "<sig>", "framework": "Quarkus" },
+      "dotnet": { "file": "sources/dotnet/<dir>/<File>.cs",   "className": "<class>", "entryMethod": "<sig>", "framework": "ASP.NET Core" },
       "restEndpoint": {
         "method": "POST",
-        "path": "/api/kyghg003/inquiry",
-        "summary": "Consulta los límites y disponibles de tarjeta para un cliente",
-        "requestExample": {
-          "ctx": {
-            "codPais": "ES",
-            "codBanco": "0182",
-            "codOficina": "0001",
-            "codCanal": "C",
-            "codIdioma": "ES",
-            "codUsuario": "DEMO_USER"
-          },
-          "entrada": {
-            "C003_COD_PAISOALF_E": "ES",
-            "C003_COD_ENTALFA_E":  "0182",
-            "C003_COD_PERSCTPN_E": "12345678",
-            "C003_COD_OPERACN_E":  "CR"
-          }
-        },
-        "responseExample": {
-          "salida": {
-            "C003_IMP_LIMITE":     "150000.00",
-            "C003_IMP_DISPONIBLE": "127340.55",
-            "C003_COD_RETORNO":    "00",
-            "C003_DES_RETORNO":    "OK"
-          }
-        }
-      }
-    },
-    {
-      "id": "T660A410",
-      "name": "Räntehantering Service",
-      "language": "Swedish (Nordic bank interest service)",
-      "cobolFile": "sources/cobol/T660A410.cbl",
-      "java": {
-        "file": "sources/java/t660a410/T660A410Service.java",
-        "className": "com.example.something.T660A410Service",
-        "entryMethod": "execute(La410Area)",
-        "framework": "Quarkus (@ApplicationScoped) — calls T6601010Service"
-      },
-      "dotnet": {
-        "file": "sources/dotnet/t660a410/T660a410.cs",
-        "className": "T660A410Service",
-        "entryMethod": "ExecuteAsync(LA410Area)",
-        "framework": "ASP.NET Core (sealed class)"
-      },
-      "restEndpoint": {
-        "method": "POST",
-        "path": "/api/t660a410/process",
-        "summary": "Behandlar räntehanteringsservice (interest-handling service)",
-        "requestExample": {
-          "la410": {
-            "wSection":   "RANTE",
-            "wArea":      "01",
-            "raderInput": 10
-          }
-        },
-        "responseExample": {
-          "la410": {
-            "wAntalRader": 10,
-            "wAntalRaderZ": "0010",
-            "ackFnutt": 0,
-            "status": "OK"
-          }
-        }
+        "path": "/api/<program-lower>/<op>",
+        "summary": "<short description>",
+        "requestExample":  {},
+        "responseExample": {}
       }
     }
-  ]
+  }
 }

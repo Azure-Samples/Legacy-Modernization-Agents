@@ -301,7 +301,7 @@ docker-compose up -d
 | `neo4j` | `cobol-migration-neo4j` | 7474 (HTTP), 7687 (Bolt) | Dependency graph storage for migration |
 | `portal` | `cobol-migration-portal` | 5028 | Web UI — chat, graphs, reports, prompt studio |
 | `cobol-rekt-neo4j` | `cobol-rekt-neo4j` | 7475 (HTTP), 7688 (Bolt) | Unified graph for AST/CFG/Data flow |
-| `cobol-rekt` | `cobol-rekt` | — | Java CLI sidecar for COBOL parsing |
+| `cobol-rekt` | `cobol-rekt` (image: **`rekt-oss-mma:latest`**) | — | Java CLI sidecar for COBOL parsing — packages [smojol](https://github.com/avishek-sen-gupta/cobol-rekt) + local patches. See [`tools/cobol-rekt/README.md`](tools/cobol-rekt/README.md). |
 | `graph-populator` | `cobol-graph-populator` | — | Python ingester for REKT JSON into Neo4j |
 
 #### Local Development (Graph Populator)

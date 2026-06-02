@@ -469,12 +469,12 @@ flowchart LR
   O --> CTX --> INJ --> LLM
 ```
 
-**Current effectiveness, measured against the 22-program test corpus**
+**Current effectiveness, measured against a 22-program test corpus**
 
 | Metric | Today | Comment |
 |---|---|---|
-| Programs parsed cleanly | ~85% | 3/22 fall to "deps only" (`T66017J1`, `T6604700`, `T660A411`). |
-| Copybook resolution | high when files are in `source/` flat | drops to 0 in nested layouts (`source/FUENTES/cpy/`). |
+| Programs parsed cleanly | ~85% | ~3/22 fall to "deps only" (a small minority of programs trigger the upstream AST-writer fallback). |
+| Copybook resolution | high when files are in `source/` flat | drops to 0 in nested layouts (e.g. `source/<corpus>/cpy/`). |
 | Non-COBOL sources scanned | `.cbl`, `.cpy` only | `.bms`, `.rus`, `.jcl`, `.prc`, `.dcl`, `.mps` ignored even though some have parsers. |
 | Tokens of REKT context per LLM call | ~12–18K | Mostly raw AST nodes; high noise-to-signal. |
 | Time to re-run REKT on a single program | full corpus only | No incremental mode; one-program iteration still triggers full scan. |

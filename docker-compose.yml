@@ -77,7 +77,11 @@ services:
 
   # Cobol-REKT Java CLI — parses COBOL into AST/CFG/Data JSON exports.
   # Stays alive as a sidecar; the Python populator calls it via docker exec.
+  # Image: rekt-oss-mma — our patched, MIT-licensed re-distribution of
+  # smojol's COBOL toolkit (https://github.com/avishek-sen-gupta/cobol-rekt).
+  # See tools/cobol-rekt/LICENSE and tools/cobol-rekt/NOTICE for attribution.
   cobol-rekt:
+    image: rekt-oss-mma:latest
     build:
       context: ./tools/cobol-rekt
       dockerfile: Dockerfile

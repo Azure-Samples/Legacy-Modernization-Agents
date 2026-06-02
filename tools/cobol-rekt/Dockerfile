@@ -1,6 +1,8 @@
-# Cobol-REKT sidecar container
+# Cobol-REKT sidecar container — rekt-oss-mma
 # Builds smojol-cli.jar from source for COBOL parsing, AST/CFG/Data export.
-# Pinned to v0.1.0-RC6 for stability.
+# Pinned to v0.1.0-RC6 for stability. See ./NOTICE for full attribution
+# to Avishek Sen Gupta and the cobol-rekt contributors — this image would
+# not exist without their excellent upstream work.
 
 FROM eclipse-temurin:21-jdk AS builder
 
@@ -29,12 +31,22 @@ RUN apt-get update && apt-get install -y graphviz && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
+LABEL org.opencontainers.image.title="rekt-oss-mma"
+LABEL org.opencontainers.image.description="COBOL parser (smojol) packaged with leniency patches for the Azure-Samples/COBOL-Modernization-Agents project."
+LABEL org.opencontainers.image.source="https://github.com/Azure-Samples/COBOL-Modernization-Agents"
+LABEL org.opencontainers.image.licenses="MIT"
+LABEL org.opencontainers.image.authors="Microsoft Corporation; patches by COBOL-Modernization-Agents contributors. Upstream COBOL toolkit by Avishek Sen Gupta (https://github.com/avishek-sen-gupta/cobol-rekt) — see /app/NOTICE."
+
 # Copy the built CLI JAR and dialect JAR
 COPY --from=builder /build/smojol-cli/target/smojol-cli.jar /app/smojol-cli.jar
 COPY --from=builder /build/che-che4z-lsp-for-cobol-integration/server/dialect-idms/target/dialect-idms.jar /app/dialect-idms.jar
 
 # Create source/output mount points
 RUN mkdir -p /source /output
+
+# Ship the license + attribution inside the image so it travels with any
+# pulled copy — required for MIT redistribution.
+COPY LICENSE NOTICE README.md /app/
 
 # Healthcheck: verify JAR is runnable
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \

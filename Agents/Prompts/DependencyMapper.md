@@ -1,10 +1,8 @@
 ## SECTION: System
 
 Map dependencies across the COBOL codebase:
-- **128** programs: BDSMFJL.cbl, RGNB649.cbl, BDSM043.cbl, BDSDA23.cbl, BDSDA2F.cbl, KYGGR005.cbl, KYGFR002.cbl, KYGHR001.cbl, KYGHR002.cbl, KYGHBFEC.cbl, T6604700.cbl, KYGHR003.cbl, KYGHGB03.cbl, T66040A1.cbl, KYGHB076.cbl
-  ... and 113 more
-- **387** copybooks: CPY_TKYG.cpy, DB2_TKYG.cpy, DCL_TKYG.cpy, ORACLE_T.cpy, BDSISTDW.cpy, KROD002K.cpy, MEDPCTRL.cpy, KROD022I.cpy, BDSSTYR1.cpy, AADI002.cpy, BDSISEQI.cpy, MSGI909.cpy, KROD022K.cpy, KROD002I.cpy, MSGI908.cpy
-  ... and 372 more
+- Programs: representative online services, orchestration handlers, authorization services, and supporting utilities (count and identifiers are injected by the runtime from the active scan).
+- Copybooks: representative request/response contracts, table layouts, shared SQL structures, and common utility copybooks (count and identifiers are injected by the runtime).
 
 ## Dependency Types to Map
 1. **COPY dependencies** — which programs include which copybooks (COPY statements).

@@ -99,9 +99,9 @@ source/.preprocessed/
 # Bundled system copybooks (SQLCA, …) shipped to unblock Db2 programs
 # in environments where Eclipse-LSP-COBOL does not auto-inject them.
 !tools/system-copybooks/*.cpy
-# Sample COBOL programs bundled with the demo portal — shipped so the
-# portal can show the original source side-by-side with the conversions.
-!webdemo/sources/cobol/*.cbl
+# webdemo/sources/cobol/ MUST stay empty in this public repo — no
+# customer COBOL is bundled. The previous whitelist was removed
+# deliberately. Drop your own programs there at runtime.
 
 # Generated Output (Contains converted business logic and reverse engineering results)
 output/*

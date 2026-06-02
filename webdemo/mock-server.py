@@ -5,16 +5,20 @@ Mock REST server for the COBOL → Java/.NET conversion demo portal.
 Serves:
   GET  /                              -> webdemo/index.html (and the rest of webdemo/)
   GET  /api/endpoints                 -> webdemo/api/endpoints.json catalog
-  POST /api/kyghg003/inquiry          -> returns the Consulta de Límites canned response,
-                                          merged with whatever the caller sent so the
-                                          demo shows the round-trip.
-  POST /api/t660a410/process          -> same, for Räntehantering Service.
+  POST /api/<program>/<op>            -> returns the responseExample from the
+                                          matching catalog entry, merged with the
+                                          incoming request body so the demo shows
+                                          the round-trip.
+
+The catalog (webdemo/api/endpoints.json) ships empty in this repository.
+Populate it after running the Convert workflow in McpChatWeb on your own
+COBOL corpus and dropping the generated Java/.NET files under
+webdemo/sources/{cobol,java,dotnet}/. No customer source is bundled.
 
 This is intentionally a *mock*: the converted Java/.NET classes are still
-plain DI beans (no JAX-RS / ASP.NET routes were emitted by the converter
-for these programs). The mock returns the response example from
-endpoints.json so the demo portal has something to display while you
-develop the real adapters.
+plain DI beans (no JAX-RS / ASP.NET routes are emitted by the converter).
+The mock returns the response example from endpoints.json so the demo
+portal has something to display while you develop the real adapters.
 
 Run:
     cd webdemo && python3 mock-server.py 8848

@@ -1,0 +1,56 @@
+# NOTICE — rekt-oss-mma
+
+`rekt-oss-mma` is the Docker image produced by `tools/cobol-rekt/Dockerfile`
+and consumed by the `cobol-rekt` service in `docker-compose.yml`. It
+packages the upstream **smojol COBOL toolkit** with a small set of local
+leniency patches (see `./patches/` and `./patches/README.md`).
+
+## Heartfelt thanks 🙏
+
+This project would not exist without the remarkable work of
+**Avishek Sen Gupta** and the contributors to:
+
+> [**cobol-rekt** (`avishek-sen-gupta/cobol-rekt`)](https://github.com/avishek-sen-gupta/cobol-rekt) — smojol-cli, smojol-core, smojol-toolkit
+
+Their COBOL parser, AST/CFG/Data extractor and Neo4j-friendly exports
+are the foundation everything in `Azure-Samples/COBOL-Modernization-Agents`
+builds on. The image distributed here is **strictly additive** — every
+upstream behaviour is preserved unless a patch in `./patches/` explicitly
+softens a hard failure for enterprise-scale corpora. We pin to upstream
+tag **`v0.1.0-RC6`**.
+
+We are very grateful for the public, permissive distribution of this work
+and for the design choices that made layering on top of it tractable.
+
+## Bundled third-party components
+
+| Component | Upstream | License | Notes |
+| --- | --- | --- | --- |
+| `smojol-cli`, `smojol-core`, `smojol-toolkit` | https://github.com/avishek-sen-gupta/cobol-rekt (tag `v0.1.0-RC6`) | See upstream `LICENSE` | Built from source inside the image; small patches applied — see `./patches/`. |
+| `che-che4z-lsp-for-cobol` dialect adapters (incl. `dialect-idms`) | https://github.com/eclipse/che-che4z-lsp-for-cobol | EPL-2.0 | Pulled in as a git submodule of `cobol-rekt`. |
+| Eclipse Temurin 21 JDK / JRE | https://adoptium.net/ | GPLv2 + Classpath exception | Base image. |
+| Graphviz | https://graphviz.org/ | CPL-1.0 | Used by smojol when rendering CFG graphs. |
+
+Our local patches are MIT-licensed (see `./LICENSE`) and are intended to
+be upstreamed once stabilised; until then they live here so the image is
+reproducible from a single `docker compose build cobol-rekt`.
+
+## Why a re-image?
+
+We re-image (rather than just consume a published JAR) because:
+
+1. The patches in `./patches/` need to be applied at build time.
+2. We want a single, version-pinned artefact (`rekt-oss-mma:latest`) so
+   demos and CI runs are reproducible without depending on a third-party
+   registry.
+
+The image name **`rekt-oss-mma`** = *rekt* (the upstream project name) +
+*oss* (open-source distribution) + *mma* (Modernization Modernization
+Agents repo, where it lives).
+
+## Contributing patches back
+
+If you improve any of the files under `./patches/`, please also open a
+corresponding PR against [avishek-sen-gupta/cobol-rekt](https://github.com/avishek-sen-gupta/cobol-rekt)
+where appropriate — the goal is for this patch set to shrink to zero
+over time.
