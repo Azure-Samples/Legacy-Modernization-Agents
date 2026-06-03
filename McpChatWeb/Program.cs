@@ -7931,9 +7931,15 @@ app.MapPost("/api/prompts/score/{promptId}", async (string promptId) =>
 				repoRoot = Path.GetFullPath("..");
 		}
 
-		var promptFile = Path.Combine(repoRoot, "Agents", "Prompts", $"{promptId}.md");
+		var sanitizedId = Path.GetFileName(promptId);
+		var promptFile = Path.GetFullPath(Path.Combine(repoRoot, "Agents", "Prompts", $"{sanitizedId}.md"));
+		var promptsDir = Path.GetFullPath(Path.Combine(repoRoot, "Agents", "Prompts"));
+
+		if (!promptFile.StartsWith(promptsDir + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+			return Results.BadRequest(new { error = "Invalid prompt ID" });
+
 		if (!File.Exists(promptFile))
-			return Results.NotFound(new { error = $"Prompt '{promptId}' not found" });
+			return Results.NotFound(new { error = $"Prompt '{sanitizedId}' not found" });
 
 		// Read prompt content
 		var content = File.ReadAllText(promptFile);
@@ -8609,7 +8615,8 @@ app.MapDelete("/api/source/files/{fileName}", (string fileName) =>
 		var targetPath = Path.GetFullPath(Path.Combine(repoRoot, "source", sanitized));
 		var sourceDir = Path.GetFullPath(Path.Combine(repoRoot, "source"));
 
-		if (!targetPath.StartsWith(sourceDir))
+		if (!targetPath.StartsWith(sourceDir + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+			&& targetPath != sourceDir)
 			return Results.BadRequest("Invalid path");
 
 		if (!File.Exists(targetPath))

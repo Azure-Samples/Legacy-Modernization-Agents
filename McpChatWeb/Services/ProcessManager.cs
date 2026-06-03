@@ -141,13 +141,17 @@ public class ProcessManager : IDisposable
         var psi = new ProcessStartInfo
         {
             FileName = executable,
-            Arguments = arguments,
             WorkingDirectory = _repoRoot,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true
         };
+
+        foreach (var argument in arguments)
+        {
+            psi.ArgumentList.Add(argument);
+        }
 
         // Set environment variables
         psi.Environment["TARGET_LANGUAGE"] = targetLanguage;
@@ -273,7 +277,7 @@ public class ProcessManager : IDisposable
             // Monitor completion
             _ = MonitorProcessAsync(run);
 
-            run.AppendLog($"[PORTAL] Started: {executable} {arguments}");
+            run.AppendLog($"[PORTAL] Started: {executable} {string.Join(" ", arguments)}");
             run.AppendLog($"[PORTAL] PID: {process.Id} | Target: {targetLanguage} | Speed: {speedProfile}");
 
             Console.WriteLine($"🚀 Run '{run.Name}' started (PID: {process.Id}, command: {command})");
@@ -323,8 +327,17 @@ public class ProcessManager : IDisposable
 
         try
         {
-            // Send SIGSTOP (19) on Unix
-            var killProc = Process.Start("kill", $"-STOP {run.Process.Id}");
+            // Send SIGSTOP on Unix via ArgumentList to avoid shell injection
+            var killPsi = new ProcessStartInfo
+            {
+                FileName = "kill",
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            killPsi.ArgumentList.Add("-STOP");
+            killPsi.ArgumentList.Add(run.Process.Id.ToString());
+
+            var killProc = Process.Start(killPsi);
             killProc?.WaitForExit(3000);
             run.Status = "paused";
             run.AppendLog("[PORTAL] Process paused by user");
@@ -349,7 +362,17 @@ public class ProcessManager : IDisposable
 
         try
         {
-            var killProc = Process.Start("kill", $"-CONT {run.Process.Id}");
+            // Send SIGCONT on Unix via ArgumentList to avoid shell injection
+            var killPsi = new ProcessStartInfo
+            {
+                FileName = "kill",
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            killPsi.ArgumentList.Add("-CONT");
+            killPsi.ArgumentList.Add(run.Process.Id.ToString());
+
+            var killProc = Process.Start(killPsi);
             killProc?.WaitForExit(3000);
             run.Status = "running";
             run.AppendLog("[PORTAL] Process resumed by user");
@@ -379,7 +402,7 @@ public class ProcessManager : IDisposable
         return _runs.TryGetValue(runId, out var run) ? run : null;
     }
 
-    private (string executable, string arguments) BuildCommand(
+    private (string executable, string[] arguments) BuildCommand(
         string command, string targetLang, string speedProfile, string? sourceFolder)
     {
         // Always use direct dotnet invocation with --no-build from the portal.
@@ -396,24 +419,24 @@ public class ProcessManager : IDisposable
         // REKT staging are handled by the Convert modal's staging logic which
         // already runs before this point.
         var dotnet = "dotnet";
-        var source = sourceFolder ?? "source";
+        var source = $"./{sourceFolder ?? "source"}";
         var project = Path.Combine(_repoRoot, "CobolToQuarkusMigration.csproj");
 
         return command.ToLowerInvariant() switch
         {
             "migrate" or "run" or "full" =>
-                (dotnet, $"run --no-build --project \"{project}\" -- --source ./{source}"),
+                (dotnet, new[] { "run", "--no-build", "--project", project, "--", "--source", source }),
 
             "reverse-engineer" or "reverse" or "re" =>
-                (dotnet, $"run --no-build --project \"{project}\" -- reverse-engineer --source ./{source} --output output"),
+                (dotnet, new[] { "run", "--no-build", "--project", project, "--", "reverse-engineer", "--source", source, "--output", "output" }),
 
             "convert-only" or "convert" =>
-                (dotnet, $"run --no-build --project \"{project}\" -- --source ./{source} --skip-reverse-engineering"),
+                (dotnet, new[] { "run", "--no-build", "--project", project, "--", "--source", source, "--skip-reverse-engineering" }),
 
             "resume" =>
-                (dotnet, $"run --no-build --project \"{project}\" -- --source ./{source} --resume"),
+                (dotnet, new[] { "run", "--no-build", "--project", project, "--", "--source", source, "--resume" }),
 
-            _ => (dotnet, $"run --no-build --project \"{project}\" -- --source ./{source}")
+            _ => (dotnet, new[] { "run", "--no-build", "--project", project, "--", "--source", source })
         };
     }
 

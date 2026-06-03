@@ -354,7 +354,7 @@ public class MigrationProcess
                 var javaFile = javaFiles[i];
 
                 // Save with correct extension based on actual file type
-                string savedPath;
+                string savedPath = string.Empty;
                 if (javaFile is JavaFile jf && targetLang == TargetLanguage.Java)
                 {
                     // Java files use JavaFile-specific save method
@@ -364,6 +364,11 @@ public class MigrationProcess
                 {
                     // C# or other CodeFiles use generic save with explicit extension
                     savedPath = await _fileHelper.SaveCodeFileAsync(codeFile, javaOutputFolder, fileExtension);
+                }
+                else if (javaFile is null)
+                {
+                    // Null entry — skip safely (e.g. converter returned a failure placeholder)
+                    _logger.LogWarning("Skipping file save because entry at index {Index} is null.", i);
                 }
                 else
                 {
@@ -377,8 +382,11 @@ public class MigrationProcess
                 if (javaFile is CodeFile asCode) asCode.FilePath = savedPath;
 
                 _enhancedLogger.ShowProgressBar(i + 1, javaFiles.Count, $"Saving {saveLangName} files");
+                var logFileType = javaFile?.GetType().Name ?? "<null>";
+                var logFileName = javaFile?.FileName ?? "<null>";
+                var logContentLen = javaFile?.Content?.Length ?? 0;
                 _enhancedLogger.LogBehindTheScenes("FILE_OUTPUT", "CODE_FILE_SAVED",
-                    $"Saved {javaFile.FileName} ({javaFile.Content.Length} chars)");
+                    $"Saved {logFileName} ({logContentLen} chars)");
                 progressCallback?.Invoke($"Saving {saveLangName} files ({i + 1}/{javaFiles.Count})", 5, totalSteps);
             }            // Step 6: Generate migration report
             _enhancedLogger.ShowStep(6, totalSteps, "Report Generation", "Creating migration summary and metrics");
