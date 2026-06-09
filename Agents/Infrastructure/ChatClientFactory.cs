@@ -8,6 +8,8 @@ using OpenAI;
 using CobolToQuarkusMigration.Models;
 using AzureOpenAIOptions = Azure.AI.OpenAI.AzureOpenAIClientOptions;
 using AzureServiceVersion = Azure.AI.OpenAI.AzureOpenAIClientOptions.ServiceVersion;
+using System.ClientModel.Primitives;
+using System.Net.Http;
 
 namespace CobolToQuarkusMigration.Agents.Infrastructure;
 
@@ -53,7 +55,7 @@ public static class ChatClientFactory
                 CreateGitHubCopilotChatClient(model, logger: logger),
 
             "openai" =>
-                CreateOpenAIChatClient(settings.ApiKey, model, logger),
+                CreateOpenAIChatClient(settings.Endpoint, settings.ApiKey, model, logger),
 
             _ => throw new ArgumentException(
                 $"Unsupported AI service type: '{settings.ServiceType}'. " +
@@ -69,9 +71,13 @@ public static class ChatClientFactory
         AISettings settings,
         ILogger? logger = null)
     {
-        var chatEndpoint = settings.ChatEndpoint ?? settings.Endpoint;
-        var chatApiKey = settings.ChatApiKey ?? settings.ApiKey;
-        var chatModel = settings.ChatModelId ?? settings.ChatDeploymentName ?? settings.ModelId;
+        var chatEndpoint = string.IsNullOrWhiteSpace(settings.ChatEndpoint) ? settings.Endpoint : settings.ChatEndpoint;
+        var chatApiKey = string.IsNullOrWhiteSpace(settings.ChatApiKey) ? settings.ApiKey : settings.ChatApiKey;
+        var chatModel = !string.IsNullOrWhiteSpace(settings.ChatModelId)
+            ? settings.ChatModelId
+            : !string.IsNullOrWhiteSpace(settings.ChatDeploymentName)
+                ? settings.ChatDeploymentName
+                : settings.ModelId;
         var serviceType = settings.ServiceType?.Trim() ?? "AzureOpenAI";
 
         // Route through CreateFromSettings which handles AzureOpenAI and CopilotSDK
@@ -164,6 +170,7 @@ public static class ChatClientFactory
     /// Creates an IChatClient for OpenAI (not Azure).
     /// </summary>
     public static IChatClient CreateOpenAIChatClient(
+        string? endpoint,
         string apiKey,
         string modelId,
         ILogger? logger = null)
@@ -173,11 +180,36 @@ public static class ChatClientFactory
         if (string.IsNullOrEmpty(modelId))
             throw new ArgumentNullException(nameof(modelId));
 
-        logger?.LogInformation("Creating OpenAI chat client for model: {Model}", modelId);
+        logger?.LogInformation("Creating OpenAI chat client for endpoint: {Endpoint}, model: {Model}",
+            string.IsNullOrWhiteSpace(endpoint) ? "https://api.openai.com/v1" : endpoint, modelId);
 
-        var client = new OpenAIClient(apiKey);
+        var options = new OpenAIClientOptions();
+        if (!string.IsNullOrWhiteSpace(endpoint))
+        {
+            var uriString = endpoint.Trim();
+            if (!uriString.EndsWith("/"))
+            {
+                uriString += "/";
+            }
+            options.Endpoint = new Uri(uriString);
+        }
+
+        var handler = new HttpClientHandler
+        {
+            UseProxy = false,
+            ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
+        };
+        options.Transport = new HttpClientPipelineTransport(new HttpClient(handler, disposeHandler: true));
+
+        var client = new OpenAIClient(new System.ClientModel.ApiKeyCredential(apiKey), options);
         return client.GetChatClient(modelId).AsIChatClient();
     }
+
+    public static IChatClient CreateOpenAIChatClient(
+        string apiKey,
+        string modelId,
+        ILogger? logger = null) =>
+        CreateOpenAIChatClient(null, apiKey, modelId, logger);
 
     // ═══════════════════════════════════════════════════════════════════════
     // GITHUB COPILOT SDK (Copilot CLI)

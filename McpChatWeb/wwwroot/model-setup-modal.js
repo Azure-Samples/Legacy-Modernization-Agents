@@ -4,7 +4,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 let _setupModels = [];
-let _setupServiceType = 'AzureOpenAI';
+let _setupServiceType = 'OpenAI';
 
 document.addEventListener('DOMContentLoaded', () => {
   initModelSetupModal();
@@ -17,6 +17,9 @@ function initModelSetupModal() {
   });
 
   // Connect buttons
+  const openAIConnectBtn = document.getElementById('openai-connect-btn');
+  if (openAIConnectBtn) openAIConnectBtn.addEventListener('click', connectOpenAI);
+
   const azureConnectBtn = document.getElementById('azure-connect-btn');
   if (azureConnectBtn) azureConnectBtn.addEventListener('click', connectAzure);
 
@@ -106,6 +109,65 @@ function switchSetupTab(provider) {
 }
 
 // ── Connect: Azure OpenAI ────────────────────────────────────────────────────
+
+async function connectOpenAI() {
+  const btn = document.getElementById('openai-connect-btn');
+  const endpoint = document.getElementById('openai-endpoint').value.trim();
+  const apiKey = document.getElementById('openai-apikey').value.trim() || 'lm-studio';
+
+  if (!endpoint) {
+    setSetupStatus('Please enter an OpenAI-compatible endpoint URL.', true);
+    return;
+  }
+
+  try {
+    const url = new URL(endpoint);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+      setSetupStatus('Endpoint must use HTTP or HTTPS.', true);
+      return;
+    }
+  } catch {
+    setSetupStatus('Invalid URL format. Example: http://localhost:1234/v1', true);
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Connecting...';
+  setSetupStatus('Connecting to OpenAI-compatible endpoint...');
+
+  try {
+    const res = await fetch('/api/models/connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        serviceType: 'OpenAI',
+        endpoint,
+        apiKey,
+        useDefaultCredential: false
+      })
+    });
+
+    const data = await res.json();
+
+    if (data.error) {
+      setSetupStatus(data.error, true);
+      return;
+    }
+
+    if (data.authenticated && data.models) {
+      _setupModels = data.models;
+      _setupServiceType = 'OpenAI';
+      setSetupStatus(`Connected! Found ${data.modelCount} model(s).`);
+      setSetupModelList(data.models);
+      document.getElementById('setup-save-btn').disabled = false;
+    }
+  } catch (err) {
+    setSetupStatus(`Connection failed: ${err.message}`, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Connect';
+  }
+}
 
 async function connectAzure() {
   const btn = document.getElementById('azure-connect-btn');
@@ -319,9 +381,13 @@ async function saveSetupConfig() {
   btn.textContent = '💾 Saving...';
 
   try {
-    const endpoint = document.getElementById('azure-endpoint')?.value?.trim() || null;
+    const endpoint = _setupServiceType === 'OpenAI'
+      ? (document.getElementById('openai-endpoint')?.value?.trim() || null)
+      : (document.getElementById('azure-endpoint')?.value?.trim() || null);
     const authMethod = document.querySelector('input[name="azure-auth"]:checked')?.value;
-    const apiKey = _setupServiceType === 'AzureOpenAI'
+    const apiKey = _setupServiceType === 'OpenAI'
+      ? (document.getElementById('openai-apikey')?.value?.trim() || 'lm-studio')
+      : _setupServiceType === 'AzureOpenAI'
       ? (authMethod === 'apikey' ? document.getElementById('azure-apikey')?.value?.trim() : null)
       : (document.querySelector('input[name="copilot-auth"]:checked')?.value === 'pat'
           ? document.getElementById('copilot-pat')?.value?.trim() : null);
@@ -331,7 +397,7 @@ async function saveSetupConfig() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         serviceType: _setupServiceType,
-        endpoint: _setupServiceType === 'AzureOpenAI' ? endpoint : null,
+        endpoint: (_setupServiceType === 'AzureOpenAI' || _setupServiceType === 'OpenAI') ? endpoint : null,
         apiKey,
         useDefaultCredential: _setupServiceType === 'AzureOpenAI' && authMethod === 'azlogin',
         chatModelId: chatModel,

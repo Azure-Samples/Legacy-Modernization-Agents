@@ -942,16 +942,16 @@ internal static class Program
                     value = ExpandVariables(value, rawVars);
                 }
 
-                // CRITICAL: Do NOT overwrite environment variables that are already set
+                // Local config is the user's current setup and must win over stale
+                // variables inherited from a long-running portal process.
                 var existingValue = Environment.GetEnvironmentVariable(key);
-                if (string.IsNullOrEmpty(existingValue))
-                {
-                    Environment.SetEnvironmentVariable(key, value);
-                }
-                else if (key == "TARGET_LANGUAGE")
+                if (!string.IsNullOrEmpty(existingValue) && key == "TARGET_LANGUAGE")
                 {
                     Console.WriteLine($"🔒 Preserving TARGET_LANGUAGE from shell: '{existingValue}' (ignoring config file value: '{value}')");
+                    continue;
                 }
+
+                Environment.SetEnvironmentVariable(key, value);
             }
         }
     }

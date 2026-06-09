@@ -31,7 +31,10 @@ async function fetchModelCatalog() {
     const providerSelect = document.getElementById('mc-provider-select');
     if (providerSelect && data.serviceType) {
       const val = (data.serviceType === 'GitHubCopilot' || data.serviceType === 'GitHubCopilotSDK')
-        ? 'GitHubCopilot' : 'AzureOpenAI';
+        ? 'GitHubCopilot'
+        : data.serviceType === 'OpenAI'
+          ? 'OpenAI'
+          : 'AzureOpenAI';
       providerSelect.value = val;
     }
 

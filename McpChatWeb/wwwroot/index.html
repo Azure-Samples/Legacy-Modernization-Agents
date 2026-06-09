@@ -98,6 +98,7 @@
           </div>
           <div class="mc-options-row">
             <select id="mc-provider-select" class="mc-select">
+              <option value="OpenAI">OpenAI / LM Studio</option>
               <option value="AzureOpenAI">☁️ Azure OpenAI</option>
               <option value="GitHubCopilot">🤖 GitHub Copilot SDK</option>
             </select>
@@ -1145,12 +1146,30 @@ curl http://localhost:5028/api/data-retrieval-guide</code></pre>
 
         <!-- Tabs -->
         <div class="setup-tabs">
-          <button class="setup-tab setup-tab-active" data-provider="AzureOpenAI">☁️ Azure OpenAI</button>
+          <button class="setup-tab setup-tab-active" data-provider="OpenAI">OpenAI / LM Studio</button>
+          <button class="setup-tab" data-provider="AzureOpenAI">☁️ Azure OpenAI</button>
           <button class="setup-tab" data-provider="GitHubCopilotSDK">🤖 GitHub Copilot SDK</button>
         </div>
 
+        <!-- OpenAI-compatible / LM Studio Tab -->
+        <div id="setup-OpenAI" class="setup-tab-content" style="display: block;">
+          <div class="setup-field">
+            <label>Endpoint URL</label>
+            <input type="text" id="openai-endpoint" placeholder="http://localhost:1234/v1" value="https://confused-flanked-yogurt.ngrok-free.dev/v1">
+            <div class="setup-help">Use the OpenAI-compatible base URL ending in <code>/v1</code>.</div>
+          </div>
+
+          <div class="setup-field">
+            <label>API Key</label>
+            <input type="password" id="openai-apikey" placeholder="lm-studio" value="lm-studio">
+            <div class="setup-help">LM Studio accepts any non-empty key; <code>lm-studio</code> is fine.</div>
+          </div>
+
+          <button class="setup-connect-btn" id="openai-connect-btn">Connect</button>
+        </div>
+
         <!-- Azure OpenAI Tab -->
-        <div id="setup-AzureOpenAI" class="setup-tab-content" style="display: block;">
+        <div id="setup-AzureOpenAI" class="setup-tab-content">
           <div class="setup-field">
             <label>Endpoint URL</label>
             <input type="text" id="azure-endpoint" placeholder="https://your-resource.openai.azure.com/">

@@ -199,6 +199,20 @@ public class ProcessManager : IDisposable
                 break;
             }
 
+            case "OpenAI":
+            {
+                psi.Environment["AZURE_OPENAI_SERVICE_TYPE"] = "OpenAI";
+                foreach (var key in new[] {
+                    "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_KEY",
+                    "AZURE_OPENAI_CHAT_ENDPOINT", "AZURE_OPENAI_CHAT_API_KEY" })
+                {
+                    var val = Environment.GetEnvironmentVariable(key);
+                    if (!string.IsNullOrEmpty(val))
+                        psi.Environment[key] = val;
+                }
+                break;
+            }
+
             default: // AzureOpenAI
             {
                 // Propagate existing Azure env vars

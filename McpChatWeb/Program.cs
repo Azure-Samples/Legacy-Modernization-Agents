@@ -12,7 +12,29 @@ using McpChatWeb.Models;
 using McpChatWeb.Services;
 using Neo4j.Driver;
 
+using System.Net;
+using System.Net.Http;
+
+ServicePointManager.ServerCertificateValidationCallback += (sender, cert, chain, sslPolicyErrors) => true;
+ClearDeadProxyEnvironment();
+
 var builder = WebApplication.CreateBuilder(args);
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole();
+builder.Logging.AddDebug();
+
+static void ClearDeadProxyEnvironment()
+{
+	var proxyKeys = new[] { "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy" };
+	foreach (var key in proxyKeys)
+	{
+		var value = Environment.GetEnvironmentVariable(key);
+		if (!string.IsNullOrWhiteSpace(value) && value.Contains("127.0.0.1:9", StringComparison.OrdinalIgnoreCase))
+		{
+			Environment.SetEnvironmentVariable(key, null);
+		}
+	}
+}
 
 // Configure Kestrel with SO_REUSEADDR to allow port reuse
 builder.WebHost.ConfigureKestrel(serverOptions =>
@@ -94,7 +116,7 @@ builder.Services.AddSingleton<McpChatWeb.Services.ProcessManager>(sp =>
 });
 
 builder.Services.AddSingleton<PortalState>();
-builder.Services.AddOpenApi();
+//builder.Services.AddOpenApi();
 
 var app = builder.Build();
 
@@ -163,7 +185,7 @@ await CleanupStaleRunsAsync();
 
 if (app.Environment.IsDevelopment())
 {
-	app.MapOpenApi();
+	//app.MapOpenApi();
 }
 
 app.UseDefaultFiles();
@@ -324,6 +346,54 @@ app.MapPost("/api/chat", async (ChatRequest request, IMcpClient client, Cancella
 	if (string.IsNullOrWhiteSpace(request.Prompt))
 	{
 		return Results.BadRequest("Prompt cannot be empty.");
+	}
+
+	static bool LooksLikeAiFallback(string response) =>
+		response.Contains("Unable to get AI answer", StringComparison.OrdinalIgnoreCase) ||
+		response.Contains("Using fallback response", StringComparison.OrdinalIgnoreCase);
+
+	async Task<IResult?> TryDirectWebAiAsync(string prompt, string failedResponse)
+	{
+		var (directClient, directModel, directError) = McpChatWeb.Services.PromptStudioAI.CreateClient();
+		if (directClient == null)
+		{
+			Console.WriteLine($"Direct web AI fallback unavailable: {directError}");
+			return null;
+		}
+
+		try
+		{
+			var directResponse = await directClient.GetResponseAsync(
+				new[]
+				{
+					new Microsoft.Extensions.AI.ChatMessage(
+						Microsoft.Extensions.AI.ChatRole.System,
+						"You are a helpful assistant for a COBOL modernization web portal. Answer the user's question clearly and directly."),
+					new Microsoft.Extensions.AI.ChatMessage(
+						Microsoft.Extensions.AI.ChatRole.User,
+						prompt)
+				},
+				new Microsoft.Extensions.AI.ChatOptions { MaxOutputTokens = 4000 },
+				cancellationToken);
+
+			var text = directResponse.Text ?? "";
+			if (!string.IsNullOrWhiteSpace(text))
+			{
+				Console.WriteLine($"Direct web AI fallback succeeded with {directModel}");
+				return Results.Ok(new ChatResponse(text, null));
+			}
+		}
+		catch (Exception directEx)
+		{
+			Console.WriteLine($"Direct web AI fallback failed: {directEx.Message}");
+		}
+		finally
+		{
+			if (directClient is IDisposable disposable)
+				disposable.Dispose();
+		}
+
+		return null;
 	}
 
 	// If the user toggled "Chat with Report", load the report content and prepend as context
@@ -953,6 +1023,12 @@ You can still access the data directly:
 		}
 
 		var normalResponse = await client.SendChatAsync(augmentedPrompt, cancellationToken);
+		if (LooksLikeAiFallback(normalResponse))
+		{
+			var directResult = await TryDirectWebAiAsync(augmentedPrompt, normalResponse);
+			if (directResult != null)
+				return directResult;
+		}
 		return Results.Ok(new ChatResponse(normalResponse, null));
 	}
 	catch (Exception ex)
@@ -962,16 +1038,27 @@ You can still access the data directly:
 		try
 		{
 			var normalResponse = await client.SendChatAsync(request.Prompt, cancellationToken);
+			if (LooksLikeAiFallback(normalResponse))
+			{
+				var directResult = await TryDirectWebAiAsync(request.Prompt, normalResponse);
+				if (directResult != null)
+					return directResult;
+			}
 			return Results.Ok(new ChatResponse(normalResponse, null));
 		}
 		catch (Exception innerEx)
 		{
+			var directResult = await TryDirectWebAiAsync(request.Prompt, innerEx.Message);
+			if (directResult != null)
+				return directResult;
+
 			var serviceType = Environment.GetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE") ?? "AzureOpenAI";
 			var modelId = Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL_ID") ?? "unknown";
 			var detail = $"AI call failed (provider: {serviceType}, model: {modelId}).\n\n" +
 			             $"Error: {innerEx.Message}\n\n" +
 			             (innerEx.InnerException != null ? $"Inner: {innerEx.InnerException.Message}\n\n" : "") +
 			             "Possible causes:\n" +
+			             "• If using OpenAI/LM Studio: check ServiceType=OpenAI, endpoint URL, API key, and loaded model in Config/appsettings.json\n" +
 			             "• If using GitHubCopilot: ensure 'gh auth login' has been run and GITHUB_TOKEN is set\n" +
 			             "• If using AzureOpenAI: check endpoint URL and API key in Config/ai-config.env\n" +
 			             "• The model selected in the portal may not match the configured AI backend\n" +
@@ -3920,7 +4007,10 @@ app.MapGet("/api/models/available", () =>
 		?? Environment.GetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE") ?? "AzureOpenAI";
 	var isCopilotSdk = serviceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase) ||
 	                   serviceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase);
-	var provider = isCopilotSdk ? "GitHub Copilot SDK" : "Azure OpenAI";
+	var isOpenAICompatible = serviceType.Equals("OpenAI", StringComparison.OrdinalIgnoreCase);
+	var provider = isCopilotSdk ? "GitHub Copilot SDK"
+		: isOpenAICompatible ? "OpenAI / LM Studio"
+		: "Azure OpenAI";
 
 	// If we have discovered models from the connect flow, use those
 	if (portalState.DiscoveredModels.Count > 0)
@@ -4032,7 +4122,82 @@ app.MapPost("/api/models/connect", async (McpChatWeb.Models.ConnectProviderReque
 	{
 		var models = new List<McpChatWeb.Models.ModelInfo>();
 
-		if (request.ServiceType.Equals("AzureOpenAI", StringComparison.OrdinalIgnoreCase))
+		if (request.ServiceType.Equals("OpenAI", StringComparison.OrdinalIgnoreCase))
+		{
+			if (string.IsNullOrWhiteSpace(request.Endpoint))
+				return Results.BadRequest(new { error = "Endpoint is required for OpenAI-compatible providers" });
+
+			if (!Uri.TryCreate(request.Endpoint, UriKind.Absolute, out var endpointUri) ||
+			    (endpointUri.Scheme != "https" && endpointUri.Scheme != "http"))
+			{
+				return Results.BadRequest(new { error = "Invalid endpoint URL. Must be a valid HTTP or HTTPS URL." });
+			}
+
+			var endpoint = request.Endpoint.TrimEnd('/');
+
+			using var openAiHttp = new HttpClient();
+			openAiHttp.Timeout = TimeSpan.FromSeconds(20);
+			if (!string.IsNullOrWhiteSpace(request.ApiKey))
+			{
+				openAiHttp.DefaultRequestHeaders.Authorization =
+					new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", request.ApiKey);
+			}
+
+			try
+			{
+				var modelsResponse = await openAiHttp.GetAsync($"{endpoint}/models");
+				var modelsJson = await modelsResponse.Content.ReadAsStringAsync();
+
+				if (!modelsResponse.IsSuccessStatusCode)
+				{
+					return Results.Ok(new
+					{
+						error = $"OpenAI-compatible endpoint returned HTTP {(int)modelsResponse.StatusCode}: {modelsJson}",
+						authenticated = false
+					});
+				}
+
+				using var modelsDoc = JsonDocument.Parse(modelsJson);
+				if (modelsDoc.RootElement.TryGetProperty("data", out var modelsArray))
+				{
+					foreach (var modelEntry in modelsArray.EnumerateArray())
+					{
+						var id = modelEntry.TryGetProperty("id", out var idProp) ? idProp.GetString() ?? "" : "";
+						if (string.IsNullOrWhiteSpace(id)) continue;
+
+						var family = ClassifyModelFamily(id);
+						if (family is "Embedding" or "Image" or "Audio") continue;
+
+						models.Add(new McpChatWeb.Models.ModelInfo(
+							id, id, "OpenAI / LM Studio", family,
+							$"OpenAI-compatible model: {id}", null
+						));
+					}
+				}
+
+				if (models.Count == 0)
+				{
+					return Results.Ok(new
+					{
+						authenticated = true,
+						error = "Connected to OpenAI-compatible endpoint but no chat/completion models were found.",
+						models = Array.Empty<object>(),
+						modelCount = 0
+					});
+				}
+
+				portalState.ConnectedServiceType = "OpenAI";
+				portalState.ConnectedEndpoint = request.Endpoint;
+				portalState.ConnectedViaDefaultCredential = false;
+
+				Console.WriteLine($"Connected to OpenAI-compatible endpoint: {models.Count} models found at {request.Endpoint}");
+			}
+			catch (Exception ex)
+			{
+				return Results.Ok(new { error = $"Cannot reach OpenAI-compatible endpoint: {ex.Message}", authenticated = false });
+			}
+		}
+		else if (request.ServiceType.Equals("AzureOpenAI", StringComparison.OrdinalIgnoreCase))
 		{
 			// ── Azure OpenAI: list actual deployments via ARM management API ──
 			if (string.IsNullOrWhiteSpace(request.Endpoint))
@@ -4470,14 +4635,21 @@ app.MapPost("/api/models/save-config", async (McpChatWeb.Models.SaveModelConfigR
 	try
 	{
 		// Update environment variables for the current process
-		Environment.SetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE", 
+		var normalizedServiceType =
 			request.ServiceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase) ||
-			request.ServiceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase) 
-				? "GitHubCopilot" : "AzureOpenAI");
+			request.ServiceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase)
+				? "GitHubCopilot"
+				: request.ServiceType.Equals("OpenAI", StringComparison.OrdinalIgnoreCase)
+					? "OpenAI"
+					: "AzureOpenAI";
+
+		Environment.SetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE", normalizedServiceType);
+		Environment.SetEnvironmentVariable("AISETTINGS__SERVICETYPE", normalizedServiceType);
 
 		if (!string.IsNullOrWhiteSpace(request.Endpoint))
 		{
 			Environment.SetEnvironmentVariable("AZURE_OPENAI_ENDPOINT", request.Endpoint);
+			Environment.SetEnvironmentVariable("AZURE_OPENAI_CHAT_ENDPOINT", request.Endpoint);
 			Environment.SetEnvironmentVariable("AISETTINGS__ENDPOINT", request.Endpoint);
 			Environment.SetEnvironmentVariable("AISETTINGS__CHATENDPOINT", request.Endpoint);
 		}
@@ -4485,6 +4657,7 @@ app.MapPost("/api/models/save-config", async (McpChatWeb.Models.SaveModelConfigR
 		if (!string.IsNullOrWhiteSpace(request.ApiKey))
 		{
 			Environment.SetEnvironmentVariable("AZURE_OPENAI_API_KEY", request.ApiKey);
+			Environment.SetEnvironmentVariable("AZURE_OPENAI_CHAT_API_KEY", request.ApiKey);
 			Environment.SetEnvironmentVariable("AISETTINGS__APIKEY", request.ApiKey);
 			Environment.SetEnvironmentVariable("AISETTINGS__CHATAPIKEY", request.ApiKey);
 		}
@@ -4520,6 +4693,7 @@ app.MapPost("/api/models/save-config", async (McpChatWeb.Models.SaveModelConfigR
 
 			var isGitHubCopilot = request.ServiceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase) ||
 			                      request.ServiceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase);
+			var isOpenAICompatible = request.ServiceType.Equals("OpenAI", StringComparison.OrdinalIgnoreCase);
 
 			var sb = new System.Text.StringBuilder();
 			sb.AppendLine("# =============================================================================");
@@ -4574,12 +4748,21 @@ app.MapPost("/api/models/save-config", async (McpChatWeb.Models.SaveModelConfigR
 			}
 			else
 			{
-				sb.AppendLine("# Provider: Azure OpenAI");
-				sb.AppendLine("AZURE_OPENAI_SERVICE_TYPE=\"AzureOpenAI\"");
+				sb.AppendLine(isOpenAICompatible ? "# Provider: OpenAI / LM Studio" : "# Provider: Azure OpenAI");
+				sb.AppendLine(isOpenAICompatible
+					? "AZURE_OPENAI_SERVICE_TYPE=\"OpenAI\""
+					: "AZURE_OPENAI_SERVICE_TYPE=\"AzureOpenAI\"");
+				sb.AppendLine(isOpenAICompatible
+					? "AISETTINGS__SERVICETYPE=\"OpenAI\""
+					: "AISETTINGS__SERVICETYPE=\"AzureOpenAI\"");
 				sb.AppendLine();
 				sb.AppendLine("# Service Credentials");
 				sb.AppendLine($"_MAIN_ENDPOINT=\"{request.Endpoint ?? ""}\"");
-				if (!string.IsNullOrWhiteSpace(request.ApiKey) && !request.UseDefaultCredential)
+				if (isOpenAICompatible)
+				{
+					sb.AppendLine($"_MAIN_API_KEY=\"{request.ApiKey ?? "lm-studio"}\"");
+				}
+				else if (!string.IsNullOrWhiteSpace(request.ApiKey) && !request.UseDefaultCredential)
 				{
 					sb.AppendLine($"_MAIN_API_KEY=\"{request.ApiKey}\"");
 				}
@@ -4609,6 +4792,10 @@ app.MapPost("/api/models/save-config", async (McpChatWeb.Models.SaveModelConfigR
 				sb.AppendLine("AZURE_OPENAI_UNIT_TEST_MODEL=\"$_CODE_MODEL\"");
 				sb.AppendLine();
 				sb.AppendLine("# Portal & Reporting Configuration (Mapped to Chat Model)");
+				sb.AppendLine("AZURE_OPENAI_CHAT_ENDPOINT=\"$_MAIN_ENDPOINT\"");
+				sb.AppendLine("AZURE_OPENAI_CHAT_API_KEY=\"$_MAIN_API_KEY\"");
+				sb.AppendLine("AZURE_OPENAI_CHAT_MODEL_ID=\"$_CHAT_MODEL\"");
+				sb.AppendLine("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME=\"$_CHAT_MODEL\"");
 				sb.AppendLine("AISETTINGS__CHATENDPOINT=\"$_MAIN_ENDPOINT\"");
 				sb.AppendLine("AISETTINGS__CHATAPIKEY=\"$_MAIN_API_KEY\"");
 				sb.AppendLine("AISETTINGS__CHATMODELID=\"$_CHAT_MODEL\"");
