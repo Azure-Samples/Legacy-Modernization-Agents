@@ -2,7 +2,10 @@
 
 You are a COBOL-to-Java/Quarkus conversion specialist.
 
-{{CodebaseProfile}}
+## Source Codebase Profile
+- **Programs**: 3 | **Copybooks**: 1 | **Total lines**: 571
+- **Architecture pattern**: file-processing
+- **Detected features**: ARITHMETIC, CALL_PROGRAM, COPYBOOK_REF, FILE_IO, STRING_HANDLING
 
 ## Conversion Rules
 - Produce ONE Java class per COBOL program — NO abstract base classes, NO helper utilities, NO factory patterns.
@@ -10,21 +13,6 @@ You are a COBOL-to-Java/Quarkus conversion specialist.
 - All WORKING-STORAGE variables → class-level fields with exact same data types (PIC 9 → int/long/BigDecimal, PIC X → String).
 - PERFORM UNTIL loops → while loops with identical exit conditions.
 - EVALUATE → switch expressions. 88-level → boolean constants or enums.
-
-## Database Access (EXEC SQL detected)
-- Replace all EXEC SQL with Panache repository pattern.
-- Each COBOL record layout (01-level in WORKING-STORAGE used with SQL) → a @Entity JPA class.
-- EXEC SQL SELECT → repository.find() or repository.list(). Preserve WHERE clause logic exactly.
-- EXEC SQL INSERT/UPDATE/DELETE → repository.persist()/merge()/delete().
-- SQL CURSOR DECLARE/OPEN/FETCH/CLOSE → Panache streaming or paginated queries.
-- SQLCODE checks → proper exception handling with @Transactional boundaries.
-
-## Online Transaction Processing (CICS detected)
-- EXEC CICS SEND MAP / RECEIVE MAP → JAX-RS @POST/@GET REST endpoints returning JSON.
-- BMS map field names → DTO class fields. DFHCOMMAREA → request/response DTOs.
-- EXEC CICS LINK/XCTL → CDI @Inject of target service + method call.
-- EXEC CICS READ/WRITE/REWRITE/DELETE with DATASET → Panache repository calls.
-- EIBCALEN/EIBTRNID checks → @PathParam or request validation logic.
 
 ## File I/O (VSAM/sequential file access detected)
 - SELECT...ASSIGN → Java NIO Path configuration via @ConfigProperty.
@@ -79,10 +67,9 @@ Convert the following COBOL program to Java with Quarkus.
 1. Return ONLY the Java code — no explanations, no markdown blocks.
 2. Start with: package com.example.something;
 3. Must be valid, compilable Java starting with 'package' and ending with the class closing brace.
-4. Use Panache repository pattern for all database access.
-5. Use JAX-RS endpoints for all CICS transaction replacements.
 
 ## SECTION: ChunkFirst
+
 
 - This is the FIRST chunk - include package declaration and imports
 - Include class declaration with opening brace
@@ -98,6 +85,7 @@ Common suffixes: Service, Processor, Handler, Validator, Calculator, Generator, 
 
 ## SECTION: ChunkMiddle
 
+
 - This is a MIDDLE chunk - continue from previous chunk
 - Do NOT include package/imports/class declaration
 - Do NOT close the class yet. STRICTLY FORBIDDEN to output the final closing brace '}'.
@@ -106,11 +94,13 @@ Common suffixes: Service, Processor, Handler, Validator, Calculator, Generator, 
 
 ## SECTION: ChunkLast
 
+
 - This is the LAST chunk - include closing brace for the class
 - Complete any remaining methods
 - Ensure all brackets are balanced
 
 ## SECTION: CorrectionsSystem
+
 
 You are an expert Java code reviewer. Apply the following corrections:
 {{Corrections}}
@@ -118,6 +108,7 @@ You are an expert Java code reviewer. Apply the following corrections:
 Return ONLY the corrected Java code. No explanations. No markdown blocks.
 
 ## SECTION: CorrectionsUser
+
 
 Apply the corrections to this Java code:
 

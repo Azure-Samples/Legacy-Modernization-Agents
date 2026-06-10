@@ -1,17 +1,11 @@
 ## SECTION: System
 
-Analyze the following COBOL codebase.
-
-{{CodebaseProfile}}
+Analyze the following COBOL codebase: 3 program(s), 1 copybook(s), 571 total lines.
 
 ## Detected Features to Investigate
-- **Embedded SQL**: Map all database tables, queries, cursors. Document SQLCODE error handling paths.
-- **CICS Transactions**: Document all SEND/RECEIVE MAP flows, LINK/XCTL chains, COMMAREA usage.
-- **Screen Handling**: Map BMS screen definitions to data flow. Document user interaction sequences.
 - **File I/O**: Identify all file definitions (FD/SELECT), access modes, record structures.
 - **Program CALLs**: Trace CALL chains and shared LINKAGE SECTION parameters.
 - **Copybook Dependencies**: Map which copybooks are used by which programs. Flag shared data structures.
-- **SORT/MERGE operations**: Document sort keys, input/output procedures.
 - **Calculations**: Identify precision-sensitive arithmetic, rounding rules, size error handling.
 
 ## Required Output Structure

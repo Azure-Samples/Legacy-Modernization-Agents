@@ -1,8 +1,6 @@
 ## SECTION: System
 
-Extract business logic from the COBOL codebase.
-
-{{CodebaseProfile}}
+Extract business logic from the COBOL codebase (3 programs, 1 copybooks).
 
 ## Extraction Focus Areas
 For each program, extract:
@@ -12,8 +10,6 @@ For each program, extract:
 4. **Calculations** — formulas, rates, accumulations with exact precision requirements.
 5. **State Transitions** — how records/transactions change state through processing.
 
-- **Data Rules**: Extract business meaning of each SQL query — not just the SQL, but what business operation it represents.
-- **Transaction Rules**: Extract the business workflow encoded in CICS transaction flows.
 - **Calculation Rules**: Document every COMPUTE/ADD/SUBTRACT/MULTIPLY/DIVIDE with its business meaning and precision.
 
 ## Output Format
