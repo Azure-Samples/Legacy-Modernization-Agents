@@ -1129,8 +1129,7 @@ You can still access the data directly:
 				var rektUser = Environment.GetEnvironmentVariable("REKT_NEO4J_USER") ?? "neo4j";
 				var rektPassword = Environment.GetEnvironmentVariable("REKT_NEO4J_PASSWORD") ?? "cobol-rekt-2026";
 
-				using var rektDriver = Neo4j.Driver.GraphDatabase.Driver(
-					rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
+				var rektDriver = McpChatWeb.Services.RektNeo4j.Shared;
 				await using var rektSession = rektDriver.AsyncSession();
 
 				string scopeLabel = scope switch
@@ -1558,7 +1557,7 @@ app.MapGet("/api/graph/stats", async (CancellationToken cancellationToken) =>
 		var rektUser = Environment.GetEnvironmentVariable("REKT_NEO4J_USER") ?? "neo4j";
 		var rektPassword = Environment.GetEnvironmentVariable("REKT_NEO4J_PASSWORD") ?? "cobol-rekt-2026";
 
-		using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
+		var driver = McpChatWeb.Services.RektNeo4j.Shared;
 		await using var session = driver.AsyncSession();
 
 		// Latest-run-per-file dedupe — each file appears once with its most recent scan data.
@@ -1652,7 +1651,7 @@ app.MapGet("/api/graph/complexity", async (CancellationToken cancellationToken) 
 		var rektUser = Environment.GetEnvironmentVariable("REKT_NEO4J_USER") ?? "neo4j";
 		var rektPassword = Environment.GetEnvironmentVariable("REKT_NEO4J_PASSWORD") ?? "cobol-rekt-2026";
 
-		using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
+		var driver = McpChatWeb.Services.RektNeo4j.Shared;
 		await using var session = driver.AsyncSession();
 
 		// Per-file complexity — latest-run-per-file so every file is visible exactly once.
@@ -1717,7 +1716,7 @@ app.MapGet("/api/graph/rekt/runs", async (CancellationToken cancellationToken) =
 		var rektUser = Environment.GetEnvironmentVariable("REKT_NEO4J_USER") ?? "neo4j";
 		var rektPassword = Environment.GetEnvironmentVariable("REKT_NEO4J_PASSWORD") ?? "cobol-rekt-2026";
 
-		using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
+		var driver = McpChatWeb.Services.RektNeo4j.Shared;
 		await using var session = driver.AsyncSession();
 
 		var result = await session.RunAsync(@"
@@ -1752,7 +1751,7 @@ app.MapGet("/api/graph/rekt/files", async (long? scanRunId, CancellationToken ca
 		var rektUser = Environment.GetEnvironmentVariable("REKT_NEO4J_USER") ?? "neo4j";
 		var rektPassword = Environment.GetEnvironmentVariable("REKT_NEO4J_PASSWORD") ?? "cobol-rekt-2026";
 
-		using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
+		var driver = McpChatWeb.Services.RektNeo4j.Shared;
 		await using var session = driver.AsyncSession();
 
 		// Return files with AST data + flag which ones have CFG edges.
@@ -1809,7 +1808,7 @@ app.MapGet("/api/graph/rekt/mermaid", async (string? file, long? scanRunId, Canc
 		var rektUser = Environment.GetEnvironmentVariable("REKT_NEO4J_USER") ?? "neo4j";
 		var rektPassword = Environment.GetEnvironmentVariable("REKT_NEO4J_PASSWORD") ?? "cobol-rekt-2026";
 
-		using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
+		var driver = McpChatWeb.Services.RektNeo4j.Shared;
 		await using var session = driver.AsyncSession();
 
 		var mermaid = new System.Text.StringBuilder();
@@ -1991,7 +1990,7 @@ app.MapGet("/api/graph/rekt/architect", async (long? scanRunId, CancellationToke
 		var rektUser = Environment.GetEnvironmentVariable("REKT_NEO4J_USER") ?? "neo4j";
 		var rektPassword = Environment.GetEnvironmentVariable("REKT_NEO4J_PASSWORD") ?? "cobol-rekt-2026";
 
-		using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
+		var driver = McpChatWeb.Services.RektNeo4j.Shared;
 		await using var session = driver.AsyncSession();
 
 		// Step 1: Get AST program names (fast — indexed by program)
@@ -2057,7 +2056,7 @@ app.MapGet("/api/graph/rekt/services", async (long? scanRunId, CancellationToken
 		var rektUser = Environment.GetEnvironmentVariable("REKT_NEO4J_USER") ?? "neo4j";
 		var rektPassword = Environment.GetEnvironmentVariable("REKT_NEO4J_PASSWORD") ?? "cobol-rekt-2026";
 
-		using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
+		var driver = McpChatWeb.Services.RektNeo4j.Shared;
 		await using var session = driver.AsyncSession();
 
 		// Deduplicated programs — pick latest runId per file
@@ -2139,7 +2138,7 @@ app.MapGet("/api/graph/rekt/structure", async (string file, long? scanRunId, Can
 		var rektUser = Environment.GetEnvironmentVariable("REKT_NEO4J_USER") ?? "neo4j";
 		var rektPassword = Environment.GetEnvironmentVariable("REKT_NEO4J_PASSWORD") ?? "cobol-rekt-2026";
 
-		using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
+		var driver = McpChatWeb.Services.RektNeo4j.Shared;
 		await using var session = driver.AsyncSession();
 
 		// Server-side ceiling on every Cypher call — without this, a large
@@ -2313,7 +2312,7 @@ app.MapGet("/api/source/content", async (string file, int? startLine, int? endLi
 			var rektUser = Environment.GetEnvironmentVariable("REKT_NEO4J_USER") ?? "neo4j";
 			var rektPassword = Environment.GetEnvironmentVariable("REKT_NEO4J_PASSWORD") ?? "cobol-rekt-2026";
 
-			using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
+			var driver = McpChatWeb.Services.RektNeo4j.Shared;
 			await using var session = driver.AsyncSession();
 
 			// Try multiple name patterns
@@ -2384,7 +2383,7 @@ app.MapGet("/api/graph/rekt/deadcode", async (string? file, long? scanRunId, Can
 		var rektUser = Environment.GetEnvironmentVariable("REKT_NEO4J_USER") ?? "neo4j";
 		var rektPassword = Environment.GetEnvironmentVariable("REKT_NEO4J_PASSWORD") ?? "cobol-rekt-2026";
 
-		using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
+		var driver = McpChatWeb.Services.RektNeo4j.Shared;
 		await using var session = driver.AsyncSession();
 
 		var runFilter = scanRunId.HasValue ? "AND n.runId = $scanRunId" : "";
@@ -2668,7 +2667,7 @@ app.MapGet("/api/graph/rekt/cfg", async (string file, long? scanRunId, Cancellat
 		var rektUser = Environment.GetEnvironmentVariable("REKT_NEO4J_USER") ?? "neo4j";
 		var rektPassword = Environment.GetEnvironmentVariable("REKT_NEO4J_PASSWORD") ?? "cobol-rekt-2026";
 
-		using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
+		var driver = McpChatWeb.Services.RektNeo4j.Shared;
 		await using var session = driver.AsyncSession();
 
 		var candidates = new[] { file, $"flow-ast-{file}", file.Replace("flow-ast-", "") };
@@ -2805,7 +2804,7 @@ app.MapGet("/api/graph/rekt/galaxy", async (long? scanRunId, CancellationToken c
 		var rektUser = Environment.GetEnvironmentVariable("REKT_NEO4J_USER") ?? "neo4j";
 		var rektPassword = Environment.GetEnvironmentVariable("REKT_NEO4J_PASSWORD") ?? "cobol-rekt-2026";
 
-		using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
+		var driver = McpChatWeb.Services.RektNeo4j.Shared;
 		await using var session = driver.AsyncSession();
 
 		// When the caller pins a specific scanRunId we honour it for both AST and CobolFile lookups;
@@ -2960,7 +2959,7 @@ app.MapGet("/api/graph/rekt/galaxy-ast", async (long? scanRunId, CancellationTok
 		var rektUser = Environment.GetEnvironmentVariable("REKT_NEO4J_USER") ?? "neo4j";
 		var rektPassword = Environment.GetEnvironmentVariable("REKT_NEO4J_PASSWORD") ?? "cobol-rekt-2026";
 
-		using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
+		var driver = McpChatWeb.Services.RektNeo4j.Shared;
 		await using var session = driver.AsyncSession();
 
 		// Get key structural nodes across ALL programs (skip low-level SENTENCE/GENERIC nodes for performance).
@@ -3095,7 +3094,7 @@ app.MapGet("/api/graph/rekt/ast", async (string file, long? scanRunId, Cancellat
 		var rektUser = Environment.GetEnvironmentVariable("REKT_NEO4J_USER") ?? "neo4j";
 		var rektPassword = Environment.GetEnvironmentVariable("REKT_NEO4J_PASSWORD") ?? "cobol-rekt-2026";
 
-		using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
+		var driver = McpChatWeb.Services.RektNeo4j.Shared;
 		await using var session = driver.AsyncSession();
 
 		// Try exact match first, then with flow-ast- prefix (rekt naming convention)
@@ -3173,7 +3172,7 @@ app.MapGet("/api/graph/rekt", async (int? runId, CancellationToken cancellationT
 		var rektUser = Environment.GetEnvironmentVariable("REKT_NEO4J_USER") ?? "neo4j";
 		var rektPassword = Environment.GetEnvironmentVariable("REKT_NEO4J_PASSWORD") ?? "cobol-rekt-2026";
 
-		using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
+		var driver = McpChatWeb.Services.RektNeo4j.Shared;
 		await using var session = driver.AsyncSession();
 
 		var nodeResult = await session.RunAsync(@"
@@ -8840,7 +8839,7 @@ app.MapGet("/api/programs/catalog", async (string? sourceFolder, long? scanRunId
 				var rektUri = Environment.GetEnvironmentVariable("REKT_NEO4J_URI") ?? "bolt://localhost:7688";
 				var rektUser = Environment.GetEnvironmentVariable("REKT_NEO4J_USER") ?? "neo4j";
 				var rektPassword = Environment.GetEnvironmentVariable("REKT_NEO4J_PASSWORD") ?? "cobol-rekt-2026";
-				using var driver = Neo4j.Driver.GraphDatabase.Driver(rektUri, Neo4j.Driver.AuthTokens.Basic(rektUser, rektPassword));
+				var driver = McpChatWeb.Services.RektNeo4j.Shared;
 				await using var neoSession = driver.AsyncSession();
 				var result = await neoSession.RunAsync(@"
 					MATCH (a:ASTNode) WHERE a.program IS NOT NULL AND coalesce(a.runId, 0) = $runId
@@ -9303,6 +9302,9 @@ app.MapPost("/api/modernization/semantic-search/expand",
 app.MapGet("/api/modernization/capability-suggestions",
     (McpChatWeb.Services.CapabilityClassifier svc) =>
         Results.Ok(svc.SuggestKeywords()));
+
+app.Lifetime.ApplicationStopping.Register(() =>
+    McpChatWeb.Services.RektNeo4j.DisposeAsync().AsTask().GetAwaiter().GetResult());
 
 app.Run();
 

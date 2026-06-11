@@ -76,6 +76,13 @@ class ModernizationIntelligenceView {
 
   async _renderActive() {
     const body = this.root.querySelector('#mi-body');
+    // Interactive subviews hold user-selected state (a picked program in the
+    // Flow Explorer, an expanded topology graph, a typed locator query) and are
+    // expensive to re-render. Mark them so the 30s auto-refresh skips the
+    // visual swap and doesn't reset what the user is looking at. The explicit
+    // ⟳ Refresh button bypasses this (it calls loadAndRender directly).
+    const interactiveSubviews = ['flow', 'topology', 'services', 'capabilities', 'chain'];
+    body.setAttribute('data-refresh', interactiveSubviews.includes(this._activeSubview) ? 'pause' : 'live');
     body.innerHTML = '<div class="mi-loading">Loading…</div>';
     try {
       if (this._activeSubview === 'dashboard') {
