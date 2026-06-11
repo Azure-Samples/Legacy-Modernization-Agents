@@ -71,20 +71,30 @@ The selector flags below are repeatable — **same flag = OR, different flags = 
 
 Output → **`output/runs/{runId}-{lang}-…/com/example/…/`** — every run gets its own immutable folder; history is never overwritten. Telemetry → `output/.metrics/<runId>.jsonl`.
 
-### 🤖 What each agent does (1-line each — full details in the [Agent Flowchart](#-agent-flowchart))
+### 🤖 The agents (full reference in [Agent Roster](#-agent-roster--what-each-one-does))
+
+The pipeline is a team of **14 prompt-driven agents**. Each one has an editable Markdown system-prompt under `Agents/Prompts/` and appears as a toggle row in the portal's **Prompt Studio** (screenshot below). The most important ones in the default end-to-end run:
 
 | Agent | One-liner |
 |---|---|
-| **CobolAnalyzerAgent** | Deep structural analysis — divisions, paragraphs, copybooks, CALL/PERFORM/SQL/IO metrics. Drives every downstream agent. |
-| **BusinessLogicExtractorAgent** | Converts technical analysis into business language — use cases, user stories, glossary terms. Powers the RE report. |
-| **DependencyMapperAgent** | Builds the CALL / COPY / PERFORM / EXEC SQL graph in SQLite + Neo4j. Backs the dependency views and CALL-tree selectors. |
-| **RektPromptInjector** | Wraps the REKT `facts.json` + shared-types registry + FACT-LOCKING rules into the converter prompt — closes the duplicate-class failure mode. |
-| **JavaConverterAgent / CSharpConverterAgent** | Generates target-language code. Single-shot for small programs, chunked + reassembled for large ones. Hits the projection cache (~80% hit rate). |
-| **ConversionParityAgent** | Re-reads the generated code and scores it against the original COBOL facts (paragraph coverage, SQL fidelity, CALL fan-out). |
-| **CodeReviewerAgent** | Static review pass for compile-blocking issues, missing imports, obvious bugs. |
-| **TestSynthesizerAgent** | Generates unit tests + a parity harness from the BusinessLogic + facts. |
+| **Cobol Analyzer** | Deep structural analysis — divisions, paragraphs, copybooks, CALL/PERFORM/SQL/IO metrics. Drives every downstream agent. |
+| **Business Logic Extractor** | Converts technical analysis into business language — use cases, user stories, glossary terms. Powers the RE report. |
+| **Structural Extractor** | Pulls a REKT-shaped structure (business purpose + rules) straight from source as an LLM fallback when the smojol parser can't fully parse a program. |
+| **Dependency Mapper** | Builds the CALL / COPY / PERFORM / EXEC SQL graph in SQLite + Neo4j. Backs the dependency views and CALL-tree selectors. |
+| **Java Converter / CSharp Converter** | Generates target-language code, single-shot for small programs. Hits the projection cache (~80% hit rate). |
+| **Chunk Aware Java / CSharp Converter** | Same, but for large files — splits at semantic boundaries, converts piece by piece, reassembles with cross-chunk consistency. |
+| **Conversion Parity** | Scores generated code against the original COBOL facts (paragraph coverage, SQL fidelity, CALL fan-out) and can repair gaps. |
+| **Code Reviewer** | Static review pass for compile-blocking issues, missing imports, obvious bugs. |
+| **Test Synthesizer** | Generates unit tests + a parity harness from the BusinessLogic + facts. |
+| **Data Mapping** | Maps COBOL data structures (PIC clauses, REDEFINES, COMP-3) to target types. |
+| **Documentation Agent** | Produces architecture/migration Markdown (with Mermaid) for the RE report. |
+| **Migration Summary** | Aggregates per-program summaries into a portfolio-level report. |
 
-The full agent topology — including the Phase-0 REKT scan, the per-phase data stores, the projection cache, and the Wave Planner write-path — is in the [**🔄 Agent Flowchart**](#-agent-flowchart) and the [**🔀 Agent Responsibilities & Interactions**](#-agent-responsibilities--interactions) Mermaid sequence diagram further down.
+> **📝 NB — prompts are generated, and you should review them.** Prompt Studio's **Generate** scans your actual `source/` corpus (program/copybook counts, detected features such as `EXEC_SQL`, `CICS`, `REDEFINES`, sample code) and **auto-writes a tailored system-prompt for every agent**. This is a starting point, not a final answer — **always review and edit each prompt so it matches the output you actually want** (target framework, naming conventions, DDD vs. transaction-script, compliance constraints, glossary). See [Customizing Agent Behavior](#-customizing-agent-behavior).
+
+The full agent topology — including the Phase-0 REKT scan, the per-phase data stores, the projection cache, and the Wave Planner write-path — is in the [**Agent Roster**](#-agent-roster--what-each-one-does), the [**🔄 Agent Flowchart**](#-agent-flowchart), and the [**🔀 Agent Responsibilities & Interactions**](#-agent-responsibilities--interactions) sequence diagram further down.
+
+![Prompt Studio — Model & Agent Prompts](docs/images/prompt-studio-agents.png)
 
 ---
 
@@ -904,6 +914,75 @@ The portal reads this graph through these endpoints (all dedup the latest scan r
 
 See [`docs/rekt-demo.md`](docs/rekt-demo.md) for an end-to-end walkthrough.
 
+### What REKT actually extracts
+
+`smojol` parses each program with a real COBOL grammar (not regex), so the facts are deterministic and AI-independent. Per program it produces:
+
+| Artifact | Contents |
+|---|---|
+| **AST** | Every node — divisions, sections, paragraphs, statements (MOVE/IF/PERFORM/CALL/EXEC SQL…), with line ranges |
+| **Control-Flow Graph (CFG)** | PERFORM chains, GO TO targets, fall-through edges — the execution skeleton |
+| **Data-flow** | WORKING-STORAGE / LINKAGE items, REDEFINES, OCCURS, level numbers, COMP/COMP-3 usage |
+| **Dependencies** | CALL targets, COPY copybooks, EXEC SQL tables, file I/O |
+| **`*.facts.json`** | A compact, conversion-ready projection of the above — the exact structure injected into the converter prompt |
+
+These land in `output/rekt/` (raw JSON + `facts.json`) **and** are ingested into the dedicated Neo4j graph (`CobolFile`, `ASTNode`, `CFGEdge`, `DataStructure` nodes/relationships). A `scanRunId` stamps every ingest so historical scans never inflate counts.
+
+### How REKT populates the dashboards
+
+The portal never re-parses COBOL — it reads REKT's facts/graph (plus conversion telemetry) and projects them into each surface. This is the data-flow:
+
+```mermaid
+flowchart LR
+  SRC[("source/**<br/>*.cbl · *.cpy")]
+  SMOJOL["smojol parser<br/>(cobol-rekt)"]
+  FACTS[("output/rekt/<br/>*.facts.json")]
+  NEO[("Neo4j :7475<br/>AST · CFG · Data · Deps")]
+  CAPS[("Data/capabilities.json<br/>capability dictionary")]
+  METRICS[("output/.metrics/*.jsonl<br/>+ Data/benchmark.db<br/>conversion telemetry")]
+
+  SRC --> SMOJOL
+  SMOJOL --> FACTS
+  SMOJOL --> NEO
+
+  subgraph DASH["Portal surfaces"]
+    GALAXY["🌌 AST Galaxy<br/>(Technical · Domains · Catalog ·<br/>Radar · BIAN · C4)"]
+    FLOW["🌊 Semantic Flow Explorer<br/>PERFORM chains / swimlanes"]
+    DEPS["🕸 Dependency Topology<br/>+ Dependency Health"]
+    APPS["📚 Application Explorer<br/>per-program inventory"]
+    CAP["🎯 Capabilities & Locator"]
+    SEM["🧠 Semantic Search"]
+    PLAN["📅 Migration Planner /<br/>Wave Planner"]
+    COCK["🎨 Visual Cockpit /<br/>📊 Dashboard"]
+  end
+
+  NEO --> GALAXY
+  NEO --> FLOW
+  NEO --> DEPS
+  FACTS --> APPS
+  FACTS --> CAP
+  FACTS --> SEM
+  CAPS --> CAP
+  CAPS --> SEM
+  FACTS --> PLAN
+  NEO --> PLAN
+  METRICS --> COCK
+  FACTS --> COCK
+```
+
+| Dashboard / surface | What REKT data feeds it | Source |
+|---|---|---|
+| 🌌 **AST Galaxy** (all 6 modes) | Programs + AST sub-structure + CALL/COPY edges; BIAN/C4 modes overlay business mappings | Neo4j (`/api/graph/rekt/galaxy`, `galaxy-ast`) |
+| 🌊 **Semantic Flow Explorer** | PERFORM chains, transaction flows, paragraph swimlanes | Neo4j CFG (`/api/graph/rekt/structure`, `cfg`) |
+| 🕸 **Dependency Topology** + 🩺 **Dependency Health** | CALL/COPY/EXEC SQL graph; missing-copybook leaderboard; full-fidelity vs deps-only flag | Neo4j + `facts.json` warnings |
+| 📚 **Application Explorer** | Per-program LoC, facts confidence, dep count, latest compile/cache state | `facts.json` + `benchmark.db` |
+| 🎯 **Capabilities & Service Locator** | Multi-label capability classification (paragraph names, CALL targets, SQL tables, copybooks) | `facts.json` × `capabilities.json` |
+| 🧠 **Semantic Search** | Ranks programs/paragraphs/copybooks/snippets by intent; expands via capability dictionary | `facts.json` × `capabilities.json` |
+| 📅 **Migration Planner / Wave Planner** | Program inventory, dependency weight, readiness scoring for wave assignment | Neo4j + `facts.json` |
+| 🎨 **Visual Cockpit** + 📊 **Dashboard** | Estate status, coupling heatmaps, readiness gauges (REKT facts) + compile/cache/LLM metrics (telemetry) | `facts.json` + `benchmark.db` / `.metrics/*.jsonl` |
+
+> **Where the line is**: everything *structural* (what a program contains, what it calls, how it flows) comes from REKT and is deterministic. Everything *qualitative* (business intent prose, generated code, parity scores) comes from the AI agents. The portal fuses both — e.g. the Capabilities view classifies REKT facts against the capability dictionary with **no LLM cost**, while the RE report is pure agent output.
+
 ---
 
 ## 🌌 AST Galaxy & AST Explorer
@@ -1052,28 +1131,47 @@ Legacy-Modernization-Agents/
 
 ## 🛠️ Customizing Agent Behavior
 
-Each agent has a **system prompt** that defines its behavior. To customize output (e.g., DDD patterns, specific frameworks), edit these files:
+Every agent's behavior is driven by a **Markdown system-prompt** in `Agents/Prompts/`. There are two ways to edit them — and the recommended path is Prompt Studio.
 
-### Agent Prompt Locations
+### Option A (recommended): Prompt Studio
 
-| Agent | File | Line | What It Does |
-|-------|------|------|--------------|
-| **CobolAnalyzerAgent** | `Agents/CobolAnalyzerAgent.cs` | ~116 | Extracts structure, variables, paragraphs, SQL |
-| **BusinessLogicExtractorAgent** | `Agents/BusinessLogicExtractorAgent.cs` | ~44 | Extracts user stories, features, business rules |
-| **JavaConverterAgent** | `Agents/JavaConverterAgent.cs` | ~66 | Converts to Java Quarkus |
-| **CSharpConverterAgent** | `Agents/CSharpConverterAgent.cs` | ~64 | Converts to C# .NET |
-| **DependencyMapperAgent** | `Agents/DependencyMapperAgent.cs` | ~129 | Maps CALL/COPY/PERFORM relationships |
-| **ChunkAwareJavaConverter** | `Agents/ChunkAwareJavaConverter.cs` | ~268 | Large file chunked conversion (Java) |
-| **ChunkAwareCSharpConverter** | `Agents/ChunkAwareCSharpConverter.cs` | ~269 | Large file chunked conversion (C#) |
+Open the portal → **Prompt Studio** tab (shown in the [agents screenshot](#-the-agents-full-reference-in-agent-roster--what-each-one-does)). For each agent you get:
+
+- **Generate** — scans your `source/` corpus (program/copybook counts, detected features, sample code) and writes a tailored prompt.
+- **✏️ Edit** — change the prompt inline; it **hot-reloads**, no rebuild.
+- **History / Diff / Restore** — every save is versioned under `Agents/Prompts/.history/`.
+- **Score** — rates the current prompt against the corpus.
+- **Regression** — runs the prompt-regression suite to catch quality drops.
+- Per-agent **on/off toggle** to include/exclude it from a run.
+
+> **📝 NB — always review generated prompts.** *Generate* produces a strong first draft, not a final answer. Before any real conversion, open each agent's prompt and confirm it targets the output **you** want — framework (Quarkus vs. plain Java; .NET version), architecture style (DDD vs. transaction-script), naming strategy, data-type mapping rules, business glossary, and any compliance constraints. A 5-minute prompt review per agent is the single biggest quality lever in the whole pipeline.
+
+### Option B: edit the files directly
+
+The prompts are plain Markdown — edit them in your editor and commit via git for review:
+
+| Agent | Prompt file |
+|---|---|
+| Cobol Analyzer | `Agents/Prompts/CobolAnalyzer.md` |
+| Structural Extractor | `Agents/Prompts/StructuralExtractor.md` |
+| Business Logic Extractor | `Agents/Prompts/BusinessLogicExtractor.md` |
+| Documentation Agent | `Agents/Prompts/DocumentationAgent.md` |
+| Dependency Mapper | `Agents/Prompts/DependencyMapper.md` |
+| Data Mapping | `Agents/Prompts/DataMapping.md` |
+| Java Converter | `Agents/Prompts/JavaConverter.md` |
+| CSharp Converter | `Agents/Prompts/CSharpConverter.md` |
+| Chunk Aware Java Converter | `Agents/Prompts/ChunkAwareJavaConverter.md` |
+| Chunk Aware CSharp Converter | `Agents/Prompts/ChunkAwareCSharpConverter.md` |
+| Conversion Parity | `Agents/Prompts/ConversionParity.md` |
+| Code Reviewer | `Agents/Prompts/CodeReviewer.md` |
+| Test Synthesizer | `Agents/Prompts/TestSynthesizer.md` |
+| Migration Summary | `Agents/Prompts/MigrationSummary.md` |
 
 ### Example: Adding DDD Patterns
 
-To make the Java converter generate Domain-Driven Design code, edit `Agents/JavaConverterAgent.cs` around line 66:
+To make the Java converter generate Domain-Driven Design code, add a section to `Agents/Prompts/JavaConverter.md` (or paste it into the Prompt Studio editor):
 
-```csharp
-var systemPrompt = @"
-You are an expert in converting COBOL programs to Java with Quarkus framework.
-
+```text
 DOMAIN-DRIVEN DESIGN REQUIREMENTS:
 - Identify bounded contexts from COBOL program sections
 - Create Aggregate Roots for main business entities
@@ -1087,12 +1185,9 @@ OUTPUT STRUCTURE:
 - application/   → Application Services, DTOs
 - infrastructure/→ Repositories, External Services
 - ports/         → Interfaces (Ports & Adapters)
-
-...existing prompt content...
-";
 ```
 
-Similarly for C#, edit `Agents/CSharpConverterAgent.cs`.
+Save (or click ✓ in Prompt Studio) and re-run — no rebuild needed. Apply the same pattern to `CSharpConverter.md` for .NET output.
 
 ---
 
@@ -1636,20 +1731,24 @@ flowchart TD
 
   subgraph ANALYZE_PHASE["PHASE 1: Reverse Engineering"]
       REGEX["Regex pre-pass<br/>(SQL / vars)"]
-      ANALYZER["CobolAnalyzerAgent<br/>(structure + logic)"]
-      BIZLOGIC["BusinessLogicExtractorAgent<br/>(intent summaries)"]
+      ANALYZER["Cobol Analyzer<br/>(structure + logic)"]
+      STRUCT["Structural Extractor<br/>(LLM fallback when<br/>smojol can't parse)"]
+      BIZLOGIC["Business Logic Extractor<br/>(intent summaries)"]
+      DOCS["Documentation Agent<br/>(architecture md + Mermaid)"]
       SQLITE[("Data/migration.db<br/>run history")]
   end
 
   subgraph DEPENDENCY_PHASE["PHASE 2: Dependencies"]
-      MAPPER["DependencyMapperAgent<br/>(CALL / COPY / EXEC SQL)"]
+      MAPPER["Dependency Mapper<br/>(CALL / COPY / EXEC SQL)"]
+      DATAMAP["Data Mapping<br/>(PIC / REDEFINES / COMP-3<br/>→ target types)"]
   end
 
   subgraph CONVERT_PHASE["PHASE 3: REKT-Grounded Conversion"]
       INJECT["RektPromptInjector<br/>+ SharedTypeRegistry<br/>+ FACT-LOCKING rules"]
       PROJ[("Data/projection-cache.db<br/>~80% hit rate")]
-      CONVERTER["JavaConverter /<br/>CSharpConverter<br/>(single-shot or chunked)"]
-      PARITY["ConversionParity +<br/>CodeReviewer +<br/>TestSynthesizer"]
+      CONVERTER["Java / CSharp Converter<br/>(single-shot or Chunk-Aware)"]
+      PARITY["Conversion Parity +<br/>Code Reviewer +<br/>Test Synthesizer"]
+      SUMMARY["Migration Summary<br/>(portfolio rollup)"]
       OUTRUN["output/runs/{runId}-{lang}-…/<br/>ISOLATED per-run folder"]
   end
 
@@ -1676,16 +1775,24 @@ flowchart TD
   REGEX --> ANALYZER
   ANALYZER --> SQLITE
   ANALYZER --> BIZLOGIC
+  ANALYZER -.->|parse gap| STRUCT
+  STRUCT --> BIZLOGIC
+  BIZLOGIC --> DOCS
   BIZLOGIC --> SQLITE
+  DOCS --> SQLITE
   SQLITE --> MAPPER
+  MAPPER --> DATAMAP
 
   FACTS --> INJECT
   SQLITE --> INJECT
   MAPPER --> INJECT
+  DATAMAP --> INJECT
   INJECT --> CONVERTER
   PROJ <--> CONVERTER
   CONVERTER --> PARITY
   PARITY --> OUTRUN
+  PARITY --> SUMMARY
+  SUMMARY --> OUTRUN
   CONVERTER --> JSONL
   JSONL --> BENCH
 
@@ -1701,9 +1808,32 @@ flowchart TD
   WAVES <--> MI
 ```
 
-**How to read it**: PHASE 0 (REKT scan) runs once per source change and writes both raw `.facts.json` (per program) and a Neo4j graph. PHASES 1–3 happen on every conversion run. REKT facts + the shared-types registry are injected into the converter prompt (closing the duplicate-class failure mode). Output lands in an **immutable per-run folder** so history is never overwritten. Telemetry streams to JSONL, gets ingested into `benchmark.db`, and powers every dashboard in the portal. The Wave Planner (Modernization Lead persona) is the only WRITE path — it persists to `Data/migration-waves.db`.
+**How to read it**: PHASE 0 (REKT scan) runs once per source change and writes both raw `.facts.json` (per program) and a Neo4j graph. PHASES 1–3 happen on every conversion run. Each labelled box is one of the 14 agents — **every agent's system-prompt is editable in Prompt Studio** (generate from corpus → review → save). REKT facts + the shared-types registry are injected into the converter prompt (closing the duplicate-class failure mode). Output lands in an **immutable per-run folder** so history is never overwritten. Telemetry streams to JSONL, gets ingested into `benchmark.db`, and powers every dashboard in the portal. The Wave Planner (Modernization Lead persona) is the only WRITE path — it persists to `Data/migration-waves.db`.
 
 
+
+### 📋 Agent Roster — what each one does
+
+All 14 agents inherit from `AgentBase`, run through `Microsoft.Extensions.AI` (`IChatClient`), share the rate-limiter/concurrency guard, and load their system-prompt from `Agents/Prompts/<Name>.md`. Columns: **Phase** (when it runs), **Reads** (inputs), **Writes** (outputs), **Prompt file**.
+
+| Agent | Phase | What it does | Reads | Writes | Prompt file |
+|---|---|---|---|---|---|
+| **Cobol Analyzer** | 1 · RE | Deep structural analysis: divisions, paragraphs, variables, copybooks, embedded SQL/DB2, CALL/PERFORM/IO metrics | raw `.cbl`/`.cpy` | `CobolAnalysis` → `migration.db` | `CobolAnalyzer.md` |
+| **Structural Extractor** | 1 · RE | LLM fallback that recovers a REKT-shaped structure (business purpose + rules) when the smojol parser fails on a program | raw source (on parse gap) | structure JSON | `StructuralExtractor.md` |
+| **Business Logic Extractor** | 1 · RE | Turns technical analysis into business language: use cases, user stories, business rules, glossary terms | `CobolAnalysis` + glossary | `BusinessLogic[]` → `business_logic` table + RE report | `BusinessLogicExtractor.md` |
+| **Documentation Agent** | 1 · RE | Produces architecture/migration Markdown (with Mermaid diagrams) for the RE report | `CobolAnalysis` + `BusinessLogic` | `reverse-engineering-details.md` | `DocumentationAgent.md` |
+| **Dependency Mapper** | 2 · Deps | Identifies CALL / COPY / PERFORM / EXEC SQL / file-IO relationships and builds graph metadata | source + analyses | `DependencyMap` → SQLite + Neo4j | `DependencyMapper.md` |
+| **Data Mapping** | 2 · Deps | Maps COBOL data structures (PIC clauses, REDEFINES, COMP/COMP-3 packed-decimal, OCCURS) to target-language types | `CobolAnalysis` data items | type-mapping notes for converter | `DataMapping.md` |
+| **Java Converter** | 3 · Convert | Converts a (small) program to Java/Quarkus in a single shot | analysis + facts + business logic | `CodeFile` (`.java`) | `JavaConverter.md` |
+| **CSharp Converter** | 3 · Convert | Converts a (small) program to C#/.NET in a single shot | analysis + facts + business logic | `CodeFile` (`.cs`) | `CSharpConverter.md` |
+| **Chunk Aware Java Converter** | 3 · Convert | Large-file Java path — splits at DIVISION/SECTION/paragraph boundaries, converts chunk-by-chunk, reassembles with cross-chunk type consistency | large program + facts | reassembled `.java` | `ChunkAwareJavaConverter.md` |
+| **Chunk Aware CSharp Converter** | 3 · Convert | Same as above for C#/.NET | large program + facts | reassembled `.cs` | `ChunkAwareCSharpConverter.md` |
+| **Conversion Parity** | 3 · Validate | Scores generated code against the original COBOL facts (paragraph coverage, SQL fidelity, CALL fan-out) and optionally repairs gaps | generated code + facts | parity report (+ repaired code) | `ConversionParity.md` |
+| **Code Reviewer** | 3 · Validate | Static review for compile-blocking issues, missing imports, obvious bugs | generated code | review findings | `CodeReviewer.md` |
+| **Test Synthesizer** | 3 · Validate | Generates unit tests + a parity harness from the business logic + facts | `BusinessLogic` + facts | test files | `TestSynthesizer.md` |
+| **Migration Summary** | 3 · Report | Aggregates per-program summaries into a portfolio-level Markdown report | per-program summaries | `migration-report.md` (portfolio) | `MigrationSummary.md` |
+
+> **📝 NB — these prompts are auto-generated; review them before a real run.** In Prompt Studio, **Generate** inspects your `source/` corpus (program/copybook counts, line totals, detected features like `EXEC_SQL` / `CICS` / `REDEFINES`, representative code samples) and writes a tailored system-prompt for every agent above. Treat the output as a **first draft**: open each prompt, confirm the target framework, naming strategy, architecture style (DDD vs. transaction-script), glossary, and any compliance rules match what you want — **then** run the conversion. Prompts hot-reload, so no rebuild is needed between edits.
 
 ### 🔀 Agent Responsibilities & Interactions
 
@@ -1759,46 +1889,7 @@ sequenceDiagram
   Portal-->>User: portal UI (chat, graph, reports)
 ```
 
-#### CobolAnalyzerAgent
-- **Purpose:** Deep structural analysis of COBOL files (divisions, paragraphs, copybooks, metrics).
-- **Inputs:** COBOL text from `FileHelper` or cached content.
-- **Outputs:** `CobolAnalysis` objects consumed by:
-  - `ReverseEngineeringProcess` (for documentation & glossary mapping)
-  - `DependencyMapperAgent` (seed data for relationships)
-  - `CodeConverterAgent` (guides translation prompts)
-- **Interactions:**
-  - Uses Azure OpenAI via `ResponsesApiClient` / `IChatClient` with concurrency guard.
-  - Results persisted by `SqliteMigrationRepository`.
-
-#### BusinessLogicExtractorAgent
-- **Purpose:** Convert technical analyses into business language (use cases, user stories, glossary).
-- **Inputs:** Output from `CobolAnalyzerAgent` + optional glossary.
-- **Outputs:** `BusinessLogic` records and Markdown sections used in `reverse-engineering-details.md`.
-- **Interactions:**
-  - Runs in parallel with analyzer results.
-  - Writes documentation via `FileHelper` and logs via `EnhancedLogger`.
-  - Results persisted to the `business_logic` SQLite table via `IMigrationRepository.SaveBusinessLogicAsync`, enabling reuse in subsequent `--skip-reverse-engineering --reuse-re` runs.
-
-#### DependencyMapperAgent
-- **Purpose:** Identify CALL/COPY/PERFORM/IO relationships and build graph metadata.
-- **Inputs:** COBOL files + analyses (line numbers, paragraphs).
-- **Outputs:** `DependencyMap` with nodes/edges stored in both SQLite and Neo4j.
-- **Interactions:**
-  - Feeds the McpChatWeb graph panel and run-selector APIs.
-  - Enables multi-run queries (e.g., "show me CALL tree for run 42").
-
-#### CodeConverterAgent(s)
-- **Variants:** `JavaConverterAgent` or `CSharpConverterAgent` (selected via `TargetLanguage`).
-- **Purpose:** Generate target-language code from COBOL analyses and dependency context.
-- **Inputs:**
-  - `CobolAnalysis` per file
-  - Target language settings (Quarkus vs. .NET)
-  - Migration run metadata (for logging & metrics)
-  - `BusinessLogic` records per file (user stories, features, business rules) — injected automatically from RE output in full-pipeline runs, or loaded from DB when `--reuse-re` is used
-- **Outputs:** `CodeFile` records saved under `output/java/` or `output/csharp/`.
-- **Interactions:**
-  - Concurrency guards (pipeline slots vs. AI calls) ensure Azure OpenAI limits respected.
-  - Results pushed to portal via repositories for browsing/download.
+Per-agent inputs/outputs and prompt-file locations are in the [📋 Agent Roster](#-agent-roster--what-each-one-does) table above. The sequence diagram shows the *default full-pipeline* path; selector runs (`convert-only`, `--reuse-re`) skip the RE leg and load persisted `BusinessLogic` from `migration.db` instead.
 
 ### ⚡ Concurrency Notes
 - **Pipeline concurrency (`--max-parallel`)** controls how many files/chunks run simultaneously (e.g., 8).
