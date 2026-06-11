@@ -155,7 +155,7 @@ flowchart LR
     REKT --> FACTS[output/rekt/<br/>*.facts.json]
     REKT --> NEO[Neo4j :7475<br/>AST + CFG + data]
     FACTS -->|projection<br/>60-90% smaller| CONV[Converter agent<br/>Java / C#]
-    CONV --> RUN[output/runs/{runId}-…/<br/>isolated per-run]
+    CONV --> RUN["output/runs/{runId}-…/<br/>isolated per-run"]
     CONV --> METRICS[output/.metrics/<br/>runId.jsonl]
     METRICS -->|ingest-metrics.py| BENCH[(Data/benchmark.db)]
     RUN --> PORTAL
