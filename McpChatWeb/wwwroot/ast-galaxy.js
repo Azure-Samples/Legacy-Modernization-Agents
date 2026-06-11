@@ -157,6 +157,11 @@ class ASTGalaxyView {
         // Async: needs service-chain data for JCL→Pgm→Cpy chain
         this._buildJclFlowVisData().then(() => {
           this._renderVisNetworkInternal(container);
+          // The early return below skips the shared stats/legend refresh, so do
+          // it here once the async build completes — otherwise the header keeps
+          // showing the previous view's (much larger) node/edge counts.
+          this._updateStatsBar();
+          this._renderLegend();
         });
         return;
       } else if (this.viewMode === 'service-catalog-v3') {
@@ -1068,10 +1073,23 @@ class ASTGalaxyView {
 
     const hasExpanded = this._expandedClusters.size > 0 || this.viewMode === 'expanded';
 
+    // Modes that pre-compute a fixed x/y position for every node. The
+    // "JCL & Batch Flow" view lays nodes out in three deterministic columns
+    // (JCL → Program → Copybook) with fixed:{x,y} on every node. Running the
+    // physics solver on these is both pointless (nodes can't move) AND
+    // catastrophic at scale: vis-network still simulates forces across every
+    // node/edge for hundreds of iterations, freezing the tab on a 7k-node /
+    // 6k-edge estate. Render them statically (physics off) so they appear
+    // instantly using the positions we already computed.
+    const prePositioned = this.viewMode === 'jcl-flow';
+
     // CAST-style: use hierarchical for expanded view (< 200 nodes), physics for larger.
-    const useHierarchical = hasExpanded && totalNodes < 200;
+    const useHierarchical = hasExpanded && totalNodes < 200 && !prePositioned;
     // Clustered programs-only view also uses hierarchical if small enough
-    const useHierarchicalClustered = !hasExpanded && totalNodes < 80;
+    const useHierarchicalClustered = !hasExpanded && totalNodes < 80 && !prePositioned;
+
+    // Any layout where node positions are already known → no physics simulation.
+    const staticLayout = prePositioned || useHierarchical || useHierarchicalClustered;
 
     const repulsion = totalNodes > 200 ? -12000 : totalNodes > 100 ? -8000 : -5000;
     const springLen = totalNodes > 200 ? 400 : totalNodes > 100 ? 320 : 250;
@@ -1089,12 +1107,14 @@ class ASTGalaxyView {
         font: { size: 9, strokeWidth: 3, strokeColor: '#0f172a' },
         chosen: { edge: (values) => { values.width = values.width * 1.5; values.opacity = 1; } },
       },
-      layout: (useHierarchical || useHierarchicalClustered)
+      layout: prePositioned
+        ? { improvedLayout: false }
+        : (useHierarchical || useHierarchicalClustered)
         ? { hierarchical: { enabled: true, direction: 'UD', sortMethod: 'directed',
             nodeSpacing: 180, levelSeparation: 120, treeSpacing: 200,
             parentCentralization: true, blockShifting: true, edgeMinimization: true } }
         : { improvedLayout: totalNodes < 400 },
-      physics: (useHierarchical || useHierarchicalClustered)
+      physics: staticLayout
         ? { enabled: false }
         : {
             enabled: true,
@@ -1126,10 +1146,15 @@ class ASTGalaxyView {
       groups: this._groupColors || {},
     });
 
+    // Pre-positioned static modes render instantly — just frame the graph once.
+    if (prePositioned) {
+      try { this.network.once('afterDrawing', () => { try { this.network && this.network.fit(); } catch {} }); } catch {}
+    }
+
     // Hard wall-clock deadline: always disable physics after a maximum time regardless of
     // whether stabilizationIterationsDone fires. Guards against the Chromium/Edge bug where
     // the event never arrives and the layout spins forever showing "95%".
-    if (!(useHierarchical || useHierarchicalClustered)) {
+    if (!staticLayout) {
       const maxMs = Math.min(12000, Math.max(2000, totalNodes * 25));
       clearTimeout(this._physicsDeadlineTimer);
       this._physicsDeadlineTimer = setTimeout(() => {
@@ -1143,7 +1168,7 @@ class ASTGalaxyView {
     }
 
     // Stabilization progress indicator with cancel button
-    if (!(useHierarchical || useHierarchicalClustered) && totalNodes > 50) {
+    if (!staticLayout && totalNodes > 50) {
       const statsEl = document.getElementById('galaxy-stats-bar');
       if (statsEl) {
         let _stabilizationDoneTimer = null;
@@ -4514,6 +4539,26 @@ class ASTGalaxyView {
           : this.viewMode === 'expanded' ? '📦 Technical (Expanded)'
           : '📦 Technical';
     const dimLabel = this.is3D ? '🧊 3D' : '2D';
+
+    // JCL & Batch Flow renders a chain of JCL jobs → programs → copybooks. Its
+    // counts must come from the actually-rendered nodes, not the full galaxy
+    // (galaxyData), otherwise the header shows misleading estate-wide totals.
+    if (this.viewMode === 'jcl-flow') {
+      let jobs = 0, pgms = 0, cpys = 0;
+      try {
+        (this.nodes?.get?.() || []).forEach(n => {
+          const t = n?._data?.nodeType;
+          if (t === 'JCL_JOB') jobs++;
+          else if (t === 'COPYBOOK') cpys++;
+          else if (t === 'PROGRAM') pgms++;
+        });
+      } catch {}
+      el.innerHTML = `
+        <span class="ast-stat">🗂 JCL & Batch Flow · ${jobs} jobs → ${pgms} programs → ${cpys} copybooks</span>
+        <span class="ast-stat">· ${edgeCount} edges</span>
+        <span class="ast-stat" style="margin-left:auto;color:#64748b;">${dimLabel}</span>`;
+      return;
+    }
 
     if (this._isBusinessMode) {
       // Count unique domains
