@@ -1,7 +1,7 @@
 using Azure.AI.OpenAI;
 using Azure.Identity;
 using Azure.Core;
-using GitHub.Copilot.SDK;
+using GitHub.Copilot;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using OpenAI;
@@ -200,7 +200,7 @@ public static class ChatClientFactory
 
         var options = new CopilotClientOptions
         {
-            UseStdio = true
+            Mode = CopilotClientMode.CopilotCli
         };
 
         if (!string.IsNullOrEmpty(githubToken))

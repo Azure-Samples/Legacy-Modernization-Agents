@@ -1,4 +1,4 @@
-using GitHub.Copilot.SDK;
+using GitHub.Copilot;
 
 namespace McpChatWeb.Services;
 
@@ -14,13 +14,17 @@ public static class CopilotCliResolver
     private static string? _cachedPath;
     private static bool _cacheChecked;
 
-    /// <summary>Build a CopilotClientOptions with CliPath set to the first usable binary.</summary>
+    /// <summary>Build a CopilotClientOptions with the connection pointed at the first usable CLI binary.</summary>
     public static CopilotClientOptions BuildOptions(bool useStdio = true, string? githubToken = null)
     {
-        var opts = new CopilotClientOptions { UseStdio = useStdio };
+        // SDK 1.0: Mode defaults to CopilotCli and a null Connection means
+        // "ForStdio() with the bundled runtime". We only override Connection
+        // when we resolve a CLI binary at a non-default location, so the SDK's
+        // own bundled-runtime auto-discovery still works out of the box.
+        var opts = new CopilotClientOptions { Mode = CopilotClientMode.CopilotCli };
         if (!string.IsNullOrWhiteSpace(githubToken)) opts.GitHubToken = githubToken;
         var cli = ResolveCliPath();
-        if (!string.IsNullOrWhiteSpace(cli)) opts.CliPath = cli;
+        if (!string.IsNullOrWhiteSpace(cli)) opts.Connection = RuntimeConnection.ForStdio(cli, null);
         return opts;
     }
 

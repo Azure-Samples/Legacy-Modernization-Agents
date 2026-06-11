@@ -10,7 +10,7 @@ using Microsoft.Extensions.Logging;
 using System.CommandLine;
 using System.Globalization;
 using Microsoft.Extensions.Logging.Console;
-using GitHub.Copilot.SDK;
+using GitHub.Copilot;
 
 namespace CobolToQuarkusMigration;
 
@@ -48,7 +48,7 @@ internal static class Program
                     options.LogToStandardErrorThreshold = LogLevel.Trace;
                 });
                 // Suppress verbose JSON-RPC logging from GitHub Copilot SDK
-                builder.AddFilter("GitHub.Copilot.SDK", LogLevel.Warning);
+                builder.AddFilter("GitHub.Copilot", LogLevel.Warning);
             });
             var logger = loggerFactory.CreateLogger(nameof(Program));
             var fileHelper = new FileHelper(loggerFactory.CreateLogger<FileHelper>());
@@ -264,7 +264,7 @@ internal static class Program
             Console.WriteLine("Querying models via GitHub Copilot SDK (CLI)...");
             try
             {
-                var client = new CopilotClient(new CopilotClientOptions { UseStdio = true });
+                var client = new CopilotClient(new CopilotClientOptions { Mode = CopilotClientMode.CopilotCli });
                 var models = await client.ListModelsAsync();
                 Console.WriteLine($"Available models ({models.Count}):");
                 foreach (var model in models.OrderBy(m => m.Name))

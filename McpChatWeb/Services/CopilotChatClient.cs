@@ -1,4 +1,4 @@
-using GitHub.Copilot.SDK;
+using GitHub.Copilot;
 using Microsoft.Extensions.AI;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -98,21 +98,16 @@ public sealed class CopilotChatClient : IChatClient, IAsyncDisposable
         var done = new TaskCompletionSource();
         string? errorMessage = null;
 
-        using var _ = session.On(evt =>
+        using var subMsg = session.On<AssistantMessageEvent>(msg =>
+            responseBuilder.Append(msg.Data.Content));
+        using var subErr = session.On<SessionErrorEvent>(err =>
         {
-            switch (evt)
-            {
-                case AssistantMessageEvent msg:
-                    responseBuilder.Append(msg.Data.Content);
-                    break;
-                case SessionErrorEvent err:
-                    errorMessage = err.Data.Message;
-                    if (!done.Task.IsCompleted) done.TrySetResult();
-                    break;
-                case SessionIdleEvent:
-                    if (!done.Task.IsCompleted) done.TrySetResult();
-                    break;
-            }
+            errorMessage = err.Data.Message;
+            if (!done.Task.IsCompleted) done.TrySetResult();
+        });
+        using var subIdle = session.On<SessionIdleEvent>(_ =>
+        {
+            if (!done.Task.IsCompleted) done.TrySetResult();
         });
 
         await session.SendAsync(new MessageOptions { Prompt = userPromptBuilder.ToString() });

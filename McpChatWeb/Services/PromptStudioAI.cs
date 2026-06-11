@@ -1,6 +1,6 @@
 using Azure.AI.OpenAI;
 using Azure.Identity;
-using GitHub.Copilot.SDK;
+using GitHub.Copilot;
 using Microsoft.Extensions.AI;
 using System.Text.Json;
 
