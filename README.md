@@ -237,15 +237,15 @@ flowchart LR
 ---
 
 ## 📋 Table of Contents
-- [⚡ Fast Quick-Start](#-fast-quick-start-3-commands--5-minutes)
+- [⚡ Fast Quick-Start](#-fast-quick-start-tldr--5-minutes)
 - [Quick Start](#-quick-start)
 - [Usage: doctor.sh](#-usage-doctorsh)
+- [🔬 Cobol-REKT Static Analysis & Graph Pipeline](#-cobol-rekt-static-analysis--graph-pipeline) — **run this first**
 - [Reverse Engineering Reports](#-reverse-engineering-reports)
 - [Portal Features](#-portal-features)
   - [Portal Overview](#portal-overview)
   - [🎨 Modernization Intelligence Surfaces (Phase-1 → Phase-3)](#-modernization-intelligence-surfaces-phase-1--phase-3)
   - [AI Provider Setup, Prompt Studio & Chat](#-ai-provider-setup-prompt-studio--chat)
-  - [Cobol-REKT Static Analysis & Graph Pipeline](#-cobol-rekt-static-analysis--graph-pipeline)
   - [AST Galaxy & AST Explorer](#-ast-galaxy--ast-explorer)
   - [Migration Planner — Domain-Based Time Chart](#-migration-planner--domain-based-time-chart)
 - [Folder Structure](#-folder-structure)
@@ -569,6 +569,103 @@ Browse the graph at http://localhost:7475 (Neo4j Browser for the REKT instance).
 
 ---
 
+## 🔬 Cobol-REKT Static Analysis & Graph Pipeline
+
+> **▶️ This is the first thing you run after `./doctor.sh setup`.** `./doctor.sh rekt-full` is the foundation of the whole portal — it statically analyses your COBOL, builds the graph, and launches the dashboards. Everything downstream (Reverse Engineering, AST Galaxy, dependency views, Semantic Search, conversion grounding) reads the facts this step produces. Run it once per source change.
+
+The REKT pipeline gives the portal its "structured truth" about every COBOL program — independent of the AI-generated reverse-engineering report. It runs as three Docker services (defined in `docker-compose.yml`):
+
+| Service | Port | Role |
+|---|---|---|
+| `cobol-rekt` | — | Java CLI (`smojol-cli`) that parses each `.cbl/.cpy` into AST / Control-Flow / Data-flow JSON under `output/rekt/<program>.cbl.report/` |
+| `cobol-rekt-neo4j` | bolt **7688**, http **7475** | Dedicated Neo4j 5.15 (separate from the migration metadata DB) holding the unified analysis graph, with APOC + Graph Data Science plugins |
+| `graph-populator` | — | Python ingester that loads the REKT JSON + MMA metadata into Neo4j |
+
+```bash
+./doctor.sh rekt-full   # one-shot: parse → ingest → launch portal
+```
+
+The portal reads this graph through these endpoints (all dedup the latest scan run per file so old scans never inflate counts):
+
+- `/api/graph/rekt/galaxy` — programs + dependency edges (drives **AST Galaxy** and **Migration Planner**)
+- `/api/graph/rekt/galaxy-ast` — full structural AST nodes for every program
+- `/api/graph/rekt/structure?file=…` — program-level summary (sections, paragraphs, AST/SQL/CALL counts)
+- `/api/graph/rekt/ast?file=…` and `/api/graph/rekt/cfg?file=…` — per-file AST and control-flow graphs
+- `/api/graph/rekt/runs` — list of historical scan runs (the `?scanRunId=N` query param pins any of them)
+
+See [`docs/rekt-demo.md`](docs/rekt-demo.md) for an end-to-end walkthrough.
+
+### What REKT actually extracts
+
+`smojol` parses each program with a real COBOL grammar (not regex), so the facts are deterministic and AI-independent. Per program it produces:
+
+| Artifact | Contents |
+|---|---|
+| **AST** | Every node — divisions, sections, paragraphs, statements (MOVE/IF/PERFORM/CALL/EXEC SQL…), with line ranges |
+| **Control-Flow Graph (CFG)** | PERFORM chains, GO TO targets, fall-through edges — the execution skeleton |
+| **Data-flow** | WORKING-STORAGE / LINKAGE items, REDEFINES, OCCURS, level numbers, COMP/COMP-3 usage |
+| **Dependencies** | CALL targets, COPY copybooks, EXEC SQL tables, file I/O |
+| **`*.facts.json`** | A compact, conversion-ready projection of the above — the exact structure injected into the converter prompt |
+
+These land in `output/rekt/` (raw JSON + `facts.json`) **and** are ingested into the dedicated Neo4j graph (`CobolFile`, `ASTNode`, `CFGEdge`, `DataStructure` nodes/relationships). A `scanRunId` stamps every ingest so historical scans never inflate counts.
+
+### How REKT populates the dashboards
+
+The portal never re-parses COBOL — it reads REKT's facts/graph (plus conversion telemetry) and projects them into each surface. This is the data-flow:
+
+```mermaid
+flowchart LR
+  SRC[("source/**<br/>*.cbl · *.cpy")]
+  SMOJOL["smojol parser<br/>(cobol-rekt)"]
+  FACTS[("output/rekt/<br/>*.facts.json")]
+  NEO[("Neo4j :7475<br/>AST · CFG · Data · Deps")]
+  CAPS[("Data/capabilities.json<br/>capability dictionary")]
+  METRICS[("output/.metrics/*.jsonl<br/>+ Data/benchmark.db<br/>conversion telemetry")]
+
+  SRC --> SMOJOL
+  SMOJOL --> FACTS
+  SMOJOL --> NEO
+
+  subgraph DASH["Portal surfaces"]
+    GALAXY["🌌 AST Galaxy<br/>(Technical · Domains · Catalog ·<br/>Radar · BIAN · C4)"]
+    FLOW["🌊 Semantic Flow Explorer<br/>PERFORM chains / swimlanes"]
+    DEPS["🕸 Dependency Topology<br/>+ Dependency Health"]
+    APPS["📚 Application Explorer<br/>per-program inventory"]
+    CAP["🎯 Capabilities & Locator"]
+    SEM["🧠 Semantic Search"]
+    PLAN["📅 Migration Planner /<br/>Wave Planner"]
+    COCK["🎨 Visual Cockpit /<br/>📊 Dashboard"]
+  end
+
+  NEO --> GALAXY
+  NEO --> FLOW
+  NEO --> DEPS
+  FACTS --> APPS
+  FACTS --> CAP
+  FACTS --> SEM
+  CAPS --> CAP
+  CAPS --> SEM
+  FACTS --> PLAN
+  NEO --> PLAN
+  METRICS --> COCK
+  FACTS --> COCK
+```
+
+| Dashboard / surface | What REKT data feeds it | Source |
+|---|---|---|
+| 🌌 **AST Galaxy** (all 6 modes) | Programs + AST sub-structure + CALL/COPY edges; BIAN/C4 modes overlay business mappings | Neo4j (`/api/graph/rekt/galaxy`, `galaxy-ast`) |
+| 🌊 **Semantic Flow Explorer** | PERFORM chains, transaction flows, paragraph swimlanes | Neo4j CFG (`/api/graph/rekt/structure`, `cfg`) |
+| 🕸 **Dependency Topology** + 🩺 **Dependency Health** | CALL/COPY/EXEC SQL graph; missing-copybook leaderboard; full-fidelity vs deps-only flag | Neo4j + `facts.json` warnings |
+| 📚 **Application Explorer** | Per-program LoC, facts confidence, dep count, latest compile/cache state | `facts.json` + `benchmark.db` |
+| 🎯 **Capabilities & Service Locator** | Multi-label capability classification (paragraph names, CALL targets, SQL tables, copybooks) | `facts.json` × `capabilities.json` |
+| 🧠 **Semantic Search** | Ranks programs/paragraphs/copybooks/snippets by intent; expands via capability dictionary | `facts.json` × `capabilities.json` |
+| 📅 **Migration Planner / Wave Planner** | Program inventory, dependency weight, readiness scoring for wave assignment | Neo4j + `facts.json` |
+| 🎨 **Visual Cockpit** + 📊 **Dashboard** | Estate status, coupling heatmaps, readiness gauges (REKT facts) + compile/cache/LLM metrics (telemetry) | `facts.json` + `benchmark.db` / `.metrics/*.jsonl` |
+
+> **Where the line is**: everything *structural* (what a program contains, what it calls, how it flows) comes from REKT and is deterministic. Everything *qualitative* (business intent prose, generated code, parity scores) comes from the AI agents. The portal fuses both — e.g. the Capabilities view classifies REKT facts against the capability dictionary with **no LLM cost**, while the RE report is pure agent output.
+
+---
+
 ## 📝 Reverse Engineering Reports
 
 **Reverse Engineering (RE)** extracts business knowledge from COBOL code **before** any conversion happens. This is the "understand first" phase.
@@ -887,101 +984,6 @@ The **📄 Reverse Engineering Results** button (left sidebar) opens the rendere
 ![Reverse Engineering Results panel](docs/images/re-report.png)
 
 Each `## SECTION` of the report is selectable as the active context for the chat (toggle above), so you can ask follow-ups against the same document the AI used to generate the analysis. The report itself is regenerated by `./doctor.sh reverse-eng` (or as part of `./doctor.sh run`), persisted under `output/reverse-engineering-details.md`, and indexed into the Migration database so previous runs stay browsable from the *Migration Run* dropdown.
-
----
-
-## 🔬 Cobol-REKT Static Analysis & Graph Pipeline
-
-The REKT pipeline gives the portal its "structured truth" about every COBOL program — independent of the AI-generated reverse-engineering report. It runs as three Docker services (defined in `docker-compose.yml`):
-
-| Service | Port | Role |
-|---|---|---|
-| `cobol-rekt` | — | Java CLI (`smojol-cli`) that parses each `.cbl/.cpy` into AST / Control-Flow / Data-flow JSON under `output/rekt/<program>.cbl.report/` |
-| `cobol-rekt-neo4j` | bolt **7688**, http **7475** | Dedicated Neo4j 5.15 (separate from the migration metadata DB) holding the unified analysis graph, with APOC + Graph Data Science plugins |
-| `graph-populator` | — | Python ingester that loads the REKT JSON + MMA metadata into Neo4j |
-
-```bash
-./doctor.sh rekt-full   # one-shot: parse → ingest → launch portal
-```
-
-The portal reads this graph through these endpoints (all dedup the latest scan run per file so old scans never inflate counts):
-
-- `/api/graph/rekt/galaxy` — programs + dependency edges (drives **AST Galaxy** and **Migration Planner**)
-- `/api/graph/rekt/galaxy-ast` — full structural AST nodes for every program
-- `/api/graph/rekt/structure?file=…` — program-level summary (sections, paragraphs, AST/SQL/CALL counts)
-- `/api/graph/rekt/ast?file=…` and `/api/graph/rekt/cfg?file=…` — per-file AST and control-flow graphs
-- `/api/graph/rekt/runs` — list of historical scan runs (the `?scanRunId=N` query param pins any of them)
-
-See [`docs/rekt-demo.md`](docs/rekt-demo.md) for an end-to-end walkthrough.
-
-### What REKT actually extracts
-
-`smojol` parses each program with a real COBOL grammar (not regex), so the facts are deterministic and AI-independent. Per program it produces:
-
-| Artifact | Contents |
-|---|---|
-| **AST** | Every node — divisions, sections, paragraphs, statements (MOVE/IF/PERFORM/CALL/EXEC SQL…), with line ranges |
-| **Control-Flow Graph (CFG)** | PERFORM chains, GO TO targets, fall-through edges — the execution skeleton |
-| **Data-flow** | WORKING-STORAGE / LINKAGE items, REDEFINES, OCCURS, level numbers, COMP/COMP-3 usage |
-| **Dependencies** | CALL targets, COPY copybooks, EXEC SQL tables, file I/O |
-| **`*.facts.json`** | A compact, conversion-ready projection of the above — the exact structure injected into the converter prompt |
-
-These land in `output/rekt/` (raw JSON + `facts.json`) **and** are ingested into the dedicated Neo4j graph (`CobolFile`, `ASTNode`, `CFGEdge`, `DataStructure` nodes/relationships). A `scanRunId` stamps every ingest so historical scans never inflate counts.
-
-### How REKT populates the dashboards
-
-The portal never re-parses COBOL — it reads REKT's facts/graph (plus conversion telemetry) and projects them into each surface. This is the data-flow:
-
-```mermaid
-flowchart LR
-  SRC[("source/**<br/>*.cbl · *.cpy")]
-  SMOJOL["smojol parser<br/>(cobol-rekt)"]
-  FACTS[("output/rekt/<br/>*.facts.json")]
-  NEO[("Neo4j :7475<br/>AST · CFG · Data · Deps")]
-  CAPS[("Data/capabilities.json<br/>capability dictionary")]
-  METRICS[("output/.metrics/*.jsonl<br/>+ Data/benchmark.db<br/>conversion telemetry")]
-
-  SRC --> SMOJOL
-  SMOJOL --> FACTS
-  SMOJOL --> NEO
-
-  subgraph DASH["Portal surfaces"]
-    GALAXY["🌌 AST Galaxy<br/>(Technical · Domains · Catalog ·<br/>Radar · BIAN · C4)"]
-    FLOW["🌊 Semantic Flow Explorer<br/>PERFORM chains / swimlanes"]
-    DEPS["🕸 Dependency Topology<br/>+ Dependency Health"]
-    APPS["📚 Application Explorer<br/>per-program inventory"]
-    CAP["🎯 Capabilities & Locator"]
-    SEM["🧠 Semantic Search"]
-    PLAN["📅 Migration Planner /<br/>Wave Planner"]
-    COCK["🎨 Visual Cockpit /<br/>📊 Dashboard"]
-  end
-
-  NEO --> GALAXY
-  NEO --> FLOW
-  NEO --> DEPS
-  FACTS --> APPS
-  FACTS --> CAP
-  FACTS --> SEM
-  CAPS --> CAP
-  CAPS --> SEM
-  FACTS --> PLAN
-  NEO --> PLAN
-  METRICS --> COCK
-  FACTS --> COCK
-```
-
-| Dashboard / surface | What REKT data feeds it | Source |
-|---|---|---|
-| 🌌 **AST Galaxy** (all 6 modes) | Programs + AST sub-structure + CALL/COPY edges; BIAN/C4 modes overlay business mappings | Neo4j (`/api/graph/rekt/galaxy`, `galaxy-ast`) |
-| 🌊 **Semantic Flow Explorer** | PERFORM chains, transaction flows, paragraph swimlanes | Neo4j CFG (`/api/graph/rekt/structure`, `cfg`) |
-| 🕸 **Dependency Topology** + 🩺 **Dependency Health** | CALL/COPY/EXEC SQL graph; missing-copybook leaderboard; full-fidelity vs deps-only flag | Neo4j + `facts.json` warnings |
-| 📚 **Application Explorer** | Per-program LoC, facts confidence, dep count, latest compile/cache state | `facts.json` + `benchmark.db` |
-| 🎯 **Capabilities & Service Locator** | Multi-label capability classification (paragraph names, CALL targets, SQL tables, copybooks) | `facts.json` × `capabilities.json` |
-| 🧠 **Semantic Search** | Ranks programs/paragraphs/copybooks/snippets by intent; expands via capability dictionary | `facts.json` × `capabilities.json` |
-| 📅 **Migration Planner / Wave Planner** | Program inventory, dependency weight, readiness scoring for wave assignment | Neo4j + `facts.json` |
-| 🎨 **Visual Cockpit** + 📊 **Dashboard** | Estate status, coupling heatmaps, readiness gauges (REKT facts) + compile/cache/LLM metrics (telemetry) | `facts.json` + `benchmark.db` / `.metrics/*.jsonl` |
-
-> **Where the line is**: everything *structural* (what a program contains, what it calls, how it flows) comes from REKT and is deterministic. Everything *qualitative* (business intent prose, generated code, parity scores) comes from the AI agents. The portal fuses both — e.g. the Capabilities view classifies REKT facts against the capability dictionary with **no LLM cost**, while the RE report is pure agent output.
 
 ---
 
