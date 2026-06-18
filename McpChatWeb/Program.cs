@@ -2220,12 +2220,18 @@ app.MapGet("/api/graph/rekt/structure", async (string file, long? scanRunId, Can
 			var cfgResult = await session.RunAsync(@"
 				MATCH (a0:ASTNode {program: $file})
 				WITH max(coalesce(a0.runId, 0)) AS _r
-				MATCH (caller:ASTNode {program: $file, nodeType: 'PARAGRAPH'})-[:CONTAINS*1..4]->(p:ASTNode {nodeType: 'PERFORM'})
-				WHERE coalesce(caller.runId, 0) = _r AND coalesce(p.runId, 0) = _r
-				  AND p.name IS NOT NULL AND p.name <> ''
-				RETURN DISTINCT caller.name AS caller, p.name AS target, p.label AS label
-				ORDER BY caller.name
-				LIMIT 500",
+				MATCH (p:ASTNode {program: $file, nodeType: 'PERFORM'})
+				WHERE coalesce(p.runId, 0) = _r AND p.name IS NOT NULL AND p.name <> ''
+				MATCH (caller:ASTNode {program: $file})-[c:CONTAINS*1..6]->(p)
+				WHERE coalesce(caller.runId, 0) = _r
+				  AND caller.nodeType IN ['PARAGRAPH', 'PARAGRAPHS', 'SECTION']
+				  AND caller.name IS NOT NULL AND caller.name <> '' AND caller.name <> 'para-group:'
+				WITH p, caller.name AS callerName, size(c) AS dist
+				ORDER BY dist ASC
+				WITH p, head(collect(callerName)) AS caller
+				RETURN DISTINCT caller AS caller, p.name AS target, p.label AS label
+				ORDER BY caller
+				LIMIT 800",
 				new Dictionary<string, object> { ["file"] = matchedProgram! },
 				txTimeout);
 
@@ -8915,8 +8921,8 @@ app.MapPost("/api/runs/convert", (System.Text.Json.JsonElement body,
 		// Build a lookup map: basename → real on-disk path (recursive scan).
 		// Handles three cases:
 		//   1. Standard .cbl/.cob in any subfolder (sources/SRC/, sample-corpus/, etc.)
-		//   2. IBM PDS-style files named UGRBOXP.AKTIV.SRC(sampleD006) — selector
-		//      surfaces them as sampleD006.cbl; the actual file lives elsewhere.
+		//   2. IBM PDS-style files named MYLIB.SOURCE.SRC(PROG001) — selector
+		//      surfaces them as PROG001.cbl; the actual file lives elsewhere.
 		//   3. Copybooks in any subfolder for the companion-copy step below.
 		var sourceRoot = Path.Combine(repoRoot, "source");
 		var pdsRx = new System.Text.RegularExpressions.Regex(@"\.SRC\(([A-Z0-9$@#]+)\)$",

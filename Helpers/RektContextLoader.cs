@@ -82,8 +82,8 @@ public sealed class RektContextLoader
     /// </para>
     /// <list type="bullet">
     /// <item><b>Standard:</b> <c>foo.cbl</c> / <c>foo.cob</c> (case-insensitive).</item>
-    /// <item><b>IBM mainframe PDS export:</b> <c>UGRBOXP.AKTIV.SRC(KROD006)</c> —
-    /// real Danish bank source. The "extension" is <c>.SRC(MEMBER)</c>. We
+    /// <item><b>IBM mainframe PDS export:</b> <c>MYLIB.SOURCE.SRC(PROG001)</c> —
+    /// a member of a partitioned data set. The "extension" is <c>.SRC(MEMBER)</c>. We
     /// detect any file whose name ends with <c>SRC(NAME)</c> and surface it
     /// as <c>NAME.cbl</c> so the rest of the pipeline treats it as a normal
     /// COBOL program.</item>

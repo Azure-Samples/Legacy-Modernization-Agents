@@ -1083,13 +1083,18 @@ class ASTGalaxyView {
     // instantly using the positions we already computed.
     const prePositioned = this.viewMode === 'jcl-flow';
 
+    // C4 L3 (single program) is a PERFORM call-graph — lay it out as a directed
+    // left-to-right tree so the control flow reads cleanly, regardless of size.
+    const isC4L3Components = this.viewMode === 'c4-model' && this._c4Level === 3
+      && this._c4SelectedProg && this._c4SelectedProg !== '__ALL__';
+
     // CAST-style: use hierarchical for expanded view (< 200 nodes), physics for larger.
     const useHierarchical = hasExpanded && totalNodes < 200 && !prePositioned;
     // Clustered programs-only view also uses hierarchical if small enough
-    const useHierarchicalClustered = !hasExpanded && totalNodes < 80 && !prePositioned;
+    const useHierarchicalClustered = !hasExpanded && totalNodes < 80 && !prePositioned && !isC4L3Components;
 
     // Any layout where node positions are already known → no physics simulation.
-    const staticLayout = prePositioned || useHierarchical || useHierarchicalClustered;
+    const staticLayout = prePositioned || useHierarchical || useHierarchicalClustered || isC4L3Components;
 
     const repulsion = totalNodes > 200 ? -12000 : totalNodes > 100 ? -8000 : -5000;
     const springLen = totalNodes > 200 ? 400 : totalNodes > 100 ? 320 : 250;
@@ -1109,6 +1114,10 @@ class ASTGalaxyView {
       },
       layout: prePositioned
         ? { improvedLayout: false }
+        : isC4L3Components
+        ? { hierarchical: { enabled: true, direction: 'LR', sortMethod: 'directed',
+            nodeSpacing: 60, levelSeparation: 220, treeSpacing: 110,
+            parentCentralization: true, blockShifting: true, edgeMinimization: true } }
         : (useHierarchical || useHierarchicalClustered)
         ? { hierarchical: { enabled: true, direction: 'UD', sortMethod: 'directed',
             nodeSpacing: 180, levelSeparation: 120, treeSpacing: 200,
@@ -4540,6 +4549,22 @@ class ASTGalaxyView {
           : '📦 Technical';
     const dimLabel = this.is3D ? '🧊 3D' : '2D';
 
+    // C4 Model — show level-appropriate counts from rendered nodes.
+    if (this.viewMode === 'c4-model') {
+      const lvlName = ['System Context','Containers','Components'][this._c4Level-1];
+      let detail = '';
+      if (this._c4Level === 3 && this._c4SelectedProg && this._c4SelectedProg !== '__ALL__') {
+        const comps = (this.nodes?.get?.() || []).filter(n => n?._data?.nodeType === 'C4_Component').length;
+        detail = ` · ${this._c4SelectedProg} · ${comps} components · ${edgeCount} PERFORM links`;
+      } else {
+        detail = ` · ${nodeCount} nodes · ${edgeCount} edges`;
+      }
+      el.innerHTML = `
+        <span class="ast-stat">🏗️ C4 Model · L${this._c4Level} ${lvlName}${detail}</span>
+        <span class="ast-stat" style="margin-left:auto;color:#64748b;">${dimLabel}</span>`;
+      return;
+    }
+
     // JCL & Batch Flow renders a chain of JCL jobs → programs → copybooks. Its
     // counts must come from the actually-rendered nodes, not the full galaxy
     // (galaxyData), otherwise the header shows misleading estate-wide totals.
@@ -4922,7 +4947,7 @@ class ASTGalaxyView {
         areaColor: '#1c1917', borderColor: '#78716c',
         domains: [
           { name: 'Data Management',             icon: '🗄️', bianRef: 'BIAN::DataManagement',
-            matches: ['BANKDATA','CUSTINQ','DATCONV','BATPROC','ACCTMGR',
+            matches: ['MASTERDAT','CUSTINQ','DATCONV','BATPROC','ACCTMGR',
                       'CBEXPORT','CBIMPORT'],
             desc: 'Shared data structures and batch utilities' },
           { name: 'System Administration',       icon: '🔐', bianRef: 'BIAN::ITSystemAdministration',
@@ -5090,7 +5115,7 @@ class ASTGalaxyView {
       'Online (CICS)':      { color: '#1e40af', border: '#3b82f6', icon: '🖥️',  keys: ['BNK1CAC','BNK1CRA','BNK1TFN','BNK1UAC'] },
       'Business Logic':     { color: '#065f46', border: '#10b981', icon: '⚙️',  keys: ['CREACC','CRECUST','DBCRFUN','DELACC','DELCUS','INQACC','INQACCCU','UPDACC','XFRFUN'] },
       'Batch Processing':   { color: '#78350f', border: '#f59e0b', icon: '📦',  keys: ['BATPROC','ACCTMGR','RPTGEN'] },
-      'Shared Data':        { color: '#1c1917', border: '#78716c', icon: '🗄️',  keys: ['BANKDATA','CUSTINQ','DATCONV'] },
+      'Shared Data':        { color: '#1c1917', border: '#78716c', icon: '🗄️',  keys: ['MASTERDAT','CUSTINQ','DATCONV'] },
     };
   }
 
@@ -5233,6 +5258,29 @@ class ASTGalaxyView {
       }
       const selProg = this._c4SelectedProg;
       const showAll = selProg === '__ALL__';
+
+      if (!showAll && selProg) {
+        // ── Single program: component CALL-GRAPH from PERFORM control flow ──
+        // The raw AST graph only has CONTAINS (nesting) edges, so drilling a
+        // program showed disconnected icons. The structure endpoint gives us
+        // performEdges (which paragraph PERFORMs which) — a genuine, readable
+        // component interconnection. Fetched + cached per program.
+        this._c4StructCache = this._c4StructCache || {};
+        const struct = this._c4StructCache[selProg];
+        if (struct) {
+          this._buildC4L3Components(struct, selProg, nodeList, edgeList);
+        } else {
+          nodeList.push({ id:'__c4_loading', label:`⏳ Loading ${selProg} components…`,
+            shape:'box', x:0, y:0, fixed:{x:true,y:true},
+            color:{background:'#1e293b',border:'#475569'}, font:{color:'#94a3b8',size:13},
+            _data:{displayName:'loading',nodeType:'C4_Loading'} });
+          this._fetchC4Structure(selProg);
+        }
+        this.nodes = new vis.DataSet(nodeList);
+        this.edges = new vis.DataSet(edgeList);
+        return;
+      }
+
       const astNodes = this.astData?.nodes || [];
       const astEdges = this.astData?.edges || [];
 
@@ -5292,6 +5340,131 @@ class ASTGalaxyView {
 
     this.nodes = new vis.DataSet(nodeList);
     this.edges = new vis.DataSet(edgeList);
+  }
+
+  /**
+   * Build a readable C4 L3 component diagram for a single program from the
+   * structure endpoint: nodes = paragraphs (components, coloured by parent
+   * SECTION), edges = PERFORM control flow (who performs whom). Rendered with
+   * the hierarchical layout so it reads as a directed call tree instead of a
+   * cloud of disconnected icons.
+   */
+  _buildC4L3Components(struct, prog, nodeList, edgeList) {
+    const sections = (struct && struct.sections) || [];
+    const performEdges = (struct && struct.performEdges) || [];
+    const junk = n => !n || n === 'para-group:' || n === 'UNNAMED' || !n.trim();
+
+    // Map paragraph → parent section, preserve section order for colouring.
+    const paraSection = new Map();
+    const sectionOrder = [];
+    const sectionSeen = new Set();
+    for (const row of sections) {
+      const sec = row.sectionName;
+      if (junk(sec)) continue;
+      if (!sectionSeen.has(sec)) { sectionSeen.add(sec); sectionOrder.push(sec); }
+      if (!junk(row.paraName)) paraSection.set(row.paraName, sec);
+    }
+
+    const PALETTE = ['#3b82f6','#10b981','#f59e0b','#a855f7','#ef4444','#06b6d4','#ec4899','#14b8a6','#f97316','#84cc16','#6366f1','#22d3ee'];
+    const secColor = new Map();
+    sectionOrder.forEach((s, i) => secColor.set(s, PALETTE[i % PALETTE.length]));
+    const colorOf = sec => secColor.get(sec) || '#64748b';
+
+    const added = new Set();
+    const byUpper = new Map();  // UPPER(name) → canonical id key, for fuzzy resolution
+    const addNode = (name, sec, external) => {
+      if (junk(name) || added.has(name)) return;
+      added.add(name);
+      byUpper.set(name.toUpperCase(), name);
+      const section = sec || paraSection.get(name) || '';
+      const color = external ? '#475569' : colorOf(section);
+      nodeList.push({
+        id: 'c4c__' + name,
+        label: name,
+        shape: 'box', size: 16,
+        color: { background: (external ? '#334155' : color + 'cc'), border: color, highlight: { background: color, border: '#fff' } },
+        font: { color: external ? '#cbd5e1' : '#0b1220', size: 10, bold: !external }, borderWidth: 1,
+        margin: { top: 5, bottom: 5, left: 9, right: 9 },
+        title: `${name}${external ? '\n(external / unresolved target)' : '\nSection: ' + (section || '—')}`,
+        _data: { displayName: name, nodeType: 'C4_Component', program: prog + '.cbl', section },
+      });
+    };
+
+    // Components first: paragraphs (if any), else the sections themselves.
+    for (const [para, sec] of paraSection.entries()) addNode(para, sec);
+    for (const sec of sectionOrder) {
+      if (![...paraSection.values()].includes(sec)) addNode(sec, sec);
+    }
+
+    // Resolve a PERFORM target name to an existing component. AST shapes vary:
+    // some store clean target names, others mangle/truncate them as
+    // "PERFORM003-BEHA". Strip the PERFORM prefix, then exact- or prefix-match.
+    const strip = s => (s || '').replace(/^PERFORM[\s:_-]*/i, '').trim();
+    const resolve = (raw) => {
+      const t = strip(raw).toUpperCase();
+      if (!t) return null;
+      if (byUpper.has(t)) return byUpper.get(t);
+      for (const [u, name] of byUpper) {
+        if (u.startsWith(t) || t.startsWith(u)) return name;
+      }
+      return strip(raw);   // unresolved → keep the cleaned literal as an external node
+    };
+
+    // PERFORM edges = the interconnections.
+    const seenEdge = new Set();
+    let realEdges = 0;
+    for (const e of performEdges) {
+      const from = junk(e.from) ? null : e.from;
+      const targetName = resolve(e.to);
+      if (!from || !targetName || from === targetName) continue;
+      if (!added.has(from)) addNode(from, paraSection.get(from));
+      if (!added.has(targetName)) addNode(targetName, paraSection.get(targetName), /*external*/ true);
+      const key = from + '\u2192' + targetName;
+      if (seenEdge.has(key)) continue;
+      seenEdge.add(key);
+      realEdges++;
+      edgeList.push({
+        from: 'c4c__' + from, to: 'c4c__' + targetName,
+        label: 'perform',
+        arrows: { to: { enabled: true, scaleFactor: 0.5 } },
+        color: { color: '#64748b', opacity: 0.75 }, width: 1,
+        font: { size: 8, color: '#94a3b8', strokeWidth: 3, strokeColor: '#0f172a' },
+        smooth: { type: 'cubicBezier', forceDirection: 'horizontal', roundness: 0.35 },
+      });
+    }
+
+    // No resolvable PERFORM edges → chain components in source order so the
+    // view still conveys structure instead of a cloud of disconnected icons.
+    if (realEdges === 0 && added.size > 1) {
+      const names = [...added];
+      for (let i = 0; i < names.length - 1; i++) {
+        edgeList.push({
+          from: 'c4c__' + names[i], to: 'c4c__' + names[i + 1],
+          dashes: true, arrows: { to: { enabled: true, scaleFactor: 0.4 } },
+          color: { color: '#475569', opacity: 0.4 }, width: 0.6,
+          title: 'source order (no PERFORM control-flow available for this program)',
+        });
+      }
+    }
+  }
+
+  /** Lazy-fetch + cache the structure (sections + performEdges) for a program, then re-render. */
+  async _fetchC4Structure(prog) {
+    this._c4StructCache = this._c4StructCache || {};
+    if (this._c4StructFetching === prog) return;
+    this._c4StructFetching = prog;
+    let data = null;
+    try {
+      const scanId = typeof _currentScanRunId !== 'undefined' ? _currentScanRunId : 'latest';
+      const scanParam = (scanId && scanId !== 'latest' && scanId !== 'all') ? `&scanRunId=${scanId}` : '';
+      const resp = await fetch(`/api/graph/rekt/structure?file=${encodeURIComponent(prog)}.cbl${scanParam}`);
+      if (resp.ok) data = await resp.json();
+    } catch { /* fail-soft */ }
+    this._c4StructCache[prog] = (data && !data.error) ? data : { sections: [], performEdges: [] };
+    this._c4StructFetching = null;
+    if (this.viewMode === 'c4-model' && this._c4Level === 3 && this._c4SelectedProg === prog) {
+      this._rebuildAndRender();
+    }
   }
 
   _injectC4LevelUI(container) {
