@@ -184,6 +184,11 @@ public static class ChatClientFactory
             string.IsNullOrWhiteSpace(endpoint) ? "https://api.openai.com/v1" : endpoint, modelId);
 
         var options = new OpenAIClientOptions();
+        
+        // FIX for the "Second Timer" (ClientPipeline Network Timeout)
+        // This tells the SDK library to wait 300 seconds before giving up
+        options.NetworkTimeout = TimeSpan.FromSeconds(300); 
+
         if (!string.IsNullOrWhiteSpace(endpoint))
         {
             var uriString = endpoint.Trim();
@@ -199,7 +204,13 @@ public static class ChatClientFactory
             UseProxy = false,
             ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
         };
-        options.Transport = new HttpClientPipelineTransport(new HttpClient(handler, disposeHandler: true));
+
+        // FIX for the "First Timer" (The HTTP Pipe)
+        var httpClient = new HttpClient(handler, disposeHandler: true)
+        {
+            Timeout = TimeSpan.FromSeconds(300)
+        };
+        options.Transport = new HttpClientPipelineTransport(httpClient);
 
         var client = new OpenAIClient(new System.ClientModel.ApiKeyCredential(apiKey), options);
         return client.GetChatClient(modelId).AsIChatClient();
