@@ -45,8 +45,9 @@ public class FileHelper
 
         var cobolFiles = new List<CobolFile>();
 
-        // Get all .cbl files (COBOL programs)
-        var cblFiles = Directory.GetFiles(directory, "*.cbl", SearchOption.AllDirectories);
+        // SourceTypeRegistry decides which extensions count as programs (.cbl,
+        // .cob) versus copybooks (.cpy); recursion behaviour is unchanged.
+        var cblFiles = SourceTypeRegistry.EnumerateProgramFiles(directory).ToArray();
         foreach (var filePath in cblFiles)
         {
             var content = await File.ReadAllTextAsync(filePath);
@@ -59,8 +60,19 @@ public class FileHelper
             });
         }
 
-        // Get all .cpy files (COBOL copybooks)
-        var cpyFiles = Directory.GetFiles(directory, "*.cpy", SearchOption.AllDirectories);
+        // In selector mode the user asked for specific programs, so skip the
+        // per-copybook analyzer calls; copybooks are still read as COPY context.
+        var selectorMode = string.Equals(
+            Environment.GetEnvironmentVariable("SELECTOR_MODE"),
+            "true",
+            StringComparison.OrdinalIgnoreCase);
+        var allCopybooks = SourceTypeRegistry.EnumerateCopybookFiles(directory).ToArray();
+        var cpyFiles = selectorMode ? Array.Empty<string>() : allCopybooks;
+        if (selectorMode)
+        {
+            _logger.LogInformation("[FileHelper] SELECTOR_MODE=true — skipping standalone .cpy analysis ({Skipped} copybooks will only be used as COPY context)",
+                allCopybooks.Length);
+        }
         foreach (var filePath in cpyFiles)
         {
             var content = await File.ReadAllTextAsync(filePath);
