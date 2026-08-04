@@ -179,10 +179,13 @@ public static class RektContextFormatter
             if (meaningful.Count > 0)
             {
                 sb.AppendLine();
-                sb.AppendLine($"DATA STRUCTURE ({meaningful.Count} groups — generate a DTO/record class for each):");
-                sb.AppendLine("  Each top-level group (01-level) should become a separate class/record.");
-                sb.AppendLine("  Use the field names and PIC clauses below to derive the correct types.");
-                sb.AppendLine("  If a group comes from a COPY (copybook), name the class after the copybook.");
+                sb.AppendLine(PromptLoader.LoadSectionValidated(
+                    "RektContext", "DataStructureHeader", new Dictionary<string, string>
+                    {
+                        ["Count"] = meaningful.Count.ToString()
+                    }));
+                sb.AppendLine(PromptLoader.LoadSectionValidated(
+                    "RektContext", "DataStructureGuidance", new Dictionary<string, string>()));
                 sb.AppendLine();
                 foreach (var d in meaningful)
                 {
@@ -191,7 +194,11 @@ public static class RektContextFormatter
                     int maxDepth = totalFields > 50 ? 10 : 30;
                     RenderDataItem(sb, d, indent: 2, maxChildren: maxDepth);
                     if (totalFields > 50)
-                        sb.AppendLine($"    … {totalFields} fields total — generate ALL in the DTO using the COBOL source for complete field list");
+                        sb.AppendLine(PromptLoader.LoadSectionValidated(
+                            "RektContext", "TruncatedDataStructure", new Dictionary<string, string>
+                            {
+                                ["Count"] = totalFields.ToString()
+                            }));
                 }
             }
         }

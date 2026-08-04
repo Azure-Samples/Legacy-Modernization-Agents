@@ -102,7 +102,8 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
 
         try
         {
-            var systemPrompt = PromptLoader.LoadSection("CSharpConverter", "System");
+            var systemPrompt = PromptLoader.LoadSectionValidated(
+                "CSharpConverter", "System", new Dictionary<string, string>());
 
             // NOTE: Large files are handled by SmartMigrationOrchestrator which routes them
             // to ChunkedMigrationProcess. Files reaching this agent should fit within API limits.
@@ -120,42 +121,28 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
             // Sanitize COBOL content for content filtering
             string sanitizedContent = SanitizeCobolContent(contentToConvert);
 
-            // =========================================================================================
-            // SPEC-DRIVEN CODE GENERATION (MITM HOOK)
-            var userPromptBuilder = new StringBuilder();
-            userPromptBuilder.AppendLine("Convert the following COBOL program to C# with .NET:");
-            userPromptBuilder.AppendLine();
-            userPromptBuilder.AppendLine("```cobol");
-            userPromptBuilder.AppendLine(sanitizedContent);
-            userPromptBuilder.AppendLine("```");
-
-            userPromptBuilder.AppendLine();
-            userPromptBuilder.AppendLine("Here is the analysis of the COBOL program:");
-            userPromptBuilder.AppendLine();
-            userPromptBuilder.AppendLine(cobolAnalysis.RawAnalysisData);
-
             // Inject business logic context from reverse engineering when available
             var businessLogic = _businessLogicExtracts
                 .FirstOrDefault(bl => string.Equals(bl.FileName, cobolFile.FileName, StringComparison.OrdinalIgnoreCase));
-            if (businessLogic != null)
-            {
-                userPromptBuilder.AppendLine();
-                userPromptBuilder.AppendLine("Here is the extracted business logic from the reverse engineering phase. Use this to ensure the converted code faithfully implements all business rules and features:");
-                userPromptBuilder.AppendLine();
-                userPromptBuilder.Append(FormatBusinessLogicContext(businessLogic));
-            }
+            var businessLogicContext = businessLogic is null
+                ? string.Empty
+                : PromptLoader.LoadSectionValidated("CSharpConverter", "BusinessLogic", new Dictionary<string, string>
+                {
+                    ["BusinessLogic"] = FormatBusinessLogicContext(businessLogic)
+                });
 
             // REKT structural context + shared-types registry (opt-in via ENABLE_REKT_CONTEXT).
+            var structuralContextBuilder = new StringBuilder();
             await RektPromptInjector.InjectAsync(
-                userPromptBuilder, "C#", cobolFile.FileName, AgentName, _runId, Logger);
+                structuralContextBuilder, "C#", cobolFile.FileName, AgentName, _runId, Logger);
 
-            userPromptBuilder.AppendLine();
-            userPromptBuilder.AppendLine("IMPORTANT REQUIREMENTS:");
-            userPromptBuilder.AppendLine("1. Return ONLY the C# code - NO explanations, NO markdown blocks");
-            userPromptBuilder.AppendLine("2. Start with: namespace CobolMigration.Something; (single line)");
-            userPromptBuilder.AppendLine("3. Your response must be valid, compilable C# code");
-
-            var userPrompt = userPromptBuilder.ToString();
+            var userPrompt = PromptLoader.LoadSectionValidated("CSharpConverter", "User", new Dictionary<string, string>
+            {
+                ["CobolContent"] = sanitizedContent,
+                ["Analysis"] = cobolAnalysis.RawAnalysisData,
+                ["BusinessLogicContext"] = businessLogicContext,
+                ["StructuralContext"] = structuralContextBuilder.ToString()
+            });
 
             var (csharpCode, usedFallback, fallbackReason) = await ExecuteWithFallbackAsync(
                 systemPrompt,
@@ -190,9 +177,11 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
                     hasNs, hasCls, opens, closes, cont + 1, maxContinuations);
 
                 var lastLines = string.Join("\n", csharpCode.Split('\n').TakeLast(10));
-                var contPrompt = $"Your previous response was truncated mid-output. Here are the LAST 10 lines you generated:\n\n```csharp\n{lastLines}\n```\n\n" +
-                    $"Continue from EXACTLY where you left off. Return ONLY the remaining C# code — no namespace declaration, no class declaration, no using directives. " +
-                    $"Start with the next line after the fragment above and end with the final closing brace '}}'.";
+                var contPrompt = PromptLoader.LoadSectionValidated(
+                    "CSharpConverter", "Continuation", new Dictionary<string, string>
+                    {
+                        ["LastLines"] = lastLines
+                    });
 
                 var (contCode, contFallback, _) = await ExecuteWithFallbackAsync(
                     systemPrompt, contPrompt, $"{cobolFile.FileName} [continuation-{cont + 1}]");

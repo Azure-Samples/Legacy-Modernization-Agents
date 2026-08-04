@@ -54,23 +54,37 @@ You are a COBOL-to-C#/.NET conversion specialist.
 
 ## SECTION: User
 
-Convert the following COBOL program to C# with .NET.
+Convert the following COBOL program to C# with .NET:
 
-## COBOL Source Code
 ```cobol
 {{CobolContent}}
 ```
 
-## Analysis of the COBOL Program
+Here is the analysis of the COBOL program:
+
 {{Analysis}}
 
-## Business Logic Context (from reverse engineering)
 {{BusinessLogicContext}}
 
-## Requirements
-1. Return ONLY the C# code — no explanations, no markdown blocks.
-2. Use file-scoped namespaces and async/await for all I/O.
-3. Must be valid, compilable C# code.
-4. Use Entity Framework Core for all database access.
-5. Use ASP.NET Minimal API endpoints for CICS replacements.
+{{StructuralContext}}
 
+IMPORTANT REQUIREMENTS:
+1. Return ONLY the C# code - NO explanations, NO markdown blocks
+2. Start with: namespace CobolMigration.Something; (single line)
+3. Your response must be valid, compilable C# code
+
+## SECTION: BusinessLogic
+
+Here is the extracted business logic from the reverse engineering phase. Use this to ensure the converted code faithfully implements all business rules and features:
+
+{{BusinessLogic}}
+
+## SECTION: Continuation
+
+Your previous response was truncated mid-output. Here are the LAST 10 lines you generated:
+
+```csharp
+{{LastLines}}
+```
+
+Continue from EXACTLY where you left off. Return ONLY the remaining C# code — no namespace declaration, no class declaration, no using directives. Start with the next line after the fragment above and end with the final closing brace '}'.

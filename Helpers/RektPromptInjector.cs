@@ -129,37 +129,13 @@ public static class RektPromptInjector
                     {
                         var rektBuilder = new StringBuilder();
                         rektBuilder.AppendLine();
-                        rektBuilder.AppendLine("---");
-                        rektBuilder.AppendLine("REKT STRUCTURAL CONTEXT (authoritative — use this as the conversion blueprint):");
-                        rektBuilder.AppendLine();
-                        rektBuilder.AppendLine("FACT-LOCKING RULES — read these BEFORE looking at the structural context:");
-                        rektBuilder.AppendLine("  • Treat the structural context below as GROUND TRUTH.");
-                        rektBuilder.AppendLine("  • Every method you emit must map to a section or paragraph listed in the context.");
-                        rektBuilder.AppendLine("  • Every field you emit must map to a data-structure entry in the context.");
-                        rektBuilder.AppendLine("  • Never invent new fields, methods, classes, SQL operations, or CALL targets that are not present here.");
-                        rektBuilder.AppendLine("  • If a name is unclear from the source, prefer the name in the structural context.");
-                        rektBuilder.AppendLine("  • If the structural context shows zero items for a category (e.g. no CALL targets), do NOT generate any.");
-                        rektBuilder.AppendLine();
-                        rektBuilder.AppendLine("DATA STRUCTURE → DTO RULES:");
-                        rektBuilder.AppendLine("  • For EVERY 01-level data group in the DATA STRUCTURE section below, generate a");
-                        rektBuilder.AppendLine("    complete DTO/record class with ALL fields — not just the ones referenced in the");
-                        rektBuilder.AppendLine("    procedure division. Copybook structures are shared");
-                        rektBuilder.AppendLine("    types used by multiple programs — they must be complete.");
-                        rektBuilder.AppendLine("  • Map EVERY PIC clause to the correct target type (PIC X→String, PIC S9V9→BigDecimal/decimal,");
-                        rektBuilder.AppendLine("    PIC 9 COMP-3→BigDecimal/decimal, PIC 9 COMP→int/long). Do NOT simplify to fewer fields.");
-                        rektBuilder.AppendLine("  • Preserve the original COBOL field name as the Java/C# field name (camelCase).");
-                        rektBuilder.AppendLine("  • If a group has >50 fields, still generate ALL of them — completeness is more");
-                        rektBuilder.AppendLine("    important than brevity.");
-                        rektBuilder.AppendLine();
-                        rektBuilder.AppendLine("CALL TARGET → SERVICE INJECTION RULES:");
-                        rektBuilder.AppendLine("  • For EVERY CALL target in the structural context, generate:");
-                        rektBuilder.AppendLine("    - A service interface (e.g. IDateService / IAccountService)");
-                        rektBuilder.AppendLine("    - An @Inject/@Autowired field in the main service class");
-                        rektBuilder.AppendLine("    - A method call at the point where the COBOL CALL appears");
-                        rektBuilder.AppendLine("  • Java: use @Inject (CDI) for the interface field");
-                        rektBuilder.AppendLine("  • C#: use constructor injection for the interface");
-                        rektBuilder.AppendLine("  • Do NOT inline the called program's logic — it will be converted separately.");
-                        rektBuilder.AppendLine();
+                        rektBuilder.AppendLine(PromptLoader.LoadSectionValidated(
+                            "RektContext", "CommonPolicy", new Dictionary<string, string>
+                            {
+                                ["SourceMetadata"] = string.Empty
+                            }));
+                        rektBuilder.AppendLine(PromptLoader.LoadSectionValidated(
+                            "RektContext", "RawTargetPolicy", new Dictionary<string, string>()));
                         rektBuilder.AppendLine(RektContextFormatter.ToPromptBlock(sc));
                         var rektBlock = rektBuilder.ToString();
                         var rawRektTokens = TokenHelper.EstimateTokens(rektBlock);

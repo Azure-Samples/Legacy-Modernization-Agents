@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text;
+using System.Text.RegularExpressions;
 using CobolToQuarkusMigration.Models;
 
 namespace CobolToQuarkusMigration.Helpers;
@@ -11,6 +12,9 @@ namespace CobolToQuarkusMigration.Helpers;
 /// </summary>
 public static class PromptLoader
 {
+    private static readonly Regex PlaceholderPattern =
+        new(@"\{\{(?<name>[A-Za-z0-9_]+)\}\}", RegexOptions.Compiled);
+
     private static readonly ConcurrentDictionary<string, string> FileCache = new();
     private static readonly ConcurrentDictionary<string, Dictionary<string, string>> SectionCache = new();
 
@@ -42,12 +46,15 @@ public static class PromptLoader
     /// </summary>
     public static string Load(string promptName, Dictionary<string, string> replacements)
     {
-        var template = Load(promptName);
-        foreach (var (key, value) in replacements)
-        {
-            template = template.Replace($"{{{{{key}}}}}", value);
-        }
-        return template;
+        return ApplyReplacements(Load(promptName), replacements);
+    }
+
+    /// <summary>
+    /// Loads and renders a prompt template, then rejects unresolved placeholders.
+    /// </summary>
+    public static string LoadValidated(string promptName, IReadOnlyDictionary<string, string> replacements)
+    {
+        return RenderValidated(Load(promptName), replacements, promptName, sectionName: null);
     }
 
     /// <summary>
@@ -56,12 +63,7 @@ public static class PromptLoader
     /// </summary>
     public static string LoadSection(string promptName, string sectionName)
     {
-        var sections = SectionCache.GetOrAdd(promptName, static name => ParseSections(Load(name)));
-
-        if (!sections.TryGetValue(sectionName, out var content))
-            throw new KeyNotFoundException($"Section '{sectionName}' not found in prompt '{promptName}'. Available: {string.Join(", ", sections.Keys)}");
-
-        return ApplyGlobalReplacements(content);
+        return ApplyGlobalReplacements(GetSection(promptName, sectionName));
     }
 
     /// <summary>
@@ -70,12 +72,30 @@ public static class PromptLoader
     /// </summary>
     public static string LoadSection(string promptName, string sectionName, Dictionary<string, string> replacements)
     {
-        var template = LoadSection(promptName, sectionName);
-        foreach (var (key, value) in replacements)
-        {
-            template = template.Replace($"{{{{{key}}}}}", value);
-        }
-        return template;
+        return ApplyReplacements(LoadSection(promptName, sectionName), replacements);
+    }
+
+    /// <summary>
+    /// Loads and renders a named prompt section, then rejects unresolved placeholders.
+    /// Use <see cref="LoadSection(string,string)"/> for sections intentionally rendered in stages.
+    /// </summary>
+    public static string LoadSectionValidated(
+        string promptName,
+        string sectionName,
+        IReadOnlyDictionary<string, string> replacements)
+    {
+        return RenderValidated(
+            GetSection(promptName, sectionName), replacements, promptName, sectionName);
+    }
+
+    private static string GetSection(string promptName, string sectionName)
+    {
+        var sections = SectionCache.GetOrAdd(promptName, static name => ParseSections(Load(name)));
+
+        if (!sections.TryGetValue(sectionName, out var content))
+            throw new KeyNotFoundException($"Section '{sectionName}' not found in prompt '{promptName}'. Available: {string.Join(", ", sections.Keys)}");
+
+        return content;
     }
 
     private static Dictionary<string, string> ParseSections(string content)
@@ -109,9 +129,47 @@ public static class PromptLoader
 
     private static string ApplyGlobalReplacements(string template)
     {
-        if (CodebaseProfile is not null)
-            template = template.Replace("{{CodebaseProfile}}", CodebaseProfile);
+        return template.Replace("{{CodebaseProfile}}", CodebaseProfile ?? string.Empty);
+    }
+
+    private static string ApplyReplacements(
+        string template,
+        IReadOnlyDictionary<string, string> replacements)
+    {
+        foreach (var (key, value) in replacements)
+            template = template.Replace($"{{{{{key}}}}}", value);
         return template;
+    }
+
+    private static string RenderValidated(
+        string template,
+        IReadOnlyDictionary<string, string> replacements,
+        string promptName,
+        string? sectionName)
+    {
+        var unresolved = new SortedSet<string>(StringComparer.Ordinal);
+        var rendered = PlaceholderPattern.Replace(template, match =>
+        {
+            var name = match.Groups["name"].Value;
+            if (replacements.TryGetValue(name, out var value))
+                return value;
+            if (name == "CodebaseProfile")
+                return CodebaseProfile ?? string.Empty;
+
+            unresolved.Add(name);
+            return match.Value;
+        });
+
+        if (unresolved.Count > 0)
+        {
+            var location = sectionName is null
+                ? $"prompt '{promptName}'"
+                : $"prompt '{promptName}', section '{sectionName}'";
+            throw new InvalidOperationException(
+                $"Unresolved placeholder(s) in {location}: {string.Join(", ", unresolved)}.");
+        }
+
+        return rendered;
     }
 
     /// <summary>

@@ -64,24 +64,18 @@ public sealed class SharedTypeRegistry
             .Take(40)
             .ToList();
 
-        var sb = new StringBuilder();
-        sb.AppendLine();
-        sb.AppendLine("---");
-        sb.AppendLine($"SHARED TYPE REGISTRY (do NOT redeclare — they already exist in the {targetLanguage} project):");
-        sb.AppendLine();
-        sb.AppendLine("These copybooks are referenced by more than one program in this batch.");
-        sb.AppendLine("A shared types file is (or will be) generated for each. If your program");
-        sb.AppendLine("needs one of these, REFERENCE it, do not redefine it. Any redefinition will");
-        sb.AppendLine("cause CS0101 / duplicate-class build errors.");
-        sb.AppendLine();
+        var items = new StringBuilder();
         foreach (var (cpy, refs) in shared)
         {
-            sb.AppendLine($"  • {cpy}  (used by {refs.Count} programs)  →  expected type: {ToPascalCase(cpy)}");
+            items.AppendLine($"  • {cpy}  (used by {refs.Count} programs)  →  expected type: {ToPascalCase(cpy)}");
         }
-        sb.AppendLine();
-        sb.AppendLine("If a copybook above corresponds to a value-object you would normally generate,");
-        sb.AppendLine("emit a `using` for the shared types namespace instead of a new declaration.");
-        return sb.ToString();
+
+        return Environment.NewLine + PromptLoader.LoadSectionValidated(
+            "RektContext", "SharedTypes", new Dictionary<string, string>
+            {
+                ["TargetLanguage"] = targetLanguage,
+                ["SharedTypes"] = items.ToString().TrimEnd()
+            });
     }
 
     private static string ToPascalCase(string name)

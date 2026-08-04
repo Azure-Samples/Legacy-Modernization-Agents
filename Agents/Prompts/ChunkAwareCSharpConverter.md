@@ -59,25 +59,47 @@ You are a COBOL-to-C#/.NET conversion specialist.
 
 ## SECTION: User
 
-Convert the following COBOL program to C# with .NET.
+Convert this COBOL chunk (lines {{StartLine}}-{{EndLine}}) to C#:
 
-## COBOL Source Code
 ```cobol
 {{CobolContent}}
 ```
 
-## Analysis of the COBOL Program
-{{Analysis}}
+{{SemanticUnitsContext}}
 
-## Business Logic Context (from reverse engineering)
+{{ForwardReferencesContext}}
+
 {{BusinessLogicContext}}
 
-## Requirements
-1. Return ONLY the C# code — no explanations, no markdown blocks.
-2. Use file-scoped namespaces and async/await for all I/O.
-3. Must be valid, compilable C# code.
-4. Use Entity Framework Core for all database access.
-5. Use ASP.NET Minimal API endpoints for CICS replacements.
+{{StructuralContext}}
+
+Return ONLY C# code. No markdown blocks. No explanations.
+
+## SECTION: PreviousSignatures
+
+Methods defined in previous chunks (maintain consistency):
+{{Items}}
+
+## SECTION: PreviousVariables
+
+Variables defined in previous chunks:
+{{Items}}
+
+## SECTION: SemanticUnits
+
+Semantic units in this chunk:
+{{Items}}
+
+## SECTION: ForwardReferences
+
+References to resolve from previous chunks:
+{{Items}}
+
+## SECTION: BusinessLogic
+
+Business logic context from reverse engineering (use to ensure accurate conversion):
+
+{{BusinessLogic}}
 
 ## SECTION: ChunkFirst
 

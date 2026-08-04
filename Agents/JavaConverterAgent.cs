@@ -103,7 +103,8 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
         try
         {
             // System prompt for Java conversion
-            var systemPrompt = PromptLoader.LoadSection("JavaConverter", "System");
+            var systemPrompt = PromptLoader.LoadSectionValidated(
+                "JavaConverter", "System", new Dictionary<string, string>());
 
             // NOTE: Large files are handled by SmartMigrationOrchestrator which routes them
             // to ChunkedMigrationProcess. Files reaching this agent should fit within API limits.
@@ -121,45 +122,28 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
             // Sanitize COBOL content for content filtering
             string sanitizedContent = SanitizeCobolContent(contentToConvert);
 
-            // User prompt for Java conversion
-            var userPromptBuilder = new StringBuilder();
-            userPromptBuilder.AppendLine("Convert the following COBOL program to Java with Quarkus:");
-            userPromptBuilder.AppendLine();
-            userPromptBuilder.AppendLine("```cobol");
-            userPromptBuilder.AppendLine(sanitizedContent);
-            userPromptBuilder.AppendLine("```");
-
-            userPromptBuilder.AppendLine();
-            userPromptBuilder.AppendLine("Here is the analysis of the COBOL program to help you understand its structure:");
-            userPromptBuilder.AppendLine();
-            userPromptBuilder.AppendLine(cobolAnalysis.RawAnalysisData);
-
             // Inject business logic context from reverse engineering when available
             var businessLogic = _businessLogicExtracts
                 .FirstOrDefault(bl => string.Equals(bl.FileName, cobolFile.FileName, StringComparison.OrdinalIgnoreCase));
-            if (businessLogic != null)
-            {
-                userPromptBuilder.AppendLine();
-                userPromptBuilder.AppendLine("Here is the extracted business logic from the reverse engineering phase. Use this to ensure the converted code faithfully implements all business rules and features:");
-                userPromptBuilder.AppendLine();
-                userPromptBuilder.Append(FormatBusinessLogicContext(businessLogic));
-            }
+            var businessLogicContext = businessLogic is null
+                ? string.Empty
+                : PromptLoader.LoadSectionValidated("JavaConverter", "BusinessLogic", new Dictionary<string, string>
+                {
+                    ["BusinessLogic"] = FormatBusinessLogicContext(businessLogic)
+                });
 
             // REKT structural context + shared-types registry (opt-in via ENABLE_REKT_CONTEXT).
+            var structuralContextBuilder = new StringBuilder();
             await RektPromptInjector.InjectAsync(
-                userPromptBuilder, "Java", cobolFile.FileName, AgentName, _runId, Logger);
+                structuralContextBuilder, "Java", cobolFile.FileName, AgentName, _runId, Logger);
 
-            userPromptBuilder.AppendLine();
-            userPromptBuilder.AppendLine("IMPORTANT REQUIREMENTS:");
-            userPromptBuilder.AppendLine("1. Return ONLY the Java code - NO explanations, NO markdown blocks, NO additional text");
-            userPromptBuilder.AppendLine("2. Start with: package com.example.something; (single line, lowercase, no comments)");
-            userPromptBuilder.AppendLine("3. Do NOT include newlines or explanatory text in the package declaration");
-            userPromptBuilder.AppendLine("4. Your response must be valid, compilable Java code starting with 'package' and ending with the class closing brace");
-
-            userPromptBuilder.AppendLine();
-            userPromptBuilder.AppendLine("Note: The original code contains Danish error handling terms replaced with placeholders.");
-
-            var userPrompt = userPromptBuilder.ToString();
+            var userPrompt = PromptLoader.LoadSectionValidated("JavaConverter", "User", new Dictionary<string, string>
+            {
+                ["CobolContent"] = sanitizedContent,
+                ["Analysis"] = cobolAnalysis.RawAnalysisData,
+                ["BusinessLogicContext"] = businessLogicContext,
+                ["StructuralContext"] = structuralContextBuilder.ToString()
+            });
 
             var (javaCode, usedFallback, fallbackReason) = await ExecuteWithFallbackAsync(
                 systemPrompt,
@@ -199,9 +183,11 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
                     hasPkg, hasCls, opens, closes, cont + 1, maxContinuations);
 
                 var lastLines = string.Join("\n", javaCode.Split('\n').TakeLast(10));
-                var contPrompt = $"Your previous response was truncated mid-output. Here are the LAST 10 lines you generated:\n\n```java\n{lastLines}\n```\n\n" +
-                    $"Continue from EXACTLY where you left off. Return ONLY the remaining Java code — no package declaration, no class declaration, no imports. " +
-                    $"Start with the next line after the fragment above and end with the final closing brace '}}' of the class.";
+                var contPrompt = PromptLoader.LoadSectionValidated(
+                    "JavaConverter", "Continuation", new Dictionary<string, string>
+                    {
+                        ["LastLines"] = lastLines
+                    });
 
                 var (contCode, contFallback, _) = await ExecuteWithFallbackAsync(
                     systemPrompt, contPrompt, $"{cobolFile.FileName} [continuation-{cont + 1}]");

@@ -394,7 +394,7 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
     {
         var sb = new StringBuilder();
 
-        sb.Append(PromptLoader.LoadSection("ChunkAwareJavaConverter", "System", new Dictionary<string, string>
+        sb.Append(PromptLoader.LoadSectionValidated("ChunkAwareJavaConverter", "System", new Dictionary<string, string>
         {
             ["ChunkNumber"] = (chunk.ChunkIndex + 1).ToString(),
             ["TotalChunks"] = context.TotalChunks.ToString()
@@ -403,25 +403,35 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
         var chunkSection = chunk.ChunkIndex == 0 ? "ChunkFirst"
             : chunk.ChunkIndex == context.TotalChunks - 1 ? "ChunkLast"
             : "ChunkMiddle";
-        sb.AppendLine(PromptLoader.LoadSection("ChunkAwareJavaConverter", chunkSection));
+        sb.AppendLine(PromptLoader.LoadSectionValidated(
+            "ChunkAwareJavaConverter", chunkSection, new Dictionary<string, string>()));
 
         // Add context from previous chunks
         if (context.PreviousSignatures.Any())
         {
-            sb.AppendLine("\nMethods defined in previous chunks (maintain consistency):");
-            foreach (var sig in context.PreviousSignatures.Take(20))
-            {
-                sb.AppendLine($"  - {sig.TargetSignature}");
-            }
+            var items = string.Join(
+                Environment.NewLine,
+                context.PreviousSignatures.Take(20).Select(sig => $"  - {sig.TargetSignature}"));
+            sb.AppendLine();
+            sb.AppendLine(PromptLoader.LoadSectionValidated(
+                "ChunkAwareJavaConverter", "PreviousSignatures", new Dictionary<string, string>
+                {
+                    ["Items"] = items
+                }));
         }
 
         if (context.PreviousVariables.Any())
         {
-            sb.AppendLine("\nVariables defined in previous chunks:");
-            foreach (var variable in context.PreviousVariables.Take(30))
-            {
-                sb.AppendLine($"  - {variable.TargetType} {variable.TargetName}");
-            }
+            var items = string.Join(
+                Environment.NewLine,
+                context.PreviousVariables.Take(30)
+                    .Select(variable => $"  - {variable.TargetType} {variable.TargetName}"));
+            sb.AppendLine();
+            sb.AppendLine(PromptLoader.LoadSectionValidated(
+                "ChunkAwareJavaConverter", "PreviousVariables", new Dictionary<string, string>
+                {
+                    ["Items"] = items
+                }));
         }
 
         return sb.ToString();
@@ -429,51 +439,50 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
 
     private async Task<string> BuildChunkAwareUserPromptAsync(ChunkResult chunk, ChunkContext context)
     {
-        var sb = new StringBuilder();
-
-        sb.AppendLine($"Convert this COBOL chunk (lines {chunk.StartLine}-{chunk.EndLine}) to Java:");
-        sb.AppendLine();
-        sb.AppendLine("```cobol");
-        sb.AppendLine(SanitizeCobolContent(chunk.Content ?? string.Empty));
-        sb.AppendLine("```");
-        sb.AppendLine();
-
-        if (chunk.SemanticUnitNames.Any())
-        {
-            sb.AppendLine("Semantic units in this chunk:");
-            foreach (var unit in chunk.SemanticUnitNames)
+        var semanticUnitsContext = chunk.SemanticUnitNames.Any()
+            ? PromptLoader.LoadSectionValidated("ChunkAwareJavaConverter", "SemanticUnits", new Dictionary<string, string>
             {
-                sb.AppendLine($"  - {unit}");
-            }
-            sb.AppendLine();
-        }
+                ["Items"] = string.Join(
+                    Environment.NewLine,
+                    chunk.SemanticUnitNames.Select(unit => $"  - {unit}"))
+            })
+            : string.Empty;
 
-        if (context.PendingForwardReferences.Any())
-        {
-            sb.AppendLine("References to resolve from previous chunks:");
-            foreach (var reference in context.PendingForwardReferences.Take(10))
+        var forwardReferencesContext = context.PendingForwardReferences.Any()
+            ? PromptLoader.LoadSectionValidated("ChunkAwareJavaConverter", "ForwardReferences", new Dictionary<string, string>
             {
-                sb.AppendLine($"  - {reference.TargetMethod}");
-            }
-            sb.AppendLine();
-        }
+                ["Items"] = string.Join(
+                    Environment.NewLine,
+                    context.PendingForwardReferences.Take(10).Select(reference => $"  - {reference.TargetMethod}"))
+            })
+            : string.Empty;
 
         // Inject business logic context from reverse engineering when available
         var businessLogic = _businessLogicExtracts
             .FirstOrDefault(bl => string.Equals(bl.FileName, chunk.SourceFile, StringComparison.OrdinalIgnoreCase));
-        if (businessLogic != null)
-        {
-            sb.AppendLine("Business logic context from reverse engineering (use to ensure accurate conversion):");
-            sb.AppendLine();
-            sb.Append(FormatBusinessLogicContext(businessLogic));
-        }
+        var businessLogicContext = businessLogic is null
+            ? string.Empty
+            : PromptLoader.LoadSectionValidated("ChunkAwareJavaConverter", "BusinessLogic", new Dictionary<string, string>
+            {
+                ["BusinessLogic"] = FormatBusinessLogicContext(businessLogic)
+            });
 
         // REKT structural context + shared-types registry (opt-in via ENABLE_REKT_CONTEXT).
-        await RektPromptInjector.InjectAsync(sb, "Java", chunk.SourceFile ?? "(unknown)", "ChunkAwareJavaConverter", _runId, Logger);
+        var structuralContextBuilder = new StringBuilder();
+        await RektPromptInjector.InjectAsync(
+            structuralContextBuilder, "Java", chunk.SourceFile ?? "(unknown)",
+            "ChunkAwareJavaConverter", _runId, Logger);
 
-        sb.AppendLine("Return ONLY Java code. No markdown blocks. No explanations.");
-
-        return sb.ToString();
+        return PromptLoader.LoadSectionValidated("ChunkAwareJavaConverter", "User", new Dictionary<string, string>
+        {
+            ["StartLine"] = chunk.StartLine.ToString(),
+            ["EndLine"] = chunk.EndLine.ToString(),
+            ["CobolContent"] = SanitizeCobolContent(chunk.Content ?? string.Empty),
+            ["SemanticUnitsContext"] = semanticUnitsContext,
+            ["ForwardReferencesContext"] = forwardReferencesContext,
+            ["BusinessLogicContext"] = businessLogicContext,
+            ["StructuralContext"] = structuralContextBuilder.ToString()
+        });
     }
 
     private string ExtractJavaCode(string input)
