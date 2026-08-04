@@ -109,6 +109,8 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
             "Converting chunk {Index} of {File} to Java (lines {Start}-{End}, {ContentLen} chars)",
             chunk.ChunkIndex, chunk.SourceFile, chunk.StartLine, chunk.EndLine, chunk.Content?.Length ?? 0);
 
+        MetricsSink.CurrentRunId = _runId;
+
         var contentLength = chunk.Content?.Length ?? 0;
         if (contentLength > MaxContentChars)
         {
@@ -128,7 +130,7 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
         try
         {
             var systemPrompt = BuildChunkAwareSystemPrompt(chunk, context);
-            var userPrompt = BuildChunkAwareUserPrompt(chunk, context);
+            var userPrompt = await BuildChunkAwareUserPromptAsync(chunk, context);
             
             EnhancedLogger?.LogBehindTheScenes("AI_PROCESSING", "CHUNK_CONVERSION_START",
                 $"Converting chunk {chunk.ChunkIndex + 1}/{context.TotalChunks} of {chunk.SourceFile}",
@@ -152,6 +154,50 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
             }
 
             javaCode = ExtractJavaCode(javaCode);
+
+            // The chunk path used to report Success=true with an empty body when the
+            // provider dropped the response, which produced 0-byte .java files.
+            var hasPkg = javaCode.Contains("package ", StringComparison.Ordinal);
+            var hasClass = javaCode.Contains("class ", StringComparison.Ordinal);
+            var opens = javaCode.Count(c => c == '{');
+            var closes = javaCode.Count(c => c == '}');
+            if (string.IsNullOrWhiteSpace(javaCode) || (!hasPkg && !hasClass) || (opens == 0 && closes == 0))
+            {
+                var reason = string.IsNullOrWhiteSpace(javaCode)
+                    ? "EMPTY_LLM_RESPONSE — model returned no usable output (likely provider timeout / 0-token response). Re-run with ENABLE_REKT_CONTEXT=true and a smaller chunk threshold."
+                    : "NO_JAVA_STRUCTURE — model emitted prose or non-Java content. Re-run with full REKT context enabled.";
+
+                var stubBuilder = new StringBuilder();
+                stubBuilder.AppendLine("// ═════════════════════════════════════════════════════════════════════");
+                stubBuilder.AppendLine("// ⚠ CHUNK CONVERSION DID NOT PRODUCE USABLE JAVA");
+                stubBuilder.AppendLine("// ═════════════════════════════════════════════════════════════════════");
+                stubBuilder.AppendLine("// Source COBOL: " + chunk.SourceFile);
+                stubBuilder.AppendLine("// Chunk: " + (chunk.ChunkIndex + 1) + "/" + context.TotalChunks
+                                       + " (lines " + chunk.StartLine + "-" + chunk.EndLine + ")");
+                stubBuilder.AppendLine("// Reason: " + reason);
+                stubBuilder.AppendLine("//");
+                stubBuilder.AppendLine("// What to do");
+                stubBuilder.AppendLine("// ──────────");
+                stubBuilder.AppendLine("// 1. Verify ENABLE_REKT_CONTEXT=true in the environment.");
+                stubBuilder.AppendLine("// 2. Confirm full-fidelity REKT artifacts exist under");
+                stubBuilder.AppendLine("//    output/rekt/" + Path.GetFileNameWithoutExtension(chunk.SourceFile) + ".cbl.report/");
+                stubBuilder.AppendLine("// 3. Re-run the conversion for just this program.");
+                stubBuilder.AppendLine("// ═════════════════════════════════════════════════════════════════════");
+
+                Logger.LogWarning("[ChunkAwareJavaConverter] Empty/unusable chunk output for {File} chunk {Idx} — writing diagnostic stub",
+                    chunk.SourceFile, chunk.ChunkIndex);
+
+                return new ChunkConversionResult
+                {
+                    ChunkIndex = chunk.ChunkIndex,
+                    SourceFile = chunk.SourceFile,
+                    Success = false,
+                    ErrorMessage = reason,
+                    ConvertedCode = stubBuilder.ToString(),
+                    ProcessingTimeMs = stopwatch.ElapsedMilliseconds
+                };
+            }
+
             var definedMethods = ExtractDefinedMethods(javaCode);
 
             return new ChunkConversionResult
@@ -385,7 +431,7 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
         return sb.ToString();
     }
 
-    private string BuildChunkAwareUserPrompt(ChunkResult chunk, ChunkContext context)
+    private async Task<string> BuildChunkAwareUserPromptAsync(ChunkResult chunk, ChunkContext context)
     {
         var sb = new StringBuilder();
 
@@ -425,6 +471,9 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
             sb.AppendLine();
             sb.Append(FormatBusinessLogicContext(businessLogic));
         }
+
+        // REKT structural context + shared-types registry (opt-in via ENABLE_REKT_CONTEXT).
+        await RektPromptInjector.InjectAsync(sb, "Java", chunk.SourceFile ?? "(unknown)", "ChunkAwareJavaConverter", _runId, Logger);
 
         sb.AppendLine("Return ONLY Java code. No markdown blocks. No explanations.");
 

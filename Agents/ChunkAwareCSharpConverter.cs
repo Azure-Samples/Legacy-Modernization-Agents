@@ -109,6 +109,8 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
             "Converting chunk {Index} of {File} to C# (lines {Start}-{End}, {ContentLen} chars)",
             chunk.ChunkIndex, chunk.SourceFile, chunk.StartLine, chunk.EndLine, chunk.Content?.Length ?? 0);
 
+        MetricsSink.CurrentRunId = _runId;
+
         var contentLength = chunk.Content?.Length ?? 0;
         if (contentLength > MaxContentChars)
         {
@@ -128,7 +130,7 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
         try
         {
             var systemPrompt = BuildChunkAwareSystemPrompt(chunk, context);
-            var userPrompt = BuildChunkAwareUserPrompt(chunk, context);
+            var userPrompt = await BuildChunkAwareUserPromptAsync(chunk, context);
 
             var (csharpCode, usedFallback, fallbackReason) = await ExecuteWithFallbackAsync(
                 systemPrompt, userPrompt, $"{chunk.SourceFile} chunk {chunk.ChunkIndex}");
@@ -382,7 +384,7 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
         return sb.ToString();
     }
 
-    private string BuildChunkAwareUserPrompt(ChunkResult chunk, ChunkContext context)
+    private async Task<string> BuildChunkAwareUserPromptAsync(ChunkResult chunk, ChunkContext context)
     {
         var sb = new StringBuilder();
 
@@ -422,6 +424,9 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
             sb.AppendLine();
             sb.Append(FormatBusinessLogicContext(businessLogic));
         }
+
+        // REKT structural context + shared-types registry (opt-in via ENABLE_REKT_CONTEXT).
+        await RektPromptInjector.InjectAsync(sb, "C#", chunk.SourceFile ?? "(unknown)", "ChunkAwareCSharpConverter", _runId, Logger);
 
         sb.AppendLine("Return ONLY C# code. No markdown blocks. No explanations.");
 
