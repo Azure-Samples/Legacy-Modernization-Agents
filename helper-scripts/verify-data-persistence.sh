@@ -124,8 +124,9 @@ echo -e "${BLUE}ℹ️  Testing Neo4j restart scenario...${NC}"
 
 # Save current node count if Neo4j is running
 if docker ps | grep -q cobol-migration-neo4j; then
-    BEFORE_RESTART=$(docker exec cobol-migration-neo4j cypher-shell -u neo4j -p cobol-migration-2025 \
-        "MATCH (n) RETURN count(n) as count;" 2>/dev/null | grep -o '[0-9]\+' | head -1 || echo "0")
+    BEFORE_RESTART=$(docker exec cobol-migration-neo4j sh -c \
+        'cypher-shell -u neo4j -p "$NEO4J_PASSWORD" "MATCH (n) RETURN count(n) as count;"' \
+        2>/dev/null | grep -o '[0-9]\+' | head -1 || echo "0")
     
     echo "   Nodes before restart: $BEFORE_RESTART"
     
@@ -133,8 +134,9 @@ if docker ps | grep -q cobol-migration-neo4j; then
     docker restart cobol-migration-neo4j >/dev/null 2>&1
     sleep 3
     
-    AFTER_RESTART=$(docker exec cobol-migration-neo4j cypher-shell -u neo4j -p cobol-migration-2025 \
-        "MATCH (n) RETURN count(n) as count;" 2>/dev/null | grep -o '[0-9]\+' | head -1 || echo "0")
+    AFTER_RESTART=$(docker exec cobol-migration-neo4j sh -c \
+        'cypher-shell -u neo4j -p "$NEO4J_PASSWORD" "MATCH (n) RETURN count(n) as count;"' \
+        2>/dev/null | grep -o '[0-9]\+' | head -1 || echo "0")
     
     echo "   Nodes after restart: $AFTER_RESTART"
     

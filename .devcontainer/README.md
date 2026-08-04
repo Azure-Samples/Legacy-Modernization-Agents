@@ -13,10 +13,10 @@ This dev container provides a fully automated development environment with all d
 
 ### Databases
 - ✅ **Neo4j 5.15.0** - Graph database for dependency visualization
-  - Auto-starts on container creation
+  - Starts automatically when the repository `.env` exists
   - Accessible at http://localhost:7474 (browser)
   - Bolt protocol at bolt://localhost:7687
-  - Credentials: `neo4j` / `cobol-migration-2025`
+  - Username: `neo4j`; password: `NEO4J_PASSWORD` from the repository `.env`
 
 - ✅ **SQLite3** - For migration metadata and content storage
   - Database location: `/workspace/Data/migration.db`
@@ -48,6 +48,10 @@ This dev container provides a fully automated development environment with all d
 git clone <repo-url>
 cd Legacy-Modernization-Agents
 
+# Configure the local Neo4j password
+cp .env.example .env
+# Replace the placeholder NEO4J_PASSWORD value
+
 # Open in VS Code
 code .
 
@@ -61,7 +65,7 @@ The dev container will automatically:
 1. Build the Docker image (~3-5 minutes first time)
 2. Install .NET dependencies (`dotnet restore`)
 3. Build the project (`dotnet build`)
-4. Start Neo4j container
+4. Start the Neo4j container when `.env` is configured
 5. Show welcome message with quick commands
 
 ### 3. Verify Setup
@@ -171,6 +175,8 @@ Once running, access these URLs:
 neo4j-status
 
 # Start manually
+cp .env.example .env
+# Replace the placeholder NEO4J_PASSWORD value
 docker-compose up -d neo4j
 
 # Check logs for errors

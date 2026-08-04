@@ -172,7 +172,9 @@ cp Config/ai-config.local.env.example Config/ai-config.local.env
 # Auth: use 'az login' (recommended) OR set _MAIN_API_KEY
 # See docs/az-login-auth-guide.md for Entra ID setup details
 
-# 3. Start Neo4j (dependency graph storage)
+# 3. Configure and start Neo4j (dependency graph storage)
+cp .env.example .env
+# Replace the NEO4J_PASSWORD placeholder with a strong local password
 docker-compose up -d neo4j
 
 # 4. Build
@@ -1055,21 +1057,8 @@ _CODE_MODEL="gpt-5.1-codex-mini"     # For Code Conversion
 
 ### Neo4j (Dependency Graphs)
 
-In `Config/appsettings.json`:
-```json
-{
-  "ApplicationSettings": {
-    "Neo4j": {
-      "Enabled": true,
-      "Uri": "bolt://localhost:7687",
-      "Username": "neo4j",
-      "Password": "cobol-migration-2025"
-    }
-  }
-}
-```
-
-Start with: `docker-compose up -d neo4j`
+Copy `.env.example` to `.env`, replace the `NEO4J_PASSWORD` placeholder, then run
+`docker-compose up -d neo4j`. Neo4j HTTP and Bolt ports bind to localhost only.
 
 ### Smart Chunking (Large Files)
 

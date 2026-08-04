@@ -6,6 +6,29 @@
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
+
+if [[ ! -f "$REPO_ROOT/.env" ]]; then
+    echo "Create .env from .env.example and set NEO4J_PASSWORD before running the demo."
+    exit 1
+fi
+
+neo4j_line=$(grep -E '^NEO4J_PASSWORD=' "$REPO_ROOT/.env" | tail -1)
+export NEO4J_PASSWORD="${neo4j_line#NEO4J_PASSWORD=}"
+NEO4J_PASSWORD="${NEO4J_PASSWORD%\"}"
+NEO4J_PASSWORD="${NEO4J_PASSWORD#\"}"
+NEO4J_PASSWORD="${NEO4J_PASSWORD%\'}"
+NEO4J_PASSWORD="${NEO4J_PASSWORD#\'}"
+export NEO4J_PASSWORD
+export ApplicationSettings__Neo4j__Password="$NEO4J_PASSWORD"
+
+if [[ -z "$NEO4J_PASSWORD" ]]; then
+    echo "NEO4J_PASSWORD is required in .env."
+    exit 1
+fi
+
 echo "╔══════════════════════════════════════════════════════════════╗"
 echo "║   COBOL Migration Portal - Demo Mode                        ║"
 echo "║   (View existing data - No new analysis)                    ║"
@@ -138,7 +161,7 @@ echo "   4. Ask questions about COBOL files and dependencies"
 echo ""
 echo "🔑 Neo4j Credentials (if needed):"
 echo "   Username: neo4j"
-echo "   Password: cobol-migration-2025"
+echo "   Password: the NEO4J_PASSWORD value from .env"
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "Starting portal in background..."

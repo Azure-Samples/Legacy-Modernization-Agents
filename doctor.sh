@@ -388,7 +388,28 @@ run_portal() {
 load_configuration() {
     if [[ -f "$REPO_ROOT/Config/load-config.sh" ]]; then
         source "$REPO_ROOT/Config/load-config.sh"
-        return $?
+        local config_status=$?
+        if [[ $config_status -ne 0 ]]; then
+            return $config_status
+        fi
+
+        if [[ -z "${NEO4J_PASSWORD:-}" && -f "$REPO_ROOT/.env" ]]; then
+            local neo4j_line
+            neo4j_line=$(grep -E '^NEO4J_PASSWORD=' "$REPO_ROOT/.env" | tail -1)
+            if [[ -n "$neo4j_line" ]]; then
+                export NEO4J_PASSWORD="${neo4j_line#NEO4J_PASSWORD=}"
+                NEO4J_PASSWORD="${NEO4J_PASSWORD%\"}"
+                NEO4J_PASSWORD="${NEO4J_PASSWORD#\"}"
+                NEO4J_PASSWORD="${NEO4J_PASSWORD%\'}"
+                NEO4J_PASSWORD="${NEO4J_PASSWORD#\'}"
+                export NEO4J_PASSWORD
+            fi
+        fi
+
+        if [[ -n "${NEO4J_PASSWORD:-}" ]]; then
+            export ApplicationSettings__Neo4j__Password="$NEO4J_PASSWORD"
+        fi
+        return 0
     else
         echo -e "${RED}❌ Configuration loader not found: Config/load-config.sh${NC}"
         return 1
@@ -2355,7 +2376,8 @@ ensure_rekt_containers() {
     local max_wait=60
     local waited=0
     echo -ne "  Waiting for $REKT_NEO4J_CONTAINER"
-    while ! docker exec "$REKT_NEO4J_CONTAINER" cypher-shell -u neo4j -p cobol-rekt-2026 'RETURN 1' >/dev/null 2>&1; do
+    while ! docker exec "$REKT_NEO4J_CONTAINER" sh -c \
+        'cypher-shell -u neo4j -p "$NEO4J_PASSWORD" "RETURN 1"' >/dev/null 2>&1; do
         sleep 2
         waited=$((waited + 2))
         echo -ne "."
@@ -2940,14 +2962,17 @@ run_rekt_status() {
     echo -e "  ${BLUE}ℹ️  cobol-migration-neo4j (existing): $mma_state${NC}"
 
     # Neo4j node count
-    if docker exec "$REKT_NEO4J_CONTAINER" cypher-shell -u neo4j -p cobol-rekt-2026 \
-        'MATCH (n) RETURN count(n) AS nodes' 2>/dev/null | grep -q "[0-9]"; then
+    if docker exec "$REKT_NEO4J_CONTAINER" sh -c \
+        'cypher-shell -u neo4j -p "$NEO4J_PASSWORD" "MATCH (n) RETURN count(n) AS nodes"' \
+        2>/dev/null | grep -q "[0-9]"; then
         local node_count
-        node_count=$(docker exec "$REKT_NEO4J_CONTAINER" cypher-shell -u neo4j -p cobol-rekt-2026 \
-            'MATCH (n) RETURN count(n) AS nodes' 2>/dev/null | tail -1 | tr -d ' "')
+        node_count=$(docker exec "$REKT_NEO4J_CONTAINER" sh -c \
+            'cypher-shell -u neo4j -p "$NEO4J_PASSWORD" "MATCH (n) RETURN count(n) AS nodes"' \
+            2>/dev/null | tail -1 | tr -d ' "')
         local rel_count
-        rel_count=$(docker exec "$REKT_NEO4J_CONTAINER" cypher-shell -u neo4j -p cobol-rekt-2026 \
-            'MATCH ()-[r]->() RETURN count(r) AS rels' 2>/dev/null | tail -1 | tr -d ' "')
+        rel_count=$(docker exec "$REKT_NEO4J_CONTAINER" sh -c \
+            'cypher-shell -u neo4j -p "$NEO4J_PASSWORD" "MATCH ()-[r]->() RETURN count(r) AS rels"' \
+            2>/dev/null | tail -1 | tr -d ' "')
         echo -e "\n  ${BLUE}Graph: ${node_count} nodes, ${rel_count} relationships${NC}"
     fi
 

@@ -9,7 +9,7 @@ Usage:
 Environment:
     NEO4J_URI       bolt://localhost:7688
     NEO4J_USER      neo4j
-    NEO4J_PASSWORD  cobol-rekt-2026
+    NEO4J_PASSWORD  required
 """
 
 from __future__ import annotations
@@ -25,8 +25,10 @@ from typing import Any
 import click
 from neo4j import GraphDatabase, ManagedTransaction
 from rich.console import Console
-from source_paths import artifact_source_path, scoped_graph_id, source_relative_path
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn
+
+from configuration import required_environment_variable
+from source_paths import artifact_source_path, scoped_graph_id, source_relative_path
 
 console = Console()
 
@@ -39,7 +41,7 @@ SOURCE_BLOCK_LINES = 500  # lines per SourceBlock node
 def get_driver():
     uri = os.environ.get("NEO4J_URI", "bolt://localhost:7688")
     user = os.environ.get("NEO4J_USER", "neo4j")
-    password = os.environ.get("NEO4J_PASSWORD", "cobol-rekt-2026")
+    password = required_environment_variable("NEO4J_PASSWORD")
     return GraphDatabase.driver(uri, auth=(user, password))
 
 
