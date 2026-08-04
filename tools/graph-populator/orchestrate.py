@@ -27,6 +27,7 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
 
 from populator import get_driver, apply_schema, ingest_rekt_outputs, migrate_sqlite
+from source_paths import source_relative_path
 
 console = Console()
 
@@ -51,7 +52,7 @@ def parse_single_file(
     Call the cobol-rekt container to parse a single COBOL file.
     Returns {file, success, duration_s, error?}.
     """
-    file_name = Path(file_path).name
+    file_name = source_relative_path(file_path, source_dir)
     start = time.time()
 
     cmd = [

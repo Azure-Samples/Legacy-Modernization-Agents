@@ -10,20 +10,49 @@
  
  public class ClassConditionBuilder {
      public CobolExpression build(CobolParser.FixedComparisonContext fixedComparisonContext, CobolExpression expression) {
-@@ -17,6 +18,15 @@ public class ClassConditionBuilder {
+@@ -17,6 +18,12 @@ public class ClassConditionBuilder {
          else if (fixedComparisonContext.POSITIVE() != null) return IsNumericCondition.isPositive(expression);
          else if (fixedComparisonContext.NEGATIVE() != null) return IsNumericCondition.isNegative(expression);
          else if (fixedComparisonContext.ZERO() != null) return IsNumericCondition.isZero(expression);
 -        else throw new UnsupportedClassConditionException(fixedComparisonContext.getText());
-+        // Local patch (Azure-Samples/COBOL-Modernization-Agents): COBOL
-+        // allows user-defined class conditions via the CLASS clause in
-+        // SPECIAL-NAMES (e.g. "01 X IS AND15"). Upstream throws and
-+        // aborts the whole program; we log and fall back to an opaque
-+        // IS_NUMERIC node so the AST still ships. The LLM converter
-+        // can re-derive the real semantics from the source class def.
++        // Local patch (Azure-Samples/COBOL-Modernization-Agents): preserve
++        // unsupported user-defined class conditions as explicit opaque nodes.
++        // Never substitute a built-in predicate because that changes semantics.
 +        Logger logger = Logger.getLogger(ClassConditionBuilder.class.getName());
 +        logger.warning("Unsupported (user-defined?) class condition: " + fixedComparisonContext.getText()
-+            + " — emitting opaque fallback node (Azure-Samples local patch).");
-+        return IsNumericCondition.isNumeric(expression);
++            + " — preserving opaque condition (Azure-Samples local patch).");
++        return UnknownClassCondition.preserve(expression, fixedComparisonContext.getText());
      }
  }
+diff --git a/smojol-core/src/main/java/org/smojol/common/vm/expression/UnknownClassCondition.java b/smojol-core/src/main/java/org/smojol/common/vm/expression/UnknownClassCondition.java
+new file mode 100644
+index 0000000..5f93684
+--- /dev/null
++++ b/smojol-core/src/main/java/org/smojol/common/vm/expression/UnknownClassCondition.java
+@@ -0,0 +1,26 @@
++package org.smojol.common.vm.expression;
++
++import org.smojol.common.vm.structure.CobolDataStructure;
++
++public class UnknownClassCondition extends ClassConditionExpression {
++    private final String sourceText;
++
++    private UnknownClassCondition(CobolExpression expression, String sourceText) {
++        super(expression, "UNKNOWN_CLASS_CONDITION");
++        this.sourceText = sourceText;
++    }
++
++    @Override
++    public CobolExpression evaluate(CobolDataStructure data) {
++        return new NullCobolExpression(description());
++    }
++
++    @Override
++    public String description() {
++        return operationMnemonic + "(" + sourceText + "," + expression.description() + ")";
++    }
++
++    public static ClassConditionExpression preserve(CobolExpression expression, String sourceText) {
++        return new UnknownClassCondition(expression, sourceText);
++    }
++}

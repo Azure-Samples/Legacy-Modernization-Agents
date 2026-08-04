@@ -59,7 +59,7 @@ public sealed class ProgramFactsExtractor
         CancellationToken cancellationToken = default)
     {
         Directory.CreateDirectory(outputDir);
-        var loader = new RektContextLoader(_repoRoot);
+        var loader = new RektContextLoader(_repoRoot, _rektDir);
 
         // Pre-compute an inverse callees → callers map by scanning every
         // deps.json once. Avoids O(N²) per-extraction work.
@@ -115,33 +115,16 @@ public sealed class ProgramFactsExtractor
             && ctx.CallTargets.Count == 0 && ctx.SqlStatements.Count == 0)
             warnings.Add("rekt-output-empty: no AST/CFG/DataStructure JSONs found");
 
-        // Confidence from scan cache outcome when available; otherwise infer from
-        // what we managed to load.
-        var confidence = FactConfidence.None;
+        RektScanEntry? cacheEntry = null;
         if (_scanCache is not null)
         {
-            var entry = await _scanCache.TryGetAsync(basename, ProgramFacts.CurrentIdentitySchemeVersion, cancellationToken);
-            if (entry is not null)
-            {
-                confidence = entry.Confidence switch
-                {
-                    RektScanConfidence.High => FactConfidence.High,
-                    RektScanConfidence.Partial => FactConfidence.Partial,
-                    RektScanConfidence.Low => FactConfidence.Low,
-                    _ => FactConfidence.None,
-                };
-            }
+            cacheEntry = await _scanCache.TryGetAsync(
+                basename,
+                ProgramFacts.CurrentIdentitySchemeVersion,
+                cancellationToken);
         }
-        if (confidence == FactConfidence.None)
-        {
-            // Fallback inference when no cache entry is available.
-            if (ctx.Sections.Count > 0 && ctx.DataStructure.Count > 0)
-                confidence = FactConfidence.High;
-            else if (ctx.DataStructure.Count > 0 || ctx.CallTargets.Count > 0)
-                confidence = FactConfidence.Partial;
-            else if (warnings.Count == 0)
-                confidence = FactConfidence.Low;
-        }
+
+        var confidence = ResolveConfidence(cacheEntry, ctx, warnings);
 
         var programId = ExtractProgramId(sourceContent);
         var preprocessNotes = LoadPreprocessNotes(basename);
@@ -232,6 +215,29 @@ public sealed class ProgramFactsExtractor
     }
 
     // ─────────────────────────── helpers ───────────────────────────
+
+    internal static FactConfidence ResolveConfidence(
+        RektScanEntry? cacheEntry,
+        RektContext context,
+        IReadOnlyCollection<string> warnings)
+    {
+        if (cacheEntry is not null)
+        {
+            return cacheEntry.Confidence switch
+            {
+                RektScanConfidence.High => FactConfidence.High,
+                RektScanConfidence.Partial => FactConfidence.Partial,
+                RektScanConfidence.Low => FactConfidence.Low,
+                _ => FactConfidence.None,
+            };
+        }
+
+        if (context.Sections.Count > 0 && context.DataStructure.Count > 0)
+            return FactConfidence.High;
+        if (context.DataStructure.Count > 0 || context.CallTargets.Count > 0)
+            return FactConfidence.Partial;
+        return warnings.Count == 0 ? FactConfidence.Low : FactConfidence.None;
+    }
 
     private static IReadOnlyDictionary<string, IReadOnlyList<string>> BuildCallersMap(
         IReadOnlyList<string> programBasenames, RektContextLoader loader)

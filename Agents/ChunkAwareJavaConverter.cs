@@ -160,6 +160,7 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
                     "package ",
                     "class ",
                     "Java",
+                    requireStructure: chunk.ChunkIndex == 0,
                     out var reason))
             {
                 var stubBuilder = new StringBuilder();

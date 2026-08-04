@@ -17,6 +17,7 @@ public class ConversionOutputGuardTests
             "namespace ",
             "class ",
             "C#",
+            requireStructure: true,
             out var reason);
 
         result.Should().BeFalse();
@@ -31,6 +32,7 @@ public class ConversionOutputGuardTests
             "namespace ",
             "class ",
             "C#",
+            requireStructure: true,
             out var reason);
 
         result.Should().BeFalse();
@@ -47,6 +49,7 @@ public class ConversionOutputGuardTests
             "namespace ",
             "class ",
             "C#",
+            requireStructure: true,
             out var reason);
 
         result.Should().BeTrue();
@@ -61,10 +64,28 @@ public class ConversionOutputGuardTests
             "namespace ",
             "class ",
             "C#",
+            requireStructure: true,
             out var reason);
 
         result.Should().BeFalse();
         reason.Should().StartWith("NO_CSHARP_STRUCTURE");
+    }
+
+    [Theory]
+    [InlineData("private int counter;")]
+    [InlineData("}")]
+    public void IsUsableChunk_LaterChunkWithoutTypeDeclaration_ReturnsTrue(string output)
+    {
+        var result = ConversionOutputGuard.IsUsableChunk(
+            output,
+            "namespace ",
+            "class ",
+            "C#",
+            requireStructure: false,
+            out var reason);
+
+        result.Should().BeTrue();
+        reason.Should().BeEmpty();
     }
 
     [Fact]
@@ -85,5 +106,31 @@ public class ConversionOutputGuardTests
     {
         ConversionOutputGuard.EscapeBlockCommentContent(output)
             .Should().Be("(no output)");
+    }
+
+    [Fact]
+    public void ShouldCreateWholeFileStub_LongBraceImbalancedClass_ReturnsTrue()
+    {
+        var output = "public class Converted { public void Run() { }";
+
+        ConversionOutputGuard.ShouldCreateWholeFileStub(
+                output,
+                hasClass: true,
+                openingBraces: 2,
+                closingBraces: 1)
+            .Should().BeTrue();
+    }
+
+    [Fact]
+    public void ShouldCreateWholeFileStub_LongBalancedClass_ReturnsFalse()
+    {
+        var output = "public class Converted { public void Run() { } }";
+
+        ConversionOutputGuard.ShouldCreateWholeFileStub(
+                output,
+                hasClass: true,
+                openingBraces: 2,
+                closingBraces: 2)
+            .Should().BeFalse();
     }
 }

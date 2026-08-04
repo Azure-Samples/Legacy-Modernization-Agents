@@ -344,28 +344,70 @@ public static class RektScanCacheCommand
     }
 
     /// <summary>
-    /// Returns true when the verify dir contains at least one REKT artifact for the
-    /// given program — heuristic match on <c>&lt;stem&gt;</c> in filename + <c>.json</c> extension.
+    /// Returns true when the verify dir contains an exact supported parser artifact
+    /// for the given program.
     /// </summary>
     internal static bool HasRektArtifacts(string verifyDir, string basename)
     {
         var stem = Path.GetFileNameWithoutExtension(basename);
         if (string.IsNullOrEmpty(stem)) return false;
+
+        var sourceName = Path.GetFileName(basename);
+        var flatCandidates = new[]
+        {
+            $"flow-ast-{stem}.json",
+            $"flow-ast-{stem}.cbl.json",
+            $"flow-cfg-{stem}.json",
+            $"flow-cfg-{stem}.cbl.json",
+            $"cfg-{stem}.cbl.json",
+            $"flow-data-{stem}.json",
+            $"flow-data-{stem}.cbl.json",
+            $"{stem}.cbl-data.json",
+            $"{stem}-deps.json",
+            $"{stem}.cbl-deps.json",
+            $"{sourceName}-deps.json",
+        };
+
         try
         {
-            foreach (var f in Directory.EnumerateFiles(verifyDir, "*", SearchOption.TopDirectoryOnly))
+            var existingFiles = Directory.EnumerateFiles(
+                    verifyDir,
+                    "*",
+                    SearchOption.TopDirectoryOnly)
+                .Select(Path.GetFileName)
+                .Where(name => !string.IsNullOrEmpty(name))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (flatCandidates.Any(existingFiles.Contains))
+                return true;
+
+            var reportDirs = new[]
             {
-                var name = Path.GetFileName(f);
-                if (name.Contains(stem, StringComparison.OrdinalIgnoreCase) &&
-                    name.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+                $"{sourceName}.report",
+                $"{stem}.cbl.report",
+                $"{stem}.CBL.report",
+                $"{stem}.report",
+            };
+
+            var existingDirectories = Directory.EnumerateDirectories(
+                    verifyDir,
+                    "*",
+                    SearchOption.TopDirectoryOnly)
+                .ToList();
+            foreach (var reportDir in reportDirs.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                var path = existingDirectories.FirstOrDefault(dir =>
+                    string.Equals(
+                        Path.GetFileName(dir),
+                        reportDir,
+                        StringComparison.OrdinalIgnoreCase));
+                if (path is not null
+                    && Directory.EnumerateFiles(path, "*.json", SearchOption.AllDirectories).Any())
                     return true;
             }
         }
         catch
         {
-            // If we can't read the verify dir, assume artifacts present so we don't
-            // re-parse needlessly — the next REKT run will surface the real error.
-            return true;
+            return false;
         }
         return false;
     }

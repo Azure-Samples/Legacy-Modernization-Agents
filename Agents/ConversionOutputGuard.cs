@@ -7,6 +7,7 @@ internal static class ConversionOutputGuard
         string primaryStructure,
         string secondaryStructure,
         string language,
+        bool requireStructure,
         out string reason)
     {
         if (string.IsNullOrWhiteSpace(code))
@@ -15,18 +16,21 @@ internal static class ConversionOutputGuard
             return false;
         }
 
-        var hasPrimaryStructure = code.Contains(primaryStructure, StringComparison.Ordinal);
-        var hasSecondaryStructure = code.Contains(secondaryStructure, StringComparison.Ordinal);
-        var opens = code.Count(c => c == '{');
-        var closes = code.Count(c => c == '}');
-
-        if ((!hasPrimaryStructure && !hasSecondaryStructure) || (opens == 0 && closes == 0))
+        if (requireStructure)
         {
-            var reasonLanguage = language.Equals("C#", StringComparison.OrdinalIgnoreCase)
-                ? "CSHARP"
-                : language.ToUpperInvariant();
-            reason = $"NO_{reasonLanguage}_STRUCTURE — model emitted prose or non-{language} content. Re-run with full REKT context enabled.";
-            return false;
+            var hasPrimaryStructure = code.Contains(primaryStructure, StringComparison.Ordinal);
+            var hasSecondaryStructure = code.Contains(secondaryStructure, StringComparison.Ordinal);
+            var opens = code.Count(c => c == '{');
+            var closes = code.Count(c => c == '}');
+
+            if ((!hasPrimaryStructure && !hasSecondaryStructure) || (opens == 0 && closes == 0))
+            {
+                var reasonLanguage = language.Equals("C#", StringComparison.OrdinalIgnoreCase)
+                    ? "CSHARP"
+                    : language.ToUpperInvariant();
+                reason = $"NO_{reasonLanguage}_STRUCTURE — model emitted prose or non-{language} content. Re-run with full REKT context enabled.";
+                return false;
+            }
         }
 
         reason = string.Empty;
@@ -38,5 +42,16 @@ internal static class ConversionOutputGuard
         return string.IsNullOrWhiteSpace(content)
             ? "(no output)"
             : content.Replace("*/", "* /", StringComparison.Ordinal);
+    }
+
+    internal static bool ShouldCreateWholeFileStub(
+        string code,
+        bool hasClass,
+        int openingBraces,
+        int closingBraces)
+    {
+        return !hasClass
+            || code.Trim().Length < 40
+            || openingBraces != closingBraces;
     }
 }

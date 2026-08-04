@@ -22,10 +22,11 @@ codebases routinely trip this for benign issues such as:
 - Unresolved third-party COPY targets (`MISSING_COPYBOOK`) that our
   stub generator already satisfies downstream.
 
-**Fix.** When accumulated errors are present, log them (preserving the
-upstream `LOGGER.info` behaviour), then proceed with AST construction
-as long as a parse tree was actually produced. Only re-throw if the
-parse tree is `null`, which is the only genuinely unrecoverable case.
+**Fix.** When accumulated diagnostics are present, log them (preserving
+the upstream `LOGGER.info` behaviour) and proceed only when every
+diagnostic is below `ERROR` severity and a parse tree was produced.
+`ERROR` diagnostics and missing parse trees remain fatal so partial
+structures are not published as authoritative.
 
 The downstream pipeline already surfaces error counts via
 `output/rekt/*.parse.log` and `output/rekt/missing-copybooks.txt`, and
@@ -70,7 +71,10 @@ a name to the token.
 
 ## 0004-tolerate-unknown-class-condition.patch
 
-**File touched:** `smojol-core/src/main/java/org/smojol/common/vm/expression/ClassConditionBuilder.java`
+**Files touched:**
+
+- `smojol-core/src/main/java/org/smojol/common/vm/expression/ClassConditionBuilder.java`
+- `smojol-core/src/main/java/org/smojol/common/vm/expression/UnknownClassCondition.java`
 
 **Problem.** COBOL allows user-defined class conditions via the `CLASS`
 clause in `SPECIAL-NAMES` (e.g. `01 X IS AND15` where `AND15` was declared
@@ -79,10 +83,11 @@ classes (NUMERIC, ALPHABETIC, ALPHABETIC-LOWER, ALPHABETIC-UPPER, POSITIVE,
 NEGATIVE, ZERO) and throws `UnsupportedClassConditionException` for any
 other class name, killing the whole program.
 
-**Fix.** Log a warning and return an opaque `IsNumericCondition` fallback
-so the AST/CFG still ship. The class-condition expression appears in the
-AST so the LLM converter can re-derive the real semantics from the
-program's `SPECIAL-NAMES CLASS …` declaration.
+**Fix.** Log a warning and preserve the source condition text in an explicit
+`UNKNOWN_CLASS_CONDITION` node. The node remains opaque rather than being
+substituted with a built-in predicate, so downstream consumers can re-derive
+the real semantics from the program's `SPECIAL-NAMES CLASS …` declaration
+without receiving incorrect numeric semantics.
 
 **Applies to:** programs that declare custom class conditions via
 `SPECIAL-NAMES`.

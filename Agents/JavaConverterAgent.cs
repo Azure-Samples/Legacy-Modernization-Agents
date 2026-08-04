@@ -467,7 +467,11 @@ public class {{className}} {
 
             // Only replace essentially unusable output. Truncated-but-mostly-valid
             // code is left alone so the chunked path can still salvage it.
-            if (!hasClassFinal || input.Trim().Length < 40)
+            if (ConversionOutputGuard.ShouldCreateWholeFileStub(
+                    input,
+                    hasClassFinal,
+                    opensFinal,
+                    closesFinal))
             {
                 var trimmedReason =
                     !hasClassFinal && !hasPkgFinal && opensFinal == 0

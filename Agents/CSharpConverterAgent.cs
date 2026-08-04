@@ -402,7 +402,11 @@ public class {{className}}
             EnhancedLogger?.LogBehindTheScenes("TRUNCATION_DETECTED", "WARNING",
                 $"namespace={hasNsFinal}, class={hasClassFinal}, braces={opensFinal}/{closesFinal}");
 
-            if (!hasClassFinal || input.Trim().Length < 40)
+            if (ConversionOutputGuard.ShouldCreateWholeFileStub(
+                    input,
+                    hasClassFinal,
+                    opensFinal,
+                    closesFinal))
             {
                 var trimmedReason =
                     !hasClassFinal && !hasNsFinal && opensFinal == 0

@@ -24,10 +24,10 @@ public sealed class RektContextLoader
     // Parsed target architecture cached for the lifetime of the loader.
     private Dictionary<string, RektTargetPlan>? _targetPlansByProgram;
 
-    public RektContextLoader(string repoRoot)
+    public RektContextLoader(string repoRoot, string? rektDir = null)
     {
         _repoRoot = repoRoot;
-        _rektDir = Path.Combine(repoRoot, "output", "rekt");
+        _rektDir = rektDir ?? Path.Combine(repoRoot, "output", "rekt");
         _targetArchPath = Path.Combine(_rektDir, "target-architecture.json");
     }
 

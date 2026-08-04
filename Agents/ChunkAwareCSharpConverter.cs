@@ -156,6 +156,7 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
                     "namespace ",
                     "class ",
                     "C#",
+                    requireStructure: chunk.ChunkIndex == 0,
                     out var reason))
             {
                 var stubBuilder = new StringBuilder();
