@@ -145,6 +145,10 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
                 userPromptBuilder.Append(FormatBusinessLogicContext(businessLogic));
             }
 
+            // REKT structural context + shared-types registry (opt-in via ENABLE_REKT_CONTEXT).
+            await RektPromptInjector.InjectAsync(
+                userPromptBuilder, "C#", cobolFile.FileName, AgentName, _runId, Logger);
+
             userPromptBuilder.AppendLine();
             userPromptBuilder.AppendLine("IMPORTANT REQUIREMENTS:");
             userPromptBuilder.AppendLine("1. Return ONLY the C# code - NO explanations, NO markdown blocks");
@@ -168,6 +172,44 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
                 $"Completed C# conversion of {cobolFile.FileName} in {stopwatch.ElapsedMilliseconds}ms");
 
             csharpCode = ExtractCSharpCode(csharpCode);
+
+            // Continuation retry: when the provider truncates mid-output, ask it to
+            // resume from the last lines rather than shipping a partial class.
+            var hasAnyCode = csharpCode.Contains("{") && (csharpCode.Contains("class ") || csharpCode.Contains("namespace "));
+            var maxContinuations = hasAnyCode ? 3 : 0;
+            for (int cont = 0; cont < maxContinuations; cont++)
+            {
+                var hasNs = csharpCode.Contains("namespace ", StringComparison.Ordinal);
+                var hasCls = csharpCode.Contains("class ", StringComparison.Ordinal);
+                var opens = csharpCode.Count(c => c == '{');
+                var closes = csharpCode.Count(c => c == '}');
+                if (hasNs && hasCls && opens == closes) break;
+
+                Logger.LogWarning(
+                    "[CSharpConverterAgent] Output truncated (ns={HasNs} cls={HasCls} braces={Opens}/{Closes}) — sending continuation {Cont}/{Max}",
+                    hasNs, hasCls, opens, closes, cont + 1, maxContinuations);
+
+                var lastLines = string.Join("\n", csharpCode.Split('\n').TakeLast(10));
+                var contPrompt = $"Your previous response was truncated mid-output. Here are the LAST 10 lines you generated:\n\n```csharp\n{lastLines}\n```\n\n" +
+                    $"Continue from EXACTLY where you left off. Return ONLY the remaining C# code — no namespace declaration, no class declaration, no using directives. " +
+                    $"Start with the next line after the fragment above and end with the final closing brace '}}'.";
+
+                var (contCode, contFallback, _) = await ExecuteWithFallbackAsync(
+                    systemPrompt, contPrompt, $"{cobolFile.FileName} [continuation-{cont + 1}]");
+
+                if (contFallback || string.IsNullOrWhiteSpace(contCode)) break;
+
+                contCode = ExtractCSharpCode(contCode);
+                var contLines = contCode.Split('\n')
+                    .SkipWhile(l => l.TrimStart().StartsWith("namespace ") || l.TrimStart().StartsWith("using ") || l.Trim() == "")
+                    .ToList();
+                var classIdx = contLines.FindIndex(l => l.Contains("class ") && l.Contains("{"));
+                if (classIdx >= 0 && classIdx < 3) contLines = contLines.Skip(classIdx + 1).ToList();
+
+                csharpCode = csharpCode.TrimEnd() + "\n" + string.Join("\n", contLines);
+                Logger.LogInformation("[CSharpConverterAgent] Continuation {Cont} appended {Lines} lines",
+                    cont + 1, contLines.Count);
+            }
 
             // Extract AI's semantic class name (based on domain/action/type pattern)
             string aiClassName = ExtractClassNameFromCode(csharpCode);
@@ -341,9 +383,68 @@ public class {{className}}
                 startIndex += startMarker.Length;
                 int endIndex = input.IndexOf(endMarker, startIndex);
                 if (endIndex >= 0)
-                    return input.Substring(startIndex, endIndex - startIndex).Trim();
+                    input = input.Substring(startIndex, endIndex - startIndex).Trim();
             }
         }
+
+        // Fail loud on unusable output. A silent 0-byte "success" is worse than a
+        // file that explains what went wrong, so write a self-documenting stub.
+        var hasNsFinal = input.Contains("namespace ", StringComparison.Ordinal);
+        var hasClassFinal = input.Contains("class ", StringComparison.Ordinal);
+        var opensFinal = input.Count(c => c == '{');
+        var closesFinal = input.Count(c => c == '}');
+        if (!hasNsFinal || !hasClassFinal || opensFinal != closesFinal)
+        {
+            Logger.LogWarning(
+                "[CSharpConverterAgent] OUTPUT APPEARS TRUNCATED: namespace={HasNs}, class={HasClass}, braces {Opens}/{Closes}. " +
+                "The provider likely hit its output token limit.",
+                hasNsFinal, hasClassFinal, opensFinal, closesFinal);
+            EnhancedLogger?.LogBehindTheScenes("TRUNCATION_DETECTED", "WARNING",
+                $"namespace={hasNsFinal}, class={hasClassFinal}, braces={opensFinal}/{closesFinal}");
+
+            if (!hasClassFinal || input.Trim().Length < 40)
+            {
+                var trimmedReason =
+                    !hasClassFinal && !hasNsFinal && opensFinal == 0
+                        ? "EMPTY_LLM_RESPONSE — model returned no usable output (often: hit output-token budget, REKT context missing for deps-only programs, or provider rate-limit)."
+                    : !hasClassFinal
+                        ? "NO_CLASS_KEYWORD — model emitted prose or a non-C# code block."
+                    : "BRACE_IMBALANCE — opens=" + opensFinal + " closes=" + closesFinal + ".";
+
+                var stub = new StringBuilder();
+                stub.AppendLine("// ═════════════════════════════════════════════════════════════════════");
+                stub.AppendLine("// ⚠ CONVERSION DID NOT PRODUCE USABLE C#");
+                stub.AppendLine("// ═════════════════════════════════════════════════════════════════════");
+                stub.AppendLine("// This file is a placeholder. The model responded but the response did");
+                stub.AppendLine("// not contain a usable C# class. The pipeline is NOT pretending this");
+                stub.AppendLine("// conversion succeeded — the file is kept so the failure stays visible.");
+                stub.AppendLine("//");
+                stub.AppendLine("// Reason: " + trimmedReason);
+                stub.AppendLine("//");
+                stub.AppendLine("// What to do");
+                stub.AppendLine("// ──────────");
+                stub.AppendLine("// 1. Check the 'Unusable Conversions' table in migration-report.md.");
+                stub.AppendLine("//");
+                stub.AppendLine("// 2. If a 'NO REKT DATA' warning was logged, this program is deps-only.");
+                stub.AppendLine("//    Resolve missing copybooks (see output/rekt/missing-copybooks.txt),");
+                stub.AppendLine("//    re-run './doctor.sh rekt-full', then re-convert.");
+                stub.AppendLine("//");
+                stub.AppendLine("// 3. If the model returned 0 tokens, it likely hit its output-token");
+                stub.AppendLine("//    budget. Re-run with chunking or switch to a provider with a");
+                stub.AppendLine("//    higher per-call budget.");
+                stub.AppendLine("//");
+                stub.AppendLine("// 4. See migration-conversation-log.md in this run folder for the raw");
+                stub.AppendLine("//    prompt and response.");
+                stub.AppendLine("// ═════════════════════════════════════════════════════════════════════");
+                stub.AppendLine();
+                stub.AppendLine("// Original output is preserved below for debugging.");
+                stub.AppendLine("/*");
+                stub.AppendLine(string.IsNullOrWhiteSpace(input) ? "(no output)" : input);
+                stub.AppendLine("*/");
+                return stub.ToString();
+            }
+        }
+
         return input;
     }
 
