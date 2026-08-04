@@ -47,7 +47,77 @@ services:
       retries: 5
       start_period: 30s
 
+  # ── Cobol-REKT Integration ─────────────────────────────────────────
+  # Separate Neo4j instance for rekt's unified graph (AST/CFG/Data).
+  # Runs on different ports so existing experiments are not affected.
+  cobol-rekt-neo4j:
+    image: neo4j:5.15.0
+    container_name: cobol-rekt-neo4j
+    restart: unless-stopped
+    ports:
+      - "7475:7474"  # HTTP (rekt)
+      - "7688:7687"  # Bolt (rekt)
+    environment:
+      - NEO4J_AUTH=neo4j/cobol-rekt-2026
+      - NEO4J_PLUGINS=["apoc","graph-data-science"]
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*,gds.*
+      - NEO4J_server_memory_heap_initial__size=512m
+      - NEO4J_server_memory_heap_max__size=1G
+      - NEO4J_server_memory_pagecache_size=512m
+    volumes:
+      - rekt_neo4j_data:/data
+      - rekt_neo4j_logs:/logs
+      - rekt_neo4j_import:/var/lib/neo4j/import
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p cobol-rekt-2026 'RETURN 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # Cobol-REKT Java CLI — parses COBOL into AST/CFG/Data JSON exports.
+  # Stays alive as a sidecar; the Python populator calls it via docker exec.
+  # Image: rekt-oss-mma — our patched, MIT-licensed re-distribution of
+  # smojol's COBOL toolkit (https://github.com/avishek-sen-gupta/cobol-rekt).
+  # See tools/cobol-rekt/LICENSE and tools/cobol-rekt/NOTICE for attribution.
+  cobol-rekt:
+    image: rekt-oss-mma:latest
+    build:
+      context: ./tools/cobol-rekt
+      dockerfile: Dockerfile
+    container_name: cobol-rekt
+    restart: unless-stopped
+    volumes:
+      - ./source:/source:ro
+      - ./output/rekt:/output
+    entrypoint: ["tail", "-f", "/dev/null"]
+
+  # Python graph populator — ingests rekt JSON + MMA metadata into Neo4j.
+  graph-populator:
+    build:
+      context: ./tools/graph-populator
+      dockerfile: Dockerfile
+    container_name: cobol-graph-populator
+    environment:
+      - NEO4J_URI=bolt://cobol-rekt-neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=cobol-rekt-2026
+      - REKT_CONTAINER=cobol-rekt
+      - REKT_OUTPUT_DIR=/output
+      - SOURCE_DIR=/source
+    volumes:
+      - ./source:/source:ro
+      - ./output/rekt:/output
+      - ./Data:/data
+    depends_on:
+      cobol-rekt-neo4j:
+        condition: service_healthy
+    entrypoint: ["tail", "-f", "/dev/null"]
+
 volumes:
   neo4j_data:
   neo4j_logs:
   neo4j_import:
+  rekt_neo4j_data:
+  rekt_neo4j_logs:
+  rekt_neo4j_import:
