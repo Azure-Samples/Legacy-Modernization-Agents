@@ -1,0 +1,18 @@
+--- a/smojol-core/src/main/java/org/smojol/common/vm/structure/NamingScheme.java
++++ b/smojol-core/src/main/java/org/smojol/common/vm/structure/NamingScheme.java
+@@ -5,9 +5,13 @@ import org.eclipse.lsp.cobol.core.CobolParser;
+ import java.util.function.Function;
+ 
+ public class NamingScheme {
+-    public static Function<CobolParser.DataDescriptionEntryFormat1Context, String> IDENTITY = d -> d.entryName().getText();
++    // Local patch (Azure-Samples/COBOL-Modernization-Agents): IBM-mainframe
++    // copybooks sometimes use FILLER-only entries that produce a null
++    // entryName() in the ANTLR tree. Fall back to a marker so AST build
++    // continues instead of NPEing.
++    public static Function<CobolParser.DataDescriptionEntryFormat1Context, String> IDENTITY = d -> d.entryName() != null ? d.entryName().getText() : "[FILLER]";
+     public static Function<CobolParser.DataDescriptionEntryFormat1Context, String> ROOT = d -> "[ROOT]";
+     public static Function<CobolParser.DataDescriptionEntryFormat1Context, String> NULL = d -> "[NULL]";
+     public static Function<CobolParser.DataDescriptionEntryFormat1Context, String> STATIC = d -> "[NULL]";
+-    public static Function<Integer, Function<CobolParser.DataDescriptionEntryFormat1Context, String>> INDEXED = index -> ctx -> ctx.entryName().getText() + "$" + index;
++    public static Function<Integer, Function<CobolParser.DataDescriptionEntryFormat1Context, String>> INDEXED = index -> ctx -> (ctx.entryName() != null ? ctx.entryName().getText() : "[FILLER]") + "$" + index;
+ }

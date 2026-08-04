@@ -1,0 +1,33 @@
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
+@@ -134,10 +134,29 @@ public class ParsePipeline {
+         StageResult<ParserStageResult> lastStageResult = (StageResult<ParserStageResult>) pipelineResult.getLastStageResult();
+         errorFinalizerService.processLateErrors(ctx, ctx.getCopybooksRepository());
+ 
++        // Local patch (Azure-Samples/COBOL-Modernization-Agents): demote
++        // non-fatal parser diagnostics to warnings so the AST/CFG/Data
++        // export still proceeds. Upstream throws on ANY accumulated error,
++        // which forces 30+ programs into deps-only mode for benign issues
++        // like fragment copybooks (e.g. BDSDDDT.cpy opens at level 05
++        // instead of 01) or unresolved third-party COPY targets. The
++        // downstream pipeline already surfaces these via parse.log and
++        // missing-copybooks.txt, so re-throwing here is over-strict.
+         if (!ctx.getAccumulatedErrors().isEmpty()) {
+             ctx.getAccumulatedErrors().forEach(e -> LOGGER.info(e.toString()));
+-            throw new ParseDiagnosticRuntimeError("There were parsing errors!", ctx.getAccumulatedErrors());
++            long fatalCount = ctx.getAccumulatedErrors().stream()
++                .filter(e -> e.getSeverity() == org.eclipse.lsp.cobol.common.error.ErrorSeverity.ERROR)
++                .count();
++            LOGGER.warning("Parser produced " + ctx.getAccumulatedErrors().size()
++                + " diagnostic(s) (" + fatalCount + " at ERROR severity) — proceeding "
++                + "with AST construction in lenient mode (Azure-Samples local patch).");
++            if (lastStageResult == null || lastStageResult.getData() == null
++                    || lastStageResult.getData().getTree() == null) {
++                throw new ParseDiagnosticRuntimeError(
++                    "Parsing produced no parse tree — cannot continue.",
++                    ctx.getAccumulatedErrors());
++            }
+         }
+ 
+         tree = lastStageResult.getData().getTree();
+         ParseTreeWalker walker = new ParseTreeWalker();
