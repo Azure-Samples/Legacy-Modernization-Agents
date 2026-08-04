@@ -161,7 +161,7 @@ public static class RektPromptInjector
                     else
                     {
                         logger?.LogWarning(
-                            "[RektPromptInjector] ⚠️ NO REKT DATA for {File} — sections={Sec}, calls={Call}, data={Data}, copybooks={Cpy}. " +
+                            "[RektPromptInjector] NO REKT DATA for {File} — sections={Sec}, calls={Call}, data={Data}, copybooks={Cpy}. " +
                             "Run './doctor.sh rekt-full' first to populate output/rekt/. Conversion will proceed without structural facts.",
                             fileName, sc.Context.Sections.Count, sc.Context.CallTargets.Count,
                             sc.Context.DataStructure.Count, sc.Context.CopybookUsage.Count);
@@ -180,7 +180,7 @@ public static class RektPromptInjector
                 }
                 catch (Exception ex)
                 {
-                    logger?.LogWarning("[RektPromptInjector] ⚠️ REKT injection FAILED for {File}: {Msg}. Conversion will proceed without structural facts.",
+                    logger?.LogWarning("[RektPromptInjector] REKT injection FAILED for {File}: {Msg}. Conversion will proceed without structural facts.",
                         fileName, ex.Message);
                 }
             }
@@ -198,7 +198,7 @@ public static class RektPromptInjector
             }
             catch (Exception ex)
             {
-                logger?.LogWarning("[RektPromptInjector] ⚠️ Shared-types injection failed for {File}: {Msg}", fileName, ex.Message);
+                logger?.LogWarning("[RektPromptInjector] Shared-types injection failed for {File}: {Msg}", fileName, ex.Message);
             }
         }
         catch (Exception ex)

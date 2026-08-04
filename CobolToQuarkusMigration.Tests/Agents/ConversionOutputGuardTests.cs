@@ -133,4 +133,37 @@ public class ConversionOutputGuardTests
                 closingBraces: 2)
             .Should().BeFalse();
     }
+
+    [Fact]
+    public void BuildChunkDiagnosticStub_IncludesChunkContextAndRemediation()
+    {
+        var stub = ConversionOutputGuard.BuildChunkDiagnosticStub(
+            "C#",
+            "nested/ACCOUNTS.cbl",
+            chunkIndex: 1,
+            totalChunks: 3,
+            startLine: 101,
+            endLine: 200,
+            reason: "EMPTY_LLM_RESPONSE");
+
+        stub.Should().Contain("CHUNK CONVERSION DID NOT PRODUCE USABLE C#");
+        stub.Should().Contain("Chunk: 2/3 (lines 101-200)");
+        stub.Should().Contain("output/rekt/ACCOUNTS.cbl.report/");
+        stub.Should().Contain("EMPTY_LLM_RESPONSE");
+    }
+
+    [Fact]
+    public void BuildWholeFileDiagnosticStub_PreservesEscapedOriginalOutput()
+    {
+        var stub = ConversionOutputGuard.BuildWholeFileDiagnosticStub(
+            "C#",
+            "BRACE_IMBALANCE",
+            "public class Broken { /* comment */ trailing */");
+
+        stub.Should().Contain("CONVERSION DID NOT PRODUCE USABLE C#");
+        stub.Should().Contain("BRACE_IMBALANCE");
+        stub.Should().Contain("public class Broken");
+        stub.Should().NotContain("trailing */");
+        stub.Should().Contain("trailing * /");
+    }
 }

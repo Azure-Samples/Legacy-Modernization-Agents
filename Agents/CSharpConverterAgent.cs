@@ -404,37 +404,10 @@ public class {{className}}
                         ? "NO_CLASS_KEYWORD — model emitted prose or a non-C# code block."
                     : "BRACE_IMBALANCE — opens=" + opensFinal + " closes=" + closesFinal + ".";
 
-                var stub = new StringBuilder();
-                stub.AppendLine("// ═════════════════════════════════════════════════════════════════════");
-                stub.AppendLine("// ⚠ CONVERSION DID NOT PRODUCE USABLE C#");
-                stub.AppendLine("// ═════════════════════════════════════════════════════════════════════");
-                stub.AppendLine("// This file is a placeholder. The model responded but the response did");
-                stub.AppendLine("// not contain a usable C# class. The pipeline is NOT pretending this");
-                stub.AppendLine("// conversion succeeded — the file is kept so the failure stays visible.");
-                stub.AppendLine("//");
-                stub.AppendLine("// Reason: " + trimmedReason);
-                stub.AppendLine("//");
-                stub.AppendLine("// What to do");
-                stub.AppendLine("// ──────────");
-                stub.AppendLine("// 1. Check the 'Unusable Conversions' table in migration-report.md.");
-                stub.AppendLine("//");
-                stub.AppendLine("// 2. If a 'NO REKT DATA' warning was logged, this program is deps-only.");
-                stub.AppendLine("//    Resolve missing copybooks (see output/rekt/missing-copybooks.txt),");
-                stub.AppendLine("//    re-run './doctor.sh rekt-full', then re-convert.");
-                stub.AppendLine("//");
-                stub.AppendLine("// 3. If the model returned 0 tokens, it likely hit its output-token");
-                stub.AppendLine("//    budget. Re-run with chunking or switch to a provider with a");
-                stub.AppendLine("//    higher per-call budget.");
-                stub.AppendLine("//");
-                stub.AppendLine("// 4. See migration-conversation-log.md in this run folder for the raw");
-                stub.AppendLine("//    prompt and response.");
-                stub.AppendLine("// ═════════════════════════════════════════════════════════════════════");
-                stub.AppendLine();
-                stub.AppendLine("// Original output is preserved below for debugging.");
-                stub.AppendLine("/*");
-                stub.AppendLine(ConversionOutputGuard.EscapeBlockCommentContent(input));
-                stub.AppendLine("*/");
-                return stub.ToString();
+                return ConversionOutputGuard.BuildWholeFileDiagnosticStub(
+                    "C#",
+                    trimmedReason,
+                    input);
             }
         }
 
