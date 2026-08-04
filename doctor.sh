@@ -2329,9 +2329,7 @@ run_conversion_only() {
     launch_mcp_web_ui "$db_path"
 }
 
-# ═══════════════════════════════════════════════════════════════════════
 # Cobol-REKT Integration
-# ═══════════════════════════════════════════════════════════════════════
 
 REKT_NEO4J_CONTAINER="cobol-rekt-neo4j"
 REKT_NEO4J_HTTP_PORT=7475
@@ -2467,12 +2465,7 @@ run_rekt_parse() {
         ! -path "*/.rekt-staging/*" \
         ! -path "*/.preprocessed/*")
 
-    # NEW: also stage auto-generated stub copybooks from .preprocessed/. The
-    # preprocessor creates a stub .cpy for every COPY target that isn't backed
-    # by a real file in source/. Without these, smojol bails out with
-    # "missing copybook" fatal errors and falls into deps-only mode for the
-    # affected programs. We stage them AFTER real copybooks so a real .cpy
-    # always wins on basename collision.
+    # Stage generated stubs after real copybooks without overwriting real files.
     if [[ -d "$preprocessed_dir" ]]; then
         while IFS= read -r stub_cpy; do
             local stub_name
@@ -2497,11 +2490,7 @@ run_rekt_parse() {
     staged_cpy=$(find "$staging_dir" -maxdepth 1 \( -name "*.cpy" -o -name "*.CPY" \) | wc -l | tr -d ' ')
     echo -e "  ${BLUE}Staged: ${staged_cbl} program(s), ${staged_cpy} copybook(s) → source/.rekt-staging/${NC}"
 
-    # Sanity-check the container can actually see the staging dir. On macOS
-    # Docker Desktop, bind mounts can desync when the host directory's inode
-    # changes (folder recreated, restored from a snapshot, etc.). If that
-    # happens we silently emit empty AST/CFG/DataStructure JSON. Detect and
-    # auto-heal by restarting the container before parsing starts.
+    # Restart stale Docker Desktop bind mounts before they produce empty parser output.
     if [[ "$staged_cbl" -gt 0 ]]; then
         local container_visible
         container_visible=$(docker exec "$REKT_CONTAINER" sh -c "ls /source/.rekt-staging 2>/dev/null | wc -l" 2>/dev/null | tr -d ' ')
@@ -2524,9 +2513,7 @@ run_rekt_parse() {
     mkdir -p "$REPO_ROOT/output/rekt"
     find "$REPO_ROOT/output/rekt" -mindepth 1 -delete 2>/dev/null || true
 
-    # Pre-parse dependency check: scan COPY directives and report missing copybooks.
-    # This surfaces resolvable parse failures BEFORE the parser runs so the user can
-    # decide whether to obtain the missing copybooks or accept reduced coverage.
+    # Report missing copybooks before parsing so reduced coverage is explicit.
     local missing_report="$REPO_ROOT/output/rekt/missing-copybooks.txt"
     mkdir -p "$REPO_ROOT/output/rekt"
     "$PYTHON_CMD" - "$staging_dir" "$missing_report" >/dev/null 2>&1 <<'PYEOF' || true
@@ -2617,25 +2604,14 @@ print(len(lines))
         fi
     fi
 
-    # Parse each file via rekt container
-    # Try with standard dialect first; on failure, retry with alternative options
-    # for IMS/DL/I programs that use EXEC DLI or non-standard column formats
+    # Fall back through parser modes for dialect and source-format incompatibilities.
     local succeeded=0
     local failed=0
     local skipped=0
     local filtered_out=0
     local failed_files=""
 
-    # ── PR2.c: optional program filter for targeted REKT runs ──
-    # Comma-separated list of basenames (with or without extension). When set,
-    # the parse loop only processes matching files; copybooks are still staged
-    # so resolution works. Combine with _REKT_INCREMENTAL=true for the smallest
-    # possible scan.  Example:
-    #     _REKT_PROGRAM_FILTER=SAMPLE002,SAMPLE004.cbl ./doctor.sh rekt-full
-    #
-    # bash 3.2 (macOS default) does not support associative arrays, so we
-    # store the set as a space-delimited string and test membership with
-    # [[ " $set " == *" $key "* ]].
+    # Store the optional program filter as text because macOS Bash 3.2 lacks associative arrays.
     local rekt_program_filter=""
     local rekt_filter_active=false
     if [[ -n "${_REKT_PROGRAM_FILTER:-}" ]]; then
@@ -2656,10 +2632,7 @@ print(len(lines))
         echo -e "  ${BLUE}REKT program filter: ${_REKT_PROGRAM_FILTER}${NC}"
     fi
 
-    # ── PR2.b: incremental REKT scan cache (opt-in via _REKT_INCREMENTAL=true) ──
-    # When enabled, query the C# planner for a parse/skip plan, build a
-    # bash skip-set, then record outcomes via a temp manifest. Default OFF
-    # to preserve existing behaviour. See docs/p2-rekt-scan-cache.md.
+    # Incremental scanning is opt-in to preserve full-scan behavior by default.
     local rekt_inc=false
     [[ "${_REKT_INCREMENTAL:-false}" == "true" ]] && rekt_inc=true
 
@@ -2672,8 +2645,7 @@ print(len(lines))
             rekt_plan_file=$(mktemp -t rekt-scan-plan.XXXXXX)
             rekt_manifest=$(mktemp -t rekt-scan-manifest.XXXXXX)
             echo -e "  ${BLUE}Incremental REKT cache: planning…${NC}"
-            # PR2.c: forward the program filter to the planner so it only plans
-            # the targeted programs (and their dependency closure via the graph).
+            # Forward the filter so the planner only considers targeted programs.
             local _plan_programs_arg=()
             if [[ "$rekt_filter_active" == "true" ]]; then
                 _plan_programs_arg=(--programs "$_REKT_PROGRAM_FILTER")
@@ -2715,7 +2687,7 @@ print(len(lines))
         local stem="${fname%.*}"
         local err_log="$REPO_ROOT/output/rekt/${stem}.parse.log"
 
-        # PR2.c: program filter — skip files not in the requested set.
+        # Skip files outside the requested program filter.
         # bash 3.2 string-membership test (see filter-setup comment above).
         if [[ "$rekt_filter_active" == "true" ]] \
            && [[ " $rekt_program_filter " != *" $fname "* ]] \
@@ -2724,7 +2696,7 @@ print(len(lines))
             continue
         fi
 
-        # PR2.b: honour the planner's skip decision.
+        # Honor the incremental planner's skip decision.
         if [[ "$rekt_inc" == "true" ]] && [[ " $rekt_skip_set " == *" $fname "* ]]; then
             echo -e "  Skipping $fname ${GREEN}(cached)${NC}"
             succeeded=$((succeeded + 1))
@@ -2769,9 +2741,7 @@ print(len(lines))
                     succeeded=$((succeeded + 1))
                     parse_outcome="RawAst"
                 else
-                    # Attempt 4: validate + dependency (bypasses AST-writer NPE bugs)
-                    # Even if validate reports minor issues, dependency extraction
-                    # can still succeed and produce useful output
+                    # Dependency extraction can remain useful when AST writing fails.
                     local dep_ok=false
                     if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar dependency "$fname" \
                         --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
@@ -2808,13 +2778,13 @@ print(len(lines))
             fi
         fi
 
-        # PR2.b: append outcome to manifest for batch-record after the loop.
+        # Append outcomes for batch recording after the loop.
         if [[ "$rekt_inc" == "true" && -n "$rekt_manifest" ]]; then
             printf '%s\t%s\n' "$fname" "$parse_outcome" >> "$rekt_manifest"
         fi
     done < <(find "$staging_dir" -maxdepth 1 \( -name "*.cbl" -o -name "*.CBL" -o -name "*.cob" -o -name "*.COB" \) | sort)
 
-    # PR2.b: persist all outcomes in a single dotnet invocation.
+    # Persist outcomes in one dotnet invocation.
     if [[ "$rekt_inc" == "true" && -n "$rekt_manifest" && -s "$rekt_manifest" ]]; then
         local rekt_db="${_REKT_SCAN_DB:-$REPO_ROOT/Data/rekt-scan.db}"
         (cd "$REPO_ROOT" && dotnet run --project CobolToQuarkusMigration.csproj --no-build -- \
@@ -2825,12 +2795,7 @@ print(len(lines))
         rm -f "$rekt_manifest"
     fi
 
-    # ── PR3.b: auto-extract program-facts.json (opt-in via _PROGRAM_FACTS=true) ──
-    # Run after the parse loop while the staging dir is still in place — the
-    # extractor needs the preprocessed source bytes for sourceHash and IO
-    # heuristics. Skip entirely when nothing succeeded (no point extracting
-    # from a completely failed parse). Failure here logs a warning but never
-    # breaks the run — facts are derived data, never load-bearing.
+    # Extract optional facts while staged source bytes remain available; failures are non-fatal.
     if [[ "${_PROGRAM_FACTS:-false}" == "true" && "$succeeded" -gt 0 ]]; then
         if command -v dotnet >/dev/null 2>&1 && [[ -f "$REPO_ROOT/CobolToQuarkusMigration.csproj" ]]; then
             local pf_db="${_REKT_SCAN_DB:-$REPO_ROOT/Data/rekt-scan.db}"
@@ -2844,8 +2809,7 @@ print(len(lines))
             # Forward the scan-cache DB only when it exists; the extractor
             # uses it for confidence inference but treats it as optional.
             [[ -f "$pf_db" ]] && pf_extract_args+=(--scan-cache-db "$pf_db")
-            # Forward the program filter (PR2.c) so partial runs don't try
-            # to extract facts for programs that weren't parsed.
+            # Limit fact extraction to programs included in partial runs.
             if [[ "$rekt_filter_active" == "true" ]]; then
                 pf_extract_args+=(--programs "$_REKT_PROGRAM_FILTER")
             fi
@@ -2856,9 +2820,7 @@ print(len(lines))
                 echo -e "  ${YELLOW}⚠️  program-facts extract failed — facts not refreshed (this run continues uncached for facts).${NC}"
             fi
 
-            # PR2.d: opportunistic orphan prune. Only fires when the user has
-            # also asked for housekeeping (prevents surprise deletes for users
-            # who only want facts written).
+            # Prune orphans only when explicitly requested.
             if [[ "${_PROGRAM_FACTS_PRUNE_ORPHANS:-false}" == "true" ]]; then
                 (cd "$REPO_ROOT" && dotnet run --project CobolToQuarkusMigration.csproj --no-build -- \
                         program-facts prune-orphans "$REPO_ROOT/output/rekt" \

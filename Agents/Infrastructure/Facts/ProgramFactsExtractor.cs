@@ -5,21 +5,6 @@ using Microsoft.Extensions.Logging;
 
 namespace CobolToQuarkusMigration.Agents.Infrastructure.Facts;
 
-/// <summary>
-/// Builds <see cref="ProgramFacts"/> for a batch of programs from REKT output
-/// JSONs plus the staging-dir source bytes plus (optionally) a scan-cache entry
-/// for confidence.
-/// </summary>
-/// <remarks>
-/// <para>
-/// The extractor is intentionally <b>not</b> wired into agent prompts in PR3.
-/// PR4 (prompt projection layer) will consume <c>output/rekt/&lt;stem&gt;.facts.json</c>
-/// directly. PR3 only produces the contract; behaviour change comes with PR4.
-/// </para>
-/// <para>
-/// Missing data is represented explicitly (empty list + warning), never silently.
-/// </para>
-/// </remarks>
 public sealed class ProgramFactsExtractor
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -48,11 +33,6 @@ public sealed class ProgramFactsExtractor
         _logger = logger;
     }
 
-    /// <summary>
-    /// Extracts facts for every program in <paramref name="programBasenames"/>
-    /// and writes <c>&lt;stem&gt;.facts.json</c> to <paramref name="outputDir"/>.
-    /// Returns the count of files written.
-    /// </summary>
     public async Task<int> ExtractAllAsync(
         IReadOnlyList<string> programBasenames,
         string outputDir,
@@ -82,7 +62,6 @@ public sealed class ProgramFactsExtractor
         return written;
     }
 
-    /// <summary>Public for tests — extracts one program's facts without persisting.</summary>
     public async Task<ProgramFacts> ExtractOneAsync(
         string basename,
         RektContextLoader loader,
@@ -91,9 +70,7 @@ public sealed class ProgramFactsExtractor
     {
         var stem = Path.GetFileNameWithoutExtension(basename);
 
-        // Load source bytes from the staging dir (preprocessed). Same bytes the
-        // PR2 scan cache and the PR1 response cache hash — keeps SourceHash
-        // consistent across the stack.
+        // Hash the same preprocessed bytes used by scan and response caches.
         string sourceContent = "";
         var srcPath = Path.Combine(_stagingDir, basename);
         if (File.Exists(srcPath))
@@ -129,15 +106,12 @@ public sealed class ProgramFactsExtractor
         var programId = ExtractProgramId(sourceContent);
         var preprocessNotes = LoadPreprocessNotes(basename);
 
-        // ── IO ──
         var dbTables = BuildDbTables(ctx.SqlStatements);
         var files = ExtractFileAccess(sourceContent);
-        // Screens / queues left as empty lists with a warning — extraction needs
-        // PR5 (BMS reader integration) and is out of scope for PR3.
+        // Screen and queue facts remain explicit until their readers are integrated.
         if (sourceContent.Contains("EXEC CICS", StringComparison.OrdinalIgnoreCase))
             warnings.Add("cics-detected-screens-not-extracted");
 
-        // ── Data groups (01-level only — that's what becomes a DTO/record). ──
         var groups = ctx.DataStructure
             .Where(d => d.Level == 1)
             .Select(d => new DataGroup(
@@ -146,7 +120,6 @@ public sealed class ProgramFactsExtractor
                 Redefines: !string.IsNullOrEmpty(d.Redefines)))
             .ToList();
 
-        // ── Callers / callees ──
         var calleesList = ctx.CallTargets
             .Select(c => c.TargetProgram)
             .Where(n => !string.IsNullOrEmpty(n))
@@ -154,7 +127,6 @@ public sealed class ProgramFactsExtractor
             .ToList();
         callersByCallee.TryGetValue(basename, out var callersForThisProgram);
 
-        // ── Control flow ──
         var entryPoints = ctx.Sections.Count > 0
             ? new List<string> { ctx.Sections[0].Name }
             : new List<string>();
@@ -165,7 +137,6 @@ public sealed class ProgramFactsExtractor
                 ? new List<string> { "STOP RUN" }
                 : new List<string>();
 
-        // ── External effects ──
         var effects = new List<string>();
         if (dbTables.Count > 0) effects.Add("DB_IO");
         if (calleesList.Count > 0) effects.Add("CALL_OUT");
@@ -214,8 +185,6 @@ public sealed class ProgramFactsExtractor
         };
     }
 
-    // ─────────────────────────── helpers ───────────────────────────
-
     internal static FactConfidence ResolveConfidence(
         RektScanEntry? cacheEntry,
         RektContext context,
@@ -242,9 +211,7 @@ public sealed class ProgramFactsExtractor
     private static IReadOnlyDictionary<string, IReadOnlyList<string>> BuildCallersMap(
         IReadOnlyList<string> programBasenames, RektContextLoader loader)
     {
-        // Index of stem (case-insensitive) → basename for normalising CALL targets
-        // (which arrive as bare program names from smojol, e.g. "CHILD") to the
-        // basename we key callers by (e.g. "CHILD.cbl").
+        // Normalize bare CALL targets to the basenames used by caller maps.
         var stemToBasename = programBasenames.ToDictionary(
             Path.GetFileNameWithoutExtension!,
             b => b,
@@ -279,7 +246,6 @@ public sealed class ProgramFactsExtractor
             StringComparer.OrdinalIgnoreCase);
     }
 
-    /// <summary>Extracts PROGRAM-ID. value from the first 50 non-comment lines.</summary>
     private static string ExtractProgramId(string content)
     {
         if (string.IsNullOrEmpty(content)) return "";
@@ -329,9 +295,7 @@ public sealed class ProgramFactsExtractor
 
     private static IReadOnlyList<FileAccess> ExtractFileAccess(string content)
     {
-        // Heuristic: scan the procedure division for OPEN/READ/WRITE/REWRITE/CLOSE on
-        // file names. The smojol AST doesn't expose FD entries today; this is a
-        // best-effort fallback that surfaces *some* file IO rather than nothing.
+        // Fall back to procedure-division verbs because the AST omits FD entries.
         if (string.IsNullOrEmpty(content)) return Array.Empty<FileAccess>();
         var byName = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
         var rx = new System.Text.RegularExpressions.Regex(
@@ -383,10 +347,6 @@ public sealed class ProgramFactsExtractor
         return chains;
     }
 
-    /// <summary>
-    /// Loads PR5 <c>.preprocess.json</c> sidecar if present. PR3 ships with the schema
-    /// reader so once PR5 starts writing them they land in <c>ProgramFacts</c> automatically.
-    /// </summary>
     private IReadOnlyList<PreprocessNote> LoadPreprocessNotes(string basename)
     {
         var notePath = Path.Combine(_stagingDir, basename + ".preprocess.json");

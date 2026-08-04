@@ -1,13 +1,4 @@
-// BmsReader.cs — deterministic parser for CICS BMS map source.
-//
-// BMS source uses three macro types:
-//   DFHMSD  — mapset definition (header)
-//   DFHMDI  — map definition (per screen)
-//   DFHMDF  — field definition (per input/output field on a map)
-//
-// Output is REKT-shaped so it can flow through StructuralContextProvider exactly
-// like a parsed COBOL program. Each BMS map becomes a "section" and each field a
-// "data item" so downstream UI generators can render a form per map.
+// Parses CICS BMS map source into the shared structural-context model.
 
 namespace CobolToQuarkusMigration.Helpers;
 
@@ -40,9 +31,6 @@ public sealed class BmsField
 
 public static class BmsReader
 {
-    /// <summary>
-    /// Parse a BMS source file. Returns null if the file is not BMS (no DFHMSD found).
-    /// </summary>
     public static BmsMapset? ParseFile(string path)
     {
         if (!File.Exists(path)) return null;
@@ -57,9 +45,7 @@ public static class BmsReader
         // 1) Strip COBOL/Assembler comments (col 1 = '*' on assembler-style BMS or col 7 = '*' on COBOL-style).
         var rawLines = content.Replace("\r", "").Split('\n');
 
-        // 2) Join continuation lines. Assembler-style continuation has a non-blank in col 72 and the
-        //    next line continues in col 16. We keep it simple: any line ending with a comma followed by
-        //    whitespace + optional sequence-number area triggers a continuation.
+        // Join comma-terminated and fixed-format continuation lines.
         var stitched = StitchContinuations(rawLines);
 
         var mapset = new BmsMapset { SourceFile = sourceFile };
@@ -123,10 +109,6 @@ public static class BmsReader
         return mapset.Maps.Count == 0 && string.IsNullOrEmpty(mapset.Name) ? null : mapset;
     }
 
-    /// <summary>
-    /// Converts a parsed mapset into a RektContext so downstream consumers can treat
-    /// it uniformly. Each map becomes a "section", each field a level-05 data item.
-    /// </summary>
     public static RektContext ToRektContext(BmsMapset m)
     {
         var ctx = new RektContext
@@ -150,8 +132,6 @@ public static class BmsReader
         }
         return ctx;
     }
-
-    // ── Internals ─────────────────────────────────────────────────────────
 
     private static IEnumerable<string> StitchContinuations(string[] lines)
     {

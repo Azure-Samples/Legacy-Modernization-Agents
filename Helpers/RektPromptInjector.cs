@@ -1,9 +1,4 @@
-// RektPromptInjector.cs — shared helper used by JavaConverter, CSharpConverter,
-// ChunkAwareJavaConverter, and ChunkAwareCSharpConverter to inject the REKT
-// structural context block + shared-types registry into per-program prompts.
-//
-// Centralised here so the four converter agents stay consistent when the
-// injection contract evolves.
+// Keeps structural-context prompt injection consistent across converter agents.
 
 namespace CobolToQuarkusMigration.Helpers;
 
@@ -14,25 +9,6 @@ using CobolToQuarkusMigration.Agents.Infrastructure.Facts;
 
 public static class RektPromptInjector
 {
-    /// <summary>
-    /// Append the REKT structural context (when ENABLE_REKT_CONTEXT=true) and
-    /// the shared-types registry block (always, when ≥1 shared copybook) to
-    /// the supplied prompt builder.
-    ///
-    /// When _USE_PROGRAM_FACTS=true AND a matching <code>.facts.json</code>
-    /// exists in <code>output/rekt/</code>, the PR4 projection block is
-    /// preferred over raw REKT — same behaviour as JavaConverterAgent's
-    /// inline path.
-    ///
-    /// Safe to call from any converter agent. Fail-soft: any I/O exception
-    /// is logged and the prompt is returned unchanged.
-    /// </summary>
-    /// <param name="sb">prompt builder to append to.</param>
-    /// <param name="targetLanguage">"Java" or "C#" — drives wording AND projection selection.</param>
-    /// <param name="fileName">COBOL file being converted, e.g. "ACCTMGR.cbl".</param>
-    /// <param name="agentName">caller agent name (for metrics attribution).</param>
-    /// <param name="runId">migration run id (for MetricsSink filename); null disables metrics emission.</param>
-    /// <param name="logger">optional logger for visibility.</param>
     public static async Task InjectAsync(
         StringBuilder sb,
         string targetLanguage,
@@ -72,7 +48,6 @@ public static class RektPromptInjector
                 "true",
                 StringComparison.OrdinalIgnoreCase);
 
-            // ── PR4: program-facts projection (opt-in, language-aware) ─────
             bool factsInjected = false;
             if (JavaConverterProjection.IsEnabled())
             {
@@ -102,7 +77,6 @@ public static class RektPromptInjector
                 if (facts is not null && builder is not null)
                 {
                     ProgramFacts nonNullFacts = facts!;
-                    // PR6: route projection-block construction through the cache.
                     var (projectionBlock, _, projectionHash, wasCacheHit) =
                         ProjectionCache.GetOrBuild(targetLanguage, nonNullFacts, builder, runId, logger);
                     var projectionTokens = TokenHelper.EstimateTokens(projectionBlock);
@@ -139,7 +113,6 @@ public static class RektPromptInjector
                 }
             }
 
-            // ── REKT structural context (raw-AST fallback) ─────────────────
             if (!factsInjected)
             {
                 try
@@ -236,7 +209,6 @@ public static class RektPromptInjector
                 }
             }
 
-            // ── Shared-types registry ─────────────────────────────────────
             try
             {
                 var registry = SharedTypeRegistryHolder.GetOrBuild(d.FullName, srcFolder);

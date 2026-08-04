@@ -33,9 +33,7 @@ BATCH_SIZE = 10_000  # nodes per transaction — tuned for million-node ingestio
 SOURCE_BLOCK_LINES = 500  # lines per SourceBlock node
 
 
-# ═══════════════════════════════════════════════════════════════════════
 # Neo4j Connection
-# ═══════════════════════════════════════════════════════════════════════
 
 def get_driver():
     uri = os.environ.get("NEO4J_URI", "bolt://localhost:7688")
@@ -44,9 +42,7 @@ def get_driver():
     return GraphDatabase.driver(uri, auth=(user, password))
 
 
-# ═══════════════════════════════════════════════════════════════════════
 # Schema Application
-# ═══════════════════════════════════════════════════════════════════════
 
 def apply_schema(driver) -> None:
     """Apply constraints and indexes from schema.cypher."""
@@ -58,7 +54,6 @@ def apply_schema(driver) -> None:
     ]
     with driver.session() as session:
         for stmt in statements:
-            # Skip pure comment lines
             lines = [l for l in stmt.split("\n") if not l.strip().startswith("//")]
             clean = "\n".join(lines).strip()
             if clean:
@@ -66,9 +61,7 @@ def apply_schema(driver) -> None:
     console.print("[green]Schema applied successfully[/green]")
 
 
-# ═══════════════════════════════════════════════════════════════════════
 # Batch Helpers
-# ═══════════════════════════════════════════════════════════════════════
 
 def _batch_list(items: list, size: int = BATCH_SIZE):
     """Yield successive chunks from a list."""
@@ -132,9 +125,7 @@ def batch_merge_relationships(
     return total
 
 
-# ═══════════════════════════════════════════════════════════════════════
 # Rekt JSON Ingestion
-# ═══════════════════════════════════════════════════════════════════════
 
 def _make_uid(*parts) -> str:
     """Deterministic UID from parts."""
@@ -176,7 +167,6 @@ def ingest_rekt_ast(driver, program: str, ast_json: dict, run_id: int) -> int:
     count = batch_merge_nodes(driver, "ASTNode", nodes)
     batch_merge_relationships(driver, "ASTNode", "id", "CONTAINS", "ASTNode", "id", edges)
 
-    # Link root to CobolFile
     root_id = nodes[0]["id"] if nodes else None
     if root_id:
         with driver.session() as session:
@@ -245,7 +235,6 @@ def ingest_rekt_data_structures(
         for child in node.get("children", []):
             _walk_ds(child, node_id)
 
-    # Top-level might be a list or a single root
     records = ds_json if isinstance(ds_json, list) else ds_json.get("records", [ds_json])
     for rec in records:
         _walk_ds(rec)
@@ -272,9 +261,7 @@ def ingest_rekt_data_structures(
     return count
 
 
-# ═══════════════════════════════════════════════════════════════════════
 # Source Block Splitting
-# ═══════════════════════════════════════════════════════════════════════
 
 def create_source_blocks(
     driver, program: str, content: str, run_id: int
@@ -298,7 +285,6 @@ def create_source_blocks(
 
     count = batch_merge_nodes(driver, "SourceBlock", blocks, merge_key="uid")
 
-    # Link to CobolFile
     rels = [{"from_id": _make_uid(run_id, program), "to_id": b["uid"]} for b in blocks]
     batch_merge_relationships(
         driver, "CobolFile", "uid", "HAS_SOURCE_BLOCK", "SourceBlock", "uid", rels
@@ -306,9 +292,7 @@ def create_source_blocks(
     return count
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# SQLite Migration (Hybrid Phase — read from SQLite, write to Neo4j)
-# ═══════════════════════════════════════════════════════════════════════
+# SQLite-to-Neo4j migration
 
 def migrate_sqlite(driver, db_path: str) -> dict[str, int]:
     """Read existing SQLite migration.db and replicate into Neo4j."""
@@ -320,7 +304,6 @@ def migrate_sqlite(driver, db_path: str) -> dict[str, int]:
     conn.row_factory = sqlite3.Row
     counts: dict[str, int] = {}
 
-    # ── Runs ──
     runs = [dict(r) for r in conn.execute("SELECT * FROM runs").fetchall()]
     run_nodes = [
         {
@@ -336,7 +319,6 @@ def migrate_sqlite(driver, db_path: str) -> dict[str, int]:
     ]
     counts["Run"] = batch_merge_nodes(driver, "Run", run_nodes)
 
-    # ── CobolFiles ──
     files = [dict(r) for r in conn.execute("SELECT * FROM cobol_files").fetchall()]
     file_nodes = [
         {
@@ -352,7 +334,6 @@ def migrate_sqlite(driver, db_path: str) -> dict[str, int]:
     ]
     counts["CobolFile"] = batch_merge_nodes(driver, "CobolFile", file_nodes, merge_key="uid")
 
-    # Run→CobolFile relationships
     run_file_rels = [
         {"from_id": f["run_id"], "to_id": _make_uid(f["run_id"], f["file_name"])}
         for f in files
@@ -361,13 +342,11 @@ def migrate_sqlite(driver, db_path: str) -> dict[str, int]:
         driver, "Run", "id", "ANALYZED", "CobolFile", "uid", run_file_rels
     )
 
-    # Create SourceBlocks for large files
     for f in files:
         content = f.get("content") or ""
         if len(content) > 50_000:  # >50KB → split into blocks
             create_source_blocks(driver, f["file_name"], content, f["run_id"])
 
-    # ── Dependencies ──
     deps = [dict(r) for r in conn.execute("SELECT * FROM dependencies").fetchall()]
     dep_rels = [
         {
@@ -384,7 +363,6 @@ def migrate_sqlite(driver, db_path: str) -> dict[str, int]:
         dep_rels, rel_props=["type", "lineNumber", "context"],
     )
 
-    # ── Signatures ──
     try:
         sigs = [dict(r) for r in conn.execute("SELECT * FROM signatures").fetchall()]
         sig_nodes = [
@@ -412,7 +390,6 @@ def migrate_sqlite(driver, db_path: str) -> dict[str, int]:
     except sqlite3.OperationalError:
         pass  # table may not exist yet
 
-    # ── Business Logic ──
     try:
         bls = [dict(r) for r in conn.execute("SELECT * FROM business_logic").fetchall()]
         bl_nodes = [
@@ -439,7 +416,6 @@ def migrate_sqlite(driver, db_path: str) -> dict[str, int]:
     except sqlite3.OperationalError:
         pass
 
-    # ── Chunk Metadata ──
     try:
         chunks = [dict(r) for r in conn.execute("SELECT * FROM chunk_metadata").fetchall()]
         chunk_nodes = [
@@ -468,7 +444,6 @@ def migrate_sqlite(driver, db_path: str) -> dict[str, int]:
     except sqlite3.OperationalError:
         pass
 
-    # ── Type Mappings ──
     try:
         tms = [dict(r) for r in conn.execute("SELECT * FROM type_mappings").fetchall()]
         tm_nodes = [
@@ -496,7 +471,6 @@ def migrate_sqlite(driver, db_path: str) -> dict[str, int]:
     except sqlite3.OperationalError:
         pass
 
-    # ── Metrics ──
     try:
         metrics = [dict(r) for r in conn.execute("SELECT * FROM metrics").fetchall()]
         m_nodes = [
@@ -528,9 +502,7 @@ def migrate_sqlite(driver, db_path: str) -> dict[str, int]:
     return counts
 
 
-# ═══════════════════════════════════════════════════════════════════════
 # Full Ingestion Pipeline
-# ═══════════════════════════════════════════════════════════════════════
 
 def ingest_rekt_outputs(driver, rekt_output_dir: str, source_dir: str, run_id: int) -> dict[str, int]:
     """Scan rekt JSON output directory and ingest all exports into Neo4j."""
@@ -577,11 +549,9 @@ def ingest_rekt_outputs(driver, rekt_output_dir: str, source_dir: str, run_id: i
         )
     counts["CobolFile"] = batch_merge_nodes(driver, "CobolFile", file_nodes, merge_key="uid")
 
-    # Create SourceBlocks for all files
     for fn in file_nodes:
         create_source_blocks(driver, fn["fileName"], fn["content"], run_id)
 
-    # Process rekt JSON exports per program
     ast_total = 0
     cfg_total = 0
     ds_total = 0
@@ -596,7 +566,6 @@ def ingest_rekt_outputs(driver, rekt_output_dir: str, source_dir: str, run_id: i
             console.print(f"[yellow]Skipping invalid JSON: {rel_path}[/yellow]")
             continue
 
-        # Detect export type from filename conventions
         name_lower = json_file.name.lower()
         if "flow-ast" in name_lower or "ast" in name_lower:
             ast_total += ingest_rekt_ast(driver, program_name, data, run_id)
@@ -611,9 +580,7 @@ def ingest_rekt_outputs(driver, rekt_output_dir: str, source_dir: str, run_id: i
     return counts
 
 
-# ═══════════════════════════════════════════════════════════════════════
 # CLI Entry Point
-# ═══════════════════════════════════════════════════════════════════════
 
 @click.group()
 def cli():
@@ -654,7 +621,6 @@ def ingest(source_dir: str, rekt_output: str, run_id: int, sqlite_db: str | None
         for label, count in rekt_counts.items():
             console.print(f"  {label}: {count}")
 
-        # Print totals
         with driver.session() as session:
             result = session.run(
                 "MATCH (n) RETURN count(n) AS nodes, "

@@ -1,11 +1,4 @@
-// RektContext.cs — typed structural context produced by the static-analysis pipeline
-// (cobol-rekt + smojol) and consumed by the AI conversion agents.
-//
-// A RektContext is the single shape both downstream consumers and the LLM fallback
-// extractor (StructuralExtractorAgent) produce, so converters/validators don't have
-// to know whether the data came from native REKT parsing, partial parsing, or LLM
-// extraction. Provenance is recorded on the wrapping `StructuralContext` so prompts
-// can show a confidence indicator.
+// Shared structural-context model for parser and LLM extraction results.
 
 using System.Text.Json.Serialization;
 
@@ -108,15 +101,8 @@ public sealed class RektTargetPlan
     public List<string> MigrationNotes { get; set; } = new();
 }
 
-// ── Helpers for prompt injection ──────────────────────────────────────────
-
 public static class RektContextFormatter
 {
-    /// <summary>
-    /// Renders a compact text block suitable for LLM prompt context. Designed to
-    /// fit in &lt; 4 KB for the average program. Includes a provenance line so the
-    /// LLM knows how much to trust the structure.
-    /// </summary>
     public static string ToPromptBlock(StructuralContext sc)
     {
         var sb = new System.Text.StringBuilder();
@@ -200,10 +186,7 @@ public static class RektContextFormatter
                 sb.AppendLine();
                 foreach (var d in meaningful)
                 {
-                    // For large groups (>50 fields), show only top 2 levels to
-                    // keep the prompt under the model's effective budget. The
-                    // converter should generate ALL fields in the DTO, using
-                    // the COBOL source for the full detail.
+                    // Limit large prompt projections; the source remains authoritative for omitted fields.
                     int totalFields = CountFields(d);
                     int maxDepth = totalFields > 50 ? 10 : 30;
                     RenderDataItem(sb, d, indent: 2, maxChildren: maxDepth);

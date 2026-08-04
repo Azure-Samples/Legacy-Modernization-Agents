@@ -1,16 +1,4 @@
-// SharedTypeRegistry.cs — deterministic scan of every copybook in source/ to
-// identify types that will be referenced by ≥2 programs in the same batch.
-// Used by the converter agents to inject a "DO NOT REDECLARE THESE" block
-// into the per-program prompt so the LLM stops generating duplicate enums /
-// records / DTOs for shared copybooks.
-//
-// Why this matters:
-// In the May 2026 65-file C# conversion run, the LLM generated 5 duplicate
-// type definitions (StorageType, TimeFormatCode, CommonRecord, SharedFileService,
-// Bdsistdi) in the CobolMigration.Models namespace — each defined in 2+ files.
-// The build failed with CS0101. Root cause: per-file conversion has no
-// global type registry, so the LLM re-derives shared copybook types per
-// program. This registry is the deterministic fix.
+// Identifies copybook types shared across programs to prevent duplicate generated types.
 
 namespace CobolToQuarkusMigration.Helpers;
 
@@ -25,11 +13,6 @@ public sealed class SharedTypeRegistry
     public IReadOnlySet<string> SharedTypeNames => _sharedNames;
     public bool IsShared(string name) => _sharedNames.Contains(name);
 
-    /// <summary>
-    /// Scan a source folder, find every COPY directive in every program, and
-    /// determine which copybooks are used by ≥2 programs (and therefore must
-    /// be emitted exactly once at the shared-types level).
-    /// </summary>
     public void Scan(string sourceFolder)
     {
         if (!Directory.Exists(sourceFolder)) return;
@@ -71,10 +54,6 @@ public sealed class SharedTypeRegistry
         }
     }
 
-    /// <summary>
-    /// Render the prompt block the converter agents prepend to the user
-    /// message. Returns empty when no shared types exist.
-    /// </summary>
     public string ToPromptBlock(string targetLanguage)
     {
         if (_sharedNames.Count == 0) return string.Empty;
@@ -120,10 +99,6 @@ public sealed class SharedTypeRegistry
     }
 }
 
-/// <summary>
-/// Process-lifetime cache so the registry scans the source folder once per
-/// migration run, not once per file. Keyed by (repoRoot, sourceFolder).
-/// </summary>
 public static class SharedTypeRegistryHolder
 {
     private static readonly object _lock = new();

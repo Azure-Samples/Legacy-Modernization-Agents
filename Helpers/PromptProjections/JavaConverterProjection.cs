@@ -4,54 +4,15 @@ using CobolToQuarkusMigration.Agents.Infrastructure.Facts;
 
 namespace CobolToQuarkusMigration.Helpers.PromptProjections;
 
-/// <summary>
-/// Projects a <see cref="ProgramFacts"/> instance into the structural-context
-/// block the Java converter prompt embeds. PR4.a.
-/// </summary>
-/// <remarks>
-/// <para>
-/// Why this exists: <see cref="ProgramFacts"/> is the curated, schema-versioned
-/// PR3 contract. The projection turns it into a compact prompt block that
-/// replaces the raw <c>RektContextLoader</c> dump when
-/// <c>_USE_PROGRAM_FACTS=true</c>.
-/// </para>
-/// <para>
-/// Output rules:
-/// </para>
-/// <list type="bullet">
-///   <item>Starts with the same marker line the existing REKT block uses
-///         (<c>"REKT STRUCTURAL CONTEXT (authoritative — use this as the conversion blueprint):"</c>)
-///         so <see cref="Agents.JavaConverterAgent.ExtractRektContextBlock"/>
-///         still picks up the right slice for the cache key.</item>
-///   <item>Carries the same fact-locking rules as the raw path (keeps
-///         agent behaviour deterministic when the source of facts swaps).</item>
-///   <item>Emits only the data sections that <see cref="ProgramFacts"/>
-///         actually populates — empty lists are explicit ("none") so the
-///         LLM does not invent values.</item>
-///   <item>Surfaces <see cref="ProgramFacts.Warnings"/> and
-///         <see cref="ProgramFacts.PreprocessNotes"/> as first-class
-///         signals so the model treats them as constraints.</item>
-/// </list>
-/// </remarks>
 public static class JavaConverterProjection
 {
-    /// <summary>Env var that activates the projection. Default off.</summary>
     public const string EnableEnvVar = "_USE_PROGRAM_FACTS";
 
-    /// <summary>
-    /// Returns true when the projection should be used for the next call.
-    /// Pure function of the environment — no AsyncLocal, no hidden state.
-    /// </summary>
     public static bool IsEnabled() =>
         string.Equals(
             Environment.GetEnvironmentVariable(EnableEnvVar), "true",
             StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>
-    /// Loads <c>&lt;stem&gt;.facts.json</c> from <paramref name="factsDir"/>
-    /// for the given program. Returns null when the file is missing or unreadable
-    /// so callers can fall back to the raw-AST path.
-    /// </summary>
     public static ProgramFacts? TryLoad(string factsDir, string programBasename)
     {
         var stem = Path.GetFileNameWithoutExtension(programBasename);
@@ -71,12 +32,6 @@ public static class JavaConverterProjection
         }
     }
 
-    /// <summary>
-    /// Renders the projection as a single string suitable for appending to the
-    /// Java converter user prompt. The string starts with the
-    /// <c>"REKT STRUCTURAL CONTEXT (authoritative"</c> marker the cache-key
-    /// extractor recognises.
-    /// </summary>
     public static string BuildPromptBlock(ProgramFacts facts)
     {
         var sb = new StringBuilder();
@@ -108,7 +63,6 @@ public static class JavaConverterProjection
         sb.AppendLine("  • Do NOT inline the called program's logic.");
         sb.AppendLine();
 
-        // ── Warnings (first-class so the LLM treats them as constraints) ──
         if (facts.Warnings.Count > 0)
         {
             sb.AppendLine("WARNINGS (preserved from REKT extraction — surface in the generated code as TODOs where relevant):");
@@ -124,7 +78,6 @@ public static class JavaConverterProjection
             sb.AppendLine();
         }
 
-        // ── Summary ──
         sb.AppendLine("PROGRAM SUMMARY:");
         sb.AppendLine($"  programId   : {Display(facts.Summary.ProgramId)}");
         sb.AppendLine($"  basename    : {facts.Basename}");
@@ -136,7 +89,6 @@ public static class JavaConverterProjection
         sb.AppendLine($"  isCopybook  : {facts.Summary.IsCopybook}");
         sb.AppendLine();
 
-        // ── Data groups (drive DTO generation) ──
         sb.AppendLine("DATA GROUPS (01-level — one DTO/record class per entry):");
         if (facts.Data.Groups.Count == 0)
             sb.AppendLine("  (none)");
@@ -145,7 +97,6 @@ public static class JavaConverterProjection
                 sb.AppendLine($"  • {g.Name} — {g.FieldCount} field(s){(g.Redefines ? " [REDEFINES — generate as variant DTO]" : "")}");
         sb.AppendLine();
 
-        // ── Copybooks ──
         sb.AppendLine("COPYBOOKS USED:");
         if (facts.Data.CopybooksUsed.Count == 0)
             sb.AppendLine("  (none)");
@@ -154,7 +105,6 @@ public static class JavaConverterProjection
                 sb.AppendLine($"  • {c}");
         sb.AppendLine();
 
-        // ── IO ──
         sb.AppendLine("IO — DB TABLES (each becomes a Panache entity / repository method):");
         if (facts.Io.DbTables.Count == 0)
             sb.AppendLine("  (none)");
@@ -184,7 +134,6 @@ public static class JavaConverterProjection
             sb.AppendLine();
         }
 
-        // ── Callees (drive @Inject service generation) ──
         sb.AppendLine("CALL TARGETS (each becomes an @Inject service interface):");
         if (facts.Callees.Count == 0)
             sb.AppendLine("  (none)");
@@ -193,7 +142,6 @@ public static class JavaConverterProjection
                 sb.AppendLine($"  • {c}");
         sb.AppendLine();
 
-        // ── Callers (informational — agent shouldn't synthesise these) ──
         if (facts.Callers.Count > 0)
         {
             sb.AppendLine("CALLED BY (informational — these programs depend on this one):");
@@ -201,7 +149,6 @@ public static class JavaConverterProjection
             sb.AppendLine();
         }
 
-        // ── Control flow ──
         sb.AppendLine("CONTROL FLOW:");
         sb.Append("  entryPoints: ");
         sb.AppendLine(facts.ControlFlow.EntryPoints.Count == 0 ? "(none)" : string.Join(", ", facts.ControlFlow.EntryPoints));
@@ -215,7 +162,6 @@ public static class JavaConverterProjection
         }
         sb.AppendLine();
 
-        // ── External effects ──
         sb.AppendLine("EXTERNAL EFFECTS (use to choose Quarkus extensions / annotations):");
         if (facts.ExternalEffects.Count == 0)
             sb.AppendLine("  (none)");

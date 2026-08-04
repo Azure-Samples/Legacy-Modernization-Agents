@@ -6,36 +6,10 @@ using CobolToQuarkusMigration.Agents.Infrastructure;
 
 namespace CobolToQuarkusMigration.Agents.Infrastructure.RektCache;
 
-/// <summary>
-/// SQLite-backed <see cref="IRektScanCache"/>. Same discipline as
-/// <see cref="Caching.SqliteResponseCache"/>: WAL mode, per-operation connections,
-/// busy_timeout, two independent schema versions.
-/// </summary>
-/// <remarks>
-/// <para>Schema versions:</para>
-/// <list type="bullet">
-///   <item><see cref="StorageSchemaVersion"/> — table layout. Mismatch ⇒ DROP and recreate
-///         (one-time data loss; this is derived data).</item>
-///   <item><see cref="SemanticInvalidationVersion"/> — bumped when the planner's
-///         decision logic changes in a way that should treat all existing entries
-///         as stale (without dropping rows). Stored on each entry; mismatched
-///         rows are treated as cache misses.</item>
-/// </list>
-/// <para>
-/// All read/write paths catch IO/SQLite exceptions and return defaults (null /
-/// empty map / no-op) so a corrupt or missing cache file always falls back to
-/// a full parse rather than crashing the pipeline.
-/// </para>
-/// </remarks>
 public sealed class SqliteRektScanCache : IRektScanCache
 {
     public const int StorageSchemaVersion = 1;
 
-    /// <summary>
-    /// Bump when the planner's invalidation logic changes (e.g. starts considering
-    /// new fields, changes hash construction). Old rows with a different value
-    /// become cache misses; the DB is otherwise untouched.
-    /// </summary>
     public const string SemanticInvalidationVersion = "1";
 
     public const string LogEventName = "RektScanCache";
@@ -74,11 +48,6 @@ public sealed class SqliteRektScanCache : IRektScanCache
         return conn;
     }
 
-    /// <summary>
-    /// Wraps schema setup with a try/catch so a corrupt DB does not throw out of
-    /// the constructor. The cache will simply behave as empty until the next clean
-    /// upsert (which will recreate the table).
-    /// </summary>
     private void TryEnsureSchema()
     {
         try
@@ -143,7 +112,6 @@ public sealed class SqliteRektScanCache : IRektScanCache
         tx.Commit();
     }
 
-    /// <inheritdoc />
     public async Task<RektScanEntry?> TryGetAsync(
         string basename, string identityScheme, CancellationToken cancellationToken = default)
     {
@@ -185,7 +153,6 @@ public sealed class SqliteRektScanCache : IRektScanCache
         }
     }
 
-    /// <inheritdoc />
     public async Task<IReadOnlyDictionary<string, RektScanEntry>> GetManyAsync(
         IReadOnlyCollection<string> basenames, string identityScheme,
         CancellationToken cancellationToken = default)
@@ -196,9 +163,7 @@ public sealed class SqliteRektScanCache : IRektScanCache
         try
         {
             using var conn = Open();
-            // Use IN with a temp table for arbitrary-size inputs. Simpler: do one
-            // query per basename — at our scale (≤1k) the per-query overhead is
-            // dominated by the WAL setup, and the connection is reused via pooling.
+            // Reuse the pooled connection for the expected corpus size of at most about 1,000 files.
             foreach (var b in basenames)
             {
                 using var cmd = conn.CreateCommand();
@@ -225,7 +190,6 @@ public sealed class SqliteRektScanCache : IRektScanCache
         return result;
     }
 
-    /// <inheritdoc />
     public async Task UpsertAsync(RektScanEntry entry, CancellationToken cancellationToken = default)
     {
         try
@@ -264,7 +228,6 @@ public sealed class SqliteRektScanCache : IRektScanCache
         }
     }
 
-    /// <inheritdoc />
     public async Task<int> PruneOtherIdentitySchemesAsync(
         string currentIdentityScheme, CancellationToken cancellationToken = default)
     {
@@ -292,7 +255,6 @@ public sealed class SqliteRektScanCache : IRektScanCache
         }
     }
 
-    /// <inheritdoc />
     public async Task<int> PruneByAgeAsync(TimeSpan maxAge, CancellationToken cancellationToken = default)
     {
         try
@@ -320,7 +282,6 @@ public sealed class SqliteRektScanCache : IRektScanCache
         }
     }
 
-    /// <inheritdoc />
     public async Task<int> PruneStaleSemanticVersionsAsync(CancellationToken cancellationToken = default)
     {
         try
@@ -347,7 +308,6 @@ public sealed class SqliteRektScanCache : IRektScanCache
         }
     }
 
-    /// <inheritdoc />
     public async Task<int> PruneToMaxEntriesAsync(int maxEntries, CancellationToken cancellationToken = default)
     {
         if (maxEntries < 0) maxEntries = 0;

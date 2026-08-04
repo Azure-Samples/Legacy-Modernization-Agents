@@ -6,23 +6,10 @@ using Microsoft.Extensions.Logging;
 
 namespace CobolToQuarkusMigration.Cli;
 
-/// <summary>
-/// Bash-callable CLI surface for the incremental REKT scan cache (PR2.b).
-/// Two verbs:
-/// <list type="bullet">
-///   <item><c>plan &lt;staging-dir&gt;</c> — emits a newline-tagged plan to stdout.</item>
-///   <item><c>record &lt;basename&gt; --outcome ...</c> — persists a parse result.</item>
-///   <item><c>prune</c> — drops rows whose identity scheme is not the current one.</item>
-/// </list>
-/// The plan output is intentionally line-oriented (one decision per line, three
-/// fields per line separated by '\t') so <c>doctor.sh</c> can consume it with
-/// a single <c>while read</c> loop — no JSON parser required in bash.
-/// </summary>
 public static class RektScanCacheCommand
 {
     public const string DefaultDbPath = "Data/rekt-scan.db";
 
-    /// <summary>Identity scheme that the planner and cache currently agree on.</summary>
     public const string IdentityScheme = CacheKeyIdentity.V1Basename;
 
     public static Command Build(ILoggerFactory loggerFactory)
@@ -37,8 +24,6 @@ public static class RektScanCacheCommand
 
         return root;
     }
-
-    // ─────────────────────────── plan ───────────────────────────
 
     private static Command BuildPlanCommand(ILoggerFactory loggerFactory)
     {
@@ -80,9 +65,7 @@ public static class RektScanCacheCommand
             var planner = new IncrementalScanPlanner(cache, graph, IdentityScheme, logger);
             var plan = await planner.PlanAsync(targets);
 
-            // Optional artifact-existence sanity check — downgrades skip→parse for
-            // programs whose REKT output JSONs are missing on disk. Closes the gap
-            // documented in docs/p2-rekt-scan-cache.md §6.3.
+            // Reparse cached programs whose parser artifacts are missing.
             var toSkip = plan.ToSkip.ToList();
             var toParse = plan.ToParse.ToList();
             if (!string.IsNullOrEmpty(verifyDir) && Directory.Exists(verifyDir))
@@ -116,8 +99,6 @@ public static class RektScanCacheCommand
 
         return cmd;
     }
-
-    // ─────────────────────────── record ───────────────────────────
 
     private static Command BuildRecordCommand(ILoggerFactory loggerFactory)
     {
@@ -177,14 +158,6 @@ public static class RektScanCacheCommand
         return cmd;
     }
 
-    // ─────────────────────────── record-batch ───────────────────────────
-
-    /// <summary>
-    /// Persists many parse outcomes in a single process — avoids paying the
-    /// dotnet startup cost per program when doctor.sh has just parsed dozens
-    /// or hundreds of files. Reads a manifest file with one
-    /// <c>&lt;basename&gt;TAB&lt;outcome&gt;</c> line per program.
-    /// </summary>
     private static Command BuildRecordBatchCommand(ILoggerFactory loggerFactory)
     {
         var cmd = new Command("record-batch", "Persist many parse outcomes from a TSV manifest in one process.");
@@ -238,9 +211,7 @@ public static class RektScanCacheCommand
                     continue;
                 }
 
-                // Re-derive the decision so the recorded snapshot matches what
-                // the planner would see right now. If the file was deleted
-                // between parse and record, this is a soft skip.
+                // Recompute the snapshot; a file deleted after parsing is a soft skip.
                 if (graph.GetHash(basename) is null)
                 {
                     Console.Error.WriteLine($"No graph entry for {basename} — file gone from staging? Skipping record.");
@@ -259,8 +230,6 @@ public static class RektScanCacheCommand
 
         return cmd;
     }
-
-    // ─────────────────────────── prune ───────────────────────────
 
     private static Command BuildPruneCommand(ILoggerFactory loggerFactory)
     {
@@ -318,9 +287,6 @@ public static class RektScanCacheCommand
         return cmd;
     }
 
-    // ─────────────────────────── helpers (internal for tests) ───────────────────────────
-
-    /// <summary>Builds an in-memory copybook graph by reading every program + copybook from the staging dir.</summary>
     internal static RektCopybookGraph BuildGraphFromStagingDir(string stagingDir, ILogger logger)
     {
         if (!Directory.Exists(stagingDir))
@@ -343,10 +309,6 @@ public static class RektScanCacheCommand
         return graph;
     }
 
-    /// <summary>
-    /// Returns true when the verify dir contains an exact supported parser artifact
-    /// for the given program.
-    /// </summary>
     internal static bool HasRektArtifacts(string verifyDir, string basename)
     {
         var stem = Path.GetFileNameWithoutExtension(basename);
@@ -413,9 +375,7 @@ public static class RektScanCacheCommand
     }
 }
 
-/// <summary>Constants for the current identity-scheme contract.</summary>
 public static class CacheKeyIdentity
 {
-    /// <summary>Basename-only identity — see docs/basename-coupling-map.md.</summary>
     public const string V1Basename = "v1-basename";
 }

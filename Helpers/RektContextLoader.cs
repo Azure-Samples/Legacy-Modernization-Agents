@@ -1,15 +1,4 @@
-// RektContextLoader.cs — Reads native REKT JSON outputs into a typed RektContext.
-//
-// Sources (all under output/rekt/):
-//   flow-ast-<program>.json           — sections, paragraphs, perform, call, branches
-//   flow-cfg-<program>.json           — control-flow edges (optional, used for perform graph)
-//   flow-data-<program>.json          — working-storage / linkage structure
-//   <program>-deps.json               — dependency export (used when full AST is missing)
-//   target-architecture.json          — per-program recommendation plan
-//
-// All readers are tolerant: missing files / fields don't throw, they just leave the
-// corresponding list empty. The caller (StructuralContextProvider) decides how to
-// react (fall back to LLM extraction, etc).
+// Loads available REKT artifacts without failing when optional outputs are absent.
 
 using System.Text.Json;
 
@@ -31,21 +20,12 @@ public sealed class RektContextLoader
         _targetArchPath = Path.Combine(_rektDir, "target-architecture.json");
     }
 
-    /// <summary>
-    /// Returns true if any REKT output exists for any program (i.e. rekt-full has run).
-    /// </summary>
     public bool HasAnyRektOutput()
     {
         if (!Directory.Exists(_rektDir)) return false;
         return Directory.EnumerateFiles(_rektDir, "*.json").Any();
     }
 
-    /// <summary>
-    /// Best-effort load. Returns a RektContext populated from whatever is available;
-    /// LineCount/IsCopybook/Program are always filled (from disk inspection) even if
-    /// no REKT JSON exists. Caller checks Sections.Count / CallTargets.Count etc. to
-    /// decide whether to invoke the LLM fallback.
-    /// </summary>
     public RektContext Load(string programFileName, string sourceFolder)
     {
         var ctx = new RektContext
@@ -70,28 +50,6 @@ public sealed class RektContextLoader
         return ctx;
     }
 
-    /// <summary>
-    /// Enumerate COBOL <b>programs</b> (compilable entry points) in the source
-    /// folder. Excludes <c>.cpy</c> copybooks — those are shared structures
-    /// included via <c>COPY</c> and are never conversion targets on their own.
-    /// Use <see cref="EnumerateCopybookFiles"/> if you specifically need the
-    /// copybook inventory.
-    ///
-    /// <para>
-    /// Detects three naming conventions:
-    /// </para>
-    /// <list type="bullet">
-    /// <item><b>Standard:</b> <c>foo.cbl</c> / <c>foo.cob</c> (case-insensitive).</item>
-    /// <item><b>IBM mainframe PDS export:</b> <c>MYLIB.SOURCE.SRC(PROG001)</c> —
-    /// a member of a partitioned data set. The "extension" is <c>.SRC(MEMBER)</c>. We
-    /// detect any file whose name ends with <c>SRC(NAME)</c> and surface it
-    /// as <c>NAME.cbl</c> so the rest of the pipeline treats it as a normal
-    /// COBOL program.</item>
-    /// <item><b>Content-based:</b> any extensionless file or non-standard
-    /// extension whose first 50 lines contain <c>PROGRAM-ID</c> is treated as
-    /// a COBOL program. Cheap heuristic, catches one-offs.</item>
-    /// </list>
-    /// </summary>
     public List<string> EnumerateProgramFiles(string sourceFolder)
     {
         var dir = Path.Combine(_repoRoot, sourceFolder);
@@ -158,11 +116,6 @@ public sealed class RektContextLoader
             .ToList();
     }
 
-    /// <summary>
-    /// Enumerate COBOL <b>copybooks</b> (<c>.cpy</c> shared structures) — the
-    /// complement of <see cref="EnumerateProgramFiles"/>. Copybooks are
-    /// included via <c>COPY</c> directives but never converted standalone.
-    /// </summary>
     public List<string> EnumerateCopybookFiles(string sourceFolder)
     {
         var dir = Path.Combine(_repoRoot, sourceFolder);
@@ -185,8 +138,6 @@ public sealed class RektContextLoader
             .ToList();
     }
 
-    // ── Per-source readers ────────────────────────────────────────────────
-
     private void TryLoadFlowAst(RektContext ctx, string stem)
     {
         var path = FindRektFile(stem, prefix: "flow-ast-");
@@ -200,16 +151,12 @@ public sealed class RektContextLoader
         catch (Exception) { /* tolerated; loader returns what it found */ }
     }
 
-    // smojol flow-ast files vary in shape — the safe approach is to walk the JSON
-    // tree recursively and harvest any object that looks like a SECTION / PARAGRAPH /
-    // PERFORM / CALL / EXEC SQL node based on its `nodeType` (or `type`) field.
+    // Walk varying smojol AST shapes recursively and harvest recognized node types.
     private void WalkAst(JsonElement el, RektContext ctx, RektSection? currentSection)
     {
         if (el.ValueKind == JsonValueKind.Object)
         {
-            // smojol v2 uses nodeType=CODE_VERTEX for everything and puts the
-            // structural type (SECTION, PARAGRAPHS, SENTENCE, etc.) in the `type`
-            // field. Prefer `type` when `nodeType` is the generic CODE_VERTEX.
+            // smojol v2 stores the structural type in `type` for generic CODE_VERTEX nodes.
             string? nodeType = null;
             if (el.TryGetProperty("nodeType", out var nt) && nt.ValueKind == JsonValueKind.String)
                 nodeType = nt.GetString();
@@ -459,8 +406,6 @@ public sealed class RektContextLoader
         catch (Exception) { /* tolerated */ }
     }
 
-    // ── Target architecture lookup ────────────────────────────────────────
-
     private RektTargetPlan? LookupTargetPlan(string programFileName)
     {
         if (_targetArchPath is null || !File.Exists(_targetArchPath)) return null;
@@ -516,10 +461,6 @@ public sealed class RektContextLoader
         return map;
     }
 
-    /// <summary>
-    /// Exposes the full target architecture mappings (used by ProgramSelectorService
-    /// for --wave / --target selectors).
-    /// </summary>
     public IReadOnlyDictionary<string, RektTargetPlan> GetAllTargetPlans()
     {
         if (_targetArchPath is null || !File.Exists(_targetArchPath))
@@ -527,8 +468,6 @@ public sealed class RektContextLoader
         _targetPlansByProgram ??= ParseTargetArchitecture(_targetArchPath);
         return _targetPlansByProgram;
     }
-
-    // ── Utilities ─────────────────────────────────────────────────────────
 
     private string? FindRektFile(string stem, string prefix)
     {
@@ -539,11 +478,7 @@ public sealed class RektContextLoader
             if (File.Exists(p)) return p;
         }
 
-        // Layout 2 (smojol v2): output/rekt/PROG.cbl.report/flow_ast/flow-ast-PROG.cbl.json
-        // Maps prefix → subdirectory:
-        //   "flow-ast-"  → flow_ast/flow-ast-<stem>.cbl.json
-        //   "flow-data-" → data_structures/<stem>.cbl-data.json
-        //   "flow-cfg-"  → cfg/cfg-<stem>.cbl.json
+        // smojol v2 nests artifacts under a per-program report directory.
         var reportDirs = new[]
         {
             $"{stem}.cbl.report",

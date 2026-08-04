@@ -493,9 +493,7 @@ public class MigrationProcess
         report.AppendLine($"- **Average Dependencies per Program**: {dependencyMap.Metrics.AverageDependenciesPerProgram:F1}");
         report.AppendLine();
 
-        // Surface conversions that produced unusable output. The run can't be
-        // failed outright because some files may still be salvageable, but a
-        // "completed" run must not imply every file is usable.
+        // Report unusable files without discarding successful conversions.
         var brokenFiles = new List<(string cobol, string javaPath, string reason)>();
         foreach (var gf in generatedFiles)
         {

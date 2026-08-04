@@ -1,19 +1,4 @@
-// ImsDbdReader.cs / ImsPsbReader.cs — deterministic parsers for IMS DBD and PSB GEN macros.
-//
-// DBD (Database Description) defines the segment hierarchy of an IMS database:
-//   DBD    NAME=cust, ACCESS=(HDAM, …)
-//   SEGM   NAME=ROOT,    BYTES=200,  PARENT=0
-//   FIELD  NAME=(CUSTID,SEQ), BYTES=10, START=1, TYPE=C
-//   SEGM   NAME=ORDER,   BYTES=80,   PARENT=ROOT
-//   FIELD  NAME=ORDERID, BYTES=10, START=1, TYPE=C
-//
-// PSB (Program Specification Block) lists which databases + segments a program may touch:
-//   PCB    TYPE=DB, DBDNAME=cust, KEYLEN=20, PROCOPT=A
-//   SENSEG NAME=ROOT,  PROCOPT=A
-//   SENSEG NAME=ORDER, PARENT=ROOT, PROCOPT=A
-//   PSBGEN LANG=COBOL, PSBNAME=ORDPSB
-//
-// These parsers handle the most common subset: SEGM/FIELD in DBD, PCB/SENSEG in PSB.
+// Parses common IMS DBD and PSB GEN macros into structural context.
 
 namespace CobolToQuarkusMigration.Helpers;
 

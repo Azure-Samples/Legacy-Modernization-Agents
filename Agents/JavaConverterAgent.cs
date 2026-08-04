@@ -421,9 +421,7 @@ public class {{className}} {
             }
         }
 
-        // Some responses contain two complete class bodies for the same program,
-        // typically when the model hits an internal token limit and restarts from
-        // scratch. Keep the balanced body rather than blindly the first.
+        // Prefer a balanced class body when a truncated response restarts from scratch.
         var firstPkg = input.IndexOf("package ", StringComparison.Ordinal);
         if (firstPkg >= 0)
         {

@@ -1,14 +1,5 @@
 #!/bin/bash
-# ═══════════════════════════════════════════════════════════════════
-# COBOL Preprocessor for rekt compatibility
-# Handles:
-#   - EXEC DLI → comment-out entire block (IMS/DL/I)
-#   - EXEC SQL INCLUDE name → COPY name (DB2 includes)
-#   - EXEC SQL GET DIAGNOSTICS → comment-out block
-#   - Pseudo-text replacement tokens :TOKEN: → XTOKEN in copybooks
-#   - Quoted COPY names: COPY 'NAME' → COPY NAME
-#   - Embedded line numbers in columns 1-6
-# ═══════════════════════════════════════════════════════════════════
+# Normalizes COBOL sources for rekt compatibility.
 
 set -euo pipefail
 
@@ -30,8 +21,7 @@ if [[ -z "$PYTHON" ]]; then
     exit 1
 fi
 
-# ─── Phase 1: Preprocess copybooks (.cpy) ───────────────────────────
-# Resolve pseudo-text tokens :TOKEN: → XTOKEN and add FILLER to anonymous entries
+# Preprocess copybooks before programs.
 cpy_count=0
 # Recursive find so nested layouts (source/lib/cpy/, etc.) are picked up.
 # -print0 / read -d '' avoids issues with paths containing whitespace.
@@ -46,10 +36,7 @@ with open('$cpy', 'r', encoding='latin-1') as f:
 
 original = content
 
-# Strip trailing sequence numbers embedded in the content area
-# Some files have cols 73-80 seq numbers that bleed into cols 8-72
-# (e.g., '001600 01 DB2FEJL REDEFINES SQLCA.           00000160')
-# Also handles seq numbers concatenated after a period: '.00000210'
+# Strip sequence numbers that leaked from columns 73-80 into source text.
 def strip_trailing_seq(text):
     out = []
     for line in text.split('\n'):
@@ -86,9 +73,7 @@ def insert_filler(m):
     new_gap_len = max(1, len(gap) - 7)
     return prefix + level + ' ' * new_gap_len + 'FILLER ' + kw
 
-# Add FILLER to anonymous data entries: '  NN  PIC' → '  NN FILLER PIC'
-# Pattern handles lines both with and without 6-digit sequence numbers.
-# The gap between level-number and keyword can be as small as 1 space.
+# Add FILLER to anonymous data entries, with or without sequence numbers.
 content = re.sub(
     r'^(\d{6}\s+|\s+)(\d{1,2})(\s{1,})(PIC\b)',
     insert_filler,
@@ -109,14 +94,7 @@ content = re.sub(
 content = re.sub(r'\bCOMP-2\b', 'PIC X(8)', content)
 content = re.sub(r'\bCOMP-1\b', 'PIC X(4)', content)
 
-# Enforce column 72 limit: handle two cases differently
-#   Case A: cols 73+ contain a mainframe timestamp/seq number/version stamp
-#           (digits, dots, dashes, slashes only) — TRUNCATE at col 72.
-#           This is the standard COBOL fixed-format treatment of the
-#           identification area (cols 73-80). The text does not belong
-#           to the program — it is a code-versioning audit trail.
-#   Case B: cols 73+ contain actual code that overflowed (rare) — fall
-#           back to whitespace compression to fit content into 72 cols.
+# Truncate identification-area metadata; compress whitespace only for actual overflow code.
 def enforce_col72(text):
     out_lines = []
     # Anything in cols 73+ that's only digits/dots/dashes/slashes/colons/spaces
@@ -147,21 +125,11 @@ def enforce_col72(text):
 import re as _re_module
 content = enforce_col72(content)
 
-# Strip Endevor-style audit stamps that appear at end-of-line. These show
-# up in old mainframe code as a date in DD.MM.YY or HH.MM.SS format after
-# a statement-terminating period:
-#     05 WS-READ-RECORD     PIC X(6) VALUE 'READ'.    12.02.16
-#     05 WS-VAL             PIC X.                    15.08.20
-# After enforce_col72 compresses whitespace, these stamps end up inside
-# the 1-72 program area and become Extraneous-input tokens that crash
-# the parser. Drop them — they are pure audit metadata, not COBOL.
+# Remove Endevor date/time audit stamps that the parser mistakes for COBOL tokens.
 content = _re_module.sub(
     r'(\.)\s+(\d{1,4}[.\-/]\d{1,2}[.\-/]\d{1,4})\s*$',
     r'\1', content, flags=_re_module.MULTILINE)
-# Also strip stamps that follow other tokens (no period before), e.g.:
-#     PIC X.   12.02.16     ← caught above
-#     COPY FOO.   12.02.16  ← also caught above
-# But also bare stamps at end of line (no preceding period):
+# Also remove audit stamps without a preceding period.
 content = _re_module.sub(
     r'\s{2,}(\d{1,4}[.\-/]\d{1,2}[.\-/]\d{1,4})\s*$',
     '', content, flags=_re_module.MULTILINE)
@@ -190,9 +158,7 @@ content = re.sub(
     flags=re.MULTILINE
 )
 
-# Comment out section labels in procedure-division SAMPLE* copybooks (without I suffix).
-# These inline code copybooks define sections that cause parse errors when included
-# inside an existing section/paragraph in the host program.
+# Comment out section labels that become invalid when SAMPLE copybooks are included inline.
 bname = '$fname'.upper()
 if bname.startswith('SAMPLE') and not bname.endswith('I.CPY'):
     content = re.sub(
@@ -202,9 +168,7 @@ if bname.startswith('SAMPLE') and not bname.endswith('I.CPY'):
         flags=re.MULTILINE | re.IGNORECASE
     )
 
-# Replace MOVE CORR/CORRESPONDING statements with CONTINUE.
-# smojol MoveFlowNode does not handle moveCorrespondingStatement (only moveToStatement).
-# Process line by line: for multi-line forms, the TO clause is on the next line.
+# Replace unsupported MOVE CORR/CORRESPONDING statements, including multiline forms.
 lines = content.splitlines(keepends=True)
 result_lines = []
 skip_to_line = False
@@ -249,7 +213,7 @@ done < <(find "$SOURCE_DIR" \
     ! -path "*/.convert-*/*" \
     -print0)
 
-# ─── Phase 2: Preprocess ALL programs (.cbl, .cob) ──────────────────
+# Preprocess COBOL programs.
 cbl_count=0
 while IFS= read -r -d '' cbl; do
     fname=$(basename "$cbl")
@@ -284,7 +248,7 @@ def strip_trailing_seq(text):
 
 content = strip_trailing_seq(content)
 
-# Step 0: Replace European decimal comma in numeric literals: '2415020,5' → '2415020.5'
+# Replace European decimal commas in numeric literals.
 content = re.sub(r'(\b\d+),(\d+\b)', r'\1.\2', content)
 
 # 1. Comment out EXEC DLI ... END-EXEC blocks (IMS/DL/I calls)
@@ -437,10 +401,7 @@ def enforce_col72(text):
             out_lines.append(line)
     return '\n'.join(out_lines)
 
-# Pre-step: Fix REPORT001 PERFORM UNTIL with 88-level conditions BEFORE col72 enforcement.
-# smojol ConditionVisitor NPE on 88-level condition names in PERFORM UNTIL.
-# Replace with explicit comparisons; split into continuation line to stay within col72.
-# Also handle already-transformed form (idempotent, in case preprocessed file was copied back).
+# Rewrite REPORT001's unsupported 88-level PERFORM condition before column enforcement.
 _until_orig = 'UNTIL BDC-FI01-EOF AND BDC-FI02-EOF'
 _until_single = \"UNTIL BDC-FI01-RETURN-CODE = 'EOF' AND BDC-FI02-RETURN-CODE = 'EOF'\"
 _until_two = \"UNTIL BDC-FI01-RETURN-CODE = 'EOF'\n      -       AND BDC-FI02-RETURN-CODE = 'EOF'\"
@@ -550,18 +511,12 @@ def normalize_figuratives(text):
 
 content = normalize_figuratives(content)
 
-# 16. Fix invalid data-name containing spaces/parens: INTRTI-PIC X(4) USAGE → INTRTI-PICX4
-#     Data declaration: '01 INTRTI-PIC X(4) USAGE PIC X(4).' → '01 INTRTI-PICX4 PIC X(4).'
-#     Procedure references: 'INTRTI-PIC X(4)' → 'INTRTI-PICX4'
-#     Replace 'INTRTI-PIC X(4) USAGE' first (strips the spurious USAGE keyword from declaration)
-#     Also handle already-transformed 'INTRTI-PICX4 USAGE' (idempotent, in case run twice)
+# Normalize the malformed INTRTI-PIC X(4) data name and its references.
 content = content.replace('INTRTI-PIC X(4) USAGE', 'INTRTI-PICX4')
 content = content.replace('INTRTI-PIC X(4)', 'INTRTI-PICX4')
 content = content.replace('INTRTI-PICX4 USAGE', 'INTRTI-PICX4')
 
-# 17. Fix SAMPLE006 colon STRING literals: 'PRG-POS-x ':' → 'PRG-POS-x :'
-#     The standalone ':' literal is mis-tokenized as a DB2 host variable prefix
-#     Pattern: 'PRG-POS-N '':' → merge into single literal 'PRG-POS-N :'
+# Merge SAMPLE006's standalone colon literal to avoid DB2 host-variable tokenization.
 content = re.sub(
     r\"'(PRG-POS-\d+ )':'\",
     lambda m: \"'\" + m.group(1) + \":'\",
@@ -577,11 +532,7 @@ content = re.sub(
     flags=re.IGNORECASE
 )
 
-# 19. Comment out all COBOL debug lines (column 7 = 'D').
-# IBM COBOL debug lines are conditionally compiled with WITH DEBUGGING MODE.
-# smojol may mis-parse continuation D-lines as code, causing parse failures.
-# Safe for static analysis: replace 'D' in col 7 with '*' (comment indicator).
-# Assumes blank-format source (cols 1-6 are spaces, not sequence numbers).
+# Treat fixed-format debug lines as comments for static analysis.
 content = re.sub(
     r'^(      )D(.*)$',
     r'\1*DBG\2',
@@ -589,9 +540,7 @@ content = re.sub(
     flags=re.MULTILINE
 )
 
-# 20. Fix CRECUST: EXEC CICS DELAY FOR SECONDS(n) uses CICS v5.1+ syntax
-#     not supported by cobol-rekt grammar (creates null parse tree node)
-#     Comment out DELAY FOR SECONDS blocks
+# Comment out unsupported CICS DELAY FOR SECONDS blocks.
 content = re.sub(
     r'([ ]{6,})EXEC\s+CICS\s+DELAY\s+FOR\s+SECONDS\b.*?END-EXEC\.?',
     lambda m: re.sub(r'^(.{6})', r'\g<1>*CIC>', m.group(0), flags=re.MULTILINE),
@@ -599,9 +548,7 @@ content = re.sub(
     flags=re.DOTALL | re.IGNORECASE
 )
 
-# 21. Fix CRECUST: EXEC CICS GET/PUT CONTAINER with FLENGTH option is CICS v5.1+
-#     syntax not supported by the dialect JAR (causes null ParseTree child NPE)
-#     Comment out any EXEC CICS block that uses the FLENGTH option
+# Comment out CICS container blocks whose FLENGTH option breaks the dialect parser.
 def comment_out_cics_block(m):
     block = m.group(0)
     return re.sub(r'^(.{6})', r'\g<1>*CIC>', block, flags=re.MULTILINE)
@@ -617,10 +564,7 @@ content = re.sub(
 #     in buildDialectNodeRepository. Strip the explicit argument to use the default.
 content = re.sub(r'\bDATESEP\s*\([^)]*\)', 'DATESEP', content)
 
-# 23. Fix orphaned IF bodies: when a CICS IF condition line is already commented out
-#     (developer left IF body + END-IF uncommented), COBOL LS parser sees dangling END-IF.
-#     Detect commented IF line (col 7 = '*', contains IF ... DFHRESP) then comment out
-#     all subsequent non-comment statements until the matching END-IF.
+# Comment out orphaned CICS IF bodies through their matching END-IF.
 def fix_orphaned_if_bodies(text):
     result = []
     in_orphan = False
@@ -649,9 +593,7 @@ def fix_orphaned_if_bodies(text):
 
 content = fix_orphaned_if_bodies(content)
 
-# 24. Fix CRECUST: DISPLAY statements with 'EXEC CICS' in string literals cause
-#     buildDialectNodeRepository NPE (grammar creates partial _DIALECT_N tokens for
-#     the string content). Comment out the DISPLAY and all its continuation lines.
+# Comment out DISPLAY strings that trigger false EXEC CICS dialect nodes.
 def fix_display_exec_cics(text):
     result = []
     display_indent = None
@@ -678,10 +620,7 @@ def fix_display_exec_cics(text):
 
 content = fix_display_exec_cics(content)
 
-# Step 25: Replace LENGTH OF <identifier> in COMPUTE statements.
-# smojol's COBOL Language Support grammar treats LENGTH OF as a CICS
-# dialect token, producing _DIALECT_N nodes with null children → NPE
-# in buildDialectNodeRepository when the referenced variable has children.
+# Replace LENGTH OF expressions that produce invalid dialect nodes.
 def fix_length_of(text):
     result = []
     for ln in text.split('\n'):
@@ -693,11 +632,7 @@ def fix_length_of(text):
 
 content = fix_length_of(content)
 
-# Step 26: Replace DFHVALUE(...) with 0.
-# DFHVALUE is a CICS compile-time constant that resolves dialect values.
-# The COBOL Language Support grammar creates an empty _DIALECT_N node for
-# DFHVALUE tokens, causing a NullPointerException in buildDialectNodeRepository.
-# Replacing with 0 is safe for static analysis.
+# Replace DFHVALUE compile-time constants with 0 for static analysis.
 def fix_dfhvalue(text):
     result = []
     for ln in text.split('\n'):
@@ -709,11 +644,7 @@ def fix_dfhvalue(text):
 
 content = fix_dfhvalue(content)
 
-# Step 27: Fix compound IF conditions where a bare condition-name test is
-# followed by AND on the next line.
-# smojol's ConditionVisitor.visitCondition() tries to call getComparison()
-# on every sub-condition, but condition-name tests have no comparison →
-# NullPointerException. Fix: drop the condition-name line, promote AND to IF.
+# Drop unsupported bare condition-name clauses and promote the following AND to IF.
 def fix_bare_condname_and(text):
     import re
     lines = text.split('\n')
@@ -748,11 +679,7 @@ def fix_bare_condname_and(text):
 
 content = fix_bare_condname_and(content)
 
-# Step 28: Replace IF conditions that use IN-qualified field names within
-# arithmetic expressions (e.g., IF (A IN G1 - A IN G2) <= N).
-# smojol cannot build a RelationExpression for arithmetic on IN-qualified
-# names → NullPointerException in ConditionVisitor. Replace with IF TRUE
-# and comment out all continuation condition lines (AND/OR clauses).
+# Replace unsupported arithmetic on IN-qualified names and its continuation clauses.
 def fix_in_arithmetic_condition(text):
     import re
     _STMT_KW = re.compile(
@@ -814,10 +741,7 @@ def fix_in_arithmetic_condition(text):
 
 content = fix_in_arithmetic_condition(content)
 
-# 29. Add END-STRING before END-IF/ELSE when a STRING statement is not explicitly
-# terminated with END-STRING. smojol requires explicit scope terminators.
-# Detects: lines with 'DELIMITED BY SIZE INTO ...' immediately followed (ignoring
-# blank/comment lines) by END-IF or ELSE with no intervening END-STRING.
+# Add END-STRING before END-IF or ELSE when explicit scope termination is missing.
 def fix_string_no_end_string(text):
     import re
     _DELIM_INTO = re.compile(r'DELIMITED\s+BY\s+(?:SIZE|\S+)\s+INTO\s+\S', re.IGNORECASE)
@@ -873,18 +797,8 @@ def fix_string_no_end_string(text):
 
 content = fix_string_no_end_string(content)
 
-# Strip Endevor-style mainframe audit stamps that appear at end-of-line.
-# These show up in old z/OS code as a date in DD.MM.YY format after any
-# token — even with just one trailing space (the original 73-80 column
-# 'identification area' bled into program area when read in free format):
-#     05 WS-READ-RECORD     PIC X(6) VALUE 'READ'.    12.02.16
-#     MOVE WS-ERR-CODE  TO ERR-OUT-FIELD 12.02.16
-#     WHERE COUNTRY_CODE = :DCL-REC.REC-COUNTRY-CODE 15.08.20
-# Strict pattern (exactly two digits, dot, two digits, dot, two digits)
-# preceded by whitespace and ending the line — won't false-positive on
-# real COBOL numerics. Skip comment lines (col 7 = '*').
-#
-# Bash inside heredoc eats unescaped \$, so we use \\\$ to get \$ in py.
+# Remove strict DD.MM.YY audit stamps while preserving comment lines and COBOL numerics.
+# Dollar signs are escaped because this Python block is embedded in a Bash heredoc.
 import re as _r_stamp
 _audit_rx = _r_stamp.compile(r'\s+\d{2}\.\d{2}\.\d{2}\s*\$')
 def _strip_audit_stamps(text):
@@ -919,9 +833,7 @@ else
     echo "  No files needed preprocessing"
 fi
 
-# ─── Phase 3: Handle >8-char copybook names ─────────────────────────
-# smojol warns about copybook names >8 characters. Create 8-char .cpy
-# aliases in the source dir so the parser can resolve them.
+# Create eight-character aliases for long copybook names.
 while IFS= read -r -d '' cpy; do
     fname=$(basename "$cpy")
     base="${fname%.*}"
@@ -942,14 +854,7 @@ done < <(find "$SOURCE_DIR" \
     ! -path "*/.convert-*/*" \
     -print0)
 
-# ─── Phase 3.5: Ship bundled system copybooks (SQLCA, etc.) ─────────
-# Some "system" copybooks (SQLCA, DFHCOMMAREA, …) are normally provided
-# by the host compiler or by Eclipse-LSP-COBOL's auto-inject. In CLI
-# mode smojol does NOT auto-inject them, so any program with
-# `EXEC SQL INCLUDE SQLCA` or `COPY SQLCA` fails with MISSING_COPYBOOK
-# and is forced into deps-only mode. To unblock the common case we ship
-# real, IBM-public definitions in tools/system-copybooks/ and copy them
-# into .preprocessed/ unless the user supplied their own.
+# Copy bundled system copybooks only when the user has not supplied them.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SYS_CPY_DIR="$SCRIPT_DIR/system-copybooks"
 sys_count=0
@@ -976,36 +881,16 @@ if [[ "$sys_count" -gt 0 ]]; then
     echo "  Shipped $sys_count bundled system copybook(s) (e.g. SQLCA) → $PREPROC_DIR/"
 fi
 
-# ─── Phase 4: Auto-stub missing copybooks ────────────────────────────
-# smojol/Eclipse-LSP-COBOL treats unresolved COPY targets as fatal errors,
-# which forces the affected program into deps-only mode (no AST). When
-# copybooks live on the mainframe and can't easily be exported, this can
-# fail a large share of the programs being analysed.
-#
-# This phase generates a minimal stub .cpy file in the .preprocessed/
-# directory for every COPY target that isn't already satisfied by a real
-# file in source/. The stubs contain valid COBOL: a single PIC X(1) field
-# wrapped in a 01-level group so they parse cleanly without polluting
-# data semantics. The converter prompt can later note that stubs were
-# used so the LLM falls back to source-based field inference.
-#
-# To opt OUT: REKT_NO_STUB_COPYBOOKS=true ./doctor.sh rekt-full
-# ─────────────────────────────────────────────────────────────────────
+# Generate minimal stubs for unresolved COPY targets; set REKT_NO_STUB_COPYBOOKS=true to disable.
 if [[ "${REKT_NO_STUB_COPYBOOKS:-false}" != "true" ]]; then
-    # System copybooks that smojol/Eclipse-LSP-COBOL handles natively or that
-    # the runtime provides — we must NOT stub these because our minimal stub
-    # would override the real built-in definition and break programs that
-    # depend on the proper field layout (e.g. SQLCA has SQLCODE, SQLSTATE,
-    # SQLERRD, etc. — programs read SQLCODE constantly).
+    # Never stub system copybooks because doing so would hide their required field layouts.
     system_copybooks_pattern="^(SQLCA|SQLDA|SQLD2|DFHCOMMAREA|DFHEIB|DFHBMSCA|EIBAID|EIBCALEN|DSNHLI|DSNTIAR)$"
     # Collect all COPY targets referenced anywhere in the source tree
     # (case-insensitive; strip surrounding quotes; uppercase for matching).
     referenced=$($PYTHON - "$SOURCE_DIR" <<'PYEOF'
 import os, re, sys
 src = sys.argv[1]
-# Avoid escaped quotes inside the regex — use a character class instead
-# so the bash heredoc parser doesn't get confused. Match COPY <NAME> with
-# optional surrounding single or double quote.
+# Use a character class for optional COPY-name quotes to keep the heredoc parser stable.
 rx_copy = re.compile(
     r"^\s*COPY\s+[\"']?([A-Z0-9$@#\-_]+)[\"']?",
     re.IGNORECASE | re.MULTILINE)

@@ -6,42 +6,7 @@ using CobolToQuarkusMigration.Agents.Infrastructure.Facts;
 
 namespace CobolToQuarkusMigration.Helpers.PromptProjections;
 
-/// <summary>
-/// PR6: deterministic projection-block cache.
-///
-/// <para>
-/// <b>Why this exists.</b> Within a single A/B suite run we already observe
-/// the same projection block being rebuilt 2–6× because chunked converters
-/// re-inject identical program facts per chunk (proven by PR5
-/// <c>projectionHash</c> reuse: <c>de5b59ce1116…</c> 6 uses,
-/// <c>657d3e2fa856…</c> 4 uses, <c>a963f49100c6…</c> 2 uses).
-/// </para>
-///
-/// <para>
-/// <b>What this caches.</b> The OUTPUT of
-/// <see cref="JavaConverterProjection.BuildPromptBlock(ProgramFacts)"/> and
-/// <see cref="CSharpConverterProjection.BuildPromptBlock(ProgramFacts)"/>
-/// keyed on a canonical input hash (target language + facts schema version
-/// + canonical JSON of the facts object). Same inputs → same key → cache hit.
-/// </para>
-///
-/// <para>
-/// <b>What this DOES NOT cache.</b> LLM responses (PR1 owns that). REKT
-/// scan output (PR2 owns that). Raw COBOL source. Nothing semantic beyond
-/// the projection block itself.
-/// </para>
-///
-/// <para>
-/// <b>Correctness over hit rate.</b> Storage schema version bumps invalidate
-/// the entire cache. Each entry also stores the output hash so future
-/// integrity checks can detect cache corruption.
-/// </para>
-///
-/// <para>
-/// <b>Fail-soft.</b> Any I/O exception is logged and the builder is invoked
-/// directly — cache failures must never break conversion.
-/// </para>
-/// </summary>
+// Projection cache failures fall back to rebuilding the projection.
 public static class ProjectionCache
 {
     private const int StorageSchemaVersion = 1;
@@ -58,17 +23,6 @@ public static class ProjectionCache
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.Never,
     };
 
-    /// <summary>
-    /// Get the cached projection block for (language, facts) or build it
-    /// fresh via <paramref name="builder"/>. Either way, emits a structured
-    /// <c>cache_event</c> to MetricsSink with hit/miss/store outcome.
-    /// </summary>
-    /// <param name="targetLanguage">"Java" or "C#" — namespaces the key.</param>
-    /// <param name="facts">Per-program facts; canonical-hashed for the key.</param>
-    /// <param name="builder">Pure builder, invoked on miss only.</param>
-    /// <param name="runId">For MetricsSink attribution.</param>
-    /// <param name="logger">Optional structured logger.</param>
-    /// <returns>(projectionBlock, inputHash, projectionHash, wasCacheHit).</returns>
     public static (string Block, string InputHash, string ProjectionHash, bool WasHit) GetOrBuild(
         string targetLanguage,
         ProgramFacts facts,
@@ -165,12 +119,6 @@ public static class ProjectionCache
         }
     }
 
-    /// <summary>
-    /// Canonical input hash. Same (language, facts content, facts schema) →
-    /// same hash. Different from <c>projectionHash</c> (which hashes the
-    /// OUTPUT block) — required because we need a key BEFORE invoking the
-    /// builder, otherwise the cache cannot avoid the build cost.
-    /// </summary>
     private static string ComputeInputHash(string targetLanguage, ProgramFacts facts)
     {
         var canonical = JsonSerializer.Serialize(facts, _canonicalJson);

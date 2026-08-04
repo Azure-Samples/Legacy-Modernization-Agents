@@ -7,19 +7,6 @@ using Microsoft.Extensions.Logging;
 
 namespace CobolToQuarkusMigration.Cli;
 
-/// <summary>
-/// PR3 CLI surface for the <c>program-facts.json</c> extractor.
-/// </summary>
-/// <remarks>
-/// Two verbs:
-/// <list type="bullet">
-///   <item><c>extract &lt;staging-dir&gt;</c> — builds <c>&lt;stem&gt;.facts.json</c>
-///         for every program in the staging dir (or those in <c>--programs</c>).
-///         Writes to <c>--output-dir</c> (defaults to <c>output/rekt/</c>).</item>
-///   <item><c>read &lt;facts-json&gt;</c> — pretty-prints a single facts file
-///         for human inspection. Useful for debugging.</item>
-/// </list>
-/// </remarks>
 public static class ProgramFactsCommand
 {
     public const string DefaultScanCacheDb = "Data/rekt-scan.db";

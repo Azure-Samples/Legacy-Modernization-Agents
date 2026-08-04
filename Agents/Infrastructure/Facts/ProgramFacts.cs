@@ -2,34 +2,10 @@ using System.Text.Json.Serialization;
 
 namespace CobolToQuarkusMigration.Agents.Infrastructure.Facts;
 
-/// <summary>
-/// Curated per-program REKT handover (PR3). One <see cref="ProgramFacts"/>
-/// instance corresponds to one COBOL program and is persisted as
-/// <c>output/rekt/&lt;stem&gt;.facts.json</c>.
-/// </summary>
-/// <remarks>
-/// <para>
-/// Schema is versioned: <see cref="SchemaVersion"/> bumps whenever the field
-/// set or semantics change. PR4 prompt projections include the schema version
-/// in their cache key so a bump invalidates response cache entries.
-/// </para>
-/// <para>
-/// <see cref="IdentitySchemeVersion"/> follows
-/// <c>docs/basename-coupling-map.md</c>: pinned to <c>"v1-basename"</c> until
-/// the ProgramKey migration. <see cref="RelativePath"/> is the forward-compat
-/// hook — populated when available, ignored for identity today.
-/// </para>
-/// <para>
-/// Fields that REKT cannot currently extract (e.g. CICS screens) are present
-/// as empty lists with a <see cref="Warnings"/> entry, never silently absent.
-/// </para>
-/// </remarks>
 public sealed record ProgramFacts
 {
-    /// <summary>Bump when the schema (field set / semantics) changes. PR4 cache key includes this.</summary>
     public const int CurrentSchemaVersion = 1;
 
-    /// <summary>Identity scheme — see docs/basename-coupling-map.md.</summary>
     public const string CurrentIdentitySchemeVersion = "v1-basename";
 
     [JsonPropertyName("schemaVersion")]
@@ -81,7 +57,6 @@ public sealed record ProgramFacts
     public IReadOnlyList<string> ExternalEffects { get; init; } = Array.Empty<string>();
 }
 
-/// <summary>Per-extraction confidence in the structural facts. Drawn from scan-cache outcome.</summary>
 public enum FactConfidence
 {
     None = 0,
@@ -90,7 +65,6 @@ public enum FactConfidence
     High,       // Full parse
 }
 
-/// <summary>Preprocessor transform applied to the source. Recorded so the LLM sees it as a warning.</summary>
 public sealed record PreprocessNote(
     [property: JsonPropertyName("rule")] string Rule,
     [property: JsonPropertyName("line")] int Line,
@@ -104,7 +78,6 @@ public sealed record ProgramSummary
     [JsonPropertyName("sections")] public int Sections { get; init; }
     [JsonPropertyName("isCopybook")] public bool IsCopybook { get; init; }
 
-    /// <summary>The program's own ID/header line, if extractable. Empty when unknown.</summary>
     [JsonPropertyName("programId")] public string ProgramId { get; init; } = "";
 }
 
@@ -139,7 +112,6 @@ public sealed record ControlFlowFacts
 {
     [JsonPropertyName("entryPoints")] public IReadOnlyList<string> EntryPoints { get; init; } = Array.Empty<string>();
 
-    /// <summary>Performance chains: each chain is an ordered list of paragraph names.</summary>
     [JsonPropertyName("performChains")] public IReadOnlyList<IReadOnlyList<string>> PerformChains { get; init; }
         = Array.Empty<IReadOnlyList<string>>();
 

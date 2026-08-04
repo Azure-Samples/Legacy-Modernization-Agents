@@ -4,37 +4,12 @@ using CobolToQuarkusMigration.Agents.Infrastructure.Facts;
 
 namespace CobolToQuarkusMigration.Helpers.PromptProjections;
 
-/// <summary>
-/// PR4.b — C# / .NET counterpart to <see cref="JavaConverterProjection"/>.
-/// </summary>
-/// <remarks>
-/// <para>
-/// Mirrors the Java projection's shape (same marker, same fact-locking rules,
-/// same "(none)" empty markers) so the cache-key extractor in the C# converter
-/// agent picks up the projection content automatically. Only the language-
-/// specific rule sections differ:
-/// </para>
-/// <list type="bullet">
-///   <item>DTO rules → PIC X → <c>string</c>, COMP-3 → <c>decimal</c>, PascalCase.</item>
-///   <item>CALL rules → constructor-injected fields (not <c>@Inject</c>).</item>
-/// </list>
-/// <para>
-/// Backed by the same <see cref="ProgramFacts"/> contract — PR3 wrote the
-/// schema once; both Java and C# consume it identically.
-/// </para>
-/// </remarks>
 public static class CSharpConverterProjection
 {
-    /// <summary>
-    /// Shares <see cref="JavaConverterProjection.EnableEnvVar"/> intentionally:
-    /// one env var enables facts-based prompting across all converter agents
-    /// so a user opts into the new behaviour once.
-    /// </summary>
     public const string EnableEnvVar = JavaConverterProjection.EnableEnvVar;
 
     public static bool IsEnabled() => JavaConverterProjection.IsEnabled();
 
-    /// <summary>Reuses <see cref="JavaConverterProjection.TryLoad"/> — same schema, same file location.</summary>
     public static ProgramFacts? TryLoad(string factsDir, string programBasename) =>
         JavaConverterProjection.TryLoad(factsDir, programBasename);
 

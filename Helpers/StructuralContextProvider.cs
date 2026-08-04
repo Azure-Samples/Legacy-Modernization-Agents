@@ -1,13 +1,4 @@
-// StructuralContextProvider.cs — Single source of truth for "give me the structure of program X".
-//
-// Tries native REKT JSON first, then partial deps-only, then optionally the LLM
-// fallback (StructuralExtractorAgent). For non-COBOL artefacts (.bms, .dbd, .psb)
-// uses the deterministic readers. Every result is tagged with provenance and a
-// confidence score so downstream consumers can scale their strictness.
-//
-// Caching is per-provider-instance plus a disk cache for LLM-extracted results
-// (output/rekt/llm-derived/<program>.json) so we don't re-pay for tokens on every
-// run.
+// Resolves structural context from REKT, deterministic readers, or the optional LLM fallback.
 
 using System.Collections.Concurrent;
 using System.Text.Json;
@@ -39,7 +30,6 @@ public sealed class StructuralContextProvider
         Directory.CreateDirectory(_llmCacheDir);
     }
 
-    /// <summary>Exposed so selectors can read the target plans without going through Get().</summary>
     public RektContextLoader Loader => _loader;
 
     public async Task<StructuralContext> GetAsync(string programFileName)

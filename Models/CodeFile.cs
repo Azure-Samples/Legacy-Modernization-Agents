@@ -10,12 +10,6 @@ public class CodeFile
     /// </summary>
     public string FileName { get; set; } = string.Empty;
 
-    /// <summary>
-    /// Absolute path the file was written to (set by the save helpers after
-    /// the file lands on disk). Empty until then. Used by quality-check
-    /// passes that re-open generated files to verify they aren't 0-byte
-    /// or stub placeholders.
-    /// </summary>
     public string FilePath { get; set; } = string.Empty;
 
     /// <summary>

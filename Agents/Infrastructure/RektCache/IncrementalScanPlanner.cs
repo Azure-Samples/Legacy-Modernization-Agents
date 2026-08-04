@@ -4,7 +4,6 @@ using CobolToQuarkusMigration.Helpers;
 
 namespace CobolToQuarkusMigration.Agents.Infrastructure.RektCache;
 
-/// <summary>Why a program is in the parse list.</summary>
 public enum ScanReason
 {
     NotCached,                  // No previous entry
@@ -16,7 +15,6 @@ public enum ScanReason
     SchemaOrIdentityMismatch,   // Cache returned no entry due to semantic/identity version
 }
 
-/// <summary>A single planner decision for one program.</summary>
 public sealed record ScanDecision(
     string Basename,
     bool MustParse,
@@ -25,7 +23,6 @@ public sealed record ScanDecision(
     IReadOnlyDictionary<string, string> DependencySnapshot,
     string PreprocessedHash);
 
-/// <summary>The planner's output for one run.</summary>
 public sealed record ScanPlan(
     IReadOnlyList<ScanDecision> ToParse,
     IReadOnlyList<ScanDecision> ToSkip)
@@ -33,20 +30,6 @@ public sealed record ScanPlan(
     public int TotalConsidered => ToParse.Count + ToSkip.Count;
 }
 
-/// <summary>
-/// Builds a <see cref="ScanPlan"/> from a corpus of preprocessed files plus the
-/// existing scan cache. Pure decision logic — no filesystem walks, no smojol
-/// calls, no doctor.sh integration.
-/// </summary>
-/// <remarks>
-/// The planner is deliberately stateless. Callers:
-/// <list type="number">
-///   <item>Build a <see cref="RektCopybookGraph"/> by adding each preprocessed file.</item>
-///   <item>Call <see cref="PlanAsync"/> with the cache.</item>
-///   <item>Iterate <see cref="ScanPlan.ToParse"/>, invoking smojol per file.</item>
-///   <item>After each parse, call <see cref="RecordParseAsync"/> with the outcome.</item>
-/// </list>
-/// </remarks>
 public sealed class IncrementalScanPlanner
 {
     private readonly IRektScanCache _cache;
@@ -68,10 +51,6 @@ public sealed class IncrementalScanPlanner
         _logger = logger;
     }
 
-    /// <summary>
-    /// Produces the parse/skip plan for the supplied program basenames.
-    /// Order of the plan mirrors the input order so downstream parsing is deterministic.
-    /// </summary>
     public async Task<ScanPlan> PlanAsync(
         IReadOnlyList<string> programBasenames,
         CancellationToken cancellationToken = default)
@@ -122,18 +101,9 @@ public sealed class IncrementalScanPlanner
         return new ScanPlan(toParse, toSkip);
     }
 
-    /// <summary>
-    /// Computes the transitive closure of programs reachable from <paramref name="seeds"/>
-    /// through the copybook graph. Used by <c>--program X</c> to determine the
-    /// minimum set of files whose copybooks must also be scanned/hashed even when
-    /// only one program is being analysed.
-    /// </summary>
     public IReadOnlySet<string> ComputeDependencyClosure(IEnumerable<string> seeds)
     {
-        // For incremental scans, the closure is "every copybook the seeds use".
-        // Programs do not typically depend on other programs at parse time — CALL
-        // resolution is a runtime concern smojol handles per-file. So the closure
-        // is purely the union of dependency snapshots.
+        // Parse-time closure follows copybooks only; CALL targets are runtime dependencies.
         var closure = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var seed in seeds)
         {
@@ -146,10 +116,6 @@ public sealed class IncrementalScanPlanner
         return closure;
     }
 
-    /// <summary>
-    /// Records the outcome of a parse against the cache. Idempotent; safe to call
-    /// even when the cache is unreachable (the underlying store fails open).
-    /// </summary>
     public async Task RecordParseAsync(
         ScanDecision decision,
         RektParseOutcome outcome,
