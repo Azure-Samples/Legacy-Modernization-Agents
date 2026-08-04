@@ -128,7 +128,7 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
             userPromptBuilder.AppendLine("```cobol");
             userPromptBuilder.AppendLine(sanitizedContent);
             userPromptBuilder.AppendLine("```");
-            
+
             userPromptBuilder.AppendLine();
             userPromptBuilder.AppendLine("Here is the analysis of the COBOL program to help you understand its structure:");
             userPromptBuilder.AppendLine();
@@ -155,7 +155,7 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
             userPromptBuilder.AppendLine("2. Start with: package com.example.something; (single line, lowercase, no comments)");
             userPromptBuilder.AppendLine("3. Do NOT include newlines or explanatory text in the package declaration");
             userPromptBuilder.AppendLine("4. Your response must be valid, compilable Java code starting with 'package' and ending with the class closing brace");
-            
+
             userPromptBuilder.AppendLine();
             userPromptBuilder.AppendLine("Note: The original code contains Danish error handling terms replaced with placeholders.");
 
@@ -223,7 +223,7 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
             // Extract AI's semantic class name (based on domain/action/type pattern)
             string aiClassName = ExtractClassNameFromCode(javaCode);
             string packageName = GetPackageName(javaCode);
-            
+
             // Prefer AI-generated semantic name if it's not generic
             // Fall back to filename-derived name only if AI gave a generic name
             string finalClassName;
@@ -237,9 +237,9 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
             {
                 // Fall back to filename-derived name
                 finalClassName = NamingHelper.DeriveClassNameFromCobolFile(cobolFile.FileName);
-                Logger.LogWarning("AI generated generic class name '{AiClass}', using filename-derived: {ClassName}", 
+                Logger.LogWarning("AI generated generic class name '{AiClass}', using filename-derived: {ClassName}",
                     aiClassName, finalClassName);
-                
+
                 // Update the code to use the new class name
                 if (aiClassName != finalClassName)
                 {

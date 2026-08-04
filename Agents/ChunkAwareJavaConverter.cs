@@ -116,7 +116,7 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
         {
             var errorMsg = $"❌ CHUNK TOO LARGE: Chunk {chunk.ChunkIndex} has {contentLength:N0} chars (max: {MaxContentChars:N0}).";
             Logger.LogError(errorMsg);
-            
+
             return new ChunkConversionResult
             {
                 ChunkIndex = chunk.ChunkIndex,
@@ -131,7 +131,7 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
         {
             var systemPrompt = BuildChunkAwareSystemPrompt(chunk, context);
             var userPrompt = await BuildChunkAwareUserPromptAsync(chunk, context);
-            
+
             EnhancedLogger?.LogBehindTheScenes("AI_PROCESSING", "CHUNK_CONVERSION_START",
                 $"Converting chunk {chunk.ChunkIndex + 1}/{context.TotalChunks} of {chunk.SourceFile}",
                 new { ChunkIndex = chunk.ChunkIndex, TotalChunks = context.TotalChunks });
@@ -397,7 +397,7 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
     private string BuildChunkAwareSystemPrompt(ChunkResult chunk, ChunkContext context)
     {
         var sb = new StringBuilder();
-        
+
         sb.Append(PromptLoader.LoadSection("ChunkAwareJavaConverter", "System", new Dictionary<string, string>
         {
             ["ChunkNumber"] = (chunk.ChunkIndex + 1).ToString(),
@@ -532,7 +532,7 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
         foreach (var line in lines)
         {
             var trimmed = line.Trim();
-            if ((trimmed.StartsWith("public ") || trimmed.StartsWith("private ") || 
+            if ((trimmed.StartsWith("public ") || trimmed.StartsWith("private ") ||
                  trimmed.StartsWith("protected ") || trimmed.StartsWith("void ")) &&
                 trimmed.Contains("(") && !trimmed.Contains("=") && !trimmed.Contains("new "))
             {
@@ -555,7 +555,7 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
     {
         var parenIndex = signature.IndexOf('(');
         if (parenIndex <= 0) return string.Empty;
-        
+
         var beforeParen = signature.Substring(0, parenIndex).Trim();
         var parts = beforeParen.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         return parts.Length > 0 ? parts[^1] : string.Empty;

@@ -106,7 +106,7 @@ public class MigrationProcess
                 loggerFactory.CreateLogger<JavaConverterAgent>(),
                 _settings.AISettings.JavaConverterModelId,
                 _enhancedLogger, _chatLogger, settings: _settings);
-            
+
             _javaConverterAgent = javaAgent;
             _codeConverterAgent = javaAgent;
         }
@@ -170,17 +170,17 @@ public class MigrationProcess
 
         var totalSteps = 6;
         var startTime = DateTime.UtcNow;
-        
+
         int runId;
         if (existingRunId.HasValue)
         {
-             runId = existingRunId.Value;
-             _logger.LogInformation("Resuming existing run ID: {RunId}", runId);
-             _enhancedLogger.ShowWarning($"Resuming migration for Run ID: {runId}");
+            runId = existingRunId.Value;
+            _logger.LogInformation("Resuming existing run ID: {RunId}", runId);
+            _enhancedLogger.ShowWarning($"Resuming migration for Run ID: {runId}");
         }
         else
         {
-             runId = await _migrationRepository.StartRunAsync(cobolSourceFolder, javaOutputFolder);
+            runId = await _migrationRepository.StartRunAsync(cobolSourceFolder, javaOutputFolder);
         }
         _activeRunId = runId;
 
@@ -190,20 +190,20 @@ public class MigrationProcess
 
         // Show initial dashboard
         _enhancedLogger.ShowDashboardSummary(
-            runId, 
-            targetName, 
-            "RUNNING", 
-            "Initializing", 
+            runId,
+            targetName,
+            "RUNNING",
+            "Initializing",
             0);
 
         // Pass run ID to agent for Spec Lookup (works for both C# and Java converters)
         _codeConverterAgent?.SetRunId(runId);
-        
+
         // Also call directly on _javaConverterAgent if it's separate (though _codeConverterAgent covers it in current logic)
         // Kept for safety if instantiation logic changes
         if (_javaConverterAgent != null && _javaConverterAgent != _codeConverterAgent)
         {
-             _javaConverterAgent.SetRunId(runId);
+            _javaConverterAgent.SetRunId(runId);
         }
 
         try

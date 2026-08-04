@@ -116,7 +116,7 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
         {
             var errorMsg = $"❌ CHUNK TOO LARGE: Chunk {chunk.ChunkIndex} has {contentLength:N0} chars (max: {MaxContentChars:N0}).";
             Logger.LogError(errorMsg);
-            
+
             return new ChunkConversionResult
             {
                 ChunkIndex = chunk.ChunkIndex,
@@ -350,7 +350,7 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
     private string BuildChunkAwareSystemPrompt(ChunkResult chunk, ChunkContext context)
     {
         var sb = new StringBuilder();
-        
+
         sb.Append(PromptLoader.LoadSection("ChunkAwareCSharpConverter", "System", new Dictionary<string, string>
         {
             ["ChunkNumber"] = (chunk.ChunkIndex + 1).ToString(),
@@ -485,7 +485,7 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
         foreach (var line in lines)
         {
             var trimmed = line.Trim();
-            if ((trimmed.StartsWith("public ") || trimmed.StartsWith("private ") || 
+            if ((trimmed.StartsWith("public ") || trimmed.StartsWith("private ") ||
                  trimmed.StartsWith("protected ") || trimmed.StartsWith("internal ") ||
                  trimmed.StartsWith("async ")) &&
                 trimmed.Contains("(") && !trimmed.Contains("=") && !trimmed.Contains("new "))
@@ -509,7 +509,7 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
     {
         var parenIndex = signature.IndexOf('(');
         if (parenIndex <= 0) return string.Empty;
-        
+
         var beforeParen = signature.Substring(0, parenIndex).Trim();
         var parts = beforeParen.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         return parts.Length > 0 ? parts[^1] : string.Empty;

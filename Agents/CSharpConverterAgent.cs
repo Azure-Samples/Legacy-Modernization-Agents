@@ -156,7 +156,7 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
             userPromptBuilder.AppendLine("3. Your response must be valid, compilable C# code");
 
             var userPrompt = userPromptBuilder.ToString();
-            
+
             var (csharpCode, usedFallback, fallbackReason) = await ExecuteWithFallbackAsync(
                 systemPrompt,
                 userPrompt,
@@ -214,7 +214,7 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
             // Extract AI's semantic class name (based on domain/action/type pattern)
             string aiClassName = ExtractClassNameFromCode(csharpCode);
             string namespaceName = GetNamespaceName(csharpCode);
-            
+
             // Prefer AI-generated semantic name if it's not generic
             // Fall back to filename-derived name only if AI gave a generic name
             string finalClassName;
@@ -228,9 +228,9 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
             {
                 // Fall back to filename-derived name
                 finalClassName = NamingHelper.DeriveClassNameFromCobolFile(cobolFile.FileName);
-                Logger.LogWarning("AI generated generic class name '{AiClass}', using filename-derived: {ClassName}", 
+                Logger.LogWarning("AI generated generic class name '{AiClass}', using filename-derived: {ClassName}",
                     aiClassName, finalClassName);
-                
+
                 // Update the code to use the new class name
                 if (aiClassName != finalClassName)
                 {

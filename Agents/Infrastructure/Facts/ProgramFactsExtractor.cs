@@ -125,10 +125,10 @@ public sealed class ProgramFactsExtractor
             {
                 confidence = entry.Confidence switch
                 {
-                    RektScanConfidence.High    => FactConfidence.High,
+                    RektScanConfidence.High => FactConfidence.High,
                     RektScanConfidence.Partial => FactConfidence.Partial,
-                    RektScanConfidence.Low     => FactConfidence.Low,
-                    _                          => FactConfidence.None,
+                    RektScanConfidence.Low => FactConfidence.Low,
+                    _ => FactConfidence.None,
                 };
             }
         }
