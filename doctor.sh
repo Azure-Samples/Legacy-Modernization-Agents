@@ -2458,20 +2458,102 @@ run_rekt_parse() {
         fi
     fi
 
-    # Build a flat staging dir so smojol can resolve copybooks regardless of subdir depth.
+    local preprocessed_dir="$REPO_ROOT/source/.preprocessed"
+    local identity_check_output=""
+    if ! identity_check_output=$("$PYTHON_CMD" - "$REPO_ROOT/source" "$preprocessed_dir" <<'PYEOF'
+import os, sys
+
+source_root = sys.argv[1]
+preproc_dir = sys.argv[2]
+program_exts = {'.cbl', '.cob'}
+copybook_exts = {'.cpy'}
+skip_dirs = {'.preprocessed', '.rekt-staging'}
+
+programs = {}
+copybooks = {}
+for root, dirs, files in os.walk(source_root):
+    dirs[:] = [d for d in dirs if d not in skip_dirs and not d.startswith('.convert-')]
+    for name in files:
+        rel = os.path.relpath(os.path.join(root, name), source_root).replace(os.sep, '/')
+        ext = os.path.splitext(name)[1].lower()
+        if ext in program_exts:
+            programs.setdefault(name.lower(), []).append(rel)
+        elif ext in copybook_exts:
+            copybooks.setdefault(name.lower(), []).append(rel)
+
+preprocessed = set()
+if os.path.isdir(preproc_dir):
+    for name in os.listdir(preproc_dir):
+        path = os.path.join(preproc_dir, name)
+        if os.path.isfile(path):
+            preprocessed.add(name.lower())
+
+errors = []
+notes = []
+for basename, paths in sorted(copybooks.items()):
+    if len(paths) > 1:
+        errors.append(("copybook-collision", basename, sorted(paths)))
+
+for basename, paths in sorted(programs.items()):
+    if len(paths) > 1:
+        sorted_paths = sorted(paths)
+        notes.append(("program-duplicate", basename, sorted_paths))
+        if basename in preprocessed:
+            errors.append(("preprocessed-program-collision", basename, sorted_paths))
+
+for kind, basename, paths in notes + errors:
+    print("\t".join([kind, basename] + paths))
+
+sys.exit(1 if errors else 0)
+PYEOF
+); then
+        echo -e "${RED}❌ Source identity collisions prevent safe REKT staging.${NC}"
+        while IFS=$'\t' read -r issue basename path1 rest; do
+            [[ -z "$issue" ]] && continue
+            case "$issue" in
+                copybook-collision)
+                    echo -e "  ${RED}copybook basename collision:${NC} ${basename}"
+                    ;;
+                preprocessed-program-collision)
+                    echo -e "  ${RED}preprocessed program basename collision:${NC} ${basename}"
+                    echo -e "    ${YELLOW}preprocess-for-rekt.sh stages flat outputs for this basename, so the transformed source is ambiguous.${NC}"
+                    ;;
+            esac
+            local _path
+            for _path in "$path1" $rest; do
+                [[ -z "$_path" ]] && continue
+                echo -e "    ${YELLOW}↳ ${_path}${NC}"
+            done
+        done <<< "$identity_check_output"
+        return 1
+    fi
+
+    local duplicate_program_basenames=""
+    while IFS=$'\t' read -r issue basename _paths; do
+        if [[ "$issue" == "program-duplicate" ]]; then
+            duplicate_program_basenames="$duplicate_program_basenames $basename"
+        fi
+    done <<< "$identity_check_output"
+
+    # Build a staging dir that preserves source-relative program identity.
+    # Copybooks remain flat at the root because smojol resolves COPY targets by basename.
     # The container sees this as /source/.rekt-staging (bind-mounted from source/).
     local staging_dir="$REPO_ROOT/source/.rekt-staging"
     rm -rf "$staging_dir"
     mkdir -p "$staging_dir"
-    local preprocessed_dir="$REPO_ROOT/source/.preprocessed"
+    local generated_stubs_file="$staging_dir/.generated-stubs"
+    : > "$generated_stubs_file"
 
-    stage_input_file() {
+    stage_copybook_file() {
         local src_file="$1"
         local file_name
         file_name="$(basename "$src_file")"
         local target="$staging_dir/$file_name"
         if [[ -f "$preprocessed_dir/$file_name" ]]; then
             cp "$preprocessed_dir/$file_name" "$target" 2>/dev/null || true
+            if [[ -f "$preprocessed_dir/$file_name.preprocess.json" ]]; then
+                cp "$preprocessed_dir/$file_name.preprocess.json" "$target.preprocess.json" 2>/dev/null || true
+            fi
         else
             cp "$src_file" "$target" 2>/dev/null || true
         fi
@@ -2480,9 +2562,29 @@ run_rekt_parse() {
         fi
     }
 
-    # Collect all copybooks (recursive) → flat staging dir; last write wins on collision (safe: no dupes found)
+    stage_program_file() {
+        local src_file="$1"
+        local file_name
+        file_name="$(basename "$src_file")"
+        local rel_path="${src_file#"$REPO_ROOT/source/"}"
+        local target="$staging_dir/$rel_path"
+        mkdir -p "$(dirname "$target")"
+        if [[ -f "$preprocessed_dir/$file_name" ]]; then
+            cp "$preprocessed_dir/$file_name" "$target" 2>/dev/null || true
+            if [[ -f "$preprocessed_dir/$file_name.preprocess.json" ]]; then
+                cp "$preprocessed_dir/$file_name.preprocess.json" "$target.preprocess.json" 2>/dev/null || true
+            fi
+        else
+            cp "$src_file" "$target" 2>/dev/null || true
+        fi
+        if [[ -f "$target" ]]; then
+            perl -0pi -e 's/MOVE ([01])\(1\)\s+TO/MOVE $1 TO/g' "$target" 2>/dev/null || true
+        fi
+    }
+
+    # Collect all copybooks (recursive) into the flat staging root.
     while IFS= read -r cpyfile; do
-        stage_input_file "$cpyfile"
+        stage_copybook_file "$cpyfile"
     done < <(find "$REPO_ROOT/source" \( -name "*.cpy" -o -name "*.CPY" \) \
         ! -path "*/.rekt-staging/*" \
         ! -path "*/.preprocessed/*")
@@ -2496,20 +2598,24 @@ run_rekt_parse() {
             # Don't overwrite a real copybook that was already staged
             if [[ ! -f "$stub_target" ]]; then
                 cp "$stub_cpy" "$stub_target" 2>/dev/null || true
+                printf '%s\n' "${stub_name%.*}" | tr '[:lower:]' '[:upper:]' >> "$generated_stubs_file"
+                if [[ -f "$stub_cpy.preprocess.json" ]]; then
+                    cp "$stub_cpy.preprocess.json" "$stub_target.preprocess.json" 2>/dev/null || true
+                fi
             fi
         done < <(find "$preprocessed_dir" -maxdepth 1 \( -name "*.cpy" -o -name "*.CPY" \) -type f 2>/dev/null)
     fi
 
-    # Collect all COBOL programs (recursive) → flat staging dir so --srcDir stays constant
+    # Collect all COBOL programs (recursive) while preserving their source-relative path.
     while IFS= read -r cblfile; do
-        stage_input_file "$cblfile"
+        stage_program_file "$cblfile"
     done < <(find "$REPO_ROOT/source" \( -name "*.cbl" -o -name "*.CBL" -o -name "*.cob" -o -name "*.COB" \) \
         ! -path "*/.rekt-staging/*" \
         ! -path "*/.preprocessed/*")
 
     local staged_cbl staged_cpy
-    staged_cbl=$(find "$staging_dir" -maxdepth 1 \( -name "*.cbl" -o -name "*.CBL" -o -name "*.cob" -o -name "*.COB" \) | wc -l | tr -d ' ')
-    staged_cpy=$(find "$staging_dir" -maxdepth 1 \( -name "*.cpy" -o -name "*.CPY" \) | wc -l | tr -d ' ')
+    staged_cbl=$(find "$staging_dir" -type f \( -name "*.cbl" -o -name "*.CBL" -o -name "*.cob" -o -name "*.COB" \) | wc -l | tr -d ' ')
+    staged_cpy=$(find "$staging_dir" -type f \( -name "*.cpy" -o -name "*.CPY" \) | wc -l | tr -d ' ')
     echo -e "  ${BLUE}Staged: ${staged_cbl} program(s), ${staged_cpy} copybook(s) → source/.rekt-staging/${NC}"
 
     # Restart stale Docker Desktop bind mounts before they produce empty parser output.
@@ -2547,10 +2653,11 @@ report_path = sys.argv[2]
 
 # Available copybook stems (case-insensitive), as staged
 available = set()
-for name in os.listdir(staging_dir):
-    stem, ext = os.path.splitext(name)
-    if ext.lower() == '.cpy':
-        available.add(stem.upper())
+for root, _, files in os.walk(staging_dir):
+    for name in files:
+        stem, ext = os.path.splitext(name)
+        if ext.lower() == '.cpy':
+            available.add(stem.upper())
 
 # Match COPY / -COPY directives in non-comment lines.
 # Handles: COPY NAME., COPY 'NAME'., COPY NAME REPLACING ...
@@ -2560,10 +2667,15 @@ copy_pat = re.compile(
 )
 
 referenced_by = defaultdict(set)  # copybook_name → set(referencing_files)
-for name in sorted(os.listdir(staging_dir)):
-    if not name.lower().endswith(('.cbl', '.cob', '.cpy')):
-        continue
-    path = os.path.join(staging_dir, name)
+staged_sources = []
+for root, _, files in os.walk(staging_dir):
+    for name in files:
+        if name.lower().endswith(('.cbl', '.cob', '.cpy')):
+            path = os.path.join(root, name)
+            rel = os.path.relpath(path, staging_dir).replace(os.sep, '/')
+            staged_sources.append((rel, path))
+
+for rel_name, path in sorted(staged_sources):
     try:
         with open(path, 'r', encoding='latin-1') as f:
             for line in f:
@@ -2574,7 +2686,7 @@ for name in sorted(os.listdir(staging_dir)):
                 if m:
                     cpy = m.group(1).upper()
                     if cpy not in available:
-                        referenced_by[cpy].add(name)
+                        referenced_by[cpy].add(rel_name)
     except OSError:
         continue
 
@@ -2606,10 +2718,10 @@ PYEOF
         local miss_summary
         miss_summary=$("$PYTHON_CMD" -c "
 import sys
-with open('$missing_report') as f:
+with open(sys.argv[1]) as f:
     lines = [l.rstrip() for l in f if l.strip() and not l.startswith('#')]
 print(len(lines))
-" 2>/dev/null || echo 0)
+" "$missing_report" 2>/dev/null || echo 0)
         if [[ "$miss_summary" -gt 0 ]]; then
             echo -e "  ${YELLOW}⚠️  Missing copybooks: ${miss_summary} unresolved COPY target(s)${NC}"
             # Show the first few inline for quick scanning
@@ -2633,30 +2745,111 @@ print(len(lines))
     local filtered_out=0
     local failed_files=""
 
-    # Store the optional program filter as text because macOS Bash 3.2 lacks associative arrays.
-    local rekt_program_filter=""
+    # Resolve the optional program filter to exact source-relative program paths.
+    local rekt_filter_file=""
     local rekt_filter_active=false
     if [[ -n "${_REKT_PROGRAM_FILTER:-}" ]]; then
         rekt_filter_active=true
-        local _f
-        IFS=',' read -ra _filter_items <<< "$_REKT_PROGRAM_FILTER"
-        for _f in "${_filter_items[@]}"; do
-            _f=$(echo "$_f" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-            [[ -z "$_f" ]] && continue
-            rekt_program_filter="$rekt_program_filter $_f"
-            # Accept both 'PROG' and 'PROG.cbl'. Auto-expand stems to common
-            # extension variants for case- and extension-insensitive matching.
-            case "$_f" in
-                *.cbl|*.CBL|*.cob|*.COB) ;;
-                *) rekt_program_filter="$rekt_program_filter ${_f}.cbl ${_f}.CBL ${_f}.cob ${_f}.COB" ;;
-            esac
-        done
+        local filter_resolution_output=""
+        if ! filter_resolution_output=$("$PYTHON_CMD" - "$staging_dir" "$_REKT_PROGRAM_FILTER" <<'PYEOF'
+import os, sys
+from collections import defaultdict
+
+staging_dir = sys.argv[1]
+selectors = sys.argv[2]
+programs = []
+for root, _, files in os.walk(staging_dir):
+    for name in files:
+        if name.lower().endswith(('.cbl', '.cob')):
+            path = os.path.join(root, name)
+            rel = os.path.relpath(path, staging_dir).replace(os.sep, '/')
+            programs.append(rel)
+
+exact = {p.lower(): p for p in programs}
+by_basename = defaultdict(list)
+by_stem = defaultdict(list)
+for rel in programs:
+    basename = os.path.basename(rel)
+    by_basename[basename.lower()].append(rel)
+    by_stem[os.path.splitext(basename)[0].lower()].append(rel)
+
+resolved = []
+for raw in selectors.split(','):
+    selector = raw.strip()
+    if not selector:
+        continue
+    normalized = selector.replace('\\', '/').lstrip('./').lstrip('/')
+    match = exact.get(normalized.lower())
+    if match:
+        if match not in resolved:
+            resolved.append(match)
+        continue
+
+    basename_matches = by_basename.get(os.path.basename(normalized).lower(), [])
+    if len(basename_matches) == 1:
+        match = basename_matches[0]
+        if match not in resolved:
+            resolved.append(match)
+        continue
+    if len(basename_matches) > 1:
+        print(
+            "Program selector '%s' matched multiple staged programs by basename: %s. Use a source-relative path."
+            % (selector, ", ".join(sorted(basename_matches)))
+        )
+        sys.exit(1)
+
+    stem_matches = by_stem.get(os.path.splitext(os.path.basename(normalized))[0].lower(), [])
+    if len(stem_matches) == 1:
+        match = stem_matches[0]
+        if match not in resolved:
+            resolved.append(match)
+        continue
+    if len(stem_matches) > 1:
+        print(
+            "Program selector '%s' matched multiple staged programs by stem: %s. Use a source-relative path."
+            % (selector, ", ".join(sorted(stem_matches)))
+        )
+        sys.exit(1)
+
+    print("Program selector '%s' did not match any staged program." % selector)
+    sys.exit(1)
+
+if not resolved:
+    print("Program filter did not resolve to any staged programs.")
+    sys.exit(1)
+
+print("\n".join(resolved))
+PYEOF
+); then
+            echo -e "${RED}❌ Invalid _REKT_PROGRAM_FILTER.${NC}"
+            while IFS= read -r line; do
+                [[ -z "$line" ]] && continue
+                echo -e "    ${YELLOW}↳ ${line}${NC}"
+            done <<< "$filter_resolution_output"
+            return 1
+        fi
+        rekt_filter_file="$staging_dir/.rekt-program-filter"
+        printf '%s\n' "$filter_resolution_output" > "$rekt_filter_file"
         echo -e "  ${BLUE}REKT program filter: ${_REKT_PROGRAM_FILTER}${NC}"
     fi
 
     # Incremental scanning is opt-in to preserve full-scan behavior by default.
     local rekt_inc=false
     [[ "${_REKT_INCREMENTAL:-false}" == "true" ]] && rekt_inc=true
+    if [[ "$rekt_inc" == "true" && -n "$duplicate_program_basenames" ]]; then
+        echo -e "${RED}❌ _REKT_INCREMENTAL requires unique program basenames.${NC}"
+        while IFS=$'\t' read -r issue basename path1 rest; do
+            [[ "$issue" != "program-duplicate" ]] && continue
+            echo -e "  ${RED}${basename}${NC}"
+            local _path
+            for _path in "$path1" $rest; do
+                [[ -z "$_path" ]] && continue
+                echo -e "    ${YELLOW}↳ ${_path}${NC}"
+            done
+        done <<< "$identity_check_output"
+        echo -e "  ${YELLOW}Disable _REKT_INCREMENTAL or disambiguate these basenames before rerunning.${NC}"
+        return 1
+    fi
 
     declare rekt_skip_set=""
     local rekt_manifest=""
@@ -2670,7 +2863,14 @@ print(len(lines))
             # Forward the filter so the planner only considers targeted programs.
             local _plan_programs_arg=()
             if [[ "$rekt_filter_active" == "true" ]]; then
-                _plan_programs_arg=(--programs "$_REKT_PROGRAM_FILTER")
+                local incremental_program_filter=""
+                while IFS= read -r filtered_program; do
+                    [[ -z "$filtered_program" ]] && continue
+                    local filtered_basename
+                    filtered_basename="$(basename "$filtered_program")"
+                    incremental_program_filter="${incremental_program_filter:+$incremental_program_filter,}$filtered_basename"
+                done < "$rekt_filter_file"
+                _plan_programs_arg=(--programs "$incremental_program_filter")
             fi
             if (cd "$REPO_ROOT" && dotnet run --project CobolToQuarkusMigration.csproj --no-build -- \
                     rekt-scan-cache plan "$staging_dir" \
@@ -2705,32 +2905,62 @@ print(len(lines))
         [[ -e "$cbl_file" ]] || continue
         local fname
         fname=$(basename "$cbl_file")
+        local rel_program="${cbl_file#"$staging_dir"/}"
         # Strip any recognised program extension (case-insensitive) to get the stem.
         local stem="${fname%.*}"
-        local err_log="$REPO_ROOT/output/rekt/${stem}.parse.log"
+        local rel_log_path="${rel_program}.parse.log"
+        local err_log="$REPO_ROOT/output/rekt/$rel_log_path"
+        mkdir -p "$(dirname "$err_log")"
 
         # Skip files outside the requested program filter.
-        # bash 3.2 string-membership test (see filter-setup comment above).
-        if [[ "$rekt_filter_active" == "true" ]] \
-           && [[ " $rekt_program_filter " != *" $fname "* ]] \
-           && [[ " $rekt_program_filter " != *" $stem "* ]]; then
+        if [[ "$rekt_filter_active" == "true" ]] && ! grep -Fqx "$rel_program" "$rekt_filter_file"; then
             filtered_out=$((filtered_out + 1))
             continue
         fi
 
         # Honor the incremental planner's skip decision.
         if [[ "$rekt_inc" == "true" ]] && [[ " $rekt_skip_set " == *" $fname "* ]]; then
-            echo -e "  Skipping $fname ${GREEN}(cached)${NC}"
+            echo -e "  Skipping $rel_program ${GREEN}(cached)${NC}"
             succeeded=$((succeeded + 1))
             skipped=$((skipped + 1))
             continue
         fi
 
-        echo -ne "  Parsing $fname..."
+        local rel_output_dir="$REPO_ROOT/output/rekt/$(dirname "$rel_program")"
+        mkdir -p "$rel_output_dir"
+        echo -ne "  Parsing $rel_program..."
         local parse_outcome="Failed"
+        local stub_warnings=""
+        if [[ -s "$generated_stubs_file" ]]; then
+            stub_warnings=$("$PYTHON_CMD" - "$cbl_file" "$generated_stubs_file" <<'PYEOF'
+import re
+import sys
+
+source_path, stubs_path = sys.argv[1:3]
+with open(stubs_path, encoding="utf-8") as handle:
+    stubs = {line.strip().upper() for line in handle if line.strip()}
+
+copy_pattern = re.compile(
+    r"\bCOPY\s+['\"]?([A-Z][A-Z0-9_-]*)['\"]?",
+    re.IGNORECASE,
+)
+used = set()
+with open(source_path, encoding="latin-1") as handle:
+    for line in handle:
+        stripped = line.lstrip()
+        if stripped.startswith("*>") or (len(line) > 6 and line[6] in ("*", "/")):
+            continue
+        match = copy_pattern.search(line)
+        if match and match.group(1).upper() in stubs:
+            used.add(match.group(1).upper())
+
+print("|".join(f"generated-copybook-stub:{name}" for name in sorted(used)))
+PYEOF
+)
+        fi
 
         # Attempt 1: Standard dialect (handles CICS, SQL, standard COBOL)
-        if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
+        if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$rel_program" \
             --commands="BUILD_BASE_ANALYSIS WRITE_FLOW_AST WRITE_CFG WRITE_DATA_STRUCTURES" \
             --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
             --dialectJarPath=/app/dialect-idms.jar \
@@ -2742,7 +2972,7 @@ print(len(lines))
             parse_outcome="Full"
         else
             # Attempt 2: Retry without dialect JAR (for IMS/DL/I and other dialects)
-            if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
+            if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$rel_program" \
                 --commands="BUILD_BASE_ANALYSIS WRITE_FLOW_AST WRITE_CFG WRITE_DATA_STRUCTURES" \
                 --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
                 --reportDir=/output \
@@ -2753,7 +2983,7 @@ print(len(lines))
                 parse_outcome="NoDialect"
             else
                 # Attempt 3: Raw AST only (tolerates more parse errors)
-                if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
+                if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$rel_program" \
                     --commands="WRITE_RAW_AST" \
                     --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
                     --reportDir=/output \
@@ -2765,46 +2995,53 @@ print(len(lines))
                 else
                     # Dependency extraction can remain useful when AST writing fails.
                     local dep_ok=false
-                    if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar dependency "$fname" \
+                    if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar dependency "$rel_program" \
                         --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
                         --dialectJarPath=/app/dialect-idms.jar \
-                        --export=/output/"${stem}"-deps.json >/dev/null 2>>"$err_log"; then
+                        --export=/output/"${rel_program}"-deps.json >/dev/null 2>>"$err_log"; then
                         dep_ok=true
                     fi
                     # Also try validate (may report warnings but still useful)
-                    docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar validate "$fname" \
+                    docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar validate "$rel_program" \
                         --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
                         --dialectJarPath=/app/dialect-idms.jar >/dev/null 2>>"$err_log" || true
 
                     if [[ "$dep_ok" == true ]]; then
                         echo -e " ${YELLOW}⚠️${NC} (deps only — AST writer bug)"
                         # Show smojol error hint. Prefer "Caused by:" (root cause); fall back to first match.
-                        # Full log available at output/rekt/<stem>.parse.log
+                        # Full log available at output/rekt/<source-relative>.parse.log
                         local err_hint
                         err_hint=$(grep -Eo '(Exception|Error|Caused by): .{1,120}' "$err_log" 2>/dev/null \
                             | grep -i 'caused by' | head -1)
                         [[ -z "$err_hint" ]] && \
                             err_hint=$(grep -Eo '(Exception|Error|Caused by): .{1,120}' "$err_log" 2>/dev/null | head -1)
                         [[ -n "$err_hint" ]] && echo -e "    ${YELLOW}↳ smojol: $err_hint${NC}"
-                        echo -e "    ${YELLOW}↳ log: output/rekt/${stem}.parse.log${NC}"
+                        echo -e "    ${YELLOW}↳ log: output/rekt/${rel_log_path}${NC}"
                         succeeded=$((succeeded + 1))
                         parse_outcome="DepsOnly"
                     else
                         echo -e " ${RED}❌${NC}"
-                        echo -e "    ${RED}↳ log: output/rekt/${stem}.parse.log${NC}"
+                        echo -e "    ${RED}↳ log: output/rekt/${rel_log_path}${NC}"
                         failed=$((failed + 1))
-                        failed_files="${failed_files} ${fname}"
+                        failed_files="${failed_files} ${rel_program}"
                         parse_outcome="Failed"
                     fi
                 fi
             fi
         fi
 
+        if [[ -n "$stub_warnings" ]]; then
+            if [[ "$parse_outcome" == "Full" || "$parse_outcome" == "NoDialect" ]]; then
+                parse_outcome="StubBacked"
+            fi
+            echo -e "    ${YELLOW}↳ generated copybook stub used; structural facts are degraded${NC}"
+        fi
+
         # Append outcomes for batch recording after the loop.
         if [[ "$rekt_inc" == "true" && -n "$rekt_manifest" ]]; then
-            printf '%s\t%s\n' "$fname" "$parse_outcome" >> "$rekt_manifest"
+            printf '%s\t%s\t%s\n' "$fname" "$parse_outcome" "$stub_warnings" >> "$rekt_manifest"
         fi
-    done < <(find "$staging_dir" -maxdepth 1 \( -name "*.cbl" -o -name "*.CBL" -o -name "*.cob" -o -name "*.COB" \) | sort)
+    done < <(find "$staging_dir" -type f \( -name "*.cbl" -o -name "*.CBL" -o -name "*.cob" -o -name "*.COB" \) | sort)
 
     # Persist outcomes in one dotnet invocation.
     if [[ "$rekt_inc" == "true" && -n "$rekt_manifest" && -s "$rekt_manifest" ]]; then
@@ -2862,11 +3099,11 @@ print(len(lines))
     fi
     # Count degraded outputs (succeeded with warnings — deps-only or raw-AST fallbacks).
     local degraded
-    degraded=$(find "$REPO_ROOT/output/rekt" -maxdepth 1 -name '*.parse.log' 2>/dev/null | wc -l | tr -d ' ')
+    degraded=$(find "$REPO_ROOT/output/rekt" -name '*.parse.log' 2>/dev/null | wc -l | tr -d ' ')
     if [[ "$degraded" -gt 0 ]]; then
         echo -e "${YELLOW}  ⚠️  ${degraded} program(s) parsed with reduced fidelity (deps-only / raw-AST fallback).${NC}"
         echo -e "${YELLOW}      These usually mean missing copybooks or smojol parser limitations.${NC}"
-        echo -e "${YELLOW}      Inspect: output/rekt/*.parse.log${NC}"
+        echo -e "${YELLOW}      Inspect: output/rekt/**/*.parse.log${NC}"
     fi
     if [[ -s "$missing_report" ]]; then
         local miss_count

@@ -26,12 +26,14 @@ cpy_count=0
 # Recursive find so nested layouts (source/lib/cpy/, etc.) are picked up.
 # -print0 / read -d '' avoids issues with paths containing whitespace.
 while IFS= read -r -d '' cpy; do
-    fname=$(basename "$cpy")
-
     "$PYTHON" -c "
-import re, sys
+import os, re, sys
 
-with open('$cpy', 'r', encoding='latin-1') as f:
+source_path = sys.argv[1]
+preproc_dir = sys.argv[2]
+fname = os.path.basename(source_path)
+
+with open(source_path, 'r', encoding='latin-1') as f:
     content = f.read()
 
 original = content
@@ -159,7 +161,7 @@ content = re.sub(
 )
 
 # Comment out section labels that become invalid when SAMPLE copybooks are included inline.
-bname = '$fname'.upper()
+bname = fname.upper()
 if bname.startswith('SAMPLE') and not bname.endswith('I.CPY'):
     content = re.sub(
         r'^(\s*\d{0,6})( )([A-Z][A-Z0-9-]+\s+SECTION\s*\.\s*)$',
@@ -198,12 +200,12 @@ content = ''.join(result_lines)
 content = re.sub(r'(\b\d+),(\d+\b)', r'\1.\2', content)
 
 if content != original:
-    with open('$PREPROC_DIR/$fname', 'w', encoding='latin-1') as f:
+    with open(os.path.join(preproc_dir, fname), 'w', encoding='latin-1') as f:
         f.write(content)
     sys.exit(0)
 else:
     sys.exit(1)
-" 2>/dev/null && cpy_count=$((cpy_count + 1))
+" "$cpy" "$PREPROC_DIR" 2>/dev/null && cpy_count=$((cpy_count + 1))
 done < <(find "$SOURCE_DIR" \
     \( -name "*.cpy" -o -name "*.CPY" \) \
     -type f \
@@ -216,12 +218,15 @@ done < <(find "$SOURCE_DIR" \
 # Preprocess COBOL programs.
 cbl_count=0
 while IFS= read -r -d '' cbl; do
-    fname=$(basename "$cbl")
-
     "$PYTHON" -c "
-import re, sys
+import os, re, sys
 
-with open('$cbl', 'r', encoding='latin-1') as f:
+source_path = sys.argv[1]
+source_dir = sys.argv[2]
+preproc_dir = sys.argv[3]
+fname = os.path.basename(source_path)
+
+with open(source_path, 'r', encoding='latin-1') as f:
     content = f.read()
 
 original = content
@@ -287,7 +292,7 @@ def truncate_copy(m):
     if len(name) > 8:
         short = name[:8]
         # Only truncate if an 8-char alias copybook exists
-        alias = os.path.join('$SOURCE_DIR', short + '.cpy')
+        alias = os.path.join(source_dir, short + '.cpy')
         if os.path.exists(alias):
             return prefix + short + suffix
     return m.group(0)
@@ -679,9 +684,14 @@ def fix_bare_condname_and(text):
 
 content = fix_bare_condname_and(content)
 
-# Replace unsupported arithmetic on IN-qualified names and its continuation clauses.
+# Replace unsupported arithmetic/comparison on IN-qualified names with an opaque
+# condition while preserving the original source as comments.
 def fix_in_arithmetic_condition(text):
     import re
+    def to_cobol_comment(line):
+        if len(line) >= 7:
+            return line[:6] + '*' + line[7:]
+        return '*' + line
     _STMT_KW = re.compile(
         r'^(IF\b|ELSE\b|END-IF\b|MOVE\b|COMPUTE\b|PERFORM\b|CONTINUE\b|'
         r'ADD\b|SUBTRACT\b|MULTIPLY\b|DIVIDE\b|SET\b|DISPLAY\b|'
@@ -710,30 +720,30 @@ def fix_in_arithmetic_condition(text):
                     after_if, re.IGNORECASE))
                 if has_in_arith or has_in_compare:
                     indent = m_if.group(1) + m_if.group(2)
-                    result.append(indent + 'TRUE')
+                    preserved = [to_cobol_comment(ln)]
                     # Comment out all continuation condition lines
                     i += 1
                     while i < len(lines):
                         cont = lines[i]
                         is_cont_comment = len(cont) >= 7 and cont[6] == '*'
                         if is_cont_comment:
-                            result.append(cont)
+                            preserved.append(cont)
                             i += 1
                             continue
                         stripped = cont.strip()
                         # AND/OR always continues the condition
                         if _COND_CONT.match(stripped):
-                            result.append(re.sub(r'^(\s{6})', r'\g<1>*', cont)
-                                          if len(cont) >= 6 else '*' + cont)
+                            preserved.append(to_cobol_comment(cont))
                             i += 1
                             continue
                         # Non-empty, non-statement → condition continuation
                         if stripped and not _STMT_KW.match(stripped):
-                            result.append(re.sub(r'^(\s{6})', r'\g<1>*', cont)
-                                          if len(cont) >= 6 else '*' + cont)
+                            preserved.append(to_cobol_comment(cont))
                             i += 1
                             continue
                         break
+                    result.extend(preserved)
+                    result.append(indent + 'REKT-OPAQUE-IN-CONDITION')
                     continue
         result.append(ln)
         i += 1
@@ -812,12 +822,12 @@ def _strip_audit_stamps(text):
 content = _strip_audit_stamps(content)
 
 if content != original:
-    with open('$PREPROC_DIR/$fname', 'w', encoding='latin-1') as f:
+    with open(os.path.join(preproc_dir, fname), 'w', encoding='latin-1') as f:
         f.write(content)
     sys.exit(0)
 else:
     sys.exit(1)
-" 2>/dev/null && cbl_count=$((cbl_count + 1))
+" "$cbl" "$SOURCE_DIR" "$PREPROC_DIR" 2>/dev/null && cbl_count=$((cbl_count + 1))
 done < <(find "$SOURCE_DIR" \
     \( -name "*.cbl" -o -name "*.CBL" -o -name "*.cob" -o -name "*.COB" \) \
     -type f \

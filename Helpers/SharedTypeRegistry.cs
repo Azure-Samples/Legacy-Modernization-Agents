@@ -20,12 +20,12 @@ public sealed class SharedTypeRegistry
         var rxCopy = new Regex(@"^[^*]{0,6}[^*\n].*?\bCOPY\s+['""]?([A-Z][A-Z0-9_-]*)['""]?",
             RegexOptions.IgnoreCase | RegexOptions.Multiline);
 
-        foreach (var program in Directory.EnumerateFiles(sourceFolder, "*.cbl", SearchOption.TopDirectoryOnly)
-                                          .Concat(Directory.EnumerateFiles(sourceFolder, "*.CBL", SearchOption.TopDirectoryOnly)))
+        foreach (var program in SourceTypeRegistry.EnumerateProgramFiles(sourceFolder))
         {
             string? text = null;
             try { text = File.ReadAllText(program); } catch { continue; }
-            var progName = Path.GetFileName(program);
+            var progName = Path.GetRelativePath(sourceFolder, program)
+                .Replace(Path.DirectorySeparatorChar, '/');
 
             foreach (Match m in rxCopy.Matches(text))
             {

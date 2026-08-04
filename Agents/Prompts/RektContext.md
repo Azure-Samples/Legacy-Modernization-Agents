@@ -109,17 +109,17 @@ EXTERNAL EFFECTS (use to choose .NET libraries / DI registrations):
 ## SECTION: SharedTypes
 
 ---
-SHARED TYPE REGISTRY (do NOT redeclare — they already exist in the {{TargetLanguage}} project):
+SHARED COPYBOOK TYPES:
 
 These copybooks are referenced by more than one program in this batch.
-A shared types file is (or will be) generated for each. If your program
-needs one of these, REFERENCE it, do not redefine it. Any redefinition will
-cause CS0101 / duplicate-class build errors.
+Do not emit a top-level type for them because another converted program may
+emit the same name. If this program needs the copybook's value-object, define
+it as a nested type inside this program's generated class. This keeps the
+type local and prevents duplicate top-level declarations.
 
 {{SharedTypes}}
 
-If a copybook above corresponds to a value-object you would normally generate,
-emit a `using` for the shared types namespace instead of a new declaration.
+Use the expected type name below for the nested type.
 
 ## SECTION: DataStructureGuidance
 

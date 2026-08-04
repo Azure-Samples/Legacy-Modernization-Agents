@@ -236,9 +236,14 @@ def ingest_rekt_data_structures(
     redefines_edges: list[dict] = []
 
     def _walk_ds(node: dict, parent_id: str | None = None):
-        node_id = str(node.get("id", _make_uid(program, "ds", node.get("name", ""), len(nodes))))
+        upstream_id = node.get(
+            "id",
+            _make_uid(program, "ds", node.get("name", ""), len(nodes)),
+        )
+        node_uid = scoped_graph_id(run_id, program, upstream_id)
         props = {
-            "id": node_id,
+            "uid": node_uid,
+            "id": str(upstream_id),
             "program": program,
             "runId": run_id,
             "name": node.get("name", ""),
@@ -250,33 +255,36 @@ def ingest_rekt_data_structures(
         nodes.append(props)
 
         if parent_id:
-            contains_edges.append({"from_id": parent_id, "to_id": node_id})
+            contains_edges.append({"from_id": parent_id, "to_id": node_uid})
 
         for child in node.get("children", []):
-            _walk_ds(child, node_id)
+            _walk_ds(child, node_uid)
 
     records = ds_json if isinstance(ds_json, list) else ds_json.get("records", [ds_json])
     for rec in records:
         _walk_ds(rec)
 
-    count = batch_merge_nodes(driver, "DataStructure", nodes)
+    count = batch_merge_nodes(driver, "DataStructure", nodes, merge_key="uid")
     batch_merge_relationships(
-        driver, "DataStructure", "id", "CONTAINS", "DataStructure", "id", contains_edges
+        driver, "DataStructure", "uid", "CONTAINS", "DataStructure", "uid", contains_edges
     )
 
     # FLOWS_INTO / REDEFINES from explicit edges in the JSON
     for edge in ds_json.get("edges", []) if isinstance(ds_json, dict) else []:
-        rec = {"from_id": str(edge["from"]), "to_id": str(edge["to"])}
+        rec = {
+            "from_id": scoped_graph_id(run_id, program, edge["from"]),
+            "to_id": scoped_graph_id(run_id, program, edge["to"]),
+        }
         if edge.get("type") == "REDEFINES":
             redefines_edges.append(rec)
         else:
             flows_into_edges.append(rec)
 
     batch_merge_relationships(
-        driver, "DataStructure", "id", "FLOWS_INTO", "DataStructure", "id", flows_into_edges
+        driver, "DataStructure", "uid", "FLOWS_INTO", "DataStructure", "uid", flows_into_edges
     )
     batch_merge_relationships(
-        driver, "DataStructure", "id", "REDEFINES", "DataStructure", "id", redefines_edges
+        driver, "DataStructure", "uid", "REDEFINES", "DataStructure", "uid", redefines_edges
     )
     return count
 

@@ -107,7 +107,7 @@ public static class RektScanCacheCommand
         var basenameArg = new Argument<string>("basename", "Program basename (with extension) that was parsed.");
         cmd.AddArgument(basenameArg);
 
-        var outcomeOption = new Option<string>("--outcome", "Parse outcome: Full | NoDialect | RawAst | DepsOnly | Failed")
+        var outcomeOption = new Option<string>("--outcome", "Parse outcome: Full | StubBacked | NoDialect | RawAst | DepsOnly | Failed")
         { IsRequired = true };
         cmd.AddOption(outcomeOption);
 
@@ -163,7 +163,8 @@ public static class RektScanCacheCommand
         var cmd = new Command("record-batch", "Persist many parse outcomes from a TSV manifest in one process.");
 
         var manifestArg = new Argument<string>("manifest",
-            "Path to a TSV file: <basename>\\t<outcome> per line. Outcome ∈ {Full, NoDialect, RawAst, DepsOnly, Failed}.");
+            "Path to a TSV file: <basename>\\t<outcome>\\t<warning>|<warning> per line. " +
+            "Outcome ∈ {Full, StubBacked, NoDialect, RawAst, DepsOnly, Failed}.");
         cmd.AddArgument(manifestArg);
 
         var stagingDirOption = new Option<string>("--staging-dir",
@@ -204,6 +205,11 @@ public static class RektScanCacheCommand
                 }
                 var basename = parts[0].Trim();
                 var outcomeStr = parts[1].Trim();
+                var warnings = parts.Length >= 3
+                    ? parts[2]
+                        .Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                        .ToList()
+                    : null;
                 if (!Enum.TryParse<RektParseOutcome>(outcomeStr, ignoreCase: true, out var outcome))
                 {
                     Console.Error.WriteLine($"Unknown outcome '{outcomeStr}' for {basename}");
@@ -221,7 +227,7 @@ public static class RektScanCacheCommand
 
                 var plan = await planner.PlanAsync(new[] { basename });
                 var decision = plan.ToParse.FirstOrDefault() ?? plan.ToSkip.First();
-                await planner.RecordParseAsync(decision, outcome);
+                await planner.RecordParseAsync(decision, outcome, warnings);
                 ok++;
             }
 
@@ -335,7 +341,7 @@ public static class RektScanCacheCommand
             var existingFiles = Directory.EnumerateFiles(
                     verifyDir,
                     "*",
-                    SearchOption.TopDirectoryOnly)
+                    SearchOption.AllDirectories)
                 .Select(Path.GetFileName)
                 .Where(name => !string.IsNullOrEmpty(name))
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -353,7 +359,7 @@ public static class RektScanCacheCommand
             var existingDirectories = Directory.EnumerateDirectories(
                     verifyDir,
                     "*",
-                    SearchOption.TopDirectoryOnly)
+                    SearchOption.AllDirectories)
                 .ToList();
             foreach (var reportDir in reportDirs.Distinct(StringComparer.OrdinalIgnoreCase))
             {

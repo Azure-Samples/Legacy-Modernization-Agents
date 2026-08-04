@@ -171,9 +171,10 @@ public sealed class IncrementalScanPlanner
         return null;
     }
 
-    private static RektScanConfidence ConfidenceFromOutcome(RektParseOutcome outcome) => outcome switch
+    internal static RektScanConfidence ConfidenceFromOutcome(RektParseOutcome outcome) => outcome switch
     {
         RektParseOutcome.Full       => RektScanConfidence.High,
+        RektParseOutcome.StubBacked => RektScanConfidence.Partial,
         RektParseOutcome.NoDialect  => RektScanConfidence.Partial,
         RektParseOutcome.RawAst     => RektScanConfidence.Low,
         RektParseOutcome.DepsOnly   => RektScanConfidence.Low,

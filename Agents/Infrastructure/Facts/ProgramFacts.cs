@@ -6,7 +6,7 @@ public sealed record ProgramFacts
 {
     public const int CurrentSchemaVersion = 1;
 
-    public const string CurrentIdentitySchemeVersion = "v1-basename";
+    public const string CurrentIdentitySchemeVersion = "v2-source-relative";
 
     [JsonPropertyName("schemaVersion")]
     public int SchemaVersion { get; init; } = CurrentSchemaVersion;

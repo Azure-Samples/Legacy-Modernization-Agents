@@ -26,13 +26,13 @@ public static class ProgramFactsCommand
     private static Command BuildPruneOrphansCommand(ILoggerFactory loggerFactory)
     {
         var cmd = new Command("prune-orphans",
-            "Delete *.facts.json files whose program is no longer present in the staging dir.");
+            "Delete *.facts.json files whose source-relative program is no longer present in the staging dir.");
 
         var factsDirArg = new Argument<string>("facts-dir", "Directory holding existing *.facts.json files.");
         cmd.AddArgument(factsDirArg);
 
         var stagingDirOption = new Option<string>("--staging-dir",
-            "Authoritative source-of-truth dir. Any *.facts.json whose stem has no matching program file here is deleted.")
+            "Authoritative source-of-truth dir. Any *.facts.json whose stored source identity has no matching program file here is deleted.")
         { IsRequired = true };
         cmd.AddOption(stagingDirOption);
 
@@ -56,20 +56,19 @@ public static class ProgramFactsCommand
                 return;
             }
 
-            var liveStems = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var f in CobolToQuarkusMigration.Helpers.SourceTypeRegistry.EnumerateProgramFiles(stagingDir))
-            {
-                liveStems.Add(Path.GetFileNameWithoutExtension(f));
-            }
+            var catalog = ProgramSourceCatalog.FromStagingDirectory(stagingDir);
 
             var deleted = 0;
-            foreach (var f in Directory.EnumerateFiles(factsDir, "*.facts.json", SearchOption.TopDirectoryOnly))
+            foreach (var f in Directory.EnumerateFiles(factsDir, "*.facts.json", SearchOption.AllDirectories))
             {
-                var stem = Path.GetFileNameWithoutExtension(Path.GetFileNameWithoutExtension(f));
-                if (liveStems.Contains(stem)) continue;
+                var resolvedProgram = catalog.ResolveFactsFileToProgram(f, factsDir);
+                if (resolvedProgram is not null) continue;
+
+                var artifactIdentity = ProgramFactsArtifactLocator.TryGetProgramRelativePath(f, factsDir)
+                    ?? Path.GetFileNameWithoutExtension(Path.GetFileNameWithoutExtension(f));
                 logger.LogInformation(
-                    "[ProgramFacts] decision=prune-orphan path={Path} stem={Stem} {Suffix}",
-                    f, stem, dryRun ? "(dry-run)" : "");
+                    "[ProgramFacts] decision=prune-orphan path={Path} identity={Identity} {Suffix}",
+                    f, artifactIdentity, dryRun ? "(dry-run)" : "");
                 if (!dryRun)
                 {
                     try { File.Delete(f); deleted++; }
@@ -91,7 +90,7 @@ public static class ProgramFactsCommand
 
     private static Command BuildExtractCommand(ILoggerFactory loggerFactory)
     {
-        var cmd = new Command("extract", "Build <stem>.facts.json for every program in the staging dir.");
+        var cmd = new Command("extract", "Build <source-relative>.facts.json for every program in the staging dir.");
 
         var stagingDirArg = new Argument<string>("staging-dir", "Directory containing preprocessed COBOL programs and copybooks (used as the source-bytes input).");
         cmd.AddArgument(stagingDirArg);
@@ -100,11 +99,11 @@ public static class ProgramFactsCommand
         { Arity = ArgumentArity.ZeroOrOne };
         cmd.AddOption(rektDirOption);
 
-        var outputDirOption = new Option<string?>("--output-dir", "Directory to write <stem>.facts.json files. Defaults to --rekt-dir.")
+        var outputDirOption = new Option<string?>("--output-dir", "Directory to write <source-relative>.facts.json files. Defaults to --rekt-dir.")
         { Arity = ArgumentArity.ZeroOrOne };
         cmd.AddOption(outputDirOption);
 
-        var programsOption = new Option<string?>("--programs", "Comma-separated basenames (with extension) to extract for. Defaults to every program in the staging dir.")
+        var programsOption = new Option<string?>("--programs", "Comma-separated source-relative paths, basenames, or stems to extract for. Basename/stem selectors must be unambiguous. Defaults to every program in the staging dir.")
         { Arity = ArgumentArity.ZeroOrOne };
         cmd.AddOption(programsOption);
 
@@ -136,16 +135,19 @@ public static class ProgramFactsCommand
                 cache = new SqliteRektScanCache(scanCacheDb, logger);
             }
 
-            var allPrograms = SourceTypeRegistry.EnumerateProgramFiles(stagingDir)
-                .Select(Path.GetFileName)
-                .Where(n => !string.IsNullOrEmpty(n))
-                .Select(n => n!)
-                .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
-                .ToList();
+            var catalog = ProgramSourceCatalog.FromStagingDirectory(stagingDir);
 
-            var targets = programs is null
-                ? allPrograms
-                : programs.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+            IReadOnlyList<string> targets;
+            try
+            {
+                targets = catalog.ResolveSelectors(programs);
+            }
+            catch (InvalidOperationException ex)
+            {
+                Console.Error.WriteLine(ex.Message);
+                Environment.ExitCode = 2;
+                return;
+            }
 
             var extractor = new ProgramFactsExtractor(
                 repoRoot: resolvedRepoRoot,

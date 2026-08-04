@@ -6,6 +6,7 @@ public enum RektParseOutcome
     DepsOnly,
     RawAst,
     NoDialect,
+    StubBacked,
     Full,
 }
 
@@ -13,7 +14,7 @@ public enum RektScanConfidence
 {
     None = 0,
     Low,        // DepsOnly / RawAst
-    Partial,    // NoDialect
+    Partial,    // NoDialect / full parse backed by generated copybook stubs
     High,       // Full
 }
 

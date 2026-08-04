@@ -23,29 +23,30 @@ public sealed class RektContextLoader
     public bool HasAnyRektOutput()
     {
         if (!Directory.Exists(_rektDir)) return false;
-        return Directory.EnumerateFiles(_rektDir, "*.json").Any();
+        return Directory.EnumerateFiles(_rektDir, "*.json", SearchOption.AllDirectories).Any();
     }
 
     public RektContext Load(string programFileName, string sourceFolder)
     {
+        var normalizedProgramPath = SourcePathHelper.NormalizeRelativePath(programFileName);
+        var basename = Path.GetFileName(normalizedProgramPath);
+        var stem = Path.GetFileNameWithoutExtension(basename);
         var ctx = new RektContext
         {
-            Program = programFileName,
-            IsCopybook = programFileName.EndsWith(".cpy", StringComparison.OrdinalIgnoreCase),
+            Program = normalizedProgramPath,
+            IsCopybook = basename.EndsWith(".cpy", StringComparison.OrdinalIgnoreCase),
         };
 
-        var srcPath = Path.Combine(_repoRoot, sourceFolder, programFileName);
+        var srcPath = Path.Combine(_repoRoot, sourceFolder, SourcePathHelper.ToOsRelativePath(normalizedProgramPath));
         if (File.Exists(srcPath))
             ctx.LineCount = File.ReadLines(srcPath).Count();
 
-        var stem = Path.GetFileNameWithoutExtension(programFileName);
+        TryLoadFlowAst(ctx, normalizedProgramPath, basename, stem);
+        TryLoadFlowCfg(ctx, normalizedProgramPath, basename, stem);
+        TryLoadFlowData(ctx, normalizedProgramPath, basename, stem);
+        TryLoadDeps(ctx, normalizedProgramPath, basename, stem);
 
-        TryLoadFlowAst(ctx, stem);
-        TryLoadFlowCfg(ctx, stem);
-        TryLoadFlowData(ctx, stem);
-        TryLoadDeps(ctx, stem);
-
-        ctx.TargetPlan = LookupTargetPlan(programFileName);
+        ctx.TargetPlan = LookupTargetPlan(normalizedProgramPath);
 
         return ctx;
     }
@@ -138,9 +139,9 @@ public sealed class RektContextLoader
             .ToList();
     }
 
-    private void TryLoadFlowAst(RektContext ctx, string stem)
+    private void TryLoadFlowAst(RektContext ctx, string programRelativePath, string basename, string stem)
     {
-        var path = FindRektFile(stem, prefix: "flow-ast-");
+        var path = FindRektFile(programRelativePath, basename, stem, prefix: "flow-ast-");
         if (path is null) return;
 
         try
@@ -277,17 +278,17 @@ public sealed class RektContextLoader
         }
     }
 
-    private void TryLoadFlowCfg(RektContext ctx, string stem)
+    private void TryLoadFlowCfg(RektContext ctx, string programRelativePath, string basename, string stem)
     {
-        var path = FindRektFile(stem, prefix: "flow-cfg-");
+        var path = FindRektFile(programRelativePath, basename, stem, prefix: "flow-cfg-");
         if (path is null) return;
         // CFG edges are useful for branch counts; we don't expose them directly today.
         // Reserved for future use (e.g. test synthesizer per-branch coverage).
     }
 
-    private void TryLoadFlowData(RektContext ctx, string stem)
+    private void TryLoadFlowData(RektContext ctx, string programRelativePath, string basename, string stem)
     {
-        var path = FindRektFile(stem, prefix: "flow-data-");
+        var path = FindRektFile(programRelativePath, basename, stem, prefix: "flow-data-");
         if (path is null) return;
         try
         {
@@ -364,18 +365,12 @@ public sealed class RektContextLoader
         }
     }
 
-    private void TryLoadDeps(RektContext ctx, string stem)
+    private void TryLoadDeps(RektContext ctx, string programRelativePath, string basename, string stem)
     {
         // Even when AST writer fails, deps export usually succeeds — feed it into CallTargets/CopybookUsage
         // so the converter at least knows what the program depends on.
         string? path = null;
-        foreach (var candidate in new[]
-        {
-            Path.Combine(_rektDir, $"{stem}-deps.json"),
-            Path.Combine(_rektDir, $"{stem}.cbl-deps.json"),
-            Path.Combine(_rektDir, $"{stem}.cbl.report", $"{stem}-deps.json"),
-            Path.Combine(_rektDir, $"{stem}.cbl.report", $"{stem}.cbl-deps.json"),
-        })
+        foreach (var candidate in EnumerateDependencyCandidates(programRelativePath, basename, stem))
         {
             if (File.Exists(candidate)) { path = candidate; break; }
         }
@@ -469,25 +464,25 @@ public sealed class RektContextLoader
         return _targetPlansByProgram;
     }
 
-    private string? FindRektFile(string stem, string prefix)
+    private string? FindRektFile(string programRelativePath, string basename, string stem, string prefix)
     {
         // Layout 1 (legacy / flat): output/rekt/flow-ast-PROG.json
-        foreach (var candidate in new[] { $"{prefix}{stem}.json", $"{prefix}{stem}.cbl.json" })
+        foreach (var candidate in new[]
+                 {
+                     $"{prefix}{stem}.json",
+                     $"{prefix}{stem}.cbl.json",
+                     $"{prefix}{basename}.json",
+                 })
         {
             var p = Path.Combine(_rektDir, candidate);
             if (File.Exists(p)) return p;
         }
 
         // smojol v2 nests artifacts under a per-program report directory.
-        var reportDirs = new[]
-        {
-            $"{stem}.cbl.report",
-            $"{stem}.report",
-            $"{stem}.CBL.report"
-        };
+        var reportDirs = EnumerateReportDirectories(programRelativePath, basename, stem);
         foreach (var reportDir in reportDirs)
         {
-            var rdir = Path.Combine(_rektDir, reportDir);
+            var rdir = Path.Combine(_rektDir, SourcePathHelper.ToOsRelativePath(reportDir));
             if (!Directory.Exists(rdir)) continue;
 
             // Try standard subdirectory mappings
@@ -495,20 +490,25 @@ public sealed class RektContextLoader
             {
                 "flow-ast-" => new[]
                 {
+                    Path.Combine(rdir, "flow_ast", $"flow-ast-{basename}.json"),
                     Path.Combine(rdir, "flow_ast", $"flow-ast-{stem}.cbl.json"),
                     Path.Combine(rdir, "flow_ast", $"flow-ast-{stem}.json"),
                 },
                 "flow-data-" => new[]
                 {
+                    Path.Combine(rdir, "data_structures", $"{basename}-data.json"),
                     Path.Combine(rdir, "data_structures", $"{stem}.cbl-data.json"),
                     Path.Combine(rdir, "data_structures", $"{stem}-data.json"),
                     Path.Combine(rdir, "data_structures", $"flow-data-{stem}.cbl.json"),
+                    Path.Combine(rdir, "data_structures", $"flow-data-{basename}.json"),
                 },
                 "flow-cfg-" => new[]
                 {
+                    Path.Combine(rdir, "cfg", $"cfg-{basename}.json"),
                     Path.Combine(rdir, "cfg", $"cfg-{stem}.cbl.json"),
                     Path.Combine(rdir, "cfg", $"cfg-{stem}.json"),
                     Path.Combine(rdir, "cfg", $"flow-cfg-{stem}.cbl.json"),
+                    Path.Combine(rdir, "cfg", $"flow-cfg-{basename}.json"),
                 },
                 _ => Array.Empty<string>(),
             };
@@ -520,15 +520,68 @@ public sealed class RektContextLoader
             // Fallback: glob the report dir recursively for the prefix
             try
             {
-                var found = Directory.EnumerateFiles(rdir, $"*{stem}*", SearchOption.AllDirectories)
-                    .FirstOrDefault(f => Path.GetFileName(f).Contains(prefix.TrimEnd('-'), StringComparison.OrdinalIgnoreCase)
-                                      || Path.GetFileName(f).StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+                var found = Directory.EnumerateFiles(rdir, "*", SearchOption.AllDirectories)
+                    .FirstOrDefault(f =>
+                        Path.GetFileName(f).StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                        && (Path.GetFileName(f).Contains(basename, StringComparison.OrdinalIgnoreCase)
+                            || Path.GetFileName(f).Contains(stem, StringComparison.OrdinalIgnoreCase)));
                 if (found != null) return found;
             }
             catch { /* access error — skip */ }
         }
 
         return null;
+    }
+
+    private IEnumerable<string> EnumerateReportDirectories(
+        string programRelativePath,
+        string basename,
+        string stem)
+    {
+        var normalizedRelativePath = SourcePathHelper.NormalizeRelativePath(programRelativePath);
+        foreach (var reportDir in new[]
+                 {
+                     normalizedRelativePath + ".report",
+                     basename + ".report",
+                     $"{stem}.cbl.report",
+                     $"{stem}.report",
+                     $"{stem}.CBL.report",
+                 }.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            yield return reportDir;
+        }
+    }
+
+    private IEnumerable<string> EnumerateDependencyCandidates(
+        string programRelativePath,
+        string basename,
+        string stem)
+    {
+        var normalizedRelativePath = SourcePathHelper.NormalizeRelativePath(programRelativePath);
+        foreach (var candidate in new[]
+                 {
+                     Path.Combine(_rektDir, SourcePathHelper.ToOsRelativePath($"{normalizedRelativePath}-deps.json")),
+                     Path.Combine(_rektDir, SourcePathHelper.ToOsRelativePath($"{basename}-deps.json")),
+                     Path.Combine(_rektDir, $"{stem}-deps.json"),
+                     Path.Combine(_rektDir, $"{stem}.cbl-deps.json"),
+                 })
+        {
+            yield return candidate;
+        }
+
+        foreach (var reportDir in EnumerateReportDirectories(programRelativePath, basename, stem))
+        {
+            var reportRoot = Path.Combine(_rektDir, SourcePathHelper.ToOsRelativePath(reportDir));
+            foreach (var candidate in new[]
+                     {
+                         Path.Combine(reportRoot, $"{basename}-deps.json"),
+                         Path.Combine(reportRoot, $"{stem}-deps.json"),
+                         Path.Combine(reportRoot, $"{stem}.cbl-deps.json"),
+                     })
+            {
+                yield return candidate;
+            }
+        }
     }
 
     private static string? TryGetString(JsonElement el, string name)

@@ -1,5 +1,4 @@
 using System.Text;
-using System.Text.Json;
 using CobolToQuarkusMigration.Agents.Infrastructure.Facts;
 
 namespace CobolToQuarkusMigration.Helpers.PromptProjections;
@@ -14,23 +13,7 @@ public static class JavaConverterProjection
             StringComparison.OrdinalIgnoreCase);
 
     public static ProgramFacts? TryLoad(string factsDir, string programBasename)
-    {
-        var stem = Path.GetFileNameWithoutExtension(programBasename);
-        if (string.IsNullOrEmpty(stem)) return null;
-
-        var path = Path.Combine(factsDir, $"{stem}.facts.json");
-        if (!File.Exists(path)) return null;
-
-        try
-        {
-            var json = File.ReadAllText(path);
-            return JsonSerializer.Deserialize<ProgramFacts>(json);
-        }
-        catch
-        {
-            return null;
-        }
-    }
+        => ProgramFactsArtifactLocator.TryLoad(factsDir, programBasename);
 
     public static string BuildPromptBlock(ProgramFacts facts)
     {

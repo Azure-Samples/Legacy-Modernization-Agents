@@ -7,7 +7,8 @@ CREATE CONSTRAINT cobolfile_uid   IF NOT EXISTS FOR (n:CobolFile)     REQUIRE n.
 DROP CONSTRAINT astnode_id IF EXISTS;
 CREATE CONSTRAINT astnode_uid     IF NOT EXISTS FOR (n:ASTNode)       REQUIRE n.uid IS UNIQUE;
 CREATE CONSTRAINT cfgnode_id      IF NOT EXISTS FOR (n:CFGNode)       REQUIRE n.id IS UNIQUE;
-CREATE CONSTRAINT datastructure_id IF NOT EXISTS FOR (n:DataStructure) REQUIRE n.id IS UNIQUE;
+DROP CONSTRAINT datastructure_id IF EXISTS;
+CREATE CONSTRAINT datastructure_uid IF NOT EXISTS FOR (n:DataStructure) REQUIRE n.uid IS UNIQUE;
 CREATE CONSTRAINT chunk_uid       IF NOT EXISTS FOR (n:Chunk)         REQUIRE n.uid IS UNIQUE;
 CREATE CONSTRAINT signature_uid   IF NOT EXISTS FOR (n:Signature)     REQUIRE n.uid IS UNIQUE;
 CREATE CONSTRAINT typemapping_uid IF NOT EXISTS FOR (n:TypeMapping)   REQUIRE n.uid IS UNIQUE;

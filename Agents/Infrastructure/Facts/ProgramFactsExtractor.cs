@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using CobolToQuarkusMigration.Agents.Infrastructure.RektCache;
 using CobolToQuarkusMigration.Helpers;
 using Microsoft.Extensions.Logging;
@@ -7,6 +8,11 @@ namespace CobolToQuarkusMigration.Agents.Infrastructure.Facts;
 
 public sealed class ProgramFactsExtractor
 {
+    private const string CompatibleScanCacheIdentityScheme = "v1-basename";
+    private static readonly Regex CopyPattern = new(
+        @"\bCOPY\s+['""]?([A-Z][A-Z0-9_-]*)['""]?",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
@@ -34,45 +40,61 @@ public sealed class ProgramFactsExtractor
     }
 
     public async Task<int> ExtractAllAsync(
-        IReadOnlyList<string> programBasenames,
+        IReadOnlyList<string> programRelativePaths,
         string outputDir,
         CancellationToken cancellationToken = default)
     {
         Directory.CreateDirectory(outputDir);
         var loader = new RektContextLoader(_repoRoot, _rektDir);
+        var targets = programRelativePaths
+            .Select(SourcePathHelper.NormalizeRelativePath)
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var catalog = new ProgramSourceCatalog(targets);
 
         // Pre-compute an inverse callees → callers map by scanning every
         // deps.json once. Avoids O(N²) per-extraction work.
-        var callersByCallee = BuildCallersMap(programBasenames, loader);
+        var callersByCallee = BuildCallersMap(targets, catalog, loader, _stagingDir);
 
         var written = 0;
-        foreach (var basename in programBasenames)
+        foreach (var programRelativePath in targets)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var facts = await ExtractOneAsync(basename, loader, callersByCallee, cancellationToken);
-            var stem = Path.GetFileNameWithoutExtension(basename);
-            var outPath = Path.Combine(outputDir, $"{stem}.facts.json");
+            var facts = await ExtractOneAsync(
+                programRelativePath,
+                catalog,
+                loader,
+                callersByCallee,
+                cancellationToken);
+            var outPath = ProgramFactsArtifactLocator.GetFactsFilePath(outputDir, programRelativePath);
+            var outDir = Path.GetDirectoryName(outPath);
+            if (!string.IsNullOrWhiteSpace(outDir))
+                Directory.CreateDirectory(outDir);
             await File.WriteAllTextAsync(outPath, JsonSerializer.Serialize(facts, JsonOptions), cancellationToken);
             _logger?.LogInformation(
-                "[ProgramFacts] basename={Basename} confidence={Conf} groups={Groups} callees={Callees} callers={Callers} warnings={Warnings} → {OutPath}",
-                basename, facts.Confidence, facts.Data.Groups.Count, facts.Callees.Count,
+                "[ProgramFacts] program={Program} confidence={Conf} groups={Groups} callees={Callees} callers={Callers} warnings={Warnings} → {OutPath}",
+                programRelativePath, facts.Confidence, facts.Data.Groups.Count, facts.Callees.Count,
                 facts.Callers.Count, facts.Warnings.Count, outPath);
             written++;
         }
         return written;
     }
 
-    public async Task<ProgramFacts> ExtractOneAsync(
-        string basename,
+    internal async Task<ProgramFacts> ExtractOneAsync(
+        string programRelativePath,
+        ProgramSourceCatalog catalog,
         RektContextLoader loader,
         IReadOnlyDictionary<string, IReadOnlyList<string>> callersByCallee,
         CancellationToken cancellationToken = default)
     {
+        programRelativePath = SourcePathHelper.NormalizeRelativePath(programRelativePath);
+        var basename = Path.GetFileName(programRelativePath);
         var stem = Path.GetFileNameWithoutExtension(basename);
 
         // Hash the same preprocessed bytes used by scan and response caches.
         string sourceContent = "";
-        var srcPath = Path.Combine(_stagingDir, basename);
+        var srcPath = Path.Combine(_stagingDir, SourcePathHelper.ToOsRelativePath(programRelativePath));
         if (File.Exists(srcPath))
         {
             sourceContent = await File.ReadAllTextAsync(srcPath, cancellationToken);
@@ -84,27 +106,33 @@ public sealed class ProgramFactsExtractor
 
         // Pull whatever REKT data exists. The loader is best-effort; missing
         // files become empty lists.
-        var ctx = loader.Load(basename, _stagingDir);
+        var ctx = loader.Load(programRelativePath, _stagingDir);
         var warnings = new List<string>();
         if (sourceContent.Length == 0)
             warnings.Add($"source-not-found: {srcPath}");
         if (ctx.Sections.Count == 0 && ctx.DataStructure.Count == 0
             && ctx.CallTargets.Count == 0 && ctx.SqlStatements.Count == 0)
             warnings.Add("rekt-output-empty: no AST/CFG/DataStructure JSONs found");
+        warnings.AddRange(GetGeneratedStubWarnings(sourceContent));
 
         RektScanEntry? cacheEntry = null;
-        if (_scanCache is not null)
+        if (_scanCache is not null && catalog.HasUniqueBasename(basename, out var uniqueProgramPath)
+            && string.Equals(uniqueProgramPath, programRelativePath, StringComparison.OrdinalIgnoreCase))
         {
             cacheEntry = await _scanCache.TryGetAsync(
                 basename,
-                ProgramFacts.CurrentIdentitySchemeVersion,
+                CompatibleScanCacheIdentityScheme,
                 cancellationToken);
+            if (cacheEntry is not null)
+            {
+                warnings.AddRange(cacheEntry.Warnings);
+            }
         }
 
         var confidence = ResolveConfidence(cacheEntry, ctx, warnings);
 
         var programId = ExtractProgramId(sourceContent);
-        var preprocessNotes = LoadPreprocessNotes(basename);
+        var preprocessNotes = LoadPreprocessNotes(programRelativePath);
 
         var dbTables = BuildDbTables(ctx.SqlStatements);
         var files = ExtractFileAccess(sourceContent);
@@ -121,11 +149,12 @@ public sealed class ProgramFactsExtractor
             .ToList();
 
         var calleesList = ctx.CallTargets
-            .Select(c => c.TargetProgram)
+            .Select(c => catalog.ResolveCallTarget(c.TargetProgram) ?? c.TargetProgram)
             .Where(n => !string.IsNullOrEmpty(n))
             .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
             .ToList();
-        callersByCallee.TryGetValue(basename, out var callersForThisProgram);
+        callersByCallee.TryGetValue(programRelativePath, out var callersForThisProgram);
 
         var entryPoints = ctx.Sections.Count > 0
             ? new List<string> { ctx.Sections[0].Name }
@@ -148,10 +177,10 @@ public sealed class ProgramFactsExtractor
         {
             Basename = basename,
             Stem = stem,
-            RelativePath = null,    // forward-compat; populated when we have it
+            RelativePath = programRelativePath,
             SourceHash = sourceHash,
             Confidence = confidence,
-            Warnings = warnings,
+            Warnings = warnings.Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
             PreprocessNotes = preprocessNotes,
             Summary = new ProgramSummary
             {
@@ -174,7 +203,7 @@ public sealed class ProgramFactsExtractor
                 CopybooksUsed = ctx.CopybookUsage.ToList(),
             },
             Callees = calleesList,
-            Callers = callersForThisProgram ?? new List<string>(),
+            Callers = callersForThisProgram ?? Array.Empty<string>(),
             ControlFlow = new ControlFlowFacts
             {
                 EntryPoints = entryPoints,
@@ -190,9 +219,10 @@ public sealed class ProgramFactsExtractor
         RektContext context,
         IReadOnlyCollection<string> warnings)
     {
+        FactConfidence confidence;
         if (cacheEntry is not null)
         {
-            return cacheEntry.Confidence switch
+            confidence = cacheEntry.Confidence switch
             {
                 RektScanConfidence.High => FactConfidence.High,
                 RektScanConfidence.Partial => FactConfidence.Partial,
@@ -200,38 +230,73 @@ public sealed class ProgramFactsExtractor
                 _ => FactConfidence.None,
             };
         }
+        else if (context.Sections.Count > 0 && context.DataStructure.Count > 0)
+        {
+            confidence = FactConfidence.High;
+        }
+        else if (context.DataStructure.Count > 0 || context.CallTargets.Count > 0)
+        {
+            confidence = FactConfidence.Partial;
+        }
+        else
+        {
+            confidence = warnings.Count == 0 ? FactConfidence.Low : FactConfidence.None;
+        }
 
-        if (context.Sections.Count > 0 && context.DataStructure.Count > 0)
-            return FactConfidence.High;
-        if (context.DataStructure.Count > 0 || context.CallTargets.Count > 0)
-            return FactConfidence.Partial;
-        return warnings.Count == 0 ? FactConfidence.Low : FactConfidence.None;
+        return warnings.Any(w => w.StartsWith("generated-copybook-stub:", StringComparison.OrdinalIgnoreCase))
+            && confidence > FactConfidence.Partial
+                ? FactConfidence.Partial
+                : confidence;
+    }
+
+    private IReadOnlyList<string> GetGeneratedStubWarnings(string sourceContent)
+    {
+        var manifestPath = Path.Combine(_stagingDir, ".generated-stubs");
+        if (string.IsNullOrWhiteSpace(sourceContent) || !File.Exists(manifestPath))
+            return Array.Empty<string>();
+
+        var generatedStubs = File.ReadAllLines(manifestPath)
+            .Where(line => !string.IsNullOrWhiteSpace(line))
+            .Select(line => line.Trim())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (generatedStubs.Count == 0)
+            return Array.Empty<string>();
+
+        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var line in sourceContent.Split('\n'))
+        {
+            var trimmed = line.TrimStart();
+            if (trimmed.StartsWith("*>", StringComparison.Ordinal)
+                || (line.Length > 6 && line[6] is '*' or '/'))
+                continue;
+
+            var match = CopyPattern.Match(line);
+            if (match.Success && generatedStubs.Contains(match.Groups[1].Value))
+                used.Add(match.Groups[1].Value.ToUpperInvariant());
+        }
+
+        return used
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .Select(name => $"generated-copybook-stub:{name}")
+            .ToList();
     }
 
     private static IReadOnlyDictionary<string, IReadOnlyList<string>> BuildCallersMap(
-        IReadOnlyList<string> programBasenames, RektContextLoader loader)
+        IReadOnlyList<string> programRelativePaths,
+        ProgramSourceCatalog catalog,
+        RektContextLoader loader,
+        string sourceFolder)
     {
-        // Normalize bare CALL targets to the basenames used by caller maps.
-        var stemToBasename = programBasenames.ToDictionary(
-            Path.GetFileNameWithoutExtension!,
-            b => b,
-            StringComparer.OrdinalIgnoreCase);
-
         var map = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-        foreach (var caller in programBasenames)
+        foreach (var caller in programRelativePaths)
         {
-            var ctx = loader.Load(caller, sourceFolder: "source");   // sourceFolder unused for CallTargets
+            var ctx = loader.Load(caller, sourceFolder);
             foreach (var callee in ctx.CallTargets)
             {
                 var rawTarget = callee.TargetProgram;
                 if (string.IsNullOrEmpty(rawTarget)) continue;
 
-                // Normalise the target: try as-is, then as stem→basename, then with .cbl/.cob.
-                string key;
-                if (stemToBasename.TryGetValue(Path.GetFileNameWithoutExtension(rawTarget), out var b))
-                    key = b;
-                else
-                    key = rawTarget;
+                var key = catalog.ResolveCallTarget(rawTarget) ?? rawTarget;
 
                 if (!map.TryGetValue(key, out var list))
                 {
@@ -242,7 +307,11 @@ public sealed class ProgramFactsExtractor
                     list.Add(caller);
             }
         }
-        return map.ToDictionary(kv => kv.Key, kv => (IReadOnlyList<string>)kv.Value,
+        return map.ToDictionary(
+            kv => kv.Key,
+            kv => (IReadOnlyList<string>)kv.Value
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .ToList(),
             StringComparer.OrdinalIgnoreCase);
     }
 
@@ -347,28 +416,41 @@ public sealed class ProgramFactsExtractor
         return chains;
     }
 
-    private IReadOnlyList<PreprocessNote> LoadPreprocessNotes(string basename)
+    private IReadOnlyList<PreprocessNote> LoadPreprocessNotes(string programRelativePath)
     {
-        var notePath = Path.Combine(_stagingDir, basename + ".preprocess.json");
-        if (!File.Exists(notePath)) return Array.Empty<PreprocessNote>();
-        try
+        foreach (var notePath in EnumeratePreprocessNotePaths(programRelativePath))
         {
-            using var doc = JsonDocument.Parse(File.ReadAllText(notePath));
-            if (!doc.RootElement.TryGetProperty("transforms", out var arr)) return Array.Empty<PreprocessNote>();
-            var notes = new List<PreprocessNote>(arr.GetArrayLength());
-            foreach (var el in arr.EnumerateArray())
+            if (!File.Exists(notePath)) continue;
+            try
             {
-                notes.Add(new PreprocessNote(
-                    Rule: el.TryGetProperty("rule", out var r) ? r.GetString() ?? "" : "",
-                    Line: el.TryGetProperty("line", out var l) && l.TryGetInt32(out var ln) ? ln : 0,
-                    Before: el.TryGetProperty("before", out var b) ? b.GetString() : null,
-                    After: el.TryGetProperty("after", out var a) ? a.GetString() : null));
+                using var doc = JsonDocument.Parse(File.ReadAllText(notePath));
+                if (!doc.RootElement.TryGetProperty("transforms", out var arr)) return Array.Empty<PreprocessNote>();
+                var notes = new List<PreprocessNote>(arr.GetArrayLength());
+                foreach (var el in arr.EnumerateArray())
+                {
+                    notes.Add(new PreprocessNote(
+                        Rule: el.TryGetProperty("rule", out var r) ? r.GetString() ?? "" : "",
+                        Line: el.TryGetProperty("line", out var l) && l.TryGetInt32(out var ln) ? ln : 0,
+                        Before: el.TryGetProperty("before", out var b) ? b.GetString() : null,
+                        After: el.TryGetProperty("after", out var a) ? a.GetString() : null));
+                }
+                return notes;
             }
-            return notes;
+            catch
+            {
+                return Array.Empty<PreprocessNote>();
+            }
         }
-        catch
-        {
-            return Array.Empty<PreprocessNote>();
-        }
+
+        return Array.Empty<PreprocessNote>();
+    }
+
+    private IEnumerable<string> EnumeratePreprocessNotePaths(string programRelativePath)
+    {
+        var normalizedRelativePath = SourcePathHelper.NormalizeRelativePath(programRelativePath);
+        yield return Path.Combine(
+            _stagingDir,
+            SourcePathHelper.ToOsRelativePath(normalizedRelativePath) + ".preprocess.json");
+        yield return Path.Combine(_stagingDir, Path.GetFileName(normalizedRelativePath) + ".preprocess.json");
     }
 }
