@@ -46,7 +46,7 @@ RUN mkdir -p /source /output
 
 # Ship the license + attribution inside the image so it travels with any
 # pulled copy — required for MIT redistribution.
-COPY LICENSE NOTICE README.md /app/
+COPY LICENSE LICENSE.cobol-rekt NOTICE README.md /app/
 
 # Healthcheck: verify JAR is runnable
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
