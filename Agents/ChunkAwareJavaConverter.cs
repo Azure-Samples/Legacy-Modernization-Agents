@@ -155,18 +155,13 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
 
             javaCode = ExtractJavaCode(javaCode);
 
-            // The chunk path used to report Success=true with an empty body when the
-            // provider dropped the response, which produced 0-byte .java files.
-            var hasPkg = javaCode.Contains("package ", StringComparison.Ordinal);
-            var hasClass = javaCode.Contains("class ", StringComparison.Ordinal);
-            var opens = javaCode.Count(c => c == '{');
-            var closes = javaCode.Count(c => c == '}');
-            if (string.IsNullOrWhiteSpace(javaCode) || (!hasPkg && !hasClass) || (opens == 0 && closes == 0))
+            if (!ConversionOutputGuard.IsUsableChunk(
+                    javaCode,
+                    "package ",
+                    "class ",
+                    "Java",
+                    out var reason))
             {
-                var reason = string.IsNullOrWhiteSpace(javaCode)
-                    ? "EMPTY_LLM_RESPONSE — model returned no usable output (likely provider timeout / 0-token response). Re-run with ENABLE_REKT_CONTEXT=true and a smaller chunk threshold."
-                    : "NO_JAVA_STRUCTURE — model emitted prose or non-Java content. Re-run with full REKT context enabled.";
-
                 var stubBuilder = new StringBuilder();
                 stubBuilder.AppendLine("// ═════════════════════════════════════════════════════════════════════");
                 stubBuilder.AppendLine("// ⚠ CHUNK CONVERSION DID NOT PRODUCE USABLE JAVA");

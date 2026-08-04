@@ -439,7 +439,7 @@ public class {{className}}
                 stub.AppendLine();
                 stub.AppendLine("// Original output is preserved below for debugging.");
                 stub.AppendLine("/*");
-                stub.AppendLine(string.IsNullOrWhiteSpace(input) ? "(no output)" : input);
+                stub.AppendLine(ConversionOutputGuard.EscapeBlockCommentContent(input));
                 stub.AppendLine("*/");
                 return stub.ToString();
             }

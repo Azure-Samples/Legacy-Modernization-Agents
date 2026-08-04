@@ -150,6 +150,47 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
             }
 
             csharpCode = ExtractCSharpCode(csharpCode);
+
+            if (!ConversionOutputGuard.IsUsableChunk(
+                    csharpCode,
+                    "namespace ",
+                    "class ",
+                    "C#",
+                    out var reason))
+            {
+                var stubBuilder = new StringBuilder();
+                stubBuilder.AppendLine("// ═════════════════════════════════════════════════════════════════════");
+                stubBuilder.AppendLine("// ⚠ CHUNK CONVERSION DID NOT PRODUCE USABLE C#");
+                stubBuilder.AppendLine("// ═════════════════════════════════════════════════════════════════════");
+                stubBuilder.AppendLine("// Source COBOL: " + chunk.SourceFile);
+                stubBuilder.AppendLine("// Chunk: " + (chunk.ChunkIndex + 1) + "/" + context.TotalChunks
+                                       + " (lines " + chunk.StartLine + "-" + chunk.EndLine + ")");
+                stubBuilder.AppendLine("// Reason: " + reason);
+                stubBuilder.AppendLine("//");
+                stubBuilder.AppendLine("// What to do");
+                stubBuilder.AppendLine("// ──────────");
+                stubBuilder.AppendLine("// 1. Verify ENABLE_REKT_CONTEXT=true in the environment.");
+                stubBuilder.AppendLine("// 2. Confirm full-fidelity REKT artifacts exist under");
+                stubBuilder.AppendLine("//    output/rekt/" + Path.GetFileNameWithoutExtension(chunk.SourceFile) + ".cbl.report/");
+                stubBuilder.AppendLine("// 3. Re-run the conversion for just this program.");
+                stubBuilder.AppendLine("// ═════════════════════════════════════════════════════════════════════");
+
+                Logger.LogWarning(
+                    "[ChunkAwareCSharpConverter] Empty/unusable chunk output for {File} chunk {Idx} — writing diagnostic stub",
+                    chunk.SourceFile,
+                    chunk.ChunkIndex);
+
+                return new ChunkConversionResult
+                {
+                    ChunkIndex = chunk.ChunkIndex,
+                    SourceFile = chunk.SourceFile,
+                    Success = false,
+                    ErrorMessage = reason,
+                    ConvertedCode = stubBuilder.ToString(),
+                    ProcessingTimeMs = stopwatch.ElapsedMilliseconds
+                };
+            }
+
             var definedMethods = ExtractDefinedMethods(csharpCode);
 
             return new ChunkConversionResult
