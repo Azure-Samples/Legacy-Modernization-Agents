@@ -25,6 +25,7 @@ from typing import Any
 import click
 from neo4j import GraphDatabase, ManagedTransaction
 from rich.console import Console
+from source_paths import artifact_source_path, scoped_graph_id, source_relative_path
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn
 
 console = Console()
@@ -47,17 +48,18 @@ def get_driver():
 def apply_schema(driver) -> None:
     """Apply constraints and indexes from schema.cypher."""
     schema_path = Path(__file__).parent / "schema.cypher"
+    schema_text = "\n".join(
+        line for line in schema_path.read_text().splitlines()
+        if not line.strip().startswith("//")
+    )
     statements = [
         s.strip()
-        for s in schema_path.read_text().split(";")
-        if s.strip() and not s.strip().startswith("//")
+        for s in schema_text.split(";")
+        if s.strip()
     ]
     with driver.session() as session:
         for stmt in statements:
-            lines = [l for l in stmt.split("\n") if not l.strip().startswith("//")]
-            clean = "\n".join(lines).strip()
-            if clean:
-                session.run(clean)
+            session.run(stmt)
     console.print("[green]Schema applied successfully[/green]")
 
 
@@ -138,9 +140,15 @@ def ingest_rekt_ast(driver, program: str, ast_json: dict, run_id: int) -> int:
     edges: list[dict] = []
 
     def _walk(node: dict, parent_id: str | None = None):
-        node_id = node.get("id", _make_uid(program, node.get("type", ""), node.get("text", ""), len(nodes)))
+        upstream_id = node.get("id") or _make_uid(
+            node.get("type", ""),
+            node.get("text", ""),
+            len(nodes),
+        )
+        node_uid = scoped_graph_id(run_id, program, upstream_id)
         props = {
-            "id": str(node_id),
+            "uid": node_uid,
+            "id": str(upstream_id),
             "program": program,
             "runId": run_id,
             "nodeType": node.get("type", "UNKNOWN"),
@@ -157,24 +165,27 @@ def ingest_rekt_ast(driver, program: str, ast_json: dict, run_id: int) -> int:
         nodes.append(props)
 
         if parent_id is not None:
-            edges.append({"from_id": parent_id, "to_id": str(node_id)})
+            edges.append({"from_id": parent_id, "to_id": node_uid})
 
         for child in node.get("children", []):
-            _walk(child, str(node_id))
+            _walk(child, node_uid)
 
     _walk(ast_json)
 
-    count = batch_merge_nodes(driver, "ASTNode", nodes)
-    batch_merge_relationships(driver, "ASTNode", "id", "CONTAINS", "ASTNode", "id", edges)
+    count = batch_merge_nodes(driver, "ASTNode", nodes, merge_key="uid")
+    batch_merge_relationships(
+        driver, "ASTNode", "uid", "CONTAINS", "ASTNode", "uid", edges
+    )
 
-    root_id = nodes[0]["id"] if nodes else None
-    if root_id:
+    root_uid = nodes[0]["uid"] if nodes else None
+    if root_uid:
         with driver.session() as session:
             session.run(
-                "MATCH (f:CobolFile {fileName: $program, runId: $runId}) "
-                "MATCH (a:ASTNode {id: $rootId}) "
+                "MATCH (f:CobolFile {uid: $fileUid}) "
+                "MATCH (a:ASTNode {uid: $rootUid}) "
                 "MERGE (f)-[:HAS_AST]->(a)",
-                program=program, runId=run_id, rootId=root_id,
+                fileUid=_make_uid(run_id, program),
+                rootUid=root_uid,
             )
     return count
 
@@ -185,11 +196,18 @@ def ingest_rekt_cfg(driver, program: str, cfg_json: dict, run_id: int) -> int:
     jumps_to: list[dict] = []
 
     for edge in cfg_json.get("edges", []):
-        from_id = str(edge.get("from") or edge.get("fromNodeID", ""))
-        to_id = str(edge.get("to") or edge.get("toNodeID", ""))
-        if not from_id or not to_id:
+        from_id = edge.get("from")
+        if from_id is None:
+            from_id = edge.get("fromNodeID")
+        to_id = edge.get("to")
+        if to_id is None:
+            to_id = edge.get("toNodeID")
+        if from_id is None or to_id is None:
             continue
-        rec = {"from_id": from_id, "to_id": to_id}
+        rec = {
+            "from_id": scoped_graph_id(run_id, program, from_id),
+            "to_id": scoped_graph_id(run_id, program, to_id),
+        }
         edge_type = edge.get("type") or edge.get("edgeType", "FOLLOWED_BY")
         if edge_type == "JUMPS_TO":
             jumps_to.append(rec)
@@ -198,10 +216,10 @@ def ingest_rekt_cfg(driver, program: str, cfg_json: dict, run_id: int) -> int:
 
     count = 0
     count += batch_merge_relationships(
-        driver, "ASTNode", "id", "FOLLOWED_BY", "ASTNode", "id", followed_by
+        driver, "ASTNode", "uid", "FOLLOWED_BY", "ASTNode", "uid", followed_by
     )
     count += batch_merge_relationships(
-        driver, "ASTNode", "id", "JUMPS_TO", "ASTNode", "id", jumps_to
+        driver, "ASTNode", "uid", "JUMPS_TO", "ASTNode", "uid", jumps_to
     )
     return count
 
@@ -536,11 +554,13 @@ def ingest_rekt_outputs(driver, rekt_output_dir: str, source_dir: str, run_id: i
     file_nodes = []
     for f in cobol_files + copybooks:
         content = f.read_text(errors="replace")
+        source_identity = source_relative_path(str(f), str(source_path))
         file_nodes.append(
             {
-                "uid": _make_uid(run_id, f.name),
+                "uid": _make_uid(run_id, source_identity),
                 "runId": run_id,
-                "fileName": f.name,
+                "fileName": source_identity,
+                "baseName": f.name,
                 "filePath": str(f),
                 "isCopybook": f.suffix.lower() in (".cpy",),
                 "content": content,
@@ -555,10 +575,20 @@ def ingest_rekt_outputs(driver, rekt_output_dir: str, source_dir: str, run_id: i
     ast_total = 0
     cfg_total = 0
     ds_total = 0
+    source_files = [node["fileName"] for node in file_nodes]
 
     for json_file in sorted(output_path.rglob("*.json")):
-        program_name = json_file.stem
         rel_path = json_file.relative_to(output_path)
+        program_name = artifact_source_path(
+            str(json_file),
+            str(output_path),
+            source_files,
+        )
+        if program_name is None:
+            console.print(
+                f"[yellow]Skipping artifact with ambiguous source: {rel_path}[/yellow]"
+            )
+            continue
 
         try:
             data = json.loads(json_file.read_text())

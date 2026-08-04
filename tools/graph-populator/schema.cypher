@@ -4,7 +4,8 @@
 // Uniqueness constraints
 CREATE CONSTRAINT run_id          IF NOT EXISTS FOR (n:Run)           REQUIRE n.id IS UNIQUE;
 CREATE CONSTRAINT cobolfile_uid   IF NOT EXISTS FOR (n:CobolFile)     REQUIRE n.uid IS UNIQUE;
-CREATE CONSTRAINT astnode_id      IF NOT EXISTS FOR (n:ASTNode)       REQUIRE n.id IS UNIQUE;
+DROP CONSTRAINT astnode_id IF EXISTS;
+CREATE CONSTRAINT astnode_uid     IF NOT EXISTS FOR (n:ASTNode)       REQUIRE n.uid IS UNIQUE;
 CREATE CONSTRAINT cfgnode_id      IF NOT EXISTS FOR (n:CFGNode)       REQUIRE n.id IS UNIQUE;
 CREATE CONSTRAINT datastructure_id IF NOT EXISTS FOR (n:DataStructure) REQUIRE n.id IS UNIQUE;
 CREATE CONSTRAINT chunk_uid       IF NOT EXISTS FOR (n:Chunk)         REQUIRE n.uid IS UNIQUE;

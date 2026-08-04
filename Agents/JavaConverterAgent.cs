@@ -206,6 +206,8 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
                     cont + 1, contLines.Count);
             }
 
+            javaCode = ValidateJavaCode(javaCode);
+
             // Extract AI's semantic class name (based on domain/action/type pattern)
             string aiClassName = ExtractClassNameFromCode(javaCode);
             string packageName = GetPackageName(javaCode);
@@ -388,24 +390,7 @@ public class {{className}} {
 
     private string ExtractJavaCode(string input)
     {
-        // If the input contains markdown code blocks, extract the Java code
-        if (input.Contains("```java"))
-        {
-            var startMarker = "```java";
-            var endMarker = "```";
-
-            int startIndex = input.IndexOf(startMarker);
-            if (startIndex >= 0)
-            {
-                startIndex += startMarker.Length;
-                int endIndex = input.IndexOf(endMarker, startIndex);
-
-                if (endIndex >= 0)
-                {
-                    input = input.Substring(startIndex, endIndex - startIndex).Trim();
-                }
-            }
-        }
+        input = ConversionOutputGuard.ExtractFencedCode(input, "```java");
 
         // Prefer a balanced class body when a truncated response restarts from scratch.
         var firstPkg = input.IndexOf("package ", StringComparison.Ordinal);
@@ -434,6 +419,11 @@ public class {{className}} {
             }
         }
 
+        return input;
+    }
+
+    private string ValidateJavaCode(string input)
+    {
         // Fail loud on unusable output. A silent 0-byte "success" is worse than a
         // file that explains what went wrong, so write a self-documenting stub.
         var hasPkgFinal = input.Contains("package ", StringComparison.Ordinal);

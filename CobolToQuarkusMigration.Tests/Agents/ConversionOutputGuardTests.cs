@@ -6,6 +6,29 @@ namespace CobolToQuarkusMigration.Tests.Agents;
 
 public class ConversionOutputGuardTests
 {
+    [Fact]
+    public void ExtractFencedCode_IncompleteInitialResponse_PreservesCodeForContinuation()
+    {
+        var output = "```csharp\nnamespace Converted;\npublic class Program\n{\n    void Run() {";
+
+        var extracted = ConversionOutputGuard.ExtractFencedCode(output, "```csharp", "```c#");
+
+        extracted.Should().StartWith("namespace Converted;");
+        extracted.Should().EndWith("void Run() {");
+        extracted.Should().NotContain("CONVERSION DID NOT PRODUCE");
+    }
+
+    [Fact]
+    public void ExtractFencedCode_ContinuationFragment_DoesNotRequireTypeDeclaration()
+    {
+        var output = "```java\n        finishWork();\n    }\n}\n```";
+
+        var extracted = ConversionOutputGuard.ExtractFencedCode(output, "```java");
+
+        extracted.Should().Be("finishWork();\n    }\n}");
+        extracted.Should().NotContain("CONVERSION DID NOT PRODUCE");
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData("")]

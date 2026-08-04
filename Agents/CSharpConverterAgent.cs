@@ -200,6 +200,8 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
                     cont + 1, contLines.Count);
             }
 
+            csharpCode = ValidateCSharpCode(csharpCode);
+
             // Extract AI's semantic class name (based on domain/action/type pattern)
             string aiClassName = ExtractClassNameFromCode(csharpCode);
             string namespaceName = GetNamespaceName(csharpCode);
@@ -362,20 +364,11 @@ public class {{className}}
 
     private string ExtractCSharpCode(string input)
     {
-        if (input.Contains("```csharp") || input.Contains("```c#"))
-        {
-            var startMarker = input.Contains("```csharp") ? "```csharp" : "```c#";
-            var endMarker = "```";
-            int startIndex = input.IndexOf(startMarker);
-            if (startIndex >= 0)
-            {
-                startIndex += startMarker.Length;
-                int endIndex = input.IndexOf(endMarker, startIndex);
-                if (endIndex >= 0)
-                    input = input.Substring(startIndex, endIndex - startIndex).Trim();
-            }
-        }
+        return ConversionOutputGuard.ExtractFencedCode(input, "```csharp", "```c#");
+    }
 
+    private string ValidateCSharpCode(string input)
+    {
         // Fail loud on unusable output. A silent 0-byte "success" is worse than a
         // file that explains what went wrong, so write a self-documenting stub.
         var hasNsFinal = input.Contains("namespace ", StringComparison.Ordinal);

@@ -4,6 +4,27 @@ using System.Text;
 
 internal static class ConversionOutputGuard
 {
+    internal static string ExtractFencedCode(string input, params string[] languageMarkers)
+    {
+        foreach (var marker in languageMarkers)
+        {
+            var startIndex = input.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+            if (startIndex < 0)
+            {
+                continue;
+            }
+
+            startIndex += marker.Length;
+            var endIndex = input.IndexOf("```", startIndex, StringComparison.Ordinal);
+            return (endIndex >= 0
+                    ? input[startIndex..endIndex]
+                    : input[startIndex..])
+                .Trim();
+        }
+
+        return input;
+    }
+
     internal static bool IsUsableChunk(
         string? code,
         string primaryStructure,
