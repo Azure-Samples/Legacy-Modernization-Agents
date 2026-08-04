@@ -152,7 +152,7 @@ public sealed class ProgramFactsExtractor
         // Screens / queues left as empty lists with a warning — extraction needs
         // PR5 (BMS reader integration) and is out of scope for PR3.
         if (sourceContent.Contains("EXEC CICS", StringComparison.OrdinalIgnoreCase))
-            warnings.Add("cics-detected-screens-not-extracted (PR3 scope; deferred to PR5)");
+            warnings.Add("cics-detected-screens-not-extracted");
 
         // ── Data groups (01-level only — that's what becomes a DTO/record). ──
         var groups = ctx.DataStructure

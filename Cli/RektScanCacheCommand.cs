@@ -28,7 +28,7 @@ public static class RektScanCacheCommand
     public static Command Build(ILoggerFactory loggerFactory)
     {
         var root = new Command("rekt-scan-cache",
-            "Incremental REKT scan cache (PR2.b). Inspects a staging dir and emits a parse/skip plan, or records a parse outcome.");
+            "Incremental REKT scan cache. Inspects a staging dir and emits a parse/skip plan, or records a parse outcome.");
 
         root.AddCommand(BuildPlanCommand(loggerFactory));
         root.AddCommand(BuildRecordCommand(loggerFactory));
