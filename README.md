@@ -167,14 +167,13 @@ git clone https://github.com/Azure-Samples/Legacy-Modernization-Agents.git
 cd Legacy-Modernization-Agents
 
 # 2. Configure Azure OpenAI
-cp Config/ai-config.local.env.example Config/ai-config.local.env
+cp Config/ai-config.env.example Config/ai-config.local.env
 # Edit: _MAIN_ENDPOINT (required), _CODE_MODEL / _CHAT_MODEL (optional)
 # Auth: use 'az login' (recommended) OR set _MAIN_API_KEY
 # See docs/az-login-auth-guide.md for Entra ID setup details
 
-# 3. Configure and start Neo4j (dependency graph storage)
-cp .env.example .env
-# Replace the NEO4J_PASSWORD placeholder with a strong local password
+# 3. Start Neo4j (the password is configured in ai-config.local.env)
+export NEO4J_PASSWORD="$(sed -n 's/^NEO4J_PASSWORD=//p' Config/ai-config.local.env | tr -d '"')"
 docker-compose up -d neo4j
 
 # 4. Build
@@ -1057,8 +1056,10 @@ _CODE_MODEL="gpt-5.1-codex-mini"     # For Code Conversion
 
 ### Neo4j (Dependency Graphs)
 
-Copy `.env.example` to `.env`, replace the `NEO4J_PASSWORD` placeholder, then run
-`docker-compose up -d neo4j`. Neo4j HTTP and Bolt ports bind to localhost only.
+`./doctor.sh setup` writes `NEO4J_PASSWORD` to `Config/ai-config.local.env`.
+The template value is for local development only and must be changed for production.
+Run `./doctor.sh rekt-full` or export the value before invoking Compose directly.
+Neo4j HTTP and Bolt ports bind to localhost only.
 
 ### Smart Chunking (Large Files)
 
@@ -1087,7 +1088,7 @@ See [Parallel Jobs Formula](#parallel-jobs-formula) for chunking configuration d
 
 | Issue | Solution |
 |-------|----------|
-| Neo4j connection refused | `docker-compose up -d neo4j` |
+| Neo4j connection refused | Load `NEO4J_PASSWORD` from `Config/ai-config.local.env`, then run `docker-compose up -d neo4j` |
 | Azure API error | Check `Config/ai-config.local.env` credentials or run `az login` |
 | No output generated | Ensure COBOL files are in `source/` |
 | Portal won't start | `lsof -ti :5028 \| xargs kill -9` then retry |

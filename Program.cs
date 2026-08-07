@@ -908,7 +908,7 @@ internal static class Program
             else
             {
                 Console.WriteLine("💡 Consider creating Config/ai-config.local.env for your personal settings");
-                Console.WriteLine("   You can copy from Config/ai-config.local.env.example");
+                Console.WriteLine("   You can copy from Config/ai-config.env.example");
             }
 
             if (File.Exists(templateConfigFile))
@@ -1374,7 +1374,7 @@ internal static class Program
 
                 Console.WriteLine("Configuration Setup Instructions:");
                 Console.WriteLine("1. Run: ./setup.sh (for interactive setup)");
-                Console.WriteLine("2. Or manually copy Config/ai-config.local.env.example to Config/ai-config.local.env");
+                Console.WriteLine("2. Or manually copy Config/ai-config.env.example to Config/ai-config.local.env");
                 Console.WriteLine("3. Edit Config/ai-config.local.env with your actual Azure OpenAI credentials");
                 Console.WriteLine("4. Ensure your model deployment names match your Azure OpenAI setup");
                 Console.WriteLine();

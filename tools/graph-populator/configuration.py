@@ -10,6 +10,7 @@ def required_environment_variable(
     value = values.get(name)
     if not value:
         raise RuntimeError(
-            f"{name} is required. Copy .env.example to .env and set a strong password."
+            f"{name} is required. Run ./doctor.sh setup and configure "
+            "Config/ai-config.local.env."
         )
     return value

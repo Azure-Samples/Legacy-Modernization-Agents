@@ -3096,7 +3096,7 @@ app.MapGet("/api/search/run/{runId}", async (string runId, IMcpClient client, Ca
 				{
 					source = "Neo4j Graph Database",
 					location = "bolt://localhost:7687",
-					credentials = new { username = "neo4j", passwordSource = "NEO4J_PASSWORD in .env" },
+					credentials = new { username = "neo4j", passwordSource = "NEO4J_PASSWORD in Config/ai-config.local.env" },
 					data = neo4jData
 				}
 			},
@@ -3178,7 +3178,7 @@ app.MapGet("/api/data-retrieval-guide", () =>
 				name = "Neo4j",
 				location = "bolt://localhost:7687",
 				purpose = "Stores dependency graph relationships and file connections",
-				credentials = new { username = "neo4j", passwordSource = "NEO4J_PASSWORD in .env" },
+				credentials = new { username = "neo4j", passwordSource = "NEO4J_PASSWORD in Config/ai-config.local.env" },
 				queries = new[]
 				{
 					new { description = "List all runs in Neo4j", cypher = "MATCH (r:Run) RETURN r.runId, r.status, r.totalFiles, r.startedAt ORDER BY r.runId DESC;" },
@@ -3234,7 +3234,7 @@ app.MapGet("/api/data-retrieval-guide", () =>
 				steps = new[]
 				{
 					"Open http://localhost:7474 in browser",
-					"Login as neo4j with the NEO4J_PASSWORD value from .env",
+					"Login as neo4j with the NEO4J_PASSWORD value from Config/ai-config.local.env",
 					"Run: MATCH (r:Run {runId: 43})-[:CONTAINS]->(f:CobolFile) RETURN f LIMIT 25;",
 					"Visualize dependencies: MATCH path = (r:Run {runId: 43})-[:CONTAINS]->()-[d:DEPENDS_ON]->() RETURN path;"
 				}

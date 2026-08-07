@@ -13,10 +13,10 @@ This dev container provides a fully automated development environment with all d
 
 ### Databases
 - ✅ **Neo4j 5.15.0** - Graph database for dependency visualization
-  - Starts automatically when the repository `.env` exists
+  - Starts automatically when `Config/ai-config.local.env` exists
   - Accessible at http://localhost:7474 (browser)
   - Bolt protocol at bolt://localhost:7687
-  - Username: `neo4j`; password: `NEO4J_PASSWORD` from the repository `.env`
+  - Username: `neo4j`; password: `NEO4J_PASSWORD` from `Config/ai-config.local.env`
 
 - ✅ **SQLite3** - For migration metadata and content storage
   - Database location: `/workspace/Data/migration.db`
@@ -48,9 +48,8 @@ This dev container provides a fully automated development environment with all d
 git clone <repo-url>
 cd Legacy-Modernization-Agents
 
-# Configure the local Neo4j password
-cp .env.example .env
-# Replace the placeholder NEO4J_PASSWORD value
+# Configure AI and local Neo4j settings
+./doctor.sh setup
 
 # Open in VS Code
 code .
@@ -65,7 +64,7 @@ The dev container will automatically:
 1. Build the Docker image (~3-5 minutes first time)
 2. Install .NET dependencies (`dotnet restore`)
 3. Build the project (`dotnet build`)
-4. Start the Neo4j container when `.env` is configured
+4. Start the Neo4j container when `Config/ai-config.local.env` is configured
 5. Show welcome message with quick commands
 
 ### 3. Verify Setup
@@ -87,7 +86,7 @@ This checks:
 
 ```bash
 # Copy the template
-cp Config/ai-config.local.env.example Config/ai-config.local.env
+cp Config/ai-config.env.example Config/ai-config.local.env
 
 # Edit with your credentials
 nano Config/ai-config.local.env
@@ -175,8 +174,7 @@ Once running, access these URLs:
 neo4j-status
 
 # Start manually
-cp .env.example .env
-# Replace the placeholder NEO4J_PASSWORD value
+export NEO4J_PASSWORD="$(sed -n 's/^NEO4J_PASSWORD=//p' Config/ai-config.local.env | tr -d '"')"
 docker-compose up -d neo4j
 
 # Check logs for errors
@@ -232,6 +230,9 @@ rm Data/migration.db
 The dev container uses docker-compose for Neo4j:
 
 ```bash
+# Load the local Neo4j credential before Compose commands
+export NEO4J_PASSWORD="$(sed -n 's/^NEO4J_PASSWORD=//p' Config/ai-config.local.env | tr -d '"')"
+
 # View all services
 docker-compose ps
 

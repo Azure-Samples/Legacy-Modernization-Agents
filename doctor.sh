@@ -393,9 +393,9 @@ load_configuration() {
             return $config_status
         fi
 
-        if [[ -z "${NEO4J_PASSWORD:-}" && -f "$REPO_ROOT/.env" ]]; then
+        if [[ -z "${NEO4J_PASSWORD:-}" && -f "$REPO_ROOT/Config/ai-config.local.env" ]]; then
             local neo4j_line
-            neo4j_line=$(grep -E '^NEO4J_PASSWORD=' "$REPO_ROOT/.env" | tail -1)
+            neo4j_line=$(grep -E '^NEO4J_PASSWORD=' "$REPO_ROOT/Config/ai-config.local.env" | tail -1)
             if [[ -n "$neo4j_line" ]]; then
                 export NEO4J_PASSWORD="${neo4j_line#NEO4J_PASSWORD=}"
                 NEO4J_PASSWORD="${NEO4J_PASSWORD%\"}"
@@ -802,13 +802,13 @@ run_doctor() {
         read -p "Would you like me to create Config/ai-config.local.env from the template? (y/n): " create_local
         
         if [[ "$create_local" =~ ^[Yy]$ ]]; then
-            if [[ -f "$REPO_ROOT/Config/ai-config.local.env.example" ]]; then
-                cp "$REPO_ROOT/Config/ai-config.local.env.example" "$REPO_ROOT/Config/ai-config.local.env"
+            if [[ -f "$REPO_ROOT/Config/ai-config.env.example" ]]; then
+                cp "$REPO_ROOT/Config/ai-config.env.example" "$REPO_ROOT/Config/ai-config.local.env"
                 echo -e "${GREEN}✅ Created Config/ai-config.local.env from example${NC}"
                 echo -e "${YELLOW}⚠️  You must edit this file with your actual AI service credentials before running the migration tool.${NC}"
                 local_config_exists=true
             else
-                echo -e "${RED}❌ Example file not found: Config/ai-config.local.env.example${NC}"
+                echo -e "${RED}❌ Example file not found: Config/ai-config.env.example${NC}"
             fi
         fi
         echo
@@ -1372,6 +1372,11 @@ AISETTINGS__CHATDEPLOYMENTNAME="\$_CHAT_MODEL"
 AZURE_OPENAI_ENDPOINT="https://copilot-sdk-placeholder"
 AISETTINGS__ENDPOINT="https://copilot-sdk-placeholder"
 AISETTINGS__CHATENDPOINT="https://copilot-sdk-placeholder"
+
+# Neo4j local development credentials
+# Username: neo4j
+# NOT FOR PRODUCTION, ENSURE TO CHANGE PASSWORD
+NEO4J_PASSWORD="cobol-rekt-2026"
 EOF
 
         # Append GitHub host if not default
@@ -1396,6 +1401,9 @@ EOF
         echo ""
         echo -e "${GREEN}✅ GitHub Copilot SDK configuration written!${NC}"
         echo -e "   Config file: ${BLUE}$LOCAL_CONFIG${NC}"
+        echo ""
+        ensure_neo4j_image || return 1
+        ensure_graph_populator_environment || return 1
         echo ""
         echo -e "${BLUE}Next steps:${NC}"
         echo "1. Run: ./doctor.sh test"
@@ -1436,6 +1444,9 @@ EOF
 
     echo ""
     echo -e "${GREEN}✅ Configuration completed!${NC}"
+    echo ""
+    ensure_neo4j_image || return 1
+    ensure_graph_populator_environment || return 1
     echo ""
     echo -e "${BLUE}🔍 Testing configuration...${NC}"
     
@@ -1648,6 +1659,12 @@ run_test() {
     echo "  Standard:         ./doctor.sh run"
     echo "  Reverse Engineer: dotnet run reverse-engineer --source ./source"
     echo "  Full Migration:   dotnet run -- --source ./source"
+    echo ""
+    echo "Deterministic COBOL Analysis (Cobol-REKT):"
+    echo "  Parse + ingest:   ./doctor.sh rekt-full"
+    echo "  Parse only:       ./doctor.sh rekt-parse"
+    echo "  Ingest existing:  ./doctor.sh rekt-ingest"
+    echo "  Check status:     ./doctor.sh rekt-status"
     echo ""
     if [ $re_components -eq $re_components_total ]; then
         echo "Reverse Engineering Available:"
@@ -2357,32 +2374,153 @@ REKT_NEO4J_HTTP_PORT=7475
 REKT_NEO4J_BOLT_PORT=7688
 REKT_CONTAINER="cobol-rekt"
 REKT_POPULATOR_CONTAINER="cobol-graph-populator"
+NEO4J_IMAGE="neo4j:5.15.0"
 
-# Auto-detect docker API version for macOS compatibility
+# Match the Docker daemon API instead of forcing a client version.
 detect_docker_api_version() {
-    if [[ "$(uname -s)" == "Darwin" ]]; then
-        export DOCKER_API_VERSION="${DOCKER_API_VERSION:-1.43}"
+    local server_api
+    server_api=$(
+        unset DOCKER_API_VERSION
+        docker version --format '{{.Server.APIVersion}}' 2>/dev/null
+    )
+
+    if [[ -n "$server_api" ]]; then
+        export DOCKER_API_VERSION="$server_api"
+    else
+        unset DOCKER_API_VERSION
     fi
+}
+
+ensure_neo4j_image() {
+    detect_docker_api_version
+
+    if ! command -v docker >/dev/null 2>&1; then
+        echo -e "${RED}❌ Docker is required to install the Neo4j image.${NC}"
+        return 1
+    fi
+
+    if docker image inspect "$NEO4J_IMAGE" >/dev/null 2>&1; then
+        echo -e "${GREEN}✅ Neo4j image is available: $NEO4J_IMAGE${NC}"
+        return 0
+    fi
+
+    echo -e "${BLUE}📦 Pulling Neo4j image: $NEO4J_IMAGE${NC}"
+    local pull_output
+    if ! pull_output=$(docker pull "$NEO4J_IMAGE" 2>&1); then
+        echo -e "${RED}❌ Failed to pull Neo4j image:${NC}"
+        printf '%s\n' "$pull_output" | sed 's/^/  /'
+        echo ""
+        echo -e "${YELLOW}Retry with:${NC}"
+        echo "  docker pull $NEO4J_IMAGE"
+        return 1
+    fi
+
+    echo -e "${GREEN}✅ Neo4j image downloaded: $NEO4J_IMAGE${NC}"
+}
+
+ensure_graph_populator_environment() {
+    local populator_dir="$REPO_ROOT/tools/graph-populator"
+    local requirements_file="$populator_dir/requirements.txt"
+    local venv_python="$populator_dir/.venv/bin/python"
+
+    if [[ ! -f "$populator_dir/populator.py" || ! -f "$requirements_file" ]]; then
+        echo -e "${RED}❌ Graph populator sources are incomplete: $populator_dir${NC}"
+        return 1
+    fi
+
+    if [[ -z "$PYTHON_CMD" ]]; then
+        echo -e "${RED}❌ Python is required for the REKT graph populator.${NC}"
+        return 1
+    fi
+
+    if [[ ! -x "$venv_python" ]]; then
+        echo -e "${BLUE}🐍 Creating graph populator virtual environment...${NC}"
+        local venv_output
+        if ! venv_output=$("$PYTHON_CMD" -m venv "$populator_dir/.venv" 2>&1); then
+            echo -e "${RED}❌ Failed to create graph populator virtual environment:${NC}"
+            printf '%s\n' "$venv_output" | sed 's/^/  /'
+            return 1
+        fi
+    fi
+
+    if ! "$venv_python" -c 'import click, neo4j, networkx, orjson, rich' >/dev/null 2>&1; then
+        echo -e "${BLUE}📦 Installing graph populator dependencies...${NC}"
+        local install_output
+        if ! install_output=$("$venv_python" -m pip install -r "$requirements_file" 2>&1); then
+            echo -e "${RED}❌ Failed to install graph populator dependencies:${NC}"
+            printf '%s\n' "$install_output" | sed 's/^/  /'
+            echo ""
+            echo -e "${YELLOW}Retry with:${NC}"
+            echo "  $venv_python -m pip install -r $requirements_file"
+            return 1
+        fi
+    fi
+
+    echo -e "${GREEN}✅ Graph populator environment is ready${NC}"
 }
 
 ensure_rekt_containers() {
     detect_docker_api_version
     echo -e "${BLUE}🔧 Ensuring rekt containers are running...${NC}"
 
-    # Start only the rekt services (leave existing neo4j untouched)
-    docker-compose up -d "$REKT_NEO4J_CONTAINER" "$REKT_CONTAINER" 2>/dev/null
+    if [[ -z "${NEO4J_PASSWORD:-}" ]]; then
+        load_configuration >/dev/null 2>&1 || true
+    fi
+
+    if [[ -z "${NEO4J_PASSWORD:-}" ]]; then
+        if [[ ! -f "$REPO_ROOT/Config/ai-config.local.env" ]]; then
+            echo -e "${RED}❌ Neo4j configuration is missing: Config/ai-config.local.env${NC}"
+            echo ""
+            echo "Create it through the interactive setup:"
+            echo "  ./doctor.sh setup"
+            return 1
+        fi
+
+        if ! grep -Eq '^[[:space:]]*NEO4J_PASSWORD[[:space:]]*=[[:space:]]*[^[:space:]#]+' "$REPO_ROOT/Config/ai-config.local.env"; then
+            echo -e "${RED}❌ NEO4J_PASSWORD is empty in Config/ai-config.local.env${NC}"
+            echo ""
+            echo "Edit Config/ai-config.local.env and set a strong local password:"
+            echo "  NEO4J_PASSWORD=<your-local-password>"
+            return 1
+        fi
+    fi
+
+    ensure_neo4j_image || return 1
+
+    # Start only the rekt services (leave existing neo4j untouched).
+    local compose_output
+    if ! compose_output=$(docker-compose up -d "$REKT_NEO4J_CONTAINER" "$REKT_CONTAINER" 2>&1); then
+        echo -e "${RED}❌ Failed to start Cobol-REKT containers:${NC}"
+        printf '%s\n' "$compose_output" | sed 's/^/  /'
+        echo ""
+        echo -e "${YELLOW}Debug with:${NC}"
+        echo "  docker-compose ps"
+        echo "  docker-compose logs --tail=100 $REKT_NEO4J_CONTAINER $REKT_CONTAINER"
+        return 1
+    fi
 
     # Wait for rekt Neo4j to be healthy
     local max_wait=60
     local waited=0
     echo -ne "  Waiting for $REKT_NEO4J_CONTAINER"
     while ! docker exec "$REKT_NEO4J_CONTAINER" sh -c \
-        'cypher-shell -u neo4j -p "$NEO4J_PASSWORD" "RETURN 1"' >/dev/null 2>&1; do
+        'cypher-shell -u neo4j -p "$HEALTHCHECK_PASSWORD" "RETURN 1"' >/dev/null 2>&1; do
         sleep 2
         waited=$((waited + 2))
         echo -ne "."
         if [[ $waited -ge $max_wait ]]; then
             echo -e "\n${RED}❌ $REKT_NEO4J_CONTAINER did not become healthy in ${max_wait}s${NC}"
+            echo -e "${YELLOW}Container state:${NC}"
+            docker inspect --format \
+                '  Status={{.State.Status}} ExitCode={{.State.ExitCode}} Error={{.State.Error}} Health={{if .State.Health}}{{.State.Health.Status}}{{else}}n/a{{end}}' \
+                "$REKT_NEO4J_CONTAINER" 2>&1 || true
+            echo ""
+            echo -e "${YELLOW}Recent $REKT_NEO4J_CONTAINER logs:${NC}"
+            docker logs --tail 50 "$REKT_NEO4J_CONTAINER" 2>&1 | sed 's/^/  /'
+            echo ""
+            echo -e "${YELLOW}Debug with:${NC}"
+            echo "  docker-compose ps"
+            echo "  docker-compose logs --tail=100 $REKT_NEO4J_CONTAINER"
             return 1
         fi
     done
@@ -3132,10 +3270,10 @@ run_rekt_ingest() {
 
     local db_path
     db_path="$(get_migration_db_path)"
-    local sqlite_flag=""
+    local sqlite_args=()
     if [[ -f "$db_path" ]]; then
         echo -e "${BLUE}  SQLite DB found: $db_path — will migrate existing data${NC}"
-        sqlite_flag="--sqlite-db /data/$(basename "$db_path")"
+        sqlite_args=(--sqlite-db "$db_path")
     fi
 
     # Use date-based run ID (YYYYMMDDhhmm) — readable and unique per minute
@@ -3145,21 +3283,18 @@ run_rekt_ingest() {
 
     echo -e "${BLUE}  Ingesting into $REKT_NEO4J_CONTAINER (bolt://localhost:$REKT_NEO4J_BOLT_PORT)${NC}"
 
-    # Use local Python venv for populator (container may not exist)
+    # Use the local Python environment so ingestion does not depend on a
+    # separately running graph-populator container.
     local populator_dir="$REPO_ROOT/tools/graph-populator"
-    if [[ -f "$populator_dir/populator.py" ]] && [[ -d "$populator_dir/.venv" ]]; then
-        (cd "$populator_dir" && source .venv/bin/activate && python populator.py ingest \
-            --source-dir "$REPO_ROOT/source" \
-            --rekt-output "$REPO_ROOT/output/rekt" \
-            --run-id "$run_id" \
-            $sqlite_flag)
-    else
-        echo -e "${RED}❌ Graph populator not found at $populator_dir${NC}"
-        echo -e "${YELLOW}   Run: cd tools/graph-populator && python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt${NC}"
-        return 1
-    fi
+    ensure_graph_populator_environment || return 1
+    (cd "$populator_dir" && .venv/bin/python populator.py ingest \
+        --source-dir "$REPO_ROOT/source" \
+        --rekt-output "$REPO_ROOT/output/rekt" \
+        --run-id "$run_id" \
+        "${sqlite_args[@]}")
 
     echo -e "\n${GREEN}  Neo4j Browser: http://localhost:$REKT_NEO4J_HTTP_PORT${NC}"
+    echo -e "${GREEN}  Connection URL: neo4j://localhost:$REKT_NEO4J_BOLT_PORT${NC}"
     echo -e "${GREEN}  Scan Run ID: ${run_id}${NC}"
 }
 
@@ -3173,6 +3308,7 @@ run_rekt_full() {
 
     echo -e "\n${GREEN}✅ rekt pipeline complete.${NC}"
     echo -e "${BLUE}  Neo4j Browser: http://localhost:$REKT_NEO4J_HTTP_PORT${NC}"
+    echo -e "${BLUE}  Connection URL: neo4j://localhost:$REKT_NEO4J_BOLT_PORT${NC}"
 
 }
 
@@ -3200,15 +3336,15 @@ run_rekt_status() {
 
     # Neo4j node count
     if docker exec "$REKT_NEO4J_CONTAINER" sh -c \
-        'cypher-shell -u neo4j -p "$NEO4J_PASSWORD" "MATCH (n) RETURN count(n) AS nodes"' \
+        'cypher-shell -u neo4j -p "$HEALTHCHECK_PASSWORD" "MATCH (n) RETURN count(n) AS nodes"' \
         2>/dev/null | grep -q "[0-9]"; then
         local node_count
         node_count=$(docker exec "$REKT_NEO4J_CONTAINER" sh -c \
-            'cypher-shell -u neo4j -p "$NEO4J_PASSWORD" "MATCH (n) RETURN count(n) AS nodes"' \
+            'cypher-shell -u neo4j -p "$HEALTHCHECK_PASSWORD" "MATCH (n) RETURN count(n) AS nodes"' \
             2>/dev/null | tail -1 | tr -d ' "')
         local rel_count
         rel_count=$(docker exec "$REKT_NEO4J_CONTAINER" sh -c \
-            'cypher-shell -u neo4j -p "$NEO4J_PASSWORD" "MATCH ()-[r]->() RETURN count(r) AS rels"' \
+            'cypher-shell -u neo4j -p "$HEALTHCHECK_PASSWORD" "MATCH ()-[r]->() RETURN count(r) AS rels"' \
             2>/dev/null | tail -1 | tr -d ' "')
         echo -e "\n  ${BLUE}Graph: ${node_count} nodes, ${rel_count} relationships${NC}"
     fi
