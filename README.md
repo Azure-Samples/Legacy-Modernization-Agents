@@ -12,16 +12,17 @@ The migration uses Microsoft Agent Framework with a multi-provider architecture 
 ---
 
 > [!TIP]
-> **Two ways to use this framework:**
+> **Ways to use this framework:**
 >
 > | Command | What it does |
 > |---|---|
-> | `./doctor.sh run` | **Run a full migration** — analyze COBOL, convert to Java/C#, generate reports, and launch the portal |
+> | `./doctor.sh setup` | **Configure the framework** — set up the AI provider, credentials, models, and local services |
+> | `./doctor.sh rekt-full` | **Run deterministic static analysis (optional but recommended)** — parse COBOL sources deterministically and ingest the resulting artifacts into the REKT Neo4j graph |
 > | `./doctor.sh reverse-eng` | **Extract business logic only** — runs RE analysis, persists results to DB, launches the portal |
-> | `./doctor.sh convert-only` | **Convert only** — skips RE; prompts whether to inject persisted RE results from a previous run |
+> | `./doctor.sh run` | **Run a full migration** — analyze COBOL, convert to Java/C#, generate reports, and launch the portal |
 > | `./doctor.sh portal` | **Open the portal only** — browse previous migration results, dependency graphs, and chat with your codebase at http://localhost:5028 |
 >
-> Both commands handle all configuration, dependency checks, and service startup automatically.
+> The doctor script handles dependency checks and required service startup automatically.
 
 ---
 
