@@ -1,0 +1,33 @@
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
+@@ -134,9 +134,29 @@ public class ParsePipeline {
+         StageResult<ParserStageResult> lastStageResult = (StageResult<ParserStageResult>) pipelineResult.getLastStageResult();
+         errorFinalizerService.processLateErrors(ctx, ctx.getCopybooksRepository());
+ 
++        // Local patch (Azure-Samples/COBOL-Modernization-Agents): allow
++        // warning-only diagnostics to retain a recovered parse tree. ERROR
++        // diagnostics remain fatal because downstream consumers label the
++        // exported structure authoritative.
+         if (!ctx.getAccumulatedErrors().isEmpty()) {
+             ctx.getAccumulatedErrors().forEach(e -> LOGGER.info(e.toString()));
+-            throw new ParseDiagnosticRuntimeError("There were parsing errors!", ctx.getAccumulatedErrors());
++            long fatalCount = ctx.getAccumulatedErrors().stream()
++                .filter(e -> e.getSeverity() == org.eclipse.lsp.cobol.common.error.ErrorSeverity.ERROR)
++                .count();
++            if (fatalCount > 0) {
++                throw new ParseDiagnosticRuntimeError(
++                    "Parsing produced ERROR diagnostics — refusing partial authoritative output.",
++                    ctx.getAccumulatedErrors());
++            }
++            LOGGER.warning("Parser produced " + ctx.getAccumulatedErrors().size()
++                + " warning diagnostic(s) — proceeding with recovered AST "
++                + "(Azure-Samples local patch).");
++            if (lastStageResult == null || lastStageResult.getData() == null
++                    || lastStageResult.getData().getTree() == null) {
++                throw new ParseDiagnosticRuntimeError(
++                    "Parsing produced no parse tree — cannot continue.",
++                    ctx.getAccumulatedErrors());
++            }
+         }
+ 
+         tree = lastStageResult.getData().getTree();

@@ -109,12 +109,14 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
             "Converting chunk {Index} of {File} to C# (lines {Start}-{End}, {ContentLen} chars)",
             chunk.ChunkIndex, chunk.SourceFile, chunk.StartLine, chunk.EndLine, chunk.Content?.Length ?? 0);
 
+        MetricsSink.CurrentRunId = _runId;
+
         var contentLength = chunk.Content?.Length ?? 0;
         if (contentLength > MaxContentChars)
         {
             var errorMsg = $"❌ CHUNK TOO LARGE: Chunk {chunk.ChunkIndex} has {contentLength:N0} chars (max: {MaxContentChars:N0}).";
             Logger.LogError(errorMsg);
-            
+
             return new ChunkConversionResult
             {
                 ChunkIndex = chunk.ChunkIndex,
@@ -128,7 +130,7 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
         try
         {
             var systemPrompt = BuildChunkAwareSystemPrompt(chunk, context);
-            var userPrompt = BuildChunkAwareUserPrompt(chunk, context);
+            var userPrompt = await BuildChunkAwareUserPromptAsync(chunk, context);
 
             var (csharpCode, usedFallback, fallbackReason) = await ExecuteWithFallbackAsync(
                 systemPrompt, userPrompt, $"{chunk.SourceFile} chunk {chunk.ChunkIndex}");
@@ -148,6 +150,40 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
             }
 
             csharpCode = ExtractCSharpCode(csharpCode);
+
+            if (!ConversionOutputGuard.IsUsableChunk(
+                    csharpCode,
+                    "namespace ",
+                    "class ",
+                    "C#",
+                    requireStructure: chunk.ChunkIndex == 0,
+                    out var reason))
+            {
+                var diagnosticStub = ConversionOutputGuard.BuildChunkDiagnosticStub(
+                    "C#",
+                    chunk.SourceFile,
+                    chunk.ChunkIndex,
+                    context.TotalChunks,
+                    chunk.StartLine,
+                    chunk.EndLine,
+                    reason);
+
+                Logger.LogWarning(
+                    "[ChunkAwareCSharpConverter] Empty/unusable chunk output for {File} chunk {Idx} — writing diagnostic stub",
+                    chunk.SourceFile,
+                    chunk.ChunkIndex);
+
+                return new ChunkConversionResult
+                {
+                    ChunkIndex = chunk.ChunkIndex,
+                    SourceFile = chunk.SourceFile,
+                    Success = false,
+                    ErrorMessage = reason,
+                    ConvertedCode = diagnosticStub,
+                    ProcessingTimeMs = stopwatch.ElapsedMilliseconds
+                };
+            }
+
             var definedMethods = ExtractDefinedMethods(csharpCode);
 
             return new ChunkConversionResult
@@ -348,8 +384,8 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
     private string BuildChunkAwareSystemPrompt(ChunkResult chunk, ChunkContext context)
     {
         var sb = new StringBuilder();
-        
-        sb.Append(PromptLoader.LoadSection("ChunkAwareCSharpConverter", "System", new Dictionary<string, string>
+
+        sb.Append(PromptLoader.LoadSectionValidated("ChunkAwareCSharpConverter", "System", new Dictionary<string, string>
         {
             ["ChunkNumber"] = (chunk.ChunkIndex + 1).ToString(),
             ["TotalChunks"] = context.TotalChunks.ToString()
@@ -358,74 +394,86 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
         var chunkSection = chunk.ChunkIndex == 0 ? "ChunkFirst"
             : chunk.ChunkIndex == context.TotalChunks - 1 ? "ChunkLast"
             : "ChunkMiddle";
-        sb.AppendLine(PromptLoader.LoadSection("ChunkAwareCSharpConverter", chunkSection));
+        sb.AppendLine(PromptLoader.LoadSectionValidated(
+            "ChunkAwareCSharpConverter", chunkSection, new Dictionary<string, string>()));
 
         // Add context from previous chunks
         if (context.PreviousSignatures.Any())
         {
-            sb.AppendLine("\nMethods defined in previous chunks (maintain consistency):");
-            foreach (var sig in context.PreviousSignatures.Take(20))
-            {
-                sb.AppendLine($"  - {sig.TargetSignature}");
-            }
+            var items = string.Join(
+                Environment.NewLine,
+                context.PreviousSignatures.Take(20).Select(sig => $"  - {sig.TargetSignature}"));
+            sb.AppendLine();
+            sb.AppendLine(PromptLoader.LoadSectionValidated(
+                "ChunkAwareCSharpConverter", "PreviousSignatures", new Dictionary<string, string>
+                {
+                    ["Items"] = items
+                }));
         }
 
         if (context.PreviousVariables.Any())
         {
-            sb.AppendLine("\nVariables defined in previous chunks:");
-            foreach (var variable in context.PreviousVariables.Take(30))
-            {
-                sb.AppendLine($"  - {variable.TargetType} {variable.TargetName}");
-            }
+            var items = string.Join(
+                Environment.NewLine,
+                context.PreviousVariables.Take(30)
+                    .Select(variable => $"  - {variable.TargetType} {variable.TargetName}"));
+            sb.AppendLine();
+            sb.AppendLine(PromptLoader.LoadSectionValidated(
+                "ChunkAwareCSharpConverter", "PreviousVariables", new Dictionary<string, string>
+                {
+                    ["Items"] = items
+                }));
         }
 
         return sb.ToString();
     }
 
-    private string BuildChunkAwareUserPrompt(ChunkResult chunk, ChunkContext context)
+    private async Task<string> BuildChunkAwareUserPromptAsync(ChunkResult chunk, ChunkContext context)
     {
-        var sb = new StringBuilder();
-
-        sb.AppendLine($"Convert this COBOL chunk (lines {chunk.StartLine}-{chunk.EndLine}) to C#:");
-        sb.AppendLine();
-        sb.AppendLine("```cobol");
-        sb.AppendLine(SanitizeCobolContent(chunk.Content ?? string.Empty));
-        sb.AppendLine("```");
-        sb.AppendLine();
-
-        if (chunk.SemanticUnitNames.Any())
-        {
-            sb.AppendLine("Semantic units in this chunk:");
-            foreach (var unit in chunk.SemanticUnitNames)
+        var semanticUnitsContext = chunk.SemanticUnitNames.Any()
+            ? PromptLoader.LoadSectionValidated("ChunkAwareCSharpConverter", "SemanticUnits", new Dictionary<string, string>
             {
-                sb.AppendLine($"  - {unit}");
-            }
-            sb.AppendLine();
-        }
+                ["Items"] = string.Join(
+                    Environment.NewLine,
+                    chunk.SemanticUnitNames.Select(unit => $"  - {unit}"))
+            })
+            : string.Empty;
 
-        if (context.PendingForwardReferences.Any())
-        {
-            sb.AppendLine("References to resolve from previous chunks:");
-            foreach (var reference in context.PendingForwardReferences.Take(10))
+        var forwardReferencesContext = context.PendingForwardReferences.Any()
+            ? PromptLoader.LoadSectionValidated("ChunkAwareCSharpConverter", "ForwardReferences", new Dictionary<string, string>
             {
-                sb.AppendLine($"  - {reference.TargetMethod}");
-            }
-            sb.AppendLine();
-        }
+                ["Items"] = string.Join(
+                    Environment.NewLine,
+                    context.PendingForwardReferences.Take(10).Select(reference => $"  - {reference.TargetMethod}"))
+            })
+            : string.Empty;
 
         // Inject business logic context from reverse engineering when available
         var businessLogic = _businessLogicExtracts
             .FirstOrDefault(bl => string.Equals(bl.FileName, chunk.SourceFile, StringComparison.OrdinalIgnoreCase));
-        if (businessLogic != null)
+        var businessLogicContext = businessLogic is null
+            ? string.Empty
+            : PromptLoader.LoadSectionValidated("ChunkAwareCSharpConverter", "BusinessLogic", new Dictionary<string, string>
+            {
+                ["BusinessLogic"] = FormatBusinessLogicContext(businessLogic)
+            });
+
+        // REKT structural context + shared-types registry (opt-in via ENABLE_REKT_CONTEXT).
+        var structuralContextBuilder = new StringBuilder();
+        await RektPromptInjector.InjectAsync(
+            structuralContextBuilder, "C#", chunk.SourceFile ?? "(unknown)",
+            "ChunkAwareCSharpConverter", _runId, Logger);
+
+        return PromptLoader.LoadSectionValidated("ChunkAwareCSharpConverter", "User", new Dictionary<string, string>
         {
-            sb.AppendLine("Business logic context from reverse engineering (use to ensure accurate conversion):");
-            sb.AppendLine();
-            sb.Append(FormatBusinessLogicContext(businessLogic));
-        }
-
-        sb.AppendLine("Return ONLY C# code. No markdown blocks. No explanations.");
-
-        return sb.ToString();
+            ["StartLine"] = chunk.StartLine.ToString(),
+            ["EndLine"] = chunk.EndLine.ToString(),
+            ["CobolContent"] = SanitizeCobolContent(chunk.Content ?? string.Empty),
+            ["SemanticUnitsContext"] = semanticUnitsContext,
+            ["ForwardReferencesContext"] = forwardReferencesContext,
+            ["BusinessLogicContext"] = businessLogicContext,
+            ["StructuralContext"] = structuralContextBuilder.ToString()
+        });
     }
 
     private string ExtractCSharpCode(string input)
@@ -480,7 +528,7 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
         foreach (var line in lines)
         {
             var trimmed = line.Trim();
-            if ((trimmed.StartsWith("public ") || trimmed.StartsWith("private ") || 
+            if ((trimmed.StartsWith("public ") || trimmed.StartsWith("private ") ||
                  trimmed.StartsWith("protected ") || trimmed.StartsWith("internal ") ||
                  trimmed.StartsWith("async ")) &&
                 trimmed.Contains("(") && !trimmed.Contains("=") && !trimmed.Contains("new "))
@@ -504,7 +552,7 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
     {
         var parenIndex = signature.IndexOf('(');
         if (parenIndex <= 0) return string.Empty;
-        
+
         var beforeParen = signature.Substring(0, parenIndex).Trim();
         var parts = beforeParen.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         return parts.Length > 0 ? parts[^1] : string.Empty;

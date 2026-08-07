@@ -12,16 +12,17 @@ The migration uses Microsoft Agent Framework with a multi-provider architecture 
 ---
 
 > [!TIP]
-> **Two ways to use this framework:**
+> **Ways to use this framework:**
 >
 > | Command | What it does |
 > |---|---|
-> | `./doctor.sh run` | **Run a full migration** — analyze COBOL, convert to Java/C#, generate reports, and launch the portal |
+> | `./doctor.sh setup` | **Configure the framework** — set up the AI provider, credentials, models, and local services |
+> | `./doctor.sh rekt-full` | **Run deterministic static analysis (optional but recommended)** — parse COBOL sources deterministically and ingest the resulting artifacts into the REKT Neo4j graph |
 > | `./doctor.sh reverse-eng` | **Extract business logic only** — runs RE analysis, persists results to DB, launches the portal |
-> | `./doctor.sh convert-only` | **Convert only** — skips RE; prompts whether to inject persisted RE results from a previous run |
+> | `./doctor.sh run` | **Run a full migration** — analyze COBOL, convert to Java/C#, generate reports, and launch the portal |
 > | `./doctor.sh portal` | **Open the portal only** — browse previous migration results, dependency graphs, and chat with your codebase at http://localhost:5028 |
 >
-> Both commands handle all configuration, dependency checks, and service startup automatically.
+> The doctor script handles dependency checks and required service startup automatically.
 
 ---
 
@@ -167,12 +168,13 @@ git clone https://github.com/Azure-Samples/Legacy-Modernization-Agents.git
 cd Legacy-Modernization-Agents
 
 # 2. Configure Azure OpenAI
-cp Config/ai-config.local.env.example Config/ai-config.local.env
+cp Config/ai-config.env.example Config/ai-config.local.env
 # Edit: _MAIN_ENDPOINT (required), _CODE_MODEL / _CHAT_MODEL (optional)
 # Auth: use 'az login' (recommended) OR set _MAIN_API_KEY
 # See docs/az-login-auth-guide.md for Entra ID setup details
 
-# 3. Start Neo4j (dependency graph storage)
+# 3. Start Neo4j (the password is configured in ai-config.local.env)
+export NEO4J_PASSWORD="$(sed -n 's/^NEO4J_PASSWORD=//p' Config/ai-config.local.env | tr -d '"')"
 docker-compose up -d neo4j
 
 # 4. Build
@@ -1055,21 +1057,10 @@ _CODE_MODEL="gpt-5.1-codex-mini"     # For Code Conversion
 
 ### Neo4j (Dependency Graphs)
 
-In `Config/appsettings.json`:
-```json
-{
-  "ApplicationSettings": {
-    "Neo4j": {
-      "Enabled": true,
-      "Uri": "bolt://localhost:7687",
-      "Username": "neo4j",
-      "Password": "cobol-migration-2025"
-    }
-  }
-}
-```
-
-Start with: `docker-compose up -d neo4j`
+`./doctor.sh setup` writes `NEO4J_PASSWORD` to `Config/ai-config.local.env`.
+The template value is for local development only and must be changed for production.
+Run `./doctor.sh rekt-full` or export the value before invoking Compose directly.
+Neo4j HTTP and Bolt ports bind to localhost only.
 
 ### Smart Chunking (Large Files)
 
@@ -1098,7 +1089,7 @@ See [Parallel Jobs Formula](#parallel-jobs-formula) for chunking configuration d
 
 | Issue | Solution |
 |-------|----------|
-| Neo4j connection refused | `docker-compose up -d neo4j` |
+| Neo4j connection refused | Load `NEO4J_PASSWORD` from `Config/ai-config.local.env`, then run `docker-compose up -d neo4j` |
 | Azure API error | Check `Config/ai-config.local.env` credentials or run `az login` |
 | No output generated | Ensure COBOL files are in `source/` |
 | Portal won't start | `lsof -ti :5028 \| xargs kill -9` then retry |

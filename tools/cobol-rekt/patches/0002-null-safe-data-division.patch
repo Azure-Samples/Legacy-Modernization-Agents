@@ -1,0 +1,24 @@
+--- a/smojol-core/src/main/java/org/smojol/common/structure/CobolDataStructureBuilder.java
++++ b/smojol-core/src/main/java/org/smojol/common/structure/CobolDataStructureBuilder.java
+@@ -34,9 +34,18 @@ public class CobolDataStructureBuilder {
+         zerothStructure = new Format1DataStructure(0, unresolvedReferenceStrategy);
+         ParseTree dataDivision = navigator.dataDivisionBody(navigator.getRoot());
+         CobolParser.DataDivisionContext dataDivisionBody = (CobolParser.DataDivisionContext) dataDivision;
+-        extractFromWorkingStorage(dataDivisionBody);
+-        extractFromLinkage(dataDivisionBody);
+-        extractFromFileSection(dataDivisionBody);
++        // Local patch (Azure-Samples/COBOL-Modernization-Agents):
++        // some legitimate COBOL programs have no DATA DIVISION at all
++        // (pure procedural shells that delegate via CALL), and partial
++        // parses can also leave dataDivisionBody null. Skip extraction
++        // gracefully instead of NPEing, so the CFG/AST still ship.
++        if (dataDivisionBody != null) {
++            extractFromWorkingStorage(dataDivisionBody);
++            extractFromLinkage(dataDivisionBody);
++            extractFromFileSection(dataDivisionBody);
++        } else {
++            LOGGER.warning("No DATA DIVISION detected — building data structure with system globals only (Azure-Samples local patch).");
++        }
+         zerothStructure.expandTables();
+         zerothStructure.calculateMemoryRequirements();
+         zerothStructure.allocateRecordPointers();

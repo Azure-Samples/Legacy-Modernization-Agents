@@ -1,31 +1,25 @@
 using System.Collections.Concurrent;
 using System.Text;
+using System.Text.RegularExpressions;
 using CobolToQuarkusMigration.Models;
 
 namespace CobolToQuarkusMigration.Helpers;
 
-/// <summary>
-/// Loads prompt templates from the Agents/Prompts directory and supports placeholder replacement.
-/// Placeholders use the {{Name}} syntax.
-/// Files may contain multiple named sections delimited by "## SECTION: Name" headers.
-/// </summary>
+// Loads Markdown prompt sections and replaces {{Name}} placeholders.
 public static class PromptLoader
 {
+    private static readonly Regex PlaceholderPattern =
+        new(@"\{\{(?<name>[A-Za-z0-9_]+)\}\}", RegexOptions.Compiled);
+
     private static readonly ConcurrentDictionary<string, string> FileCache = new();
     private static readonly ConcurrentDictionary<string, Dictionary<string, string>> SectionCache = new();
 
-    /// <summary>
-    /// Gets or sets the current codebase profile text. Set this after scanning COBOL files
-    /// so that prompt templates with {{CodebaseProfile}} are populated automatically.
-    /// </summary>
+    // Populates the global {{CodebaseProfile}} placeholder.
     public static string? CodebaseProfile { get; set; }
 
     private static string PromptsDirectory =>
         Path.Combine(AppContext.BaseDirectory, "Agents", "Prompts");
 
-    /// <summary>
-    /// Loads a prompt template by name (without extension). Files are expected at Agents/Prompts/{name}.md.
-    /// </summary>
     public static string Load(string promptName)
     {
         return FileCache.GetOrAdd(promptName, static name =>
@@ -37,45 +31,44 @@ public static class PromptLoader
         });
     }
 
-    /// <summary>
-    /// Loads a prompt template and replaces {{placeholder}} tokens with the supplied values.
-    /// </summary>
     public static string Load(string promptName, Dictionary<string, string> replacements)
     {
-        var template = Load(promptName);
-        foreach (var (key, value) in replacements)
-        {
-            template = template.Replace($"{{{{{key}}}}}", value);
-        }
-        return template;
+        return ApplyReplacements(Load(promptName), replacements);
     }
 
-    /// <summary>
-    /// Loads a named section from a prompt file that contains "## SECTION: Name" delimiters.
-    /// Automatically applies the {{CodebaseProfile}} replacement if set.
-    /// </summary>
+    public static string LoadValidated(string promptName, IReadOnlyDictionary<string, string> replacements)
+    {
+        return RenderValidated(Load(promptName), replacements, promptName, sectionName: null);
+    }
+
     public static string LoadSection(string promptName, string sectionName)
+    {
+        return ApplyGlobalReplacements(GetSection(promptName, sectionName));
+    }
+
+    public static string LoadSection(string promptName, string sectionName, Dictionary<string, string> replacements)
+    {
+        return ApplyReplacements(LoadSection(promptName, sectionName), replacements);
+    }
+
+    // Use LoadSection for templates intentionally rendered in multiple stages.
+    public static string LoadSectionValidated(
+        string promptName,
+        string sectionName,
+        IReadOnlyDictionary<string, string> replacements)
+    {
+        return RenderValidated(
+            GetSection(promptName, sectionName), replacements, promptName, sectionName);
+    }
+
+    private static string GetSection(string promptName, string sectionName)
     {
         var sections = SectionCache.GetOrAdd(promptName, static name => ParseSections(Load(name)));
 
         if (!sections.TryGetValue(sectionName, out var content))
             throw new KeyNotFoundException($"Section '{sectionName}' not found in prompt '{promptName}'. Available: {string.Join(", ", sections.Keys)}");
 
-        return ApplyGlobalReplacements(content);
-    }
-
-    /// <summary>
-    /// Loads a named section and replaces {{placeholder}} tokens with the supplied values.
-    /// Automatically applies the {{CodebaseProfile}} replacement if set.
-    /// </summary>
-    public static string LoadSection(string promptName, string sectionName, Dictionary<string, string> replacements)
-    {
-        var template = LoadSection(promptName, sectionName);
-        foreach (var (key, value) in replacements)
-        {
-            template = template.Replace($"{{{{{key}}}}}", value);
-        }
-        return template;
+        return content;
     }
 
     private static Dictionary<string, string> ParseSections(string content)
@@ -109,15 +102,50 @@ public static class PromptLoader
 
     private static string ApplyGlobalReplacements(string template)
     {
-        if (CodebaseProfile is not null)
-            template = template.Replace("{{CodebaseProfile}}", CodebaseProfile);
+        return template.Replace("{{CodebaseProfile}}", CodebaseProfile ?? string.Empty);
+    }
+
+    private static string ApplyReplacements(
+        string template,
+        IReadOnlyDictionary<string, string> replacements)
+    {
+        foreach (var (key, value) in replacements)
+            template = template.Replace($"{{{{{key}}}}}", value);
         return template;
     }
 
-    /// <summary>
-    /// Generates a codebase profile string from the scanned COBOL files.
-    /// Set the result on <see cref="CodebaseProfile"/> before agents start processing.
-    /// </summary>
+    private static string RenderValidated(
+        string template,
+        IReadOnlyDictionary<string, string> replacements,
+        string promptName,
+        string? sectionName)
+    {
+        var unresolved = new SortedSet<string>(StringComparer.Ordinal);
+        var rendered = PlaceholderPattern.Replace(template, match =>
+        {
+            var name = match.Groups["name"].Value;
+            if (replacements.TryGetValue(name, out var value))
+                return value;
+            if (name == "CodebaseProfile")
+                return CodebaseProfile ?? string.Empty;
+
+            unresolved.Add(name);
+            return match.Value;
+        });
+
+        if (unresolved.Count > 0)
+        {
+            var location = sectionName is null
+                ? $"prompt '{promptName}'"
+                : $"prompt '{promptName}', section '{sectionName}'";
+            throw new InvalidOperationException(
+                $"Unresolved placeholder(s) in {location}: {string.Join(", ", unresolved)}.");
+        }
+
+        return rendered;
+    }
+
+    // Summarizes the scanned corpus for the global prompt profile.
     public static string GenerateCodebaseProfile(IReadOnlyList<CobolFile> files)
     {
         var programs = files.Where(f => !f.IsCopybook).ToList();

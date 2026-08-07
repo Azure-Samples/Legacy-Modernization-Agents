@@ -102,7 +102,8 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
 
         try
         {
-            var systemPrompt = PromptLoader.LoadSection("CSharpConverter", "System");
+            var systemPrompt = PromptLoader.LoadSectionValidated(
+                "CSharpConverter", "System", new Dictionary<string, string>());
 
             // NOTE: Large files are handled by SmartMigrationOrchestrator which routes them
             // to ChunkedMigrationProcess. Files reaching this agent should fit within API limits.
@@ -120,39 +121,29 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
             // Sanitize COBOL content for content filtering
             string sanitizedContent = SanitizeCobolContent(contentToConvert);
 
-            // =========================================================================================
-            // SPEC-DRIVEN CODE GENERATION (MITM HOOK)
-            var userPromptBuilder = new StringBuilder();
-            userPromptBuilder.AppendLine("Convert the following COBOL program to C# with .NET:");
-            userPromptBuilder.AppendLine();
-            userPromptBuilder.AppendLine("```cobol");
-            userPromptBuilder.AppendLine(sanitizedContent);
-            userPromptBuilder.AppendLine("```");
-
-            userPromptBuilder.AppendLine();
-            userPromptBuilder.AppendLine("Here is the analysis of the COBOL program:");
-            userPromptBuilder.AppendLine();
-            userPromptBuilder.AppendLine(cobolAnalysis.RawAnalysisData);
-
             // Inject business logic context from reverse engineering when available
             var businessLogic = _businessLogicExtracts
                 .FirstOrDefault(bl => string.Equals(bl.FileName, cobolFile.FileName, StringComparison.OrdinalIgnoreCase));
-            if (businessLogic != null)
+            var businessLogicContext = businessLogic is null
+                ? string.Empty
+                : PromptLoader.LoadSectionValidated("CSharpConverter", "BusinessLogic", new Dictionary<string, string>
+                {
+                    ["BusinessLogic"] = FormatBusinessLogicContext(businessLogic)
+                });
+
+            // REKT structural context + shared-types registry (opt-in via ENABLE_REKT_CONTEXT).
+            var structuralContextBuilder = new StringBuilder();
+            await RektPromptInjector.InjectAsync(
+                structuralContextBuilder, "C#", cobolFile.FileName, AgentName, _runId, Logger);
+
+            var userPrompt = PromptLoader.LoadSectionValidated("CSharpConverter", "User", new Dictionary<string, string>
             {
-                userPromptBuilder.AppendLine();
-                userPromptBuilder.AppendLine("Here is the extracted business logic from the reverse engineering phase. Use this to ensure the converted code faithfully implements all business rules and features:");
-                userPromptBuilder.AppendLine();
-                userPromptBuilder.Append(FormatBusinessLogicContext(businessLogic));
-            }
+                ["CobolContent"] = sanitizedContent,
+                ["Analysis"] = cobolAnalysis.RawAnalysisData,
+                ["BusinessLogicContext"] = businessLogicContext,
+                ["StructuralContext"] = structuralContextBuilder.ToString()
+            });
 
-            userPromptBuilder.AppendLine();
-            userPromptBuilder.AppendLine("IMPORTANT REQUIREMENTS:");
-            userPromptBuilder.AppendLine("1. Return ONLY the C# code - NO explanations, NO markdown blocks");
-            userPromptBuilder.AppendLine("2. Start with: namespace CobolMigration.Something; (single line)");
-            userPromptBuilder.AppendLine("3. Your response must be valid, compilable C# code");
-
-            var userPrompt = userPromptBuilder.ToString();
-            
             var (csharpCode, usedFallback, fallbackReason) = await ExecuteWithFallbackAsync(
                 systemPrompt,
                 userPrompt,
@@ -169,10 +160,52 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
 
             csharpCode = ExtractCSharpCode(csharpCode);
 
+            // Continuation retry: when the provider truncates mid-output, ask it to
+            // resume from the last lines rather than shipping a partial class.
+            var hasAnyCode = csharpCode.Contains("{") && (csharpCode.Contains("class ") || csharpCode.Contains("namespace "));
+            var maxContinuations = hasAnyCode ? 3 : 0;
+            for (int cont = 0; cont < maxContinuations; cont++)
+            {
+                var hasNs = csharpCode.Contains("namespace ", StringComparison.Ordinal);
+                var hasCls = csharpCode.Contains("class ", StringComparison.Ordinal);
+                var opens = csharpCode.Count(c => c == '{');
+                var closes = csharpCode.Count(c => c == '}');
+                if (hasNs && hasCls && opens == closes) break;
+
+                Logger.LogWarning(
+                    "[CSharpConverterAgent] Output truncated (ns={HasNs} cls={HasCls} braces={Opens}/{Closes}) — sending continuation {Cont}/{Max}",
+                    hasNs, hasCls, opens, closes, cont + 1, maxContinuations);
+
+                var lastLines = string.Join("\n", csharpCode.Split('\n').TakeLast(10));
+                var contPrompt = PromptLoader.LoadSectionValidated(
+                    "CSharpConverter", "Continuation", new Dictionary<string, string>
+                    {
+                        ["LastLines"] = lastLines
+                    });
+
+                var (contCode, contFallback, _) = await ExecuteWithFallbackAsync(
+                    systemPrompt, contPrompt, $"{cobolFile.FileName} [continuation-{cont + 1}]");
+
+                if (contFallback || string.IsNullOrWhiteSpace(contCode)) break;
+
+                contCode = ExtractCSharpCode(contCode);
+                var contLines = contCode.Split('\n')
+                    .SkipWhile(l => l.TrimStart().StartsWith("namespace ") || l.TrimStart().StartsWith("using ") || l.Trim() == "")
+                    .ToList();
+                var classIdx = contLines.FindIndex(l => l.Contains("class ") && l.Contains("{"));
+                if (classIdx >= 0 && classIdx < 3) contLines = contLines.Skip(classIdx + 1).ToList();
+
+                csharpCode = csharpCode.TrimEnd() + "\n" + string.Join("\n", contLines);
+                Logger.LogInformation("[CSharpConverterAgent] Continuation {Cont} appended {Lines} lines",
+                    cont + 1, contLines.Count);
+            }
+
+            csharpCode = ValidateCSharpCode(csharpCode);
+
             // Extract AI's semantic class name (based on domain/action/type pattern)
             string aiClassName = ExtractClassNameFromCode(csharpCode);
             string namespaceName = GetNamespaceName(csharpCode);
-            
+
             // Prefer AI-generated semantic name if it's not generic
             // Fall back to filename-derived name only if AI gave a generic name
             string finalClassName;
@@ -186,9 +219,9 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
             {
                 // Fall back to filename-derived name
                 finalClassName = NamingHelper.DeriveClassNameFromCobolFile(cobolFile.FileName);
-                Logger.LogWarning("AI generated generic class name '{AiClass}', using filename-derived: {ClassName}", 
+                Logger.LogWarning("AI generated generic class name '{AiClass}', using filename-derived: {ClassName}",
                     aiClassName, finalClassName);
-                
+
                 // Update the code to use the new class name
                 if (aiClassName != finalClassName)
                 {
@@ -331,19 +364,46 @@ public class {{className}}
 
     private string ExtractCSharpCode(string input)
     {
-        if (input.Contains("```csharp") || input.Contains("```c#"))
+        return ConversionOutputGuard.ExtractFencedCode(input, "```csharp", "```c#");
+    }
+
+    private string ValidateCSharpCode(string input)
+    {
+        // Fail loud on unusable output. A silent 0-byte "success" is worse than a
+        // file that explains what went wrong, so write a self-documenting stub.
+        var hasNsFinal = input.Contains("namespace ", StringComparison.Ordinal);
+        var hasClassFinal = input.Contains("class ", StringComparison.Ordinal);
+        var opensFinal = input.Count(c => c == '{');
+        var closesFinal = input.Count(c => c == '}');
+        if (!hasNsFinal || !hasClassFinal || opensFinal != closesFinal)
         {
-            var startMarker = input.Contains("```csharp") ? "```csharp" : "```c#";
-            var endMarker = "```";
-            int startIndex = input.IndexOf(startMarker);
-            if (startIndex >= 0)
+            Logger.LogWarning(
+                "[CSharpConverterAgent] OUTPUT APPEARS TRUNCATED: namespace={HasNs}, class={HasClass}, braces {Opens}/{Closes}. " +
+                "The provider likely hit its output token limit.",
+                hasNsFinal, hasClassFinal, opensFinal, closesFinal);
+            EnhancedLogger?.LogBehindTheScenes("TRUNCATION_DETECTED", "WARNING",
+                $"namespace={hasNsFinal}, class={hasClassFinal}, braces={opensFinal}/{closesFinal}");
+
+            if (ConversionOutputGuard.ShouldCreateWholeFileStub(
+                    input,
+                    hasClassFinal,
+                    opensFinal,
+                    closesFinal))
             {
-                startIndex += startMarker.Length;
-                int endIndex = input.IndexOf(endMarker, startIndex);
-                if (endIndex >= 0)
-                    return input.Substring(startIndex, endIndex - startIndex).Trim();
+                var trimmedReason =
+                    !hasClassFinal && !hasNsFinal && opensFinal == 0
+                        ? "EMPTY_LLM_RESPONSE — model returned no usable output (often: hit output-token budget, REKT context missing for deps-only programs, or provider rate-limit)."
+                    : !hasClassFinal
+                        ? "NO_CLASS_KEYWORD — model emitted prose or a non-C# code block."
+                    : "BRACE_IMBALANCE — opens=" + opensFinal + " closes=" + closesFinal + ".";
+
+                return ConversionOutputGuard.BuildWholeFileDiagnosticStub(
+                    "C#",
+                    trimmedReason,
+                    input);
             }
         }
+
         return input;
     }
 

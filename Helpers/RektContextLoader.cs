@@ -1,0 +1,629 @@
+// Loads available REKT artifacts without failing when optional outputs are absent.
+
+using System.Text.Json;
+
+namespace CobolToQuarkusMigration.Helpers;
+
+public sealed class RektContextLoader
+{
+    private readonly string _repoRoot;
+    private readonly string _rektDir;
+    private readonly string? _targetArchPath;
+
+    // Parsed target architecture cached for the lifetime of the loader.
+    private Dictionary<string, RektTargetPlan>? _targetPlansByProgram;
+
+    public RektContextLoader(string repoRoot, string? rektDir = null)
+    {
+        _repoRoot = repoRoot;
+        _rektDir = rektDir ?? Path.Combine(repoRoot, "output", "rekt");
+        _targetArchPath = Path.Combine(_rektDir, "target-architecture.json");
+    }
+
+    public bool HasAnyRektOutput()
+    {
+        if (!Directory.Exists(_rektDir)) return false;
+        return Directory.EnumerateFiles(_rektDir, "*.json", SearchOption.AllDirectories).Any();
+    }
+
+    public RektContext Load(string programFileName, string sourceFolder)
+    {
+        var normalizedProgramPath = SourcePathHelper.NormalizeRelativePath(programFileName);
+        var basename = Path.GetFileName(normalizedProgramPath);
+        var stem = Path.GetFileNameWithoutExtension(basename);
+        var ctx = new RektContext
+        {
+            Program = normalizedProgramPath,
+            IsCopybook = basename.EndsWith(".cpy", StringComparison.OrdinalIgnoreCase),
+        };
+
+        var srcPath = Path.Combine(_repoRoot, sourceFolder, SourcePathHelper.ToOsRelativePath(normalizedProgramPath));
+        if (File.Exists(srcPath))
+            ctx.LineCount = File.ReadLines(srcPath).Count();
+
+        TryLoadFlowAst(ctx, normalizedProgramPath, basename, stem);
+        TryLoadFlowCfg(ctx, normalizedProgramPath, basename, stem);
+        TryLoadFlowData(ctx, normalizedProgramPath, basename, stem);
+        TryLoadDeps(ctx, normalizedProgramPath, basename, stem);
+
+        ctx.TargetPlan = LookupTargetPlan(normalizedProgramPath);
+
+        return ctx;
+    }
+
+    public List<string> EnumerateProgramFiles(string sourceFolder)
+    {
+        var dir = Path.Combine(_repoRoot, sourceFolder);
+        if (!Directory.Exists(dir)) return new();
+        // IBM PDS pattern: anything ending in SRC(MEMBER)  →  surface as MEMBER.cbl
+        var pdsRx = new System.Text.RegularExpressions.Regex(@"\.SRC\(([A-Z0-9$@#]+)\)$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        // Generic copybook extensions we should never treat as programs
+        var copybookExts = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ".cpy", ".cpb" };
+
+        var results = new List<string>();
+        foreach (var p in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
+        {
+            // Skip transient REKT / convert directories so we never surface
+            // the same program multiple times from staging mirrors.
+            if (p.Contains("/.convert-", StringComparison.Ordinal)
+                || p.Contains("/.rekt-staging", StringComparison.Ordinal)
+                || p.Contains("/.preprocessed", StringComparison.Ordinal))
+                continue;
+            var name = Path.GetFileName(p);
+            if (name is null) continue;
+            var ext = Path.GetExtension(p);
+
+            // 1. Standard extension
+            if (ext.Equals(".cbl", StringComparison.OrdinalIgnoreCase)
+                || ext.Equals(".cob", StringComparison.OrdinalIgnoreCase))
+            {
+                results.Add(name);
+                continue;
+            }
+            // Don't try to misinterpret copybook files
+            if (copybookExts.Contains(ext)) continue;
+
+            // 2. IBM PDS export: extract the member name in SRC(NAME) → surface as NAME.cbl
+            var pdsMatch = pdsRx.Match(name);
+            if (pdsMatch.Success)
+            {
+                var memberName = pdsMatch.Groups[1].Value.ToUpperInvariant();
+                results.Add(memberName + ".cbl");
+                continue;
+            }
+
+            // 3. Content-based detection — extensionless or unknown-ext files
+            //    whose first 50 lines contain PROGRAM-ID. Cheap heuristic.
+            if (string.IsNullOrEmpty(ext) || ext.Length > 5)
+            {
+                try
+                {
+                    var head = string.Join("\n", File.ReadLines(p).Take(50));
+                    if (head.Contains("PROGRAM-ID", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Use the file name as-is + .cbl tag so downstream tooling
+                        // treats it as COBOL.
+                        results.Add(Path.GetFileNameWithoutExtension(name) + ".cbl");
+                    }
+                }
+                catch { /* skip unreadable */ }
+            }
+        }
+
+        return results
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    public List<string> EnumerateCopybookFiles(string sourceFolder)
+    {
+        var dir = Path.Combine(_repoRoot, sourceFolder);
+        if (!Directory.Exists(dir)) return new();
+        return Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories)
+            .Where(p =>
+            {
+                if (p.Contains("/.convert-", StringComparison.Ordinal)
+                    || p.Contains("/.rekt-staging", StringComparison.Ordinal)
+                    || p.Contains("/.preprocessed", StringComparison.Ordinal))
+                    return false;
+                var ext = Path.GetExtension(p);
+                return ext.Equals(".cpy", StringComparison.OrdinalIgnoreCase);
+            })
+            .Select(Path.GetFileName)
+            .Where(n => n is not null)
+            .Cast<string>()
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private void TryLoadFlowAst(RektContext ctx, string programRelativePath, string basename, string stem)
+    {
+        var path = FindRektFile(programRelativePath, basename, stem, prefix: "flow-ast-");
+        if (path is null) return;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(File.ReadAllText(path));
+            WalkAst(doc.RootElement, ctx, currentSection: null);
+        }
+        catch (Exception) { /* tolerated; loader returns what it found */ }
+    }
+
+    // Walk varying smojol AST shapes recursively and harvest recognized node types.
+    private void WalkAst(JsonElement el, RektContext ctx, RektSection? currentSection)
+    {
+        if (el.ValueKind == JsonValueKind.Object)
+        {
+            // smojol v2 stores the structural type in `type` for generic CODE_VERTEX nodes.
+            string? nodeType = null;
+            if (el.TryGetProperty("nodeType", out var nt) && nt.ValueKind == JsonValueKind.String)
+                nodeType = nt.GetString();
+            if (el.TryGetProperty("type", out var t) && t.ValueKind == JsonValueKind.String)
+            {
+                var typeVal = t.GetString();
+                // If nodeType is a generic bucket (CODE_VERTEX, COMPOSITE), prefer
+                // the more specific `type` field for classification.
+                if (nodeType is null or "CODE_VERTEX" or "COMPOSITE" or "ATOMIC")
+                    nodeType = typeVal;
+            }
+
+            var name = TryGetString(el, "name") ?? TryGetString(el, "displayName") ?? "";
+            var startLine = TryGetInt(el, "startLine");
+            var endLine = TryGetInt(el, "endLine");
+
+            switch (nodeType?.ToUpperInvariant())
+            {
+                case "SECTION":
+                {
+                    var section = new RektSection { Name = name, StartLine = startLine, EndLine = endLine };
+                    ctx.Sections.Add(section);
+                    currentSection = section;
+                    break;
+                }
+                case "PARAGRAPH":
+                case "SENTENCE":
+                {
+                    var p = new RektParagraph { Name = name, StartLine = startLine, EndLine = endLine };
+                    if (currentSection != null) currentSection.Paragraphs.Add(p);
+                    else ctx.Sections.Add(new RektSection { Name = "(implicit)", Paragraphs = { p } });
+                    // v2: sentences may contain PERFORM/CALL info in `name` (e.g. "PERFORM010-INIT")
+                    if (name.StartsWith("PERFORM", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var target = name.Substring("PERFORM".Length).Trim();
+                        if (!string.IsNullOrEmpty(target))
+                        {
+                            ctx.PerformGraph.Add(new RektPerformEdge
+                            {
+                                From = currentSection?.Name ?? "",
+                                To = target,
+                                Conditional = name.Contains("UNTIL", StringComparison.OrdinalIgnoreCase)
+                            });
+                        }
+                    }
+                    else if (name.StartsWith("CALL", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var target = name.Substring("CALL".Length).Trim().Trim('\'');
+                        if (!string.IsNullOrEmpty(target))
+                        {
+                            ctx.CallTargets.Add(new RektCallTarget
+                            {
+                                TargetProgram = target,
+                                IsDynamic = false,
+                                LineNumber = startLine,
+                            });
+                        }
+                    }
+                    break;
+                }
+                case "PERFORM":
+                {
+                    var target = TryGetString(el, "target") ?? name;
+                    if (!string.IsNullOrEmpty(target))
+                    {
+                        ctx.PerformGraph.Add(new RektPerformEdge
+                        {
+                            From = currentSection?.Name ?? "",
+                            To = target,
+                            Conditional = TryGetBool(el, "conditional")
+                        });
+                    }
+                    break;
+                }
+                case "CALL":
+                case "CALLSTATEMENT":
+                {
+                    var target = TryGetString(el, "target") ?? name;
+                    if (!string.IsNullOrEmpty(target))
+                    {
+                        ctx.CallTargets.Add(new RektCallTarget
+                        {
+                            TargetProgram = target.Trim('\''),
+                            IsDynamic = TryGetBool(el, "dynamic"),
+                            LineNumber = startLine,
+                        });
+                    }
+                    break;
+                }
+                case "DIALECT":
+                case "DIALECT_CONTAINER":
+                {
+                    // smojol surfaces EXEC SQL via DIALECT nodes. We try to harvest the
+                    // operation keyword from a text/excerpt field if present.
+                    var excerpt = TryGetString(el, "text") ?? TryGetString(el, "excerpt") ?? "";
+                    var op = ExtractSqlOperation(excerpt);
+                    if (op != null)
+                    {
+                        ctx.SqlStatements.Add(new RektSqlStatement
+                        {
+                            Operation = op,
+                            Tables = ExtractSqlTables(excerpt),
+                            LineNumber = startLine,
+                            Excerpt = excerpt.Length > 200 ? excerpt[..200] : excerpt,
+                        });
+                    }
+                    break;
+                }
+            }
+
+            foreach (var prop in el.EnumerateObject())
+                WalkAst(prop.Value, ctx, currentSection);
+        }
+        else if (el.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in el.EnumerateArray())
+                WalkAst(item, ctx, currentSection);
+        }
+    }
+
+    private void TryLoadFlowCfg(RektContext ctx, string programRelativePath, string basename, string stem)
+    {
+        var path = FindRektFile(programRelativePath, basename, stem, prefix: "flow-cfg-");
+        if (path is null) return;
+        // CFG edges are useful for branch counts; we don't expose them directly today.
+        // Reserved for future use (e.g. test synthesizer per-branch coverage).
+    }
+
+    private void TryLoadFlowData(RektContext ctx, string programRelativePath, string basename, string stem)
+    {
+        var path = FindRektFile(programRelativePath, basename, stem, prefix: "flow-data-");
+        if (path is null) return;
+        try
+        {
+            using var doc = JsonDocument.Parse(File.ReadAllText(path));
+            WalkData(doc.RootElement, ctx.DataStructure, depth: 0);
+        }
+        catch (Exception) { /* tolerated */ }
+    }
+
+    private void WalkData(JsonElement el, List<RektDataItem> bucket, int depth)
+    {
+        if (el.ValueKind == JsonValueKind.Object)
+        {
+            var name = TryGetString(el, "name");
+            // v1 uses "level", v2 uses "levelNumber"
+            var level = TryGetInt(el, "level");
+            if (level == 0) level = TryGetInt(el, "levelNumber");
+            if (!string.IsNullOrEmpty(name) && level > 0)
+            {
+                // Extract PIC clause: v1 has "pic"/"picClause", v2 embeds it in "rawText"
+                var pic = TryGetString(el, "pic") ?? TryGetString(el, "picClause");
+                if (pic == null)
+                {
+                    var rawText = TryGetString(el, "rawText") ?? "";
+                    var picMatch = System.Text.RegularExpressions.Regex.Match(
+                        rawText, @"\bPIC\s+(\S+(?:\(\d+\))?(?:V\S+)?)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    if (picMatch.Success) pic = "PIC " + picMatch.Groups[1].Value;
+                }
+
+                // Usage: v1 has "usage", v2 may have it in rawText
+                var usage = TryGetString(el, "usage");
+                if (usage == null)
+                {
+                    var rawText = TryGetString(el, "rawText") ?? "";
+                    if (rawText.Contains("COMP-3", StringComparison.OrdinalIgnoreCase)) usage = "COMP-3";
+                    else if (rawText.Contains("COMP-5", StringComparison.OrdinalIgnoreCase)) usage = "COMP-5";
+                    else if (rawText.Contains("COMP-4", StringComparison.OrdinalIgnoreCase)) usage = "COMP-4";
+                    else if (rawText.Contains("COMP-2", StringComparison.OrdinalIgnoreCase)) usage = "COMP-2";
+                    else if (rawText.Contains("COMP-1", StringComparison.OrdinalIgnoreCase)) usage = "COMP-1";
+                    else if (System.Text.RegularExpressions.Regex.IsMatch(rawText, @"\bCOMP\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) usage = "COMP";
+                }
+
+                // Redefines: v1 has "redefines" string, v2 has "isRedefinition" bool + "redefines" string
+                var redefines = TryGetString(el, "redefines");
+
+                var item = new RektDataItem
+                {
+                    Level = level,
+                    Name = name,
+                    PicClause = pic,
+                    Usage = usage,
+                    Value = TryGetString(el, "value"),
+                    Redefines = redefines,
+                    Occurs = TryGetIntNullable(el, "occurs"),
+                };
+                bucket.Add(item);
+
+                // Children
+                if (el.TryGetProperty("children", out var children) && children.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var child in children.EnumerateArray())
+                        WalkData(child, item.Children, depth + 1);
+                }
+                return; // don't double-walk
+            }
+
+            foreach (var prop in el.EnumerateObject())
+                WalkData(prop.Value, bucket, depth);
+        }
+        else if (el.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in el.EnumerateArray())
+                WalkData(item, bucket, depth);
+        }
+    }
+
+    private void TryLoadDeps(RektContext ctx, string programRelativePath, string basename, string stem)
+    {
+        // Even when AST writer fails, deps export usually succeeds — feed it into CallTargets/CopybookUsage
+        // so the converter at least knows what the program depends on.
+        string? path = null;
+        foreach (var candidate in EnumerateDependencyCandidates(programRelativePath, basename, stem))
+        {
+            if (File.Exists(candidate)) { path = candidate; break; }
+        }
+        if (path is null) return;
+        try
+        {
+            using var doc = JsonDocument.Parse(File.ReadAllText(path));
+            if (doc.RootElement.TryGetProperty("dependencies", out var deps) && deps.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var d in deps.EnumerateArray())
+                {
+                    var name = TryGetString(d, "name") ?? "";
+                    if (string.IsNullOrEmpty(name)) continue;
+
+                    if (name.EndsWith(".cpy", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (!ctx.CopybookUsage.Contains(name, StringComparer.OrdinalIgnoreCase))
+                            ctx.CopybookUsage.Add(name);
+                    }
+                    else
+                    {
+                        if (!ctx.CallTargets.Any(c => string.Equals(c.TargetProgram, name, StringComparison.OrdinalIgnoreCase)))
+                            ctx.CallTargets.Add(new RektCallTarget { TargetProgram = name });
+                    }
+                }
+            }
+        }
+        catch (Exception) { /* tolerated */ }
+    }
+
+    private RektTargetPlan? LookupTargetPlan(string programFileName)
+    {
+        if (_targetArchPath is null || !File.Exists(_targetArchPath)) return null;
+        try
+        {
+            _targetPlansByProgram ??= ParseTargetArchitecture(_targetArchPath);
+            // Look up by exact name first, then bare stem.
+            if (_targetPlansByProgram.TryGetValue(programFileName, out var p)) return p;
+            var stem = Path.GetFileNameWithoutExtension(programFileName);
+            return _targetPlansByProgram.TryGetValue(stem, out var p2) ? p2 : null;
+        }
+        catch (Exception) { return null; }
+    }
+
+    private Dictionary<string, RektTargetPlan> ParseTargetArchitecture(string path)
+    {
+        var map = new Dictionary<string, RektTargetPlan>(StringComparer.OrdinalIgnoreCase);
+        using var doc = JsonDocument.Parse(File.ReadAllText(path));
+        if (!doc.RootElement.TryGetProperty("programMappings", out var pm)) return map;
+        if (pm.ValueKind != JsonValueKind.Array) return map;
+
+        foreach (var entry in pm.EnumerateArray())
+        {
+            var program = TryGetString(entry, "program") ?? "";
+            if (string.IsNullOrEmpty(program)) continue;
+            if (!entry.TryGetProperty("recommendation", out var rec) || rec.ValueKind != JsonValueKind.Object) continue;
+
+            var plan = new RektTargetPlan
+            {
+                TargetComponent = TryGetString(rec, "targetComponent") ?? "",
+                TargetComponentName = TryGetString(rec, "targetComponentName") ?? "",
+                TargetLayer = TryGetString(rec, "targetLayer") ?? "",
+                TargetTech = TryGetString(rec, "targetTech") ?? "",
+                Strategy = TryGetString(rec, "strategy") ?? "",
+                Wave = TryGetInt(rec, "wave"),
+                Complexity = TryGetDouble(rec, "complexity"),
+                Rationale = TryGetString(rec, "rationale") ?? "",
+            };
+            if (rec.TryGetProperty("patterns", out var pat) && pat.ValueKind == JsonValueKind.Array)
+                plan.Patterns = pat.EnumerateArray()
+                    .Where(x => x.ValueKind == JsonValueKind.String)
+                    .Select(x => x.GetString()!)
+                    .ToList();
+            if (rec.TryGetProperty("migrationNotes", out var notes) && notes.ValueKind == JsonValueKind.Array)
+                plan.MigrationNotes = notes.EnumerateArray()
+                    .Where(x => x.ValueKind == JsonValueKind.String)
+                    .Select(x => x.GetString()!)
+                    .ToList();
+
+            map[program] = plan;
+            map[Path.GetFileNameWithoutExtension(program)] = plan;
+        }
+        return map;
+    }
+
+    public IReadOnlyDictionary<string, RektTargetPlan> GetAllTargetPlans()
+    {
+        if (_targetArchPath is null || !File.Exists(_targetArchPath))
+            return new Dictionary<string, RektTargetPlan>();
+        _targetPlansByProgram ??= ParseTargetArchitecture(_targetArchPath);
+        return _targetPlansByProgram;
+    }
+
+    private string? FindRektFile(string programRelativePath, string basename, string stem, string prefix)
+    {
+        // Layout 1 (legacy / flat): output/rekt/flow-ast-PROG.json
+        foreach (var candidate in new[]
+                 {
+                     $"{prefix}{stem}.json",
+                     $"{prefix}{stem}.cbl.json",
+                     $"{prefix}{basename}.json",
+                 })
+        {
+            var p = Path.Combine(_rektDir, candidate);
+            if (File.Exists(p)) return p;
+        }
+
+        // smojol v2 nests artifacts under a per-program report directory.
+        var reportDirs = EnumerateReportDirectories(programRelativePath, basename, stem);
+        foreach (var reportDir in reportDirs)
+        {
+            var rdir = Path.Combine(_rektDir, SourcePathHelper.ToOsRelativePath(reportDir));
+            if (!Directory.Exists(rdir)) continue;
+
+            // Try standard subdirectory mappings
+            var subPaths = prefix switch
+            {
+                "flow-ast-" => new[]
+                {
+                    Path.Combine(rdir, "flow_ast", $"flow-ast-{basename}.json"),
+                    Path.Combine(rdir, "flow_ast", $"flow-ast-{stem}.cbl.json"),
+                    Path.Combine(rdir, "flow_ast", $"flow-ast-{stem}.json"),
+                },
+                "flow-data-" => new[]
+                {
+                    Path.Combine(rdir, "data_structures", $"{basename}-data.json"),
+                    Path.Combine(rdir, "data_structures", $"{stem}.cbl-data.json"),
+                    Path.Combine(rdir, "data_structures", $"{stem}-data.json"),
+                    Path.Combine(rdir, "data_structures", $"flow-data-{stem}.cbl.json"),
+                    Path.Combine(rdir, "data_structures", $"flow-data-{basename}.json"),
+                },
+                "flow-cfg-" => new[]
+                {
+                    Path.Combine(rdir, "cfg", $"cfg-{basename}.json"),
+                    Path.Combine(rdir, "cfg", $"cfg-{stem}.cbl.json"),
+                    Path.Combine(rdir, "cfg", $"cfg-{stem}.json"),
+                    Path.Combine(rdir, "cfg", $"flow-cfg-{stem}.cbl.json"),
+                    Path.Combine(rdir, "cfg", $"flow-cfg-{basename}.json"),
+                },
+                _ => Array.Empty<string>(),
+            };
+            foreach (var sp in subPaths)
+            {
+                if (File.Exists(sp)) return sp;
+            }
+
+            // Fallback: glob the report dir recursively for the prefix
+            try
+            {
+                var found = Directory.EnumerateFiles(rdir, "*", SearchOption.AllDirectories)
+                    .FirstOrDefault(f =>
+                        Path.GetFileName(f).StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                        && (Path.GetFileName(f).Contains(basename, StringComparison.OrdinalIgnoreCase)
+                            || Path.GetFileName(f).Contains(stem, StringComparison.OrdinalIgnoreCase)));
+                if (found != null) return found;
+            }
+            catch { /* access error — skip */ }
+        }
+
+        return null;
+    }
+
+    private IEnumerable<string> EnumerateReportDirectories(
+        string programRelativePath,
+        string basename,
+        string stem)
+    {
+        var normalizedRelativePath = SourcePathHelper.NormalizeRelativePath(programRelativePath);
+        foreach (var reportDir in new[]
+                 {
+                     normalizedRelativePath + ".report",
+                     basename + ".report",
+                     $"{stem}.cbl.report",
+                     $"{stem}.report",
+                     $"{stem}.CBL.report",
+                 }.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            yield return reportDir;
+        }
+    }
+
+    private IEnumerable<string> EnumerateDependencyCandidates(
+        string programRelativePath,
+        string basename,
+        string stem)
+    {
+        var normalizedRelativePath = SourcePathHelper.NormalizeRelativePath(programRelativePath);
+        foreach (var candidate in new[]
+                 {
+                     Path.Combine(_rektDir, SourcePathHelper.ToOsRelativePath($"{normalizedRelativePath}-deps.json")),
+                     Path.Combine(_rektDir, SourcePathHelper.ToOsRelativePath($"{basename}-deps.json")),
+                     Path.Combine(_rektDir, $"{stem}-deps.json"),
+                     Path.Combine(_rektDir, $"{stem}.cbl-deps.json"),
+                 })
+        {
+            yield return candidate;
+        }
+
+        foreach (var reportDir in EnumerateReportDirectories(programRelativePath, basename, stem))
+        {
+            var reportRoot = Path.Combine(_rektDir, SourcePathHelper.ToOsRelativePath(reportDir));
+            foreach (var candidate in new[]
+                     {
+                         Path.Combine(reportRoot, $"{basename}-deps.json"),
+                         Path.Combine(reportRoot, $"{stem}-deps.json"),
+                         Path.Combine(reportRoot, $"{stem}.cbl-deps.json"),
+                     })
+            {
+                yield return candidate;
+            }
+        }
+    }
+
+    private static string? TryGetString(JsonElement el, string name)
+        => el.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+    private static int TryGetInt(JsonElement el, string name)
+        => el.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var i) ? i : 0;
+
+    private static int? TryGetIntNullable(JsonElement el, string name)
+        => el.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var i) ? i : null;
+
+    private static double TryGetDouble(JsonElement el, string name)
+        => el.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetDouble(out var d) ? d : 0.0;
+
+    private static bool TryGetBool(JsonElement el, string name)
+        => el.TryGetProperty(name, out var v) && v.ValueKind is JsonValueKind.True or JsonValueKind.False && v.GetBoolean();
+
+    private static string? ExtractSqlOperation(string sql)
+    {
+        if (string.IsNullOrWhiteSpace(sql)) return null;
+        var trimmed = sql.TrimStart();
+        var firstWord = new string(trimmed.TakeWhile(c => !char.IsWhiteSpace(c)).ToArray()).ToUpperInvariant();
+        return firstWord switch
+        {
+            "SELECT" or "INSERT" or "UPDATE" or "DELETE" or "MERGE" or "OPEN" or "FETCH" or "CLOSE" or "DECLARE" or "EXEC" => firstWord,
+            _ => null,
+        };
+    }
+
+    private static List<string> ExtractSqlTables(string sql)
+    {
+        // Lightweight: pick the token after FROM / INTO / UPDATE / JOIN.
+        var tables = new List<string>();
+        if (string.IsNullOrWhiteSpace(sql)) return tables;
+        var rx = new System.Text.RegularExpressions.Regex(
+            @"\b(?:FROM|INTO|UPDATE|JOIN)\s+([A-Z][A-Z0-9_]*)",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        foreach (System.Text.RegularExpressions.Match m in rx.Matches(sql))
+        {
+            var t = m.Groups[1].Value.ToUpperInvariant();
+            if (!tables.Contains(t)) tables.Add(t);
+        }
+        return tables;
+    }
+}

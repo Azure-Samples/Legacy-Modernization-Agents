@@ -62,25 +62,47 @@ You are a COBOL-to-Java/Quarkus conversion specialist.
 
 ## SECTION: User
 
-Convert the following COBOL program to Java with Quarkus.
+Convert this COBOL chunk (lines {{StartLine}}-{{EndLine}}) to Java:
 
-## COBOL Source Code
 ```cobol
 {{CobolContent}}
 ```
 
-## Analysis of the COBOL Program
-{{Analysis}}
+{{SemanticUnitsContext}}
 
-## Business Logic Context (from reverse engineering)
+{{ForwardReferencesContext}}
+
 {{BusinessLogicContext}}
 
-## Requirements
-1. Return ONLY the Java code — no explanations, no markdown blocks.
-2. Start with: package com.example.something;
-3. Must be valid, compilable Java starting with 'package' and ending with the class closing brace.
-4. Use Panache repository pattern for all database access.
-5. Use JAX-RS endpoints for all CICS transaction replacements.
+{{StructuralContext}}
+
+Return ONLY Java code. No markdown blocks. No explanations.
+
+## SECTION: PreviousSignatures
+
+Methods defined in previous chunks (maintain consistency):
+{{Items}}
+
+## SECTION: PreviousVariables
+
+Variables defined in previous chunks:
+{{Items}}
+
+## SECTION: SemanticUnits
+
+Semantic units in this chunk:
+{{Items}}
+
+## SECTION: ForwardReferences
+
+References to resolve from previous chunks:
+{{Items}}
+
+## SECTION: BusinessLogic
+
+Business logic context from reverse engineering (use to ensure accurate conversion):
+
+{{BusinessLogic}}
 
 ## SECTION: ChunkFirst
 

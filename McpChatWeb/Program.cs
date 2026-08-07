@@ -733,7 +733,7 @@ app.MapPost("/api/chat", async (ChatRequest request, IMcpClient client, Cancella
    - Status: {(graphAvailable ? "✓ Available" : "⚠ Limited availability")}
    - Nodes: {nodeCount}
    - Edges: {edgeCount}
-   - To query: cypher-shell -u neo4j -p cobol-migration-2025
+   - To query: cypher-shell -u neo4j
    - Cypher: MATCH (n) WHERE n.runId = {requestedRunId} RETURN n LIMIT 25;
 
 **How to Access Full Data:**
@@ -743,7 +743,7 @@ app.MapPost("/api/chat", async (ChatRequest request, IMcpClient client, Cancella
   - All available run metadata
   - Graph visualization data
   - Sample queries for direct database access
-  - Connection credentials
+  - Connection guidance
 
 • **Direct Queries:**
   
@@ -775,7 +775,7 @@ Note: The MCP server currently provides detailed analysis only for Run 43. For o
 You can still access the data directly:
 • API: GET /api/search/run/{requestedRunId}
 • SQLite: sqlite3 ""Data/migration.db"" ""SELECT * FROM runs WHERE id = {requestedRunId};""
-• Neo4j: cypher-shell -u neo4j -p cobol-migration-2025";
+• Neo4j: cypher-shell -u neo4j";
 
 			return Results.Ok(new ChatResponse(errorResponse, requestedRunId));
 		}
@@ -3096,7 +3096,7 @@ app.MapGet("/api/search/run/{runId}", async (string runId, IMcpClient client, Ca
 				{
 					source = "Neo4j Graph Database",
 					location = "bolt://localhost:7687",
-					credentials = new { username = "neo4j", password = "cobol-migration-2025" },
+					credentials = new { username = "neo4j", passwordSource = "NEO4J_PASSWORD in Config/ai-config.local.env" },
 					data = neo4jData
 				}
 			},
@@ -3114,7 +3114,7 @@ app.MapGet("/api/search/run/{runId}", async (string runId, IMcpClient client, Ca
 				},
 				neo4j = new
 				{
-					cypher_shell = $"echo 'MATCH (n) WHERE n.runId = {parsedRunId.Value} RETURN n LIMIT 25;' | cypher-shell -u neo4j -p cobol-migration-2025",
+					cypher_shell = $"echo 'MATCH (n) WHERE n.runId = {parsedRunId.Value} RETURN n LIMIT 25;' | cypher-shell -u neo4j -p \"$NEO4J_PASSWORD\"",
 					queries = new[]
 					{
 						$"MATCH (n) WHERE n.runId = {parsedRunId.Value} RETURN n LIMIT 25;",
@@ -3178,7 +3178,7 @@ app.MapGet("/api/data-retrieval-guide", () =>
 				name = "Neo4j",
 				location = "bolt://localhost:7687",
 				purpose = "Stores dependency graph relationships and file connections",
-				credentials = new { username = "neo4j", password = "cobol-migration-2025" },
+				credentials = new { username = "neo4j", passwordSource = "NEO4J_PASSWORD in Config/ai-config.local.env" },
 				queries = new[]
 				{
 					new { description = "List all runs in Neo4j", cypher = "MATCH (r:Run) RETURN r.runId, r.status, r.totalFiles, r.startedAt ORDER BY r.runId DESC;" },
@@ -3191,7 +3191,7 @@ app.MapGet("/api/data-retrieval-guide", () =>
 				{
 					new { name = "Neo4j Browser", url = "http://localhost:7474" },
 					new { name = "Neo4j Desktop", url = "https://neo4j.com/download/" },
-					new { name = "Cypher Shell", command = "cypher-shell -a bolt://localhost:7687 -u neo4j -p cobol-migration-2025" }
+					new { name = "Cypher Shell", command = "cypher-shell -a bolt://localhost:7687 -u neo4j -p \"$NEO4J_PASSWORD\"" }
 				}
 			}
 		},
@@ -3234,7 +3234,7 @@ app.MapGet("/api/data-retrieval-guide", () =>
 				steps = new[]
 				{
 					"Open http://localhost:7474 in browser",
-					"Login: neo4j / cobol-migration-2025",
+					"Login as neo4j with the NEO4J_PASSWORD value from Config/ai-config.local.env",
 					"Run: MATCH (r:Run {runId: 43})-[:CONTAINS]->(f:CobolFile) RETURN f LIMIT 25;",
 					"Visualize dependencies: MATCH path = (r:Run {runId: 43})-[:CONTAINS]->()-[d:DEPENDS_ON]->() RETURN path;"
 				}

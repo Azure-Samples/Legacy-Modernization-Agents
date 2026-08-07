@@ -178,7 +178,7 @@ if [ -f "/workspaces/Legacy-Modernization-Agents/Config/ai-config.local.env" ]; 
     fi
 else
     echo "⚠️  AI configuration file not found"
-    echo "   💡 Copy Config/ai-config.local.env.example to Config/ai-config.local.env"
+    echo "   💡 Copy Config/ai-config.env.example to Config/ai-config.local.env"
     WARNINGS=$((WARNINGS + 1))
 fi
 

@@ -1,0 +1,21 @@
+--- a/smojol-core/src/main/java/org/smojol/common/vm/structure/Format1DataStructure.java
++++ b/smojol-core/src/main/java/org/smojol/common/vm/structure/Format1DataStructure.java
+@@ -219,7 +219,17 @@ public class Format1DataStructure extends CompositeCobolDataStructure implements
+                 && (dataDescription.dataUsageClause(0).usageFormat().COMP_1() != null
+                 || dataDescription.dataUsageClause(0).usageFormat().COMPUTATIONAL_1() != null))
+             return ImmutablePair.of(new Comp1DataTypeSpec(), 4);
+-        return new DataLayoutBuilder().size(dataDescription.dataPictureClause().getFirst().pictureString().getFirst().getText());
++        // Local patch (Azure-Samples/COBOL-Modernization-Agents):
++        // some entries have no PIC clause (group-level intermediates,
++        // USAGE-only, IMS/CICS dialect-rewritten entries). Upstream
++        // calls getFirst() which throws NoSuchElementException. Fall
++        // back to a 1-byte X(1) group so memory layout still resolves.
++        if (dataDescription.dataPictureClause().isEmpty()
++                || dataDescription.dataPictureClause().getFirst().pictureString().isEmpty()) {
++            LOGGER.warning("Data entry has no PIC clause — defaulting to X(1) (Azure-Samples local patch).");
++            return new DataLayoutBuilder().size("X(1)");
++        }
++        return new DataLayoutBuilder().size(dataDescription.dataPictureClause().getFirst().pictureString().getFirst().getText());
+     }
+ 
+     protected List<CobolDataStructure> primaryDefinitions() {

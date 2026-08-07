@@ -1,18 +1,13 @@
 ---
 name: Documentation Updater
-description: Checks if documentation is up to date on pushes and PRs, and notifies responsible users when it is not
+description: Checks if documentation is up to date after changes land on main and notifies responsible users when it is not
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
-    types: [opened, synchronize, closed]
-  workflow_dispatch:
 
 permissions:
   contents: read
   issues: read
-  pull-requests: read
 
 tracker-id: documentation-updater
 engine: copilot
@@ -26,7 +21,7 @@ network:
 tools:
   cache-memory: true
   github:
-    toolsets: [default]
+    toolsets: [repos, issues]
   bash:
     - "find docs -name '*.md' -o -name '*.mdx'"
     - "find docs -maxdepth 1 -ls"
@@ -52,24 +47,7 @@ You are an AI documentation agent that verifies whether project documentation is
 
 ## Trigger Context
 
-This workflow is triggered in three scenarios. You **must** determine which scenario applies and follow the corresponding flow exactly.
-
-| Trigger | Condition | Flow |
-|---|---|---|
-| `push` to `main` | Direct push (no associated merged PR) | **Flow A** |
-| `pull_request` `opened` or `synchronize` | PR is open against `main` | **Flow B** |
-| `pull_request` `closed` with `merged == true` | PR was just merged into `main` | **Flow C → Flow A** |
-
-Use the event context to determine the active flow:
-- If `${{ github.event.pull_request.number }}` is empty/unset, this is a **push** event → **Flow A**
-- If `${{ github.event.pull_request.number }}` is set and `${{ github.event.pull_request.state }}` is `open`, this is a PR opened/updated → **Flow B**
-- If `${{ github.event.pull_request.number }}` is set and `${{ github.event.pull_request.state }}` is `closed`, this is a merged PR → **Flow C → Flow A**
-
----
-
-## Flow A — Direct Push to Main
-
-**Trigger**: A push lands on `main` without going through a PR, **or** a merged PR still has documentation gaps (escalated from Flow C).
+This workflow runs only after changes land on `main`, either through a direct push or a merged pull request. It must not run while a pull request is open.
 
 ### Steps
 
@@ -79,48 +57,14 @@ Use the event context to determine the active flow:
 4. **If documentation is up to date**: Exit gracefully. No action needed.
 5. **If documentation is outdated or missing**:
    - **Request issue creation** via safe-output with:
-     - **Title**: `Documentation update needed for push to main by @${{ github.actor }}`
+     - **Title**: `Documentation update needed after changes landed on main by @${{ github.actor }}`
      - **Body**: Include a summary of what code changed, which documentation is missing or outdated, and specific suggestions for what should be documented. Reference the commit SHAs.
-
----
-
-## Flow B — Pull Request Opened or Updated
-
-**Trigger**: A PR is opened or updated (synchronized) targeting `main`.
-
-### Steps
-
-1. **Identify changed files**: Use `pull_request_read` to get the PR details. Use `list_pull_request_files` or compare the PR diff to collect the list of changed files.
-2. **Check documentation** (see [Documentation Check Process](#documentation-check-process) below).
-3. **If documentation is up to date**: Leave a short nice and approving comment on the PR confirming docs look good, and exit gracefully.
-4. **If documentation is outdated or missing**:
-   - **Request a comment** on the PR via safe-output with:
-     - A clear summary of which documentation is missing or outdated
-     - Specific suggestions for what should be documented and where
-     - A checklist the author can follow to fix the gaps before merging
-   - Do **not** open an issue at this stage — the author has a chance to fix it before merge.
-
----
-
-## Flow C — Pull Request Merged into Main
-
-**Trigger**: A PR targeting `main` is closed with `merged == true`.
-
-### Steps
-
-1. **Identify changed files**: Use `pull_request_read` and `list_pull_request_files` to collect the full set of changed files from the merged PR.
-2. **Check documentation** (see [Documentation Check Process](#documentation-check-process) below).
-3. **If documentation is up to date**: Exit gracefully. The author addressed any earlier feedback.
-4. **If documentation is still outdated or missing**:
-   - **Escalate to Flow A**: Request issue creation via safe-output with:
-     - **Title**: `Documentation update needed after merge of PR #${{ github.event.pull_request.number }}`
-     - **Body**: Include a summary of the merged PR, what documentation is missing, and specific suggestions. Reference the PR number.
 
 ---
 
 ## Documentation Check Process
 
-This is the shared analysis procedure used by all three flows.
+Use this procedure to analyze the changes that landed on `main`.
 
 ### 1. Review Documentation Instructions
 
@@ -177,7 +121,7 @@ A change does **not** require documentation updates if:
 - **Be Accurate**: Only flag genuine documentation gaps — avoid false positives
 - **Be Specific**: When reporting gaps, name the exact files and sections that need updates. Provide concrete suggestions.
 - **Be Selective**: Skip internal refactoring unless it changes user-facing behavior
-- **Respect the Author**: In PR comments, be constructive, nice and helpful, not demanding
+- **Respect the Author**: Be constructive, helpful, and specific when reporting gaps
 - **Avoid Duplicates**: Before opening an issue, search for existing open issues with the `documentation` label that cover the same gap. If one exists, comment on it instead of creating a new one.
 - **Link References**: Include links to relevant commits, PRs, and existing documentation where applicable
 
@@ -185,7 +129,7 @@ A change does **not** require documentation updates if:
 
 - You have access to GitHub tools to search and review code changes
 - You have access to bash commands to explore the documentation structure
-- Issues and PR comments are created via safe-outputs — you do **not** have direct write permissions
+- Issues and issue comments are created via safe-outputs — you do **not** have direct write permissions
 - You do **not** have the edit tool — your job is to notify, not to fix
 - Always read the documentation instructions before analyzing
 - Focus on user-facing features and changes that affect the developer experience

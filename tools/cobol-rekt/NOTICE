@@ -1,0 +1,15 @@
+# Third-party notices for rekt-oss-mma
+
+The `rekt-oss-mma` image contains locally patched open-source components.
+
+| Component | Source | License |
+|---|---|---|
+| cobol-rekt / smojol `v0.1.0-RC6` | https://github.com/avishek-sen-gupta/cobol-rekt | MIT; see `LICENSE.cobol-rekt` |
+| Local patches and image packaging | This repository | MIT; see `LICENSE` |
+| che-che4z-lsp-for-cobol dialect adapters | https://github.com/eclipse/che-che4z-lsp-for-cobol | EPL-2.0 |
+| Eclipse Temurin 21 | https://adoptium.net/ | GPLv2 with Classpath Exception |
+| Graphviz | https://graphviz.org/ | EPL-2.0 |
+
+The image builds cobol-rekt from source and applies the patches under
+`patches/`. The upstream source remains owned and licensed by its respective
+copyright holders.

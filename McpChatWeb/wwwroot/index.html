@@ -580,7 +580,7 @@ WHERE migration_run_id = 43;</code></pre>
           <div class="info-box">
             <p><strong>Location:</strong> <code>bolt://localhost:7687</code></p>
             <p><strong>Browser:</strong> <a href="http://localhost:7474" target="_blank">http://localhost:7474</a></p>
-            <p><strong>Credentials:</strong> neo4j / cobol-migration-2025</p>
+            <p><strong>Credentials:</strong> username <code>neo4j</code>; password from <code>NEO4J_PASSWORD</code> in <code>Config/ai-config.local.env</code></p>
             <p><strong>Purpose:</strong> Stores dependency graphs and file relationships</p>
           </div>
           
@@ -617,7 +617,7 @@ ORDER BY dependents DESC;</code></pre>
           <h4>Access Tools</h4>
           <ul>
             <li><strong>Neo4j Browser:</strong> <a href="http://localhost:7474" target="_blank">Open in Browser</a></li>
-            <li><strong>Cypher Shell:</strong> <code>cypher-shell -a bolt://localhost:7687 -u neo4j -p cobol-migration-2025</code></li>
+            <li><strong>Cypher Shell:</strong> <code>cypher-shell -a bolt://localhost:7687 -u neo4j -p "$NEO4J_PASSWORD"</code></li>
             <li><strong>Neo4j Desktop:</strong> <a href="https://neo4j.com/download/" target="_blank">Download</a></li>
           </ul>
         </div>

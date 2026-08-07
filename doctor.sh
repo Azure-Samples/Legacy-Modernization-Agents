@@ -96,6 +96,12 @@ show_usage() {
     echo -e "  ${GREEN}validate${NC}        Validate system requirements"
     echo -e "  ${GREEN}conversation${NC}    Generate conversation log from migration data"
     echo
+    echo -e "${BOLD}Cobol-REKT (deterministic static analysis):${NC}"
+    echo -e "  ${GREEN}rekt-parse${NC}      Parse COBOL into ASTs/flowcharts under output/rekt/"
+    echo -e "  ${GREEN}rekt-ingest${NC}     Load parsed artifacts into the REKT Neo4j graph"
+    echo -e "  ${GREEN}rekt-full${NC}       Run parse then ingest"
+    echo -e "  ${GREEN}rekt-status${NC}     Show REKT container, graph, and export status"
+    echo
     echo -e "${BOLD}Examples:${NC}"
     echo -e "  $0                   ${CYAN}# Run configuration doctor${NC}"
     echo -e "  $0 setup             ${CYAN}# Interactive setup${NC}"
@@ -382,7 +388,28 @@ run_portal() {
 load_configuration() {
     if [[ -f "$REPO_ROOT/Config/load-config.sh" ]]; then
         source "$REPO_ROOT/Config/load-config.sh"
-        return $?
+        local config_status=$?
+        if [[ $config_status -ne 0 ]]; then
+            return $config_status
+        fi
+
+        if [[ -z "${NEO4J_PASSWORD:-}" && -f "$REPO_ROOT/Config/ai-config.local.env" ]]; then
+            local neo4j_line
+            neo4j_line=$(grep -E '^NEO4J_PASSWORD=' "$REPO_ROOT/Config/ai-config.local.env" | tail -1)
+            if [[ -n "$neo4j_line" ]]; then
+                export NEO4J_PASSWORD="${neo4j_line#NEO4J_PASSWORD=}"
+                NEO4J_PASSWORD="${NEO4J_PASSWORD%\"}"
+                NEO4J_PASSWORD="${NEO4J_PASSWORD#\"}"
+                NEO4J_PASSWORD="${NEO4J_PASSWORD%\'}"
+                NEO4J_PASSWORD="${NEO4J_PASSWORD#\'}"
+                export NEO4J_PASSWORD
+            fi
+        fi
+
+        if [[ -n "${NEO4J_PASSWORD:-}" ]]; then
+            export ApplicationSettings__Neo4j__Password="$NEO4J_PASSWORD"
+        fi
+        return 0
     else
         echo -e "${RED}❌ Configuration loader not found: Config/load-config.sh${NC}"
         return 1
@@ -775,13 +802,13 @@ run_doctor() {
         read -p "Would you like me to create Config/ai-config.local.env from the template? (y/n): " create_local
         
         if [[ "$create_local" =~ ^[Yy]$ ]]; then
-            if [[ -f "$REPO_ROOT/Config/ai-config.local.env.example" ]]; then
-                cp "$REPO_ROOT/Config/ai-config.local.env.example" "$REPO_ROOT/Config/ai-config.local.env"
+            if [[ -f "$REPO_ROOT/Config/ai-config.env.example" ]]; then
+                cp "$REPO_ROOT/Config/ai-config.env.example" "$REPO_ROOT/Config/ai-config.local.env"
                 echo -e "${GREEN}✅ Created Config/ai-config.local.env from example${NC}"
                 echo -e "${YELLOW}⚠️  You must edit this file with your actual AI service credentials before running the migration tool.${NC}"
                 local_config_exists=true
             else
-                echo -e "${RED}❌ Example file not found: Config/ai-config.local.env.example${NC}"
+                echo -e "${RED}❌ Example file not found: Config/ai-config.env.example${NC}"
             fi
         fi
         echo
@@ -1345,6 +1372,11 @@ AISETTINGS__CHATDEPLOYMENTNAME="\$_CHAT_MODEL"
 AZURE_OPENAI_ENDPOINT="https://copilot-sdk-placeholder"
 AISETTINGS__ENDPOINT="https://copilot-sdk-placeholder"
 AISETTINGS__CHATENDPOINT="https://copilot-sdk-placeholder"
+
+# Neo4j local development credentials
+# Username: neo4j
+# NOT FOR PRODUCTION, ENSURE TO CHANGE PASSWORD
+NEO4J_PASSWORD="cobol-rekt-2026"
 EOF
 
         # Append GitHub host if not default
@@ -1369,6 +1401,9 @@ EOF
         echo ""
         echo -e "${GREEN}✅ GitHub Copilot SDK configuration written!${NC}"
         echo -e "   Config file: ${BLUE}$LOCAL_CONFIG${NC}"
+        echo ""
+        ensure_neo4j_image || return 1
+        ensure_graph_populator_environment || return 1
         echo ""
         echo -e "${BLUE}Next steps:${NC}"
         echo "1. Run: ./doctor.sh test"
@@ -1409,6 +1444,9 @@ EOF
 
     echo ""
     echo -e "${GREEN}✅ Configuration completed!${NC}"
+    echo ""
+    ensure_neo4j_image || return 1
+    ensure_graph_populator_environment || return 1
     echo ""
     echo -e "${BLUE}🔍 Testing configuration...${NC}"
     
@@ -1621,6 +1659,12 @@ run_test() {
     echo "  Standard:         ./doctor.sh run"
     echo "  Reverse Engineer: dotnet run reverse-engineer --source ./source"
     echo "  Full Migration:   dotnet run -- --source ./source"
+    echo ""
+    echo "Deterministic COBOL Analysis (Cobol-REKT):"
+    echo "  Parse + ingest:   ./doctor.sh rekt-full"
+    echo "  Parse only:       ./doctor.sh rekt-parse"
+    echo "  Ingest existing:  ./doctor.sh rekt-ingest"
+    echo "  Check status:     ./doctor.sh rekt-status"
     echo ""
     if [ $re_components -eq $re_components_total ]; then
         echo "Reverse Engineering Available:"
@@ -2323,6 +2367,998 @@ run_conversion_only() {
     launch_mcp_web_ui "$db_path"
 }
 
+# Cobol-REKT Integration
+
+REKT_NEO4J_CONTAINER="cobol-rekt-neo4j"
+REKT_NEO4J_HTTP_PORT=7475
+REKT_NEO4J_BOLT_PORT=7688
+REKT_CONTAINER="cobol-rekt"
+REKT_POPULATOR_CONTAINER="cobol-graph-populator"
+NEO4J_IMAGE="neo4j:5.15.0"
+
+# Match the Docker daemon API instead of forcing a client version.
+detect_docker_api_version() {
+    local server_api
+    server_api=$(
+        unset DOCKER_API_VERSION
+        docker version --format '{{.Server.APIVersion}}' 2>/dev/null
+    )
+
+    if [[ -n "$server_api" ]]; then
+        export DOCKER_API_VERSION="$server_api"
+    else
+        unset DOCKER_API_VERSION
+    fi
+}
+
+ensure_neo4j_image() {
+    detect_docker_api_version
+
+    if ! command -v docker >/dev/null 2>&1; then
+        echo -e "${RED}❌ Docker is required to install the Neo4j image.${NC}"
+        return 1
+    fi
+
+    if docker image inspect "$NEO4J_IMAGE" >/dev/null 2>&1; then
+        echo -e "${GREEN}✅ Neo4j image is available: $NEO4J_IMAGE${NC}"
+        return 0
+    fi
+
+    echo -e "${BLUE}📦 Pulling Neo4j image: $NEO4J_IMAGE${NC}"
+    local pull_output
+    if ! pull_output=$(docker pull "$NEO4J_IMAGE" 2>&1); then
+        echo -e "${RED}❌ Failed to pull Neo4j image:${NC}"
+        printf '%s\n' "$pull_output" | sed 's/^/  /'
+        echo ""
+        echo -e "${YELLOW}Retry with:${NC}"
+        echo "  docker pull $NEO4J_IMAGE"
+        return 1
+    fi
+
+    echo -e "${GREEN}✅ Neo4j image downloaded: $NEO4J_IMAGE${NC}"
+}
+
+ensure_graph_populator_environment() {
+    local populator_dir="$REPO_ROOT/tools/graph-populator"
+    local requirements_file="$populator_dir/requirements.txt"
+    local venv_python="$populator_dir/.venv/bin/python"
+
+    if [[ ! -f "$populator_dir/populator.py" || ! -f "$requirements_file" ]]; then
+        echo -e "${RED}❌ Graph populator sources are incomplete: $populator_dir${NC}"
+        return 1
+    fi
+
+    if [[ -z "$PYTHON_CMD" ]]; then
+        echo -e "${RED}❌ Python is required for the REKT graph populator.${NC}"
+        return 1
+    fi
+
+    if [[ ! -x "$venv_python" ]]; then
+        echo -e "${BLUE}🐍 Creating graph populator virtual environment...${NC}"
+        local venv_output
+        if ! venv_output=$("$PYTHON_CMD" -m venv "$populator_dir/.venv" 2>&1); then
+            echo -e "${RED}❌ Failed to create graph populator virtual environment:${NC}"
+            printf '%s\n' "$venv_output" | sed 's/^/  /'
+            return 1
+        fi
+    fi
+
+    if ! "$venv_python" -c 'import click, neo4j, networkx, orjson, rich' >/dev/null 2>&1; then
+        echo -e "${BLUE}📦 Installing graph populator dependencies...${NC}"
+        local install_output
+        if ! install_output=$("$venv_python" -m pip install -r "$requirements_file" 2>&1); then
+            echo -e "${RED}❌ Failed to install graph populator dependencies:${NC}"
+            printf '%s\n' "$install_output" | sed 's/^/  /'
+            echo ""
+            echo -e "${YELLOW}Retry with:${NC}"
+            echo "  $venv_python -m pip install -r $requirements_file"
+            return 1
+        fi
+    fi
+
+    echo -e "${GREEN}✅ Graph populator environment is ready${NC}"
+}
+
+ensure_rekt_containers() {
+    detect_docker_api_version
+    echo -e "${BLUE}🔧 Ensuring rekt containers are running...${NC}"
+
+    if [[ -z "${NEO4J_PASSWORD:-}" ]]; then
+        load_configuration >/dev/null 2>&1 || true
+    fi
+
+    if [[ -z "${NEO4J_PASSWORD:-}" ]]; then
+        if [[ ! -f "$REPO_ROOT/Config/ai-config.local.env" ]]; then
+            echo -e "${RED}❌ Neo4j configuration is missing: Config/ai-config.local.env${NC}"
+            echo ""
+            echo "Create it through the interactive setup:"
+            echo "  ./doctor.sh setup"
+            return 1
+        fi
+
+        if ! grep -Eq '^[[:space:]]*NEO4J_PASSWORD[[:space:]]*=[[:space:]]*[^[:space:]#]+' "$REPO_ROOT/Config/ai-config.local.env"; then
+            echo -e "${RED}❌ NEO4J_PASSWORD is empty in Config/ai-config.local.env${NC}"
+            echo ""
+            echo "Edit Config/ai-config.local.env and set a strong local password:"
+            echo "  NEO4J_PASSWORD=<your-local-password>"
+            return 1
+        fi
+    fi
+
+    ensure_neo4j_image || return 1
+
+    # Start only the rekt services (leave existing neo4j untouched).
+    local compose_output
+    if ! compose_output=$(docker-compose up -d "$REKT_NEO4J_CONTAINER" "$REKT_CONTAINER" 2>&1); then
+        echo -e "${RED}❌ Failed to start Cobol-REKT containers:${NC}"
+        printf '%s\n' "$compose_output" | sed 's/^/  /'
+        echo ""
+        echo -e "${YELLOW}Debug with:${NC}"
+        echo "  docker-compose ps"
+        echo "  docker-compose logs --tail=100 $REKT_NEO4J_CONTAINER $REKT_CONTAINER"
+        return 1
+    fi
+
+    # Wait for rekt Neo4j to be healthy
+    local max_wait=60
+    local waited=0
+    echo -ne "  Waiting for $REKT_NEO4J_CONTAINER"
+    while ! docker exec "$REKT_NEO4J_CONTAINER" sh -c \
+        'cypher-shell -u neo4j -p "$HEALTHCHECK_PASSWORD" "RETURN 1"' >/dev/null 2>&1; do
+        sleep 2
+        waited=$((waited + 2))
+        echo -ne "."
+        if [[ $waited -ge $max_wait ]]; then
+            echo -e "\n${RED}❌ $REKT_NEO4J_CONTAINER did not become healthy in ${max_wait}s${NC}"
+            echo -e "${YELLOW}Container state:${NC}"
+            docker inspect --format \
+                '  Status={{.State.Status}} ExitCode={{.State.ExitCode}} Error={{.State.Error}} Health={{if .State.Health}}{{.State.Health.Status}}{{else}}n/a{{end}}' \
+                "$REKT_NEO4J_CONTAINER" 2>&1 || true
+            echo ""
+            echo -e "${YELLOW}Recent $REKT_NEO4J_CONTAINER logs:${NC}"
+            docker logs --tail 50 "$REKT_NEO4J_CONTAINER" 2>&1 | sed 's/^/  /'
+            echo ""
+            echo -e "${YELLOW}Debug with:${NC}"
+            echo "  docker-compose ps"
+            echo "  docker-compose logs --tail=100 $REKT_NEO4J_CONTAINER"
+            return 1
+        fi
+    done
+    echo -e " ${GREEN}✅${NC}"
+
+    # Verify rekt CLI is available
+    if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar --version >/dev/null 2>&1; then
+        echo -e "  ${GREEN}✅ Cobol-REKT CLI available${NC}"
+    else
+        echo -e "  ${YELLOW}⚠️  Cobol-REKT CLI not responding (container may still be building)${NC}"
+    fi
+
+    # Verify /output bind mount is writable — rm -rf on the host changes the inode and breaks it.
+    # Restart the container to re-establish the mount if needed.
+    if ! docker exec "$REKT_CONTAINER" bash -c \
+        "touch /output/.write_probe && rm -f /output/.write_probe" >/dev/null 2>&1; then
+        echo -e "  ${YELLOW}⚠️  /output bind mount stale — restarting $REKT_CONTAINER...${NC}"
+        docker restart "$REKT_CONTAINER" >/dev/null
+        sleep 3
+        if ! docker exec "$REKT_CONTAINER" bash -c \
+            "touch /output/.write_probe && rm -f /output/.write_probe" >/dev/null 2>&1; then
+            echo -e "  ${RED}❌ /output still not writable after restart. Check Docker volume mount.${NC}"
+            return 1
+        fi
+        echo -e "  ${GREEN}✅ Bind mount restored${NC}"
+    fi
+}
+
+run_rekt_parse() {
+    echo -e "${CYAN}╔══════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║   Cobol-REKT: Parse COBOL → AST/CFG/Data JSON              ║${NC}"
+    echo -e "${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
+
+    detect_docker_api_version
+    ensure_rekt_containers || return 1
+
+    local cobol_count
+    cobol_count=$(find "$REPO_ROOT/source" \
+        \( -name "*.cbl" -o -name "*.CBL" -o -name "*.cob" -o -name "*.COB" \) \
+        ! -path "*/.rekt-staging/*" \
+        ! -path "*/.preprocessed/*" \
+        2>/dev/null | wc -l | tr -d ' ')
+    local copy_count
+    copy_count=$(find "$REPO_ROOT/source" \
+        \( -name "*.cpy" -o -name "*.CPY" \) \
+        ! -path "*/.rekt-staging/*" \
+        ! -path "*/.preprocessed/*" \
+        2>/dev/null | wc -l | tr -d ' ')
+
+    echo -e "${BLUE}  Found: ${cobol_count} programs, ${copy_count} copybooks${NC}"
+
+    if [[ "$cobol_count" -eq 0 ]]; then
+        echo -e "${RED}❌ No .cbl/.cob files found in source/. Drop COBOL files there first.${NC}"
+        return 1
+    fi
+
+    # Preprocess files that need IMS/DLI or dialect compatibility transformations
+    echo -e "${BLUE}  Running preprocessor for IMS/DLI and dialect compatibility...${NC}"
+    if [[ -x "$REPO_ROOT/tools/preprocess-for-rekt.sh" ]]; then
+        "$REPO_ROOT/tools/preprocess-for-rekt.sh" "$REPO_ROOT/source" 2>/dev/null
+        if [[ -d "$REPO_ROOT/source/.preprocessed" ]]; then
+            local preproc_count=0
+            local pp_p
+            for pp_p in cbl cob cpy; do
+                local hits
+                hits=$(find "$REPO_ROOT/source/.preprocessed" -maxdepth 1 \
+                    \( -name "*.${pp_p}" -o -name "*.$(echo $pp_p | tr 'a-z' 'A-Z')" \) 2>/dev/null | wc -l | tr -d ' ')
+                preproc_count=$((preproc_count + hits))
+            done
+            if [[ "$preproc_count" -gt 0 ]]; then
+                echo -e "  ${GREEN}✅ Preprocessed ${preproc_count} file(s) for rekt compatibility${NC}"
+            fi
+        fi
+    fi
+
+    local preprocessed_dir="$REPO_ROOT/source/.preprocessed"
+    local identity_check_output=""
+    if ! identity_check_output=$("$PYTHON_CMD" - "$REPO_ROOT/source" "$preprocessed_dir" <<'PYEOF'
+import os, sys
+
+source_root = sys.argv[1]
+preproc_dir = sys.argv[2]
+program_exts = {'.cbl', '.cob'}
+copybook_exts = {'.cpy'}
+skip_dirs = {'.preprocessed', '.rekt-staging'}
+
+programs = {}
+copybooks = {}
+for root, dirs, files in os.walk(source_root):
+    dirs[:] = [d for d in dirs if d not in skip_dirs and not d.startswith('.convert-')]
+    for name in files:
+        rel = os.path.relpath(os.path.join(root, name), source_root).replace(os.sep, '/')
+        ext = os.path.splitext(name)[1].lower()
+        if ext in program_exts:
+            programs.setdefault(name.lower(), []).append(rel)
+        elif ext in copybook_exts:
+            copybooks.setdefault(name.lower(), []).append(rel)
+
+preprocessed = set()
+if os.path.isdir(preproc_dir):
+    for name in os.listdir(preproc_dir):
+        path = os.path.join(preproc_dir, name)
+        if os.path.isfile(path):
+            preprocessed.add(name.lower())
+
+errors = []
+notes = []
+for basename, paths in sorted(copybooks.items()):
+    if len(paths) > 1:
+        errors.append(("copybook-collision", basename, sorted(paths)))
+
+for basename, paths in sorted(programs.items()):
+    if len(paths) > 1:
+        sorted_paths = sorted(paths)
+        notes.append(("program-duplicate", basename, sorted_paths))
+        if basename in preprocessed:
+            errors.append(("preprocessed-program-collision", basename, sorted_paths))
+
+for kind, basename, paths in notes + errors:
+    print("\t".join([kind, basename] + paths))
+
+sys.exit(1 if errors else 0)
+PYEOF
+); then
+        echo -e "${RED}❌ Source identity collisions prevent safe REKT staging.${NC}"
+        while IFS=$'\t' read -r issue basename path1 rest; do
+            [[ -z "$issue" ]] && continue
+            case "$issue" in
+                copybook-collision)
+                    echo -e "  ${RED}copybook basename collision:${NC} ${basename}"
+                    ;;
+                preprocessed-program-collision)
+                    echo -e "  ${RED}preprocessed program basename collision:${NC} ${basename}"
+                    echo -e "    ${YELLOW}preprocess-for-rekt.sh stages flat outputs for this basename, so the transformed source is ambiguous.${NC}"
+                    ;;
+            esac
+            local _path
+            for _path in "$path1" $rest; do
+                [[ -z "$_path" ]] && continue
+                echo -e "    ${YELLOW}↳ ${_path}${NC}"
+            done
+        done <<< "$identity_check_output"
+        return 1
+    fi
+
+    local duplicate_program_basenames=""
+    while IFS=$'\t' read -r issue basename _paths; do
+        if [[ "$issue" == "program-duplicate" ]]; then
+            duplicate_program_basenames="$duplicate_program_basenames $basename"
+        fi
+    done <<< "$identity_check_output"
+
+    # Build a staging dir that preserves source-relative program identity.
+    # Copybooks remain flat at the root because smojol resolves COPY targets by basename.
+    # The container sees this as /source/.rekt-staging (bind-mounted from source/).
+    local staging_dir="$REPO_ROOT/source/.rekt-staging"
+    rm -rf "$staging_dir"
+    mkdir -p "$staging_dir"
+    local generated_stubs_file="$staging_dir/.generated-stubs"
+    : > "$generated_stubs_file"
+
+    stage_copybook_file() {
+        local src_file="$1"
+        local file_name
+        file_name="$(basename "$src_file")"
+        local target="$staging_dir/$file_name"
+        if [[ -f "$preprocessed_dir/$file_name" ]]; then
+            cp "$preprocessed_dir/$file_name" "$target" 2>/dev/null || true
+            if [[ -f "$preprocessed_dir/$file_name.preprocess.json" ]]; then
+                cp "$preprocessed_dir/$file_name.preprocess.json" "$target.preprocess.json" 2>/dev/null || true
+            fi
+        else
+            cp "$src_file" "$target" 2>/dev/null || true
+        fi
+        if [[ -f "$target" ]]; then
+            perl -0pi -e 's/MOVE ([01])\(1\)\s+TO/MOVE $1 TO/g' "$target" 2>/dev/null || true
+        fi
+    }
+
+    stage_program_file() {
+        local src_file="$1"
+        local file_name
+        file_name="$(basename "$src_file")"
+        local rel_path="${src_file#"$REPO_ROOT/source/"}"
+        local target="$staging_dir/$rel_path"
+        mkdir -p "$(dirname "$target")"
+        if [[ -f "$preprocessed_dir/$file_name" ]]; then
+            cp "$preprocessed_dir/$file_name" "$target" 2>/dev/null || true
+            if [[ -f "$preprocessed_dir/$file_name.preprocess.json" ]]; then
+                cp "$preprocessed_dir/$file_name.preprocess.json" "$target.preprocess.json" 2>/dev/null || true
+            fi
+        else
+            cp "$src_file" "$target" 2>/dev/null || true
+        fi
+        if [[ -f "$target" ]]; then
+            perl -0pi -e 's/MOVE ([01])\(1\)\s+TO/MOVE $1 TO/g' "$target" 2>/dev/null || true
+        fi
+    }
+
+    # Collect all copybooks (recursive) into the flat staging root.
+    while IFS= read -r cpyfile; do
+        stage_copybook_file "$cpyfile"
+    done < <(find "$REPO_ROOT/source" \( -name "*.cpy" -o -name "*.CPY" \) \
+        ! -path "*/.rekt-staging/*" \
+        ! -path "*/.preprocessed/*")
+
+    # Stage generated stubs after real copybooks without overwriting real files.
+    if [[ -d "$preprocessed_dir" ]]; then
+        while IFS= read -r stub_cpy; do
+            local stub_name
+            stub_name="$(basename "$stub_cpy")"
+            local stub_target="$staging_dir/$stub_name"
+            # Don't overwrite a real copybook that was already staged
+            if [[ ! -f "$stub_target" ]]; then
+                cp "$stub_cpy" "$stub_target" 2>/dev/null || true
+                printf '%s\n' "${stub_name%.*}" | tr '[:lower:]' '[:upper:]' >> "$generated_stubs_file"
+                if [[ -f "$stub_cpy.preprocess.json" ]]; then
+                    cp "$stub_cpy.preprocess.json" "$stub_target.preprocess.json" 2>/dev/null || true
+                fi
+            fi
+        done < <(find "$preprocessed_dir" -maxdepth 1 \( -name "*.cpy" -o -name "*.CPY" \) -type f 2>/dev/null)
+    fi
+
+    # Collect all COBOL programs (recursive) while preserving their source-relative path.
+    while IFS= read -r cblfile; do
+        stage_program_file "$cblfile"
+    done < <(find "$REPO_ROOT/source" \( -name "*.cbl" -o -name "*.CBL" -o -name "*.cob" -o -name "*.COB" \) \
+        ! -path "*/.rekt-staging/*" \
+        ! -path "*/.preprocessed/*")
+
+    local staged_cbl staged_cpy
+    staged_cbl=$(find "$staging_dir" -type f \( -name "*.cbl" -o -name "*.CBL" -o -name "*.cob" -o -name "*.COB" \) | wc -l | tr -d ' ')
+    staged_cpy=$(find "$staging_dir" -type f \( -name "*.cpy" -o -name "*.CPY" \) | wc -l | tr -d ' ')
+    echo -e "  ${BLUE}Staged: ${staged_cbl} program(s), ${staged_cpy} copybook(s) → source/.rekt-staging/${NC}"
+
+    # Restart stale Docker Desktop bind mounts before they produce empty parser output.
+    if [[ "$staged_cbl" -gt 0 ]]; then
+        local container_visible
+        container_visible=$(docker exec "$REKT_CONTAINER" sh -c "ls /source/.rekt-staging 2>/dev/null | wc -l" 2>/dev/null | tr -d ' ')
+        if [[ -z "$container_visible" || "$container_visible" -eq 0 ]]; then
+            echo -e "  ${YELLOW}⚠️  Container can't see /source/.rekt-staging — bind mount is stale. Restarting cobol-rekt…${NC}"
+            docker compose -f "$REPO_ROOT/docker-compose.yml" restart "$REKT_CONTAINER" >/dev/null 2>&1 || true
+            sleep 3
+            container_visible=$(docker exec "$REKT_CONTAINER" sh -c "ls /source/.rekt-staging 2>/dev/null | wc -l" 2>/dev/null | tr -d ' ')
+            if [[ -z "$container_visible" || "$container_visible" -eq 0 ]]; then
+                echo -e "  ${RED}❌ Container still can't see staging files after restart.${NC}"
+                echo -e "     Try: ${BLUE}docker compose down && docker compose up -d${NC} from the repo root."
+                return 1
+            fi
+            echo -e "  ${GREEN}✅ Container now sees ${container_visible} staged file(s).${NC}"
+        fi
+    fi
+
+    # Clear previous run outputs first so the missing-copybook report below survives.
+    # Use find-delete rather than rm -rf dir to preserve the Docker bind mount (./output/rekt:/output).
+    mkdir -p "$REPO_ROOT/output/rekt"
+    find "$REPO_ROOT/output/rekt" -mindepth 1 -delete 2>/dev/null || true
+
+    # Report missing copybooks before parsing so reduced coverage is explicit.
+    local missing_report="$REPO_ROOT/output/rekt/missing-copybooks.txt"
+    mkdir -p "$REPO_ROOT/output/rekt"
+    "$PYTHON_CMD" - "$staging_dir" "$missing_report" >/dev/null 2>&1 <<'PYEOF' || true
+import os, re, sys
+from collections import defaultdict
+
+staging_dir = sys.argv[1]
+report_path = sys.argv[2]
+
+# Available copybook stems (case-insensitive), as staged
+available = set()
+for root, _, files in os.walk(staging_dir):
+    for name in files:
+        stem, ext = os.path.splitext(name)
+        if ext.lower() == '.cpy':
+            available.add(stem.upper())
+
+# Match COPY / -COPY directives in non-comment lines.
+# Handles: COPY NAME., COPY 'NAME'., COPY NAME REPLACING ...
+copy_pat = re.compile(
+    r"^[^*]{0,6}[^*\n].*?\bCOPY\s+['\"]?([A-Z][A-Z0-9_-]*)['\"]?",
+    re.IGNORECASE,
+)
+
+referenced_by = defaultdict(set)  # copybook_name → set(referencing_files)
+staged_sources = []
+for root, _, files in os.walk(staging_dir):
+    for name in files:
+        if name.lower().endswith(('.cbl', '.cob', '.cpy')):
+            path = os.path.join(root, name)
+            rel = os.path.relpath(path, staging_dir).replace(os.sep, '/')
+            staged_sources.append((rel, path))
+
+for rel_name, path in sorted(staged_sources):
+    try:
+        with open(path, 'r', encoding='latin-1') as f:
+            for line in f:
+                # Skip comments (col 7 = '*') and lines too short
+                if len(line) > 6 and line[6] == '*':
+                    continue
+                m = copy_pat.match(line.rstrip())
+                if m:
+                    cpy = m.group(1).upper()
+                    if cpy not in available:
+                        referenced_by[cpy].add(rel_name)
+    except OSError:
+        continue
+
+if not referenced_by:
+    # Truncate the report so stale entries don't linger.
+    open(report_path, 'w').close()
+    sys.exit(0)
+
+with open(report_path, 'w', encoding='utf-8') as out:
+    out.write('# Missing copybooks referenced by staged sources\n')
+    out.write('# These COPY targets were not found in source/. The parser will\n')
+    out.write('# still attempt the file but may emit MISSING_COPYBOOK errors and\n')
+    out.write('# produce reduced AST/data coverage for affected programs.\n\n')
+    for cpy in sorted(referenced_by):
+        refs = ', '.join(sorted(referenced_by[cpy]))
+        out.write(f'{cpy}\treferenced by: {refs}\n')
+
+# Stdout: short, colorized-friendly summary (no ANSI here; caller decorates)
+total = len(referenced_by)
+unique_files = set()
+for refs in referenced_by.values():
+    unique_files.update(refs)
+print(f'{total}|{len(unique_files)}')
+for cpy in sorted(referenced_by):
+    print(f'  {cpy} ← {", ".join(sorted(referenced_by[cpy]))}')
+PYEOF
+
+    if [[ -s "$missing_report" ]]; then
+        local miss_summary
+        miss_summary=$("$PYTHON_CMD" -c "
+import sys
+with open(sys.argv[1]) as f:
+    lines = [l.rstrip() for l in f if l.strip() and not l.startswith('#')]
+print(len(lines))
+" "$missing_report" 2>/dev/null || echo 0)
+        if [[ "$miss_summary" -gt 0 ]]; then
+            echo -e "  ${YELLOW}⚠️  Missing copybooks: ${miss_summary} unresolved COPY target(s)${NC}"
+            # Show the first few inline for quick scanning
+            local first_lines
+            first_lines=$(grep -v '^#' "$missing_report" | head -5)
+            while IFS= read -r line; do
+                [[ -z "$line" ]] && continue
+                echo -e "    ${YELLOW}↳ ${line}${NC}"
+            done <<< "$first_lines"
+            if [[ "$miss_summary" -gt 5 ]]; then
+                echo -e "    ${YELLOW}↳ … and $((miss_summary - 5)) more — see output/rekt/missing-copybooks.txt${NC}"
+            fi
+            echo -e "    ${YELLOW}Provide these in source/ for full AST coverage; the scan will continue.${NC}"
+        fi
+    fi
+
+    # Fall back through parser modes for dialect and source-format incompatibilities.
+    local succeeded=0
+    local failed=0
+    local skipped=0
+    local filtered_out=0
+    local failed_files=""
+
+    # Resolve the optional program filter to exact source-relative program paths.
+    local rekt_filter_file=""
+    local rekt_filter_active=false
+    if [[ -n "${_REKT_PROGRAM_FILTER:-}" ]]; then
+        rekt_filter_active=true
+        local filter_resolution_output=""
+        if ! filter_resolution_output=$("$PYTHON_CMD" - "$staging_dir" "$_REKT_PROGRAM_FILTER" <<'PYEOF'
+import os, sys
+from collections import defaultdict
+
+staging_dir = sys.argv[1]
+selectors = sys.argv[2]
+programs = []
+for root, _, files in os.walk(staging_dir):
+    for name in files:
+        if name.lower().endswith(('.cbl', '.cob')):
+            path = os.path.join(root, name)
+            rel = os.path.relpath(path, staging_dir).replace(os.sep, '/')
+            programs.append(rel)
+
+exact = {p.lower(): p for p in programs}
+by_basename = defaultdict(list)
+by_stem = defaultdict(list)
+for rel in programs:
+    basename = os.path.basename(rel)
+    by_basename[basename.lower()].append(rel)
+    by_stem[os.path.splitext(basename)[0].lower()].append(rel)
+
+resolved = []
+for raw in selectors.split(','):
+    selector = raw.strip()
+    if not selector:
+        continue
+    normalized = selector.replace('\\', '/').lstrip('./').lstrip('/')
+    match = exact.get(normalized.lower())
+    if match:
+        if match not in resolved:
+            resolved.append(match)
+        continue
+
+    basename_matches = by_basename.get(os.path.basename(normalized).lower(), [])
+    if len(basename_matches) == 1:
+        match = basename_matches[0]
+        if match not in resolved:
+            resolved.append(match)
+        continue
+    if len(basename_matches) > 1:
+        print(
+            "Program selector '%s' matched multiple staged programs by basename: %s. Use a source-relative path."
+            % (selector, ", ".join(sorted(basename_matches)))
+        )
+        sys.exit(1)
+
+    stem_matches = by_stem.get(os.path.splitext(os.path.basename(normalized))[0].lower(), [])
+    if len(stem_matches) == 1:
+        match = stem_matches[0]
+        if match not in resolved:
+            resolved.append(match)
+        continue
+    if len(stem_matches) > 1:
+        print(
+            "Program selector '%s' matched multiple staged programs by stem: %s. Use a source-relative path."
+            % (selector, ", ".join(sorted(stem_matches)))
+        )
+        sys.exit(1)
+
+    print("Program selector '%s' did not match any staged program." % selector)
+    sys.exit(1)
+
+if not resolved:
+    print("Program filter did not resolve to any staged programs.")
+    sys.exit(1)
+
+print("\n".join(resolved))
+PYEOF
+); then
+            echo -e "${RED}❌ Invalid _REKT_PROGRAM_FILTER.${NC}"
+            while IFS= read -r line; do
+                [[ -z "$line" ]] && continue
+                echo -e "    ${YELLOW}↳ ${line}${NC}"
+            done <<< "$filter_resolution_output"
+            return 1
+        fi
+        rekt_filter_file="$staging_dir/.rekt-program-filter"
+        printf '%s\n' "$filter_resolution_output" > "$rekt_filter_file"
+        echo -e "  ${BLUE}REKT program filter: ${_REKT_PROGRAM_FILTER}${NC}"
+    fi
+
+    # Incremental scanning is opt-in to preserve full-scan behavior by default.
+    local rekt_inc=false
+    [[ "${_REKT_INCREMENTAL:-false}" == "true" ]] && rekt_inc=true
+    if [[ "$rekt_inc" == "true" && -n "$duplicate_program_basenames" ]]; then
+        echo -e "${RED}❌ _REKT_INCREMENTAL requires unique program basenames.${NC}"
+        while IFS=$'\t' read -r issue basename path1 rest; do
+            [[ "$issue" != "program-duplicate" ]] && continue
+            echo -e "  ${RED}${basename}${NC}"
+            local _path
+            for _path in "$path1" $rest; do
+                [[ -z "$_path" ]] && continue
+                echo -e "    ${YELLOW}↳ ${_path}${NC}"
+            done
+        done <<< "$identity_check_output"
+        echo -e "  ${YELLOW}Disable _REKT_INCREMENTAL or disambiguate these basenames before rerunning.${NC}"
+        return 1
+    fi
+
+    declare rekt_skip_set=""
+    local rekt_manifest=""
+    if [[ "$rekt_inc" == "true" ]]; then
+        if command -v dotnet >/dev/null 2>&1 && [[ -f "$REPO_ROOT/CobolToQuarkusMigration.csproj" ]]; then
+            local rekt_db="${_REKT_SCAN_DB:-$REPO_ROOT/Data/rekt-scan.db}"
+            local rekt_plan_file
+            rekt_plan_file=$(mktemp -t rekt-scan-plan.XXXXXX)
+            rekt_manifest=$(mktemp -t rekt-scan-manifest.XXXXXX)
+            echo -e "  ${BLUE}Incremental REKT cache: planning…${NC}"
+            # Forward the filter so the planner only considers targeted programs.
+            local _plan_programs_arg=()
+            if [[ "$rekt_filter_active" == "true" ]]; then
+                local incremental_program_filter=""
+                while IFS= read -r filtered_program; do
+                    [[ -z "$filtered_program" ]] && continue
+                    local filtered_basename
+                    filtered_basename="$(basename "$filtered_program")"
+                    incremental_program_filter="${incremental_program_filter:+$incremental_program_filter,}$filtered_basename"
+                done < "$rekt_filter_file"
+                _plan_programs_arg=(--programs "$incremental_program_filter")
+            fi
+            if (cd "$REPO_ROOT" && dotnet run --project CobolToQuarkusMigration.csproj --no-build -- \
+                    rekt-scan-cache plan "$staging_dir" \
+                    --db "$rekt_db" \
+                    --verify-artifacts-in "$REPO_ROOT/output/rekt" \
+                    "${_plan_programs_arg[@]}" \
+                    > "$rekt_plan_file" 2>/dev/null); then
+                local _skip_count=0 _parse_count=0
+                while IFS=$'\t' read -r action basename reason; do
+                    [[ -z "$action" ]] && continue
+                    if [[ "$action" == "skip" ]]; then
+                        rekt_skip_set="$rekt_skip_set $basename"
+                        _skip_count=$((_skip_count + 1))
+                    else
+                        _parse_count=$((_parse_count + 1))
+                    fi
+                done < "$rekt_plan_file"
+                echo -e "  ${BLUE}Incremental plan: ${_parse_count} to parse, ${_skip_count} cached.${NC}"
+            else
+                echo -e "  ${YELLOW}⚠️  Incremental plan failed — falling back to full scan.${NC}"
+                rekt_inc=false
+            fi
+            rm -f "$rekt_plan_file"
+        else
+            echo -e "  ${YELLOW}⚠️  _REKT_INCREMENTAL=true but dotnet/project not available — full scan.${NC}"
+            rekt_inc=false
+        fi
+    fi
+
+    # Use process substitution so succeeded/failed counters persist outside the loop
+    while IFS= read -r cbl_file; do
+        [[ -e "$cbl_file" ]] || continue
+        local fname
+        fname=$(basename "$cbl_file")
+        local rel_program="${cbl_file#"$staging_dir"/}"
+        # Strip any recognised program extension (case-insensitive) to get the stem.
+        local stem="${fname%.*}"
+        local rel_log_path="${rel_program}.parse.log"
+        local err_log="$REPO_ROOT/output/rekt/$rel_log_path"
+        mkdir -p "$(dirname "$err_log")"
+
+        # Skip files outside the requested program filter.
+        if [[ "$rekt_filter_active" == "true" ]] && ! grep -Fqx "$rel_program" "$rekt_filter_file"; then
+            filtered_out=$((filtered_out + 1))
+            continue
+        fi
+
+        # Honor the incremental planner's skip decision.
+        if [[ "$rekt_inc" == "true" ]] && [[ " $rekt_skip_set " == *" $fname "* ]]; then
+            echo -e "  Skipping $rel_program ${GREEN}(cached)${NC}"
+            succeeded=$((succeeded + 1))
+            skipped=$((skipped + 1))
+            continue
+        fi
+
+        local rel_output_dir="$REPO_ROOT/output/rekt/$(dirname "$rel_program")"
+        mkdir -p "$rel_output_dir"
+        echo -ne "  Parsing $rel_program..."
+        local parse_outcome="Failed"
+        local stub_warnings=""
+        if [[ -s "$generated_stubs_file" ]]; then
+            stub_warnings=$("$PYTHON_CMD" - "$cbl_file" "$generated_stubs_file" <<'PYEOF'
+import re
+import sys
+
+source_path, stubs_path = sys.argv[1:3]
+with open(stubs_path, encoding="utf-8") as handle:
+    stubs = {line.strip().upper() for line in handle if line.strip()}
+
+copy_pattern = re.compile(
+    r"\bCOPY\s+['\"]?([A-Z][A-Z0-9_-]*)['\"]?",
+    re.IGNORECASE,
+)
+used = set()
+with open(source_path, encoding="latin-1") as handle:
+    for line in handle:
+        stripped = line.lstrip()
+        if stripped.startswith("*>") or (len(line) > 6 and line[6] in ("*", "/")):
+            continue
+        match = copy_pattern.search(line)
+        if match and match.group(1).upper() in stubs:
+            used.add(match.group(1).upper())
+
+print("|".join(f"generated-copybook-stub:{name}" for name in sorted(used)))
+PYEOF
+)
+        fi
+
+        # Attempt 1: Standard dialect (handles CICS, SQL, standard COBOL)
+        if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$rel_program" \
+            --commands="BUILD_BASE_ANALYSIS WRITE_FLOW_AST WRITE_CFG WRITE_DATA_STRUCTURES" \
+            --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
+            --dialectJarPath=/app/dialect-idms.jar \
+            --reportDir=/output \
+            --generation=PROGRAM >/dev/null 2>"$err_log"; then
+            echo -e " ${GREEN}✅${NC}"
+            rm -f "$err_log"
+            succeeded=$((succeeded + 1))
+            parse_outcome="Full"
+        else
+            # Attempt 2: Retry without dialect JAR (for IMS/DL/I and other dialects)
+            if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$rel_program" \
+                --commands="BUILD_BASE_ANALYSIS WRITE_FLOW_AST WRITE_CFG WRITE_DATA_STRUCTURES" \
+                --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
+                --reportDir=/output \
+                --generation=PROGRAM >/dev/null 2>>"$err_log"; then
+                echo -e " ${GREEN}✅${NC} (no-dialect mode)"
+                rm -f "$err_log"
+                succeeded=$((succeeded + 1))
+                parse_outcome="NoDialect"
+            else
+                # Attempt 3: Raw AST only (tolerates more parse errors)
+                if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$rel_program" \
+                    --commands="WRITE_RAW_AST" \
+                    --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
+                    --reportDir=/output \
+                    --generation=PROGRAM >/dev/null 2>>"$err_log"; then
+                    echo -e " ${YELLOW}⚠️${NC} (raw AST only — complex copybooks)"
+                    rm -f "$err_log"
+                    succeeded=$((succeeded + 1))
+                    parse_outcome="RawAst"
+                else
+                    # Dependency extraction can remain useful when AST writing fails.
+                    local dep_ok=false
+                    if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar dependency "$rel_program" \
+                        --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
+                        --dialectJarPath=/app/dialect-idms.jar \
+                        --export=/output/"${rel_program}"-deps.json >/dev/null 2>>"$err_log"; then
+                        dep_ok=true
+                    fi
+                    # Also try validate (may report warnings but still useful)
+                    docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar validate "$rel_program" \
+                        --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
+                        --dialectJarPath=/app/dialect-idms.jar >/dev/null 2>>"$err_log" || true
+
+                    if [[ "$dep_ok" == true ]]; then
+                        echo -e " ${YELLOW}⚠️${NC} (deps only — AST writer bug)"
+                        # Show smojol error hint. Prefer "Caused by:" (root cause); fall back to first match.
+                        # Full log available at output/rekt/<source-relative>.parse.log
+                        local err_hint
+                        err_hint=$(grep -Eo '(Exception|Error|Caused by): .{1,120}' "$err_log" 2>/dev/null \
+                            | grep -i 'caused by' | head -1)
+                        [[ -z "$err_hint" ]] && \
+                            err_hint=$(grep -Eo '(Exception|Error|Caused by): .{1,120}' "$err_log" 2>/dev/null | head -1)
+                        [[ -n "$err_hint" ]] && echo -e "    ${YELLOW}↳ smojol: $err_hint${NC}"
+                        echo -e "    ${YELLOW}↳ log: output/rekt/${rel_log_path}${NC}"
+                        succeeded=$((succeeded + 1))
+                        parse_outcome="DepsOnly"
+                    else
+                        echo -e " ${RED}❌${NC}"
+                        echo -e "    ${RED}↳ log: output/rekt/${rel_log_path}${NC}"
+                        failed=$((failed + 1))
+                        failed_files="${failed_files} ${rel_program}"
+                        parse_outcome="Failed"
+                    fi
+                fi
+            fi
+        fi
+
+        if [[ -n "$stub_warnings" ]]; then
+            if [[ "$parse_outcome" == "Full" || "$parse_outcome" == "NoDialect" ]]; then
+                parse_outcome="StubBacked"
+            fi
+            echo -e "    ${YELLOW}↳ generated copybook stub used; structural facts are degraded${NC}"
+        fi
+
+        # Append outcomes for batch recording after the loop.
+        if [[ "$rekt_inc" == "true" && -n "$rekt_manifest" ]]; then
+            printf '%s\t%s\t%s\n' "$fname" "$parse_outcome" "$stub_warnings" >> "$rekt_manifest"
+        fi
+    done < <(find "$staging_dir" -type f \( -name "*.cbl" -o -name "*.CBL" -o -name "*.cob" -o -name "*.COB" \) | sort)
+
+    # Persist outcomes in one dotnet invocation.
+    if [[ "$rekt_inc" == "true" && -n "$rekt_manifest" && -s "$rekt_manifest" ]]; then
+        local rekt_db="${_REKT_SCAN_DB:-$REPO_ROOT/Data/rekt-scan.db}"
+        (cd "$REPO_ROOT" && dotnet run --project CobolToQuarkusMigration.csproj --no-build -- \
+                rekt-scan-cache record-batch "$rekt_manifest" \
+                --staging-dir "$staging_dir" \
+                --db "$rekt_db" >/dev/null 2>&1) || \
+            echo -e "  ${YELLOW}⚠️  Incremental cache record-batch failed (results not persisted).${NC}"
+        rm -f "$rekt_manifest"
+    fi
+
+    # Extract optional facts while staged source bytes remain available; failures are non-fatal.
+    if [[ "${_PROGRAM_FACTS:-false}" == "true" && "$succeeded" -gt 0 ]]; then
+        if command -v dotnet >/dev/null 2>&1 && [[ -f "$REPO_ROOT/CobolToQuarkusMigration.csproj" ]]; then
+            local pf_db="${_REKT_SCAN_DB:-$REPO_ROOT/Data/rekt-scan.db}"
+            echo -e "  ${BLUE}Extracting program-facts.json …${NC}"
+            local pf_extract_args=(
+                program-facts extract "$staging_dir"
+                --rekt-dir "$REPO_ROOT/output/rekt"
+                --output-dir "$REPO_ROOT/output/rekt"
+                --repo-root "$REPO_ROOT"
+            )
+            # Forward the scan-cache DB only when it exists; the extractor
+            # uses it for confidence inference but treats it as optional.
+            [[ -f "$pf_db" ]] && pf_extract_args+=(--scan-cache-db "$pf_db")
+            # Limit fact extraction to programs included in partial runs.
+            if [[ "$rekt_filter_active" == "true" ]]; then
+                pf_extract_args+=(--programs "$_REKT_PROGRAM_FILTER")
+            fi
+            if (cd "$REPO_ROOT" && dotnet run --project CobolToQuarkusMigration.csproj --no-build -- \
+                    "${pf_extract_args[@]}" 2>/dev/null); then
+                : # success summary already printed to stderr by the CLI
+            else
+                echo -e "  ${YELLOW}⚠️  program-facts extract failed — facts not refreshed (this run continues uncached for facts).${NC}"
+            fi
+
+            # Prune orphans only when explicitly requested.
+            if [[ "${_PROGRAM_FACTS_PRUNE_ORPHANS:-false}" == "true" ]]; then
+                (cd "$REPO_ROOT" && dotnet run --project CobolToQuarkusMigration.csproj --no-build -- \
+                        program-facts prune-orphans "$REPO_ROOT/output/rekt" \
+                        --staging-dir "$staging_dir" 2>/dev/null) || true
+            fi
+        else
+            echo -e "  ${YELLOW}⚠️  _PROGRAM_FACTS=true but dotnet/project not available — facts not extracted.${NC}"
+        fi
+    fi
+
+    # Clean up staging dir — it lives inside source/ which is gitignored
+    rm -rf "$staging_dir"
+
+    echo -e "\n${GREEN}  Parsed: $succeeded succeeded ($skipped from cache), $failed failed${NC}"
+    if [[ "$rekt_filter_active" == "true" && "$filtered_out" -gt 0 ]]; then
+        echo -e "  ${BLUE}Filter active: $filtered_out program(s) outside _REKT_PROGRAM_FILTER were skipped.${NC}"
+    fi
+    # Count degraded outputs (succeeded with warnings — deps-only or raw-AST fallbacks).
+    local degraded
+    degraded=$(find "$REPO_ROOT/output/rekt" -name '*.parse.log' 2>/dev/null | wc -l | tr -d ' ')
+    if [[ "$degraded" -gt 0 ]]; then
+        echo -e "${YELLOW}  ⚠️  ${degraded} program(s) parsed with reduced fidelity (deps-only / raw-AST fallback).${NC}"
+        echo -e "${YELLOW}      These usually mean missing copybooks or smojol parser limitations.${NC}"
+        echo -e "${YELLOW}      Inspect: output/rekt/**/*.parse.log${NC}"
+    fi
+    if [[ -s "$missing_report" ]]; then
+        local miss_count
+        miss_count=$(grep -cv '^#' "$missing_report" 2>/dev/null | tr -d ' ')
+        # grep -cv may count blank lines; recompute strictly
+        miss_count=$(grep -v '^#' "$missing_report" | grep -c .)
+        if [[ "$miss_count" -gt 0 ]]; then
+            echo -e "${YELLOW}  ⚠️  ${miss_count} missing copybook(s) — see output/rekt/missing-copybooks.txt${NC}"
+        fi
+    fi
+    if [[ -n "$failed_files" ]]; then
+        echo -e "${YELLOW}  Failed files:${failed_files}${NC}"
+        echo -e "${YELLOW}  These may use IMS/DL/I EXEC DLI, non-standard column formats,${NC}"
+        echo -e "${YELLOW}  or reference missing copybooks. Check with: grep 'EXEC DLI' source/<file>${NC}"
+    fi
+    echo -e "${BLUE}  Output: output/rekt/${NC}"
+}
+
+run_rekt_ingest() {
+    echo -e "${CYAN}╔══════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║   Graph Populator: Ingest into Neo4j                        ║${NC}"
+    echo -e "${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
+
+    detect_docker_api_version
+    ensure_rekt_containers || return 1
+
+    local db_path
+    db_path="$(get_migration_db_path)"
+    local sqlite_args=()
+    if [[ -f "$db_path" ]]; then
+        echo -e "${BLUE}  SQLite DB found: $db_path — will migrate existing data${NC}"
+        sqlite_args=(--sqlite-db "$db_path")
+    fi
+
+    # Use date-based run ID (YYYYMMDDhhmm) — readable and unique per minute
+    local run_id
+    run_id=$(date +%Y%m%d%H%M)
+    echo -e "${BLUE}  Scan Run ID: ${GREEN}${run_id}${NC}"
+
+    echo -e "${BLUE}  Ingesting into $REKT_NEO4J_CONTAINER (bolt://localhost:$REKT_NEO4J_BOLT_PORT)${NC}"
+
+    # Use the local Python environment so ingestion does not depend on a
+    # separately running graph-populator container.
+    local populator_dir="$REPO_ROOT/tools/graph-populator"
+    ensure_graph_populator_environment || return 1
+    (cd "$populator_dir" && .venv/bin/python populator.py ingest \
+        --source-dir "$REPO_ROOT/source" \
+        --rekt-output "$REPO_ROOT/output/rekt" \
+        --run-id "$run_id" \
+        "${sqlite_args[@]}")
+
+    echo -e "\n${GREEN}  Neo4j Browser: http://localhost:$REKT_NEO4J_HTTP_PORT${NC}"
+    echo -e "${GREEN}  Connection URL: neo4j://localhost:$REKT_NEO4J_BOLT_PORT${NC}"
+    echo -e "${GREEN}  Scan Run ID: ${run_id}${NC}"
+}
+
+run_rekt_full() {
+    echo -e "${CYAN}╔══════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║   Cobol-REKT Full Pipeline: Parse → Ingest                ║${NC}"
+    echo -e "${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
+
+    run_rekt_parse || return 1
+    run_rekt_ingest || return 1
+
+    echo -e "\n${GREEN}✅ rekt pipeline complete.${NC}"
+    echo -e "${BLUE}  Neo4j Browser: http://localhost:$REKT_NEO4J_HTTP_PORT${NC}"
+    echo -e "${BLUE}  Connection URL: neo4j://localhost:$REKT_NEO4J_BOLT_PORT${NC}"
+
+}
+
+run_rekt_status() {
+    echo -e "${CYAN}╔══════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║   Cobol-REKT Status                                         ║${NC}"
+    echo -e "${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
+
+    # Check containers
+    local containers=("$REKT_NEO4J_CONTAINER" "$REKT_CONTAINER" "$REKT_POPULATOR_CONTAINER")
+    for c in "${containers[@]}"; do
+        local state
+        state=$(docker inspect --format='{{.State.Status}}' "$c" 2>/dev/null || echo "not found")
+        if [[ "$state" == "running" ]]; then
+            echo -e "  ${GREEN}✅ $c: running${NC}"
+        else
+            echo -e "  ${RED}❌ $c: $state${NC}"
+        fi
+    done
+
+    # Check existing MMA Neo4j
+    local mma_state
+    mma_state=$(docker inspect --format='{{.State.Status}}' "cobol-migration-neo4j" 2>/dev/null || echo "not found")
+    echo -e "  ${BLUE}ℹ️  cobol-migration-neo4j (existing): $mma_state${NC}"
+
+    # Neo4j node count
+    if docker exec "$REKT_NEO4J_CONTAINER" sh -c \
+        'cypher-shell -u neo4j -p "$HEALTHCHECK_PASSWORD" "MATCH (n) RETURN count(n) AS nodes"' \
+        2>/dev/null | grep -q "[0-9]"; then
+        local node_count
+        node_count=$(docker exec "$REKT_NEO4J_CONTAINER" sh -c \
+            'cypher-shell -u neo4j -p "$HEALTHCHECK_PASSWORD" "MATCH (n) RETURN count(n) AS nodes"' \
+            2>/dev/null | tail -1 | tr -d ' "')
+        local rel_count
+        rel_count=$(docker exec "$REKT_NEO4J_CONTAINER" sh -c \
+            'cypher-shell -u neo4j -p "$HEALTHCHECK_PASSWORD" "MATCH ()-[r]->() RETURN count(r) AS rels"' \
+            2>/dev/null | tail -1 | tr -d ' "')
+        echo -e "\n  ${BLUE}Graph: ${node_count} nodes, ${rel_count} relationships${NC}"
+    fi
+
+    # rekt output files
+    local json_count
+    json_count=$(find "$REPO_ROOT/output/rekt" -name "*.json" 2>/dev/null | wc -l | tr -d ' ')
+    echo -e "  ${BLUE}Rekt JSON exports: ${json_count} files in output/rekt/${NC}"
+
+    echo -e "\n  ${BLUE}Ports:${NC}"
+    echo -e "    Existing Neo4j: http://localhost:7474 (bolt://localhost:7687)"
+    echo -e "    Rekt Neo4j:     http://localhost:$REKT_NEO4J_HTTP_PORT (bolt://localhost:$REKT_NEO4J_BOLT_PORT)"
+}
+
 # Main command routing
 main() {
     # Create required directories if they don't exist
@@ -2365,6 +3401,18 @@ main() {
             ;;
         "validate")
             run_validate
+            ;;
+        "rekt"|"rekt-parse")
+            run_rekt_parse
+            ;;
+        "rekt-ingest")
+            run_rekt_ingest
+            ;;
+        "rekt-full")
+            run_rekt_full
+            ;;
+        "rekt-status")
+            run_rekt_status
             ;;
         "help"|"-h"|"--help")
             show_usage

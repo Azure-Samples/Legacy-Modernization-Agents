@@ -1,0 +1,16 @@
+--- a/smojol-core/src/main/java/org/smojol/common/ast/BuildSerialisableASTTask.java
++++ b/smojol-core/src/main/java/org/smojol/common/ast/BuildSerialisableASTTask.java
+@@ -50,6 +50,13 @@ public class BuildSerialisableASTTask {
+     private void buildContextGraph(ParseTree astParentNode, CobolContextAugmentedTreeNode graphParentNode, CobolEntityNavigator navigator) {
+         for (int i = 0; i <= astParentNode.getChildCount() - 1; ++i) {
+             ParseTree astChildNode = astParentNode.getChild(i);
++            // Local patch (Azure-Samples/COBOL-Modernization-Agents):
++            // ANTLR can return null children from partially-recovered
++            // parse trees (typical for IMS/CICS dialect statements that
++            // the parser inserted error tokens for). Skip them rather
++            // than NPE inside the CobolContextAugmentedTreeNode ctor;
++            // the serialised AST keeps the parent and other siblings.
++            if (astChildNode == null) continue;
+             CobolContextAugmentedTreeNode graphChildNode = new CobolContextAugmentedTreeNode(astChildNode, navigator);
+             graphParentNode.addChild(graphChildNode);
+             buildContextGraph(astChildNode, graphChildNode, navigator);

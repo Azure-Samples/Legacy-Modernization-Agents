@@ -106,7 +106,7 @@ public class MigrationProcess
                 loggerFactory.CreateLogger<JavaConverterAgent>(),
                 _settings.AISettings.JavaConverterModelId,
                 _enhancedLogger, _chatLogger, settings: _settings);
-            
+
             _javaConverterAgent = javaAgent;
             _codeConverterAgent = javaAgent;
         }
@@ -170,36 +170,40 @@ public class MigrationProcess
 
         var totalSteps = 6;
         var startTime = DateTime.UtcNow;
-        
+
         int runId;
         if (existingRunId.HasValue)
         {
-             runId = existingRunId.Value;
-             _logger.LogInformation("Resuming existing run ID: {RunId}", runId);
-             _enhancedLogger.ShowWarning($"Resuming migration for Run ID: {runId}");
+            runId = existingRunId.Value;
+            _logger.LogInformation("Resuming existing run ID: {RunId}", runId);
+            _enhancedLogger.ShowWarning($"Resuming migration for Run ID: {runId}");
         }
         else
         {
-             runId = await _migrationRepository.StartRunAsync(cobolSourceFolder, javaOutputFolder);
+            runId = await _migrationRepository.StartRunAsync(cobolSourceFolder, javaOutputFolder);
         }
         _activeRunId = runId;
 
+        // Ambient run id so every agent's LLM call is attributed to this run,
+        // not just the converters that are handed the id explicitly.
+        MetricsSink.CurrentRunId = runId;
+
         // Show initial dashboard
         _enhancedLogger.ShowDashboardSummary(
-            runId, 
-            targetName, 
-            "RUNNING", 
-            "Initializing", 
+            runId,
+            targetName,
+            "RUNNING",
+            "Initializing",
             0);
 
         // Pass run ID to agent for Spec Lookup (works for both C# and Java converters)
         _codeConverterAgent?.SetRunId(runId);
-        
+
         // Also call directly on _javaConverterAgent if it's separate (though _codeConverterAgent covers it in current logic)
         // Kept for safety if instantiation logic changes
         if (_javaConverterAgent != null && _javaConverterAgent != _codeConverterAgent)
         {
-             _javaConverterAgent.SetRunId(runId);
+            _javaConverterAgent.SetRunId(runId);
         }
 
         try
@@ -352,21 +356,25 @@ public class MigrationProcess
                 var javaFile = javaFiles[i];
 
                 // Save with correct extension based on actual file type
+                string savedPath = string.Empty;
                 if (javaFile is JavaFile jf && targetLang == TargetLanguage.Java)
                 {
                     // Java files use JavaFile-specific save method
-                    await _fileHelper.SaveJavaFileAsync(jf, javaOutputFolder);
+                    savedPath = await _fileHelper.SaveJavaFileAsync(jf, javaOutputFolder);
                 }
                 else if (javaFile is CodeFile codeFile)
                 {
                     // C# or other CodeFiles use generic save with explicit extension
-                    await _fileHelper.SaveCodeFileAsync(codeFile, javaOutputFolder, fileExtension);
+                    savedPath = await _fileHelper.SaveCodeFileAsync(codeFile, javaOutputFolder, fileExtension);
                 }
                 else
                 {
                     // javaFile is null — skip safely
                     _logger.LogWarning("Skipping file save because entry at index {Index} is null.", i);
                 }
+
+                // Needed by the post-run quality check, which re-opens each file.
+                if (javaFile is CodeFile asCode) asCode.FilePath = savedPath;
 
                 _enhancedLogger.ShowProgressBar(i + 1, javaFiles.Count, $"Saving {saveLangName} files");
                 var logFileType = javaFile?.GetType().Name ?? "<null>";
@@ -484,6 +492,55 @@ public class MigrationProcess
         report.AppendLine($"- **Copybooks Analyzed**: {dependencyMap.Metrics.TotalCopybooks}");
         report.AppendLine($"- **Average Dependencies per Program**: {dependencyMap.Metrics.AverageDependenciesPerProgram:F1}");
         report.AppendLine();
+
+        // Report unusable files without discarding successful conversions.
+        var brokenFiles = new List<(string cobol, string javaPath, string reason)>();
+        foreach (var gf in generatedFiles)
+        {
+            try
+            {
+                var filePath = gf.FilePath;
+                if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath)) continue;
+                var size = new FileInfo(filePath).Length;
+                if (size == 0)
+                {
+                    brokenFiles.Add((gf.OriginalCobolFileName ?? "?", filePath, "0-byte file — model returned no output"));
+                    continue;
+                }
+
+                var text = File.ReadAllText(filePath);
+                if (text.Contains("CONVERSION DID NOT PRODUCE USABLE", StringComparison.Ordinal))
+                    brokenFiles.Add((gf.OriginalCobolFileName ?? "?", filePath, "Stub placeholder — see file header for diagnosis"));
+                else if (size < 200 && !text.Contains("class ", StringComparison.Ordinal))
+                    brokenFiles.Add((gf.OriginalCobolFileName ?? "?", filePath, $"No 'class' keyword — non-{langName} output"));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Quality check could not inspect {File}", gf.FileName);
+            }
+        }
+
+        if (brokenFiles.Count > 0)
+        {
+            report.AppendLine("## ⚠ Quality Warning — Unusable Conversions");
+            report.AppendLine();
+            report.AppendLine($"**{brokenFiles.Count} of {generatedFiles.Count} generated file(s) are stubs or empty.** These conversions did not produce usable {langName} code. The files are kept so the failures stay visible, but **do not assume they compile**.");
+            report.AppendLine();
+            report.AppendLine("| COBOL Source | Generated File | Problem |");
+            report.AppendLine("|--------------|----------------|---------|");
+            foreach (var (cobol, path, reason) in brokenFiles.Take(20))
+            {
+                report.AppendLine($"| {cobol} | {Path.GetFileName(path)} | {reason} |");
+            }
+            report.AppendLine();
+            report.AppendLine("**Likely causes and fixes:**");
+            report.AppendLine("- **Deps-only source program** — REKT could not fully parse the COBOL (missing copybooks or dialect issues). Resolve the entries in `output/rekt/missing-copybooks.txt`, re-run `./doctor.sh rekt-full`, then re-convert.");
+            report.AppendLine("- **Model hit its output-token budget** — re-run with chunking enabled or switch to a provider with a higher per-call budget.");
+            report.AppendLine("- **Provider rate-limit or timeout** — wait and re-run.");
+            report.AppendLine();
+            report.AppendLine("Open each stub file — its header comment explains the specific failure mode.");
+            report.AppendLine();
+        }
 
         // File mapping section
         report.AppendLine("## 🗂️ File Mapping");

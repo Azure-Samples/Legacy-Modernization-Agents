@@ -28,22 +28,22 @@ internal static class Program
         // Start live log capture for portal's Live Run Log panel
         var logsDirectory = Path.Combine(Directory.GetCurrentDirectory(), "Logs");
         Directory.CreateDirectory(logsDirectory);
-        
+
         // Only enable live logging for migration runs (not MCP server or conversation modes)
         var isMigrationRun = !args.Contains("mcp") && !args.Contains("conversation");
         LiveLogWriter? liveLogWriter = null;
-        
+
         if (isMigrationRun)
         {
             liveLogWriter = LiveLogWriter.Start(logsDirectory);
         }
-        
+
         try
         {
             // Configure logger to write to Stderr to avoid breaking MCP JSON-RPC on Stdout
-            using var loggerFactory = LoggerFactory.Create(builder => 
+            using var loggerFactory = LoggerFactory.Create(builder =>
             {
-                builder.AddConsole(options => 
+                builder.AddConsole(options =>
                 {
                     options.LogToStandardErrorThreshold = LogLevel.Trace;
                 });
@@ -143,6 +143,12 @@ internal static class Program
 
         var listModelsCommand = BuildListModelsCommand(loggerFactory);
         rootCommand.AddCommand(listModelsCommand);
+
+        // Incremental / targeted REKT scan planning and recording.
+        rootCommand.AddCommand(CobolToQuarkusMigration.Cli.RektScanCacheCommand.Build(loggerFactory));
+
+        // Curated program-facts.json extraction from REKT artifacts.
+        rootCommand.AddCommand(CobolToQuarkusMigration.Cli.ProgramFactsCommand.Build(loggerFactory));
 
         rootCommand.SetHandler(async (string cobolSource, string javaOutput, string reverseEngineerOutput, bool reverseEngineerOnly, bool skipReverseEngineering, bool reuseRe, string configPath, bool resume) =>
         {
@@ -449,18 +455,18 @@ internal static class Program
     private static void ConfigureSmartChunking(AppSettings settings, string chatDeployment, ILogger logger)
     {
         // 1. TRUST THE CONFIGURATION FIRST:
-        if (settings.AISettings.ContextWindowSize.HasValue) 
+        if (settings.AISettings.ContextWindowSize.HasValue)
         {
-             var size = settings.AISettings.ContextWindowSize.Value;
-             if (size >= 100_000)
-             {
-                settings.ChunkingSettings.AutoChunkLineThreshold = 25_000; 
-                settings.ChunkingSettings.AutoChunkCharThreshold = 400_000; 
+            var size = settings.AISettings.ContextWindowSize.Value;
+            if (size >= 100_000)
+            {
+                settings.ChunkingSettings.AutoChunkLineThreshold = 25_000;
+                settings.ChunkingSettings.AutoChunkCharThreshold = 400_000;
                 settings.ChunkingSettings.MaxTokensPerChunk = 90_000;
-                
+
                 logger.LogInformation("🚀 Optimized Strategy: 'Whole-Program Analysis' enabled based on configured ContextWindowSize ({Size} tokens).", size);
                 return;
-             }
+            }
         }
 
         // 2. USE MODEL CAPABILITIES DETECTION (replaces magic string matching):
@@ -471,12 +477,12 @@ internal static class Program
             var caps = CobolToQuarkusMigration.Models.ModelCapabilities.Detect(targetModel);
             if (caps.ContextWindowSize >= 100_000)
             {
-                settings.ChunkingSettings.AutoChunkLineThreshold = 25_000; 
-                settings.ChunkingSettings.AutoChunkCharThreshold = 400_000; 
+                settings.ChunkingSettings.AutoChunkLineThreshold = 25_000;
+                settings.ChunkingSettings.AutoChunkCharThreshold = 400_000;
                 settings.ChunkingSettings.MaxTokensPerChunk = 90_000;
-                
+
                 logger.LogInformation("🚀 High-context model detected ({Model}, family={Family}, context={Context}). " +
-                    "'Whole-Program Analysis' enabled for files up to {NewLines} lines.", 
+                    "'Whole-Program Analysis' enabled for files up to {NewLines} lines.",
                     targetModel, caps.Family, caps.ContextWindowSize, settings.ChunkingSettings.AutoChunkLineThreshold);
             }
         }
@@ -504,7 +510,7 @@ internal static class Program
             if (targetLanguage == TargetLanguage.CSharp)
             {
                 // For C#, use CSharpOutputFolder if set, otherwise fall back to JavaOutputFolder or default
-                if (string.IsNullOrEmpty(settings.ApplicationSettings.CSharpOutputFolder) && 
+                if (string.IsNullOrEmpty(settings.ApplicationSettings.CSharpOutputFolder) &&
                     string.IsNullOrEmpty(settings.ApplicationSettings.JavaOutputFolder))
                 {
                     settings.ApplicationSettings.CSharpOutputFolder = "output/csharp";
@@ -546,7 +552,7 @@ internal static class Program
             // Create AI clients based on provider
             var serviceType = settings.AISettings.ServiceType ?? "AzureOpenAI";
             var codeModelCaps = CobolToQuarkusMigration.Models.ModelCapabilities.Detect(settings.AISettings.ModelId);
-            
+
             // ResponsesApiClient only for Azure OpenAI Codex models (not for GitHub Copilot SDK)
             ResponsesApiClient? responsesApiClient = null;
             if (!IsGitHubCopilotSdkMode() &&
@@ -563,7 +569,7 @@ internal static class Program
                     apiVersion: apiVersion,
                     rateLimitSafetyFactor: settings.ChunkingSettings.RateLimitSafetyFactor);
 
-                logger.LogInformation("ResponsesApiClient initialized for {Model} (API: {ApiVersion})", 
+                logger.LogInformation("ResponsesApiClient initialized for {Model} (API: {ApiVersion})",
                     settings.AISettings.DeploymentName, apiVersion);
             }
 
@@ -619,7 +625,7 @@ internal static class Program
             await migrationRepository.InitializeAsync();
 
             // Cleanup stale runs on startup
-            if (!resume) 
+            if (!resume)
             {
                 await migrationRepository.CleanupStaleRunsAsync();
             }
@@ -665,7 +671,7 @@ internal static class Program
 
                 // Smart routing: check for large files to decide between chunked vs direct RE
                 var cobolFiles = await fileHelper.ScanDirectoryForCobolFilesAsync(settings.ApplicationSettings.CobolSourceFolder);
-                var hasLargeFiles = cobolFiles.Any(f => 
+                var hasLargeFiles = cobolFiles.Any(f =>
                     settings.ChunkingSettings.RequiresChunking(f.Content.Length, f.Content.Split('\n').Length));
 
                 ReverseEngineeringResult reverseEngResult;
@@ -777,8 +783,8 @@ internal static class Program
             {
                 // Determine output folder based on target language
                 var targetLang = settings.ApplicationSettings.TargetLanguage;
-                var outputFolder = targetLang == TargetLanguage.CSharp 
-                    ? settings.ApplicationSettings.CSharpOutputFolder 
+                var outputFolder = targetLang == TargetLanguage.CSharp
+                    ? settings.ApplicationSettings.CSharpOutputFolder
                     : settings.ApplicationSettings.JavaOutputFolder;
 
                 // Ensure output folder has a default value
@@ -788,7 +794,7 @@ internal static class Program
                 }
 
                 var langName = targetLang == TargetLanguage.CSharp ? "C# .NET" : "Java Quarkus";
-                
+
                 // ═══════════════════════════════════════════════════════════════════
                 // QUALITY GATE: Final verification before migration starts
                 // ═══════════════════════════════════════════════════════════════════
@@ -801,15 +807,15 @@ internal static class Program
                 Console.WriteLine($"  ENV Variable:     TARGET_LANGUAGE={Environment.GetEnvironmentVariable("TARGET_LANGUAGE") ?? "(not set)"}");
                 Console.WriteLine($"  Smart Chunking:   ENABLED (auto-routes large files)");
                 Console.WriteLine($"  Chunk Threshold:  {settings.ChunkingSettings.AutoChunkCharThreshold:N0} chars / {settings.ChunkingSettings.AutoChunkLineThreshold:N0} lines");
-                
+
                 // Verify env var matches what we're about to do
                 var envLang = Environment.GetEnvironmentVariable("TARGET_LANGUAGE");
                 if (!string.IsNullOrEmpty(envLang))
                 {
-                    var expectedCSharp = envLang.Equals("CSharp", StringComparison.OrdinalIgnoreCase) || 
+                    var expectedCSharp = envLang.Equals("CSharp", StringComparison.OrdinalIgnoreCase) ||
                                          envLang.Equals("C#", StringComparison.OrdinalIgnoreCase);
                     var actualCSharp = targetLang == TargetLanguage.CSharp;
-                    
+
                     if (expectedCSharp != actualCSharp)
                     {
                         Console.WriteLine($"  ❌ MISMATCH DETECTED!");
@@ -821,11 +827,11 @@ internal static class Program
                         Environment.Exit(1);
                     }
                 }
-                
+
                 Console.WriteLine($"  ✅ Quality Gate PASSED");
                 Console.WriteLine("═══════════════════════════════════════════════════════════════════");
                 Console.WriteLine("");
-                
+
                 Console.WriteLine($"Starting COBOL to {langName} migration with Smart Orchestration...");
                 Console.WriteLine($"Target language: {langName}");
                 Console.WriteLine($"Output folder: {outputFolder}");
@@ -902,7 +908,7 @@ internal static class Program
             else
             {
                 Console.WriteLine("💡 Consider creating Config/ai-config.local.env for your personal settings");
-                Console.WriteLine("   You can copy from Config/ai-config.local.env.example");
+                Console.WriteLine("   You can copy from Config/ai-config.env.example");
             }
 
             if (File.Exists(templateConfigFile))
@@ -931,10 +937,10 @@ internal static class Program
             {
                 string key = parts[0].Trim();
                 string value = parts[1].Trim().Trim('"', '\'');
-                
+
                 // Store raw value first
                 rawVars[key] = value;
-                
+
                 // Variable Expansion (Basic)
                 // If value contains $VAR or ${VAR}, try to replace from ALREADY loaded Env vars or current file dictionary
                 if (value.Contains('$'))
@@ -961,12 +967,12 @@ internal static class Program
         // Simple expansion: find $VAR or ${VAR}
         // This is not a full bash emulator but handles common cases
         // We iterate specifically looking for keys we might know
-        
+
         // 1. Check fileVars (local scope first)
         foreach (var kvp in fileVars)
         {
-             value = value.Replace($"${{{kvp.Key}}}", kvp.Value)
-                          .Replace($"${kvp.Key}", kvp.Value);
+            value = value.Replace($"${{{kvp.Key}}}", kvp.Value)
+                         .Replace($"${kvp.Key}", kvp.Value);
         }
 
         // 2. Check Environment (global scope)
@@ -1021,7 +1027,7 @@ internal static class Program
                 aiSettings.Endpoint = "copilot-sdk://cli";
             }
         }
-        
+
         // Primary deployment (for code models)
         var endpoint = Environment.GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT");
         if (!string.IsNullOrEmpty(endpoint))
@@ -1131,11 +1137,11 @@ internal static class Program
             var isCSharp = trimmedLang.Equals("CSharp", StringComparison.OrdinalIgnoreCase) ||
                            trimmedLang.Equals("C#", StringComparison.OrdinalIgnoreCase);
             applicationSettings.TargetLanguage = isCSharp ? TargetLanguage.CSharp : TargetLanguage.Java;
-            
+
             // Quality Gate: Verify the language was correctly parsed
             Console.WriteLine($"🎯 TARGET_LANGUAGE env var: '{trimmedLang}' → {applicationSettings.TargetLanguage}");
             Console.WriteLine($"🔒 Quality Gate: Language selection = {applicationSettings.TargetLanguage}");
-            
+
             // Additional verification: Check if the env var value matches expected values
             if (!trimmedLang.Equals("Java", StringComparison.OrdinalIgnoreCase) &&
                 !trimmedLang.Equals("CSharp", StringComparison.OrdinalIgnoreCase) &&
@@ -1368,7 +1374,7 @@ internal static class Program
 
                 Console.WriteLine("Configuration Setup Instructions:");
                 Console.WriteLine("1. Run: ./setup.sh (for interactive setup)");
-                Console.WriteLine("2. Or manually copy Config/ai-config.local.env.example to Config/ai-config.local.env");
+                Console.WriteLine("2. Or manually copy Config/ai-config.env.example to Config/ai-config.local.env");
                 Console.WriteLine("3. Edit Config/ai-config.local.env with your actual Azure OpenAI credentials");
                 Console.WriteLine("4. Ensure your model deployment names match your Azure OpenAI setup");
                 Console.WriteLine();
@@ -1532,7 +1538,7 @@ internal static class Program
 
             // Smart routing: check for large files to decide between chunked vs direct RE
             var cobolFiles = await fileHelper.ScanDirectoryForCobolFilesAsync(settings.ApplicationSettings.CobolSourceFolder);
-            var hasLargeFiles = cobolFiles.Any(f => 
+            var hasLargeFiles = cobolFiles.Any(f =>
                 settings.ChunkingSettings.RequiresChunking(f.Content.Length, f.Content.Split('\n').Length));
 
             ReverseEngineeringResult result;

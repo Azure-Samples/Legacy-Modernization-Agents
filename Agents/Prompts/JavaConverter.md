@@ -57,23 +57,40 @@ You are a COBOL-to-Java/Quarkus conversion specialist.
 
 ## SECTION: User
 
-Convert the following COBOL program to Java with Quarkus.
+Convert the following COBOL program to Java with Quarkus:
 
-## COBOL Source Code
 ```cobol
 {{CobolContent}}
 ```
 
-## Analysis of the COBOL Program
+Here is the analysis of the COBOL program to help you understand its structure:
+
 {{Analysis}}
 
-## Business Logic Context (from reverse engineering)
 {{BusinessLogicContext}}
 
-## Requirements
-1. Return ONLY the Java code — no explanations, no markdown blocks.
-2. Start with: package com.example.something;
-3. Must be valid, compilable Java starting with 'package' and ending with the class closing brace.
-4. Use Panache repository pattern for all database access.
-5. Use JAX-RS endpoints for all CICS transaction replacements.
+{{StructuralContext}}
 
+IMPORTANT REQUIREMENTS:
+1. Return ONLY the Java code - NO explanations, NO markdown blocks, NO additional text
+2. Start with: package com.example.something; (single line, lowercase, no comments)
+3. Do NOT include newlines or explanatory text in the package declaration
+4. Your response must be valid, compilable Java code starting with 'package' and ending with the class closing brace
+
+Note: The original code contains Danish error handling terms replaced with placeholders.
+
+## SECTION: BusinessLogic
+
+Here is the extracted business logic from the reverse engineering phase. Use this to ensure the converted code faithfully implements all business rules and features:
+
+{{BusinessLogic}}
+
+## SECTION: Continuation
+
+Your previous response was truncated mid-output. Here are the LAST 10 lines you generated:
+
+```java
+{{LastLines}}
+```
+
+Continue from EXACTLY where you left off. Return ONLY the remaining Java code — no package declaration, no class declaration, no imports. Start with the next line after the fragment above and end with the final closing brace '}' of the class.

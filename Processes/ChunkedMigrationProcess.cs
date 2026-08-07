@@ -534,6 +534,8 @@ public class ChunkedMigrationProcess
 
         foreach (var chunkedResult in chunkedResults)
         {
+            results.AddRange(CreateFailedChunkDiagnosticFiles(chunkedResult, isJava));
+
             // Get successful chunks - we'll generate output even if some failed
             var successfulChunks = chunkedResult.Result.ChunkResults
                 .Where(r => r.Success && !string.IsNullOrEmpty(r.ConversionResult?.ConvertedCode))
@@ -573,6 +575,32 @@ public class ChunkedMigrationProcess
         }
 
         return results;
+    }
+
+    internal static IReadOnlyList<CodeFile> CreateFailedChunkDiagnosticFiles(
+        ChunkedFileResult chunkedResult,
+        bool isJava)
+    {
+        var extension = isJava ? ".java" : ".cs";
+        var language = isJava ? "Java" : "CSharp";
+        var sourceStem = Path.GetFileNameWithoutExtension(chunkedResult.SourceFile);
+
+        return chunkedResult.Result.ChunkResults
+            .Where(r => !r.Success
+                && !string.IsNullOrWhiteSpace(r.ConversionResult?.ConvertedCode)
+                && r.ConversionResult.ConvertedCode.Contains(
+                    "CHUNK CONVERSION DID NOT PRODUCE USABLE",
+                    StringComparison.Ordinal))
+            .OrderBy(r => r.ChunkIndex)
+            .Select(r => new CodeFile
+            {
+                FileName = $"{sourceStem}.chunk-{r.ChunkIndex + 1}.failed{extension}",
+                ClassName = $"{sourceStem}Chunk{r.ChunkIndex + 1}Failed",
+                Content = r.ConversionResult.ConvertedCode,
+                OriginalCobolFileName = chunkedResult.SourceFile,
+                TargetLanguage = language
+            })
+            .ToList();
     }
 
     private List<CodeFile> AssembleCSharpFiles(ChunkedFileResult chunkedResult, List<ChunkProcessingResult> successfulChunks)

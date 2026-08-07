@@ -103,7 +103,8 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
         try
         {
             // System prompt for Java conversion
-            var systemPrompt = PromptLoader.LoadSection("JavaConverter", "System");
+            var systemPrompt = PromptLoader.LoadSectionValidated(
+                "JavaConverter", "System", new Dictionary<string, string>());
 
             // NOTE: Large files are handled by SmartMigrationOrchestrator which routes them
             // to ChunkedMigrationProcess. Files reaching this agent should fit within API limits.
@@ -121,41 +122,28 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
             // Sanitize COBOL content for content filtering
             string sanitizedContent = SanitizeCobolContent(contentToConvert);
 
-            // User prompt for Java conversion
-            var userPromptBuilder = new StringBuilder();
-            userPromptBuilder.AppendLine("Convert the following COBOL program to Java with Quarkus:");
-            userPromptBuilder.AppendLine();
-            userPromptBuilder.AppendLine("```cobol");
-            userPromptBuilder.AppendLine(sanitizedContent);
-            userPromptBuilder.AppendLine("```");
-            
-            userPromptBuilder.AppendLine();
-            userPromptBuilder.AppendLine("Here is the analysis of the COBOL program to help you understand its structure:");
-            userPromptBuilder.AppendLine();
-            userPromptBuilder.AppendLine(cobolAnalysis.RawAnalysisData);
-
             // Inject business logic context from reverse engineering when available
             var businessLogic = _businessLogicExtracts
                 .FirstOrDefault(bl => string.Equals(bl.FileName, cobolFile.FileName, StringComparison.OrdinalIgnoreCase));
-            if (businessLogic != null)
+            var businessLogicContext = businessLogic is null
+                ? string.Empty
+                : PromptLoader.LoadSectionValidated("JavaConverter", "BusinessLogic", new Dictionary<string, string>
+                {
+                    ["BusinessLogic"] = FormatBusinessLogicContext(businessLogic)
+                });
+
+            // REKT structural context + shared-types registry (opt-in via ENABLE_REKT_CONTEXT).
+            var structuralContextBuilder = new StringBuilder();
+            await RektPromptInjector.InjectAsync(
+                structuralContextBuilder, "Java", cobolFile.FileName, AgentName, _runId, Logger);
+
+            var userPrompt = PromptLoader.LoadSectionValidated("JavaConverter", "User", new Dictionary<string, string>
             {
-                userPromptBuilder.AppendLine();
-                userPromptBuilder.AppendLine("Here is the extracted business logic from the reverse engineering phase. Use this to ensure the converted code faithfully implements all business rules and features:");
-                userPromptBuilder.AppendLine();
-                userPromptBuilder.Append(FormatBusinessLogicContext(businessLogic));
-            }
-
-            userPromptBuilder.AppendLine();
-            userPromptBuilder.AppendLine("IMPORTANT REQUIREMENTS:");
-            userPromptBuilder.AppendLine("1. Return ONLY the Java code - NO explanations, NO markdown blocks, NO additional text");
-            userPromptBuilder.AppendLine("2. Start with: package com.example.something; (single line, lowercase, no comments)");
-            userPromptBuilder.AppendLine("3. Do NOT include newlines or explanatory text in the package declaration");
-            userPromptBuilder.AppendLine("4. Your response must be valid, compilable Java code starting with 'package' and ending with the class closing brace");
-            
-            userPromptBuilder.AppendLine();
-            userPromptBuilder.AppendLine("Note: The original code contains Danish error handling terms replaced with placeholders.");
-
-            var userPrompt = userPromptBuilder.ToString();
+                ["CobolContent"] = sanitizedContent,
+                ["Analysis"] = cobolAnalysis.RawAnalysisData,
+                ["BusinessLogicContext"] = businessLogicContext,
+                ["StructuralContext"] = structuralContextBuilder.ToString()
+            });
 
             var (javaCode, usedFallback, fallbackReason) = await ExecuteWithFallbackAsync(
                 systemPrompt,
@@ -174,10 +162,56 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
             // Extract the Java code from markdown code blocks if necessary
             javaCode = ExtractJavaCode(javaCode);
 
+            // Continuation retry: when the provider truncates mid-output, ask it to
+            // resume from the last lines rather than shipping a partial class.
+            var hasAnyCode = javaCode.Contains("{") && (javaCode.Contains("class ") || javaCode.Contains("void ") || javaCode.Contains("public "));
+            var maxContinuations = hasAnyCode ? 3 : 0;
+            if (!hasAnyCode && !string.IsNullOrWhiteSpace(javaCode))
+            {
+                Logger.LogWarning("[JavaConverterAgent] Response contains no valid Java code — skipping continuation");
+            }
+            for (int cont = 0; cont < maxContinuations; cont++)
+            {
+                var hasPkg = javaCode.Contains("package ", StringComparison.Ordinal);
+                var hasCls = javaCode.Contains("class ", StringComparison.Ordinal);
+                var opens = javaCode.Count(c => c == '{');
+                var closes = javaCode.Count(c => c == '}');
+                if (hasPkg && hasCls && opens == closes) break; // complete
+
+                Logger.LogWarning(
+                    "[JavaConverterAgent] Output truncated (pkg={HasPkg} cls={HasCls} braces={Opens}/{Closes}) — sending continuation {Cont}/{Max}",
+                    hasPkg, hasCls, opens, closes, cont + 1, maxContinuations);
+
+                var lastLines = string.Join("\n", javaCode.Split('\n').TakeLast(10));
+                var contPrompt = PromptLoader.LoadSectionValidated(
+                    "JavaConverter", "Continuation", new Dictionary<string, string>
+                    {
+                        ["LastLines"] = lastLines
+                    });
+
+                var (contCode, contFallback, _) = await ExecuteWithFallbackAsync(
+                    systemPrompt, contPrompt, $"{cobolFile.FileName} [continuation-{cont + 1}]");
+
+                if (contFallback || string.IsNullOrWhiteSpace(contCode)) break;
+
+                contCode = ExtractJavaCode(contCode);
+                var contLines = contCode.Split('\n')
+                    .SkipWhile(l => l.TrimStart().StartsWith("package ") || l.TrimStart().StartsWith("import ") || l.Trim() == "")
+                    .ToList();
+                var classIdx = contLines.FindIndex(l => l.Contains("class ") && l.Contains("{"));
+                if (classIdx >= 0 && classIdx < 3) contLines = contLines.Skip(classIdx + 1).ToList();
+
+                javaCode = javaCode.TrimEnd() + "\n" + string.Join("\n", contLines);
+                Logger.LogInformation("[JavaConverterAgent] Continuation {Cont} appended {Lines} lines",
+                    cont + 1, contLines.Count);
+            }
+
+            javaCode = ValidateJavaCode(javaCode);
+
             // Extract AI's semantic class name (based on domain/action/type pattern)
             string aiClassName = ExtractClassNameFromCode(javaCode);
             string packageName = GetPackageName(javaCode);
-            
+
             // Prefer AI-generated semantic name if it's not generic
             // Fall back to filename-derived name only if AI gave a generic name
             string finalClassName;
@@ -191,9 +225,9 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
             {
                 // Fall back to filename-derived name
                 finalClassName = NamingHelper.DeriveClassNameFromCobolFile(cobolFile.FileName);
-                Logger.LogWarning("AI generated generic class name '{AiClass}', using filename-derived: {ClassName}", 
+                Logger.LogWarning("AI generated generic class name '{AiClass}', using filename-derived: {ClassName}",
                     aiClassName, finalClassName);
-                
+
                 // Update the code to use the new class name
                 if (aiClassName != finalClassName)
                 {
@@ -356,22 +390,74 @@ public class {{className}} {
 
     private string ExtractJavaCode(string input)
     {
-        // If the input contains markdown code blocks, extract the Java code
-        if (input.Contains("```java"))
+        input = ConversionOutputGuard.ExtractFencedCode(input, "```java");
+
+        // Prefer a balanced class body when a truncated response restarts from scratch.
+        var firstPkg = input.IndexOf("package ", StringComparison.Ordinal);
+        if (firstPkg >= 0)
         {
-            var startMarker = "```java";
-            var endMarker = "```";
-
-            int startIndex = input.IndexOf(startMarker);
-            if (startIndex >= 0)
+            var afterFirstPkg = input.IndexOf('\n', firstPkg) + 1;
+            if (afterFirstPkg > 0)
             {
-                startIndex += startMarker.Length;
-                int endIndex = input.IndexOf(endMarker, startIndex);
-
-                if (endIndex >= 0)
+                var secondPkg = input.IndexOf("package ", afterFirstPkg, StringComparison.Ordinal);
+                if (secondPkg > 0)
                 {
-                    return input.Substring(startIndex, endIndex - startIndex).Trim();
+                    var firstBody = input.Substring(firstPkg, secondPkg - firstPkg);
+                    var secondBody = input.Substring(secondPkg);
+                    bool firstBalanced = firstBody.Count(c => c == '{') == firstBody.Count(c => c == '}');
+                    bool secondBalanced = secondBody.Count(c => c == '{') == secondBody.Count(c => c == '}');
+                    string keep;
+                    if (firstBalanced && !secondBalanced) keep = firstBody;
+                    else if (!firstBalanced && secondBalanced) keep = secondBody;
+                    else keep = secondBody.Length >= firstBody.Length ? secondBody : firstBody;
+                    Logger.LogWarning(
+                        "[JavaConverterAgent] Duplicate 'package …;' detected in LLM output (first={FirstLen}c balanced={FirstBal}, second={SecondLen}c balanced={SecondBal}) — keeping the {Pick}.",
+                        firstBody.Length, firstBalanced, secondBody.Length, secondBalanced,
+                        keep == firstBody ? "first" : "second");
+                    input = keep.TrimEnd();
                 }
+            }
+        }
+
+        return input;
+    }
+
+    private string ValidateJavaCode(string input)
+    {
+        // Fail loud on unusable output. A silent 0-byte "success" is worse than a
+        // file that explains what went wrong, so write a self-documenting stub.
+        var hasPkgFinal = input.Contains("package ", StringComparison.Ordinal);
+        var hasClassFinal = input.Contains("class ", StringComparison.Ordinal);
+        var opensFinal = input.Count(c => c == '{');
+        var closesFinal = input.Count(c => c == '}');
+        if (!hasPkgFinal || !hasClassFinal || opensFinal != closesFinal)
+        {
+            Logger.LogWarning(
+                "[JavaConverterAgent] OUTPUT APPEARS TRUNCATED: package={HasPkg}, class={HasClass}, braces {Opens}/{Closes}. " +
+                "The provider likely hit its output token limit.",
+                hasPkgFinal, hasClassFinal, opensFinal, closesFinal);
+            EnhancedLogger?.LogBehindTheScenes("TRUNCATION_DETECTED", "WARNING",
+                $"package={hasPkgFinal}, class={hasClassFinal}, braces={opensFinal}/{closesFinal}");
+
+            // Only replace essentially unusable output. Truncated-but-mostly-valid
+            // code is left alone so the chunked path can still salvage it.
+            if (ConversionOutputGuard.ShouldCreateWholeFileStub(
+                    input,
+                    hasClassFinal,
+                    opensFinal,
+                    closesFinal))
+            {
+                var trimmedReason =
+                    !hasClassFinal && !hasPkgFinal && opensFinal == 0
+                        ? "EMPTY_LLM_RESPONSE — model returned no usable output (often: hit output-token budget, REKT context missing for deps-only programs, or provider rate-limit)."
+                    : !hasClassFinal
+                        ? "NO_CLASS_KEYWORD — model emitted prose or a non-Java code block."
+                    : "BRACE_IMBALANCE — opens=" + opensFinal + " closes=" + closesFinal + ".";
+
+                return ConversionOutputGuard.BuildWholeFileDiagnosticStub(
+                    "JAVA",
+                    trimmedReason,
+                    input);
             }
         }
 

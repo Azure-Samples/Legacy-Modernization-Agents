@@ -1,0 +1,77 @@
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/WriteFlowASTTask.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/WriteFlowASTTask.java
+@@ -12,8 +12,12 @@ import org.smojol.toolkit.task.AnalysisTaskResult;
+ import org.smojol.toolkit.analysis.pipeline.config.FlowASTOutputConfig;
+ 
+ import java.io.IOException;
++import java.io.Writer;
++import java.util.logging.Logger;
+ 
+ public class WriteFlowASTTask implements AnalysisTask {
++    private static final Logger LOGGER = Logger.getLogger(WriteFlowASTTask.class.getName());
++
+     private final FlowNode astRoot;
+     private final FlowASTOutputConfig flowASTOutputConfig;
+     private final ResourceOperations resourceOperations;
+@@ -26,6 +30,24 @@ public class WriteFlowASTTask implements AnalysisTask {
+ 
+     @Override
+     public AnalysisTaskResult run() {
++        // Local patch (Azure-Samples/COBOL-Modernization-Agents):
++        // When the upstream BuildBaseModelTask returns a degenerate
++        // model (COPY-only stub or partial parse), astRoot is null
++        // and the visitor NPEs. Skip flow AST emission cleanly so
++        // the rest of the pipeline (data structures, CFG) still
++        // produces partial output.
++        if (astRoot == null) {
++            LOGGER.warning("Flow AST root is null — skipping WRITE_FLOW_AST emission (Azure-Samples local patch).");
++            try {
++                resourceOperations.createDirectories(flowASTOutputConfig.outputDir());
++                try (Writer writer = resourceOperations.fileWriter(flowASTOutputConfig.outputPath())) {
++                    writer.write("null");
++                }
++            } catch (IOException e) {
++                return AnalysisTaskResult.ERROR(e, CommandLineAnalysisTask.WRITE_FLOW_AST);
++            }
++            return AnalysisTaskResult.OK(CommandLineAnalysisTask.WRITE_FLOW_AST, null);
++        }
+         SerialisableASTFlowNode serialisableASTFlowRoot = new SerialiseFlowASTTask().serialisedFlowAST(astRoot);
+         Gson gson = new GsonBuilder().setPrettyPrinting().create();
+         try {
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/WriteControlFlowGraphTask.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/WriteControlFlowGraphTask.java
+@@ -13,8 +13,12 @@ import org.smojol.toolkit.task.AnalysisTaskResult;
+ import org.smojol.toolkit.analysis.pipeline.config.CFGOutputConfig;
+ 
+ import java.io.IOException;
++import java.io.Writer;
++import java.util.logging.Logger;
+ 
+ public class WriteControlFlowGraphTask implements AnalysisTask {
++    private static final Logger LOGGER = Logger.getLogger(WriteControlFlowGraphTask.class.getName());
++
+     private final FlowNode astRoot;
+     private final IdProvider idProvider;
+     private final CFGOutputConfig cfgOutputConfig;
+@@ -29,6 +33,21 @@ public class WriteControlFlowGraphTask implements AnalysisTask {
+ 
+     @Override
+     public AnalysisTaskResult run() {
++        // Local patch (Azure-Samples/COBOL-Modernization-Agents):
++        // Skip cleanly when astRoot is null (degenerate model from
++        // COPY-only stub or partial parse) to avoid NPE.
++        if (astRoot == null) {
++            LOGGER.warning("CFG root is null — skipping WRITE_CFG emission (Azure-Samples local patch).");
++            try {
++                resourceOperations.createDirectories(cfgOutputConfig.outputDir());
++                try (Writer writer = resourceOperations.fileWriter(cfgOutputConfig.outputPath())) {
++                    writer.write("null");
++                }
++            } catch (IOException e) {
++                return AnalysisTaskResult.ERROR(e, CommandLineAnalysisTask.WRITE_CFG);
++            }
++            return AnalysisTaskResult.OK(CommandLineAnalysisTask.WRITE_CFG);
++        }
+         SerialisableCFGGraphCollector cfgGraphCollector = new SerialisableCFGGraphCollector(idProvider);
+         astRoot.accept(cfgGraphCollector, -1);
+         Gson gson = new GsonBuilder().setPrettyPrinting().create();
