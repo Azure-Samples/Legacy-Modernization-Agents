@@ -65,7 +65,9 @@ def _install_populator_import_stubs():
 
 _install_populator_import_stubs()
 
-from populator import ingest_rekt_data_structures
+import tempfile
+
+from populator import ingest_rekt_data_structures, ingest_rekt_outputs
 from source_paths import scoped_graph_id
 
 
@@ -167,6 +169,34 @@ class IngestRektDataStructuresTests(unittest.TestCase):
         self.assertEqual("ROOT", third_node["id"])
         self.assertNotEqual(first_node["uid"], second_node["uid"])
         self.assertNotEqual(first_node["uid"], third_node["uid"])
+
+
+class IngestRektOutputsTests(unittest.TestCase):
+    @patch("populator.ingest_rekt_ast")
+    @patch("populator.create_source_blocks")
+    @patch("populator.batch_merge_nodes")
+    def test_null_artifact_is_skipped(
+        self,
+        merge_nodes,
+        create_blocks,
+        ingest_ast,
+    ):
+        merge_nodes.return_value = 1
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_dir = root / "source"
+            source_dir.mkdir()
+            (source_dir / "ACCOUNTS.cbl").write_text("IDENTIFICATION DIVISION.\n")
+
+            rekt_dir = root / "rekt"
+            report_dir = rekt_dir / "ACCOUNTS.cbl.report"
+            report_dir.mkdir(parents=True)
+            (report_dir / "flow-ast-ACCOUNTS.cbl.json").write_text("null")
+
+            counts = ingest_rekt_outputs(object(), str(rekt_dir), str(source_dir), 1)
+
+        ingest_ast.assert_not_called()
+        self.assertEqual(0, counts["ASTNode"])
 
 
 class SchemaTests(unittest.TestCase):

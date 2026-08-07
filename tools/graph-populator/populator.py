@@ -606,6 +606,15 @@ def ingest_rekt_outputs(driver, rekt_output_dir: str, source_dir: str, run_id: i
             console.print(f"[yellow]Skipping invalid JSON: {rel_path}[/yellow]")
             continue
 
+        # Degenerate programs (no PROCEDURE DIVISION body) make the patched
+        # parser emit a literal `null` artifact. Skip it rather than letting
+        # the ingest walkers fail on a non-mapping payload.
+        if not isinstance(data, dict):
+            console.print(
+                f"[yellow]Skipping empty artifact (degenerate parse): {rel_path}[/yellow]"
+            )
+            continue
+
         name_lower = json_file.name.lower()
         if "flow-ast" in name_lower or "ast" in name_lower:
             ast_total += ingest_rekt_ast(driver, program_name, data, run_id)
