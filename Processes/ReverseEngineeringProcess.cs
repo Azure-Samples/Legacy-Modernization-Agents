@@ -225,9 +225,11 @@ public class ReverseEngineeringProcess
         sb.AppendLine();
         sb.AppendLine($"**Generated**: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
         sb.AppendLine($"**Total Files Analyzed**: {result.TotalFilesAnalyzed} ({programCount} programs, {copybookCount} copybooks)");
-        sb.AppendLine($"**Total User Stories**: {result.TotalUserStories}");
-        sb.AppendLine($"**Total Features**: {result.TotalFeatures}");
-        sb.AppendLine($"**Total Business Rules**: {result.TotalBusinessRules}");
+        BusinessLogicMarkdownFormatter.AppendTotals(
+            sb,
+            result.TotalUserStories,
+            result.TotalFeatures,
+            result.TotalBusinessRules);
         sb.AppendLine();
         sb.AppendLine("---");
         sb.AppendLine();
@@ -247,47 +249,7 @@ public class ReverseEngineeringProcess
                 sb.AppendLine();
             }
 
-            // Feature Descriptions
-            if (businessLogic.UserStories.Any())
-            {
-                sb.AppendLine("### Feature Descriptions");
-                sb.AppendLine();
-
-                foreach (var story in businessLogic.UserStories)
-                {
-                    sb.AppendLine($"#### {story.Id}: {story.Title}");
-                    sb.AppendLine();
-                    if (!string.IsNullOrWhiteSpace(story.Role))
-                    {
-                        sb.AppendLine($"**Trigger:** {story.Role}");
-                    }
-                    if (!string.IsNullOrWhiteSpace(story.Action))
-                    {
-                        sb.AppendLine($"**Description:** {story.Action}");
-                    }
-                    if (!string.IsNullOrWhiteSpace(story.Benefit))
-                    {
-                        sb.AppendLine($"**Benefit:** {story.Benefit}");
-                    }
-                    sb.AppendLine();
-
-                    if (story.AcceptanceCriteria.Any())
-                    {
-                        sb.AppendLine("**Business Rules:**");
-                        foreach (var criteria in story.AcceptanceCriteria)
-                        {
-                            sb.AppendLine($"- {criteria}");
-                        }
-                        sb.AppendLine();
-                    }
-
-                    if (!string.IsNullOrWhiteSpace(story.SourceLocation))
-                    {
-                        sb.AppendLine($"*Source: {story.SourceLocation}*");
-                        sb.AppendLine();
-                    }
-                }
-            }
+            BusinessLogicMarkdownFormatter.AppendUserStories(sb, businessLogic);
 
             // Features
             if (businessLogic.Features.Any())
@@ -352,6 +314,8 @@ public class ReverseEngineeringProcess
                     }
                 }
             }
+
+            BusinessLogicMarkdownFormatter.AppendBusinessRules(sb, businessLogic);
 
             sb.AppendLine("---");
             sb.AppendLine();
