@@ -147,7 +147,11 @@ public class BusinessLogicExtractorAgent : AgentBase
             stopwatch.Stop();
             EnhancedLogger?.LogPerformanceMetrics($"Business Logic Extraction - {cobolFile.FileName}", stopwatch.Elapsed, 1);
 
-            var businessLogic = ParseBusinessLogic(cobolFile, analysisText);
+            var businessLogic = ParseBusinessLogicResponse(cobolFile, analysisText);
+
+            EnsureUsableBusinessLogic(
+                businessLogic,
+                message => Logger.LogWarning("{Message} File: {FileName}", message, cobolFile.FileName));
 
             Logger.LogInformation("Completed business logic extraction for: {FileName}", cobolFile.FileName);
             return businessLogic;
@@ -297,7 +301,10 @@ public class BusinessLogicExtractorAgent : AgentBase
                 if (analysis == null)
                 {
                     Logger.LogWarning("No analysis found for {FileName}", cobolFile.FileName);
-                    indexedTasks.Add(Task.FromResult<(int Index, BusinessLogic? Logic)>((index, null)));
+                    indexedTasks.Add(Task.FromResult<(int Index, BusinessLogic? Logic)>(
+                        (index, CreateMissingAnalysisResult(cobolFile))));
+                    processedCount++;
+                    progressCallback?.Invoke(processedCount, cobolFiles.Count);
                     continue;
                 }
 
@@ -306,7 +313,10 @@ public class BusinessLogicExtractorAgent : AgentBase
                     await semaphore.WaitAsync();
                     try
                     {
-                        var businessLogic = await ExtractBusinessLogicAsync(cobolFile, analysis, glossary);
+                        var businessLogic = await ExtractFileSafelyAsync(
+                            cobolFile,
+                            () => ExtractBusinessLogicAsync(cobolFile, analysis, glossary),
+                            ex => LogBatchExtractionFailure(cobolFile, ex));
                         lock (lockObj)
                         {
                             processedCount++;
@@ -342,10 +352,16 @@ public class BusinessLogicExtractorAgent : AgentBase
                 if (analysis == null)
                 {
                     Logger.LogWarning("No analysis found for {FileName}", cobolFile.FileName);
+                    businessLogicList.Add(CreateMissingAnalysisResult(cobolFile));
+                    processedCount++;
+                    progressCallback?.Invoke(processedCount, cobolFiles.Count);
                     continue;
                 }
 
-                var businessLogic = await ExtractBusinessLogicAsync(cobolFile, analysis, glossary);
+                var businessLogic = await ExtractFileSafelyAsync(
+                    cobolFile,
+                    () => ExtractBusinessLogicAsync(cobolFile, analysis, glossary),
+                    ex => LogBatchExtractionFailure(cobolFile, ex));
                 businessLogicList.Add(businessLogic);
 
                 processedCount++;
@@ -356,7 +372,68 @@ public class BusinessLogicExtractorAgent : AgentBase
         }
     }
 
-    private BusinessLogic ParseBusinessLogic(CobolFile cobolFile, string analysisText)
+    internal static void EnsureUsableBusinessLogic(BusinessLogic businessLogic, Action<string>? logWarning = null)
+    {
+        if (!string.IsNullOrWhiteSpace(businessLogic.BusinessPurpose) ||
+            businessLogic.UserStories.Count > 0 ||
+            businessLogic.Features.Count > 0 ||
+            businessLogic.BusinessRules.Count > 0)
+        {
+            return;
+        }
+
+        const string formatMismatch = "Business logic extraction did not match the required output format.";
+        logWarning?.Invoke(formatMismatch);
+        businessLogic.BusinessPurpose = formatMismatch;
+    }
+
+    internal static async Task<BusinessLogic> ExtractFileSafelyAsync(
+        CobolFile cobolFile,
+        Func<Task<BusinessLogic>> extraction,
+        Action<Exception>? logError = null)
+    {
+        try
+        {
+            return await extraction();
+        }
+        catch (Exception ex)
+        {
+            logError?.Invoke(ex);
+            return new BusinessLogic
+            {
+                FileName = cobolFile.FileName,
+                FilePath = cobolFile.FilePath,
+                IsCopybook = cobolFile.IsCopybook,
+                BusinessPurpose = $"Business logic extraction failed: {ex.Message}"
+            };
+        }
+    }
+
+    internal static BusinessLogic CreateMissingAnalysisResult(CobolFile cobolFile)
+    {
+        return new BusinessLogic
+        {
+            FileName = cobolFile.FileName,
+            FilePath = cobolFile.FilePath,
+            IsCopybook = cobolFile.IsCopybook,
+            BusinessPurpose = "Business logic extraction skipped because technical analysis was unavailable."
+        };
+    }
+
+    private void LogBatchExtractionFailure(CobolFile cobolFile, Exception exception)
+    {
+        Logger.LogError(
+            exception,
+            "Business logic extraction failed for {FileName}; continuing with remaining files",
+            cobolFile.FileName);
+        EnhancedLogger?.LogBehindTheScenes(
+            "ERROR",
+            "BUSINESS_LOGIC_FILE_FAILED",
+            $"Business logic extraction failed for {cobolFile.FileName}; continuing with remaining files: {exception.Message}",
+            exception.GetType().Name);
+    }
+
+    internal static BusinessLogic ParseBusinessLogicResponse(CobolFile cobolFile, string analysisText)
     {
         var businessLogic = new BusinessLogic
         {
@@ -373,15 +450,20 @@ public class BusinessLogicExtractorAgent : AgentBase
         return businessLogic;
     }
 
-    private string ExtractBusinessPurpose(string analysisText)
+    private static string ExtractBusinessPurpose(string analysisText)
     {
         var lines = analysisText.Split('\n');
         var purposeSection = new List<string>();
         bool inPurposeSection = false;
+        bool hasContent = false;
 
         foreach (var line in lines)
         {
-            if (line.Contains("Business Purpose", StringComparison.OrdinalIgnoreCase))
+            var trimmedLine = line.Trim();
+
+            if (!inPurposeSection &&
+                trimmedLine.StartsWith("#", StringComparison.Ordinal) &&
+                trimmedLine.Contains("Business Purpose", StringComparison.OrdinalIgnoreCase))
             {
                 inPurposeSection = true;
                 continue;
@@ -389,20 +471,34 @@ public class BusinessLogicExtractorAgent : AgentBase
 
             if (inPurposeSection)
             {
-                if (string.IsNullOrWhiteSpace(line) ||
-                    line.Contains("Use Cases", StringComparison.OrdinalIgnoreCase) ||
-                    line.Contains("Features", StringComparison.OrdinalIgnoreCase))
+                if (trimmedLine.StartsWith("#", StringComparison.Ordinal))
                 {
                     break;
                 }
-                purposeSection.Add(line.Trim());
+
+                if (string.IsNullOrWhiteSpace(trimmedLine))
+                {
+                    if (hasContent)
+                    {
+                        purposeSection.Add(string.Empty);
+                    }
+                    continue;
+                }
+
+                if (trimmedLine.Equals("None identified.", StringComparison.OrdinalIgnoreCase))
+                {
+                    return string.Empty;
+                }
+
+                hasContent = true;
+                purposeSection.Add(trimmedLine);
             }
         }
 
-        return string.Join(" ", purposeSection).Trim();
+        return string.Join(" ", purposeSection.Where(line => line.Length > 0)).Trim();
     }
 
-    private List<UserStory> ExtractUserStories(string analysisText, string fileName)
+    private static List<UserStory> ExtractUserStories(string analysisText, string fileName)
     {
         var stories = new List<UserStory>();
         var lines = analysisText.Split('\n');
@@ -416,8 +512,9 @@ public class BusinessLogicExtractorAgent : AgentBase
         {
             var line = lines[i].Trim();
 
-            if (line.StartsWith("###") && (line.Contains("Use Case", StringComparison.OrdinalIgnoreCase) ||
-                                          line.Contains("User Story", StringComparison.OrdinalIgnoreCase)))
+            var storyMatch = MatchUseCaseHeading(line);
+
+            if (storyMatch.Success)
             {
                 if (currentStory != null)
                 {
@@ -431,7 +528,7 @@ public class BusinessLogicExtractorAgent : AgentBase
                 currentStory = new UserStory
                 {
                     Id = $"US-{stories.Count + 1}",
-                    Title = line.Replace("###", "").Trim(':').Trim(),
+                    Title = storyMatch.Groups[1].Value.Trim(),
                     SourceLocation = fileName
                 };
                 currentSection = "title";
@@ -450,6 +547,11 @@ public class BusinessLogicExtractorAgent : AgentBase
                     descriptionLines.Add(line.Replace("**Description:**", "").Trim());
                     currentSection = "description";
                 }
+                else if (line.StartsWith("**Benefit:**", StringComparison.OrdinalIgnoreCase))
+                {
+                    currentStory.Benefit = line.Replace("**Benefit:**", "").Trim();
+                    currentSection = "benefit";
+                }
                 else if (line.StartsWith("**Key Steps:**", StringComparison.OrdinalIgnoreCase))
                 {
                     currentSection = "steps";
@@ -462,7 +564,10 @@ public class BusinessLogicExtractorAgent : AgentBase
                     }
                     else if (currentSection == "steps" && (line.StartsWith("-") || char.IsDigit(line[0])))
                     {
-                        stepLines.Add(line.TrimStart('-', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '.', ' ').Trim());
+                        stepLines.Add(System.Text.RegularExpressions.Regex.Replace(
+                            line,
+                            @"^\s*(?:[-•]|\d+[.)])\s*",
+                            "").Trim());
                     }
                 }
             }
@@ -480,7 +585,15 @@ public class BusinessLogicExtractorAgent : AgentBase
         return stories;
     }
 
-    private List<FeatureDescription> ExtractFeatures(string analysisText, string fileName)
+    private static System.Text.RegularExpressions.Match MatchUseCaseHeading(string line)
+    {
+        return System.Text.RegularExpressions.Regex.Match(
+            line,
+            @"^#{3,}\s*(?:Use Case|User Story)(?:\s+\d+)?\s*:\s*(.+)$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    }
+
+    private static List<FeatureDescription> ExtractFeatures(string analysisText, string fileName)
     {
         var features = new List<FeatureDescription>();
         var lines = analysisText.Split('\n');
@@ -491,19 +604,18 @@ public class BusinessLogicExtractorAgent : AgentBase
         {
             var line = lines[i].Trim();
 
-            if (line.StartsWith("###") && (line.Contains("Feature", StringComparison.OrdinalIgnoreCase)
-                || line.Contains("Use Case", StringComparison.OrdinalIgnoreCase)
-                || line.Contains("Operation", StringComparison.OrdinalIgnoreCase)))
+            var featureMatch = System.Text.RegularExpressions.Regex.Match(
+                line,
+                @"^#{3,}\s*(?:Feature|Operation)(?:\s+\d+)?\s*:\s*(.+)$",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+            if (featureMatch.Success)
             {
                 if (currentFeature != null) features.Add(currentFeature);
                 currentFeature = new FeatureDescription
                 {
                     Id = $"F-{features.Count + 1}",
-                    Name = System.Text.RegularExpressions.Regex.Replace(
-                        line.Replace("###", "").Trim(),
-                        @"^(Feature|Use Case \d+|Operation)[\s:]*",
-                        "",
-                        System.Text.RegularExpressions.RegexOptions.IgnoreCase).Trim(),
+                    Name = featureMatch.Groups[1].Value.Trim(),
                     SourceLocation = fileName
                 };
             }
@@ -524,27 +636,85 @@ public class BusinessLogicExtractorAgent : AgentBase
         return features;
     }
 
-    private List<BusinessRule> ExtractBusinessRules(string analysisText, string fileName)
+    private static List<BusinessRule> ExtractBusinessRules(string analysisText, string fileName)
     {
         var rules = new List<BusinessRule>();
         var lines = analysisText.Split('\n');
         bool inRulesSection = false;
+        BusinessRule? currentRule = null;
 
         for (int i = 0; i < lines.Length; i++)
         {
             var line = lines[i].Trim();
 
-            if (line.Contains("Business Rules", StringComparison.OrdinalIgnoreCase) ||
-                line.Contains("Validations", StringComparison.OrdinalIgnoreCase))
+            if (System.Text.RegularExpressions.Regex.IsMatch(line, @"^##(?!#)\s+") &&
+                (line.Contains("Business Rules", StringComparison.OrdinalIgnoreCase) ||
+                 line.Contains("Validations", StringComparison.OrdinalIgnoreCase) ||
+                 line.Contains("Calculations", StringComparison.OrdinalIgnoreCase) ||
+                 line.Contains("State Transitions", StringComparison.OrdinalIgnoreCase)))
             {
+                if (currentRule != null)
+                {
+                    rules.Add(currentRule);
+                    currentRule = null;
+                }
                 inRulesSection = true;
                 continue;
             }
 
             if (inRulesSection)
             {
-                if (line.StartsWith("##") && !line.Contains("Business Rules") && !line.Contains("Validations"))
+                if (line.StartsWith("##", StringComparison.Ordinal) &&
+                    !line.StartsWith("###", StringComparison.Ordinal))
+                {
+                    if (currentRule != null)
+                    {
+                        rules.Add(currentRule);
+                    }
                     break;
+                }
+
+                var ruleMatch = System.Text.RegularExpressions.Regex.Match(
+                    line,
+                    @"^#{3,}\s*(?:Rule\s*\d*|BR-\d+)\s*:\s*(.+)$",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+                if (ruleMatch.Success)
+                {
+                    if (currentRule != null)
+                    {
+                        rules.Add(currentRule);
+                    }
+
+                    currentRule = new BusinessRule
+                    {
+                        Id = $"BR-{rules.Count + 1}",
+                        Description = ruleMatch.Groups[1].Value.Trim(),
+                        SourceLocation = fileName
+                    };
+                    continue;
+                }
+
+                if (currentRule != null)
+                {
+                    if (line.StartsWith("**Condition:**", StringComparison.OrdinalIgnoreCase))
+                    {
+                        currentRule.Condition = line.Replace("**Condition:**", "").Trim();
+                        continue;
+                    }
+
+                    if (line.StartsWith("**Action:**", StringComparison.OrdinalIgnoreCase))
+                    {
+                        currentRule.Action = line.Replace("**Action:**", "").Trim();
+                        continue;
+                    }
+
+                    if (line.StartsWith("**Source:**", StringComparison.OrdinalIgnoreCase))
+                    {
+                        currentRule.SourceLocation = line.Replace("**Source:**", "").Trim();
+                        continue;
+                    }
+                }
 
                 if (!string.IsNullOrWhiteSpace(line) && (line.StartsWith("-") || line.StartsWith("•")))
                 {
@@ -562,6 +732,11 @@ public class BusinessLogicExtractorAgent : AgentBase
                     }
                 }
             }
+        }
+
+        if (currentRule != null && !rules.Contains(currentRule))
+        {
+            rules.Add(currentRule);
         }
 
         return rules;

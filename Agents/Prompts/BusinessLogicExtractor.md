@@ -18,6 +18,27 @@ For each program, extract:
 
 ## Output Format
 Describe business logic in **domain language**, not COBOL syntax. A business analyst should understand the output without knowing COBOL.
+Return only Markdown using this exact structure:
+
+## Business Purpose
+[One or two paragraphs describing the business function.]
+
+## Use Cases
+### Use Case 1: [Operation name]
+**Trigger:** [What initiates the operation]
+**Description:** [What the operation does]
+**Benefit:** [Business outcome]
+**Key Steps:**
+1. [Business step]
+2. [Business step]
+
+## Business Rules
+### Rule 1: [Short rule name]
+**Condition:** [When the rule applies]
+**Action:** [Required outcome]
+**Source:** [COBOL paragraph or statement]
+
+Use `None identified.` under a section when the source contains no applicable items. Do not rename these headings or replace the structure with tables.
 
 ## SECTION: User
 
@@ -36,4 +57,3 @@ Extract the business logic from the following COBOL program.
 2. Validations and data transformations
 3. Calculations with precision requirements
 4. Decision trees and state transitions
-

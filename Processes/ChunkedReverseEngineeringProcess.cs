@@ -655,47 +655,7 @@ ON CONFLICT(run_id, source_file, chunk_index) DO NOTHING;";
                 sb.AppendLine();
             }
 
-            // Feature Descriptions (User Stories)
-            if (businessLogic.UserStories.Any())
-            {
-                sb.AppendLine("### Feature Descriptions");
-                sb.AppendLine();
-
-                foreach (var story in businessLogic.UserStories)
-                {
-                    sb.AppendLine($"#### {story.Id}: {story.Title}");
-                    sb.AppendLine();
-                    if (!string.IsNullOrWhiteSpace(story.Role))
-                    {
-                        sb.AppendLine($"**Trigger:** {story.Role}");
-                    }
-                    if (!string.IsNullOrWhiteSpace(story.Action))
-                    {
-                        sb.AppendLine($"**Description:** {story.Action}");
-                    }
-                    if (!string.IsNullOrWhiteSpace(story.Benefit))
-                    {
-                        sb.AppendLine($"**Benefit:** {story.Benefit}");
-                    }
-                    sb.AppendLine();
-
-                    if (story.AcceptanceCriteria.Any())
-                    {
-                        sb.AppendLine("**Business Rules:**");
-                        foreach (var criteria in story.AcceptanceCriteria)
-                        {
-                            sb.AppendLine($"- {criteria}");
-                        }
-                        sb.AppendLine();
-                    }
-
-                    if (!string.IsNullOrWhiteSpace(story.SourceLocation))
-                    {
-                        sb.AppendLine($"*Source: {story.SourceLocation}*");
-                        sb.AppendLine();
-                    }
-                }
-            }
+            BusinessLogicMarkdownFormatter.AppendUserStories(sb, businessLogic);
 
             // Features
             if (businessLogic.Features.Any())
@@ -761,26 +721,7 @@ ON CONFLICT(run_id, source_file, chunk_index) DO NOTHING;";
                 }
             }
 
-            // Business Rules
-            if (businessLogic.BusinessRules.Any())
-            {
-                sb.AppendLine("### Business Rules");
-                sb.AppendLine();
-
-                foreach (var rule in businessLogic.BusinessRules)
-                {
-                    sb.AppendLine($"- **{rule.Id}**: {rule.Description}");
-                    if (!string.IsNullOrWhiteSpace(rule.Condition))
-                    {
-                        sb.AppendLine($"  - Condition: {rule.Condition}");
-                    }
-                    if (!string.IsNullOrWhiteSpace(rule.Action))
-                    {
-                        sb.AppendLine($"  - Action: {rule.Action}");
-                    }
-                }
-                sb.AppendLine();
-            }
+            BusinessLogicMarkdownFormatter.AppendBusinessRules(sb, businessLogic);
 
             sb.AppendLine("---");
             sb.AppendLine();
