@@ -36,9 +36,10 @@ Return only Markdown using this exact structure:
 ### Rule 1: [Short rule name]
 **Condition:** [When the rule applies]
 **Action:** [Required outcome]
-**Source:** [COBOL paragraph or statement]
+**Source:** [FileName:StartLine-EndLine — brief description of the relevant statement or branch]
 
 Use `None identified.` under a section when the source contains no applicable items. Do not rename these headings or replace the structure with tables.
+Every source must include the source file name, the smallest useful line range, and a short domain-neutral locator. Example: `CUSTOMER-INQUIRY.cbl:38-43 — keyed customer read with found/not-found branches`.
 
 ## SECTION: User
 
@@ -48,6 +49,7 @@ Extract the business logic from the following COBOL program.
 {{GlossaryContext}}
 
 ## Source File: {{FileName}}
+The numeric prefixes below are source line references, not part of the COBOL syntax.
 ```cobol
 {{CobolContent}}
 ```

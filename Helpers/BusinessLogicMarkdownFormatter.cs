@@ -5,6 +5,20 @@ namespace CobolToQuarkusMigration.Helpers;
 
 internal static class BusinessLogicMarkdownFormatter
 {
+    internal static void AppendTotals(
+        StringBuilder builder,
+        int totalUseCases,
+        int totalProcessFeatures,
+        int totalBusinessRules)
+    {
+        builder.AppendLine($"**Total Use Cases**: {totalUseCases}");
+        if (totalProcessFeatures > 0)
+        {
+            builder.AppendLine($"**Total Process Features**: {totalProcessFeatures}");
+        }
+        builder.AppendLine($"**Total Business Rules**: {totalBusinessRules}");
+    }
+
     internal static void AppendUserStories(StringBuilder builder, BusinessLogic businessLogic)
     {
         if (!businessLogic.UserStories.Any())
@@ -12,7 +26,7 @@ internal static class BusinessLogicMarkdownFormatter
             return;
         }
 
-        builder.AppendLine("### Feature Descriptions");
+        builder.AppendLine("### Use Cases");
         builder.AppendLine();
 
         foreach (var story in businessLogic.UserStories)
@@ -82,7 +96,12 @@ internal static class BusinessLogicMarkdownFormatter
 
             if (!string.IsNullOrWhiteSpace(rule.SourceLocation))
             {
-                builder.AppendLine($"*Source: {rule.SourceLocation}*");
+                var source = rule.SourceLocation.StartsWith(
+                    businessLogic.FileName,
+                    StringComparison.OrdinalIgnoreCase)
+                    ? rule.SourceLocation
+                    : $"{businessLogic.FileName} — {rule.SourceLocation}";
+                builder.AppendLine($"*Source: {source}*");
             }
 
             builder.AppendLine();

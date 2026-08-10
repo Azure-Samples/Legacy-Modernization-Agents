@@ -126,7 +126,7 @@ public class BusinessLogicExtractorAgent : AgentBase
             {
                 ["GlossaryContext"] = glossaryContext,
                 ["FileName"] = cobolFile.FileName,
-                ["CobolContent"] = contentToAnalyze
+                ["CobolContent"] = AddSourceLineNumbers(contentToAnalyze)
             });
 
             var (analysisText, usedFallback, fallbackReason) = await ExecuteWithFallbackAsync(
@@ -418,6 +418,14 @@ public class BusinessLogicExtractorAgent : AgentBase
             IsCopybook = cobolFile.IsCopybook,
             BusinessPurpose = "Business logic extraction skipped because technical analysis was unavailable."
         };
+    }
+
+    internal static string AddSourceLineNumbers(string content)
+    {
+        var lines = content.Replace("\r\n", "\n").Split('\n');
+        return string.Join(
+            "\n",
+            lines.Select((line, index) => $"{index + 1,6} | {line}"));
     }
 
     private void LogBatchExtractionFailure(CobolFile cobolFile, Exception exception)

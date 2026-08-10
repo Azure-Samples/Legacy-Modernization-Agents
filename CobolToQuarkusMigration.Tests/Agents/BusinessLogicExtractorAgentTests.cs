@@ -28,7 +28,7 @@ public class BusinessLogicExtractorAgentTests
             ### Rule 1: Customer must exist
             **Condition:** No record matches the supplied identifier.
             **Action:** Inform the operator that the customer is invalid.
-            **Source:** SEARCH-CUSTOMER / INVALID KEY
+            **Source:** CUSTOMER-INQUIRY.cbl:38-43 — keyed customer read with found/not-found branches
             """;
 
         var result = BusinessLogicExtractorAgent.ParseBusinessLogicResponse(
@@ -49,7 +49,8 @@ public class BusinessLogicExtractorAgentTests
         result.BusinessRules[0].Description.Should().Be("Customer must exist");
         result.BusinessRules[0].Condition.Should().Contain("No record matches");
         result.BusinessRules[0].Action.Should().Contain("Inform the operator");
-        result.BusinessRules[0].SourceLocation.Should().Be("SEARCH-CUSTOMER / INVALID KEY");
+        result.BusinessRules[0].SourceLocation.Should().Be(
+            "CUSTOMER-INQUIRY.cbl:38-43 — keyed customer read with found/not-found branches");
     }
 
     [Fact]
@@ -200,5 +201,17 @@ public class BusinessLogicExtractorAgentTests
         result.FilePath.Should().Be(file.FilePath);
         result.IsCopybook.Should().BeTrue();
         result.BusinessPurpose.Should().Contain("technical analysis was unavailable");
+    }
+
+    [Fact]
+    public void AddSourceLineNumbers_UsesOneBasedStableReferences()
+    {
+        var numbered = BusinessLogicExtractorAgent.AddSourceLineNumbers(
+            "READ CUSTOMER-FILE\r\n    INVALID KEY\r\n        DISPLAY ERR-INVALID-CUST");
+
+        numbered.Should().Be(
+            "     1 | READ CUSTOMER-FILE\n" +
+            "     2 |     INVALID KEY\n" +
+            "     3 |         DISPLAY ERR-INVALID-CUST");
     }
 }

@@ -225,9 +225,11 @@ public class ReverseEngineeringProcess
         sb.AppendLine();
         sb.AppendLine($"**Generated**: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
         sb.AppendLine($"**Total Files Analyzed**: {result.TotalFilesAnalyzed} ({programCount} programs, {copybookCount} copybooks)");
-        sb.AppendLine($"**Total User Stories**: {result.TotalUserStories}");
-        sb.AppendLine($"**Total Features**: {result.TotalFeatures}");
-        sb.AppendLine($"**Total Business Rules**: {result.TotalBusinessRules}");
+        BusinessLogicMarkdownFormatter.AppendTotals(
+            sb,
+            result.TotalUserStories,
+            result.TotalFeatures,
+            result.TotalBusinessRules);
         sb.AppendLine();
         sb.AppendLine("---");
         sb.AppendLine();
