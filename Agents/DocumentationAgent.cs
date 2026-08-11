@@ -34,7 +34,7 @@ public class DocumentationAgent : AgentBase
         {
             ["TargetLanguage"] = targetLanguage,
             ["StructuralContext"] = RektContextFormatter.ToPromptBlock(sc),
-            ["Code"] = convertedCode.Length > 35_000 ? convertedCode.Substring(0, 35_000) + "\n// [TRUNCATED]\n" : convertedCode,
+            ["Code"] = convertedCode,
         });
 
         try

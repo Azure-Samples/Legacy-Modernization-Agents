@@ -418,7 +418,7 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
         if (context.PreviousSignatures.Any())
         {
             sb.AppendLine("\nMethods defined in previous chunks (maintain consistency):");
-            foreach (var sig in context.PreviousSignatures.Take(20))
+            foreach (var sig in context.PreviousSignatures)
             {
                 sb.AppendLine($"  - {sig.TargetSignature}");
             }
@@ -427,7 +427,7 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
         if (context.PreviousVariables.Any())
         {
             sb.AppendLine("\nVariables defined in previous chunks:");
-            foreach (var variable in context.PreviousVariables.Take(30))
+            foreach (var variable in context.PreviousVariables)
             {
                 sb.AppendLine($"  - {variable.TargetType} {variable.TargetName}");
             }
@@ -460,7 +460,7 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
         if (context.PendingForwardReferences.Any())
         {
             sb.AppendLine("References to resolve from previous chunks:");
-            foreach (var reference in context.PendingForwardReferences.Take(10))
+            foreach (var reference in context.PendingForwardReferences)
             {
                 sb.AppendLine($"  - {reference.TargetMethod}");
             }

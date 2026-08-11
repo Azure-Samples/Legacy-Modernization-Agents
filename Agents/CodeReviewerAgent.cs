@@ -57,7 +57,7 @@ public class CodeReviewerAgent : AgentBase
         {
             ["TargetLanguage"] = targetLanguage,
             ["StructuralContext"] = RektContextFormatter.ToPromptBlock(sc),
-            ["Code"] = convertedCode.Length > 30_000 ? convertedCode.Substring(0, 30_000) + "\n// [TRUNCATED]\n" : convertedCode,
+            ["Code"] = convertedCode,
         });
 
         string response;

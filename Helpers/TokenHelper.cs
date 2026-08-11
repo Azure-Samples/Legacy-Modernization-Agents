@@ -4,7 +4,7 @@ using System.Text.RegularExpressions;
 namespace CobolToQuarkusMigration.Helpers;
 
 /// <summary>
-/// Helper for token estimation and content truncation to stay within rate limits.
+/// Helper for token estimation and rate-limit calculations.
 /// 
 /// Token Calculation for Azure OpenAI:
 /// - ~4 characters per token for English text
@@ -59,114 +59,29 @@ public static class TokenHelper
     }
 
     /// <summary>
-    /// Truncates content to fit within a maximum token limit.
+    /// Compatibility shim retained for callers compiled against earlier versions.
+    /// Truncation is disabled; the complete content is always returned.
     /// </summary>
-    /// <param name="content">The content to truncate.</param>
-    /// <param name="maxTokens">Maximum tokens allowed.</param>
-    /// <param name="preserveStart">If true, keeps the start; if false, keeps the end.</param>
-    /// <returns>Truncated content and whether it was truncated.</returns>
+    [Obsolete("Truncation is disabled. Use semantic chunking when input exceeds a model context window.")]
     public static (string Content, bool WasTruncated) TruncateToTokenLimit(
-        string content, 
-        int maxTokens, 
+        string content,
+        int maxTokens,
         bool preserveStart = true)
     {
-        if (string.IsNullOrEmpty(content))
-            return (content, false);
-        
-        var estimatedTokens = EstimateTokens(content);
-        if (estimatedTokens <= maxTokens)
-            return (content, false);
-        
-        // Calculate max characters we can keep
-        var maxChars = (int)(maxTokens * CharsPerToken * SafetyMargin);
-        
-        if (preserveStart)
-        {
-            var truncated = content.Substring(0, Math.Min(maxChars, content.Length));
-            // Try to end at a newline for cleaner truncation
-            var lastNewline = truncated.LastIndexOf('\n');
-            if (lastNewline > maxChars * 0.8)
-            {
-                truncated = truncated.Substring(0, lastNewline);
-            }
-            return (truncated + "\n... [TRUNCATED - file too large for single analysis]", true);
-        }
-        else
-        {
-            var truncated = content.Substring(Math.Max(0, content.Length - maxChars));
-            var firstNewline = truncated.IndexOf('\n');
-            if (firstNewline > 0 && firstNewline < maxChars * 0.2)
-            {
-                truncated = truncated.Substring(firstNewline + 1);
-            }
-            return ("[TRUNCATED - file too large for single analysis] ...\n" + truncated, true);
-        }
+        return (content, false);
     }
 
     /// <summary>
-    /// Truncates COBOL content intelligently, preserving IDENTIFICATION and PROCEDURE divisions.
+    /// Compatibility shim retained for callers compiled against earlier versions.
+    /// Truncation is disabled; the complete COBOL source is always returned.
     /// </summary>
-    /// <param name="cobolContent">The COBOL content to truncate.</param>
-    /// <param name="maxTokens">Maximum tokens allowed.</param>
-    /// <returns>Truncated content with key sections preserved.</returns>
+    [Obsolete("Truncation is disabled. Use semantic chunking when input exceeds a model context window.")]
     public static (string Content, bool WasTruncated, string Summary) TruncateCobolIntelligently(
-        string cobolContent, 
+        string cobolContent,
         int maxTokens)
     {
-        if (string.IsNullOrEmpty(cobolContent))
-            return (cobolContent, false, "Empty content");
-        
         var estimatedTokens = EstimateCobolTokens(cobolContent);
-        if (estimatedTokens <= maxTokens)
-            return (cobolContent, false, $"Full content ({estimatedTokens} tokens)");
-        
-        var lines = cobolContent.Split('\n');
-        var totalLines = lines.Length;
-        
-        // Calculate how many lines we can keep (roughly)
-        var maxChars = (int)(maxTokens * 3.0 * SafetyMargin); // 3.0 for COBOL
-        var avgLineLength = cobolContent.Length / (double)totalLines;
-        var maxLines = (int)(maxChars / avgLineLength);
-        
-        // Strategy: Keep first 30% (IDENTIFICATION, DATA DIVISION) and last 40% (PROCEDURE DIVISION end)
-        // Middle 30% gets summarized
-        var keepStart = (int)(maxLines * 0.4);
-        var keepEnd = (int)(maxLines * 0.5);
-        var skipMiddle = totalLines - keepStart - keepEnd;
-        
-        if (skipMiddle <= 0)
-        {
-            // File is small enough, just truncate
-            var (truncated, _) = TruncateToTokenLimit(cobolContent, maxTokens, true);
-            return (truncated, true, $"Truncated from {totalLines} lines");
-        }
-        
-        var result = new System.Text.StringBuilder();
-        
-        // Add first section
-        for (int i = 0; i < keepStart && i < totalLines; i++)
-        {
-            result.AppendLine(lines[i]);
-        }
-        
-        // Add truncation notice
-        result.AppendLine();
-        result.AppendLine($"      * ================================================================");
-        result.AppendLine($"      * TRUNCATED: {skipMiddle} lines omitted ({totalLines} total lines)");
-        result.AppendLine($"      * Original file too large for single AI analysis.");
-        result.AppendLine($"      * Large files are automatically chunked for proper processing.");
-        result.AppendLine($"      * ================================================================");
-        result.AppendLine();
-        
-        // Add last section
-        for (int i = totalLines - keepEnd; i < totalLines; i++)
-        {
-            if (i >= 0)
-                result.AppendLine(lines[i]);
-        }
-        
-        var summary = $"Truncated: kept {keepStart} start + {keepEnd} end lines, omitted {skipMiddle} middle lines";
-        return (result.ToString(), true, summary);
+        return (cobolContent, false, $"Full content ({estimatedTokens} tokens)");
     }
 
     /// <summary>

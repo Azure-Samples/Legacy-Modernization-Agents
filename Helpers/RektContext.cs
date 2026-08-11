@@ -147,9 +147,8 @@ public static class RektContextFormatter
             foreach (var s in ctx.Sections)
             {
                 sb.AppendLine($"  {s.Name} (lines {s.StartLine}-{s.EndLine})  paragraphs: {s.Paragraphs.Count}");
-                foreach (var p in s.Paragraphs.Take(6))
+                foreach (var p in s.Paragraphs)
                     sb.AppendLine($"    - {p.Name} (lines {p.StartLine}-{p.EndLine})");
-                if (s.Paragraphs.Count > 6) sb.AppendLine($"    … and {s.Paragraphs.Count - 6} more");
             }
             sb.AppendLine();
         }
@@ -157,9 +156,8 @@ public static class RektContextFormatter
         if (ctx.PerformGraph.Count > 0)
         {
             sb.AppendLine($"PERFORM GRAPH ({ctx.PerformGraph.Count} edges):");
-            foreach (var e in ctx.PerformGraph.Take(30))
+            foreach (var e in ctx.PerformGraph)
                 sb.AppendLine($"  {e.From} → {e.To}{(e.Conditional ? " (conditional)" : "")}");
-            if (ctx.PerformGraph.Count > 30) sb.AppendLine($"  … and {ctx.PerformGraph.Count - 30} more");
             sb.AppendLine();
         }
 
@@ -174,9 +172,8 @@ public static class RektContextFormatter
         if (ctx.SqlStatements.Count > 0)
         {
             sb.AppendLine($"EXEC SQL ({ctx.SqlStatements.Count}):");
-            foreach (var s in ctx.SqlStatements.Take(20))
+            foreach (var s in ctx.SqlStatements)
                 sb.AppendLine($"  {s.Operation} {string.Join(",", s.Tables)} (line {s.LineNumber})");
-            if (ctx.SqlStatements.Count > 20) sb.AppendLine($"  … and {ctx.SqlStatements.Count - 20} more");
             sb.AppendLine();
         }
 
@@ -200,15 +197,7 @@ public static class RektContextFormatter
                 sb.AppendLine();
                 foreach (var d in meaningful)
                 {
-                    // For large groups (>50 fields), show only top 2 levels to
-                    // keep the prompt under the model's effective budget. The
-                    // converter should generate ALL fields in the DTO, using
-                    // the COBOL source for the full detail.
-                    int totalFields = CountFields(d);
-                    int maxDepth = totalFields > 50 ? 10 : 30;
-                    RenderDataItem(sb, d, indent: 2, maxChildren: maxDepth);
-                    if (totalFields > 50)
-                        sb.AppendLine($"    … {totalFields} fields total — generate ALL in the DTO using the COBOL source for complete field list");
+                    RenderDataItem(sb, d, indent: 2);
                 }
             }
         }
@@ -216,7 +205,7 @@ public static class RektContextFormatter
         return sb.ToString();
     }
 
-    private static void RenderDataItem(System.Text.StringBuilder sb, RektDataItem d, int indent, int maxChildren = 30)
+    private static void RenderDataItem(System.Text.StringBuilder sb, RektDataItem d, int indent)
     {
         var pad = new string(' ', indent);
         var pic = d.PicClause != null ? $" {d.PicClause}" : "";
@@ -224,15 +213,6 @@ public static class RektContextFormatter
         var redef = d.Redefines != null ? $" REDEFINES {d.Redefines}" : "";
         var occ = d.Occurs.HasValue ? $" OCCURS {d.Occurs}" : "";
         sb.AppendLine($"{pad}{d.Level:00} {d.Name}{pic}{usage}{redef}{occ}");
-        foreach (var c in d.Children.Take(maxChildren)) RenderDataItem(sb, c, indent + 2, maxChildren);
-        if (d.Children.Count > maxChildren)
-            sb.AppendLine($"{pad}  … and {d.Children.Count - maxChildren} more child fields");
-    }
-
-    private static int CountFields(RektDataItem d)
-    {
-        int count = 1;
-        foreach (var c in d.Children) count += CountFields(c);
-        return count;
+        foreach (var c in d.Children) RenderDataItem(sb, c, indent + 2);
     }
 }

@@ -203,8 +203,8 @@ public class ConversionParityAgent : AgentBase
         {
             ["Gaps"] = string.Join("\n", gaps.Select(g => "- " + g)),
             ["StructuralContext"] = RektContextFormatter.ToPromptBlock(sc),
-            ["CobolSource"] = TruncateForPrompt(cobolSource, 40_000),
-            ["ConvertedCode"] = TruncateForPrompt(convertedCode, 30_000),
+            ["CobolSource"] = cobolSource,
+            ["ConvertedCode"] = convertedCode,
             ["TargetLanguage"] = targetLanguage,
         });
 
@@ -229,9 +229,6 @@ public class ConversionParityAgent : AgentBase
         // Strip any accidental ``` fences the model added.
         return StripCodeFences(response);
     }
-
-    private static string TruncateForPrompt(string s, int max) =>
-        s.Length <= max ? s : s.Substring(0, max) + "\n// [TRUNCATED]\n";
 
     private static string StripCodeFences(string s)
     {

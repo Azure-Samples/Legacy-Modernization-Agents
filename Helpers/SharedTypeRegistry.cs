@@ -82,7 +82,6 @@ public sealed class SharedTypeRegistry
         var shared = _copybookReferences
             .Where(kv => kv.Value.Count >= 2)
             .OrderByDescending(kv => kv.Value.Count)
-            .Take(40)
             .ToList();
 
         var sb = new StringBuilder();

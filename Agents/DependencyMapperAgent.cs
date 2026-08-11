@@ -410,13 +410,13 @@ public class DependencyMapperAgent : AgentBase, IDependencyMapperAgent
             {
                 var systemPrompt = PromptLoader.LoadSection("DependencyMapper", "AnalysisSystem");
 
-                var fileStructure = string.Join("\n", cobolFiles.Take(5).Select(f =>
+                var fileStructure = string.Join("\n", cobolFiles.Select(f =>
                     $"File: {f.FileName}\nType: {(f.FileName.EndsWith(".cbl") ? "Program" : "Copybook")}\nSize: {f.Content.Length} chars"));
 
                 var userPrompt = PromptLoader.LoadSection("DependencyMapper", "AnalysisUser", new Dictionary<string, string>
                 {
                     ["FileStructure"] = fileStructure,
-                    ["CopybookUsagePatterns"] = string.Join("\n", dependencyMap.CopybookUsage.Take(10).Select(kvp =>
+                    ["CopybookUsagePatterns"] = string.Join("\n", dependencyMap.CopybookUsage.Select(kvp =>
                         $"{kvp.Key} uses: {string.Join(", ", kvp.Value)}"))
                 });
 

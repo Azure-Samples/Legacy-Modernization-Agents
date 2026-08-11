@@ -49,19 +49,11 @@ public class StructuralExtractorAgent : AgentBase
     {
         var lineCount = source.Count(c => c == '\n') + 1;
 
-        // Truncate massively large programs — we just need structure, not every line.
-        var truncated = source;
-        if (source.Length > 60_000)
-        {
-            truncated = source.Substring(0, 60_000)
-                      + "\n\n*  [TRUNCATED — file is " + source.Length + " chars; first 60 KB shown for structural extraction]\n";
-        }
-
         var systemPrompt = PromptLoader.Load("StructuralExtractor", new Dictionary<string, string>
         {
             ["Program"] = programFileName,
             ["LineCount"] = lineCount.ToString(),
-            ["Source"] = truncated,
+            ["Source"] = source,
         });
 
         try

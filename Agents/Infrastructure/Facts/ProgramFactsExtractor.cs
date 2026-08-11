@@ -357,14 +357,14 @@ public sealed class ProgramFactsExtractor
             .ToDictionary(g => g.Key, g => g.Select(e => e.To).ToList(),
                 StringComparer.OrdinalIgnoreCase);
 
-        // Emit one chain per top-level entry section, depth-bounded to avoid cycles.
+        // Emit one chain per top-level entry section. The seen set prevents cycles.
         var chains = new List<IReadOnlyList<string>>();
-        foreach (var entry in ctx.Sections.Take(5))
+        foreach (var entry in ctx.Sections)
         {
             var chain = new List<string> { entry.Name };
             var current = entry.Name;
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { current };
-            while (chain.Count < 25 && byFrom.TryGetValue(current, out var nexts))
+            while (byFrom.TryGetValue(current, out var nexts))
             {
                 var next = nexts.FirstOrDefault(n => !seen.Contains(n));
                 if (next is null) break;

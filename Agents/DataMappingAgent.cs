@@ -55,7 +55,7 @@ public class DataMappingAgent : AgentBase
         {
             ["TargetLanguage"] = targetLanguage,
             ["StructuralContext"] = RektContextFormatter.ToPromptBlock(sc),
-            ["CobolSource"] = cobolSource.Length > 40_000 ? cobolSource.Substring(0, 40_000) + "\n// [TRUNCATED]\n" : cobolSource,
+            ["CobolSource"] = cobolSource,
         });
 
         string response;
