@@ -86,7 +86,7 @@ graph TB
     subgraph "Data Models"
         CobolFile[CobolFile]
         CobolAnalysis[CobolAnalysis]
-        BusinessLogicModel[BusinessLogic<br/>- UseCases<br/>- Features<br/>- BusinessRules]
+        BusinessLogicModel[BusinessLogic<br/>- Use Cases<br/>- Features<br/>- BusinessRules]
     end
     
     subgraph "Chunking Infrastructure"
