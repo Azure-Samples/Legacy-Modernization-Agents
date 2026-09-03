@@ -1,4 +1,6 @@
+using System;
 using System.Collections.Generic;
+using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json.Nodes;
 using System.Threading;
@@ -49,6 +51,32 @@ public class WebAppTests : IClassFixture<WebAppFactory>
         var payload = await response.Content.ReadFromJsonAsync<ChatResponse>();
         Assert.NotNull(payload);
         Assert.Equal("Echo: hello", payload!.Response);
+    }
+
+    [Fact]
+    public async Task PromptScoreEndpoint_ValidPromptId_ReturnsSuccess()
+    {
+        var client = _factory.CreateClient();
+
+        var response = await client.PostAsync("/api/prompts/score/CobolAnalyzer", null);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("../secret")]
+    [InlineData("../../secret")]
+    [InlineData("..\\secret")]
+    [InlineData("/etc/passwd")]
+    [InlineData("foo/bar")]
+    public async Task PromptScoreEndpoint_PathTraversalPromptIds_ReturnBadRequest(string promptId)
+    {
+        var client = _factory.CreateClient();
+        var encodedPromptId = Uri.EscapeDataString(promptId);
+
+        var response = await client.PostAsync($"/api/prompts/score/{encodedPromptId}", null);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 }
 
