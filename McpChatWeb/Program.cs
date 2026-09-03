@@ -5623,7 +5623,10 @@ app.MapPost("/api/prompts/score/{promptId}", async (string promptId) =>
 				repoRoot = Path.GetFullPath("..");
 		}
 
-		var sanitizedId = Path.GetFileName(promptId);
+		if (string.IsNullOrWhiteSpace(promptId) || !System.Text.RegularExpressions.Regex.IsMatch(promptId, "^[A-Za-z0-9_-]+$", System.Text.RegularExpressions.RegexOptions.CultureInvariant))
+			return Results.BadRequest(new { error = "Invalid prompt ID" });
+
+		var sanitizedId = promptId;
 		var promptFile = Path.GetFullPath(Path.Combine(repoRoot, "Agents", "Prompts", $"{sanitizedId}.md"));
 		var promptsDir = Path.GetFullPath(Path.Combine(repoRoot, "Agents", "Prompts"));
 
