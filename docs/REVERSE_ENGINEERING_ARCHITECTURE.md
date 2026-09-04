@@ -11,7 +11,7 @@ The reverse engineering process extracts business logic from COBOL source code, 
 | Component | Model | Purpose |
 |-----------|-------|---------|
 | COBOL Analyzer | `gpt-5.1-codex-mini` | Technical structure analysis (divisions, paragraphs, data) |
-| Business Logic Extractor | `gpt-5.1-codex-mini` | Business rules, features, user stories extraction |
+| Business Logic Extractor | `gpt-5.1-codex-mini` | Extraction of business rules, features, and use cases |
 | Portal Chat | `gpt-5.1-chat` | Interactive Q&A about migration results |
 
 **Configuration:** `Config/appsettings.json`
@@ -86,7 +86,7 @@ graph TB
     subgraph "Data Models"
         CobolFile[CobolFile]
         CobolAnalysis[CobolAnalysis]
-        BusinessLogicModel[BusinessLogic<br/>- UserStories<br/>- Features<br/>- BusinessRules]
+        BusinessLogicModel[BusinessLogic<br/>- Use Cases<br/>- Features<br/>- BusinessRules]
     end
     
     subgraph "Chunking Infrastructure"

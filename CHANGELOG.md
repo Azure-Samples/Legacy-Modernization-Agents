@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`ChatClientFactory` `InvalidOperationException`** — `CreateFromSettings()` now throws a descriptive `InvalidOperationException` when called with an unrecognised `ServiceType`, instead of returning `null` and causing a downstream null-reference crash.
 - **Provider label display** — AI provider labels in the portal header now correctly reflect the active provider (was showing `AzureOpenAI` for all providers).
 - **XSS hardening** — API-supplied model names are HTML-escaped before DOM insertion in the portal setup modal.
+- **Business logic report — Use Cases output** — The `reverse-engineering-details.md` report now consistently uses `### Use Cases` as the section heading. Each entry now renders `Trigger:`, `Description:`, `Benefit:`, and `Key Steps:` fields, and markdown generation is centralized in `BusinessLogicMarkdownFormatter`.
 
 ### Security
 - **Command injection fix in `ProcessManager`** — `ProcessManager.StartRun()` now uses `ProcessStartInfo.ArgumentList` instead of `ProcessStartInfo.Arguments` to pass arguments to `doctor.sh` subprocesses. This eliminates the command injection risk that existed when user-controlled values were interpolated into the `Arguments` string. Resolves [code-scanning alert #6](https://github.com/Azure-Samples/Legacy-Modernization-Agents/security/code-scanning/6).
