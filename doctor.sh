@@ -14,6 +14,11 @@ MAGENTA='\033[0;35m'
 BOLD='\033[1m'
 NC='\033[0m' # No Color
 
+# Variable for the GitHub host, defaults to 'github.com'
+GITHUB_HOST="${GITHUB_HOST:-github.com}"
+GITHUB_HOST="${GITHUB_HOST#https://}"
+GITHUB_HOST="${GITHUB_HOST#http://}"
+
 # Resolve the sqlite3 command, handling Windows (Git Bash / MSYS2) paths
 SQLITE3_CMD=""
 resolve_sqlite3() {
@@ -1177,6 +1182,31 @@ run_setup() {
         echo -e "${GREEN}✅ Copilot CLI found in PATH${NC}"
         echo ""
 
+        # GitHub host selection
+        echo -e "${BOLD}${BLUE}GitHub Host${NC}"
+        echo -e "  ${GREEN}1)${NC} github.com (default)"
+        echo -e "  ${GREEN}2)${NC} GitHub Data Residency (custom host)"
+        echo ""
+        read -p "Choice [1]: " gh_host_choice
+        gh_host_choice=${gh_host_choice:-1}
+        echo ""
+
+        if [[ "$gh_host_choice" == "2" ]]; then
+            read -p "Enter your GitHub host (e.g., github.yourcompany.ghe.com): " custom_gh_host
+            if [[ -n "$custom_gh_host" ]]; then
+                # Strip protocol prefix if provided
+                custom_gh_host="${custom_gh_host#https://}"
+                custom_gh_host="${custom_gh_host#http://}"
+                # Strip trailing slash
+                custom_gh_host="${custom_gh_host%/}"
+                GITHUB_HOST="$custom_gh_host"
+            else
+                echo -e "${YELLOW}⚠️  No host provided, defaulting to github.com${NC}"
+            fi
+        fi
+        echo -e "${GREEN}✅ GitHub host: ${GITHUB_HOST}${NC}"
+        echo ""
+
         # Check CLI version and update if needed (before auth, to avoid interrupted login)
         local cli_version
         cli_version=$(copilot --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
@@ -1215,7 +1245,7 @@ run_setup() {
             echo -e "  ${BLUE}Classic PAT (fine-grained PATs do not currently support Copilot):${NC}"
             echo "    • copilot"
             echo ""
-            echo -e "${YELLOW}Create one at: https://github.com/settings/tokens${NC}"
+            echo -e "${YELLOW}Create one at: https://${GITHUB_HOST}/settings/tokens${NC}"
             echo ""
             # Read from /dev/tty explicitly to ensure correct capture in all terminal environments
             echo -n "Please provide the PAT and press Enter: "
@@ -1232,7 +1262,7 @@ run_setup() {
             # --- CLI authentication (existing flow) ---
             echo -e "${BLUE}🔐 Authenticating with GitHub Copilot...${NC}"
             echo ""
-            if ! copilot login; then
+            if ! copilot login --host "https://${GITHUB_HOST}"; then
                 echo ""
                 echo -e "${RED}❌ Authentication failed. Please try again.${NC}"
                 return 1
@@ -1364,6 +1394,15 @@ AZURE_OPENAI_ENDPOINT="https://copilot-sdk-placeholder"
 AISETTINGS__ENDPOINT="https://copilot-sdk-placeholder"
 AISETTINGS__CHATENDPOINT="https://copilot-sdk-placeholder"
 EOF
+
+        # Append GitHub host if not default
+        if [[ "$GITHUB_HOST" != "github.com" ]]; then
+            cat >> "$LOCAL_CONFIG" <<EOF
+
+# GitHub Data Residency host
+GITHUB_HOST="$GITHUB_HOST"
+EOF
+        fi
 
         # Append PAT to config if provided
         if [[ -n "$ghcp_token" ]]; then
