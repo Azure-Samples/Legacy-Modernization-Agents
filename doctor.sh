@@ -461,6 +461,38 @@ open_url_in_browser() {
     esac
 }
 
+# Return PIDs listening on the given TCP port. Prefers `lsof` (Linux/macOS);
+# falls back to Windows' `netstat` when lsof isn't installed, which is the
+# normal case under Git Bash/MINGW64.
+port_listen_pids() {
+    local port="$1"
+    if command -v lsof >/dev/null 2>&1; then
+        lsof -Pi ":$port" -sTCP:LISTEN -t 2>/dev/null
+    elif command -v netstat >/dev/null 2>&1; then
+        # Windows netstat output: "TCP  0.0.0.0:5028  0.0.0.0:0  LISTENING  1234"
+        # — the PID is always the last whitespace-separated field.
+        netstat -ano 2>/dev/null | grep -E "[:.]${port}[[:space:]]+.*LISTENING" | awk '{print $NF}' | sort -u
+    fi
+}
+
+# Kill whatever process(es) are listening on the given TCP port.
+kill_port_listeners() {
+    local port="$1"
+    local pids
+    pids="$(port_listen_pids "$port")"
+    [[ -z "$pids" ]] && return 1
+    if command -v taskkill >/dev/null 2>&1 && ! command -v lsof >/dev/null 2>&1; then
+        # Git Bash/MINGW: the double-slash keeps MSYS from mangling the
+        # /F /PID flags into bogus filesystem paths before taskkill.exe runs.
+        local pid
+        while IFS= read -r pid; do
+            [[ -n "$pid" ]] && taskkill //F //PID "$pid" >/dev/null 2>&1
+        done <<<"$pids"
+    else
+        echo "$pids" | xargs kill -9 2>/dev/null
+    fi
+}
+
 launch_mcp_web_ui() {
     local db_path="$1"
     local host="${MCP_WEB_HOST:-$DEFAULT_MCP_HOST}"
@@ -488,14 +520,12 @@ launch_mcp_web_ui() {
     echo -e "${BLUE}➡️  Starting web server at${NC} ${BOLD}$url${NC}"
     
     # Check if port is already in use and clean up (only kill the LISTEN socket owner)
-    if lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; then
+    local listen_pids
+    listen_pids="$(port_listen_pids "$port")"
+    if [[ -n "$listen_pids" ]]; then
         echo -e "${YELLOW}⚠️  Port $port is already in use. Cleaning up...${NC}"
-        local listen_pids
-        listen_pids=$(lsof -Pi :$port -sTCP:LISTEN -t 2>/dev/null)
-        if [[ -n "$listen_pids" ]]; then
-            echo "$listen_pids" | xargs kill -9 2>/dev/null && echo -e "${GREEN}✅ Killed existing process on port $port${NC}" || true
-            sleep 1
-        fi
+        kill_port_listeners "$port" && echo -e "${GREEN}✅ Killed existing process on port $port${NC}" || true
+        sleep 1
     fi
     
     echo -e "${BLUE}➡️  Press Ctrl+C to stop the UI and exit.${NC}"
@@ -518,14 +548,12 @@ launch_portal_background() {
     echo "===================================================="
     
     # Check if port is already in use and clean up (only kill the LISTEN socket owner)
-    if lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; then
+    local listen_pids
+    listen_pids="$(port_listen_pids "$port")"
+    if [[ -n "$listen_pids" ]]; then
         echo -e "${YELLOW}⚠️  Port $port is already in use. Cleaning up...${NC}"
-        local listen_pids
-        listen_pids=$(lsof -Pi :$port -sTCP:LISTEN -t 2>/dev/null)
-        if [[ -n "$listen_pids" ]]; then
-            echo "$listen_pids" | xargs kill -9 2>/dev/null && echo -e "${GREEN}✅ Killed existing process on port $port${NC}" || true
-            sleep 1
-        fi
+        kill_port_listeners "$port" && echo -e "${GREEN}✅ Killed existing process on port $port${NC}" || true
+        sleep 1
     fi
 
     # Launch portal in background
@@ -537,7 +565,7 @@ launch_portal_background() {
     echo -e "${BLUE}⏳ Waiting for portal to start...${NC}"
     local max_wait=15
     local waited=0
-    while ! lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; do
+    while [[ -z "$(port_listen_pids "$port")" ]]; do
         sleep 1
         waited=$((waited + 1))
         if [[ $waited -ge $max_wait ]]; then
@@ -546,7 +574,7 @@ launch_portal_background() {
         fi
     done
     
-    if lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; then
+    if [[ -n "$(port_listen_pids "$port")" ]]; then
         echo -e "${GREEN}✅ Portal running at ${BOLD}$url${NC} (PID: $PORTAL_PID)"
         open_url_in_browser "$url"
     fi
