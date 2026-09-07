@@ -3444,10 +3444,15 @@ run_rekt_ingest() {
 
     local db_path
     db_path="$(get_migration_db_path)"
-    local sqlite_flag=""
+    local -a sqlite_args=()
     if [[ -f "$db_path" ]]; then
         echo -e "${BLUE}  SQLite DB found: $db_path — will migrate existing data${NC}"
-        sqlite_flag="--sqlite-db /data/$(basename "$db_path")"
+        # This function always runs the populator locally via its venv (see
+        # below), never inside a container, so it needs the real host path
+        # here, not a /data/... container-mount path. Use an array (not a
+        # plain string) so a path containing spaces survives unquoted
+        # expansion below.
+        sqlite_args=(--sqlite-db "$db_path")
     fi
 
     # Use date-based run ID (YYYYMMDDhhmm) — readable and unique per minute
@@ -3472,7 +3477,7 @@ run_rekt_ingest() {
             --source-dir "$REPO_ROOT/source" \
             --rekt-output "$REPO_ROOT/output/rekt" \
             --run-id "$run_id" \
-            $sqlite_flag)
+            "${sqlite_args[@]}")
     else
         echo -e "${RED}❌ Graph populator not found at $populator_dir${NC}"
         # Use `python -m pip install` rather than the bare `pip` launcher:
