@@ -190,6 +190,24 @@ else:
     print(fallback)
 PY
 )
+    else
+        # No jq/Python: our own diagnostic JSON is a flat, single-line object
+        # we fully control (see WriteDiagnosticJson), so a small regex
+        # extraction is reliable without any external interpreter. A message
+        # containing an escaped quote may be truncated, which is an
+        # acceptable degradation versus no message at all.
+        local line last_json=""
+        while IFS= read -r line; do
+            [[ "$line" == *'"category"'* ]] && last_json="$line"
+        done <<< "$payload"
+        if [[ -n "$last_json" ]]; then
+            local category message
+            category=$(printf '%s' "$last_json" | grep -oE '"category":"[^"]*"' | head -1 | sed -E 's/"category":"([^"]*)"/\1/')
+            message=$(printf '%s' "$last_json" | grep -oE '"message":"[^"]*"' | head -1 | sed -E 's/"message":"([^"]*)"/\1/')
+            if [[ -n "$category" || -n "$message" ]]; then
+                result="${category:-unexpected}: ${message:-$fallback}"
+            fi
+        fi
     fi
 
     if [[ -n "$result" ]]; then
@@ -1474,7 +1492,26 @@ for line in reversed(os.environ.get("MODELS_JSON", "").splitlines()):
 PY
 )
             else
-                echo -e "${YELLOW}⚠️  Neither jq nor Python is available, so JSON discovery output cannot be parsed. Using manual entry.${NC}"
+                # No jq/Python available: our own diagnostic JSON is a flat,
+                # single-line object with a plain string array (see
+                # WriteDiagnosticJson / CopilotDiagnosticResult), so a small
+                # regex extraction is reliable without any external
+                # interpreter. Model IDs from the Copilot catalog don't
+                # contain embedded quotes or commas.
+                local line last_json=""
+                while IFS= read -r line; do
+                    [[ "$line" == *'"success"'* ]] && last_json="$line"
+                done <<< "$models_json"
+                if [[ -n "$last_json" ]] && [[ "$last_json" == *'"success":true'* ]]; then
+                    local models_array
+                    models_array=$(printf '%s' "$last_json" | grep -oE '"models":\[[^]]*\]' | sed -E 's/"models":\[(.*)\]/\1/')
+                    if [[ -n "$models_array" ]]; then
+                        models_raw=$(printf '%s' "$models_array" | grep -oE '"[^"]*"' | sed -E 's/^"//; s/"$//')
+                    fi
+                fi
+                if [[ -z "$models_raw" ]]; then
+                    echo -e "${YELLOW}⚠️  Neither jq nor Python is available, and the fallback parser found no models. Using manual entry.${NC}"
+                fi
             fi
         else
             local discovery_stderr_tail
