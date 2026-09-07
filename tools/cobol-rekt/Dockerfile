@@ -22,8 +22,18 @@ RUN set -e; for p in /build/patches/*.patch; do \
         git apply --verbose "$p"; \
     done
 
-# Build (skip tests + checkstyle for faster image)
-RUN mvn clean verify -Dmaven.test.skip=true -Dcheckstyle.skip=true -q
+# Build (skip tests + checkstyle for faster image).
+# maven.checkstyle.plugin.version override: the vendored che-che4z LSP
+# submodules pin maven-checkstyle-plugin 3.1.1, which transitively pulls in
+# org.apache.velocity:velocity:1.7 via doxia-site-renderer. That legacy
+# artifact is unresolvable on some restricted corporate networks, and
+# Maven resolves a bound plugin's dependencies before it can honor
+# checkstyle.skip, so skip=true alone does not avoid the failure. 3.6.0+
+# dropped the doxia-site-renderer/velocity dependency entirely; all
+# affected poms reference the version via this same property, so
+# overriding it here avoids the failure without patching any pom.
+RUN mvn clean verify -Dmaven.test.skip=true -Dcheckstyle.skip=true \
+    -Dmaven.checkstyle.plugin.version=3.6.0 -q
 
 # ── Runtime stage ────────────────────────────────────────────────────
 FROM eclipse-temurin:21-jre
