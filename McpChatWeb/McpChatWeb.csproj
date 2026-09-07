@@ -4,6 +4,10 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- See CobolToQuarkusMigration.csproj: avoids launching an unsigned native
+         AppHost that enterprise endpoint security may block with "Access is
+         denied" when doctor.sh runs `dotnet run --project McpChatWeb`. -->
+    <UseAppHost>false</UseAppHost>
   </PropertyGroup>
 
   <ItemGroup>

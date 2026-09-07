@@ -5,6 +5,13 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <!-- `dotnet run` launches the native AppHost executable directly by default.
+         Some enterprise endpoint security policies (Defender ASR rules, AppLocker,
+         WDAC) block freshly built, unsigned executables from running, which fails
+         with a Win32 "Access is denied" error when doctor.sh invokes `dotnet run`.
+         Disabling the AppHost makes `dotnet run`/`dotnet exec` load the DLL through
+         the already-trusted `dotnet.exe` muxer instead. -->
+    <UseAppHost>false</UseAppHost>
   </PropertyGroup>
 
   <ItemGroup>
