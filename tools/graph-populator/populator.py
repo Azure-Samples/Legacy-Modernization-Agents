@@ -53,7 +53,7 @@ def apply_schema(driver) -> None:
     schema_path = Path(__file__).parent / "schema.cypher"
     statements = [
         s.strip()
-        for s in schema_path.read_text().split(";")
+        for s in schema_path.read_text(encoding="utf-8").split(";")
         if s.strip() and not s.strip().startswith("//")
     ]
     with driver.session() as session:
@@ -563,7 +563,7 @@ def ingest_rekt_outputs(driver, rekt_output_dir: str, source_dir: str, run_id: i
 
     file_nodes = []
     for f in cobol_files + copybooks:
-        content = f.read_text(errors="replace")
+        content = f.read_text(encoding="utf-8", errors="replace")
         file_nodes.append(
             {
                 "uid": _make_uid(run_id, f.name),
@@ -591,7 +591,7 @@ def ingest_rekt_outputs(driver, rekt_output_dir: str, source_dir: str, run_id: i
         rel_path = json_file.relative_to(output_path)
 
         try:
-            data = json.loads(json_file.read_text())
+            data = json.loads(json_file.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             console.print(f"[yellow]Skipping invalid JSON: {rel_path}[/yellow]")
             continue
