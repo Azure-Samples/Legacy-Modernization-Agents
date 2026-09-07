@@ -1,1 +1,6 @@
 .github/workflows/*.lock.yml linguist-generated=true merge=ours
+
+# Unified diffs are matched by exact byte content (git apply). Force LF so a
+# Windows checkout (core.autocrlf=true) never corrupts them with CRLF, which
+# breaks patch application inside the Linux-based rekt-full Docker build.
+*.patch text eol=lf
