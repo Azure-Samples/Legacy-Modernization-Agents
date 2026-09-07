@@ -114,13 +114,27 @@ detect_dotnet_cli() {
 }
 
 DOTNET_CMD="$(detect_dotnet_cli)"
+# A candidate is only accepted once it actually executes and prints real
+# output. This matters on Windows: `command -v python`/`python3` can resolve
+# to the WindowsApps "App execution alias" stub, which is present on PATH but
+# is not Python — running it just prints a Microsoft Store prompt to
+# stdout/stderr instead of failing cleanly, which would silently corrupt any
+# downstream parsing that assumes real Python ran.
+_verify_python_candidate() {
+    local candidate="$1"
+    command -v "$candidate" >/dev/null 2>&1 || return 1
+    local probe
+    probe=$("$candidate" -c 'import sys; sys.stdout.write("ok")' 2>/dev/null)
+    [[ "$probe" == "ok" ]]
+}
+
 detect_python() {
-    if command -v python3 >/dev/null 2>&1; then
+    if _verify_python_candidate python3; then
         echo python3
         return
     fi
 
-    if command -v python >/dev/null 2>&1; then
+    if _verify_python_candidate python; then
         echo python
         return
     fi
@@ -130,11 +144,37 @@ detect_python() {
 
 PYTHON_CMD="$(detect_python)"
 
+# jq is preferred for parsing JSON emitted by our own .NET commands: it has
+# no equivalent Windows Store alias trap and is a smaller, more predictable
+# dependency than a full Python interpreter.
+JQ_CMD=""
+if command -v jq >/dev/null 2>&1; then
+    JQ_CMD="jq"
+fi
+
+# Parse newline-delimited JSON (the last line that is valid JSON wins, mirroring
+# the .NET side which may emit a single diagnostic object) and extract
+# "category: message" for a failed Copilot diagnostic. Falls back to a plain
+# message when neither jq nor a verified Python is available.
 show_copilot_diagnostic() {
     local payload="$1"
     local fallback="$2"
-    if [[ -n "$PYTHON_CMD" ]]; then
-        DIAGNOSTIC_JSON="$payload" "$PYTHON_CMD" - "$fallback" <<'PY'
+    local result=""
+
+    if [[ -n "$JQ_CMD" ]]; then
+        local line last_json=""
+        while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            if printf '%s' "$line" | "$JQ_CMD" -e . >/dev/null 2>&1; then
+                last_json="$line"
+            fi
+        done <<< "$payload"
+        if [[ -n "$last_json" ]]; then
+            result=$(printf '%s' "$last_json" | "$JQ_CMD" -r --arg fallback "$fallback" \
+                '"\(.category // "unexpected"): \(.message // $fallback)"' 2>/dev/null)
+        fi
+    elif [[ -n "$PYTHON_CMD" ]]; then
+        result=$(DIAGNOSTIC_JSON="$payload" "$PYTHON_CMD" - "$fallback" <<'PY'
 import json, os, sys
 fallback = sys.argv[1]
 for line in reversed(os.environ.get("DIAGNOSTIC_JSON", "").splitlines()):
@@ -149,6 +189,11 @@ for line in reversed(os.environ.get("DIAGNOSTIC_JSON", "").splitlines()):
 else:
     print(fallback)
 PY
+)
+    fi
+
+    if [[ -n "$result" ]]; then
+        printf '%s\n' "$result"
     else
         printf '%s\n' "$fallback"
     fi
@@ -1361,7 +1406,19 @@ run_setup() {
         if models_json=$("$DOTNET_CMD" run --project "$REPO_ROOT/CobolToQuarkusMigration.csproj" \
             -p:CopilotSkipCliDownload=true -- \
             list-models --format json --timeout-seconds 45 2>/dev/null); then
-            if [[ -n "$PYTHON_CMD" ]]; then
+            if [[ -n "$JQ_CMD" ]]; then
+                local line last_json=""
+                while IFS= read -r line; do
+                    [[ -z "$line" ]] && continue
+                    if printf '%s' "$line" | "$JQ_CMD" -e . >/dev/null 2>&1; then
+                        last_json="$line"
+                    fi
+                done <<< "$models_json"
+                if [[ -n "$last_json" ]] && printf '%s' "$last_json" | "$JQ_CMD" -e '.success == true' >/dev/null 2>&1; then
+                    models_raw=$(printf '%s' "$last_json" | "$JQ_CMD" -r \
+                        '.models[]? | select(type == "string" and length > 0)' 2>/dev/null)
+                fi
+            elif [[ -n "$PYTHON_CMD" ]]; then
                 models_raw=$(MODELS_JSON="$models_json" "$PYTHON_CMD" - <<'PY'
 import json, os
 for line in reversed(os.environ.get("MODELS_JSON", "").splitlines()):
@@ -1377,7 +1434,7 @@ for line in reversed(os.environ.get("MODELS_JSON", "").splitlines()):
 PY
 )
             else
-                echo -e "${YELLOW}⚠️  Python is unavailable, so JSON discovery output cannot be parsed. Using manual entry.${NC}"
+                echo -e "${YELLOW}⚠️  Neither jq nor Python is available, so JSON discovery output cannot be parsed. Using manual entry.${NC}"
             fi
         else
             echo -e "${YELLOW}⚠️  Automatic model discovery failed: $(show_copilot_diagnostic "$models_json" "unknown discovery error")${NC}"
