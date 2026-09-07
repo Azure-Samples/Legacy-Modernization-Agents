@@ -1,132 +1,114 @@
 # Troubleshooting setup (`./doctor.sh setup`)
 
-**Last updated**: 2026-05-08
+**Last updated**: 2026-09-07
 
-This guide covers setup failures where `./doctor.sh setup` exits with:
+`./doctor.sh setup` is the primary setup path. For Copilot, it writes a complete
+`Config/ai-config.local.env` only after sign-in and model validation succeed.
+For Azure OpenAI, it starts from the local template when present, otherwise the
+tracked `Config/ai-config.env.example`. The wizard performs provider selection,
+sign-in, model discovery or manual entry, validation, and persistence. Separate
+pre-login commands and manual config editing are not required.
 
-```text
-❌ Example configuration file not found: .../Config/ai-config.local.env.example
-```
+## GitHub Copilot routing and model setup
 
-## Why this happens
+### GitHub Enterprise Cloud with Data Residency is not GHES
 
-`doctor.sh setup` requires `Config/ai-config.local.env.example` as its source template.  
-In some clones, that file is missing, so setup cannot create `Config/ai-config.local.env`.
+GitHub Enterprise Cloud with Data Residency uses a tenant hostname such as
+`company.ghe.com`. It is a GitHub.com cloud deployment, not GitHub Enterprise
+Server (GHES). Do not add `/api/v3` or another path to the host value.
 
-The most common cause is repository ignore rules: `Config/` is broadly ignored in `.gitignore`, and if `ai-config.local.env.example` is not explicitly tracked, fresh clones do not get it.
-
-## Quick diagnosis
-
-From repository root:
-
-```bash
-ls -la Config/ai-config.local.env.example
-```
-
-- If it exists, re-run `./doctor.sh setup`.
-- If it does not exist, continue with recovery below.
-
-## Recovery options
-
-### Option 1 (recommended): seed from tracked template
+The project accepts either a bare hostname or an HTTPS root URL:
 
 ```bash
-cp Config/ai-config.env.example Config/ai-config.local.env.example
-cp Config/ai-config.local.env.example Config/ai-config.local.env
-./doctor.sh setup
+export COPILOT_GH_HOST="company.ghe.com"
+# Equivalent input during setup: https://company.ghe.com/
 ```
 
-Then open `Config/ai-config.local.env` and set your real provider values (`_MAIN_ENDPOINT`, auth, model names).
+Values containing credentials, a non-root path, query, fragment, HTTP scheme,
+or custom port are rejected.
 
-### Option 2: create only the local file (skip local example)
+### Host-variable precedence
+
+Copilot routing is resolved in this order:
+
+1. Explicit host supplied to a diagnostic or portal request.
+2. `COPILOT_GH_HOST` — authoritative Copilot CLI routing variable.
+3. `GITHUB_HOST` — legacy project compatibility.
+4. `GH_HOST` — final compatibility fallback.
+5. `github.com`.
+
+The resolved hostname is exported to the Copilot CLI subprocess as
+`COPILOT_GH_HOST`. The project does not set `GH_HOST`, because `GH_HOST` may
+identify a separate GHES repository host used by the `gh` CLI.
+
+`GitHub.Copilot.SDK` 1.0.0 launches Copilot CLI over stdio. It does not expose a
+GitHub API base-URL option. Leaving `CopilotClientOptions.Environment` unset
+inherits the parent process environment; this project supplies a complete copy
+of that environment with only `COPILOT_GH_HOST` overlaid, preserving `PATH`,
+`HOME`, proxy settings, and credential-store variables.
+
+### Authentication
+
+The setup wizard invokes the host-specific sign-in flow itself:
 
 ```bash
-cp Config/ai-config.env.example Config/ai-config.local.env
-./doctor.sh
+copilot login --host "https://${COPILOT_GH_HOST}"
 ```
 
-Edit `Config/ai-config.local.env` with your credentials, then continue with normal commands (`./doctor.sh test`, `./doctor.sh run`).
+No separate pre-login command is required.
 
-## Verify whether gitignore is the root cause
+For token-based automation, current Copilot CLI supports fine-grained personal
+access tokens with the **Copilot Requests** permission. Classic PATs are not
+supported. The wizard exports the supplied token as `COPILOT_GITHUB_TOKEN` for
+discovery and validation. It does not print token fragments. To preserve the
+existing compatibility mechanism, the generated local configuration stores the
+token once as `GITHUB_COPILOT_TOKEN` and maps `COPILOT_GITHUB_TOKEN` to that
+value. Keep `Config/ai-config.local.env` private.
+
+Runtime token precedence is `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`,
+then legacy `GITHUB_COPILOT_TOKEN`.
+
+### Model discovery and manual selection
+
+The current Copilot CLI has no documented non-interactive catalog command;
+`/model` is interactive. Automatic discovery therefore uses the SDK's
+`ListModelsAsync` path:
 
 ```bash
-git check-ignore -v Config/ai-config.local.env.example
+dotnet run --project CobolToQuarkusMigration.csproj -- \
+  list-models --format json --timeout-seconds 45
 ```
 
-If output is shown, the file is being ignored by git rules in your clone.
+Discovery is bounded. If it fails or returns no models, `doctor.sh setup` and
+the portal allow immediate manual entry instead of launching an interactive
+fallback or selecting an arbitrary model.
 
-## Preventive fix for maintainers
+Each distinct selected model is validated with a minimal tool-free request
+before configuration is saved:
 
-Ensure `Config/ai-config.local.env.example` is tracked in the repository and exempted in `.gitignore`:
-
-```gitignore
-Config/
-!Config/.gitkeep
-!Config/ai-config.env.example
-!Config/ai-config.local.env.example
+```bash
+dotnet run --project CobolToQuarkusMigration.csproj -- \
+  validate-model --model MODEL_ID --format json --timeout-seconds 60
 ```
 
-This keeps secret files ignored while making setup templates consistently available to new contributors.
+The code model defaults to the chat model when omitted. When both are provided,
+they remain separate through persisted configuration, portal active-chat
+selection, managed conversion runs, Prompt Studio, and MCP subprocesses.
 
----
+### Diagnostic categories
 
-## `⚠️ Could not fetch user-specific models, falling back to CLI model list`
+JSON diagnostics classify failures as `authentication`, `routing`,
+`unavailable_or_policy`, `network`, `timeout`, `runtime_or_protocol`, or
+`unexpected`. Classification is conservative because SDK 1.0.0 often surfaces
+runtime failures as message-only exceptions.
 
-### What triggers this
+The portal keeps non-AI views available when Copilot readiness fails. Re-open
+**Setup** to correct the host, authentication, or model ID.
 
-During `./doctor.sh setup`, the script calls `dotnet run -- list-models` which invokes `CopilotClient.ListModelsAsync()` from the **GitHub Copilot .NET SDK** (`GitHub.Copilot.SDK`). The SDK's `ListModelsAsync` queries the GitHub Copilot API at:
+### Validation status
 
-```
-https://api.github.com/copilot_internal/...
-```
-
-If that call fails or returns nothing, `doctor.sh` falls back to scraping the model list from `copilot --model invalid` error output (the static CLI allow-list).
-
-### Root cause on GitHub Enterprise (GHE)
-
-When your organisation uses a GitHub Enterprise Server instance at `companyname.ghe.com`, the Copilot API lives at a different host:
-
-```
-https://companyname.ghe.com/api/v3/copilot_internal/...
-```
-
-The GitHub Copilot .NET SDK (`CopilotClientOptions`) has no property to override this base URL — it is hardcoded to `api.github.com`. The `CopilotCliResolver.BuildOptions()` in this project only sets `UseStdio`, `GitHubToken`, and `CliPath`; it does not (and cannot) set a custom API host.
-
-As a result:
-
-1. `ListModelsAsync()` is called against `api.github.com` with your GHE token.
-2. The GHE token is scoped to `companyname.ghe.com` and is not accepted by `api.github.com`.
-3. The call returns HTTP 401 / empty, the SDK throws, and `doctor.sh` catches the empty output and prints the warning.
-
-### Impact
-
-The fallback static list (scraped from the Copilot CLI binary) shows the CLI's built-in model allow-list, **not** your enterprise-approved models. You can still select a model manually — just type a model ID that is available on your GHE Copilot plan.
-
-### Workaround
-
-Your `Config/ai-config.local.env` already has a `GITHUB_HOST` variable:
-
-```env
-GITHUB_HOST="companyname.ghe.com"
-```
-
-The **Copilot CLI** (`copilot`) respects this variable and routes correctly to the GHE instance. However, the **GitHub Copilot .NET SDK** (`GitHub.Copilot.SDK`) does **not** read `GITHUB_HOST` — it is hardcoded to `api.github.com`. So the `list-models` call during `doctor.sh setup` still fails.
-
-**Workaround:** after the setup wizard completes (even with the fallback list), manually edit `Config/ai-config.local.env` and set the model IDs that your enterprise Copilot plan provisions:
-
-```env
-_CHAT_MODEL="claude-sonnet-4"
-_CODE_MODEL="claude-sonnet-4"
-```
-
-Everything except the model-listing step works correctly with GHE — the Copilot CLI handles actual inference calls through `GITHUB_HOST`.
-
-> **Security note:** Never put a live PAT in a file that may be shared or screenshotted. Use a token with the minimum required scope (`copilot` for classic PATs). Rotate any token that has been exposed.
-
-### For SDK maintainers / contributors
-
-`CopilotClientOptions` would need a `GitHubApiBaseUrl` property to support GHE. Until the upstream SDK exposes that, the model-listing step cannot query GHE instances. Relevant code is in:
-
-- `Program.cs` line ~258 — `BuildListModelsCommand`
-- `McpChatWeb/Program.cs` line ~6215 — `/api/ai/models` endpoint
-- `Agents/Infrastructure/ChatClientFactory.cs` line ~193 — chat client construction
+Local tests cover hostname normalization and precedence, environment
+propagation, bounded timeout behavior, provider aliases, and separate chat/code
+model handling. Real authentication, model discovery, and inference against a
+GitHub Enterprise Cloud Data Residency tenant remain pending validation by a
+contributor with access to that tenant.

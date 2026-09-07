@@ -78,7 +78,9 @@ public sealed class CopilotChatClient : IChatClient, IAsyncDisposable
         // NOTE: deliberately do NOT attach the app logger to CopilotClientOptions.Logger
         // — the SDK emits very verbose JSON-RPC tracing that floods the console.
         // Use the app logger here only for our own structured throttling logs.
-        _client = new CopilotClient(options ?? new CopilotClientOptions());
+        options ??= new CopilotClientOptions { Mode = CopilotClientMode.CopilotCli };
+        CopilotRouting.ApplyTo(options);
+        _client = new CopilotClient(options);
     }
 
     /// <summary>

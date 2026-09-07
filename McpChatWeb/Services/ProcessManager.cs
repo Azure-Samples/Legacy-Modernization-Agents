@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
+using System.Text.RegularExpressions;
+using CobolToQuarkusMigration.Helpers;
 
 namespace McpChatWeb.Services;
 
@@ -169,6 +171,19 @@ public class ProcessManager : IDisposable
         // Order: local first (higher priority), then template for defaults.
         LoadEnvFile(psi.Environment, Path.Combine(_repoRoot, "Config", "ai-config.local.env"));
         LoadEnvFile(psi.Environment, Path.Combine(_repoRoot, "Config", "ai-config.env"));
+        try
+        {
+            var route = CopilotRouting.Resolve(getEnvironmentVariable: key =>
+                psi.Environment.TryGetValue(key, out var value) ? value : null);
+            psi.Environment[CopilotRouting.HostEnvironmentVariable] = route.Hostname;
+        }
+        catch (ArgumentException ex)
+        {
+            run.Status = "failed";
+            run.AppendLog($"ERROR: Invalid GitHub Copilot host configuration: {ex.Message}");
+            _runs[run.RunId] = run;
+            return run;
+        }
 
         // Speed profile env vars
         ApplySpeedProfile(psi.Environment, speedProfile);
@@ -181,12 +196,18 @@ public class ProcessManager : IDisposable
         }
 
         // ── Apply provider/model selection from portal UI ──
-        var effectiveModel = modelId ?? Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL_ID") ?? "gpt-5.1-codex-mini";
+        var (effectiveCodeModel, effectiveChatModel) = ResolveModelSelection(modelId, psi.Environment);
 
-        switch (provider)
+        if (string.IsNullOrWhiteSpace(effectiveCodeModel))
         {
-            case "GitHubModels":
-            {
+            run.Status = "failed";
+            run.AppendLog("ERROR: No code model is configured. Complete model setup before starting a run.");
+            _runs[run.RunId] = run;
+            return run;
+        }
+
+        if (provider.Equals("GitHubModels", StringComparison.OrdinalIgnoreCase))
+        {
                 var ghToken = Environment.GetEnvironmentVariable("GITHUB_TOKEN") ?? "";
                 // Try gh auth token if no env var
                 if (string.IsNullOrEmpty(ghToken))
@@ -216,21 +237,17 @@ public class ProcessManager : IDisposable
                 psi.Environment["AZURE_OPENAI_API_KEY"] = ghToken;
                 psi.Environment["GITHUB_TOKEN"] = ghToken;
                 psi.Environment["AZURE_OPENAI_CHAT_API_KEY"] = ghToken;
-                break;
-            }
-
-            case "CopilotSDK":
-            {
-                psi.Environment["AZURE_OPENAI_SERVICE_TYPE"] = "GitHubCopilotSDK";
+        }
+        else if (CopilotProvider.IsSdk(provider))
+        {
+                psi.Environment["AZURE_OPENAI_SERVICE_TYPE"] = CopilotProvider.CanonicalServiceType;
                 // Force sequential — Copilot SDK stdio deadlocks with concurrent sessions
                 psi.Environment["AI_MAX_PARALLEL_CONVERSION"] = "1";
                 psi.Environment["AI_MAX_PARALLEL_ANALYSIS"] = "1";
                 psi.Environment["AI_MAX_PARALLEL_CHUNKS"] = "1";
-                break;
-            }
-
-            default: // AzureOpenAI
-            {
+        }
+        else
+        {
                 // Propagate existing Azure env vars
                 foreach (var key in new[] {
                     "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_KEY",
@@ -241,19 +258,21 @@ public class ProcessManager : IDisposable
                     if (!string.IsNullOrEmpty(val))
                         psi.Environment[key] = val;
                 }
-                break;
-            }
         }
 
-        // Set model for ALL agents
-        psi.Environment["AZURE_OPENAI_MODEL_ID"] = effectiveModel;
-        psi.Environment["AZURE_OPENAI_DEPLOYMENT_NAME"] = effectiveModel;
-        psi.Environment["AZURE_OPENAI_COBOL_ANALYZER_MODEL"] = effectiveModel;
-        psi.Environment["AZURE_OPENAI_JAVA_CONVERTER_MODEL"] = effectiveModel;
-        psi.Environment["AZURE_OPENAI_DEPENDENCY_MAPPER_MODEL"] = effectiveModel;
-        psi.Environment["AZURE_OPENAI_UNIT_TEST_MODEL"] = effectiveModel;
-        psi.Environment["AZURE_OPENAI_CHAT_MODEL_ID"] = effectiveModel;
-        psi.Environment["AZURE_OPENAI_CHAT_DEPLOYMENT_NAME"] = effectiveModel;
+        // Keep code and chat roles distinct. A missing chat model intentionally defaults to code.
+        psi.Environment["AZURE_OPENAI_MODEL_ID"] = effectiveCodeModel;
+        psi.Environment["AZURE_OPENAI_DEPLOYMENT_NAME"] = effectiveCodeModel;
+        psi.Environment["AISETTINGS__MODELID"] = effectiveCodeModel;
+        psi.Environment["AISETTINGS__DEPLOYMENTNAME"] = effectiveCodeModel;
+        psi.Environment["AZURE_OPENAI_COBOL_ANALYZER_MODEL"] = effectiveCodeModel;
+        psi.Environment["AZURE_OPENAI_JAVA_CONVERTER_MODEL"] = effectiveCodeModel;
+        psi.Environment["AZURE_OPENAI_DEPENDENCY_MAPPER_MODEL"] = effectiveCodeModel;
+        psi.Environment["AZURE_OPENAI_UNIT_TEST_MODEL"] = effectiveCodeModel;
+        psi.Environment["AZURE_OPENAI_CHAT_MODEL_ID"] = effectiveChatModel;
+        psi.Environment["AZURE_OPENAI_CHAT_DEPLOYMENT_NAME"] = effectiveChatModel;
+        psi.Environment["AISETTINGS__CHATMODELID"] = effectiveChatModel;
+        psi.Environment["AISETTINGS__CHATDEPLOYMENTNAME"] = effectiveChatModel;
 
         try
         {
@@ -528,7 +547,7 @@ public class ProcessManager : IDisposable
     /// Load a KEY=VALUE env file (same format doctor.sh uses) into the process
     /// environment. Skips comments, blank lines, and keys already set.
     /// </summary>
-    private static void LoadEnvFile(IDictionary<string, string?> env, string path)
+    internal static void LoadEnvFile(IDictionary<string, string?> env, string path)
     {
         if (!File.Exists(path)) return;
         foreach (var rawLine in File.ReadAllLines(path))
@@ -538,11 +557,37 @@ public class ProcessManager : IDisposable
             var eq = line.IndexOf('=');
             if (eq <= 0) continue;
             var key = line[..eq].Trim();
-            var val = line[(eq + 1)..].Trim().Trim('"');
+            var val = line[(eq + 1)..].Trim().Trim('"', '\'');
+            val = Regex.Replace(val, @"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?", match =>
+                env.TryGetValue(match.Groups[1].Value, out var expanded) ? expanded ?? "" : "");
             // Don't overwrite values already set (local.env loaded after template)
             if (!env.ContainsKey(key) || string.IsNullOrEmpty(env[key]))
                 env[key] = val;
         }
+    }
+
+    internal static string? GetEnvironmentValue(
+        IDictionary<string, string?> environment,
+        params string[] keys)
+    {
+        foreach (var key in keys)
+        {
+            if (environment.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value))
+                return value;
+        }
+        return null;
+    }
+
+    internal static (string? CodeModel, string? ChatModel) ResolveModelSelection(
+        string? codeModelOverride,
+        IDictionary<string, string?> environment)
+    {
+        var codeModel = codeModelOverride
+            ?? GetEnvironmentValue(environment, "AZURE_OPENAI_MODEL_ID", "AISETTINGS__MODELID");
+        var chatModel = GetEnvironmentValue(
+            environment, "AZURE_OPENAI_CHAT_MODEL_ID", "AISETTINGS__CHATMODELID")
+            ?? codeModel;
+        return (codeModel, chatModel);
     }
 
     /// <summary>

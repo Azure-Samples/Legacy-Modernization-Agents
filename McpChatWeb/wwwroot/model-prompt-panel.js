@@ -215,9 +215,12 @@ async function applyModelSelection() {
       body: JSON.stringify({ modelId: select.value })
     });
 
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
     const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error
+        ? `${data.error}${data.category ? ` (${data.category})` : ''}`
+        : `HTTP ${res.status}`);
+    }
     updateActiveModelBadge(data.activeModelId);
 
     btn.textContent = '✓';
@@ -229,6 +232,7 @@ async function applyModelSelection() {
     }, 1500);
   } catch (err) {
     console.error('Failed to set model:', err);
+    alert(`Model validation failed: ${err.message}`);
     btn.textContent = '✗';
     btn.style.background = '#ef4444';
     setTimeout(() => {

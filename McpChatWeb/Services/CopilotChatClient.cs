@@ -2,6 +2,7 @@ using GitHub.Copilot;
 using Microsoft.Extensions.AI;
 using System.Runtime.CompilerServices;
 using System.Text;
+using CobolToQuarkusMigration.Helpers;
 
 using AIChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
@@ -24,7 +25,9 @@ public sealed class CopilotChatClient : IChatClient, IAsyncDisposable
     public CopilotChatClient(string model, CopilotClientOptions? options = null)
     {
         _model = model ?? throw new ArgumentNullException(nameof(model));
-        _client = new CopilotClient(options ?? CopilotCliResolver.BuildOptions(useStdio: true));
+        options ??= CopilotCliResolver.BuildOptions(useStdio: true);
+        CopilotRouting.ApplyTo(options);
+        _client = new CopilotClient(options);
     }
 
     private async Task EnsureStartedAsync()

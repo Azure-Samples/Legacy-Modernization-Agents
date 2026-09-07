@@ -11,6 +11,8 @@ using System.CommandLine;
 using System.Globalization;
 using Microsoft.Extensions.Logging.Console;
 using GitHub.Copilot;
+using System.CommandLine.Invocation;
+using System.Text.Json;
 
 namespace CobolToQuarkusMigration;
 
@@ -25,12 +27,36 @@ internal static class Program
 {
     public static async Task<int> Main(string[] args)
     {
+        var isDiagnosticCommand = args.FirstOrDefault() is "list-models" or "validate-model";
+        LoadEnvironmentVariables(quiet: isDiagnosticCommand);
+        try
+        {
+            CopilotRouting.ApplyToCurrentProcess();
+        }
+        catch (ArgumentException ex)
+        {
+            if (isDiagnosticCommand)
+            {
+                WriteDiagnosticJson(new
+                {
+                    success = false,
+                    category = "routing",
+                    message = ex.Message
+                });
+            }
+            else
+            {
+                Console.Error.WriteLine($"Invalid GitHub Copilot host configuration: {ex.Message}");
+            }
+            return 2;
+        }
+
         // Start live log capture for portal's Live Run Log panel
         var logsDirectory = Path.Combine(Directory.GetCurrentDirectory(), "Logs");
         Directory.CreateDirectory(logsDirectory);
         
         // Only enable live logging for migration runs (not MCP server or conversation modes)
-        var isMigrationRun = !args.Contains("mcp") && !args.Contains("conversation");
+        var isMigrationRun = !args.Contains("mcp") && !args.Contains("conversation") && !isDiagnosticCommand;
         LiveLogWriter? liveLogWriter = null;
         
         if (isMigrationRun)
@@ -54,7 +80,7 @@ internal static class Program
             var fileHelper = new FileHelper(loggerFactory.CreateLogger<FileHelper>());
             var settingsHelper = new SettingsHelper(loggerFactory.CreateLogger<SettingsHelper>());
 
-            if (!ValidateAndLoadConfiguration())
+            if (!isDiagnosticCommand && !ValidateAndLoadConfiguration())
             {
                 return 1;
             }
@@ -143,6 +169,7 @@ internal static class Program
 
         var listModelsCommand = BuildListModelsCommand(loggerFactory);
         rootCommand.AddCommand(listModelsCommand);
+        rootCommand.AddCommand(BuildValidateModelCommand());
 
         // PR2.b — incremental REKT scan cache CLI surface.
         rootCommand.AddCommand(CobolToQuarkusMigration.Cli.RektScanCacheCommand.Build(loggerFactory));
@@ -252,37 +279,115 @@ internal static class Program
 
     private static Command BuildListModelsCommand(ILoggerFactory loggerFactory)
     {
-        var listModelsCommand = new Command("list-models", "List available models from the configured AI provider");
+        var command = new Command("list-models", "List available models from GitHub Copilot SDK");
+        var timeoutOption = new Option<int>("--timeout-seconds", () => 45, "Maximum discovery time in seconds");
+        var hostOption = new Option<string?>("--host", "GitHub Copilot hostname or HTTPS URL");
+        var formatOption = new Option<string>("--format", () => "text", "Output format: text or json");
+        command.AddOption(timeoutOption);
+        command.AddOption(hostOption);
+        command.AddOption(formatOption);
 
-        listModelsCommand.SetHandler(async () =>
+        command.SetHandler(async (InvocationContext context) =>
         {
-            var logger = loggerFactory.CreateLogger("ListModels");
-
-            // list-models always uses Copilot SDK — it's only called during
-            // './doctor.sh setup' before config is written, so don't check
-            // AZURE_OPENAI_SERVICE_TYPE (it will be AzureOpenAI at this point).
-            Console.WriteLine("Querying models via GitHub Copilot SDK (CLI)...");
+            var timeoutSeconds = context.ParseResult.GetValueForOption(timeoutOption);
+            var host = context.ParseResult.GetValueForOption(hostOption);
+            var format = context.ParseResult.GetValueForOption(formatOption) ?? "text";
+            CopilotDiagnosticResult result;
             try
             {
-                var client = new CopilotClient(new CopilotClientOptions { Mode = CopilotClientMode.CopilotCli });
-                var models = await client.ListModelsAsync();
-                Console.WriteLine($"Available models ({models.Count}):");
-                foreach (var model in models.OrderBy(m => m.Name))
-                {
-                    var id = model.Id ?? model.Name;
-                    Console.WriteLine($"  • {id}");
-                }
+                var options = CreateDiagnosticCopilotOptions(host);
+                result = await CopilotModelDiagnostics.ListModelsAsync(
+                    options,
+                    TimeSpan.FromSeconds(Math.Clamp(timeoutSeconds, 5, 300)),
+                    context.GetCancellationToken());
             }
             catch (Exception ex)
             {
-                logger.LogError(ex, "Failed to list models via Copilot SDK");
-                Console.WriteLine($"Error: {ex.Message}");
-                Console.WriteLine("Make sure GitHub Copilot CLI is installed and you are logged in (copilot login).");
+                result = new(false, "routing", ex.Message, host ?? "");
             }
+
+            WriteDiagnosticResult(result, format);
+            context.ExitCode = CopilotModelDiagnostics.ExitCodeFor(result.Category);
         });
 
-        return listModelsCommand;
+        return command;
     }
+
+    private static Command BuildValidateModelCommand()
+    {
+        var command = new Command("validate-model", "Validate one GitHub Copilot model with a minimal tool-free request");
+        var modelOption = new Option<string>("--model", "Model ID to validate") { IsRequired = true };
+        var timeoutOption = new Option<int>("--timeout-seconds", () => 60, "Maximum validation time in seconds");
+        var hostOption = new Option<string?>("--host", "GitHub Copilot hostname or HTTPS URL");
+        var formatOption = new Option<string>("--format", () => "text", "Output format: text or json");
+        command.AddOption(modelOption);
+        command.AddOption(timeoutOption);
+        command.AddOption(hostOption);
+        command.AddOption(formatOption);
+
+        command.SetHandler(async (InvocationContext context) =>
+        {
+            var model = context.ParseResult.GetValueForOption(modelOption) ?? "";
+            var timeoutSeconds = context.ParseResult.GetValueForOption(timeoutOption);
+            var host = context.ParseResult.GetValueForOption(hostOption);
+            var format = context.ParseResult.GetValueForOption(formatOption) ?? "text";
+            CopilotDiagnosticResult result;
+            try
+            {
+                var options = CreateDiagnosticCopilotOptions(host);
+                result = await CopilotModelDiagnostics.ValidateModelAsync(
+                    model,
+                    options,
+                    TimeSpan.FromSeconds(Math.Clamp(timeoutSeconds, 10, 300)),
+                    context.GetCancellationToken());
+            }
+            catch (Exception ex)
+            {
+                result = new(false, "routing", ex.Message, host ?? "", Model: model);
+            }
+
+            WriteDiagnosticResult(result, format);
+            context.ExitCode = CopilotModelDiagnostics.ExitCodeFor(result.Category);
+        });
+
+        return command;
+    }
+
+    private static CopilotClientOptions CreateDiagnosticCopilotOptions(string? host)
+    {
+        var options = new CopilotClientOptions { Mode = CopilotClientMode.CopilotCli };
+        var token = CopilotRouting.ResolveToken();
+        if (!string.IsNullOrWhiteSpace(token))
+            options.GitHubToken = token;
+        CopilotRouting.ApplyTo(options, host);
+        return options;
+    }
+
+    private static void WriteDiagnosticResult(CopilotDiagnosticResult result, string format)
+    {
+        if (format.Equals("json", StringComparison.OrdinalIgnoreCase))
+        {
+            WriteDiagnosticJson(result);
+            return;
+        }
+
+        if (result.Success)
+        {
+            Console.WriteLine($"{result.Message} Host: {result.Host}");
+            foreach (var model in result.Models ?? [])
+                Console.WriteLine(model);
+        }
+        else
+        {
+            Console.Error.WriteLine($"Copilot diagnostic failed [{result.Category}] for {result.Host}: {result.Message}");
+        }
+    }
+
+    private static void WriteDiagnosticJson(object value) =>
+        Console.WriteLine(JsonSerializer.Serialize(value, new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        }));
 
     private static async Task GenerateConversationAsync(ILoggerFactory loggerFactory, string sessionId, string logDir, bool live)
     {
@@ -541,8 +646,7 @@ internal static class Program
             }
 
             if (string.IsNullOrEmpty(settings.AISettings.Endpoint) &&
-                !settings.AISettings.ServiceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase) &&
-                !settings.AISettings.ServiceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase) &&
+                !CopilotProvider.IsSdk(settings.AISettings.ServiceType) &&
                 !settings.AISettings.ServiceType.Equals("OpenAI", StringComparison.OrdinalIgnoreCase))
             {
                 logger.LogError("AI configuration incomplete. Set endpoint for AzureOpenAI, or change ServiceType to GitHubCopilot/GitHubCopilotSDK/OpenAI.");
@@ -905,7 +1009,7 @@ internal static class Program
         }
     }
 
-    private static void LoadEnvironmentVariables()
+    private static void LoadEnvironmentVariables(bool quiet = false)
     {
         try
         {
@@ -918,7 +1022,7 @@ internal static class Program
             {
                 LoadEnvFile(localConfigFile);
             }
-            else
+            else if (!quiet)
             {
                 Console.WriteLine("💡 Consider creating Config/ai-config.local.env for your personal settings");
                 Console.WriteLine("   You can copy from Config/ai-config.local.env.example");
@@ -1014,9 +1118,8 @@ internal static class Program
             aiSettings.ApiKey = githubToken;
         }
 
-        // Auto-set endpoint for GitHub Copilot
-        if (aiSettings.ServiceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase) ||
-            aiSettings.ServiceType.Equals("GitHub", StringComparison.OrdinalIgnoreCase) ||
+        // GitHub Models REST provider (distinct from the Copilot SDK/CLI provider).
+        if (aiSettings.ServiceType.Equals("GitHub", StringComparison.OrdinalIgnoreCase) ||
             aiSettings.ServiceType.Equals("GitHubModels", StringComparison.OrdinalIgnoreCase))
         {
             if (string.IsNullOrEmpty(aiSettings.Endpoint) || aiSettings.Endpoint.Contains("your-"))
@@ -1033,8 +1136,9 @@ internal static class Program
         }
 
         // GitHub Copilot SDK: authentication handled by CLI, no endpoint/key needed
-        if (aiSettings.ServiceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase))
+        if (CopilotProvider.IsSdk(aiSettings.ServiceType))
         {
+            aiSettings.ServiceType = CopilotProvider.CanonicalServiceType;
             if (string.IsNullOrEmpty(aiSettings.Endpoint))
             {
                 aiSettings.Endpoint = "copilot-sdk://cli";
@@ -1300,10 +1404,9 @@ internal static class Program
             LoadEnvironmentVariables();
 
             var serviceType = Environment.GetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE") ?? "AzureOpenAI";
-            var isGitHubCopilot = serviceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase) ||
-                                   serviceType.Equals("GitHub", StringComparison.OrdinalIgnoreCase) ||
-                                   serviceType.Equals("GitHubModels", StringComparison.OrdinalIgnoreCase);
-            var isGitHubCopilotSdk = serviceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase);
+            var isGitHubCopilotSdk = CopilotProvider.IsSdk(serviceType);
+            var isGitHubModels = serviceType.Equals("GitHub", StringComparison.OrdinalIgnoreCase) ||
+                                 serviceType.Equals("GitHubModels", StringComparison.OrdinalIgnoreCase);
             var isDirectOpenAI = serviceType.Equals("OpenAI", StringComparison.OrdinalIgnoreCase);
 
             var requiredSettings = new Dictionary<string, string?>();
@@ -1313,7 +1416,7 @@ internal static class Program
                 // GitHub Copilot SDK: only needs model ID, authentication handled by CLI
                 requiredSettings["AZURE_OPENAI_MODEL_ID"] = Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL_ID");
             }
-            else if (isGitHubCopilot)
+            else if (isGitHubModels)
             {
                 // GitHub Copilot: only needs token (GitHub PAT) and model
                 var token = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_KEY") ??
@@ -1338,7 +1441,7 @@ internal static class Program
             // API Key is optional for Azure if using Entra ID
             var apiKey = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_KEY") ??
                          Environment.GetEnvironmentVariable("GITHUB_TOKEN");
-            if (!isGitHubCopilot && !isGitHubCopilotSdk && !isDirectOpenAI)
+            if (!isGitHubModels && !isGitHubCopilotSdk && !isDirectOpenAI)
             {
                 if (!string.IsNullOrWhiteSpace(apiKey) && !apiKey.Contains("your-api-key") && !apiKey.Contains("placeholder"))
                 {
@@ -1426,8 +1529,8 @@ internal static class Program
             Console.WriteLine($"Model: {modelId}");
             if (!string.IsNullOrEmpty(deployment))
                 Console.WriteLine($"Deployment: {deployment}");
-            if (!string.IsNullOrEmpty(apiKey) && apiKey.Length > 8)
-                Console.WriteLine($"API Key: {apiKey.Substring(0, Math.Min(8, apiKey.Length))}... ({apiKey.Length} chars)");
+            if (!string.IsNullOrEmpty(apiKey))
+                Console.WriteLine("API Key: configured");
             Console.WriteLine();
 
             return true;
@@ -1447,7 +1550,7 @@ internal static class Program
     private static bool IsGitHubCopilotSdkMode()
     {
         var serviceType = Environment.GetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE") ?? "AzureOpenAI";
-        return serviceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase);
+        return CopilotProvider.IsSdk(serviceType);
     }
 
     private static async Task RunReverseEngineeringAsync(ILoggerFactory loggerFactory, FileHelper fileHelper, SettingsHelper settingsHelper, string cobolSource, string output, string configPath)
@@ -1487,8 +1590,7 @@ internal static class Program
             }
 
             if (string.IsNullOrEmpty(settings.AISettings.Endpoint) &&
-                !settings.AISettings.ServiceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase) &&
-                !settings.AISettings.ServiceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase) &&
+                !CopilotProvider.IsSdk(settings.AISettings.ServiceType) &&
                 !settings.AISettings.ServiceType.Equals("OpenAI", StringComparison.OrdinalIgnoreCase))
             {
                 logger.LogError("AI configuration incomplete. Set endpoint for AzureOpenAI, or use ServiceType=GitHubCopilot/GitHubCopilotSDK.");

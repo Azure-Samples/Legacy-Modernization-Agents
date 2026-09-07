@@ -96,7 +96,9 @@ validate_config() {
     log_info "Validating configuration..."
 
     # GitHub Copilot SDK mode: only model IDs are required, no endpoint/key
-    if [[ "${AZURE_OPENAI_SERVICE_TYPE}" == "GitHubCopilot" ]]; then
+    if [[ "${AZURE_OPENAI_SERVICE_TYPE}" == "GitHubCopilot" ||
+          "${AZURE_OPENAI_SERVICE_TYPE}" == "GitHubCopilotSDK" ||
+          "${AZURE_OPENAI_SERVICE_TYPE}" == "CopilotSDK" ]]; then
         log_success "✓ Provider: GitHub Copilot SDK"
 
         local copilot_required=("AISETTINGS__MODELID")
@@ -169,9 +171,7 @@ show_config_summary() {
     elif [[ "${AZURE_OPENAI_API_KEY}" == *"your-"* ]] || [[ "${AZURE_OPENAI_API_KEY}" == *"placeholder"* ]]; then
         echo "  API Key: PLACEHOLDER VALUE (update ai-config.local.env with a real key or use Entra ID)"
     else
-        local key_length=${#AZURE_OPENAI_API_KEY}
-        local key_preview="${AZURE_OPENAI_API_KEY:0:4}"
-        echo "  API Key: ${key_preview}... (${key_length} chars)"
+        echo "  API Key: configured"
     fi
     echo "  Source Folder: ${COBOL_SOURCE_FOLDER:-'SampleCobol'}"
     echo "  Output Folder: ${JAVA_OUTPUT_FOLDER:-'JavaOutput'}"
@@ -206,6 +206,12 @@ load_ai_config() {
     
     # Then load template defaults for any remaining unset values
     load_env_file "$TEMPLATE_CONFIG" "template configuration"
+
+    # Preserve legacy project configuration while routing the token through the
+    # current Copilot CLI precedence variable.
+    if [[ -z "${COPILOT_GITHUB_TOKEN:-}" && -n "${GITHUB_COPILOT_TOKEN:-}" ]]; then
+        export COPILOT_GITHUB_TOKEN="$GITHUB_COPILOT_TOKEN"
+    fi
     
     # 3. Validate configuration
     if ! validate_config; then

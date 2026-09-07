@@ -1513,6 +1513,12 @@ curl http://localhost:5028/api/data-retrieval-guide</code></pre>
         <!-- GitHub Copilot SDK Tab -->
         <div id="setup-GitHubCopilotSDK" class="setup-tab-content">
           <div class="setup-field">
+            <label>GitHub Copilot Host</label>
+            <input type="text" id="copilot-host" value="github.com" placeholder="github.com or tenant.ghe.com">
+            <div class="setup-help">Use your <code>*.ghe.com</code> hostname for GitHub Enterprise Cloud with Data Residency. This does not change <code>GH_HOST</code>.</div>
+          </div>
+
+          <div class="setup-field">
             <label>Authentication</label>
             <div class="setup-auth-options">
               <label class="setup-auth-option">
@@ -1524,13 +1530,13 @@ curl http://localhost:5028/api/data-retrieval-guide</code></pre>
                 🔑 Personal Access Token
               </label>
             </div>
-            <div class="setup-help">CLI auth uses your existing <code>gh auth login</code> session on the server.</div>
+            <div class="setup-help">Preferred: use credentials already stored by <code>copilot login</code>.</div>
           </div>
 
           <div class="setup-field" id="copilot-pat-group" style="display: none;">
             <label>Personal Access Token</label>
-            <input type="password" id="copilot-pat" placeholder="ghp_...">
-            <div class="setup-help">Classic PAT with <code>copilot</code> scope. Create at github.com/settings/tokens</div>
+            <input type="password" id="copilot-pat" placeholder="Fine-grained token">
+            <div class="setup-help">Optional one-time validation token. Use a fine-grained PAT with <strong>Copilot Requests</strong> permission. Classic PATs are unsupported. The portal does not save this token.</div>
           </div>
 
           <button class="setup-connect-btn" id="copilot-connect-btn">🔌 Connect</button>

@@ -17,7 +17,8 @@ public sealed record ConnectProviderRequest(
     string ServiceType,            // "AzureOpenAI" | "GitHubCopilotSDK"
     string? Endpoint = null,       // Azure OpenAI endpoint URL
     string? ApiKey = null,         // Azure API key or GitHub PAT
-    bool UseDefaultCredential = false  // true = use az login / gh auth login
+    bool UseDefaultCredential = false, // true = use az login / logged-in Copilot CLI credentials
+    string? GitHubHost = null
 );
 
 public sealed record SaveModelConfigRequest(
@@ -26,7 +27,14 @@ public sealed record SaveModelConfigRequest(
     string? ApiKey = null,
     bool UseDefaultCredential = false,
     string? ChatModelId = null,
-    string? CodeModelId = null
+    string? CodeModelId = null,
+    string? GitHubHost = null
+);
+
+public sealed record ValidateModelRequest(
+    string ModelId,
+    string? GitHubHost = null,
+    string? ApiKey = null
 );
 
 public sealed record PromptInfo(

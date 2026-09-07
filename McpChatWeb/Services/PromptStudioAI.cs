@@ -3,6 +3,7 @@ using Azure.Identity;
 using GitHub.Copilot;
 using Microsoft.Extensions.AI;
 using System.Text.Json;
+using CobolToQuarkusMigration.Helpers;
 
 namespace McpChatWeb.Services;
 
@@ -46,7 +47,7 @@ public static class PromptStudioAI
 
             try
             {
-                var copilotToken = Environment.GetEnvironmentVariable("GITHUB_COPILOT_TOKEN") ?? "";
+                var copilotToken = CopilotRouting.ResolveToken() ?? "";
                 var options = CopilotCliResolver.BuildOptions(
                     useStdio: true,
                     githubToken: string.IsNullOrWhiteSpace(copilotToken) ? null : copilotToken);

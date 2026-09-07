@@ -26,6 +26,9 @@
     <Compile Include="..\Helpers\StructuralContextProvider.cs"   Link="Shared\StructuralContextProvider.cs" />
     <Compile Include="..\Helpers\BmsReader.cs"                   Link="Shared\BmsReader.cs" />
     <Compile Include="..\Helpers\ImsReaders.cs"                  Link="Shared\ImsReaders.cs" />
+    <Compile Include="..\Helpers\CopilotRouting.cs"              Link="Shared\CopilotRouting.cs" />
+    <Compile Include="..\Helpers\CopilotProvider.cs"             Link="Shared\CopilotProvider.cs" />
+    <Compile Include="..\Helpers\CopilotModelDiagnostics.cs"     Link="Shared\CopilotModelDiagnostics.cs" />
   </ItemGroup>
 
 </Project>

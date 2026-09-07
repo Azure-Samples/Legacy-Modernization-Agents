@@ -5,6 +5,7 @@ using GitHub.Copilot;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using OpenAI;
+using CobolToQuarkusMigration.Helpers;
 using CobolToQuarkusMigration.Models;
 using AzureOpenAIOptions = Azure.AI.OpenAI.AzureOpenAIClientOptions;
 using AzureServiceVersion = Azure.AI.OpenAI.AzureOpenAIClientOptions.ServiceVersion;
@@ -47,7 +48,7 @@ public static class ChatClientFactory
         return serviceType.ToLowerInvariant() switch
         {
             // GitHub Copilot SDK: authenticates via logged-in Copilot CLI user
-            "githubcopilotsdk" or "githubcopilot" =>
+            "githubcopilotsdk" or "githubcopilot" or "copilotsdk" =>
                 CreateGitHubCopilotChatClient(model, logger: logger),
 
             _ => // AzureOpenAI or anything with an endpoint
@@ -203,10 +204,12 @@ public static class ChatClientFactory
             Mode = CopilotClientMode.CopilotCli
         };
 
+        githubToken ??= CopilotRouting.ResolveToken();
         if (!string.IsNullOrEmpty(githubToken))
         {
             options.GitHubToken = githubToken;
         }
+        CopilotRouting.ApplyTo(options);
 
         // Pass the shared GitHub limiter so concurrent CopilotChatClient
         // instances share a single TPM/RPM bucket and adaptive cooldown.
@@ -231,8 +234,7 @@ public static class ChatClientFactory
         ILogger? logger = null,
         string? serviceType = null)
     {
-        if (string.Equals(serviceType, "GitHubCopilot", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(serviceType, "GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase))
+        if (CopilotProvider.IsSdk(serviceType))
         {
             return CreateGitHubCopilotChatClient(modelId, githubToken: null, logger);
         }

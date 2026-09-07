@@ -91,6 +91,8 @@ function openSetupModal() {
         const input = document.getElementById('azure-endpoint');
         if (input && !input.value) input.value = ep;
       }
+      const hostInput = document.getElementById('copilot-host');
+      if (hostInput && d.githubHost) hostInput.value = d.githubHost;
     }).catch(() => {});
   }
 }
@@ -189,6 +191,7 @@ async function connectCopilot() {
   const btn = document.getElementById('copilot-connect-btn');
   const authMethod = document.querySelector('input[name="copilot-auth"]:checked')?.value || 'cli';
   const pat = document.getElementById('copilot-pat').value.trim();
+  const githubHost = document.getElementById('copilot-host').value.trim();
 
   if (authMethod === 'pat' && !pat) {
     setSetupStatus('Please enter your GitHub Personal Access Token.', true);
@@ -206,22 +209,31 @@ async function connectCopilot() {
       body: JSON.stringify({
         serviceType: 'GitHubCopilotSDK',
         apiKey: authMethod === 'pat' ? pat : null,
-        useDefaultCredential: authMethod === 'cli'
+        useDefaultCredential: authMethod === 'cli',
+        githubHost
       })
     });
 
     const data = await res.json();
 
     if (data.error) {
-      setSetupStatus(data.error, true);
+      setSetupStatus(`${data.error} Enter model IDs manually below.`, true);
+      _setupServiceType = 'GitHubCopilotSDK';
+      setSetupManualModelEntry();
+      document.getElementById('setup-save-btn').disabled = false;
       return;
     }
 
     if (data.authenticated && data.models) {
       _setupModels = data.models;
       _setupServiceType = 'GitHubCopilotSDK';
-      setSetupStatus(`✅ Connected! Found ${data.modelCount} model(s).`);
-      setSetupModelList(data.models);
+      if (data.models.length > 0) {
+        setSetupStatus(`✅ Connected! Found ${data.modelCount} model(s).`);
+        setSetupModelList(data.models);
+      } else {
+        setSetupStatus('Connected, but the model catalog was empty. Enter model IDs manually.', true);
+        setSetupManualModelEntry();
+      }
       document.getElementById('setup-save-btn').disabled = false;
     }
   } catch (err) {
@@ -293,6 +305,22 @@ function setSetupModelList(models) {
   autoSelectDefaults(models);
 }
 
+function setSetupManualModelEntry() {
+  const container = document.getElementById('setup-model-list');
+  if (!container) return;
+  container.innerHTML = `
+    <div class="setup-model-roles">
+      <div class="setup-role-row">
+        <label class="setup-role-label">💬 Chat Model:</label>
+        <input id="setup-chat-model" class="setup-model-select" type="text" placeholder="Required model ID">
+      </div>
+      <div class="setup-role-row">
+        <label class="setup-role-label">⚙️ Code Model:</label>
+        <input id="setup-code-model" class="setup-model-select" type="text" placeholder="Defaults to chat model">
+      </div>
+    </div>`;
+}
+
 function autoSelectDefaults(models) {
   const chatSelect = document.getElementById('setup-chat-model');
   const codeSelect = document.getElementById('setup-code-model');
@@ -317,8 +345,8 @@ function autoSelectDefaults(models) {
 
 async function saveSetupConfig() {
   const btn = document.getElementById('setup-save-btn');
-  const chatModel = document.getElementById('setup-chat-model')?.value;
-  const codeModel = document.getElementById('setup-code-model')?.value;
+  const chatModel = document.getElementById('setup-chat-model')?.value?.trim();
+  const codeModel = document.getElementById('setup-code-model')?.value?.trim() || chatModel;
 
   if (!chatModel && !codeModel) {
     setSetupStatus('Please select at least one model.', true);
@@ -333,8 +361,14 @@ async function saveSetupConfig() {
     const authMethod = document.querySelector('input[name="azure-auth"]:checked')?.value;
     const apiKey = _setupServiceType === 'AzureOpenAI'
       ? (authMethod === 'apikey' ? document.getElementById('azure-apikey')?.value?.trim() : null)
-      : (document.querySelector('input[name="copilot-auth"]:checked')?.value === 'pat'
-          ? document.getElementById('copilot-pat')?.value?.trim() : null);
+      : null;
+    const validationApiKey = _setupServiceType === 'GitHubCopilotSDK' &&
+      document.querySelector('input[name="copilot-auth"]:checked')?.value === 'pat'
+        ? document.getElementById('copilot-pat')?.value?.trim() : null;
+    const githubHost = document.getElementById('copilot-host')?.value?.trim() || null;
+
+    if (_setupServiceType === 'GitHubCopilotSDK')
+      setSetupStatus('Validating selected model(s) before saving...');
 
     const res = await fetch('/api/models/save-config', {
       method: 'POST',
@@ -342,10 +376,11 @@ async function saveSetupConfig() {
       body: JSON.stringify({
         serviceType: _setupServiceType,
         endpoint: _setupServiceType === 'AzureOpenAI' ? endpoint : null,
-        apiKey,
+        apiKey: _setupServiceType === 'GitHubCopilotSDK' ? validationApiKey : apiKey,
         useDefaultCredential: _setupServiceType === 'AzureOpenAI' && authMethod === 'azlogin',
         chatModelId: chatModel,
-        codeModelId: codeModel
+        codeModelId: codeModel,
+        githubHost
       })
     });
 
@@ -365,7 +400,7 @@ async function saveSetupConfig() {
         if (typeof updateActiveModelBadge === 'function') updateActiveModelBadge(data.activeModelId);
       }, 1000);
     } else {
-      setSetupStatus('Failed to save configuration.', true);
+      setSetupStatus(data.error || 'Failed to save configuration.', true);
     }
   } catch (err) {
     setSetupStatus(`Save failed: ${err.message}`, true);

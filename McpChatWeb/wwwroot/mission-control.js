@@ -177,7 +177,7 @@ async function startRunCommand(command) {
   const name = nameInput?.value || '';
 
   // Warn about Copilot SDK sequential processing
-  if (provider === 'CopilotSDK') {
+  if (provider === 'CopilotSDK' || provider === 'GitHubCopilot' || provider === 'GitHubCopilotSDK') {
     const logEl = document.getElementById('mc-run-log');
     if (logEl) logEl.textContent = '⚠️ Copilot SDK: sequential processing (1 request at a time). This is slower but stable.';
   }

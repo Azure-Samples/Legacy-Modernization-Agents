@@ -192,8 +192,8 @@ public class SmartMigrationOrchestrator
         var envServiceType = Environment.GetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE") ?? "";
         var settingsServiceType = _settings?.AISettings?.ServiceType ?? "";
         var isCopilot =
-            envServiceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase) ||
-            settingsServiceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase);
+            CopilotProvider.IsSdk(envServiceType) ||
+            CopilotProvider.IsSdk(settingsServiceType);
         var optOut = string.Equals(Environment.GetEnvironmentVariable("COPILOT_SAFE_MODE"), "false", StringComparison.OrdinalIgnoreCase);
 
         if (isCopilot && !optOut)

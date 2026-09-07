@@ -14,10 +14,69 @@ MAGENTA='\033[0;35m'
 BOLD='\033[1m'
 NC='\033[0m' # No Color
 
-# Variable for the GitHub host, defaults to 'github.com'
-GITHUB_HOST="${GITHUB_HOST:-github.com}"
-GITHUB_HOST="${GITHUB_HOST#https://}"
-GITHUB_HOST="${GITHUB_HOST#http://}"
+# Get repository root (directory containing this script)
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Resolve Copilot routing before any child process (including dotnet discovery) starts.
+# Do not set GH_HOST: it may intentionally identify a different GHES repository host.
+normalize_copilot_host() {
+    local value="$1"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+
+    [[ -n "$value" ]] || return 1
+    if [[ "$value" =~ ^[Hh][Tt][Tt][Pp][Ss]:// ]]; then
+        value="${value:8}"
+    elif [[ "$value" == *"://"* ]]; then
+        return 1
+    fi
+    value="${value%/}"
+    [[ -n "$value" && "$value" != */* && "$value" != *"@"* && "$value" != *"?"* && "$value" != *"#"* && "$value" != *":"* ]] || return 1
+    local label
+    IFS='.' read -r -a _host_labels <<< "$value"
+    for label in "${_host_labels[@]}"; do
+        [[ "$label" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]] || return 1
+    done
+    printf '%s' "$value" | tr '[:upper:]' '[:lower:]'
+}
+
+read_config_value() {
+    local key="$1"
+    local file line value
+    for file in "$REPO_ROOT/Config/ai-config.local.env" "$REPO_ROOT/Config/ai-config.env"; do
+        [[ -f "$file" ]] || continue
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            [[ "$line" =~ ^[[:space:]]*# ]] && continue
+            if [[ "$line" =~ ^[[:space:]]*${key}[[:space:]]*=(.*)$ ]]; then
+                value="${BASH_REMATCH[1]}"
+                value="${value#"${value%%[![:space:]]*}"}"
+                value="${value%"${value##*[![:space:]]}"}"
+                value="${value%\"}"; value="${value#\"}"
+                value="${value%\'}"; value="${value#\'}"
+                printf '%s' "$value"
+                return 0
+            fi
+        done < "$file"
+    done
+    return 1
+}
+
+if [[ -z "${COPILOT_GH_HOST:-}" ]]; then
+    COPILOT_GH_HOST="$(read_config_value COPILOT_GH_HOST 2>/dev/null || true)"
+fi
+if [[ -z "${GITHUB_HOST:-}" ]]; then
+    GITHUB_HOST="$(read_config_value GITHUB_HOST 2>/dev/null || true)"
+fi
+
+_COPILOT_HOST_INPUT="${COPILOT_GH_HOST:-${GITHUB_HOST:-${GH_HOST:-github.com}}}"
+if ! COPILOT_GH_HOST="$(normalize_copilot_host "$_COPILOT_HOST_INPUT")"; then
+    echo "Invalid GitHub Copilot host. Use a bare hostname or an HTTPS root URL." >&2
+    exit 2
+fi
+export COPILOT_GH_HOST
+# Legacy compatibility for existing project scripts/configuration only.
+GITHUB_HOST="$COPILOT_GH_HOST"
+export GITHUB_HOST
 
 # Resolve the sqlite3 command, handling Windows (Git Bash / MSYS2) paths
 SQLITE3_CMD=""
@@ -36,9 +95,6 @@ resolve_sqlite3() {
     fi
     [ -n "$SQLITE3_CMD" ]
 }
-
-# Get repository root (directory containing this script)
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Determine the preferred dotnet CLI (favor .NET 10 installations when available)
 detect_dotnet_cli() {
@@ -73,6 +129,31 @@ detect_python() {
 }
 
 PYTHON_CMD="$(detect_python)"
+
+show_copilot_diagnostic() {
+    local payload="$1"
+    local fallback="$2"
+    if [[ -n "$PYTHON_CMD" ]]; then
+        DIAGNOSTIC_JSON="$payload" "$PYTHON_CMD" - "$fallback" <<'PY'
+import json, os, sys
+fallback = sys.argv[1]
+for line in reversed(os.environ.get("DIAGNOSTIC_JSON", "").splitlines()):
+    try:
+        payload = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    category = payload.get("category", "unexpected")
+    message = payload.get("message", fallback)
+    print(f"{category}: {message}")
+    break
+else:
+    print(fallback)
+PY
+    else
+        printf '%s\n' "$fallback"
+    fi
+}
+
 DEFAULT_MCP_HOST="localhost"
 DEFAULT_MCP_PORT=5028
 
@@ -1141,18 +1222,12 @@ run_setup() {
         fi
     fi
 
-    # Create local config from template
-    echo -e "${BLUE}📁 Creating local configuration file...${NC}"
+    # Resolve the Azure template. Copilot setup writes a complete configuration
+    # directly after authentication and model validation.
     TEMPLATE_CONFIG="$REPO_ROOT/Config/ai-config.local.env.example"
-
     if [ ! -f "$TEMPLATE_CONFIG" ]; then
-        echo -e "${RED}❌ Example configuration file not found: $TEMPLATE_CONFIG${NC}"
-        return 1
+        TEMPLATE_CONFIG="$REPO_ROOT/Config/ai-config.env.example"
     fi
-
-    cp "$TEMPLATE_CONFIG" "$LOCAL_CONFIG"
-    echo -e "${GREEN}✅ Created: $LOCAL_CONFIG${NC}"
-    echo ""
 
     # Interactive configuration
     echo -e "${BLUE}🔧 Interactive Configuration Setup${NC}"
@@ -1194,17 +1269,24 @@ run_setup() {
         if [[ "$gh_host_choice" == "2" ]]; then
             read -p "Enter your GitHub host (e.g., github.yourcompany.ghe.com): " custom_gh_host
             if [[ -n "$custom_gh_host" ]]; then
-                # Strip protocol prefix if provided
-                custom_gh_host="${custom_gh_host#https://}"
-                custom_gh_host="${custom_gh_host#http://}"
-                # Strip trailing slash
-                custom_gh_host="${custom_gh_host%/}"
-                GITHUB_HOST="$custom_gh_host"
+                if ! COPILOT_GH_HOST="$(normalize_copilot_host "$custom_gh_host")"; then
+                    echo -e "${RED}❌ Invalid host. Use a bare hostname or HTTPS root URL without credentials, path, query, fragment, or port.${NC}"
+                    return 1
+                fi
+                export COPILOT_GH_HOST
+                GITHUB_HOST="$COPILOT_GH_HOST"
+                export GITHUB_HOST
             else
                 echo -e "${YELLOW}⚠️  No host provided, defaulting to github.com${NC}"
+                COPILOT_GH_HOST="github.com"
             fi
+        else
+            COPILOT_GH_HOST="github.com"
         fi
-        echo -e "${GREEN}✅ GitHub host: ${GITHUB_HOST}${NC}"
+        export COPILOT_GH_HOST
+        GITHUB_HOST="$COPILOT_GH_HOST"
+        export GITHUB_HOST
+        echo -e "${GREEN}✅ GitHub Copilot host: ${COPILOT_GH_HOST}${NC}"
         echo ""
 
         # Check CLI version and update if needed (before auth, to avoid interrupted login)
@@ -1225,30 +1307,22 @@ run_setup() {
         fi
         echo ""
 
-        # Authentication method selection
         echo -e "${BLUE}🔐 How do you want to authenticate?${NC}"
-        echo -e "  ${GREEN}1)${NC} GitHub CLI (copilot login) (default)"
-        echo -e "  ${GREEN}2)${NC} Personal Access Token (PAT)"
+        echo -e "  ${GREEN}1)${NC} GitHub Copilot CLI login (default)"
+        echo -e "  ${GREEN}2)${NC} Personal Access Token (headless/automation)"
         echo ""
         read -p "Choice [1]: " auth_choice
         auth_choice=${auth_choice:-1}
         echo ""
 
         local ghcp_token=""
-
         if [[ "$auth_choice" == "2" ]]; then
-            # --- PAT authentication ---
             echo -e "${BLUE}🔑 Personal Access Token Authentication${NC}"
+            echo -e "${YELLOW}Use a fine-grained PAT with the \"Copilot Requests\" permission.${NC}"
+            echo -e "${YELLOW}Classic PATs (ghp_) are not supported by the current Copilot CLI.${NC}"
+            echo -e "${YELLOW}Create the token for ${COPILOT_GH_HOST}; it will be stored only through the existing legacy GITHUB_COPILOT_TOKEN setting.${NC}"
             echo ""
-            echo -e "${YELLOW}Your PAT needs the following permission:${NC}"
-            echo ""
-            echo -e "  ${BLUE}Classic PAT (fine-grained PATs do not currently support Copilot):${NC}"
-            echo "    • copilot"
-            echo ""
-            echo -e "${YELLOW}Create one at: https://${GITHUB_HOST}/settings/tokens${NC}"
-            echo ""
-            # Read from /dev/tty explicitly to ensure correct capture in all terminal environments
-            echo -n "Please provide the PAT and press Enter: "
+            echo -n "Please provide the fine-grained PAT and press Enter: "
             read -s ghcp_token < /dev/tty
             echo ""
 
@@ -1256,13 +1330,18 @@ run_setup() {
                 echo -e "${RED}❌ No PAT provided. Aborting.${NC}"
                 return 1
             fi
+            if [[ "$ghcp_token" == ghp_* ]]; then
+                echo -e "${RED}❌ Classic PATs (ghp_) are unsupported. Create a fine-grained PAT with Copilot Requests permission.${NC}"
+                return 1
+            fi
 
-            echo -e "${GREEN}✅ PAT received: ${ghcp_token:0:4}...${ghcp_token: -4}${NC}"
+            # Current Copilot CLI token precedence starts with COPILOT_GITHUB_TOKEN.
+            # Export it for the bounded SDK discovery and validation subprocesses.
+            export COPILOT_GITHUB_TOKEN="$ghcp_token"
+            echo -e "${GREEN}✅ PAT accepted for this setup session.${NC}"
         else
-            # --- CLI authentication (existing flow) ---
-            echo -e "${BLUE}🔐 Authenticating with GitHub Copilot...${NC}"
-            echo ""
-            if ! copilot login --host "https://${GITHUB_HOST}"; then
+            echo -e "${BLUE}🔐 Authenticating with GitHub Copilot CLI...${NC}"
+            if ! copilot login --host "https://${COPILOT_GH_HOST}"; then
                 echo ""
                 echo -e "${RED}❌ Authentication failed. Please try again.${NC}"
                 return 1
@@ -1275,14 +1354,34 @@ run_setup() {
         # Get available models from GitHub Copilot (user-specific)
         echo -e "${BLUE}📋 Fetching available models for your account...${NC}"
         echo ""
-        local models_raw
-        # Run list-models and extract only "  • model-id" lines
-        models_raw=$("$DOTNET_CMD" run --project "$REPO_ROOT/CobolToQuarkusMigration.csproj" -- list-models 2>/dev/null | grep '•' | sed 's/.*•[[:space:]]*//')
-        
-        # Fallback to copilot CLI static list if SDK call fails
-        if [[ -z "$models_raw" ]]; then
-            echo -e "${YELLOW}⚠️  Could not fetch user-specific models, falling back to CLI model list${NC}"
-            models_raw=$(copilot --model invalid 2>&1 | grep -o 'Allowed choices are .*' | sed 's/Allowed choices are //' | tr ',' '\n' | sed 's/[[:space:]]*//g' | sed 's/\.$//')
+        local models_raw=""
+        local models_json=""
+        local ghcp_chat_model=""
+        local ghcp_code_model=""
+        if models_json=$("$DOTNET_CMD" run --project "$REPO_ROOT/CobolToQuarkusMigration.csproj" \
+            -p:CopilotSkipCliDownload=true -- \
+            list-models --format json --timeout-seconds 45 2>/dev/null); then
+            if [[ -n "$PYTHON_CMD" ]]; then
+                models_raw=$(MODELS_JSON="$models_json" "$PYTHON_CMD" - <<'PY'
+import json, os
+for line in reversed(os.environ.get("MODELS_JSON", "").splitlines()):
+    try:
+        payload = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if payload.get("success"):
+        for model in payload.get("models") or []:
+            if isinstance(model, str) and model.strip():
+                print(model.strip())
+    break
+PY
+)
+            else
+                echo -e "${YELLOW}⚠️  Python is unavailable, so JSON discovery output cannot be parsed. Using manual entry.${NC}"
+            fi
+        else
+            echo -e "${YELLOW}⚠️  Automatic model discovery failed: $(show_copilot_diagnostic "$models_json" "unknown discovery error")${NC}"
+            echo -e "${YELLOW}   Continuing immediately with manual model entry.${NC}"
         fi
 
         local models=()
@@ -1306,22 +1405,35 @@ run_setup() {
             echo ""
             echo -e "${YELLOW}Note: Model availability depends on your GitHub Copilot plan.${NC}"
             echo ""
-            read -p "Select chat model [1-${#models[@]}] (default: 1): " chat_choice
-            chat_choice=${chat_choice:-1}
-
-            if [[ "$chat_choice" =~ ^[0-9]+$ ]] && (( chat_choice >= 1 && chat_choice <= ${#models[@]} )); then
-                ghcp_chat_model="${models[$((chat_choice - 1))]}"
-            else
-                echo -e "${RED}Invalid selection, using default: ${models[0]}${NC}"
-                ghcp_chat_model="${models[0]}"
-            fi
+            while true; do
+                read -p "Select chat model [1-${#models[@]}], or type m for manual entry: " chat_choice
+                if [[ "$chat_choice" == "m" || "$chat_choice" == "M" ]]; then
+                    read -p "Chat model ID: " ghcp_chat_model
+                    [[ -n "$ghcp_chat_model" ]] && break
+                elif [[ "$chat_choice" =~ ^[0-9]+$ ]] && (( chat_choice >= 1 && chat_choice <= ${#models[@]} )); then
+                    ghcp_chat_model="${models[$((chat_choice - 1))]}"
+                    break
+                fi
+                echo -e "${RED}Invalid selection. Choose a listed number or enter m.${NC}"
+            done
         else
-            read -p "Chat model name (default: claude-sonnet-4): " ghcp_chat_model
-            ghcp_chat_model=${ghcp_chat_model:-claude-sonnet-4}
+            while [[ -z "$ghcp_chat_model" ]]; do
+                read -p "Chat model ID (required): " ghcp_chat_model
+            done
         fi
 
-        echo ""
-        echo -e "${GREEN}✅ Chat model: $ghcp_chat_model${NC}"
+        while true; do
+            local validation_json
+            if validation_json=$("$DOTNET_CMD" run --no-build --project "$REPO_ROOT/CobolToQuarkusMigration.csproj" -- \
+                validate-model --model "$ghcp_chat_model" --format json --timeout-seconds 60 2>/dev/null) &&
+                [[ "$validation_json" == *'"success":true'* ]]; then
+                echo -e "${GREEN}✅ Chat model validated: $ghcp_chat_model${NC}"
+                break
+            fi
+            echo -e "${YELLOW}⚠️  Chat model validation failed: $(show_copilot_diagnostic "$validation_json" "unknown validation error")${NC}"
+            read -p "Enter a different chat model ID, or press Enter to retry '$ghcp_chat_model': " replacement
+            [[ -n "$replacement" ]] && ghcp_chat_model="$replacement"
+        done
         echo ""
 
         # --- Step 2: Code Model Selection ---
@@ -1342,22 +1454,44 @@ run_setup() {
                     ((j++))
                 done
                 echo ""
-                read -p "Select code model [1-${#models[@]}] (default: 1): " code_choice
-                code_choice=${code_choice:-1}
-
-                if [[ "$code_choice" =~ ^[0-9]+$ ]] && (( code_choice >= 1 && code_choice <= ${#models[@]} )); then
-                    ghcp_code_model="${models[$((code_choice - 1))]}"
-                else
-                    echo -e "${RED}Invalid selection, using default: ${models[0]}${NC}"
-                    ghcp_code_model="${models[0]}"
-                fi
+                while true; do
+                    read -p "Select code model [1-${#models[@]}], or type m for manual entry: " code_choice
+                    if [[ "$code_choice" == "m" || "$code_choice" == "M" ]]; then
+                        read -p "Code model ID: " ghcp_code_model
+                        [[ -n "$ghcp_code_model" ]] && break
+                    elif [[ "$code_choice" =~ ^[0-9]+$ ]] && (( code_choice >= 1 && code_choice <= ${#models[@]} )); then
+                        ghcp_code_model="${models[$((code_choice - 1))]}"
+                        break
+                    fi
+                    echo -e "${RED}Invalid selection. Choose a listed number or enter m.${NC}"
+                done
             else
-                read -p "Code model name (default: claude-sonnet-4): " ghcp_code_model
-                ghcp_code_model=${ghcp_code_model:-claude-sonnet-4}
+                read -p "Code model ID (press Enter to use '$ghcp_chat_model'): " ghcp_code_model
+                ghcp_code_model=${ghcp_code_model:-$ghcp_chat_model}
             fi
         else
             ghcp_code_model="$ghcp_chat_model"
             echo -e "${CYAN}⏭️  Skipped — using chat model ${BOLD}$ghcp_chat_model${NC}${CYAN} for code generation too${NC}"
+        fi
+
+        if [[ "$ghcp_code_model" != "$ghcp_chat_model" ]]; then
+            while true; do
+                local validation_json
+                if validation_json=$("$DOTNET_CMD" run --no-build --project "$REPO_ROOT/CobolToQuarkusMigration.csproj" -- \
+                    validate-model --model "$ghcp_code_model" --format json --timeout-seconds 60 2>/dev/null) &&
+                    [[ "$validation_json" == *'"success":true'* ]]; then
+                    echo -e "${GREEN}✅ Code model validated: $ghcp_code_model${NC}"
+                    break
+                fi
+                echo -e "${YELLOW}⚠️  Code model validation failed: $(show_copilot_diagnostic "$validation_json" "unknown validation error")${NC}"
+                read -p "Enter a different code model ID, press Enter to retry, or type 'chat' to use '$ghcp_chat_model': " replacement
+                if [[ "$replacement" == "chat" ]]; then
+                    ghcp_code_model="$ghcp_chat_model"
+                    break
+                elif [[ -n "$replacement" ]]; then
+                    ghcp_code_model="$replacement"
+                fi
+            done
         fi
 
         echo ""
@@ -1371,7 +1505,8 @@ run_setup() {
 # =============================================================================
 # This configuration uses the GitHub Copilot SDK instead of Azure OpenAI.
 # Requires: Copilot CLI installed.
-# Auth: either 'copilot login' or a Personal Access Token (PAT).
+# Auth: logged-in Copilot CLI credentials are preferred. Existing
+# GITHUB_COPILOT_TOKEN values remain supported for legacy automation.
 # =============================================================================
 
 # Provider
@@ -1384,33 +1519,40 @@ _CODE_MODEL="$ghcp_code_model"
 # System mapping (model IDs for the application)
 AZURE_OPENAI_MODEL_ID="\$_CODE_MODEL"
 AZURE_OPENAI_DEPLOYMENT_NAME="\$_CODE_MODEL"
+AZURE_OPENAI_CHAT_MODEL_ID="\$_CHAT_MODEL"
+AZURE_OPENAI_CHAT_DEPLOYMENT_NAME="\$_CHAT_MODEL"
 AISETTINGS__MODELID="\$_CODE_MODEL"
 AISETTINGS__DEPLOYMENTNAME="\$_CODE_MODEL"
 AISETTINGS__CHATMODELID="\$_CHAT_MODEL"
 AISETTINGS__CHATDEPLOYMENTNAME="\$_CHAT_MODEL"
+AZURE_OPENAI_COBOL_ANALYZER_MODEL="\$_CODE_MODEL"
+AZURE_OPENAI_JAVA_CONVERTER_MODEL="\$_CODE_MODEL"
+AZURE_OPENAI_DEPENDENCY_MAPPER_MODEL="\$_CODE_MODEL"
+AZURE_OPENAI_UNIT_TEST_MODEL="\$_CODE_MODEL"
+AISETTINGS__COBOLANALYZERMODELID="\$_CODE_MODEL"
+AISETTINGS__JAVACONVERTERMODELID="\$_CODE_MODEL"
+AISETTINGS__DEPENDENCYMAPPERMODELID="\$_CODE_MODEL"
+AISETTINGS__UNITTESTMODELID="\$_CODE_MODEL"
 
 # Not needed for Copilot SDK but set to avoid validation errors
 AZURE_OPENAI_ENDPOINT="https://copilot-sdk-placeholder"
 AISETTINGS__ENDPOINT="https://copilot-sdk-placeholder"
 AISETTINGS__CHATENDPOINT="https://copilot-sdk-placeholder"
+
+# GitHub Copilot routing
+COPILOT_GH_HOST="$COPILOT_GH_HOST"
+# Legacy compatibility for older project scripts; COPILOT_GH_HOST is authoritative.
+GITHUB_HOST="$COPILOT_GH_HOST"
 EOF
 
-        # Append GitHub host if not default
-        if [[ "$GITHUB_HOST" != "github.com" ]]; then
-            cat >> "$LOCAL_CONFIG" <<EOF
-
-# GitHub Data Residency host
-GITHUB_HOST="$GITHUB_HOST"
-EOF
-        fi
-
-        # Append PAT to config if provided
+        # Preserve the existing legacy on-disk token mechanism without writing
+        # an additional plaintext copy. The current CLI variable references it.
         if [[ -n "$ghcp_token" ]]; then
             cat >> "$LOCAL_CONFIG" <<EOF
 
-# GitHub Copilot PAT Authentication
-# Classic PAT with 'copilot' scope (fine-grained PATs do not currently support Copilot)
+# GitHub Copilot PAT authentication (fine-grained, Copilot Requests permission)
 GITHUB_COPILOT_TOKEN="$ghcp_token"
+COPILOT_GITHUB_TOKEN="\$GITHUB_COPILOT_TOKEN"
 EOF
         fi
 
@@ -1425,6 +1567,15 @@ EOF
     fi
 
     # --- Azure OpenAI setup (original flow) ---
+    if [ ! -f "$TEMPLATE_CONFIG" ]; then
+        echo -e "${RED}❌ Example configuration file not found: $TEMPLATE_CONFIG${NC}"
+        return 1
+    fi
+    echo -e "${BLUE}📁 Creating local configuration file...${NC}"
+    cp "$TEMPLATE_CONFIG" "$LOCAL_CONFIG"
+    echo -e "${GREEN}✅ Created: $LOCAL_CONFIG${NC}"
+    echo ""
+
     echo "Please provide your AI service configuration details:"
     echo ""
 

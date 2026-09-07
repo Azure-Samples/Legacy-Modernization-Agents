@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using CobolToQuarkusMigration.Helpers;
 using System.Threading;
 using McpChatWeb.Configuration;
 using McpChatWeb.Models;
@@ -260,7 +261,8 @@ public sealed class McpProcessClient : IMcpClient, IDisposable
                           ?? Environment.GetEnvironmentVariable("AISETTINGS__SERVICETYPE")
                           ?? "GitHubCopilot";
         var modelId = Environment.GetEnvironmentVariable("AISETTINGS__CHATMODELID")
-                      ?? Environment.GetEnvironmentVariable("AZURE_OPENAI_CHAT_DEPLOYMENT")
+                      ?? Environment.GetEnvironmentVariable("AZURE_OPENAI_CHAT_MODEL_ID")
+                      ?? Environment.GetEnvironmentVariable("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME")
                       ?? Environment.GetEnvironmentVariable("AISETTINGS__MODELID")
                       ?? Environment.GetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT_NAME")
                       ?? "claude-opus-4.6";
@@ -269,10 +271,9 @@ public sealed class McpProcessClient : IMcpClient, IDisposable
                            "You have access to reverse engineering results including business purpose, user " +
                            "stories, features, and business rules. Be concise, technical, and accurate.";
 
-        if (serviceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase) ||
-            serviceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase))
+        if (CopilotProvider.IsSdk(serviceType))
         {
-            var token = Environment.GetEnvironmentVariable("GITHUB_COPILOT_TOKEN");
+            var token = CopilotRouting.ResolveToken();
             var options = CopilotCliResolver.BuildOptions(useStdio: true,
                 githubToken: string.IsNullOrWhiteSpace(token) ? null : token);
             await using var client = new CopilotChatClient(modelId, options);
@@ -468,9 +469,14 @@ public sealed class McpProcessClient : IMcpClient, IDisposable
             var keyStr = key?.ToString();
             if (string.IsNullOrEmpty(keyStr)) continue;
 
-            // Forward Azure OpenAI vars, GITHUB_TOKEN, and service type
+            // Forward AI configuration and the canonical Copilot routing host.
             if (keyStr.StartsWith("AZURE_OPENAI", StringComparison.OrdinalIgnoreCase) ||
-                keyStr.Equals("GITHUB_TOKEN", StringComparison.OrdinalIgnoreCase))
+                keyStr.StartsWith("AISETTINGS__", StringComparison.OrdinalIgnoreCase) ||
+                keyStr.Equals("GITHUB_TOKEN", StringComparison.OrdinalIgnoreCase) ||
+                keyStr.Equals("GH_TOKEN", StringComparison.OrdinalIgnoreCase) ||
+                keyStr.Equals("COPILOT_GITHUB_TOKEN", StringComparison.OrdinalIgnoreCase) ||
+                keyStr.Equals("GITHUB_COPILOT_TOKEN", StringComparison.OrdinalIgnoreCase) ||
+                keyStr.Equals(CopilotRouting.HostEnvironmentVariable, StringComparison.OrdinalIgnoreCase))
             {
                 var value = Environment.GetEnvironmentVariable(keyStr);
                 if (!string.IsNullOrEmpty(value))
