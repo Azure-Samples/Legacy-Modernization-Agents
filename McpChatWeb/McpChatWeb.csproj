@@ -6,7 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <!-- See CobolToQuarkusMigration.csproj: avoids launching an unsigned native
          AppHost that enterprise endpoint security may block with "Access is
-         denied" when doctor.sh runs `dotnet run --project McpChatWeb`. -->
+         denied" when doctor.sh runs `dotnet run` for McpChatWeb. -->
     <UseAppHost>false</UseAppHost>
   </PropertyGroup>
 
