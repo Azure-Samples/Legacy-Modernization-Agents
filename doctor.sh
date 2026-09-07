@@ -199,6 +199,31 @@ PY
     fi
 }
 
+# Run a diagnostic dotnet subcommand (list-models/validate-model), capturing
+# stdout normally while stderr goes to a caller-supplied file instead of being
+# discarded. Structured JSON failures already carry a category/message (see
+# CopilotModelDiagnostics), but a crash before that point (build/restore
+# failure, unhandled exception) produces no JSON at all — in that case the
+# stderr tail is the only actionable signal, so it must not be thrown away.
+# The caller must create $1 (e.g. via mktemp) BEFORE calling this in a
+# command substitution: this function itself runs in a subshell, so it
+# cannot hand a value back to the caller except via stdout/return code —
+# the stderr file must already exist in the caller's own shell so its
+# contents survive after the subshell exits.
+run_diagnostic_dotnet() {
+    local stderr_file="$1"
+    shift
+    "$@" 2>"$stderr_file"
+}
+
+# Read back and redact the stderr tail written by run_diagnostic_dotnet.
+read_diagnostic_stderr_tail() {
+    local stderr_file="$1"
+    tail -n 5 "$stderr_file" 2>/dev/null \
+        | sed -E 's/(gh[pousr]_[A-Za-z0-9]{20,})/[redacted]/g' \
+        | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//'
+}
+
 DEFAULT_MCP_HOST="localhost"
 DEFAULT_MCP_PORT=5028
 
@@ -1403,9 +1428,11 @@ run_setup() {
         local models_json=""
         local ghcp_chat_model=""
         local ghcp_code_model=""
-        if models_json=$("$DOTNET_CMD" run --project "$REPO_ROOT/CobolToQuarkusMigration.csproj" \
+        local discovery_stderr_file
+        discovery_stderr_file="$(mktemp)"
+        if models_json=$(run_diagnostic_dotnet "$discovery_stderr_file" "$DOTNET_CMD" run --project "$REPO_ROOT/CobolToQuarkusMigration.csproj" \
             -p:CopilotSkipCliDownload=true -- \
-            list-models --format json --timeout-seconds 45 2>/dev/null); then
+            list-models --format json --timeout-seconds 45); then
             if [[ -n "$JQ_CMD" ]]; then
                 local line last_json=""
                 while IFS= read -r line; do
@@ -1437,9 +1464,12 @@ PY
                 echo -e "${YELLOW}⚠️  Neither jq nor Python is available, so JSON discovery output cannot be parsed. Using manual entry.${NC}"
             fi
         else
-            echo -e "${YELLOW}⚠️  Automatic model discovery failed: $(show_copilot_diagnostic "$models_json" "unknown discovery error")${NC}"
+            local discovery_stderr_tail
+            discovery_stderr_tail="$(read_diagnostic_stderr_tail "$discovery_stderr_file")"
+            echo -e "${YELLOW}⚠️  Automatic model discovery failed: $(show_copilot_diagnostic "$models_json" "${discovery_stderr_tail:-unknown discovery error}")${NC}"
             echo -e "${YELLOW}   Continuing immediately with manual model entry.${NC}"
         fi
+        rm -f "$discovery_stderr_file"
 
         local models=()
         while IFS= read -r model; do
@@ -1480,14 +1510,18 @@ PY
         fi
 
         while true; do
-            local validation_json
-            if validation_json=$("$DOTNET_CMD" run --no-build --project "$REPO_ROOT/CobolToQuarkusMigration.csproj" -- \
-                validate-model --model "$ghcp_chat_model" --format json --timeout-seconds 60 2>/dev/null) &&
+            local validation_json validation_stderr_file validation_stderr_tail
+            validation_stderr_file="$(mktemp)"
+            if validation_json=$(run_diagnostic_dotnet "$validation_stderr_file" "$DOTNET_CMD" run --no-build --project "$REPO_ROOT/CobolToQuarkusMigration.csproj" -- \
+                validate-model --model "$ghcp_chat_model" --format json --timeout-seconds 60) &&
                 [[ "$validation_json" == *'"success":true'* ]]; then
                 echo -e "${GREEN}✅ Chat model validated: $ghcp_chat_model${NC}"
+                rm -f "$validation_stderr_file"
                 break
             fi
-            echo -e "${YELLOW}⚠️  Chat model validation failed: $(show_copilot_diagnostic "$validation_json" "unknown validation error")${NC}"
+            validation_stderr_tail="$(read_diagnostic_stderr_tail "$validation_stderr_file")"
+            rm -f "$validation_stderr_file"
+            echo -e "${YELLOW}⚠️  Chat model validation failed: $(show_copilot_diagnostic "$validation_json" "${validation_stderr_tail:-unknown validation error}")${NC}"
             read -p "Enter a different chat model ID, or press Enter to retry '$ghcp_chat_model': " replacement
             [[ -n "$replacement" ]] && ghcp_chat_model="$replacement"
         done
@@ -1533,14 +1567,18 @@ PY
 
         if [[ "$ghcp_code_model" != "$ghcp_chat_model" ]]; then
             while true; do
-                local validation_json
-                if validation_json=$("$DOTNET_CMD" run --no-build --project "$REPO_ROOT/CobolToQuarkusMigration.csproj" -- \
-                    validate-model --model "$ghcp_code_model" --format json --timeout-seconds 60 2>/dev/null) &&
+                local validation_json validation_stderr_file validation_stderr_tail
+                validation_stderr_file="$(mktemp)"
+                if validation_json=$(run_diagnostic_dotnet "$validation_stderr_file" "$DOTNET_CMD" run --no-build --project "$REPO_ROOT/CobolToQuarkusMigration.csproj" -- \
+                    validate-model --model "$ghcp_code_model" --format json --timeout-seconds 60) &&
                     [[ "$validation_json" == *'"success":true'* ]]; then
                     echo -e "${GREEN}✅ Code model validated: $ghcp_code_model${NC}"
+                    rm -f "$validation_stderr_file"
                     break
                 fi
-                echo -e "${YELLOW}⚠️  Code model validation failed: $(show_copilot_diagnostic "$validation_json" "unknown validation error")${NC}"
+                validation_stderr_tail="$(read_diagnostic_stderr_tail "$validation_stderr_file")"
+                rm -f "$validation_stderr_file"
+                echo -e "${YELLOW}⚠️  Code model validation failed: $(show_copilot_diagnostic "$validation_json" "${validation_stderr_tail:-unknown validation error}")${NC}"
                 read -p "Enter a different code model ID, press Enter to retry, or type 'chat' to use '$ghcp_chat_model': " replacement
                 if [[ "$replacement" == "chat" ]]; then
                     ghcp_code_model="$ghcp_chat_model"
