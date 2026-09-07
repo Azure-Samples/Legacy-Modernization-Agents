@@ -1554,8 +1554,14 @@ PY
                 echo -e "${RED}Invalid selection. Choose a listed number or enter m.${NC}"
             done
         else
+            echo -e "${YELLOW}Example model IDs: gpt-5.4, claude-opus-4.7, gpt-5.6-sol (check your Copilot plan/enterprise policy for exact availability).${NC}"
             while [[ -z "$ghcp_chat_model" ]]; do
-                read -p "Chat model ID (required): " ghcp_chat_model
+                if ! read -p "Chat model ID (required): " ghcp_chat_model; then
+                    echo ""
+                    echo -e "${RED}❌ No input received (stdin closed). Cannot continue without a chat model ID.${NC}"
+                    echo -e "${RED}   Re-run 'doctor.sh setup' in an interactive terminal and provide a model ID.${NC}"
+                    return 1
+                fi
             done
         fi
 
