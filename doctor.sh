@@ -3459,15 +3459,29 @@ run_rekt_ingest() {
 
     # Use local Python venv for populator (container may not exist)
     local populator_dir="$REPO_ROOT/tools/graph-populator"
-    if [[ -f "$populator_dir/populator.py" ]] && [[ -d "$populator_dir/.venv" ]]; then
-        (cd "$populator_dir" && source .venv/bin/activate && python populator.py ingest \
+    local venv_activate=""
+    if [[ -f "$populator_dir/.venv/bin/activate" ]]; then
+        venv_activate=".venv/bin/activate"
+    elif [[ -f "$populator_dir/.venv/Scripts/activate" ]]; then
+        # A venv created by a native Windows Python interpreter uses
+        # Scripts/ instead of bin/, even under Git Bash/MINGW.
+        venv_activate=".venv/Scripts/activate"
+    fi
+    if [[ -f "$populator_dir/populator.py" ]] && [[ -n "$venv_activate" ]]; then
+        (cd "$populator_dir" && source "$venv_activate" && python populator.py ingest \
             --source-dir "$REPO_ROOT/source" \
             --rekt-output "$REPO_ROOT/output/rekt" \
             --run-id "$run_id" \
             $sqlite_flag)
     else
         echo -e "${RED}❌ Graph populator not found at $populator_dir${NC}"
-        echo -e "${YELLOW}   Run: cd tools/graph-populator && python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt${NC}"
+        if [[ -n "$PYTHON_CMD" ]]; then
+            echo -e "${YELLOW}   Run: cd tools/graph-populator && $PYTHON_CMD -m venv .venv && source .venv/*/activate && pip install -r requirements.txt${NC}"
+        else
+            echo -e "${YELLOW}   No working Python interpreter was found (see earlier diagnostic). Install Python${NC}"
+            echo -e "${YELLOW}   from python.org (not the Microsoft Store), then run: cd tools/graph-populator &&${NC}"
+            echo -e "${YELLOW}   python3 -m venv .venv && source .venv/*/activate && pip install -r requirements.txt${NC}"
+        fi
         return 1
     fi
 
