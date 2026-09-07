@@ -3475,12 +3475,18 @@ run_rekt_ingest() {
             $sqlite_flag)
     else
         echo -e "${RED}❌ Graph populator not found at $populator_dir${NC}"
+        # Use `python -m pip install` rather than the bare `pip` launcher:
+        # some enterprise endpoint security policies (Defender ASR/AppLocker/
+        # WDAC) block execution of freshly created executables like the
+        # pip.exe stub venv just generated, the same class of issue as the
+        # dotnet run AppHost fix elsewhere in this project. Routing through
+        # the already-trusted python interpreter avoids launching a new exe.
         if [[ -n "$PYTHON_CMD" ]]; then
-            echo -e "${YELLOW}   Run: cd tools/graph-populator && $PYTHON_CMD -m venv .venv && source .venv/*/activate && pip install -r requirements.txt${NC}"
+            echo -e "${YELLOW}   Run: cd tools/graph-populator && $PYTHON_CMD -m venv .venv && source .venv/*/activate && python -m pip install -r requirements.txt${NC}"
         else
             echo -e "${YELLOW}   No working Python interpreter was found (see earlier diagnostic). Install Python${NC}"
             echo -e "${YELLOW}   from python.org (not the Microsoft Store), then run: cd tools/graph-populator &&${NC}"
-            echo -e "${YELLOW}   python3 -m venv .venv && source .venv/*/activate && pip install -r requirements.txt${NC}"
+            echo -e "${YELLOW}   python3 -m venv .venv && source .venv/*/activate && python -m pip install -r requirements.txt${NC}"
         fi
         return 1
     fi
