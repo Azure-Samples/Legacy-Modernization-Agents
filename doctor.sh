@@ -1377,6 +1377,19 @@ run_setup() {
         fi
         echo ""
 
+        # The Copilot CLI checks COPILOT_GITHUB_TOKEN, then GH_TOKEN, then
+        # GITHUB_TOKEN, in that order. An ambient GH_TOKEN/GITHUB_TOKEN left
+        # over from a previous github.com login (e.g. `gh auth login`) would
+        # silently outrank the credential this setup establishes for
+        # $COPILOT_GH_HOST, so discovery/validation would keep authenticating
+        # against the wrong host with the wrong token. Clear them for this
+        # setup session so the chosen host's credential is unambiguous.
+        if [[ -n "${GH_TOKEN:-}" || -n "${GITHUB_TOKEN:-}" ]]; then
+            echo -e "${YELLOW}⚠️  Clearing ambient GH_TOKEN/GITHUB_TOKEN for this setup session so authentication targets ${COPILOT_GH_HOST}.${NC}"
+            echo ""
+        fi
+        unset GH_TOKEN GITHUB_TOKEN
+
         echo -e "${BLUE}🔐 How do you want to authenticate?${NC}"
         echo -e "  ${GREEN}1)${NC} GitHub Copilot CLI login (default)"
         echo -e "  ${GREEN}2)${NC} Personal Access Token (headless/automation)"
