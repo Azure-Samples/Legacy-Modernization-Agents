@@ -353,6 +353,14 @@ show_usage() {
     echo -e "  Chunking thresholds lowered to 80K chars / 1500 lines so REKT+shared-types"
     echo -e "  prompt growth doesn't push single-shot conversions past the model's window."
     echo
+    echo -e "  ${BOLD}REKT parsing${NC} (${GREEN}rekt-full${NC}): each smojol call is capped at"
+    echo -e "  ${GREEN}${REKT_PARSE_TIMEOUT_SECONDS}s${NC} and prints elapsed time, so a parse can no longer stall silently."
+    echo -e "  ${GREEN}REKT_VERBOSE=1 $0 rekt-full${NC}            Stream live smojol output"
+    echo -e "                                  ${CYAN}→ Use when a parse looks stuck: shows whether the JVM is${NC}"
+    echo -e "                                  ${CYAN}  working or being blocked by endpoint security / a proxy.${NC}"
+    echo -e "  ${GREEN}REKT_PARSE_TIMEOUT_SECONDS=900 $0 rekt-full${NC}  Raise the per-file cap for very large programs"
+    echo -e "  Full per-file output is always kept at ${GREEN}output/rekt/<program>.parse.log${NC}."
+    echo
     echo -e "${BOLD}🤖 GitHub Copilot provider:${NC}"
     echo -e "  Copilot silently drops requests above ~10K tokens with high reasoning effort."
     echo -e "  When the active provider is ${GREEN}GitHubCopilot${NC}, the orchestrator auto-shrinks"
@@ -3002,6 +3010,71 @@ docker_exec() {
     esac
 }
 
+# Per-invocation ceiling for a single smojol CLI call, plus an opt-in live
+# output mode. Both are environment-overridable:
+#   REKT_VERBOSE=1                  stream smojol output instead of a timer
+#   REKT_PARSE_TIMEOUT_SECONDS=600  raise the per-file ceiling
+REKT_PARSE_TIMEOUT_SECONDS="${REKT_PARSE_TIMEOUT_SECONDS:-300}"
+REKT_VERBOSE="${REKT_VERBOSE:-0}"
+
+# Run one smojol CLI invocation with visible progress and a hard timeout.
+#
+# These calls previously sent stdout to /dev/null and stderr to a log, so a
+# multi-minute parse printed nothing at all and a blocked or hung JVM was
+# indistinguishable from slow work. There was also no upper bound, so a stall
+# lasted forever. This prints elapsed seconds while the call runs, aborts at the
+# timeout (returning 124, as `timeout` does), and with REKT_VERBOSE=1 streams
+# output live — which is what surfaces an endpoint-security or proxy block.
+#
+# `timeout` is not available everywhere (notably macOS), so the ceiling is
+# enforced by polling a background job rather than by an external command.
+run_rekt_cli() {
+    local label="$1" log="$2"
+    shift 2
+
+    # A timeout means the JVM hung or was blocked, not that the dialect was
+    # wrong — the fallback attempts exist for parse errors and would each burn
+    # the full timeout again. Once a file times out, fail it fast.
+    if [[ "${REKT_TIMED_OUT_FILE:-}" == "$label" ]]; then
+        return 124
+    fi
+
+    if [[ "$REKT_VERBOSE" == "1" ]]; then
+        echo ""
+        echo -e "    ${BLUE}↳ docker exec $*${NC}"
+        docker_exec "$@" 2>&1 | tee -a "$log"
+        return "${PIPESTATUS[0]}"
+    fi
+
+    docker_exec "$@" >>"$log" 2>&1 &
+    local pid=$! waited=0 rc=0
+    while kill -0 "$pid" 2>/dev/null; do
+        sleep 2
+        waited=$((waited + 2))
+        # Redraw in place only on a terminal; piped output (CI, tee, log files)
+        # has no cursor to move, so the carriage returns would just repeat the
+        # line. There, stay silent and let the caller print the outcome.
+        if (( waited % 10 == 0 )) && [[ -t 1 ]]; then
+            echo -ne "\r  Parsing ${label}... ${waited}s (timeout ${REKT_PARSE_TIMEOUT_SECONDS}s)   "
+        fi
+        if (( waited >= REKT_PARSE_TIMEOUT_SECONDS )); then
+            kill -9 "$pid" 2>/dev/null
+            wait "$pid" 2>/dev/null
+            REKT_TIMED_OUT_FILE="$label"
+            echo -e "\r  Parsing ${label}... ${YELLOW}⏱ timed out after ${REKT_PARSE_TIMEOUT_SECONDS}s${NC}   "
+            echo -e "    ${YELLOW}↳ Re-run with ${BOLD}REKT_VERBOSE=1 ./doctor.sh rekt-full${NC}${YELLOW} to see live smojol output${NC}"
+            echo -e "    ${YELLOW}↳ If the file is simply large: ${BOLD}REKT_PARSE_TIMEOUT_SECONDS=900 ./doctor.sh rekt-full${NC}"
+            echo -e "    ${YELLOW}↳ Endpoint security blocking java/docker shows up as no output at all${NC}"
+            return 124
+        fi
+    done
+    wait "$pid"; rc=$?
+    if [[ -t 1 ]]; then
+        echo -ne "\r  Parsing ${label}...                                        \r  Parsing ${label}..."
+    fi
+    return $rc
+}
+
 # Resolve the Compose entrypoint once per process.
 #
 # Docker Desktop ships Compose v2 as the `docker compose` *subcommand*; the
@@ -3673,36 +3746,41 @@ print(len(lines))
 
         echo -ne "  Parsing $fname..."
         local parse_outcome="Failed"
+        # Every attempt appends to this log now (stdout included, so a hang or a
+        # blocked JVM is diagnosable). Truncate here — after the skip checks, so
+        # a cached file keeps its log — to stop a re-run inheriting stale output,
+        # which the error hint below greps.
+        : > "$err_log"
 
         # Attempt 1: Standard dialect (handles CICS, SQL, standard COBOL)
-        if docker_exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
+        if run_rekt_cli "$fname" "$err_log" "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
             --commands="BUILD_BASE_ANALYSIS WRITE_FLOW_AST WRITE_CFG WRITE_DATA_STRUCTURES" \
             --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
             --dialectJarPath=/app/dialect-idms.jar \
             --reportDir=/output \
-            --generation=PROGRAM >/dev/null 2>"$err_log"; then
+            --generation=PROGRAM; then
             echo -e " ${GREEN}✅${NC}"
             rm -f "$err_log"
             succeeded=$((succeeded + 1))
             parse_outcome="Full"
         else
             # Attempt 2: Retry without dialect JAR (for IMS/DL/I and other dialects)
-            if docker_exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
+            if run_rekt_cli "$fname" "$err_log" "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
                 --commands="BUILD_BASE_ANALYSIS WRITE_FLOW_AST WRITE_CFG WRITE_DATA_STRUCTURES" \
                 --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
                 --reportDir=/output \
-                --generation=PROGRAM >/dev/null 2>>"$err_log"; then
+                --generation=PROGRAM; then
                 echo -e " ${GREEN}✅${NC} (no-dialect mode)"
                 rm -f "$err_log"
                 succeeded=$((succeeded + 1))
                 parse_outcome="NoDialect"
             else
                 # Attempt 3: Raw AST only (tolerates more parse errors)
-                if docker_exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
+                if run_rekt_cli "$fname" "$err_log" "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
                     --commands="WRITE_RAW_AST" \
                     --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
                     --reportDir=/output \
-                    --generation=PROGRAM >/dev/null 2>>"$err_log"; then
+                    --generation=PROGRAM; then
                     echo -e " ${YELLOW}⚠️${NC} (raw AST only — complex copybooks)"
                     rm -f "$err_log"
                     succeeded=$((succeeded + 1))
@@ -3712,16 +3790,16 @@ print(len(lines))
                     # Even if validate reports minor issues, dependency extraction
                     # can still succeed and produce useful output
                     local dep_ok=false
-                    if docker_exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar dependency "$fname" \
+                    if run_rekt_cli "$fname" "$err_log" "$REKT_CONTAINER" java -jar /app/smojol-cli.jar dependency "$fname" \
                         --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
                         --dialectJarPath=/app/dialect-idms.jar \
-                        --export=/output/"${stem}"-deps.json >/dev/null 2>>"$err_log"; then
+                        --export=/output/"${stem}"-deps.json; then
                         dep_ok=true
                     fi
                     # Also try validate (may report warnings but still useful)
-                    docker_exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar validate "$fname" \
+                    run_rekt_cli "$fname" "$err_log" "$REKT_CONTAINER" java -jar /app/smojol-cli.jar validate "$fname" \
                         --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
-                        --dialectJarPath=/app/dialect-idms.jar >/dev/null 2>>"$err_log" || true
+                        --dialectJarPath=/app/dialect-idms.jar || true
 
                     if [[ "$dep_ok" == true ]]; then
                         echo -e " ${YELLOW}⚠️${NC} (deps only — AST writer bug)"

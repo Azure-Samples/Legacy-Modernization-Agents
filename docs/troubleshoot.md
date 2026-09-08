@@ -1,6 +1,6 @@
 # Troubleshooting setup (`./doctor.sh setup`)
 
-**Last updated**: 2026-09-08
+**Last updated**: 2026-09-09
 
 `./doctor.sh setup` is the primary setup path. For Copilot, it writes a complete
 `Config/ai-config.local.env` only after sign-in and model validation succeed.
@@ -151,3 +151,79 @@ propagation, bounded timeout behavior, provider aliases, and separate chat/code
 model handling. Real authentication, model discovery, and inference against a
 GitHub Enterprise Cloud Data Residency tenant remain pending validation by a
 contributor with access to that tenant.
+
+## REKT parsing (`./doctor.sh rekt-full`)
+
+### A parse appears to stall with no output
+
+Each program is parsed by the smojol CLI inside the `cobol-rekt` container. The
+parse is capped per file (default 300 s) and prints elapsed seconds while it
+runs, so a long parse is visibly progressing rather than silent.
+
+If a file exceeds the cap it is aborted and reported, and the remaining fallback
+attempts for that file are skipped — those fallbacks exist for parse *errors*,
+not for hangs, so retrying them would multiply the wait.
+
+```bash
+# Stream live smojol output instead of the elapsed-time indicator
+REKT_VERBOSE=1 ./doctor.sh rekt-full
+
+# Raise the per-file cap for very large programs
+REKT_PARSE_TIMEOUT_SECONDS=900 ./doctor.sh rekt-full
+```
+
+Full output for every file — stdout and stderr, for successful and failed
+parses alike — is written to `output/rekt/<program>.parse.log`. The log is
+truncated at the start of each parse, so it always reflects the current run.
+
+### Distinguishing a slow parse from a blocked one
+
+```mermaid
+flowchart TD
+    A[Parse appears stuck] --> B{Elapsed timer advancing?}
+    B -- No --> C[doctor.sh is not running the call<br/>check container health]
+    B -- Yes --> D[Re-run with REKT_VERBOSE=1]
+    D --> E{Any smojol output?}
+    E -- Steady output --> F[Genuinely slow<br/>raise REKT_PARSE_TIMEOUT_SECONDS]
+    E -- Stops at a fixed point --> G[Blocked dependency<br/>inspect the last line]
+    E -- No output at all --> H[JVM never started<br/>suspect endpoint security or proxy]
+```
+
+Endpoint-protection software that inspects or blocks `java` or `docker`
+typically produces **no** smojol output at all, whereas a genuinely slow parse
+emits steady progress. Verbose mode is what makes the two distinguishable.
+
+To reproduce a single file outside the pipeline:
+
+```bash
+docker exec cobol-rekt java -jar /app/smojol-cli.jar run PROGRAM.cbl \
+  --commands="BUILD_BASE_ANALYSIS WRITE_FLOW_AST WRITE_CFG WRITE_DATA_STRUCTURES" \
+  --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
+  --dialectJarPath=/app/dialect-idms.jar --reportDir=/output --generation=PROGRAM
+```
+
+Under Git Bash on Windows, prefix the command with `MSYS_NO_PATHCONV=1` so the
+container-absolute paths are not rewritten to Windows paths.
+
+### Reduced fidelity: "Unsupported figurative constant"
+
+```
+Parsing PROGRAM.cbl... ⚠️ (deps only — AST writer bug)
+  ↳ smojol: Exception: Unsupported figurative constant: zero
+```
+
+smojol maps only the upper-case spellings of the twelve COBOL figurative
+constants (`ZERO`, `ZEROS`, `ZEROES`, `SPACE`, `SPACES`, `HIGH-VALUE`,
+`HIGH-VALUES`, `LOW-VALUE`, `LOW-VALUES`, `QUOTE`, `QUOTES`, `NULL`). COBOL is
+case-insensitive for these words, so valid source such as `MOVE zero TO WS-NUM`
+made all three high-fidelity attempts fail and dropped the program to the
+deps-only fallback — losing its AST, CFG and data structures.
+
+The preprocessor now upper-cases these words in the staged copy, for programs
+and copybooks alike. Comment lines and quoted literals are skipped, and hyphen
+counts as a word character, so `WS-ZERO-COUNT` and `'zero'` are left as-is.
+Files under `source/` are never modified; only the staged copy is rewritten.
+
+If a program still reports deps-only, the cause is a different one — check the
+`smojol:` hint and the full `output/rekt/<program>.parse.log`. Missing copybooks
+are the other common cause.

@@ -233,6 +233,38 @@ content = ''.join(result_lines)
 # Some COBOL programs use comma as decimal separator (Danish/German convention).
 content = re.sub(r'(\b\d+),(\d+\b)', r'\1.\2', content)
 
+# Normalise figurative constants to upper case.
+# smojol maps only the upper-case spellings and throws
+# UnsupportedOperationException (Unsupported figurative constant: zero) on any
+# other casing, which silently drops the whole program to the deps-only
+# fallback. COBOL is case-insensitive for these words, so this preserves
+# semantics. Hyphen is treated as a word character so identifiers such as
+# WS-ZERO-COUNT or zero-total are left alone, comment lines are skipped, and
+# quoted literals are never rewritten.
+_FIG_WORDS = (
+    r'high-values', r'high-value', r'low-values', r'low-value',
+    r'zeroes', r'zeros', r'zero', r'spaces', r'space',
+    r'quotes', r'quote', r'null',
+)
+_fig_rx = re.compile(
+    r'(?<![A-Za-z0-9_-])(' + r'|'.join(_FIG_WORDS) + r')(?![A-Za-z0-9_-])',
+    re.IGNORECASE)
+_lit_rx = re.compile(r'(\x27[^\x27]*\x27|\x22[^\x22]*\x22)')
+
+def _normalise_figurative(text):
+    out = []
+    for line in text.split('\n'):
+        if len(line) >= 7 and line[6] in (r'*', r'/'):
+            out.append(line)
+            continue
+        parts = _lit_rx.split(line)
+        for i in range(0, len(parts), 2):
+            parts[i] = _fig_rx.sub(lambda m: m.group(1).upper(), parts[i])
+        out.append(''.join(parts))
+    return '\n'.join(out)
+
+content = _normalise_figurative(content)
+
 if content != original:
     with open('$PREPROC_DIR/$fname', 'w', encoding='latin-1') as f:
         f.write(content)
@@ -896,6 +928,38 @@ def _strip_audit_stamps(text):
     return '\n'.join(out)
 
 content = _strip_audit_stamps(content)
+
+# Normalise figurative constants to upper case.
+# smojol maps only the upper-case spellings and throws
+# UnsupportedOperationException (Unsupported figurative constant: zero) on any
+# other casing, which silently drops the whole program to the deps-only
+# fallback. COBOL is case-insensitive for these words, so this preserves
+# semantics. Hyphen is treated as a word character so identifiers such as
+# WS-ZERO-COUNT or zero-total are left alone, comment lines are skipped, and
+# quoted literals are never rewritten.
+_FIG_WORDS = (
+    r'high-values', r'high-value', r'low-values', r'low-value',
+    r'zeroes', r'zeros', r'zero', r'spaces', r'space',
+    r'quotes', r'quote', r'null',
+)
+_fig_rx = re.compile(
+    r'(?<![A-Za-z0-9_-])(' + r'|'.join(_FIG_WORDS) + r')(?![A-Za-z0-9_-])',
+    re.IGNORECASE)
+_lit_rx = re.compile(r'(\x27[^\x27]*\x27|\x22[^\x22]*\x22)')
+
+def _normalise_figurative(text):
+    out = []
+    for line in text.split('\n'):
+        if len(line) >= 7 and line[6] in (r'*', r'/'):
+            out.append(line)
+            continue
+        parts = _lit_rx.split(line)
+        for i in range(0, len(parts), 2):
+            parts[i] = _fig_rx.sub(lambda m: m.group(1).upper(), parts[i])
+        out.append(''.join(parts))
+    return '\n'.join(out)
+
+content = _normalise_figurative(content)
 
 if content != original:
     with open('$PREPROC_DIR/$fname', 'w', encoding='latin-1') as f:
