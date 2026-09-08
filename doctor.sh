@@ -2982,20 +2982,25 @@ detect_docker_api_version() {
 }
 
 # Git Bash / MSYS rewrites arguments that look like absolute POSIX paths into
-# Windows paths before handing them to a native .exe. Every `docker exec` here
-# passes *container* paths, so `/app/smojol-cli.jar` reached docker.exe as
-# `C:/Program Files/Git/app/smojol-cli.jar`:
+# Windows paths before handing them to a native .exe. That translation is
+# *required* for host paths (docker compose -f "$REPO_ROOT/docker-compose.yml"
+# must become C:\...) but *wrong* for container paths, where it produced:
 #     Error: Unable to access jarfile C:/Program Files/Git/app/smojol-cli.jar
-# The same applies to `--srcDir=/source/...`, `--reportDir=/output`, and so on.
-# Wrapping docker once disables that translation for all current and future
-# call sites; it is a no-op on macOS and Linux, where the wrapper isn't defined.
-case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*)
-        docker() {
-            MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' command docker "$@"
-        }
-        ;;
-esac
+#
+# The two cases therefore cannot share one setting: disabling conversion for all
+# of docker breaks `compose -f`, which then fails with C:\c\Dev\... Only
+# `docker exec` passes container paths (/app/smojol-cli.jar, --srcDir=/source,
+# --reportDir=/output), so the exemption is scoped to exactly that command.
+docker_exec() {
+    case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*)
+            MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' command docker exec "$@"
+            ;;
+        *)
+            command docker exec "$@"
+            ;;
+    esac
+}
 
 # Resolve the Compose entrypoint once per process.
 #
@@ -3227,7 +3232,7 @@ ensure_rekt_containers() {
     local max_wait=120
     local waited=0
     echo -ne "  Waiting for $REKT_NEO4J_CONTAINER"
-    while ! docker exec "$REKT_NEO4J_CONTAINER" cypher-shell -u neo4j -p cobol-rekt-2026 'RETURN 1' >/dev/null 2>&1; do
+    while ! docker_exec "$REKT_NEO4J_CONTAINER" cypher-shell -u neo4j -p cobol-rekt-2026 'RETURN 1' >/dev/null 2>&1; do
         sleep 2
         waited=$((waited + 2))
         if (( waited % 10 == 0 )); then
@@ -3244,7 +3249,7 @@ ensure_rekt_containers() {
     echo -e "\r  $REKT_NEO4J_CONTAINER ready ${GREEN}✅${NC}                                        "
 
     # Verify rekt CLI is available
-    if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar --version >/dev/null 2>&1; then
+    if docker_exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar --version >/dev/null 2>&1; then
         echo -e "  ${GREEN}✅ Cobol-REKT CLI available${NC}"
     else
         echo -e "  ${YELLOW}⚠️  Cobol-REKT CLI not responding (container may still be building)${NC}"
@@ -3254,13 +3259,13 @@ ensure_rekt_containers() {
     # directory inode, which leaves the container's mount pointing at the old,
     # deleted one. `docker restart` cannot fix this: bind mounts are established
     # at container *creation*, so the container must be recreated.
-    if ! docker exec "$REKT_CONTAINER" bash -c \
+    if ! docker_exec "$REKT_CONTAINER" bash -c \
         "touch /output/.write_probe && rm -f /output/.write_probe" >/dev/null 2>&1; then
         echo -e "  ${YELLOW}⚠️  /output bind mount stale — recreating $REKT_CONTAINER...${NC}"
         ensure_bind_mount_dirs
         compose up -d --force-recreate "$REKT_CONTAINER" >/dev/null 2>&1
         sleep 3
-        if ! docker exec "$REKT_CONTAINER" bash -c \
+        if ! docker_exec "$REKT_CONTAINER" bash -c \
             "touch /output/.write_probe && rm -f /output/.write_probe" >/dev/null 2>&1; then
             echo -e "  ${RED}❌ /output still not writable after recreate. Check Docker volume mount.${NC}"
             return 1
@@ -3438,12 +3443,12 @@ run_rekt_parse() {
     # auto-heal by restarting the container before parsing starts.
     if [[ "$staged_cbl" -gt 0 ]]; then
         local container_visible
-        container_visible=$(docker exec "$REKT_CONTAINER" sh -c "ls /source/.rekt-staging 2>/dev/null | wc -l" 2>/dev/null | tr -d ' ')
+        container_visible=$(docker_exec "$REKT_CONTAINER" sh -c "ls /source/.rekt-staging 2>/dev/null | wc -l" 2>/dev/null | tr -d ' ')
         if [[ -z "$container_visible" || "$container_visible" -eq 0 ]]; then
             echo -e "  ${YELLOW}⚠️  Container can't see /source/.rekt-staging — bind mount is stale. Recreating cobol-rekt…${NC}"
             compose up -d --force-recreate "$REKT_CONTAINER" >/dev/null 2>&1 || true
             sleep 3
-            container_visible=$(docker exec "$REKT_CONTAINER" sh -c "ls /source/.rekt-staging 2>/dev/null | wc -l" 2>/dev/null | tr -d ' ')
+            container_visible=$(docker_exec "$REKT_CONTAINER" sh -c "ls /source/.rekt-staging 2>/dev/null | wc -l" 2>/dev/null | tr -d ' ')
             if [[ -z "$container_visible" || "$container_visible" -eq 0 ]]; then
                 echo -e "  ${RED}❌ Container still can't see staging files after recreate.${NC}"
                 echo -e "     Try: ${BLUE}./doctor.sh containers reset${NC} from the repo root."
@@ -3670,7 +3675,7 @@ print(len(lines))
         local parse_outcome="Failed"
 
         # Attempt 1: Standard dialect (handles CICS, SQL, standard COBOL)
-        if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
+        if docker_exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
             --commands="BUILD_BASE_ANALYSIS WRITE_FLOW_AST WRITE_CFG WRITE_DATA_STRUCTURES" \
             --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
             --dialectJarPath=/app/dialect-idms.jar \
@@ -3682,7 +3687,7 @@ print(len(lines))
             parse_outcome="Full"
         else
             # Attempt 2: Retry without dialect JAR (for IMS/DL/I and other dialects)
-            if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
+            if docker_exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
                 --commands="BUILD_BASE_ANALYSIS WRITE_FLOW_AST WRITE_CFG WRITE_DATA_STRUCTURES" \
                 --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
                 --reportDir=/output \
@@ -3693,7 +3698,7 @@ print(len(lines))
                 parse_outcome="NoDialect"
             else
                 # Attempt 3: Raw AST only (tolerates more parse errors)
-                if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
+                if docker_exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
                     --commands="WRITE_RAW_AST" \
                     --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
                     --reportDir=/output \
@@ -3707,14 +3712,14 @@ print(len(lines))
                     # Even if validate reports minor issues, dependency extraction
                     # can still succeed and produce useful output
                     local dep_ok=false
-                    if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar dependency "$fname" \
+                    if docker_exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar dependency "$fname" \
                         --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
                         --dialectJarPath=/app/dialect-idms.jar \
                         --export=/output/"${stem}"-deps.json >/dev/null 2>>"$err_log"; then
                         dep_ok=true
                     fi
                     # Also try validate (may report warnings but still useful)
-                    docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar validate "$fname" \
+                    docker_exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar validate "$fname" \
                         --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
                         --dialectJarPath=/app/dialect-idms.jar >/dev/null 2>>"$err_log" || true
 
@@ -3943,13 +3948,13 @@ run_rekt_status() {
     echo -e "  ${BLUE}ℹ️  cobol-migration-neo4j (existing): $mma_state${NC}"
 
     # Neo4j node count
-    if docker exec "$REKT_NEO4J_CONTAINER" cypher-shell -u neo4j -p cobol-rekt-2026 \
+    if docker_exec "$REKT_NEO4J_CONTAINER" cypher-shell -u neo4j -p cobol-rekt-2026 \
         'MATCH (n) RETURN count(n) AS nodes' 2>/dev/null | grep -q "[0-9]"; then
         local node_count
-        node_count=$(docker exec "$REKT_NEO4J_CONTAINER" cypher-shell -u neo4j -p cobol-rekt-2026 \
+        node_count=$(docker_exec "$REKT_NEO4J_CONTAINER" cypher-shell -u neo4j -p cobol-rekt-2026 \
             'MATCH (n) RETURN count(n) AS nodes' 2>/dev/null | tail -1 | tr -d ' "')
         local rel_count
-        rel_count=$(docker exec "$REKT_NEO4J_CONTAINER" cypher-shell -u neo4j -p cobol-rekt-2026 \
+        rel_count=$(docker_exec "$REKT_NEO4J_CONTAINER" cypher-shell -u neo4j -p cobol-rekt-2026 \
             'MATCH ()-[r]->() RETURN count(r) AS rels' 2>/dev/null | tail -1 | tr -d ' "')
         echo -e "\n  ${BLUE}Graph: ${node_count} nodes, ${rel_count} relationships${NC}"
     fi
