@@ -242,6 +242,37 @@ read_diagnostic_stderr_tail() {
         | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//'
 }
 
+# --- Last-known-good model cache -------------------------------------------
+# Model discovery runs the Copilot CLI through the SDK, which binds the CLI's
+# JSON-RPC responses to fixed DTOs. A CLI newer than the SDK can therefore
+# break discovery outright, even though the user's credentials, host and
+# entitlements are all fine. Caching the last successful catalogue means a
+# future CLI release degrades setup to "reuse what worked last time" instead
+# of forcing every user into manual model entry.
+#
+# The cache is keyed by host so a github.com catalogue is never offered to a
+# GHE tenant (or vice versa) — the two return different model sets.
+model_cache_file() {
+    local host="${COPILOT_GH_HOST:-github.com}"
+    # Keep the filename filesystem-safe on every platform.
+    local key
+    key="$(printf '%s' "$host" | tr -c 'A-Za-z0-9._-' '_')"
+    printf '%s/Data/model-cache/%s.txt' "$REPO_ROOT" "$key"
+}
+
+save_model_cache() {
+    local cache_file
+    cache_file="$(model_cache_file)"
+    mkdir -p "$(dirname "$cache_file")" 2>/dev/null || return 0
+    printf '%s\n' "$1" > "$cache_file" 2>/dev/null || true
+}
+
+load_model_cache() {
+    local cache_file
+    cache_file="$(model_cache_file)"
+    [[ -s "$cache_file" ]] && cat "$cache_file"
+}
+
 DEFAULT_MCP_HOST="localhost"
 DEFAULT_MCP_PORT=5028
 
@@ -1545,9 +1576,23 @@ PY
             local discovery_stderr_tail
             discovery_stderr_tail="$(read_diagnostic_stderr_tail "$discovery_stderr_file")"
             echo -e "${YELLOW}⚠️  Automatic model discovery failed: $(show_copilot_diagnostic "$models_json" "${discovery_stderr_tail:-unknown discovery error}")${NC}"
-            echo -e "${YELLOW}   Continuing immediately with manual model entry.${NC}"
         fi
         rm -f "$discovery_stderr_file"
+
+        if [[ -n "$models_raw" ]]; then
+            save_model_cache "$models_raw"
+        else
+            # Discovery produced nothing. Reuse the last catalogue that worked
+            # for this host before falling back to manual entry, so a Copilot
+            # CLI change cannot block setup for a user whose account is fine.
+            models_raw="$(load_model_cache)"
+            if [[ -n "$models_raw" ]]; then
+                echo -e "${YELLOW}   Using the last known-good model list for ${BOLD}${COPILOT_GH_HOST:-github.com}${NC}${YELLOW}.${NC}"
+                echo -e "${YELLOW}   Pick a different model manually if this list is out of date.${NC}"
+            else
+                echo -e "${YELLOW}   Continuing immediately with manual model entry.${NC}"
+            fi
+        fi
 
         local models=()
         while IFS= read -r model; do

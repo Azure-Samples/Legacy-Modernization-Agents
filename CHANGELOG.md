@@ -202,6 +202,12 @@ DELETE /api/modernization/waves
 
 ### Fixed
 
+- **Copilot CLI payload mismatches reported as authentication failures** — `Helpers/CopilotModelDiagnostics.cs` classified exceptions by searching `Exception.ToString()`, which includes stack frames. A `System.Text.Json` failure binding the CLI's readiness-ping `timestamp` to `DateTimeOffset` contains `JsonTokenType` and the text "token type", so it matched the `token` keyword and was reported as `authentication` with exit code 3. Users were told to re-authenticate against a working account. Classification now inspects the exception type first (`JsonException` → `runtime_or_protocol`), matches only the exception message chain, and uses word boundaries for short ambiguous terms (`token`, `login`, `401`, `403`, `404`). `not available` is also recognised so unavailable models are no longer reported as protocol errors.
+- **Copilot CLI / SDK version drift was undiagnosable** — `doctor.sh` builds with `CopilotSkipCliDownload=true` so the build never requires access to `registry.npmjs.org`, which means the CLI on `PATH` is used and may not match the version the SDK package pins. Failing diagnostics now report `cliPath`, `cliVersion`, and `expectedCliVersion` (new `Helpers/CopilotCliInfo.cs`, with the expected version embedded at build time), and payload-shape failures state the remedy. Resolution runs in-process, so bash, Git Bash, and PowerShell report identical results.
+- **Model discovery failures forced manual entry** — `doctor.sh setup` now caches the last successfully discovered catalog per host in `Data/model-cache/<host>.txt` (untracked) and reuses it when discovery fails, falling back to manual entry only when no cache exists. Keyed by host so `github.com` and GHE tenants never share a catalog.
+
+### Fixed
+
 - `Agents/JavaConverterAgent.cs` + `CSharpConverterAgent.cs` — `ExtractJavaCode` / `ExtractCSharpCode` now detect when the LLM hits an internal token limit mid-output and silently restarts. The response contains two complete bodies concatenated; the first is truncated mid-method (unbalanced braces), the second is the full restart. Logic compares brace-balance + length of both halves and keeps the complete one. Logged at warn so the symptom remains visible.
 
 ### Fixed

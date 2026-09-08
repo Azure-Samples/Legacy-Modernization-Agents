@@ -1,6 +1,6 @@
 # Troubleshooting setup (`./doctor.sh setup`)
 
-**Last updated**: 2026-09-07
+**Last updated**: 2026-09-08
 
 `./doctor.sh setup` is the primary setup path. For Copilot, it writes a complete
 `Config/ai-config.local.env` only after sign-in and model validation succeed.
@@ -79,9 +79,13 @@ dotnet run --project CobolToQuarkusMigration.csproj -- \
   list-models --format json --timeout-seconds 45
 ```
 
-Discovery is bounded. If it fails or returns no models, `doctor.sh setup` and
-the portal allow immediate manual entry instead of launching an interactive
-fallback or selecting an arbitrary model.
+Discovery is bounded. If it fails or returns no models, `doctor.sh setup` reuses
+the last catalog that was discovered successfully for the **same host**, and
+otherwise allows immediate manual entry. The cache lives in
+`Data/model-cache/<host>.txt` (untracked) and is keyed by host so a `github.com`
+catalog is never offered to a GHE tenant, or the reverse. This keeps setup
+usable when Copilot CLI changes break discovery for reasons unrelated to the
+user's account.
 
 Each distinct selected model is validated with a minimal tool-free request
 before configuration is saved:
@@ -95,12 +99,47 @@ The code model defaults to the chat model when omitted. When both are provided,
 they remain separate through persisted configuration, portal active-chat
 selection, managed conversion runs, Prompt Studio, and MCP subprocesses.
 
+### Copilot CLI and SDK version alignment
+
+The SDK binds the CLI's JSON-RPC responses to fixed DTOs, so a CLI whose payload
+shape differs from the SDK's expectations fails during the startup handshake —
+before any model is listed. A CLI that returns the readiness ping's `timestamp`
+as a number rather than a string, for example, fails with:
+
+```
+The JSON value could not be converted to System.DateTimeOffset. Path: $.timestamp
+```
+
+This is not an authentication problem. `doctor.sh` builds with
+`CopilotSkipCliDownload=true` so the build never depends on reaching
+`registry.npmjs.org`, which means the CLI on `PATH` is used and its version can
+drift from the one the SDK package pins.
+
+Every failing diagnostic therefore reports `cliPath`, `cliVersion`, and
+`expectedCliVersion`, and payload-shape failures name the remedy directly.
+Resolution happens in-process, so bash, Git Bash, and PowerShell all report the
+same values. To align the versions, either install the expected CLI:
+
+```bash
+npm i -g @github/copilot@<expectedCliVersion>
+```
+
+or let the build supply a matching CLI by dropping `CopilotSkipCliDownload=true`.
+On restricted networks, set `CopilotNpmRegistryUrl` to an internal mirror or
+`CopilotCliBinaryPath` to a pre-downloaded binary instead.
+
 ### Diagnostic categories
 
 JSON diagnostics classify failures as `authentication`, `routing`,
 `unavailable_or_policy`, `network`, `timeout`, `runtime_or_protocol`, or
-`unexpected`. Classification is conservative because SDK 1.0.0 often surfaces
-runtime failures as message-only exceptions.
+`unexpected`.
+
+Classification inspects the exception type first and then only the exception
+message chain — never the stack trace. Stack frames name types such as
+`JsonTokenType`, and matching those as evidence previously reported CLI payload
+mismatches as `authentication`, sending users to re-authenticate against a
+working account. Short, ambiguous terms (`token`, `login`, `401`, `403`, `404`)
+are matched on word boundaries for the same reason.
 
 The portal keeps non-AI views available when Copilot readiness fails. Re-open
 **Setup** to correct the host, authentication, or model ID.

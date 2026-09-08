@@ -53,4 +53,18 @@
   <ItemGroup>
     <Compile Remove="output\**" />
   </ItemGroup>
+
+  <!-- Record the Copilot CLI version this SDK package expects so the running
+       app can compare it against the CLI actually on the machine and report a
+       version mismatch instead of an opaque protocol error. Runs as a target
+       (not a plain ItemGroup) so it reads the property after the SDK's props
+       are imported, and no-ops on any SDK that does not define it. -->
+  <Target Name="_EmbedCopilotCliVersion" BeforeTargets="GetAssemblyAttributes" Condition="'$(CopilotCliVersion)' != ''">
+    <ItemGroup>
+      <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+        <_Parameter1>CopilotCliVersion</_Parameter1>
+        <_Parameter2>$(CopilotCliVersion)</_Parameter2>
+      </AssemblyAttribute>
+    </ItemGroup>
+  </Target>
 </Project>
