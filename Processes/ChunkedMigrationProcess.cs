@@ -1185,7 +1185,9 @@ public class ChunkedMigrationProcess
         report.AppendLine($"- **Progressive Compression**: {_settings.ChunkingSettings.EnableProgressiveCompression}");
         report.AppendLine();
 
-        var parity = await ConversionParityPostPass.RunAsync(generatedFiles, outputFolder, langName, _logger);
+        var parity = await ConversionParityPostPass.RunAsync(
+            generatedFiles, outputFolder, langName, _logger,
+            cobolFiles.Select(f => f.FileName));
         if (!string.IsNullOrWhiteSpace(parity)) report.Append(parity);
 
         await File.WriteAllTextAsync(reportPath, report.ToString());

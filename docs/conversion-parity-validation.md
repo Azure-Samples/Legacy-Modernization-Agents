@@ -46,19 +46,35 @@ Ambiguity in the code/comment split always resolves toward the comment bucket. U
 
 ### Gap classification
 
-| Symbol found in | Kind | Counts against score |
+| Symbol found in | Kind | Score credit |
 |---|---|---|
-| code | — not a gap | no |
-| comments or string literals only | `PossiblyRenamedOrMerged` | no |
-| neither | `Missing` | yes |
+| code | — not a gap | full |
+| comments or string literals only | `PossiblyRenamedOrMerged` | **half** |
+| neither | `Missing` | none |
 
-A paragraph folded into another method, or renamed during conversion, characteristically survives as a comment naming the original. Scoring that as a loss is a false positive, and false positives are what get a validator switched off. It is still reported, so a real loss that happens to be mentioned in a comment stays visible rather than being hidden.
+A paragraph folded into another method, or renamed during conversion, characteristically survives as a comment naming the original. Scoring that as a total loss is a false positive, and false positives are what get a validator switched off. Scoring it as a full pass is the opposite error: a comment is evidence that the original name was *considered*, not that its behaviour was carried over. Half credit says exactly that, and the gap is still reported either way.
+
+### Total axis loss
+
+A score alone cannot express that an entire dimension was dropped. With the weights above, a conversion that loses every `CALL` target still scores 0.80 and passes a 0.75 threshold.
+
+An axis with at least one expected symbol and **no code match at all** is therefore flagged as a total loss, and fails the threshold check regardless of the overall score. The axis names appear as `lostAxes` in the JSON and in the report table.
 
 ## What is deliberately not scored
 
 - `FILLER`, level-88 condition names, level-66 renames and generated `TypedRecord*` types are excluded from `dataFields`. They are not storage a conversion is expected to reproduce.
+- Data nodes attributed to the `PROCEDURE DIVISION` are excluded. The parser surfaces COBOL special registers such as `WHEN-COMPILED` as data items with `sourceSection: PROCEDURE_DIVISION`; they are injected by the compiler, not declared by the program, so no conversion can carry them. Real storage always carries `WORKING_STORAGE`, `LINKAGE` or `FILE`.
+- Fields declared only by an auto-generated stub copybook are excluded — see *Evidence quality* below.
 - A `PERFORM ... UNTIL` operand that is also a data field is dropped from `procedures`; it names a condition, not a paragraph.
 - `CALL WS-PROGRAM-NAME` is not recorded as a callee. The variable holds a program name at runtime; treating the variable as a dependency would invent one.
+
+## Evidence quality
+
+`tools/preprocess-for-rekt.sh` synthesises a placeholder copybook whenever a `COPY` target cannot be resolved, containing invented `<NAME>-STUB` and `<NAME>-VAL` fields and a marker comment. Those fields exist only as preprocessing artefacts, while the real fields the program actually uses are absent entirely.
+
+Expecting them in generated code produces gaps no conversion can close, so they are excluded. Detection is exact — the file must contain the marker string — rather than a guess at the `-STUB` suffix, which could drop real fields.
+
+Because their exclusion means field parity was measured against *incomplete* evidence, each affected program carries an `evidenceNotes` entry naming the stub copybooks. The score is not silently adjusted to compensate; the weakened evidence is stated instead.
 
 ## When parity is not measured
 
@@ -69,11 +85,12 @@ An inferred value is never presented as a measured one.
 | No structural context, or provenance `None` | `NotEvaluated`, no score, reason names `./doctor.sh rekt-full` |
 | All four axes have no comparable symbols | `NotEvaluated`, axes still reported |
 | Generated file cannot be mapped back to a source program | `NotEvaluated`, never guessed |
+| Source program produced **no** generated file | **Evaluated, score 0**, explicit `file` gap |
 | File is a `ConversionOutputGuard` diagnostic stub | **Evaluated, score 0**, explicit `file` gap |
 
-The stub case outranks the missing-context rule. The stub marker is direct evidence that conversion failed, so it is a measured zero even when nothing is known about the source.
+The two score-0 cases outrank the missing-context rule. A missing output and a stub marker are both direct evidence that conversion failed, so they are measured zeros even when nothing is known about the source. Parity therefore starts from the inventory of source programs, not from the list of files that happen to exist — a program that silently produced nothing is the most severe failure the check can find, and reading only the output directory would miss it entirely.
 
-That case also drives the comment rule: the guard embeds the rejected model output inside a block comment. If comment matches earned credit, a stub whose rejected output happened to be Java-shaped would score 1.0 — precisely the failure this feature exists to catch. Comment credit is therefore withheld from any file containing no converted code.
+That case also drives the comment rule: the guard embeds the rejected model output inside a block comment. If comment matches earned full credit, a stub whose rejected output happened to be Java-shaped would score 1.0 — precisely the failure this feature exists to catch. Comment credit is therefore withheld entirely from any file containing no converted code.
 
 ## Where it runs
 
@@ -100,16 +117,22 @@ MIN_PROGRAM_SCORE=0.8 ON_LOW_SCORE=stop ./doctor.sh run
 
 Exit code `4` is distinct from the existing conventions (`2` usage or not-found, `3` parse failure).
 
+> Making that work required a fix in `Program.cs`. An `int`-returning `Main` overrides `Environment.ExitCode` entirely, so the gate — and every existing `Cli/` command that reports failure the same way — exited `0` regardless. `Main` now returns the environment code when its own is zero.
+
 ### Calibrating the threshold
 
-`0.75` was calibrated against the sample estate, not guessed. On a real REKT scan of `CUSTOMER-INQUIRY.cbl`:
+`0.75` was calibrated against the sample estate, not guessed. On a real REKT scan, converted by hand from the COBOL alone rather than tuned to pass:
 
 | Conversion | Score |
 |---|---|
-| Faithful | 1.00 |
-| One of two paragraphs renamed, original named in a comment | 1.00 |
-| One of two paragraphs and the only `CALL` dropped | 0.53 |
+| Faithful, `CUSTOMER-INQUIRY.cbl` | 1.00 |
+| Faithful, `CUSTOMER-DISPLAY.cbl` | 0.95 |
+| One paragraph renamed, original named in a comment | 0.97 |
+| One paragraph, five fields and the only `CALL` dropped | 0.27, `callTargets` lost |
+| Source program that produced no output at all | 0.00 |
 | `ConversionOutputGuard` stub | 0.00 |
+
+The 0.95 is the copybook-scope limit described under *Known limits*, not a conversion defect: `CUST-STATUS` is read through a condition name and lives in a record class emitted alongside the other program.
 
 The default sits between a conversion that is complete and one that has lost a fifth of its structure. Estates with many small paragraphs will want a different value, which is why it is configurable.
 
@@ -125,9 +148,29 @@ The Modernization Intelligence **Runtime** subview renders it. The runtime-telem
 
 ## Known limits
 
+Parity is an **identifier-retention check**. It answers "are the names the COBOL declared still visible in the generated code", which is a proxy for structural representation and nothing more. The limits below follow from that and are not defects.
+
+- Matching is name-based. A conversion that faithfully reproduces behaviour under entirely unrelated names scores low; one that keeps the names while discarding the logic scores high. Parity is evidence of structural representation, not of correctness.
+- Matching is not one-to-one. `1000-INIT` and `2000-INIT` both normalise to `init`, so one generated `init` method satisfies both. The check is designed to catch wholesale loss, not near-duplicates.
+- Scope is one source program against its own generated files. A field declared in a copybook and rendered into a shared record class belonging to a *different* program is reported missing, because the check never looks outside the program's own output. Where the section is known, the gap carries it — a `LINKAGE` field is annotated as supplied by the caller — so the reader can tell this case from a genuine drop.
 - Recall depends on what the scan surfaced. A `CALL` nested inside a conditional is emitted by the parser as untyped statement text, and is recovered by scanning that text for quoted targets; a construct that survives in neither form cannot be expected, so its loss would go unreported. The axis reports `Expected = 0` rather than claiming coverage.
-- Matching is name-based. A conversion that faithfully reproduces behaviour under entirely unrelated names scores low, and one that keeps the names while discarding the logic scores high. Parity is evidence of structural representation, not of correctness.
 - Compact-form fallback matching can pair a short expected name with a longer identifier that contains it.
+- Parity needs the repository layout to resolve source programs and copybooks. Running from a published image without it, the post-pass logs that it is skipping rather than reporting a false pass.
+
+### Dimensions not validated
+
+Presence of a name says nothing about these, and none of them is checked:
+
+| Dimension | Not checked |
+|---|---|
+| SQL | which *operations* run against a table — only that the table is named |
+| Data | `PIC` precision, `USAGE`, `OCCURS` bounds, `REDEFINES` overlays |
+| Conditions | level-88 values, and whether the condition survives at all |
+| Calls | parameter lists, `BY REFERENCE` / `BY CONTENT` semantics |
+| Transactions | CICS and IMS verbs |
+| Control flow | ordering, nesting, `GO TO` semantics |
+
+A program can pass parity at 1.00 and still be a wrong conversion. The report says so.
 
 ## Not ported from the source branch
 

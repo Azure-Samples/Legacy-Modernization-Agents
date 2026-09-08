@@ -47,6 +47,10 @@ public sealed record ParityAxisResult
     // null when Expected is 0: the axis is absent, not perfect.
     [JsonPropertyName("coverage")] public double? Coverage { get; init; }
 
+    // Expected symbols, none of them in code. Renormalising the weighted score can otherwise
+    // leave an all-or-nothing axis failure above the threshold, so the gate reads this too.
+    [JsonPropertyName("totalLoss")] public bool IsTotalLoss => Expected > 0 && MatchedInCode == 0;
+
     [JsonPropertyName("note")] public string? Note { get; init; }
 }
 
@@ -65,6 +69,16 @@ public sealed record ProgramParityResult
     [JsonPropertyName("score")] public double? Score { get; init; }
 
     [JsonPropertyName("isDiagnosticStub")] public bool IsDiagnosticStub { get; init; }
+
+    // Symbols dropped because the evidence behind them is synthetic. A score computed with these
+    // excluded measures less than a clean one, so the omission is reported rather than absorbed.
+    [JsonPropertyName("evidenceNotes")] public IReadOnlyList<string> EvidenceNotes { get; init; }
+        = Array.Empty<string>();
+
+    // Axes whose symbols are entirely absent from code. A program with any of these has failed
+    // parity whatever its weighted score, so it is surfaced next to the score, not buried.
+    [JsonPropertyName("lostAxes")] public IReadOnlyList<string> LostAxes =>
+        Axes.Where(a => a.IsTotalLoss).Select(a => a.Name).ToList();
 
     [JsonPropertyName("axes")] public IReadOnlyList<ParityAxisResult> Axes { get; init; }
         = Array.Empty<ParityAxisResult>();

@@ -1,3 +1,4 @@
+using System.Globalization;
 using CobolToQuarkusMigration.Agents;
 using FluentAssertions;
 using Xunit;
@@ -179,6 +180,33 @@ public class ConversionParityPostPassTests : IDisposable
     }
 
     [Fact]
+    // The threshold the report prints is meant to be copied into MIN_PROGRAM_SCORE, which is
+    // parsed invariantly. Under a comma-decimal culture a localised value would not round-trip.
+    public void BuildMarkdown_FormatsNumbersInvariantlyUnderAnyCulture()
+    {
+        var original = CultureInfo.CurrentCulture;
+        try
+        {
+            CultureInfo.CurrentCulture = new CultureInfo("de-DE");
+
+            var report = ConversionParityPostPass.BuildReport(
+                new List<ProgramParityResult> { Evaluated("A.cbl", 0.94) },
+                "Java", 0.75, ConversionParityPostPass.ParityGate.Warn);
+
+            var markdown = ConversionParityPostPass.BuildMarkdown(report);
+
+            markdown.Should().Contain("MIN_PROGRAM_SCORE=0.75");
+            markdown.Should().Contain("0.94");
+            markdown.Should().NotContain("0,75");
+            markdown.Should().NotContain("0,94");
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = original;
+        }
+    }
+
+    [Fact]
     public void BuildMarkdown_StatesThatParityIsStructuralNotBehavioural()
     {
         var report = ConversionParityPostPass.BuildReport(
@@ -187,6 +215,102 @@ public class ConversionParityPostPassTests : IDisposable
 
         ConversionParityPostPass.BuildMarkdown(report)
             .Should().Contain("not behavioural equivalence");
+    }
+
+    [Fact]
+    // Chunked assembly emits one file per generated class, all carrying the same source. Scoring
+    // them individually reported a correct service/DTO split as several deficient conversions.
+    public async Task RunAsync_ScoresAllFilesOfOneProgramTogether()
+    {
+        Environment.SetEnvironmentVariable("ON_LOW_SCORE", "warn");
+        Environment.SetEnvironmentVariable("MIN_PROGRAM_SCORE", "0.75");
+
+        var dir = Path.Combine(Path.GetTempPath(), $"parity-group-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var service = Path.Combine(dir, "CustomerService.java");
+            var dto = Path.Combine(dir, "CustomerDto.java");
+            await File.WriteAllTextAsync(service, "class CustomerService { void mainLogic() {} }");
+            await File.WriteAllTextAsync(dto, "class CustomerDto { int customerTotal; }");
+
+            await ConversionParityPostPass.RunAsync(
+                [Generated("CustomerService.java", service, "CUSTOMER-INQUIRY.cbl"),
+                 Generated("CustomerDto.java", dto, "CUSTOMER-INQUIRY.cbl")],
+                dir, "Java");
+
+            var report = await ReadReportAsync(dir);
+            report.Programs.Should().ContainSingle()
+                .Which.Program.Should().Be("CUSTOMER-INQUIRY.cbl");
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    // A source that produced no output at all is the worst parity failure there is, and it was
+    // invisible while the report only walked generated files.
+    public async Task RunAsync_ReportsSourceProgramsThatProducedNoOutput()
+    {
+        Environment.SetEnvironmentVariable("ON_LOW_SCORE", "stop");
+        Environment.SetEnvironmentVariable("MIN_PROGRAM_SCORE", "0.75");
+        Environment.ExitCode = 0;
+
+        var dir = Path.Combine(Path.GetTempPath(), $"parity-missing-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var path = Path.Combine(dir, "Converted.java");
+            await File.WriteAllTextAsync(path, "class Converted {}");
+
+            await ConversionParityPostPass.RunAsync(
+                [Generated("Converted.java", path, "CONVERTED.cbl")],
+                dir, "Java",
+                sourcePrograms: new[] { "CONVERTED.cbl", "NEVER-CONVERTED.cbl" });
+
+            var report = await ReadReportAsync(dir);
+            var missing = report.Programs.Single(p => p.Program == "NEVER-CONVERTED.cbl");
+
+            missing.Outcome.Should().Be(ParityOutcome.Evaluated);
+            missing.Score.Should().Be(0);
+            missing.Gaps.Should().ContainSingle()
+                .Which.Detail.Should().Contain("no output file");
+
+            Environment.ExitCode.Should().Be(ConversionParityPostPass.LowScoreExitCode);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("NaN")]
+    [InlineData("Infinity")]
+    // Every comparison against NaN is false, so an unparseable-but-accepted threshold silently
+    // disabled the gate rather than falling back to the default.
+    public void ReadThreshold_RejectsNonFiniteValues(string raw)
+    {
+        Environment.SetEnvironmentVariable("MIN_PROGRAM_SCORE", raw);
+        ConversionParityPostPass.ReadThreshold().Should().Be(0.75);
+    }
+
+    private static CobolToQuarkusMigration.Models.CodeFile Generated(
+        string name, string path, string program) => new()
+    {
+        FileName = name,
+        FilePath = path,
+        OriginalCobolFileName = program,
+        Content = "x",
+    };
+
+    private static async Task<ConversionParityReport> ReadReportAsync(string dir)
+    {
+        var json = await System.IO.File.ReadAllTextAsync(
+            Path.Combine(dir, ConversionParityPostPass.ArtifactName));
+        return System.Text.Json.JsonSerializer.Deserialize<ConversionParityReport>(json)!;
     }
 
     private static ProgramParityResult Evaluated(string program, double score) => new()

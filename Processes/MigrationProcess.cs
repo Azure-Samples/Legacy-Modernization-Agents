@@ -543,7 +543,9 @@ public class MigrationProcess
         }
 
         var langLabel = targetLang == TargetLanguage.CSharp ? "C#" : "Java";
-        var parity = await ConversionParityPostPass.RunAsync(generatedFiles, outputFolder, langLabel, _logger);
+        var parity = await ConversionParityPostPass.RunAsync(
+            generatedFiles, outputFolder, langLabel, _logger,
+            cobolFiles.Select(f => f.FileName));
         if (!string.IsNullOrWhiteSpace(parity)) report.Append(parity);
 
         // File mapping section

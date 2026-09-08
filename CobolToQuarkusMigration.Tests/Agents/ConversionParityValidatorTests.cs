@@ -105,7 +105,7 @@ public class ConversionParityValidatorTests
     }
 
     [Fact]
-    public void Evaluate_SymbolOnlyInCommentIsNotScoredAsLoss()
+    public void Evaluate_SymbolOnlyInCommentScoresPartialCreditNotFull()
     {
         var context = Context(
             sections: new[] { "2000-PROCESS-CUSTOMER" },
@@ -122,9 +122,58 @@ public class ConversionParityValidatorTests
 
         var result = ConversionParityValidator.Evaluate("CUST.cbl", "C.java", java, context, null);
 
-        result.Score.Should().Be(1.0);
+        result.Score.Should().Be(0.5);
         result.Gaps.Should().ContainSingle()
             .Which.Kind.Should().Be(ParityGapKind.PossiblyRenamedOrMerged);
+    }
+
+    [Fact]
+    // A handful of renames must stay above the gate, or the validator gets switched off.
+    public void Evaluate_MostlyConvertedWithOneRenameStaysAboveThreshold()
+    {
+        var context = Context(
+            sections: new[] { "1000-INIT", "2000-PROCESS", "3000-REPORT", "4000-CLEANUP" },
+            fields: Array.Empty<string>(),
+            calls: Array.Empty<string>(),
+            tables: Array.Empty<string>());
+
+        const string java = """
+            public class C {
+                void init() {}
+                void process() {}
+                void report() {}
+                // 4000-CLEANUP was folded into process()
+            }
+            """;
+
+        var result = ConversionParityValidator.Evaluate("CUST.cbl", "C.java", java, context, null);
+
+        result.Score.Should().Be(0.875);
+        result.Score.Should().BeGreaterThan(0.75);
+    }
+
+    [Fact]
+    // The degenerate adversarial case: a file that converts nothing but names everything in a
+    // comment scored a perfect 1.0 before comment evidence was down-weighted.
+    public void Evaluate_HollowFileNamingEverythingInCommentsFails()
+    {
+        var context = Context(
+            sections: new[] { "1000-INIT", "2000-PROCESS" },
+            fields: new[] { "WS-CUSTOMER-TOTAL", "WS-ACCOUNT-BALANCE" },
+            calls: Array.Empty<string>(),
+            tables: Array.Empty<string>());
+
+        const string java = """
+            public class Empty {
+                // 1000-INIT 2000-PROCESS WS-CUSTOMER-TOTAL WS-ACCOUNT-BALANCE
+            }
+            """;
+
+        var result = ConversionParityValidator.Evaluate("CUST.cbl", "Empty.java", java, context, null);
+
+        result.Score.Should().Be(0.5);
+        result.Score.Should().BeLessThan(0.75);
+        result.Axes.Should().OnlyContain(a => a.Coverage == null || a.IsTotalLoss);
     }
 
     [Fact]
@@ -254,6 +303,130 @@ public class ConversionParityValidatorTests
     }
 
     [Fact]
+    public void Evaluate_ProcedureDivisionRegistersAreExcluded()
+    {
+        var context = new StructuralContext
+        {
+            Program = "CUST.cbl",
+            Provenance = StructuralProvenance.RektNative,
+            Confidence = 0.95,
+            Context = new RektContext
+            {
+                DataStructure =
+                {
+                    new RektDataItem { Level = 1, Name = "WS-CUSTOMER-ID", SourceSection = "WORKING_STORAGE" },
+                    new RektDataItem { Level = 1, Name = "WHEN-COMPILED", SourceSection = "PROCEDURE_DIVISION" },
+                },
+            },
+        };
+
+        var result = ConversionParityValidator.Evaluate(
+            "CUST.cbl", "C.java", "public class C { String customerId; }", context, null);
+
+        result.Axes.Single(a => a.Name == "dataFields").Expected.Should().Be(1);
+        result.Gaps.Should().NotContain(g => g.Symbol == "WHEN-COMPILED");
+        result.Score.Should().Be(1.0);
+    }
+
+    [Fact]
+    public void Evaluate_LinkageFieldGapRecordsWhereTheFieldCameFrom()
+    {
+        var context = new StructuralContext
+        {
+            Program = "CUST.cbl",
+            Provenance = StructuralProvenance.RektNative,
+            Confidence = 0.95,
+            Context = new RektContext
+            {
+                DataStructure =
+                {
+                    new RektDataItem
+                    {
+                        Level = 1,
+                        Name = "CUSTOMER-RECORD",
+                        SourceSection = "LINKAGE",
+                        Children = { new RektDataItem { Level = 5, Name = "CUST-STATUS" } },
+                    },
+                },
+            },
+        };
+
+        var result = ConversionParityValidator.Evaluate(
+            "CUST.cbl", "C.java", "public class C { CustomerRecord customerRecord; }", context, null);
+
+        // The section is declared on the parent, so the child must inherit it.
+        result.Gaps.Single(g => g.Symbol == "CUST-STATUS")
+            .Detail.Should().Contain("LINKAGE");
+    }
+
+    [Fact]
+    public void Evaluate_StubCopybookFieldsAreExcludedAndReportedAsWeakenedEvidence()
+    {
+        using var estate = new TempEstate();
+        estate.WritePreprocessedCopybook(
+            "ERROR-CODES.cpy",
+            $"      *> {StubCopybookCatalog.Marker}\n       01 ERROR-CODES-STUB PIC X.\n       01 ERROR-CODES-VAL PIC X.\n");
+
+        var catalog = StubCopybookCatalog.Load(estate.Root, "source");
+
+        var context = new StructuralContext
+        {
+            Program = "CUST.cbl",
+            Provenance = StructuralProvenance.RektNative,
+            Confidence = 0.95,
+            Context = new RektContext
+            {
+                DataStructure =
+                {
+                    new RektDataItem { Level = 1, Name = "WS-CUSTOMER-ID" },
+                    new RektDataItem { Level = 1, Name = "ERROR-CODES-STUB" },
+                    new RektDataItem { Level = 1, Name = "ERROR-CODES-VAL" },
+                },
+            },
+        };
+
+        var result = ConversionParityValidator.Evaluate(
+            "CUST.cbl", "C.java", "public class C { String customerId; }", context, null, catalog);
+
+        result.Axes.Single(a => a.Name == "dataFields").Expected.Should().Be(1);
+        result.Gaps.Should().NotContain(g => g.Symbol.StartsWith("ERROR-CODES"));
+        result.EvidenceNotes.Should().ContainSingle()
+            .Which.Should().Contain("ERROR-CODES-STUB").And.Contain("incomplete evidence");
+    }
+
+    [Fact]
+    public void Load_TreatsOnlyMarkedCopybooksAsStubs()
+    {
+        using var estate = new TempEstate();
+        estate.WritePreprocessedCopybook("REAL.cpy", "       01 REAL-FIELD PIC X.\n");
+        estate.WritePreprocessedCopybook(
+            "STUBBED.cpy", $"      *> {StubCopybookCatalog.Marker}\n       01 STUB-FIELD PIC X.\n");
+
+        var catalog = StubCopybookCatalog.Load(estate.Root, "source");
+
+        catalog.Contains("STUB-FIELD").Should().BeTrue();
+        catalog.Contains("REAL-FIELD").Should().BeFalse("a real copybook must never have its fields excluded");
+        catalog.Copybooks.Should().ContainSingle().Which.Should().Be("STUBBED");
+    }
+
+    private sealed class TempEstate : IDisposable
+    {
+        public string Root { get; } = Directory.CreateTempSubdirectory("parity-stub-").FullName;
+
+        public void WritePreprocessedCopybook(string name, string content)
+        {
+            var dir = Path.Combine(Root, "source", ".preprocessed");
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(Path.Combine(dir, name), content);
+        }
+
+        public void Dispose()
+        {
+            try { Directory.Delete(Root, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    [Fact]
     public void Evaluate_ImplicitSectionIsNotCountedAsExpectedSymbol()
     {
         // The REKT loader synthesises "(implicit)" for paragraphs with no enclosing section.
@@ -337,6 +510,93 @@ public class ConversionParityValidatorTests
         result.Score.Should().Be(1.0);
     }
 
+    [Fact]
+    // ProgramFacts records callees as source-relative paths for identity. Comparing the raw
+    // path tokenised to [shared, receiver, cbl], which no faithful conversion can match, so
+    // every program with facts lost the whole call-target axis.
+    public void Evaluate_CalleeRecordedAsSourceRelativePathMatchesGeneratedClass()
+    {
+        var context = Context(
+            sections: new[] { "1000-MAIN" },
+            fields: Array.Empty<string>(),
+            calls: Array.Empty<string>(),
+            tables: Array.Empty<string>());
+
+        const string java = """
+            public class C {
+                void main() { receiverService.call(); }
+            }
+            """;
+
+        var result = ConversionParityValidator.Evaluate(
+            "CUST.cbl", "C.java", java, context, FactsWithCallees("shared/RECEIVER.cbl"));
+
+        var axis = result.Axes.Single(a => a.Name == "callTargets");
+        axis.Expected.Should().Be(1);
+        axis.MatchedInCode.Should().Be(1);
+        axis.IsTotalLoss.Should().BeFalse();
+
+        // The path stays in the gap text so identity is not lost when a gap is real.
+        result.Gaps.Should().NotContain(g => g.Axis == "callTargets");
+    }
+
+    [Fact]
+    // A target resolved from a variable at runtime has no name a converter could emit, so
+    // expecting one invents a gap that can never be closed.
+    public void Evaluate_DynamicCallTargetIsNotExpectedInGeneratedCode()
+    {
+        var ctx = new RektContext();
+        ctx.Sections.Add(new RektSection { Name = "1000-MAIN" });
+        ctx.CallTargets.Add(new RektCallTarget { TargetProgram = "WS-PROGRAM-NAME", IsDynamic = true });
+        ctx.CallTargets.Add(new RektCallTarget { TargetProgram = "FORMAT-BALANCE" });
+
+        var context = new StructuralContext
+        {
+            Program = "CUST.cbl",
+            Provenance = StructuralProvenance.RektNative,
+            Confidence = 0.95,
+            Context = ctx,
+        };
+
+        const string java = """
+            public class C {
+                void main() { formatBalance(); }
+            }
+            """;
+
+        var result = ConversionParityValidator.Evaluate("CUST.cbl", "C.java", java, context, null);
+
+        var axis = result.Axes.Single(a => a.Name == "callTargets");
+        axis.Expected.Should().Be(1);
+        axis.MatchedInCode.Should().Be(1);
+    }
+
+    [Fact]
+    // Renormalising over present axes let a total loss stay above the gate: dropping every CALL
+    // target with no SQL present scores 0.65/0.85 = 0.76 against a 0.75 threshold.
+    public void Evaluate_TotalLossOfAnAxisIsFlaggedEvenWhenTheScoreClearsTheThreshold()
+    {
+        var context = Context(
+            sections: new[] { "1000-MAIN" },
+            fields: new[] { "WS-CUSTOMER-TOTAL" },
+            calls: new[] { "FORMAT-BALANCE", "AUDIT-LOG" },
+            tables: Array.Empty<string>());
+
+        const string java = """
+            public class C {
+                int customerTotal;
+                void main() {}
+            }
+            """;
+
+        var result = ConversionParityValidator.Evaluate("CUST.cbl", "C.java", java, context, null);
+
+        result.Score.Should().BeApproximately(0.7647, 0.0005);
+        result.Score.Should().BeGreaterThan(0.75);
+        result.LostAxes.Should().Equal("callTargets");
+        ConversionParityPostPass.Fails(result, 0.75).Should().BeTrue();
+    }
+
     private static StructuralContext Context(
         IEnumerable<string> sections,
         IEnumerable<string> fields,
@@ -367,5 +627,16 @@ public class ConversionParityValidatorTests
         Confidence = FactConfidence.High,
         Summary = new ProgramSummary(),
         Io = new IoFacts { DbTables = tables },
+    };
+
+    private static ProgramFacts FactsWithCallees(params string[] callees) => new()
+    {
+        Basename = "CUST.cbl",
+        Stem = "CUST",
+        SourceHash = "hash",
+        Confidence = FactConfidence.High,
+        Summary = new ProgramSummary(),
+        Io = new IoFacts(),
+        Callees = callees,
     };
 }

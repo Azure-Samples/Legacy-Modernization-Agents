@@ -341,6 +341,7 @@ public sealed class RektContextLoader
                     Value = TryGetString(el, "value"),
                     Redefines = redefines,
                     Occurs = TryGetIntNullable(el, "occurs"),
+                    SourceSection = TryGetString(el, "sourceSection"),
                 };
                 bucket.Add(item);
 

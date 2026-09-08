@@ -21,13 +21,19 @@ public static class ConversionParityPostPass
         IEnumerable<CodeFile> generatedFiles,
         string outputFolder,
         string targetLanguage,
-        ILogger? logger = null)
+        ILogger? logger = null,
+        IEnumerable<string>? sourcePrograms = null)
     {
         var files = generatedFiles
             .Where(f => !string.IsNullOrWhiteSpace(f.FilePath))
             .ToList();
 
-        if (files.Count == 0) return string.Empty;
+        var expectedPrograms = (sourcePrograms ?? Enumerable.Empty<string>())
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (files.Count == 0 && expectedPrograms.Count == 0) return string.Empty;
 
         var repoRoot = FindRepoRoot();
         if (repoRoot is null)
@@ -42,29 +48,59 @@ public static class ConversionParityPostPass
         var factsDir = Path.Combine(repoRoot, "output", "rekt");
 
         var provider = new StructuralContextProvider(repoRoot, sourceFolder, fallbackToAi: false);
+        var stubCopybooks = StubCopybookCatalog.Load(repoRoot, sourceFolder);
+        if (stubCopybooks.Copybooks.Count > 0)
+        {
+            logger?.LogWarning(
+                "[ConversionParity] {Count} stub copybook(s) in use ({Names}); field-level parity is " +
+                "measured against incomplete evidence.",
+                stubCopybooks.Copybooks.Count, string.Join(", ", stubCopybooks.Copybooks));
+        }
         var results = new List<ProgramParityResult>();
 
-        foreach (var file in files)
+        var unmapped = files.Where(f => string.IsNullOrWhiteSpace(f.OriginalCobolFileName)).ToList();
+        foreach (var file in unmapped)
         {
-            var program = file.OriginalCobolFileName;
-            if (string.IsNullOrWhiteSpace(program))
+            results.Add(NotEvaluated(
+                Path.GetFileName(file.FilePath!),
+                file.FilePath,
+                "Generated file could not be mapped back to a COBOL source program."));
+        }
+
+        // Chunked assembly emits one file per generated class, all carrying the same source
+        // program. Scoring them individually would report a correct split as several failures.
+        var byProgram = files
+            .Where(f => !string.IsNullOrWhiteSpace(f.OriginalCobolFileName))
+            .GroupBy(f => f.OriginalCobolFileName!, StringComparer.OrdinalIgnoreCase);
+
+        var converted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var group in byProgram)
+        {
+            var program = group.Key;
+            converted.Add(program);
+
+            var parts = new List<string>();
+            var readFailures = new List<string>();
+            foreach (var file in group)
             {
-                results.Add(NotEvaluated(
-                    Path.GetFileName(file.FilePath!),
-                    file.FilePath,
-                    "Generated file could not be mapped back to a COBOL source program."));
-                continue;
+                try
+                {
+                    parts.Add(await File.ReadAllTextAsync(file.FilePath!));
+                }
+                catch (Exception ex)
+                {
+                    logger?.LogDebug(ex, "[ConversionParity] Could not read {File}", file.FilePath);
+                    readFailures.Add($"{Path.GetFileName(file.FilePath)}: {ex.Message}");
+                }
             }
 
-            string code;
-            try
+            var generatedFile = DescribeFiles(group);
+            if (parts.Count == 0)
             {
-                code = await File.ReadAllTextAsync(file.FilePath!);
-            }
-            catch (Exception ex)
-            {
-                logger?.LogDebug(ex, "[ConversionParity] Could not read {File}", file.FilePath);
-                results.Add(NotEvaluated(program, file.FilePath, $"Generated file could not be read: {ex.Message}"));
+                results.Add(NotEvaluated(
+                    program, generatedFile,
+                    $"No generated file could be read ({string.Join("; ", readFailures)})."));
                 continue;
             }
 
@@ -79,7 +115,16 @@ public static class ConversionParityPostPass
             }
 
             var facts = ProgramFactsArtifactLocator.TryLoad(factsDir, program);
-            results.Add(ConversionParityValidator.Evaluate(program, file.FilePath, code, context, facts));
+            var code = string.Join("\n", parts);
+            results.Add(ConversionParityValidator.Evaluate(
+                program, generatedFile, code, context, facts, stubCopybooks));
+        }
+
+        // A source that produced no output at all is the worst parity failure there is, and it
+        // is invisible if the report only walks generated files.
+        foreach (var program in expectedPrograms.Where(p => !converted.Contains(p)))
+        {
+            results.Add(NoOutput(program));
         }
 
         var report = BuildReport(results, targetLanguage, threshold, gate);
@@ -89,11 +134,17 @@ public static class ConversionParityPostPass
         {
             Environment.ExitCode = LowScoreExitCode;
             logger?.LogError(
-                "[ConversionParity] {Count} program(s) below MIN_PROGRAM_SCORE={Threshold}; ON_LOW_SCORE=stop set exit code {Code}.",
+                "[ConversionParity] {Count} program(s) failed parity (MIN_PROGRAM_SCORE={Threshold}); ON_LOW_SCORE=stop set exit code {Code}.",
                 report.BelowThresholdCount, threshold, LowScoreExitCode);
         }
 
         return BuildMarkdown(report);
+    }
+
+    private static string DescribeFiles(IEnumerable<CodeFile> group)
+    {
+        var names = group.Select(f => Path.GetFileName(f.FilePath!)).OrderBy(n => n).ToList();
+        return names.Count == 1 ? names[0] : $"{names[0]} (+{names.Count - 1} more)";
     }
 
     internal static ConversionParityReport BuildReport(
@@ -110,7 +161,7 @@ public static class ConversionParityPostPass
             Programs = results,
             EvaluatedCount = evaluated.Count,
             NotEvaluatedCount = results.Count - evaluated.Count,
-            BelowThresholdCount = evaluated.Count(r => r.Score!.Value < threshold),
+            BelowThresholdCount = results.Count(r => Fails(r, threshold)),
             AverageScore = evaluated.Count == 0 ? null : Math.Round(evaluated.Average(r => r.Score!.Value), 4),
         };
     }
@@ -146,28 +197,32 @@ public static class ConversionParityPostPass
             return sb.ToString();
         }
 
-        sb.AppendLine($"Structural coverage of the generated {report.TargetLanguage} against the COBOL each file came from. Threshold `MIN_PROGRAM_SCORE={report.Threshold:0.##}`, gate `ON_LOW_SCORE={report.OnLowScore}`.");
+        // MIN_PROGRAM_SCORE is parsed invariantly, so the value shown must round-trip under any locale.
+        sb.AppendLine(FormattableString.Invariant(
+            $"Structural coverage of the generated {report.TargetLanguage} against the COBOL each file came from. Threshold `MIN_PROGRAM_SCORE={report.Threshold:0.##}`, gate `ON_LOW_SCORE={report.OnLowScore}`."));
         sb.AppendLine();
         sb.AppendLine($"- Evaluated: **{report.EvaluatedCount}**, not evaluated: **{report.NotEvaluatedCount}**");
-        sb.AppendLine($"- Average score: **{report.AverageScore:0.00}**");
-        sb.AppendLine($"- Below threshold: **{report.BelowThresholdCount}**");
+        sb.AppendLine(FormattableString.Invariant($"- Average score: **{report.AverageScore:0.00}**"));
+        sb.AppendLine($"- Failing parity: **{report.BelowThresholdCount}**");
         sb.AppendLine();
 
         var flagged = report.Programs
-            .Where(p => p.Outcome == ParityOutcome.Evaluated && p.Score < report.Threshold)
-            .OrderBy(p => p.Score)
+            .Where(p => Fails(p, report.Threshold))
+            .OrderBy(p => p.Score ?? 0)
             .ToList();
 
         if (flagged.Count > 0)
         {
-            sb.AppendLine("### Programs below threshold");
+            sb.AppendLine("### Programs failing parity");
             sb.AppendLine();
-            sb.AppendLine("| COBOL Source | Generated File | Score | Missing |");
-            sb.AppendLine("|---|---|---|---|");
+            sb.AppendLine("| COBOL Source | Generated File | Score | Missing | Lost axes |");
+            sb.AppendLine("|---|---|---|---|---|");
             foreach (var p in flagged.Take(20))
             {
                 var missing = p.Gaps.Count(g => g.Kind == ParityGapKind.Missing);
-                sb.AppendLine($"| {p.Program} | {Path.GetFileName(p.GeneratedFile ?? "-")} | {p.Score:0.00} | {missing} |");
+                var lost = p.LostAxes.Count == 0 ? "-" : string.Join(", ", p.LostAxes);
+                sb.AppendLine(FormattableString.Invariant(
+                    $"| {p.Program} | {Path.GetFileName(p.GeneratedFile ?? "-")} | {p.Score:0.00} | {missing} | {lost} |"));
             }
             sb.AppendLine();
 
@@ -224,16 +279,38 @@ public static class ConversionParityPostPass
         NotEvaluatedReason = reason,
     };
 
+    private static ProgramParityResult NoOutput(string program) => new()
+    {
+        Program = program,
+        Outcome = ParityOutcome.Evaluated,
+        Score = 0,
+        Gaps = [new ParityGap
+        {
+            Axis = "file",
+            Symbol = program,
+            Kind = ParityGapKind.Missing,
+            Detail = "Conversion produced no output file for this source program.",
+        }],
+    };
+
+    // A program fails parity if its weighted score is short, or if any axis that had expected
+    // symbols has none of them in code. Renormalisation can otherwise keep a whole-axis loss
+    // above the threshold: dropping every CALL target scores 0.76 against a 0.75 gate.
+    internal static bool Fails(ProgramParityResult result, double threshold) =>
+        result.Outcome == ParityOutcome.Evaluated
+        && (result.Score is { } score && score < threshold || result.LostAxes.Count > 0);
+
     internal static double ReadThreshold(ILogger? logger = null)
     {
         var raw = Environment.GetEnvironmentVariable("MIN_PROGRAM_SCORE");
         if (string.IsNullOrWhiteSpace(raw)) return DefaultThreshold;
 
         if (!double.TryParse(raw, System.Globalization.NumberStyles.Float,
-                System.Globalization.CultureInfo.InvariantCulture, out var value))
+                System.Globalization.CultureInfo.InvariantCulture, out var value)
+            || !double.IsFinite(value))
         {
             logger?.LogWarning(
-                "[ConversionParity] MIN_PROGRAM_SCORE='{Raw}' is not a number; using {Default}.", raw, DefaultThreshold);
+                "[ConversionParity] MIN_PROGRAM_SCORE='{Raw}' is not a finite number; using {Default}.", raw, DefaultThreshold);
             return DefaultThreshold;
         }
 

@@ -25,6 +25,10 @@ internal static class ConversionParityValidator
     // Compact matching ignores word boundaries, so it needs a longer name to stay honest.
     private const int MinimumCompactLength = 4;
 
+    // Weight of a symbol found only in comments or string literals. Not zero, because renaming
+    // is legitimate; not one, because a comment is not converted code.
+    private const double CommentEvidenceWeight = 0.5;
+
     // Storage-section prefixes carry no meaning a converter is expected to preserve.
     private static readonly HashSet<string> ScopePrefixes =
         new(StringComparer.Ordinal) { "ws", "ls", "lk", "fd", "sd" };
@@ -46,8 +50,10 @@ internal static class ConversionParityValidator
         string? generatedFile,
         string generatedCode,
         StructuralContext? structuralContext,
-        ProgramFacts? facts)
+        ProgramFacts? facts,
+        StubCopybookCatalog? stubCopybooks = null)
     {
+        stubCopybooks ??= StubCopybookCatalog.Empty;
         var symbols = new SourceSymbols(generatedCode);
         var isStub = StubMarkers.Any(m => generatedCode.Contains(m, StringComparison.Ordinal));
 
@@ -92,7 +98,7 @@ internal static class ConversionParityValidator
         // comments is not evidence that anything was converted.
         var creditComments = !isStub && symbols.HasCode;
 
-        var fieldNames = CollectDataFields(structuralContext.Context);
+        var fieldNames = CollectDataFields(structuralContext.Context, stubCopybooks, out var stubbed);
         var expectedByAxis = new Dictionary<string, List<ExpectedSymbol>>
         {
             [ProceduresAxis] = CollectProcedures(structuralContext.Context, fieldNames),
@@ -117,6 +123,16 @@ internal static class ConversionParityValidator
             axes.Add(ScoreAxis(axisName, weights[axisName], expected, symbols, creditComments, gaps));
         }
 
+        var evidenceNotes = stubbed.Count == 0
+            ? Array.Empty<string>()
+            : new[]
+            {
+                $"{stubbed.Count} data field(s) excluded as artefacts of auto-generated stub copybooks: "
+                + string.Join(", ", stubbed.OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
+                + ". The real copybooks were not found, so field-level parity is measured against "
+                + "incomplete evidence.",
+            };
+
         var scored = axes.Where(a => a.Coverage.HasValue).ToList();
         if (scored.Count == 0)
         {
@@ -130,6 +146,7 @@ internal static class ConversionParityValidator
                 Provenance = structuralContext.Provenance.ToString(),
                 StructuralConfidence = structuralContext.Confidence,
                 IsDiagnosticStub = isStub,
+                EvidenceNotes = evidenceNotes,
                 Axes = axes,
             };
         }
@@ -158,6 +175,7 @@ internal static class ConversionParityValidator
             StructuralConfidence = structuralContext.Confidence,
             Score = Math.Round(score, 4),
             IsDiagnosticStub = isStub,
+            EvidenceNotes = evidenceNotes,
             Axes = axes,
             Gaps = gaps,
         };
@@ -235,9 +253,10 @@ internal static class ConversionParityValidator
             });
         }
 
-        // Comment-only matches do not count as loss: a renamed or inlined procedure
-        // typically survives as a comment referencing the original COBOL name.
-        var covered = inCode + inCommentsOnly;
+        // Comment-only evidence is weaker than code: a renamed procedure characteristically
+        // survives as a comment, but a file that only names its symbols in comments converted
+        // nothing. Half credit keeps a handful of renames passing while a hollow file fails.
+        var covered = (inCode + CommentEvidenceWeight * inCommentsOnly) / comparable.Count;
 
         return new ParityAxisResult
         {
@@ -248,7 +267,7 @@ internal static class ConversionParityValidator
             MatchedInCommentsOnly = inCommentsOnly,
             Missing = missing,
             Excluded = excluded,
-            Coverage = (double)covered / comparable.Count,
+            Coverage = covered,
         };
     }
 
@@ -302,36 +321,88 @@ internal static class ConversionParityValidator
         }
     }
 
-    private static List<ExpectedSymbol> CollectDataFields(RektContext ctx)
+    private static List<ExpectedSymbol> CollectDataFields(
+        RektContext ctx, StubCopybookCatalog stubCopybooks, out List<string> stubbed)
     {
-        var names = new List<string>();
-        foreach (var item in ctx.DataStructure) FlattenDataItem(item, names);
-        return Distinct(names).Select(n => new ExpectedSymbol(n)).ToList();
+        var found = new List<(string Name, string? Section)>();
+        foreach (var item in ctx.DataStructure) FlattenDataItem(item, found, null);
+
+        var sections = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (name, section) in found) sections.TryAdd(name, section);
+
+        var distinct = Distinct(found.Select(f => f.Name));
+        stubbed = distinct.Where(stubCopybooks.Contains).ToList();
+
+        return distinct
+            .Where(n => !stubCopybooks.Contains(n))
+            .Select(n => new ExpectedSymbol(n, detail: DescribeSection(sections.GetValueOrDefault(n))))
+            .ToList();
     }
 
-    private static void FlattenDataItem(RektDataItem item, List<string> into)
+    // A LINKAGE field is supplied by the caller, so a program that only reads it through a
+    // condition name legitimately never spells it out. Saying where it came from stops the gap
+    // being read as a dropped field.
+    private static string? DescribeSection(string? section) =>
+        string.Equals(section, "LINKAGE", StringComparison.OrdinalIgnoreCase)
+            ? "Declared in the LINKAGE SECTION; supplied by the caller."
+            : null;
+
+    private static void FlattenDataItem(
+        RektDataItem item, List<(string Name, string? Section)> into, string? inheritedSection)
     {
         var name = item.Name?.Trim() ?? "";
+        var section = item.SourceSection ?? inheritedSection;
         var keep =
             name.Length > 0
             && item.Level >= 0
             && item.Level != 88   // condition names are booleans over another field, not storage
             && item.Level != 66   // RENAMES aliases an existing field
+            && !IsProcedureRegister(item)
             && !name.Equals("FILLER", StringComparison.OrdinalIgnoreCase)
             && !name.StartsWith("TypedRecord", StringComparison.Ordinal);
 
-        if (keep) into.Add(name);
+        if (keep) into.Add((name, section));
 
-        foreach (var child in item.Children) FlattenDataItem(child, into);
+        foreach (var child in item.Children) FlattenDataItem(child, into, section);
     }
+
+    // A data node attributed to the PROCEDURE DIVISION is a special register smojol injected
+    // (WHEN-COMPILED, TALLY), not declared storage, so no conversion can be expected to carry it.
+    private static bool IsProcedureRegister(RektDataItem item) =>
+        string.Equals(item.SourceSection, "PROCEDURE_DIVISION", StringComparison.OrdinalIgnoreCase);
+
+    private static readonly string[] CobolSourceExtensions = { ".cbl", ".cob", ".cpy", ".ccp", ".cobol" };
 
     private static List<ExpectedSymbol> CollectCallTargets(RektContext ctx, ProgramFacts? facts)
     {
+        // Dynamic targets name a variable resolved at runtime, so no generated identifier can
+        // be expected to carry them.
         var names = facts?.Callees is { Count: > 0 } callees
             ? callees.ToList()
-            : ctx.CallTargets.Select(c => c.TargetProgram).ToList();
+            : ctx.CallTargets.Where(c => !c.IsDynamic).Select(c => c.TargetProgram).ToList();
 
-        return Distinct(names).Select(n => new ExpectedSymbol(n)).ToList();
+        return Distinct(names)
+            .Select(n => new ExpectedSymbol(n, comparable: ComparableProgramName(n)))
+            .ToList();
+    }
+
+    // Facts record a callee as a source-relative path so identity stays unique across duplicate
+    // basenames; only the program stem can plausibly appear in generated code.
+    private static string ComparableProgramName(string name)
+    {
+        var trimmed = name.Trim().Trim('\'', '"').Replace('\\', '/');
+        if (trimmed.Length == 0) return name;
+
+        var segment = trimmed[(trimmed.LastIndexOf('/') + 1)..];
+        if (segment.Length == 0) return trimmed;
+
+        foreach (var ext in CobolSourceExtensions)
+        {
+            if (segment.EndsWith(ext, StringComparison.OrdinalIgnoreCase))
+                return segment[..^ext.Length];
+        }
+
+        return segment;
     }
 
     private static List<ExpectedSymbol> CollectSqlTables(RektContext ctx, ProgramFacts? facts)
@@ -369,12 +440,12 @@ internal static class ConversionParityValidator
 
     internal sealed class ExpectedSymbol
     {
-        internal ExpectedSymbol(string original, string? detail = null)
+        internal ExpectedSymbol(string original, string? detail = null, string? comparable = null)
         {
             Original = original;
             Detail = detail;
 
-            var all = Tokenizer.SplitIdentifier(original);
+            var all = Tokenizer.SplitIdentifier(comparable ?? original);
             Tokens = all.Where(t => !t.All(char.IsDigit)).ToList();
 
             CoreTokens = Tokens.Count > 1 && ScopePrefixes.Contains(Tokens[0])

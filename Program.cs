@@ -60,7 +60,11 @@ internal static class Program
             }
 
             var rootCommand = BuildRootCommand(loggerFactory, logger, fileHelper, settingsHelper);
-            return await rootCommand.InvokeAsync(args);
+            var exitCode = await rootCommand.InvokeAsync(args);
+
+            // Main returning int overrides Environment.ExitCode entirely, so a quality gate that
+            // only sets the latter would never fail a build. Handler failures still win.
+            return exitCode != 0 ? exitCode : Environment.ExitCode;
         }
         finally
         {
