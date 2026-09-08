@@ -523,6 +523,22 @@ The speed profile works by setting environment variables that override the three
 ./doctor.sh chunking-health  # Check smart chunking configuration
 ```
 
+### Container Commands
+
+The REKT pipeline runs in Docker. These commands manage that stack directly —
+the analysis commands start it automatically, so they are only needed to warm
+images ahead of time or to recover from a bad state.
+
+```bash
+./doctor.sh containers status    # container + image state, flags a stale REKT image
+./doctor.sh containers up        # pull/build what's missing, then start (safe to re-run)
+./doctor.sh containers rebuild   # force a REKT image rebuild after a framework update
+./doctor.sh containers reset     # remove containers and graph volumes, then start clean
+```
+
+> Full reference: [`docs/container-lifecycle.md`](docs/container-lifecycle.md) — startup
+> sequence, image-freshness fingerprinting, the two Neo4j instances, and port usage.
+
 ### Cobol-REKT: Static Analysis Pipeline
 
 Cobol-REKT provides deep structural analysis — AST, control flow graphs (CFG), and data flow extraction — independent of the AI-driven migration. It uses a Java-based COBOL parser ([smojol-cli](https://github.com/avishek-sen-gupta/cobol-rekt)) and ingests results into a dedicated Neo4j instance.

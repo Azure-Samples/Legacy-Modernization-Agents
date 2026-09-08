@@ -1,13 +1,38 @@
+# Pin the Compose project name.
+#
+# Compose otherwise derives it from the directory name, while every service here
+# also fixes `container_name:`. Two checkouts, a renamed folder or a re-clone
+# under a different name therefore produce a different project that collides on
+# the fixed container names:
+#   Conflict. The container name "/cobol-rekt" is already in use
+# Pinning the name keeps one stable project regardless of the folder. doctor.sh
+# also exports COMPOSE_PROJECT_NAME so Compose versions that predate this key
+# behave identically.
+name: legacy-modernization-agents
+
 services:
   portal:
     build: .
     container_name: cobol-migration-portal
+    # Opt-in only. doctor.sh runs the portal directly on the host on port 5028;
+    # without a profile a bare `docker compose up -d` would also start this
+    # container on the same port, and because of `restart: unless-stopped` it
+    # would reclaim 5028 after every Docker restart, making the host portal fail
+    # with AddressInUseException. Start it explicitly instead:
+    #   docker compose --profile container-portal up -d portal
+    profiles: ["container-portal"]
     restart: unless-stopped
     ports:
       - "5028:5028"
     env_file:
-      - ./Config/ai-config.env
-      - ./Config/ai-config.local.env
+      - path: ./Config/ai-config.env
+        required: true
+      # Personal overrides; gitignored, so absent on a fresh clone. Compose
+      # treats env_file as mandatory by default, which made every whole-project
+      # command fail before any container started. (Needs Compose v2.24+;
+      # doctor.sh also creates the file so older versions keep working.)
+      - path: ./Config/ai-config.local.env
+        required: false
     volumes:
       - ./Data:/app/Data
       - ./Logs:/app/Logs
@@ -19,8 +44,16 @@ services:
       - Mcp__ConfigPath=/app/Config/appsettings.json
       - Mcp__WorkingDirectory=/app
       - ApplicationSettings__Neo4j__Uri=bolt://neo4j:7687
+      # The rekt graph lives in a second Neo4j. The portal defaults to
+      # bolt://localhost:7688, which inside this container resolves to the
+      # container itself — so the REKT panels must be pointed at the service
+      # name and its in-network bolt port.
+      - REKT_NEO4J_URI=bolt://cobol-rekt-neo4j:7687
+      - REKT_NEO4J_USER=neo4j
+      - REKT_NEO4J_PASSWORD=cobol-rekt-2026
     depends_on:
       - neo4j
+      - cobol-rekt-neo4j
 
   neo4j:
     image: neo4j:5.15.0

@@ -339,6 +339,12 @@ show_usage() {
     echo -e "  ${GREEN}--min-program-score 0.75${NC}          Per-program parity score gate (0 = off)"
     echo -e "  ${GREEN}--on-low-score continue|stop${NC}      What to do when a file misses the score"
     echo
+    echo -e "${BOLD}📦 Containers:${NC}"
+    echo -e "  ${GREEN}$0 containers status${NC}   Show container/image state (flags a stale REKT image)"
+    echo -e "  ${GREEN}$0 containers up${NC}       Pull/build images and start the rekt stack (safe to re-run)"
+    echo -e "  ${GREEN}$0 containers rebuild${NC}  Force-rebuild the REKT image after a framework update"
+    echo -e "  ${GREEN}$0 containers reset${NC}    Remove containers and graph volumes, then start clean"
+    echo
     echo -e "${BOLD}🛡️ Reliability:${NC}"
     echo -e "  Every LLM call has a hang-timeout (default 480 s). If the provider accepts the"
     echo -e "  request but never replies (Copilot endpoint sometimes does this on long calls),"
@@ -507,11 +513,30 @@ port_listen_pids() {
 }
 
 # Kill whatever process(es) are listening on the given TCP port.
+#
+# A published container port is held by Docker's proxy, not by the portal
+# process: killing that PID does not free the port, because the container
+# immediately re-binds it (the compose portal service is `restart:
+# unless-stopped`, so it also returns after every Docker restart). Stop the
+# container itself first, then fall back to killing host processes.
 kill_port_listeners() {
     local port="$1"
+    local freed=1
+
+    if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+        local cname
+        while IFS= read -r cname; do
+            [[ -z "$cname" ]] && continue
+            echo -e "${YELLOW}⚠️  Container '${cname}' is publishing port ${port} — stopping it.${NC}" >&2
+            docker stop "$cname" >/dev/null 2>&1 && freed=0
+        done < <(docker ps --filter "publish=$port" --format '{{.Names}}' 2>/dev/null)
+    fi
+
     local pids
     pids="$(port_listen_pids "$port")"
-    [[ -z "$pids" ]] && return 1
+    if [[ -z "$pids" ]]; then
+        return $freed
+    fi
     if command -v taskkill >/dev/null 2>&1 && ! command -v lsof >/dev/null 2>&1; then
         # Git Bash/MINGW: the double-slash keeps MSYS from mangling the
         # /F /PID flags into bogus filesystem paths before taskkill.exe runs.
@@ -522,6 +547,7 @@ kill_port_listeners() {
     else
         echo "$pids" | xargs kill -9 2>/dev/null
     fi
+    return 0
 }
 
 launch_mcp_web_ui() {
@@ -2764,7 +2790,7 @@ run_reverse_engineering() {
         echo "    inject them into conversion prompts (or pass --skip-reverse-engineering --reuse-re)"
         echo ""
         echo -e "${CYAN}📄 View in Portal:${NC}"
-        echo "  • Portal running at: http://localhost:5028"
+        echo "  • Portal running at: http://localhost:$DEFAULT_MCP_PORT"
         echo "  • Click '📄 Reverse Engineering Results' button to view the full RE report"
         echo "  • Each run card now has a '🔬 RE Results' button to view or delete persisted results"
         echo ""
@@ -2783,7 +2809,7 @@ run_reverse_engineering() {
         echo ""
         echo -e "${RED}❌ Reverse engineering failed (exit code $exit_code)${NC}"
         if [ -n "$PORTAL_PID" ]; then
-            echo -e "${YELLOW}Portal is still running at http://localhost:5028 for debugging${NC}"
+            echo -e "${YELLOW}Portal is still running at http://localhost:$DEFAULT_MCP_PORT for debugging${NC}"
         fi
     fi
 
@@ -2945,6 +2971,9 @@ REKT_NEO4J_BOLT_PORT=7688
 REKT_CONTAINER="cobol-rekt"
 REKT_POPULATOR_CONTAINER="cobol-graph-populator"
 
+REKT_IMAGE="rekt-oss-mma:latest"
+REKT_FINGERPRINT_LABEL="mma.rekt.fingerprint"
+
 # Auto-detect docker API version for macOS compatibility
 detect_docker_api_version() {
     if [[ "$(uname -s)" == "Darwin" ]]; then
@@ -2952,27 +2981,251 @@ detect_docker_api_version() {
     fi
 }
 
-ensure_rekt_containers() {
+# Resolve the Compose entrypoint once per process.
+#
+# Docker Desktop ships Compose v2 as the `docker compose` *subcommand*; the
+# standalone `docker-compose` v1 binary is no longer installed. Calling the v1
+# name unconditionally exits 127 ("command not found"), and because the old
+# call sites also redirected stderr to /dev/null the failure was invisible —
+# the script then waited a full minute for containers that were never started.
+COMPOSE_CMD=()
+resolve_compose_cmd() {
+    [[ ${#COMPOSE_CMD[@]} -gt 0 ]] && return 0
+    if docker compose version >/dev/null 2>&1; then
+        COMPOSE_CMD=(docker compose)
+    elif command -v docker-compose >/dev/null 2>&1; then
+        COMPOSE_CMD=(docker-compose)
+    else
+        return 1
+    fi
+    return 0
+}
+
+# Run a compose command against this repo's compose file.
+#
+# COMPOSE_PROJECT_NAME is pinned to match the `name:` key in docker-compose.yml.
+# Compose otherwise derives the project from the directory name, which collides
+# with the fixed `container_name:` values whenever the repo lives in a
+# differently-named folder (a second checkout, a rename, or a fresh clone during
+# an upgrade). Setting it here also covers Compose versions that predate the
+# top-level `name:` key.
+COMPOSE_PROJECT="legacy-modernization-agents"
+compose() {
+    resolve_compose_cmd || return 1
+    COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT" \
+        "${COMPOSE_CMD[@]}" -f "$REPO_ROOT/docker-compose.yml" "$@"
+}
+
+# Remove containers that carry our fixed names but belong to a different Compose
+# project (created before the project name was pinned, or by another checkout).
+# Compose cannot adopt them, so it fails outright with a name conflict; deleting
+# the stray container lets Compose recreate it. Named volumes hold the graph
+# data, so nothing is lost.
+clear_conflicting_containers() {
+    local name owner removed=1
+    for name in "$@"; do
+        docker container inspect "$name" >/dev/null 2>&1 || continue
+        owner="$(docker container inspect "$name" \
+            --format '{{ index .Config.Labels "com.docker.compose.project" }}' 2>/dev/null)"
+        [[ "$owner" == "$COMPOSE_PROJECT" ]] && continue
+        echo -e "  ${YELLOW}⚠️  '$name' belongs to Compose project '${owner:-none}' — removing so it can be recreated.${NC}"
+        docker rm -f "$name" >/dev/null 2>&1 && removed=0
+    done
+    return $removed
+}
+
+# Verify Docker is installed *and* the daemon is actually reachable before we
+# try to use it, so users get one clear message instead of a wall of API errors.
+require_docker() {
     detect_docker_api_version
+    if ! command -v docker >/dev/null 2>&1; then
+        echo -e "${RED}❌ Docker is not installed (or not on PATH).${NC}"
+        echo -e "   Install Docker Desktop: ${BLUE}https://www.docker.com/products/docker-desktop/${NC}"
+        return 1
+    fi
+    if ! docker info >/dev/null 2>&1; then
+        echo -e "${RED}❌ Docker is installed but the daemon isn't responding.${NC}"
+        echo -e "   Start Docker Desktop and wait for the whale icon to stop animating, then retry."
+        return 1
+    fi
+    if ! resolve_compose_cmd; then
+        echo -e "${RED}❌ Neither 'docker compose' (v2) nor 'docker-compose' (v1) is available.${NC}"
+        echo -e "   Update Docker Desktop, which bundles Compose v2."
+        return 1
+    fi
+    return 0
+}
+
+# The portal's env_file list references Config/ai-config.local.env, which holds
+# personal overrides and is therefore gitignored — it does not exist on a fresh
+# clone. Compose treats env_file entries as mandatory, so a missing file aborts
+# any whole-project command (`docker compose up -d`, `config`, `ps`) before a
+# single container starts. docker-compose.yml also marks it `required: false`,
+# but that needs Compose v2.24+; creating the stub keeps every version working.
+ensure_local_env_file() {
+    local f="$REPO_ROOT/Config/ai-config.local.env"
+    [[ -f "$f" ]] && return 0
+    mkdir -p "$REPO_ROOT/Config"
+    cat > "$f" <<'ENVEOF'
+# Local overrides for docker-compose (gitignored).
+# Created automatically by doctor.sh so Compose can start the stack on a
+# fresh clone. Add personal settings such as API keys here.
+ENVEOF
+    echo -e "  ${GREEN}✅ Created Config/ai-config.local.env (was missing)${NC}"
+}
+
+# Bind-mounted host directories must exist *before* the containers start,
+# otherwise Docker creates them itself — root-owned on Linux, which then breaks
+# host-side writes into output/rekt.
+ensure_bind_mount_dirs() {
+    mkdir -p "$REPO_ROOT/output/rekt" "$REPO_ROOT/source" "$REPO_ROOT/Data" "$REPO_ROOT/Logs"
+}
+
+# Fingerprint of everything that feeds the rekt image build.
+rekt_build_fingerprint() {
+    local hasher=""
+    if command -v shasum >/dev/null 2>&1; then
+        hasher="shasum -a 256"
+    elif command -v sha256sum >/dev/null 2>&1; then
+        hasher="sha256sum"
+    else
+        echo "no-hasher"
+        return 0
+    fi
+    {
+        cat "$REPO_ROOT/tools/cobol-rekt/Dockerfile" 2>/dev/null
+        find "$REPO_ROOT/tools/cobol-rekt/patches" -type f 2>/dev/null | sort | while IFS= read -r p; do
+            cat "$p" 2>/dev/null
+        done
+    } | $hasher | awk '{print $1}'
+}
+
+rekt_image_fingerprint() {
+    docker image inspect "$REKT_IMAGE" \
+        --format "{{ index .Config.Labels \"$REKT_FINGERPRINT_LABEL\" }}" 2>/dev/null
+}
+
+# Pull a base image only when it isn't present locally, streaming progress so a
+# multi-hundred-megabyte download never looks like a hung script.
+ensure_image_pulled() {
+    local image="$1" label="$2"
+    if docker image inspect "$image" >/dev/null 2>&1; then
+        echo -e "  ${GREEN}✅ $label image present${NC} ($image)"
+        return 0
+    fi
+    echo -e "  ${BLUE}⬇️  Pulling $label image ($image) — first run only, this can take several minutes...${NC}"
+    if docker pull "$image"; then
+        echo -e "  ${GREEN}✅ Pulled $label image${NC}"
+        return 0
+    fi
+    echo -e "  ${RED}❌ Failed to pull $image${NC}"
+    return 1
+}
+
+# Build the rekt image when it is missing or its build inputs changed.
+#
+# docker-compose.yml gives cobol-rekt both `image:` and `build:`. Compose builds
+# only when the image is absent, so after a framework update that edits the
+# Dockerfile an existing user keeps running a stale image forever and silently
+# never receives the fix. Comparing a fingerprint label closes that gap while
+# still skipping the (slow) Maven build whenever nothing changed.
+ensure_rekt_image() {
+    local want have
+    want="$(rekt_build_fingerprint)"
+    have="$(rekt_image_fingerprint)"
+
+    if docker image inspect "$REKT_IMAGE" >/dev/null 2>&1; then
+        if [[ -n "$want" && "$want" == "$have" ]]; then
+            echo -e "  ${GREEN}✅ Cobol-REKT image up to date${NC}"
+            return 0
+        fi
+        if [[ -z "$have" ]]; then
+            echo -e "  ${YELLOW}🔄 Cobol-REKT image predates version tracking — rebuilding once...${NC}"
+        else
+            echo -e "  ${YELLOW}🔄 Cobol-REKT build inputs changed — rebuilding image...${NC}"
+        fi
+    else
+        echo -e "  ${BLUE}🔨 Building Cobol-REKT image (first run, several minutes)...${NC}"
+    fi
+
+    if docker build \
+        --label "$REKT_FINGERPRINT_LABEL=$want" \
+        -t "$REKT_IMAGE" \
+        "$REPO_ROOT/tools/cobol-rekt"; then
+        echo -e "  ${GREEN}✅ Cobol-REKT image ready${NC}"
+        return 0
+    fi
+    echo -e "  ${RED}❌ Cobol-REKT image build failed${NC}"
+    return 1
+}
+
+# Show that a slow wait is alive: elapsed time plus the container's real state.
+container_state() {
+    docker inspect -f '{{.State.Status}}{{if .State.Health}} ({{.State.Health.Status}}){{end}}' \
+        "$1" 2>/dev/null || echo "absent"
+}
+
+ensure_rekt_containers() {
+    require_docker || return 1
     echo -e "${BLUE}🔧 Ensuring rekt containers are running...${NC}"
 
-    # Start only the rekt services (leave existing neo4j untouched)
-    docker-compose up -d "$REKT_NEO4J_CONTAINER" "$REKT_CONTAINER" 2>/dev/null
+    ensure_local_env_file
+    ensure_bind_mount_dirs
 
-    # Wait for rekt Neo4j to be healthy
-    local max_wait=60
+    # Acquire images up front, with visible progress, before anything waits on
+    # them. Previously the first `rekt-full` run paid for a ~500MB Neo4j pull
+    # plus the Maven build in the middle of an analysis, with all output
+    # suppressed — indistinguishable from a hang.
+    ensure_image_pulled "neo4j:5.15.0" "Neo4j" || return 1
+    ensure_rekt_image || return 1
+
+    echo -e "  ${BLUE}🚀 Starting containers...${NC}"
+    local up_args=(up -d)
+    # Compose v2 can block until healthchecks pass; both Neo4j services define
+    # one. Fall back to the manual poll below when --wait isn't supported.
+    if compose up --help 2>/dev/null | grep -q -- "--wait"; then
+        up_args+=(--wait --wait-timeout 180)
+    fi
+    if ! compose "${up_args[@]}" "$REKT_NEO4J_CONTAINER" "$REKT_CONTAINER"; then
+        # A name conflict means containers with our fixed names exist under a
+        # different Compose project. Clear them and retry once.
+        if clear_conflicting_containers "$REKT_NEO4J_CONTAINER" "$REKT_CONTAINER"; then
+            echo -e "  ${BLUE}🔁 Retrying startup...${NC}"
+            compose "${up_args[@]}" "$REKT_NEO4J_CONTAINER" "$REKT_CONTAINER" || {
+                echo -e "${RED}❌ Failed to start rekt containers.${NC}"
+                echo -e "   Inspect with: ${BLUE}./doctor.sh containers status${NC}"
+                echo -e "   Recover with: ${BLUE}./doctor.sh containers reset${NC}"
+                return 1
+            }
+        else
+            echo -e "${RED}❌ Failed to start rekt containers.${NC}"
+            echo -e "   Inspect with: ${BLUE}./doctor.sh containers status${NC}"
+            echo -e "   Recover with: ${BLUE}./doctor.sh containers reset${NC}"
+            return 1
+        fi
+    fi
+
+    # Wait for rekt Neo4j to answer queries (also covers older Compose without
+    # --wait). The heartbeat prints elapsed time and real container state so a
+    # slow start is visibly progressing rather than frozen.
+    local max_wait=120
     local waited=0
     echo -ne "  Waiting for $REKT_NEO4J_CONTAINER"
     while ! docker exec "$REKT_NEO4J_CONTAINER" cypher-shell -u neo4j -p cobol-rekt-2026 'RETURN 1' >/dev/null 2>&1; do
         sleep 2
         waited=$((waited + 2))
-        echo -ne "."
+        if (( waited % 10 == 0 )); then
+            echo -ne "\r  Waiting for $REKT_NEO4J_CONTAINER — ${waited}s, state: $(container_state "$REKT_NEO4J_CONTAINER")    "
+        fi
         if [[ $waited -ge $max_wait ]]; then
-            echo -e "\n${RED}❌ $REKT_NEO4J_CONTAINER did not become healthy in ${max_wait}s${NC}"
+            echo -e "\n${RED}❌ $REKT_NEO4J_CONTAINER did not become ready in ${max_wait}s${NC}"
+            echo -e "   State: $(container_state "$REKT_NEO4J_CONTAINER")"
+            echo -e "   Recent logs:"
+            docker logs --tail 15 "$REKT_NEO4J_CONTAINER" 2>&1 | sed 's/^/     /'
             return 1
         fi
     done
-    echo -e " ${GREEN}✅${NC}"
+    echo -e "\r  $REKT_NEO4J_CONTAINER ready ${GREEN}✅${NC}                                        "
 
     # Verify rekt CLI is available
     if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar --version >/dev/null 2>&1; then
@@ -2981,20 +3234,79 @@ ensure_rekt_containers() {
         echo -e "  ${YELLOW}⚠️  Cobol-REKT CLI not responding (container may still be building)${NC}"
     fi
 
-    # Verify /output bind mount is writable — rm -rf on the host changes the inode and breaks it.
-    # Restart the container to re-establish the mount if needed.
+    # Verify /output bind mount is writable — `rm -rf` on the host replaces the
+    # directory inode, which leaves the container's mount pointing at the old,
+    # deleted one. `docker restart` cannot fix this: bind mounts are established
+    # at container *creation*, so the container must be recreated.
     if ! docker exec "$REKT_CONTAINER" bash -c \
         "touch /output/.write_probe && rm -f /output/.write_probe" >/dev/null 2>&1; then
-        echo -e "  ${YELLOW}⚠️  /output bind mount stale — restarting $REKT_CONTAINER...${NC}"
-        docker restart "$REKT_CONTAINER" >/dev/null
+        echo -e "  ${YELLOW}⚠️  /output bind mount stale — recreating $REKT_CONTAINER...${NC}"
+        ensure_bind_mount_dirs
+        compose up -d --force-recreate "$REKT_CONTAINER" >/dev/null 2>&1
         sleep 3
         if ! docker exec "$REKT_CONTAINER" bash -c \
             "touch /output/.write_probe && rm -f /output/.write_probe" >/dev/null 2>&1; then
-            echo -e "  ${RED}❌ /output still not writable after restart. Check Docker volume mount.${NC}"
+            echo -e "  ${RED}❌ /output still not writable after recreate. Check Docker volume mount.${NC}"
             return 1
         fi
         echo -e "  ${GREEN}✅ Bind mount restored${NC}"
     fi
+}
+
+run_containers() {
+    local action="${1:-status}"
+    case "$action" in
+        status)
+            require_docker || return 1
+            echo -e "${CYAN}📦 Container status${NC}"
+            compose ps
+            echo ""
+            echo -e "${BLUE}Images:${NC}"
+            local want have
+            want="$(rekt_build_fingerprint)"; have="$(rekt_image_fingerprint)"
+            if docker image inspect "$REKT_IMAGE" >/dev/null 2>&1; then
+                if [[ "$want" == "$have" ]]; then
+                    echo -e "  ${GREEN}✅ $REKT_IMAGE up to date${NC}"
+                else
+                    echo -e "  ${YELLOW}🔄 $REKT_IMAGE is stale — run './doctor.sh containers rebuild'${NC}"
+                fi
+            else
+                echo -e "  ${YELLOW}⚠️  $REKT_IMAGE not built yet${NC}"
+            fi
+            docker image inspect neo4j:5.15.0 >/dev/null 2>&1 \
+                && echo -e "  ${GREEN}✅ neo4j:5.15.0 present${NC}" \
+                || echo -e "  ${YELLOW}⚠️  neo4j:5.15.0 not pulled yet${NC}"
+            ;;
+        up)
+            ensure_rekt_containers || return 1
+            echo -e "${GREEN}✅ Containers ready${NC}"
+            echo -e "   Rekt Neo4j browser: ${BLUE}http://localhost:$REKT_NEO4J_HTTP_PORT${NC}"
+            ;;
+        rebuild)
+            require_docker || return 1
+            ensure_local_env_file
+            ensure_bind_mount_dirs
+            echo -e "${BLUE}🔨 Forcing Cobol-REKT image rebuild...${NC}"
+            docker build --no-cache \
+                --label "$REKT_FINGERPRINT_LABEL=$(rekt_build_fingerprint)" \
+                -t "$REKT_IMAGE" "$REPO_ROOT/tools/cobol-rekt" || return 1
+            compose up -d --force-recreate "$REKT_CONTAINER" || return 1
+            echo -e "${GREEN}✅ Rebuilt and recreated $REKT_CONTAINER${NC}"
+            ;;
+        reset)
+            require_docker || return 1
+            echo -e "${YELLOW}⚠️  This removes the rekt containers and their graph data volumes.${NC}"
+            read -r -p "Continue? [y/N] " confirm
+            [[ "$confirm" =~ ^[Yy]$ ]] || { echo "Aborted."; return 0; }
+            compose down -v
+            echo -e "${GREEN}✅ Reset complete — run './doctor.sh containers up' to rebuild.${NC}"
+            ;;
+        *)
+            echo -e "${RED}❌ Unknown containers action: $action${NC}"
+            echo "Usage: ./doctor.sh containers {status|up|rebuild|reset}"
+            return 1
+            ;;
+    esac
 }
 
 run_rekt_parse() {
@@ -3112,13 +3424,13 @@ run_rekt_parse() {
         local container_visible
         container_visible=$(docker exec "$REKT_CONTAINER" sh -c "ls /source/.rekt-staging 2>/dev/null | wc -l" 2>/dev/null | tr -d ' ')
         if [[ -z "$container_visible" || "$container_visible" -eq 0 ]]; then
-            echo -e "  ${YELLOW}⚠️  Container can't see /source/.rekt-staging — bind mount is stale. Restarting cobol-rekt…${NC}"
-            docker compose -f "$REPO_ROOT/docker-compose.yml" restart "$REKT_CONTAINER" >/dev/null 2>&1 || true
+            echo -e "  ${YELLOW}⚠️  Container can't see /source/.rekt-staging — bind mount is stale. Recreating cobol-rekt…${NC}"
+            compose up -d --force-recreate "$REKT_CONTAINER" >/dev/null 2>&1 || true
             sleep 3
             container_visible=$(docker exec "$REKT_CONTAINER" sh -c "ls /source/.rekt-staging 2>/dev/null | wc -l" 2>/dev/null | tr -d ' ')
             if [[ -z "$container_visible" || "$container_visible" -eq 0 ]]; then
-                echo -e "  ${RED}❌ Container still can't see staging files after restart.${NC}"
-                echo -e "     Try: ${BLUE}docker compose down && docker compose up -d${NC} from the repo root."
+                echo -e "  ${RED}❌ Container still can't see staging files after recreate.${NC}"
+                echo -e "     Try: ${BLUE}./doctor.sh containers reset${NC} from the repo root."
                 return 1
             fi
             echo -e "  ${GREEN}✅ Container now sees ${container_visible} staged file(s).${NC}"
@@ -3822,6 +4134,9 @@ main() {
         "rekt-status")
             run_rekt_status
             ;;
+        "containers"|"container")
+            run_containers "${2:-status}"
+            ;;
         "help"|"-h"|"--help")
             show_usage
             ;;
@@ -3953,8 +4268,9 @@ check_chunking_health() {
         if docker ps --format '{{.Names}}' | grep -q "cobol-migration-portal"; then
             echo -e "   ${GREEN}✅ Container 'cobol-migration-portal' is running${NC}"
         else
-            echo -e "   ${YELLOW}⚠️  Container 'cobol-migration-portal' is NOT running${NC}"
-            echo -e "      (Run 'docker-compose up -d' to start the containerized portal)"
+            echo -e "   ${BLUE}ℹ️  Container 'cobol-migration-portal' is not running${NC}"
+            echo -e "      This is normal — ./doctor.sh runs the portal directly on the host."
+            echo -e "      For the containerized portal instead: ${BLUE}docker compose --profile container-portal up -d portal${NC}"
         fi
     else
         echo -e "   ${YELLOW}⚠️  Docker not available - skipping container checks${NC}"
@@ -3995,7 +4311,7 @@ check_chunking_health() {
     echo "   • SmartMigrationOrchestrator routes files to appropriate process"
     echo "   • Full migration uses ChunkedMigrationProcess for conversion"
     echo "   • RE-only mode uses ChunkedReverseEngineeringProcess for analysis"
-    echo "   • Monitor progress in portal: http://localhost:5028"
+    echo "   • Monitor progress in portal: http://localhost:$DEFAULT_MCP_PORT"
     echo "   • Adjust MaxLinesPerChunk in appsettings.json for tuning"
     echo ""
     echo -e "${GREEN}📊 Output Validation:${NC}"
