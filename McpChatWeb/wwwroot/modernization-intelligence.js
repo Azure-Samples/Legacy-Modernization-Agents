@@ -1,0 +1,470 @@
+// Modernization Intelligence — the deterministic decision surface.
+//
+// Every number here traces to a measurement: the REKT scan cache, facts.json,
+// or the presence of an artifact on disk. Where a value is inferred rather than
+// measured, the fidelity source is shown beside it so the two are never
+// confused. Subviews whose backends are not part of this build render an
+// explicit notice rather than an empty table that reads as "nothing found".
+
+const MI_LIVE_SUBVIEWS = ['health', 'topology', 'flow', 'chain'];
+
+const MI_PENDING_SUBVIEWS = {
+  dashboard: 'Modernization Dashboard',
+  applications: 'Application Explorer',
+  runtime: 'Runtime & Conversion Intelligence',
+  services: 'Service Candidates',
+  waves: 'Migration Wave Planner',
+  capabilities: 'Capabilities & Locator',
+};
+
+const MI_FIDELITY = {
+  full: { label: 'Full', color: '#10b981' },
+  partial: { label: 'Partial', color: '#f59e0b' },
+  'deps-only': { label: 'Deps only', color: '#38bdf8' },
+  failed: { label: 'Failed', color: '#ef4444' },
+  'not-parsed': { label: 'Not parsed', color: '#64748b' },
+};
+
+const MI_FIDELITY_SOURCE = {
+  'scan-cache': 'Measured by the REKT scan cache',
+  facts: 'Read from facts.json confidence',
+  artifacts: 'Inferred from artifacts present on disk',
+  none: 'No evidence — program has not been scanned',
+};
+
+function miEscape(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function miFidelityBadge(fidelity) {
+  const f = MI_FIDELITY[fidelity] || MI_FIDELITY['not-parsed'];
+  return `<span class="mi-badge" style="color:${f.color};border-color:${f.color}44;background:${f.color}18;">${f.label}</span>`;
+}
+
+function miSourceBadge(source) {
+  const title = MI_FIDELITY_SOURCE[source] || source;
+  const inferred = source === 'artifacts' || source === 'none';
+  return `<span class="mi-src ${inferred ? 'mi-src-weak' : ''}" title="${miEscape(title)}">${miEscape(source)}</span>`;
+}
+
+function miStat(label, value, hint, color) {
+  return `<div class="mi-stat">
+    <div class="mi-stat-value" style="${color ? `color:${color};` : ''}">${miEscape(value)}</div>
+    <div class="mi-stat-label">${miEscape(label)}</div>
+    ${hint ? `<div class="mi-stat-hint">${miEscape(hint)}</div>` : ''}
+  </div>`;
+}
+
+function miNotice(text, kind = 'info') {
+  return `<div class="mi-notice mi-notice-${kind}">${miEscape(text)}</div>`;
+}
+
+function miPendingPanel(title) {
+  return `<div class="mi-pending">
+    <div class="mi-pending-icon">🚧</div>
+    <div class="mi-pending-title">${miEscape(title)}</div>
+    <div class="mi-pending-body">Not wired in this build — ships with a later feature.</div>
+  </div>`;
+}
+
+class ModernizationIntelligenceView {
+  constructor(rootId) {
+    this.root = document.getElementById(rootId);
+    if (!this.root) return;
+    this._activeSubview = 'health';
+    this._flowIdentity = null;
+    this._chainJob = '';
+    this._chainProgram = '';
+    this._renderShell();
+  }
+
+  _renderShell() {
+    this.root.innerHTML = `
+      <div class="mi-shell">
+        <div class="mi-header">
+          <div class="mi-title">
+            <span class="mi-icon">🧭</span>
+            <div>
+              <div class="mi-title-main">Modernization Intelligence</div>
+              <div class="mi-title-sub">Deterministic decision surface · REKT scan cache, facts.json, JCL</div>
+            </div>
+          </div>
+          <div class="mi-actions">
+            <button id="mi-refresh" class="mi-btn" title="Re-fetch from /api/modernization/*">⟳ Refresh</button>
+          </div>
+        </div>
+        <div class="mi-subnav">
+          <button class="mi-subtab" data-sub="dashboard">📊 Modernization Dashboard</button>
+          <button class="mi-subtab" data-sub="applications">📚 Application Explorer</button>
+          <button class="mi-subtab mi-subtab-active" data-sub="health">⚕️ Dependency Health</button>
+          <button class="mi-subtab" data-sub="chain">🔗 Service Chain (JCL→Pgm→Cpy)</button>
+          <button class="mi-subtab" data-sub="runtime">⏱ Runtime &amp; Conversion Intelligence</button>
+          <button class="mi-subtab" data-sub="topology">🕸 Dependency Topology</button>
+          <button class="mi-subtab" data-sub="flow">🌊 Semantic Flow Explorer</button>
+          <button class="mi-subtab" data-sub="services">🧩 Service Candidates</button>
+          <button class="mi-subtab" data-sub="waves">🚀 Migration Wave Planner</button>
+          <button class="mi-subtab" data-sub="capabilities">🎯 Capabilities &amp; Locator</button>
+        </div>
+        <div id="mi-body" class="mi-body"></div>
+      </div>
+    `;
+    this.root.querySelectorAll('.mi-subtab').forEach(btn => {
+      btn.addEventListener('click', () => {
+        this._activeSubview = btn.dataset.sub;
+        this.root.querySelectorAll('.mi-subtab').forEach(b =>
+          b.classList.toggle('mi-subtab-active', b.dataset.sub === this._activeSubview));
+        this._renderActive();
+      });
+    });
+    this.root.querySelector('#mi-refresh')
+      ?.addEventListener('click', () => this.loadAndRender());
+  }
+
+  async loadAndRender() {
+    await this._renderActive();
+  }
+
+  async _renderActive() {
+    const body = this.root.querySelector('#mi-body');
+    if (!body) return;
+
+    if (!MI_LIVE_SUBVIEWS.includes(this._activeSubview)) {
+      body.innerHTML = miPendingPanel(MI_PENDING_SUBVIEWS[this._activeSubview] || 'Subview');
+      return;
+    }
+
+    body.innerHTML = '<div class="mi-loading">Loading…</div>';
+    try {
+      if (this._activeSubview === 'health') {
+        const data = await this._get('/api/modernization/dependency-health');
+        body.innerHTML = this._renderDependencyHealth(data);
+      } else if (this._activeSubview === 'topology') {
+        const data = await this._get('/api/modernization/topology');
+        body.innerHTML = this._renderTopology(data);
+        this._drawTopology(data);
+      } else if (this._activeSubview === 'flow') {
+        const health = await this._get('/api/modernization/dependency-health');
+        body.innerHTML = this._renderFlowShell(health);
+        this._wireFlow(body, health);
+      } else if (this._activeSubview === 'chain') {
+        await this._renderChain(body);
+      }
+    } catch (e) {
+      console.error('Modernization Intelligence load error:', e);
+      body.innerHTML = miNotice(`Could not load this view: ${e.message}`, 'error');
+    }
+  }
+
+  async _get(url) {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
+    return resp.json();
+  }
+
+  // ── Dependency Health ───────────────────────────────────────────────
+  _renderDependencyHealth(d) {
+    const total = d.totalPrograms || 0;
+    const note = d.note ? miNotice(d.note, 'warn') : '';
+
+    const stats = `<div class="mi-stats">
+      ${miStat('Programs', total, 'Copybooks excluded')}
+      ${miStat('Full fidelity', d.fullFidelityCount, 'Parsed with full semantics', MI_FIDELITY.full.color)}
+      ${miStat('Partial', d.partialFidelityCount, 'Raw AST, no dialect, or stub-backed', MI_FIDELITY.partial.color)}
+      ${miStat('Deps only', d.depsOnlyCount, 'Edges known, logic unknown', MI_FIDELITY['deps-only'].color)}
+      ${miStat('Failed', d.failedCount, 'Parser could not complete', MI_FIDELITY.failed.color)}
+      ${miStat('Not parsed', d.notParsedCount, 'No scan evidence', MI_FIDELITY['not-parsed'].color)}
+    </div>
+    <div class="mi-stats">
+      ${miStat('Readiness', `${(d.readinessScore ?? 0).toFixed(1)}%`, 'full=1 · partial=0.5 · deps-only=0.25')}
+      ${miStat('Coverage', `${(d.coveragePct ?? 0).toFixed(1)}%`, 'Full fidelity share')}
+      ${miStat('Scan-cache backed', d.scanCacheBackedCount, 'Measured, not inferred')}
+      ${miStat('Missing copybooks', d.totalMissingCopybooks, 'Distinct names unresolved', d.totalMissingCopybooks ? MI_FIDELITY.failed.color : undefined)}
+      ${miStat('Blocked programs', d.programsBlockedByMissing, 'Reference a missing copybook', d.programsBlockedByMissing ? MI_FIDELITY.partial.color : undefined)}
+    </div>`;
+
+    const missing = (d.missingCopybooks || []).length
+      ? `<h4 class="mi-h4">Missing copybooks — blocking parse fidelity</h4>
+         <table class="mi-table">
+           <thead><tr><th>Copybook</th><th>Referenced by</th></tr></thead>
+           <tbody>${d.missingCopybooks.map(m => `<tr>
+             <td class="mi-mono">${miEscape(m.copybook)}</td>
+             <td class="mi-dim">${miEscape((m.referencedBy || []).join(', ')) || '—'}</td>
+           </tr>`).join('')}</tbody>
+         </table>`
+      : '';
+
+    const rows = (d.programs || []).map(p => `<tr>
+      <td class="mi-mono">${miEscape(p.basename)}${p.ambiguousBasename
+        ? ' <span class="mi-warn-chip" title="This basename maps to more than one file, so no scan-cache row can be attributed to it">ambiguous</span>' : ''}</td>
+      <td class="mi-dim mi-mono">${miEscape(p.relativePath)}</td>
+      <td class="mi-num">${p.linesOfCode || 0}</td>
+      <td>${miFidelityBadge(p.parseFidelity)}</td>
+      <td>${miSourceBadge(p.fidelitySource)}</td>
+      <td class="mi-dim">${miEscape(p.scanOutcome || '—')}</td>
+      <td class="mi-num">${p.factsWarnings || 0}</td>
+      <td class="mi-num">${p.missingCopybookCount || 0}</td>
+    </tr>`).join('');
+
+    return `${note}${stats}${missing}
+      <h4 class="mi-h4">Programs</h4>
+      <table class="mi-table">
+        <thead><tr>
+          <th>Program</th><th>Path</th><th>LoC</th><th>Fidelity</th>
+          <th>Evidence</th><th>Scan outcome</th><th>Warnings</th><th>Missing cpy</th>
+        </tr></thead>
+        <tbody>${rows || '<tr><td colspan="8" class="mi-dim">No programs found.</td></tr>'}</tbody>
+      </table>`;
+  }
+
+  // ── Dependency Topology ─────────────────────────────────────────────
+  _renderTopology(d) {
+    const note = d.note ? miNotice(d.note, 'warn') : '';
+    const nodes = d.nodes || [];
+    const edges = d.edges || [];
+    const unresolved = d.unresolvedEdges || [];
+
+    const unresolvedPanel = unresolved.length
+      ? `<h4 class="mi-h4">Unresolved edges — ${unresolved.length}</h4>
+         ${miNotice('A CALL or COPY target that matches no file, or matches several, cannot be attributed. These are findings, not noise: each one is a program whose true dependencies are unknown.', 'info')}
+         <table class="mi-table">
+           <thead><tr><th>From</th><th>Target</th><th>Kind</th></tr></thead>
+           <tbody>${unresolved.slice(0, 200).map(e => `<tr>
+             <td class="mi-mono">${miEscape(e.source)}</td>
+             <td class="mi-mono">${miEscape(e.target)}</td>
+             <td class="mi-dim">${miEscape(e.kind)}</td>
+           </tr>`).join('')}</tbody>
+         </table>`
+      : '';
+
+    return `${note}
+      <div class="mi-stats">
+        ${miStat('Nodes', nodes.length, 'Programs and copybooks')}
+        ${miStat('Edges', edges.length, 'CALL and COPY, resolved')}
+        ${miStat('Unresolved', unresolved.length, 'Target not attributable', unresolved.length ? MI_FIDELITY.partial.color : undefined)}
+      </div>
+      <div id="mi-topology-graph" class="mi-graph"></div>
+      ${unresolvedPanel}`;
+  }
+
+  _drawTopology(d) {
+    const host = document.getElementById('mi-topology-graph');
+    if (!host || typeof vis === 'undefined') return;
+    const nodes = (d.nodes || []).map(n => {
+      const f = MI_FIDELITY[n.parseFidelity] || MI_FIDELITY['not-parsed'];
+      return {
+        id: n.id,
+        label: n.basename,
+        shape: n.kind === 'copybook' ? 'box' : 'dot',
+        size: Math.min(30, 8 + Math.sqrt(n.linesOfCode || 0)),
+        color: { background: `${f.color}33`, border: f.color },
+        font: { color: '#e2e8f0', size: 11 },
+        title: `${n.basename}\n${n.parseFidelity} (${n.fidelitySource})\n${n.linesOfCode || 0} LoC`,
+      };
+    });
+    const edges = (d.edges || []).map(e => ({
+      from: e.source,
+      to: e.target,
+      arrows: 'to',
+      dashes: e.kind === 'copy',
+      color: { color: e.kind === 'copy' ? '#10b98166' : '#60a5fa66' },
+    }));
+    this._topologyNetwork?.destroy();
+    this._topologyNetwork = new vis.Network(host, { nodes, edges }, {
+      physics: {
+        solver: 'forceAtlas2Based',
+        forceAtlas2Based: { gravitationalConstant: -120, springLength: 180, avoidOverlap: 0.5 },
+        stabilization: { iterations: 200 },
+      },
+      interaction: { hover: true, tooltipDelay: 120 },
+    });
+  }
+
+  // ── Semantic Flow Explorer ──────────────────────────────────────────
+  _renderFlowShell(health) {
+    const programs = (health.programs || [])
+      .filter(p => p.parseFidelity !== 'not-parsed');
+
+    const rows = programs.map(p => `<tr class="mi-flow-row" data-identity="${miEscape(p.relativePath)}">
+      <td class="mi-mono">${miEscape(p.basename)}</td>
+      <td>${miFidelityBadge(p.parseFidelity)}</td>
+      <td class="mi-num">${p.linesOfCode || 0}</td>
+    </tr>`).join('');
+
+    return `<div class="mi-flow">
+      <div class="mi-flow-list">
+        <h4 class="mi-h4">Programs with scan evidence</h4>
+        ${programs.length ? '' : miNotice('No program has been scanned yet. Run the REKT preprocessing pipeline first.', 'warn')}
+        <table class="mi-table mi-table-compact">
+          <thead><tr><th>Program</th><th>Fidelity</th><th>LoC</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <div class="mi-flow-detail" id="mi-flow-detail">
+        <div class="mi-dim">Select a program to inspect its procedural flow artifacts.</div>
+      </div>
+    </div>`;
+  }
+
+  _wireFlow(body, health) {
+    body.querySelectorAll('.mi-flow-row').forEach(tr => {
+      tr.onclick = () => {
+        body.querySelectorAll('.mi-flow-row').forEach(r => r.classList.remove('mi-flow-row-active'));
+        tr.classList.add('mi-flow-row-active');
+        this._loadProgramFlow(tr.dataset.identity);
+      };
+    });
+    // Lead with a program that actually has something to show.
+    const first = (health.programs || []).find(p => p.parseFidelity === 'full')
+      || (health.programs || []).find(p => p.parseFidelity !== 'not-parsed');
+    if (first) {
+      const tr = body.querySelector(`.mi-flow-row[data-identity="${CSS.escape(first.relativePath)}"]`);
+      tr?.classList.add('mi-flow-row-active');
+      this._loadProgramFlow(first.relativePath);
+    }
+  }
+
+  async _loadProgramFlow(identity) {
+    const host = document.getElementById('mi-flow-detail');
+    if (!host) return;
+    host.innerHTML = '<div class="mi-loading">Loading…</div>';
+    try {
+      const parts = String(identity).split('/').map(encodeURIComponent).join('/');
+      const f = await this._get(`/api/modernization/flow/${parts}`);
+      host.innerHTML = this._renderFlow(f);
+    } catch (e) {
+      host.innerHTML = miNotice(`Could not load flow: ${e.message}`, 'error');
+    }
+  }
+
+  _renderFlow(f) {
+    const yn = v => v
+      ? '<span class="mi-yes">present</span>'
+      : '<span class="mi-no">absent</span>';
+
+    const astList = (f.flowAstNames || []).length
+      ? `<h4 class="mi-h4">Flow AST files — ${f.flowAstFiles}</h4>
+         <ul class="mi-list">${f.flowAstNames.map(n => `<li class="mi-mono">${miEscape(n)}</li>`).join('')}</ul>`
+      : '';
+
+    const candidates = (f.candidates || []).length
+      ? `<h4 class="mi-h4">Locations searched</h4>
+         <ul class="mi-list mi-dim">${f.candidates.map(c => `<li class="mi-mono">${miEscape(c)}</li>`).join('')}</ul>`
+      : '';
+
+    return `
+      <div class="mi-flow-head">
+        <div class="mi-flow-name mi-mono">${miEscape(f.basename)}</div>
+        <div>${miFidelityBadge(f.parseFidelity)} ${miSourceBadge(f.fidelitySource)}</div>
+      </div>
+      <div class="mi-dim mi-mono mi-flow-path">${miEscape(f.relativePath)}</div>
+      ${f.note ? miNotice(f.note, 'warn') : ''}
+      <table class="mi-table mi-table-compact">
+        <tbody>
+          <tr><td>Procedural flow AST</td><td>${yn(f.hasFlowAst)}</td></tr>
+          <tr><td>Control flow graph</td><td>${yn(f.hasCfg)}</td></tr>
+          <tr><td>Data structures</td><td>${yn(f.hasDataStructures)}</td></tr>
+          <tr><td>Report directory</td><td class="mi-mono mi-dim">${miEscape(f.reportDirectory || '—')}</td></tr>
+        </tbody>
+      </table>
+      ${astList}
+      ${candidates}`;
+  }
+
+  // ── Service Chain ───────────────────────────────────────────────────
+  async _renderChain(body) {
+    const qs = new URLSearchParams();
+    if (this._chainJob) qs.set('job', this._chainJob);
+    if (this._chainProgram) qs.set('program', this._chainProgram);
+    const d = await this._get(`/api/modernization/service-chain${qs.toString() ? `?${qs}` : ''}`);
+
+    const jobOptions = ['<option value="">All jobs</option>']
+      .concat((d.jobs || []).map(j =>
+        `<option value="${miEscape(j.jobName)}"${j.jobName === this._chainJob ? ' selected' : ''}>${miEscape(j.jobName)}</option>`))
+      .join('');
+
+    body.innerHTML = `
+      ${d.note ? miNotice(d.note, 'warn') : ''}
+      <div class="mi-filters">
+        <label>Job
+          <select id="mi-chain-job">${jobOptions}</select>
+        </label>
+        <label>Program
+          <input id="mi-chain-program" type="text" placeholder="e.g. CUSTMAST" value="${miEscape(this._chainProgram)}">
+        </label>
+        <button class="mi-btn" id="mi-chain-clear">Clear</button>
+      </div>
+      <div class="mi-stats">
+        ${miStat('Jobs', d.totalJobs, 'JCL job cards')}
+        ${miStat('Programs', d.totalPrograms, 'Reached from JCL or on disk')}
+        ${miStat('Copybooks', d.totalCopybooks, 'Distinct, via COPY')}
+        ${miStat('JCL→Pgm', d.jobToProgramEdges, 'EXEC PGM= steps')}
+        ${miStat('Pgm→Cpy', d.programToCopybookEdges, 'COPY statements')}
+      </div>
+      ${d.mermaidTruncated
+        ? miNotice(`Diagram capped at ${d.mermaidEdgeCount} edges. The tables and counts below cover the whole estate.`, 'info')
+        : ''}
+      <div class="mermaid mi-mermaid" id="mi-chain-diagram">${miEscape(d.mermaid || '')}</div>
+      <h4 class="mi-h4">Jobs</h4>
+      <table class="mi-table">
+        <thead><tr><th>Job</th><th>JCL file</th><th>Programs</th></tr></thead>
+        <tbody>${(d.jobs || []).map(j => `<tr>
+          <td class="mi-mono">${miEscape(j.jobName)}</td>
+          <td class="mi-dim mi-mono">${miEscape(j.jclFileName)}</td>
+          <td class="mi-mono">${miEscape((j.primaryPrograms || []).join(', ')) || '—'}</td>
+        </tr>`).join('') || '<tr><td colspan="3" class="mi-dim">No JCL jobs found.</td></tr>'}</tbody>
+      </table>
+      <h4 class="mi-h4">Programs</h4>
+      <table class="mi-table">
+        <thead><tr><th>Program</th><th>Fidelity</th><th>LoC</th><th>Copybooks</th><th>Run by</th></tr></thead>
+        <tbody>${(d.programs || []).map(p => `<tr>
+          <td class="mi-mono">${miEscape(p.basename)}</td>
+          <td>${miFidelityBadge(p.parseFidelity)}</td>
+          <td class="mi-num">${p.linesOfCode || 0}</td>
+          <td class="mi-mono mi-dim">${miEscape((p.copybooks || []).join(', ')) || '—'}</td>
+          <td class="mi-mono mi-dim">${miEscape((p.calledByJobs || []).join(', ')) || '<not run by any job>'}</td>
+        </tr>`).join('') || '<tr><td colspan="5" class="mi-dim">No programs found.</td></tr>'}</tbody>
+      </table>`;
+
+    body.querySelector('#mi-chain-job').onchange = e => {
+      this._chainJob = e.target.value;
+      this._renderActive();
+    };
+    const progInput = body.querySelector('#mi-chain-program');
+    // `change` fires on blur, `keydown` gives an immediate response to Enter.
+    // Both funnel through the same guard so Enter-then-blur renders once.
+    const applyProgram = value => {
+      const next = value.trim();
+      if (next === this._chainProgram) return;
+      this._chainProgram = next;
+      this._renderActive();
+    };
+    progInput.onchange = e => applyProgram(e.target.value);
+    progInput.onkeydown = e => {
+      if (e.key === 'Enter') applyProgram(e.target.value);
+    };
+    body.querySelector('#mi-chain-clear').onclick = () => {
+      this._chainJob = '';
+      this._chainProgram = '';
+      this._renderActive();
+    };
+
+    await this._renderMermaid(body.querySelector('#mi-chain-diagram'));
+  }
+
+  async _renderMermaid(host) {
+    if (!host || !window.mermaid) return;
+    try {
+      // mermaid.run consumes textContent, so the escaped markup we injected for
+      // safety has to be handed back as plain text.
+      host.textContent = host.textContent;
+      host.removeAttribute('data-processed');
+      await window.mermaid.run({ nodes: [host] });
+    } catch (e) {
+      console.error('Mermaid render failed:', e);
+      host.innerHTML = miNotice('Diagram could not be rendered.', 'warn');
+    }
+  }
+}
+
+window.ModernizationIntelligenceView = ModernizationIntelligenceView;

@@ -321,6 +321,19 @@
         <h2>Dependency Graph <span class="run-id-badge" id="graph-run-badge" style="display: none;">| Run <span id="current-run-id">...</span></span></h2>
         <button id="expand-graph-btn" class="btn-small" title="Expand View" style="background: 334155; color: white; border: 1px solid #475569;">⛶ Expand</button>
       </div>
+
+      <div class="dashboard-tabs">
+        <button class="dashboard-tab active" data-tab="dependency" onclick="switchDashboard('dependency')">🕸 Dependency Graph</button>
+        <button class="dashboard-tab" data-tab="services" onclick="switchDashboard('services')">🏗️ Architecture</button>
+        <button class="dashboard-tab" data-tab="modernization" onclick="switchDashboard('modernization')">🧭 Modernization Intelligence</button>
+        <span style="margin-left:auto; display:flex; align-items:center; gap:6px;">
+          <label style="color:#94a3b8; font-size:11px;">Scan:</label>
+          <select id="rekt-scan-select" style="padding:4px 8px; background:#1e293b; color:#e2e8f0; border:1px solid #475569; border-radius:4px; font-size:12px;" onchange="window._onScanRunChange && window._onScanRunChange(this.value)">
+            <option value="latest">Latest scan</option>
+            <option value="all">All scans</option>
+          </select>
+        </span>
+      </div>
       
       <div class="graph-toolbar">
         <!-- Controls Section -->
@@ -500,6 +513,40 @@
       </div>
 
       <div id="dependency-graph"></div>
+
+      <!-- Architecture & Services — REKT graph projections -->
+      <div id="services-container" class="dashboard-panel" style="display: none;">
+        <div id="services-controls" style="padding: 8px; display: flex; gap: 8px; align-items: center; background: rgba(15,23,42,0.8); border-bottom: 1px solid #334155;">
+          <span style="color: #60a5fa; font-weight: 600;">🏗️ Architecture</span>
+          <div class="arch-view-toggle" style="display:flex;gap:2px;background:#0f172a;border-radius:6px;padding:2px;border:1px solid #334155;">
+            <button class="arch-mode-btn active" data-mode="layers" onclick="servicesView?.setViewMode('layers')">Layers</button>
+            <button class="arch-mode-btn" data-mode="components" onclick="servicesView?.setViewMode('components')">Components</button>
+            <button class="arch-mode-btn" data-mode="techmap" onclick="servicesView?.setViewMode('techmap')">Tech Map</button>
+            <button class="arch-mode-btn" data-mode="dependencies" onclick="servicesView?.setViewMode('dependencies')">Dependencies</button>
+            <button class="arch-mode-btn" data-mode="modules" onclick="servicesView?.setViewMode('modules')">Modules</button>
+            <button class="arch-mode-btn" data-mode="deadcode" onclick="servicesView?.setViewMode('deadcode')">Reachability</button>
+          </div>
+          <input type="text" id="services-search" placeholder="Search programs..." oninput="servicesView?.searchNode(this.value)" style="flex: 1; padding: 6px 10px; background: #1e293b; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; font-size: 13px;">
+          <span id="services-stats" style="color: #94a3b8; font-size: 12px; margin-left: auto;">Loading...</span>
+          <button onclick="servicesView?.zoomToFit()" class="btn-small">Fit</button>
+          <button onclick="servicesView?.refresh()" class="btn-small">Refresh</button>
+        </div>
+        <div style="display: flex; height: calc(100% - 42px);">
+          <div id="services-content" style="flex: 1; min-width: 0; position: relative; height: 100%;"></div>
+          <div id="services-legend" style="width: 220px; background: #0f172a; border-left: 1px solid #334155; padding: 12px; overflow-y: auto; font-size: 12px; color: #cbd5e1;">
+            <div id="services-legend-content">
+              <h4 class="sv-legend-title">Legend</h4>
+              <div class="sv-dim">Select a view mode</div>
+            </div>
+            <div id="services-detail" style="margin-top: 16px; border-top: 1px solid #334155; padding-top: 10px;"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Modernization Intelligence — deterministic decision surface -->
+      <div id="modernization-intelligence-container" class="dashboard-panel" style="display: none;">
+        <div id="modernization-intelligence-root" style="height:100%;overflow:auto;background:#0a0e1a;"></div>
+      </div>
       <div id="graph-info" class="graph-info"></div>
       <div id="node-details" class="node-details" hidden>
         <h3>Node Details</h3>
@@ -1231,7 +1278,15 @@ curl http://localhost:5028/api/data-retrieval-guide</code></pre>
   <script src="model-prompt-panel.js"></script>
   <script src="model-setup-modal.js"></script>
   <script src="mission-control.js"></script>
+  <script src="services-view.js"></script>
+  <script src="modernization-intelligence.js"></script>
+  <script src="dashboard-tabs.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'strict' });
+    window.mermaid = mermaid;
+  </script>
   <script>
     // Toggle collapsible sections
     function toggleSection(sectionId) {
