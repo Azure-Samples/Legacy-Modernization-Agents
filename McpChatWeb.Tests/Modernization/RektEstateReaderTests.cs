@@ -66,6 +66,23 @@ public class RektEstateReaderTests
     }
 
     [Fact]
+    public async Task ReportWithoutScanCacheOrFacts_ReportsPartialNotFull()
+    {
+        using var fixture = new EstateFixture();
+        // What `./doctor.sh rekt-full` alone leaves on disk: a report directory,
+        // no scan cache and no facts. A stub-backed parse with degraded
+        // structural facts emits a report directory identical to a clean one, so
+        // artifacts cannot establish Full without overstating readiness.
+        fixture.AddProgram("CUSTOMER.cbl").AddReportDirectory("CUSTOMER.cbl");
+
+        var estate = await ReaderFor(fixture).ReadAsync();
+        var record = Assert.Single(estate.Programs);
+
+        Assert.Equal(ParseFidelity.Partial, record.ParseFidelity);
+        Assert.Equal(FidelitySources.Artifacts, record.FidelitySource);
+    }
+
+    [Fact]
     public async Task NoArtifacts_ReportsNotParsedWithNoSource()
     {
         using var fixture = new EstateFixture();

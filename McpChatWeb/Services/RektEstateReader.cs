@@ -253,7 +253,13 @@ public sealed class RektEstateReader
             return (fidelity, FidelitySources.Facts);
         }
 
-        if (hasReport) return (ParseFidelity.Full, FidelitySources.Artifacts);
+        // Artifact presence proves a parse ran, not that it succeeded fully.
+        // A stub-backed parse whose structural facts are degraded emits a report
+        // directory indistinguishable from a clean one — same cfg/, flow_ast/ and
+        // data_structures/ payloads. Only the scan cache or facts record the
+        // outcome, so inferring Full here would overstate readiness for exactly
+        // the programs this surface exists to flag.
+        if (hasReport) return (ParseFidelity.Partial, FidelitySources.Artifacts);
         if (hasDeps) return (ParseFidelity.DepsOnly, FidelitySources.Artifacts);
         return (ParseFidelity.NotParsed, FidelitySources.None);
     }

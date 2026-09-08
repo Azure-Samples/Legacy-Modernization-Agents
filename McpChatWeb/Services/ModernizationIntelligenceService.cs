@@ -18,12 +18,18 @@ namespace McpChatWeb.Services;
 /// </summary>
 public sealed class ModernizationIntelligenceService
 {
+    // Program and job names accept '-' beyond the JCL-legal alphanumeric and
+    // national characters. Real MVS member names cannot contain a hyphen, so
+    // permitting it costs nothing there, but modernization estates routinely
+    // carry hyphenated COBOL names such as CUSTOMER-INQUIRY. Without it the
+    // capture truncates at the hyphen to CUSTOMER, which matches no program and
+    // silently drops every job-to-program edge.
     private static readonly Regex ExecPgmRegex = new(
-        @"EXEC\s+PGM\s*=\s*([A-Z0-9$@#]+)",
+        @"EXEC\s+PGM\s*=\s*([A-Z0-9$@#-]+)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex JobCardRegex = new(
-        @"^//(?<name>[A-Z0-9$@#]+)\s+JOB",
+        @"^//(?<name>[A-Z0-9$@#-]+)\s+JOB",
         RegexOptions.IgnoreCase | RegexOptions.Multiline | RegexOptions.Compiled);
 
     /// <summary>
@@ -403,15 +409,17 @@ public sealed class ModernizationIntelligenceService
                            ?? jobsByProgram.GetValueOrDefault(program.Basename)
                            ?? new List<string>();
 
-            if (programStem is not null)
+            if (programStem is not null
+                && !program.Stem.Equals(programStem, StringComparison.OrdinalIgnoreCase))
             {
-                if (!program.Stem.Equals(programStem, StringComparison.OrdinalIgnoreCase)) continue;
-            }
-            else if (!string.IsNullOrWhiteSpace(jobFilter) && calledBy.Count == 0)
-            {
-                // Scoped to a job: keep only what that job actually runs.
                 continue;
             }
+
+            // Scoped to a job: keep only what that job actually runs. This also
+            // applies when a program filter is present, so asking for a program
+            // inside a job that never runs it returns nothing rather than a
+            // standalone entry implying the job runs it.
+            if (!string.IsNullOrWhiteSpace(jobFilter) && calledBy.Count == 0) continue;
 
             snapshot.Programs.Add(new ProgramChain(
                 Basename: program.Basename,

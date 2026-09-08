@@ -143,6 +143,86 @@ public class ModernizationIntelligenceServiceTests
     }
 
     [Fact]
+    public async Task ServiceChain_HyphenatedProgramNames_StillLinkJobsToPrograms()
+    {
+        using var fixture = new EstateFixture();
+        // COBOL estates carry hyphenated names. A capture that stops at the
+        // hyphen yields CUSTOMER, which matches no program, and the job-to-
+        // program edges vanish without any error being reported.
+        fixture.AddProgram("CUSTOMER-INQUIRY.cbl").AddProgram("CUSTOMER-DISPLAY.cbl");
+        fixture.AddJcl("jcl/NIGHTLY.jcl", """
+            //NIGHTLY  JOB (ACCT),'A',CLASS=A
+            //STEP010  EXEC PGM=CUSTOMER-INQUIRY
+            //STEP020  EXEC PGM=CUSTOMER-DISPLAY
+            """);
+
+        var chain = await ServiceFor(fixture).GetServiceChainAsync(null, null, includeUtilities: false);
+
+        var job = Assert.Single(chain.Jobs);
+        Assert.Equal(new[] { "CUSTOMER-INQUIRY", "CUSTOMER-DISPLAY" }, job.PrimaryPrograms);
+        Assert.Contains(
+            "NIGHTLY",
+            Assert.Single(chain.Programs, p => p.Basename == "CUSTOMER-INQUIRY.cbl").CalledByJobs);
+    }
+
+    [Fact]
+    public async Task ServiceChain_JobFilter_KeepsProgramsThatJobRuns()
+    {
+        using var fixture = new EstateFixture();
+        fixture.AddProgram("CUSTOMER-INQUIRY.cbl").AddProgram("BILLING.cbl");
+        fixture.AddJcl("jcl/NIGHTLY.jcl", """
+            //NIGHTLY  JOB (ACCT),'A',CLASS=A
+            //STEP010  EXEC PGM=CUSTOMER-INQUIRY
+            """);
+
+        var chain = await ServiceFor(fixture).GetServiceChainAsync("NIGHTLY", null, includeUtilities: false);
+
+        Assert.Equal("CUSTOMER-INQUIRY.cbl", Assert.Single(chain.Programs).Basename);
+    }
+
+    [Fact]
+    public async Task ServiceChain_ProgramFilter_KeepsJobsThatRunIt()
+    {
+        using var fixture = new EstateFixture();
+        fixture.AddProgram("CUSTOMER-DISPLAY.cbl");
+        fixture.AddJcl("jcl/NIGHTLY.jcl", """
+            //NIGHTLY  JOB (ACCT),'A',CLASS=A
+            //STEP010  EXEC PGM=CUSTOMER-DISPLAY
+            """);
+        fixture.AddJcl("jcl/WEEKEND.jcl", """
+            //WEEKEND  JOB (ACCT),'B',CLASS=A
+            //STEP010  EXEC PGM=CUSTOMER-DISPLAY
+            """);
+
+        var chain = await ServiceFor(fixture)
+            .GetServiceChainAsync(null, "CUSTOMER-DISPLAY", includeUtilities: false);
+
+        Assert.Equal(
+            new[] { "NIGHTLY", "WEEKEND" },
+            chain.Jobs.Select(j => j.JobName).OrderBy(n => n).ToArray());
+        Assert.Equal("CUSTOMER-DISPLAY.cbl", Assert.Single(chain.Programs).Basename);
+    }
+
+    [Fact]
+    public async Task ServiceChain_JobAndProgramFilter_ThatDisagree_ReturnNothing()
+    {
+        using var fixture = new EstateFixture();
+        fixture.AddProgram("CUSTOMER-INQUIRY.cbl").AddProgram("CUSTOMER-DISPLAY.cbl");
+        fixture.AddJcl("jcl/WEEKEND.jcl", """
+            //WEEKEND  JOB (ACCT),'B',CLASS=A
+            //STEP010  EXEC PGM=CUSTOMER-DISPLAY
+            """);
+
+        // WEEKEND never runs CUSTOMER-INQUIRY, so returning it would imply a
+        // schedule relationship that does not exist.
+        var chain = await ServiceFor(fixture)
+            .GetServiceChainAsync("WEEKEND", "CUSTOMER-INQUIRY", includeUtilities: false);
+
+        Assert.Empty(chain.Jobs);
+        Assert.Empty(chain.Programs);
+    }
+
+    [Fact]
     public async Task ServiceChain_EmptyEstate_ReturnsNoteNotFailure()
     {
         using var fixture = new EstateFixture();

@@ -35,7 +35,7 @@ flowchart TD
     B -->|No| D{"facts.json<br/>confidence?"}
     D -->|Yes| E["facts<br/>recorded at fact-extraction time"]
     D -->|No| F{"Report dir or<br/>deps.json present?"}
-    F -->|Yes| G["artifacts<br/>inferred from file presence"]
+    F -->|Yes| G["artifacts<br/>inferred from file presence<br/>capped at partial"]
     F -->|No| H["none<br/>not scanned"]
 
     style C stroke-width:3px
@@ -44,6 +44,8 @@ flowchart TD
 ```
 
 Each row carries a `FidelitySource` of `scan-cache`, `facts`, `artifacts` or `none`, and the UI weakens the badge for the latter two. An inferred value is never displayed as a measured one.
+
+Artifact presence is capped at `partial` and can never yield `full`. A stub-backed parse — one where a missing copybook was replaced by a generated stub, so the structural facts are degraded — writes a report directory that is byte-for-byte indistinguishable in shape from a clean one: same `cfg/`, `flow_ast/` and `data_structures/` subdirectories. Since the artifacts on disk cannot separate the two cases, treating their presence as proof of a complete parse would report a degraded estate as fully ready. `./doctor.sh rekt-full` alone writes no scan cache, so this is the common path, not an edge case.
 
 The scan cache is preferred because it is the only source that records a *parse outcome* rather than a by-product of one. It is keyed by basename under the `v1-basename` identity scheme, while facts use `v2-source-relative`. That mismatch is deliberate and is handled explicitly: when a basename maps to more than one source file, the cache entry is ambiguous and is **discarded** rather than attributed to an arbitrary one of them.
 
@@ -78,9 +80,11 @@ flowchart LR
     P2 --> C2[ACCTREC.cpy]
 ```
 
-Programs no job executes are rendered standalone rather than hidden — an unscheduled program is a real finding, since it is either dead code or invoked by something outside the scanned estate.
+Within an estate that has JCL, programs no job executes are rendered standalone rather than hidden — an unscheduled program is a real finding, since it is either dead code or invoked by something outside the scanned estate. An estate with no JCL at all is a different case: the view returns an explanatory note instead of a job-less program list, because "nothing is scheduled" and "there is no schedule to read" are not the same conclusion.
 
-Filters narrow by job or by program. Mermaid output is capped at 200 edges and flags the truncation; the JSON response always carries the complete graph.
+Program names are matched allowing hyphens, so `EXEC PGM=CUSTOMER-INQUIRY` resolves to the program of that name. Strict JCL member names cannot contain a hyphen, but modernization estates routinely carry hyphenated COBOL names, and truncating at the hyphen silently drops every job-to-program edge.
+
+Filters narrow by job or by program, and combine: requesting a program inside a job that never runs it returns an empty result rather than the program on its own, which would imply a schedule relationship that does not exist. Mermaid output is capped at 200 edges and flags the truncation; the JSON response always carries the complete graph.
 
 ### Semantic Flow Explorer
 

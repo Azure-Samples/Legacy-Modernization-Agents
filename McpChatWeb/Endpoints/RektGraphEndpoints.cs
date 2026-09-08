@@ -72,16 +72,6 @@ public static class RektGraphEndpoints
             {
                 await using var session = RektNeo4j.Shared.AsyncSession();
 
-                // Program names are read from ASTNode separately: joining them
-                // onto the file query multiplies rows by AST size.
-                var astPrograms = new HashSet<string>(StringComparer.Ordinal);
-                var astCursor = await session.RunAsync(
-                    "MATCH (n:ASTNode) WHERE n.program IS NOT NULL RETURN DISTINCT n.program AS program");
-                await astCursor.ForEachAsync(r =>
-                {
-                    if (r["program"].As<string?>() is { Length: > 0 } program) astPrograms.Add(program);
-                });
-
                 var programs = new List<object>();
                 var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -94,7 +84,7 @@ public static class RektGraphEndpoints
                         fileName,
                         isCopybook = record.IsCopybook,
                         lineCount = record.LineCount,
-                        hasAst = astPrograms.Contains($"flow-ast-{fileName}"),
+                        hasAst = record.HasAst,
                     });
                 }
 
@@ -191,11 +181,13 @@ public static class RektGraphEndpoints
             note,
         });
 
-    private sealed record FileRecord(string FileName, bool IsCopybook, int LineCount);
+    private sealed record FileRecord(string FileName, bool IsCopybook, int LineCount, bool HasAst);
 
     /// <summary>
     /// Files for a scan run, collapsed to the newest run per file name so a
-    /// re-ingest does not duplicate every node.
+    /// re-ingest does not duplicate every node. <c>hasAst</c> comes from the
+    /// HAS_AST relationship rather than an ASTNode naming convention, so the
+    /// architecture and services projections cannot disagree about it.
     /// </summary>
     private static async IAsyncEnumerable<FileRecord> QueryFilesAsync(IAsyncSession session, long? scanRunId)
     {
@@ -205,7 +197,9 @@ public static class RektGraphEndpoints
             WHERE f.runId IS NOT NULL {runFilter}
             WITH f.fileName AS fileName, max(f.runId) AS latestRun, collect(f) AS files
             WITH fileName, latestRun, [x IN files WHERE x.runId = latestRun][0] AS f
-            RETURN DISTINCT fileName, f.isCopybook AS isCopybook, f.lineCount AS lineCount",
+            OPTIONAL MATCH (f)-[:HAS_AST]->(root:ASTNode)
+            RETURN DISTINCT fileName, f.isCopybook AS isCopybook, f.lineCount AS lineCount,
+                root IS NOT NULL AS hasAst",
             scanRunId.HasValue ? new { scanRunId = scanRunId.Value } : null);
 
         await foreach (var record in cursor)
@@ -213,7 +207,8 @@ public static class RektGraphEndpoints
             yield return new FileRecord(
                 record["fileName"].As<string>(),
                 record["isCopybook"].As<bool?>() ?? false,
-                record["lineCount"].As<int?>() ?? 0);
+                record["lineCount"].As<int?>() ?? 0,
+                record["hasAst"].As<bool>());
         }
     }
 
