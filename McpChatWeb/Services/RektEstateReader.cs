@@ -60,7 +60,7 @@ public sealed class RektEstateReader
         // Copybooks are enumerated too, or every COPY edge would be reported as a gap.
         var relativePaths = SourcePathHelper.EnumerateProgramRelativePaths(sourceRoot)
             .Concat(EnumerateCopybookRelativePaths(sourceRoot))
-            .Where(IsScannableSource)
+            .Where(path => !SourceTypeRegistry.IsScratchPath(path))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -83,7 +83,7 @@ public sealed class RektEstateReader
         var scanEntries = await LoadScanEntriesAsync(
             basenameCounts.Keys, cancellationToken).ConfigureAwait(false);
 
-        var rektDir = Path.Combine(RepoRoot, "output", "rekt");
+        var rektDir = RektDir;
         var programs = new List<RektProgramRecord>(relativePaths.Count);
 
         foreach (var relativePath in relativePaths)
@@ -136,17 +136,6 @@ public sealed class RektEstateReader
             note = $"Scan cache not found: {ScanCacheDbPath}. Parse fidelity falls back to artifacts on disk.";
 
         return new RektEstate(RepoRoot, sourceRoot, rektDir, programs, ReadMissingCopybooks(), note);
-    }
-
-    // Staging, preprocessing and conversion scratch folders hold derived copies of
-    // the same programs; counting them would double the estate.
-    private static bool IsScannableSource(string relativePath)
-    {
-        var segments = relativePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        return !segments.Any(segment =>
-            segment.StartsWith(".convert-", StringComparison.Ordinal)
-            || segment.Equals(".rekt-staging", StringComparison.Ordinal)
-            || segment.Equals(".preprocessed", StringComparison.Ordinal));
     }
 
     private async Task<Dictionary<string, RektScanEntry>> LoadScanEntriesAsync(
@@ -373,53 +362,3 @@ public sealed class RektEstateReader
         | System.Text.RegularExpressions.RegexOptions.Multiline
         | System.Text.RegularExpressions.RegexOptions.Compiled);
 }
-
-public static class ParseFidelity
-{
-    public const string Full = "full";
-    public const string Partial = "partial";
-    public const string DepsOnly = "deps-only";
-    public const string Failed = "failed";
-    public const string NotParsed = "not-parsed";
-}
-
-public static class FidelitySources
-{
-    public const string ScanCache = "scan-cache";
-    public const string Facts = "facts";
-    public const string Artifacts = "artifacts";
-    public const string None = "none";
-}
-
-public sealed record RektProgramRecord(
-    string Basename,
-    string RelativePath,
-    int LinesOfCode,
-    bool IsCopybook,
-    bool HasFacts,
-    int FactsConfidence,
-    int FactsWarnings,
-    IReadOnlyList<string> Copybooks,
-    IReadOnlyList<string> Callees,
-    IReadOnlyList<string> Callers,
-    string ParseFidelity,
-    string FidelitySource,
-    bool HasReport,
-    bool HasDepsOnly,
-    bool AmbiguousBasename,
-    string? ReportDirectory,
-    string? ScanOutcome,
-    DateTime? ScanParsedAtUtc)
-{
-    public string Stem => Path.GetFileNameWithoutExtension(Basename);
-}
-
-public sealed record RektEstate(
-    string RepoRoot,
-    string SourceRoot,
-    string RektDir,
-    IReadOnlyList<RektProgramRecord> Programs,
-    IReadOnlyList<MissingCopybookRow> MissingCopybooks,
-    string? Note);
-
-public sealed record MissingCopybookRow(string Copybook, IReadOnlyList<string> ReferencedBy);

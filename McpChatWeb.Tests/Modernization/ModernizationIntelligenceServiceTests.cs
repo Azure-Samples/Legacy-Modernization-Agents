@@ -258,4 +258,33 @@ public class ModernizationIntelligenceServiceTests
         Assert.Equal("CUSTOMER.cbl", byPath.Basename);
         Assert.Equal(byPath.RelativePath, byBasename.RelativePath);
     }
+
+    // Dependency Health flags shared basenames as ambiguous and the UI answers by sending
+    // the exact relative path, so an exact path must win outright instead of re-matching
+    // every sibling by stem and reporting the ambiguity straight back.
+    [Fact]
+    public async Task Flow_ExactRelativePathWinsOverSiblingSharingBasename()
+    {
+        using var fixture = new EstateFixture();
+        fixture.AddProgram("billing/CUSTOMER.cbl");
+        fixture.AddProgram("legacy/CUSTOMER.cbl");
+
+        var flow = await ServiceFor(fixture).GetProgramFlowAsync("billing/CUSTOMER.cbl");
+
+        Assert.Equal("billing/CUSTOMER.cbl", flow.RelativePath);
+        Assert.Empty(flow.Candidates);
+    }
+
+    [Fact]
+    public async Task Flow_AmbiguousBasenameStillOffersCandidates()
+    {
+        using var fixture = new EstateFixture();
+        fixture.AddProgram("billing/CUSTOMER.cbl");
+        fixture.AddProgram("legacy/CUSTOMER.cbl");
+
+        var flow = await ServiceFor(fixture).GetProgramFlowAsync("CUSTOMER.cbl");
+
+        Assert.Equal(2, flow.Candidates.Count);
+        Assert.Contains("billing/CUSTOMER.cbl", flow.Candidates);
+    }
 }

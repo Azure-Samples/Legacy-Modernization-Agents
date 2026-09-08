@@ -332,6 +332,9 @@ class ModernizationIntelligenceView {
       const parts = String(identity).split('/').map(encodeURIComponent).join('/');
       const f = await this._get(`/api/modernization/flow/${parts}`);
       host.innerHTML = this._renderFlow(f);
+      host.querySelectorAll('.mi-candidate').forEach(btn => {
+        btn.onclick = () => this._loadProgramFlow(btn.dataset.identity);
+      });
     } catch (e) {
       host.innerHTML = miNotice(`Could not load flow: ${e.message}`, 'error');
     }
@@ -348,8 +351,9 @@ class ModernizationIntelligenceView {
       : '';
 
     const candidates = (f.candidates || []).length
-      ? `<h4 class="mi-h4">Locations searched</h4>
-         <ul class="mi-list mi-dim">${f.candidates.map(c => `<li class="mi-mono">${miEscape(c)}</li>`).join('')}</ul>`
+      ? `<h4 class="mi-h4">Matching source files — pick one</h4>
+         <ul class="mi-list">${f.candidates.map(c =>
+           `<li><button type="button" class="mi-candidate mi-mono" data-identity="${miEscape(c)}">${miEscape(c)}</button></li>`).join('')}</ul>`
       : '';
 
     return `
@@ -379,8 +383,8 @@ class ModernizationIntelligenceView {
     const d = await this._get(`/api/modernization/service-chain${qs.toString() ? `?${qs}` : ''}`);
 
     const jobOptions = ['<option value="">All jobs</option>']
-      .concat((d.jobs || []).map(j =>
-        `<option value="${miEscape(j.jobName)}"${j.jobName === this._chainJob ? ' selected' : ''}>${miEscape(j.jobName)}</option>`))
+      .concat((d.allJobNames || []).map(name =>
+        `<option value="${miEscape(name)}"${name === this._chainJob ? ' selected' : ''}>${miEscape(name)}</option>`))
       .join('');
 
     body.innerHTML = `

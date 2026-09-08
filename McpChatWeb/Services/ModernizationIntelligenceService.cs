@@ -210,14 +210,7 @@ public sealed class ModernizationIntelligenceService
         var estate = await _estate.ReadAsync(cancellationToken).ConfigureAwait(false);
         var normalized = SourcePathHelper.NormalizeRelativePath(identity ?? "");
 
-        // Accept a source-relative path, a basename or a stem, in that order of
-        // specificity, so the UI can link with whatever identity it holds.
-        var matches = estate.Programs
-            .Where(p =>
-                p.RelativePath.Equals(normalized, StringComparison.OrdinalIgnoreCase)
-                || p.Basename.Equals(normalized, StringComparison.OrdinalIgnoreCase)
-                || p.Stem.Equals(Path.GetFileNameWithoutExtension(normalized), StringComparison.OrdinalIgnoreCase))
-            .ToList();
+        var matches = ResolveByIdentity(estate.Programs, normalized);
 
         if (matches.Count == 0)
             return new FlowSnapshot { Identity = identity ?? "", Note = $"No source file matches '{identity}'." };
@@ -277,6 +270,29 @@ public sealed class ModernizationIntelligenceService
         return snapshot;
     }
 
+    // Tiers are tried in order and the first non-empty one wins. A flat OR would let a
+    // sibling sharing the stem make an exact path look ambiguous, which no caller can resolve.
+    private static List<RektProgramRecord> ResolveByIdentity(
+        IReadOnlyList<RektProgramRecord> programs, string normalized)
+    {
+        if (string.IsNullOrWhiteSpace(normalized)) return new List<RektProgramRecord>();
+
+        var byPath = programs
+            .Where(p => p.RelativePath.Equals(normalized, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (byPath.Count > 0) return byPath;
+
+        var byBasename = programs
+            .Where(p => p.Basename.Equals(normalized, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (byBasename.Count > 0) return byBasename;
+
+        var stem = Path.GetFileNameWithoutExtension(normalized);
+        return string.IsNullOrEmpty(stem)
+            ? new List<RektProgramRecord>()
+            : programs.Where(p => p.Stem.Equals(stem, StringComparison.OrdinalIgnoreCase)).ToList();
+    }
+
     // ── Service chain ────────────────────────────────────────────────────
 
     public async Task<ServiceChainSnapshot> GetServiceChainAsync(
@@ -292,7 +308,7 @@ public sealed class ModernizationIntelligenceService
         if (jclFiles.Count == 0)
         {
             snapshot.Note ??= $"No JCL files found under {estate.SourceRoot}.";
-            snapshot.Mermaid = BuildServiceChainMermaid(snapshot);
+            ApplyMermaid(snapshot);
             return snapshot;
         }
 
@@ -339,6 +355,14 @@ public sealed class ModernizationIntelligenceService
                 j => j.PrimaryPrograms.Contains(programStem, StringComparer.OrdinalIgnoreCase));
 
         foreach (var job in selectedJobs) snapshot.Jobs.Add(job);
+
+        foreach (var name in allJobs
+                     .Select(j => j.JobName)
+                     .Distinct(StringComparer.OrdinalIgnoreCase)
+                     .OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
+        {
+            snapshot.AllJobNames.Add(name);
+        }
 
         var jobsByProgram = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
         foreach (var job in snapshot.Jobs)
@@ -391,7 +415,7 @@ public sealed class ModernizationIntelligenceService
         snapshot.JobToProgramEdges = snapshot.Jobs.Sum(j => j.PrimaryPrograms.Count);
         snapshot.ProgramToCopybookEdges = snapshot.Programs.Sum(p => p.Copybooks.Count);
 
-        snapshot.Mermaid = BuildServiceChainMermaid(snapshot);
+        ApplyMermaid(snapshot);
         return snapshot;
     }
 
@@ -402,7 +426,7 @@ public sealed class ModernizationIntelligenceService
         {
             return Directory.EnumerateFiles(sourceRoot, "*", SearchOption.AllDirectories)
                 .Where(path => Path.GetExtension(path).Equals(".jcl", StringComparison.OrdinalIgnoreCase))
-                .Where(path => !IsScratchPath(sourceRoot, path))
+                .Where(path => !SourceTypeRegistry.IsScratchPath(Path.GetRelativePath(sourceRoot, path)))
                 // Case-insensitive filesystems return the same file for the
                 // *.JCL and *.jcl patterns REKT tooling uses.
                 .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -412,21 +436,20 @@ public sealed class ModernizationIntelligenceService
         catch { return new List<string>(); }
     }
 
-    private static bool IsScratchPath(string root, string path)
-    {
-        var relative = SourcePathHelper.NormalizeRelativePath(Path.GetRelativePath(root, path));
-        return relative.Split('/', StringSplitOptions.RemoveEmptyEntries).Any(segment =>
-            segment.StartsWith(".convert-", StringComparison.Ordinal)
-            || segment.Equals(".rekt-staging", StringComparison.Ordinal)
-            || segment.Equals(".preprocessed", StringComparison.Ordinal));
-    }
-
     // Capped at MaxMermaidEdges because the client-side renderer becomes unusable well
     // before a full estate is drawn; the JSON payload still carries every edge.
     private const int MaxMermaidEdges = 200;
 
+    private static void ApplyMermaid(ServiceChainSnapshot snapshot)
+    {
+        var diagram = BuildServiceChainMermaid(snapshot);
+        snapshot.Mermaid = diagram.Text;
+        snapshot.MermaidEdgeCount = diagram.EdgeCount;
+        snapshot.MermaidTruncated = diagram.Truncated;
+    }
+
     // Filtering happens upstream so the diagram cannot disagree with the JSON beside it.
-    private static string BuildServiceChainMermaid(ServiceChainSnapshot snapshot)
+    private static MermaidDiagram BuildServiceChainMermaid(ServiceChainSnapshot snapshot)
     {
         var sb = new StringBuilder();
         sb.AppendLine("flowchart LR");
@@ -465,7 +488,8 @@ public sealed class ModernizationIntelligenceService
                 foreach (var copybook in chain.Copybooks)
                 {
                     if (edges >= MaxMermaidEdges) break;
-                    edges += AppendCopybook(sb, renderedCopybooks, pgmId, copybook);
+                    AppendCopybook(sb, renderedCopybooks, pgmId, copybook);
+                    edges++;
                 }
             }
         }
@@ -484,24 +508,24 @@ public sealed class ModernizationIntelligenceService
             foreach (var copybook in program.Copybooks)
             {
                 if (edges >= MaxMermaidEdges) break;
-                edges += AppendCopybook(sb, renderedCopybooks, pgmId, copybook);
+                AppendCopybook(sb, renderedCopybooks, pgmId, copybook);
+                edges++;
             }
         }
 
-        snapshot.MermaidEdgeCount = edges;
-        snapshot.MermaidTruncated = edges >= MaxMermaidEdges;
-        return sb.ToString();
+        return new MermaidDiagram(sb.ToString(), edges, edges >= MaxMermaidEdges);
     }
 
-    private static int AppendCopybook(
+    private static void AppendCopybook(
         StringBuilder sb, HashSet<string> rendered, string programId, string copybook)
     {
         var copybookId = Sanitize($"c_{copybook}");
         if (rendered.Add(copybook))
             sb.AppendLine($"  {copybookId}([\"{Escape(copybook)}\"]):::cpyNode");
         sb.AppendLine($"  {programId} -.-> {copybookId}");
-        return 1;
     }
+
+    private readonly record struct MermaidDiagram(string Text, int EdgeCount, bool Truncated);
 
     private static string Sanitize(string value) =>
         new(value.Select(c => char.IsLetterOrDigit(c) || c == '_' ? c : '_').ToArray());
@@ -509,108 +533,3 @@ public sealed class ModernizationIntelligenceService
     private static string Escape(string value) =>
         (value ?? "").Replace("\"", "'").Replace('\n', ' ').Replace('\r', ' ');
 }
-
-// ── Contracts ────────────────────────────────────────────────────────────
-
-public sealed class DependencyHealthSnapshot
-{
-    public int TotalPrograms { get; set; }
-    public int FullFidelityCount { get; set; }
-    public int PartialFidelityCount { get; set; }
-    public int DepsOnlyCount { get; set; }
-    public int FailedCount { get; set; }
-    public int NotParsedCount { get; set; }
-    public int ScanCacheBackedCount { get; set; }
-    public double CoveragePct { get; set; }
-    public int TotalMissingCopybooks { get; set; }
-    public int ProgramsBlockedByMissing { get; set; }
-    public double ReadinessScore { get; set; }
-    public List<MissingCopybookRow> MissingCopybooks { get; } = new();
-    public List<ProgramHealthRow> Programs { get; } = new();
-    public string? Note { get; set; }
-}
-
-public sealed record ProgramHealthRow(
-    string Basename,
-    string RelativePath,
-    int LinesOfCode,
-    string ParseFidelity,
-    string FidelitySource,
-    string? ScanOutcome,
-    int FactsConfidence,
-    int FactsWarnings,
-    int MissingCopybookCount,
-    bool HasReport,
-    bool HasDepsOnly,
-    bool AmbiguousBasename);
-
-public sealed class TopologySnapshot
-{
-    public List<TopologyNode> Nodes { get; } = new();
-    public List<TopologyEdge> Edges { get; } = new();
-
-    // Targets with no matching source file, or whose name maps to several.
-    public List<TopologyEdge> UnresolvedEdges { get; } = new();
-
-    public string? Note { get; set; }
-}
-
-public sealed record TopologyNode(
-    string Id,
-    string Basename,
-    string Kind,
-    int LinesOfCode,
-    bool HasFacts,
-    int FactsConfidence,
-    string ParseFidelity,
-    string FidelitySource,
-    bool AmbiguousBasename);
-
-public sealed record TopologyEdge(string Source, string Target, string Kind);
-
-public sealed class FlowSnapshot
-{
-    public string Identity { get; set; } = "";
-    public string Basename { get; set; } = "";
-    public string RelativePath { get; set; } = "";
-    public string ParseFidelity { get; set; } = Services.ParseFidelity.NotParsed;
-    public string FidelitySource { get; set; } = FidelitySources.None;
-    public bool HasFlowAst { get; set; }
-    public bool HasCfg { get; set; }
-    public bool HasDataStructures { get; set; }
-    public int FlowAstFiles { get; set; }
-    public List<string> FlowAstNames { get; set; } = new();
-    public List<string> Candidates { get; set; } = new();
-    public string? ReportDirectory { get; set; }
-    public string? Note { get; set; }
-}
-
-public sealed class ServiceChainSnapshot
-{
-    public int TotalJobs { get; set; }
-    public int TotalPrograms { get; set; }
-    public int TotalCopybooks { get; set; }
-    public int JobToProgramEdges { get; set; }
-    public int ProgramToCopybookEdges { get; set; }
-    public int MermaidEdgeCount { get; set; }
-    public bool MermaidTruncated { get; set; }
-    public List<JclJob> Jobs { get; } = new();
-    public List<ProgramChain> Programs { get; } = new();
-    public string Mermaid { get; set; } = "";
-    public string? Note { get; set; }
-}
-
-public sealed record JclJob(
-    string JobName,
-    string JclFileName,
-    string RelativePath,
-    List<string> PrimaryPrograms);
-
-public sealed record ProgramChain(
-    string Basename,
-    string Stem,
-    string RelativePath,
-    int LinesOfCode,
-    string ParseFidelity,
-    List<string> Copybooks,
-    List<string> CalledByJobs);

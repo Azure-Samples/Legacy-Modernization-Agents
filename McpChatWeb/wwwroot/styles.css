@@ -7731,6 +7731,11 @@ main.three-panel-layout {
 
 .mi-list { margin: 4px 0 0 16px; padding: 0; font-size: 12px; }
 .mi-list li { margin: 2px 0; }
+.mi-candidate {
+  background: none; border: none; padding: 0;
+  color: #60a5fa; cursor: pointer; font: inherit; text-decoration: underline;
+}
+.mi-candidate:hover { color: #93c5fd; }
 
 .mi-filters { display: flex; gap: 12px; align-items: flex-end; margin-bottom: 12px; flex-wrap: wrap; }
 .mi-filters label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: #94a3b8; }

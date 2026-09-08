@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using McpChatWeb.Services;
 using Neo4j.Driver;
 
@@ -10,12 +11,11 @@ public static class RektGraphEndpoints
     public static void MapRektGraphEndpoints(this WebApplication app)
     {
         var group = app.MapGroup("/api/graph/rekt").WithTags("REKT Graph");
+        var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("RektGraph");
 
         group.MapGet("/runs", async (
-            ILoggerFactory loggerFactory,
             CancellationToken cancellationToken) =>
         {
-            var logger = loggerFactory.CreateLogger("RektGraph");
             if (!RektNeo4j.IsConfigured)
                 return Results.Ok(new { runs = Array.Empty<object>(), note = RektNeo4j.NotConfiguredNote });
 
@@ -32,12 +32,15 @@ public static class RektGraphEndpoints
                     ORDER BY runId DESC");
 
                 var runs = new List<object>();
-                await cursor.ForEachAsync(r => runs.Add(new
+                await foreach (var r in cursor.WithCancellation(cancellationToken))
                 {
-                    runId = r["runId"].As<long>(),
-                    fileCount = r["fileCount"].As<int>(),
-                    maxLines = r["maxLines"].As<int>(),
-                }));
+                    runs.Add(new
+                    {
+                        runId = r["runId"].As<long>(),
+                        fileCount = r["fileCount"].As<int>(),
+                        maxLines = r["maxLines"].As<int>(),
+                    });
+                }
 
                 return Results.Ok(new { runs, note = (string?)null });
             }
@@ -52,10 +55,8 @@ public static class RektGraphEndpoints
 
         group.MapGet("/architect", async (
             long? scanRunId,
-            ILoggerFactory loggerFactory,
             CancellationToken cancellationToken) =>
         {
-            var logger = loggerFactory.CreateLogger("RektGraph");
             if (!RektNeo4j.IsConfigured)
                 return EmptyArchitecture(RektNeo4j.NotConfiguredNote);
 
@@ -66,7 +67,7 @@ public static class RektGraphEndpoints
                 var programs = new List<object>();
                 var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-                await foreach (var record in QueryFilesAsync(session, scanRunId))
+                await foreach (var record in QueryFilesAsync(session, scanRunId, cancellationToken))
                 {
                     var fileName = record.FileName;
                     if (!seen.Add(fileName)) continue;
@@ -79,7 +80,7 @@ public static class RektGraphEndpoints
                     });
                 }
 
-                var dependencies = await ReadDependenciesAsync(session);
+                var dependencies = await ReadDependenciesAsync(session, cancellationToken);
                 return Results.Ok(new { programs, dependencies, note = (string?)null });
             }
             catch (Exception ex)
@@ -93,10 +94,8 @@ public static class RektGraphEndpoints
 
         group.MapGet("/services", async (
             long? scanRunId,
-            ILoggerFactory loggerFactory,
             CancellationToken cancellationToken) =>
         {
-            var logger = loggerFactory.CreateLogger("RektGraph");
             if (!RektNeo4j.IsConfigured)
                 return EmptyServices(RektNeo4j.NotConfiguredNote);
 
@@ -123,10 +122,10 @@ public static class RektGraphEndpoints
 
                 var nodes = new List<object>();
                 var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                await cursor.ForEachAsync(r =>
+                await foreach (var r in cursor.WithCancellation(cancellationToken))
                 {
                     var fileName = r["fileName"].As<string>();
-                    if (!seen.Add(fileName)) return;
+                    if (!seen.Add(fileName)) continue;
                     nodes.Add(new
                     {
                         id = fileName,
@@ -138,9 +137,9 @@ public static class RektGraphEndpoints
                         performCount = r["performCount"].As<int>(),
                         displayCount = r["displayCount"].As<int>(),
                     });
-                });
+                }
 
-                var edges = await ReadDependenciesAsync(session);
+                var edges = await ReadDependenciesAsync(session, cancellationToken);
                 return Results.Ok(new { nodes, edges, note = (string?)null });
             }
             catch (Exception ex)
@@ -176,7 +175,9 @@ public static class RektGraphEndpoints
 
     // Newest run per file name, so a re-ingest does not duplicate nodes. hasAst reads the
     // HAS_AST edge, not a name convention, so the two projections cannot disagree on it.
-    private static async IAsyncEnumerable<FileRecord> QueryFilesAsync(IAsyncSession session, long? scanRunId)
+    private static async IAsyncEnumerable<FileRecord> QueryFilesAsync(
+        IAsyncSession session, long? scanRunId,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         var runFilter = scanRunId.HasValue ? "AND f.runId = $scanRunId" : "";
         var cursor = await session.RunAsync($@"
@@ -189,7 +190,7 @@ public static class RektGraphEndpoints
                 root IS NOT NULL AS hasAst",
             scanRunId.HasValue ? new { scanRunId = scanRunId.Value } : null);
 
-        await foreach (var record in cursor)
+        await foreach (var record in cursor.WithCancellation(cancellationToken))
         {
             yield return new FileRecord(
                 record["fileName"].As<string>(),
@@ -199,7 +200,8 @@ public static class RektGraphEndpoints
         }
     }
 
-    private static async Task<List<object>> ReadDependenciesAsync(IAsyncSession session)
+    private static async Task<List<object>> ReadDependenciesAsync(
+        IAsyncSession session, CancellationToken cancellationToken)
     {
         var cursor = await session.RunAsync(@"
             MATCH (a:CobolFile)-[d:DEPENDS_ON]->(b:CobolFile)
@@ -207,14 +209,14 @@ public static class RektGraphEndpoints
 
         var edges = new List<object>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        await cursor.ForEachAsync(r =>
+        await foreach (var r in cursor.WithCancellation(cancellationToken))
         {
             var source = r["source"].As<string>();
             var target = r["target"].As<string>();
             var type = r["type"].As<string?>() ?? "DEPENDS_ON";
-            if (!seen.Add($"{source}->{target}:{type}")) return;
+            if (!seen.Add($"{source}->{target}:{type}")) continue;
             edges.Add(new { source, target, type });
-        });
+        }
         return edges;
     }
 }
