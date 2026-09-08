@@ -54,7 +54,7 @@ internal static class Program
             var fileHelper = new FileHelper(loggerFactory.CreateLogger<FileHelper>());
             var settingsHelper = new SettingsHelper(loggerFactory.CreateLogger<SettingsHelper>());
 
-            if (!ValidateAndLoadConfiguration())
+            if (!ValidateAndLoadConfiguration(RequiresAiSettings(args)))
             {
                 return 1;
             }
@@ -903,7 +903,6 @@ internal static class Program
             string currentDir = Directory.GetCurrentDirectory();
             string configDir = Path.Combine(currentDir, "Config");
             string localConfigFile = Path.Combine(configDir, "ai-config.local.env");
-            string templateConfigFile = Path.Combine(configDir, "ai-config.env");
 
             if (File.Exists(localConfigFile))
             {
@@ -913,11 +912,6 @@ internal static class Program
             {
                 Console.WriteLine("💡 Consider creating Config/ai-config.local.env for your personal settings");
                 Console.WriteLine("   You can copy from Config/ai-config.env.example");
-            }
-
-            if (File.Exists(templateConfigFile))
-            {
-                LoadEnvFile(templateConfigFile);
             }
         }
         catch (Exception ex)
@@ -1266,11 +1260,37 @@ internal static class Program
             chatProfile.MaxOutputTokens = chatMaxVal;
     }
 
-    private static bool ValidateAndLoadConfiguration()
+    // These subcommands only read and write files. Requiring AI credentials for them was
+    // masked while Config/ai-config.env shipped placeholder values that satisfied validation.
+    private static bool RequiresAiSettings(string[] args)
+    {
+        if (args.Any(a => a is "--help" or "-h" or "-?" or "--version"))
+        {
+            return false;
+        }
+
+        var command = args.FirstOrDefault(a => !a.StartsWith('-'));
+        return command is not ("program-facts" or "rekt-scan-cache" or "conversation");
+    }
+
+    // Matched against the literals shipped in ai-config.env.example. An unedited placeholder that
+    // passes validation resurfaces as a DNS or auth failure, not as "you have not configured this".
+    private static bool IsTemplatePlaceholder(string value) =>
+        value.Contains("your-endpoint", StringComparison.OrdinalIgnoreCase) ||
+        value.Contains("your-resource", StringComparison.OrdinalIgnoreCase) ||
+        value.Contains("your-api-key", StringComparison.OrdinalIgnoreCase) ||
+        value.Contains("placeholder", StringComparison.OrdinalIgnoreCase);
+
+    private static bool ValidateAndLoadConfiguration(bool requireAiSettings)
     {
         try
         {
             LoadEnvironmentVariables();
+
+            if (!requireAiSettings)
+            {
+                return true;
+            }
 
             var serviceType = Environment.GetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE") ?? "AzureOpenAI";
             var isGitHubCopilot = serviceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase) ||
@@ -1338,11 +1358,11 @@ internal static class Program
                     {
                         invalidSettings.Add($"{setting.Key} (invalid URL format)");
                     }
-                    else if (setting.Key == "AZURE_OPENAI_API_KEY" && setting.Value.Contains("your-api-key"))
+                    else if (setting.Key == "AZURE_OPENAI_API_KEY" && IsTemplatePlaceholder(setting.Value))
                     {
                         invalidSettings.Add($"{setting.Key} (contains template placeholder)");
                     }
-                    else if (setting.Key == "AZURE_OPENAI_ENDPOINT" && setting.Value.Contains("your-resource"))
+                    else if (setting.Key == "AZURE_OPENAI_ENDPOINT" && IsTemplatePlaceholder(setting.Value))
                     {
                         invalidSettings.Add($"{setting.Key} (contains template placeholder)");
                     }
@@ -1377,12 +1397,12 @@ internal static class Program
                 }
 
                 Console.WriteLine("Configuration Setup Instructions:");
-                Console.WriteLine("1. Run: ./setup.sh (for interactive setup)");
+                Console.WriteLine("1. Run: ./doctor.sh setup (for interactive setup)");
                 Console.WriteLine("2. Or manually copy Config/ai-config.env.example to Config/ai-config.local.env");
                 Console.WriteLine("3. Edit Config/ai-config.local.env with your actual Azure OpenAI credentials");
                 Console.WriteLine("4. Ensure your model deployment names match your Azure OpenAI setup");
                 Console.WriteLine();
-                Console.WriteLine("For detailed instructions, see: CONFIGURATION_GUIDE.md");
+                Console.WriteLine("For detailed instructions, see the Configuration Reference in README.md");
 
                 return false;
             }

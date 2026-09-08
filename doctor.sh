@@ -726,11 +726,11 @@ run_doctor() {
 
     config_files_ok=true
 
-    # Check template configuration
-    if [[ -f "$REPO_ROOT/Config/ai-config.env" ]]; then
-        echo -e "${GREEN}✅ Template configuration found: Config/ai-config.env${NC}"
+    # Check the example that local config is created from
+    if [[ -f "$REPO_ROOT/Config/ai-config.env.example" ]]; then
+        echo -e "${GREEN}✅ Example configuration found: Config/ai-config.env.example${NC}"
     else
-        echo -e "${RED}❌ Missing template configuration: Config/ai-config.env${NC}"
+        echo -e "${RED}❌ Missing example configuration: Config/ai-config.env.example${NC}"
         config_files_ok=false
     fi
 
@@ -2033,7 +2033,7 @@ run_validate() {
 
     # Check configuration files
     required_files=(
-        "Config/ai-config.env"
+        "Config/ai-config.env.example"
         "Config/load-config.sh"
         "Config/appsettings.json"
         "CobolToQuarkusMigration.csproj"

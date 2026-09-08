@@ -107,7 +107,7 @@ Each run writes `conversion-parity.json` beside the generated code and appends a
 | `MIN_PROGRAM_SCORE` | `0.75` | Score below which a program is counted as below threshold. Clamped to `[0,1]`; an unparseable value logs a warning and falls back to the default. |
 | `ON_LOW_SCORE` | `warn` | `warn` reports only. `stop` additionally sets exit code `4`. |
 
-Both are read from the environment, which takes precedence over `Config/ai-config.env`.
+Both are read from the environment, which takes precedence over `Config/ai-config.local.env`.
 
 ```bash
 MIN_PROGRAM_SCORE=0.8 ON_LOW_SCORE=stop ./doctor.sh run

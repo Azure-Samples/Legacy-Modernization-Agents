@@ -980,7 +980,7 @@ You can still access the data directly:
 			             (innerEx.InnerException != null ? $"Inner: {innerEx.InnerException.Message}\n\n" : "") +
 			             "Possible causes:\n" +
 			             "• If using GitHubCopilot: ensure 'gh auth login' has been run and GITHUB_TOKEN is set\n" +
-			             "• If using AzureOpenAI: check endpoint URL and API key in Config/ai-config.env\n" +
+			             "• If using AzureOpenAI: check endpoint URL and API key in Config/ai-config.local.env\n" +
 			             "• The model selected in the portal may not match the configured AI backend\n" +
 			             "• Try restarting the portal after changing models";
 			Console.WriteLine($"❌ Chat completely failed: {innerEx.Message}");
