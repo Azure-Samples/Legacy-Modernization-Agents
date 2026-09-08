@@ -16,6 +16,7 @@ public class ModernizationEndpointsTests : IClassFixture<Integration.WebAppFacto
     [InlineData("/api/modernization/dependency-health")]
     [InlineData("/api/modernization/topology")]
     [InlineData("/api/modernization/service-chain")]
+    [InlineData("/api/modernization/conversion-parity")]
     [InlineData("/api/modernization/flow/CUSTOMER.cbl")]
     [InlineData("/api/graph/rekt/runs")]
     [InlineData("/api/graph/rekt/architect")]
@@ -52,6 +53,19 @@ public class ModernizationEndpointsTests : IClassFixture<Integration.WebAppFacto
 
         Assert.Equal(JsonValueKind.Array, payload.GetProperty("runs").ValueKind);
         Assert.True(payload.TryGetProperty("note", out _));
+    }
+
+    [Fact]
+    public async Task ConversionParity_ReportsWhichTargetsWereFound()
+    {
+        var client = _factory.CreateClient();
+
+        var payload = await client.GetFromJsonAsync<JsonElement>("/api/modernization/conversion-parity");
+
+        Assert.Equal(JsonValueKind.Array, payload.GetProperty("reports").ValueKind);
+        // Absence must be explicit — an empty reports array alone reads as "everything passed".
+        Assert.Equal(JsonValueKind.Array, payload.GetProperty("missingTargets").ValueKind);
+        Assert.Equal(JsonValueKind.Array, payload.GetProperty("unreadableTargets").ValueKind);
     }
 
     [Fact]

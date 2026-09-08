@@ -166,6 +166,11 @@ public sealed class RektContextLoader
             var startLine = TryGetInt(el, "startLine");
             var endLine = TryGetInt(el, "endLine");
 
+            // smojol truncates statement node `name`/`label` to 15 characters, so
+            // "PERFORM SEARCH-CUSTOMER" arrives as "PERFORMSEARCH-C". `originalText`
+            // is untruncated; parse targets from it and keep `name` only as a fallback.
+            var statementText = TryGetString(el, "originalText") ?? name;
+
             switch (nodeType?.ToUpperInvariant())
             {
                 case "SECTION":
@@ -176,43 +181,40 @@ public sealed class RektContextLoader
                     break;
                 }
                 case "PARAGRAPH":
-                case "SENTENCE":
                 {
                     var p = new RektParagraph { Name = name, StartLine = startLine, EndLine = endLine };
                     if (currentSection != null) currentSection.Paragraphs.Add(p);
                     else ctx.Sections.Add(new RektSection { Name = "(implicit)", Paragraphs = { p } });
-                    // v2: sentences may contain PERFORM/CALL info in `name` (e.g. "PERFORM010-INIT")
-                    if (name.StartsWith("PERFORM", StringComparison.OrdinalIgnoreCase))
+                    break;
+                }
+                case "SENTENCE":
+                case "GENERIC_STATEMENT":
+                {
+                    // A sentence is a statement, not a named paragraph; only its PERFORM/CALL
+                    // target is structural. Recording it as a paragraph put statement text into
+                    // Sections[].Paragraphs and inflated the paragraph count in facts.json.
+                    var target = ExtractStatementTarget(statementText, "PERFORM");
+                    if (target != null)
                     {
-                        var target = name.Substring("PERFORM".Length).Trim();
-                        if (!string.IsNullOrEmpty(target))
+                        ctx.PerformGraph.Add(new RektPerformEdge
                         {
-                            ctx.PerformGraph.Add(new RektPerformEdge
-                            {
-                                From = currentSection?.Name ?? "",
-                                To = target,
-                                Conditional = name.Contains("UNTIL", StringComparison.OrdinalIgnoreCase)
-                            });
-                        }
+                            From = currentSection?.Name ?? "",
+                            To = target,
+                            Conditional = statementText.Contains("UNTIL", StringComparison.OrdinalIgnoreCase)
+                        });
                     }
-                    else if (name.StartsWith("CALL", StringComparison.OrdinalIgnoreCase))
-                    {
-                        var target = name.Substring("CALL".Length).Trim().Trim('\'');
-                        if (!string.IsNullOrEmpty(target))
-                        {
-                            ctx.CallTargets.Add(new RektCallTarget
-                            {
-                                TargetProgram = target,
-                                IsDynamic = false,
-                                LineNumber = startLine,
-                            });
-                        }
-                    }
+
+                    // A CALL nested inside a conditional (READ ... NOT INVALID KEY) is emitted as
+                    // a GENERIC_STATEMENT with no CALL node, so the target exists only in the text.
+                    // An inline PERFORM ... END-PERFORM can also wrap one, so this is not an else.
+                    HarvestLiteralCalls(statementText, startLine, ctx);
                     break;
                 }
                 case "PERFORM":
                 {
-                    var target = TryGetString(el, "target") ?? name;
+                    var target = TryGetString(el, "target")
+                                 ?? ExtractStatementTarget(statementText, "PERFORM")
+                                 ?? NullIfEmpty(name);
                     if (!string.IsNullOrEmpty(target))
                     {
                         ctx.PerformGraph.Add(new RektPerformEdge
@@ -227,12 +229,16 @@ public sealed class RektContextLoader
                 case "CALL":
                 case "CALLSTATEMENT":
                 {
-                    var target = TryGetString(el, "target") ?? name;
-                    if (!string.IsNullOrEmpty(target))
+                    var target = TryGetString(el, "target")
+                                 ?? ExtractStatementTarget(statementText, "CALL")
+                                 ?? NullIfEmpty(name);
+                    target = target?.Trim('\'', '"');
+                    if (!string.IsNullOrEmpty(target)
+                        && !ctx.CallTargets.Any(c => string.Equals(c.TargetProgram, target, StringComparison.OrdinalIgnoreCase)))
                     {
                         ctx.CallTargets.Add(new RektCallTarget
                         {
-                            TargetProgram = target.Trim('\''),
+                            TargetProgram = target,
                             IsDynamic = TryGetBool(el, "dynamic"),
                             LineNumber = startLine,
                         });
@@ -574,6 +580,58 @@ public sealed class RektContextLoader
                 yield return candidate;
             }
         }
+    }
+
+    private static string? NullIfEmpty(string s) => string.IsNullOrWhiteSpace(s) ? null : s;
+
+    private static readonly System.Text.RegularExpressions.Regex LiteralCallPattern =
+        new(@"\bCALL\s+['""]([A-Za-z0-9][A-Za-z0-9_\-]*)['""]",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase
+            | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    // Only quoted targets are harvested: `CALL WS-PROGRAM` names a variable holding a program
+    // name, and recording the variable as a callee would invent a dependency that does not exist.
+    private static void HarvestLiteralCalls(string statementText, int startLine, RektContext ctx)
+    {
+        foreach (System.Text.RegularExpressions.Match m in LiteralCallPattern.Matches(statementText))
+        {
+            var target = m.Groups[1].Value;
+            if (ctx.CallTargets.Any(c => string.Equals(c.TargetProgram, target, StringComparison.OrdinalIgnoreCase)))
+                continue;
+
+            ctx.CallTargets.Add(new RektCallTarget
+            {
+                TargetProgram = target,
+                IsDynamic = false,
+                LineNumber = startLine,
+            });
+        }
+    }
+
+    // An inline PERFORM has no procedure target; these words follow the verb instead of a name.
+    private static readonly HashSet<string> InlinePerformKeywords =
+        new(StringComparer.OrdinalIgnoreCase) { "VARYING", "UNTIL", "WITH", "TEST", "FOREVER", "THRU", "THROUGH" };
+
+    // Returns the target of a PERFORM/CALL statement, or null when the text is not that verb.
+    // Handles both the untruncated `originalText` ("PERFORM SEARCH-CUSTOMER.") and smojol's
+    // 15-char truncated `name` ("PERFORMSEARCH-C"), where the separating space is gone.
+    private static string? ExtractStatementTarget(string statementText, string verb)
+    {
+        var text = statementText.TrimStart();
+        if (!text.StartsWith(verb, StringComparison.OrdinalIgnoreCase)) return null;
+
+        var rest = text.Substring(verb.Length).TrimStart();
+        if (rest.Length == 0) return null;
+
+        // "PERFORM X UNTIL ..." / "CALL 'X' USING ..." — the target is the first token.
+        var end = rest.IndexOfAny([' ', '\t', '\r', '\n']);
+        var token = (end < 0 ? rest : rest[..end]).Trim().Trim('.').Trim('\'', '"');
+
+        // "PERFORM 10 TIMES" and "PERFORM VARYING ..." name no procedure; recording the
+        // first token would invent one.
+        if (InlinePerformKeywords.Contains(token) || token.All(char.IsDigit)) return null;
+
+        return NullIfEmpty(token);
     }
 
     private static string? TryGetString(JsonElement el, string name)

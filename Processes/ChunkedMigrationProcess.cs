@@ -1102,7 +1102,8 @@ public class ChunkedMigrationProcess
 
         foreach (var file in files)
         {
-            await _fileHelper.SaveCodeFileAsync(file, outputFolder, extension);
+            // Recorded so the parity post-pass can re-open what actually shipped.
+            file.FilePath = await _fileHelper.SaveCodeFileAsync(file, outputFolder, extension);
         }
     }
 
@@ -1183,6 +1184,9 @@ public class ChunkedMigrationProcess
         report.AppendLine($"- **Naming Strategy**: {_settings.ConversionSettings.NamingStrategy}");
         report.AppendLine($"- **Progressive Compression**: {_settings.ChunkingSettings.EnableProgressiveCompression}");
         report.AppendLine();
+
+        var parity = await ConversionParityPostPass.RunAsync(generatedFiles, outputFolder, langName, _logger);
+        if (!string.IsNullOrWhiteSpace(parity)) report.Append(parity);
 
         await File.WriteAllTextAsync(reportPath, report.ToString());
         _logger.LogInformation("Chunked migration report saved to {Path}", reportPath);

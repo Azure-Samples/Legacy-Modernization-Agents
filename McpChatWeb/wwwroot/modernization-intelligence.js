@@ -6,12 +6,11 @@
 // confused. Subviews whose backends are not part of this build render an
 // explicit notice rather than an empty table that reads as "nothing found".
 
-const MI_LIVE_SUBVIEWS = ['health', 'topology', 'flow', 'chain'];
+const MI_LIVE_SUBVIEWS = ['health', 'topology', 'flow', 'chain', 'runtime'];
 
 const MI_PENDING_SUBVIEWS = {
   dashboard: 'Modernization Dashboard',
   applications: 'Application Explorer',
-  runtime: 'Runtime & Conversion Intelligence',
   services: 'Service Candidates',
   waves: 'Migration Wave Planner',
   capabilities: 'Capabilities & Locator',
@@ -69,8 +68,8 @@ function miFlowOverflow(total) {
     : '';
 }
 
-function miPendingPanel(title) {
-  return `<div class="mi-pending">
+function miPendingPanel(title, { inline = false } = {}) {
+  return `<div class="mi-pending${inline ? ' mi-pending-inline' : ''}">
     <div class="mi-pending-icon">🚧</div>
     <div class="mi-pending-title">${miEscape(title)}</div>
     <div class="mi-pending-body">Not wired in this build — ships with a later feature.</div>
@@ -163,6 +162,10 @@ class ModernizationIntelligenceView {
         this._wireFlow(body, health);
       } else if (this._activeSubview === 'chain') {
         await this._renderChain(body, token);
+      } else if (this._activeSubview === 'runtime') {
+        const data = await this._get('/api/modernization/conversion-parity');
+        if (token !== this._renderToken) return;
+        body.innerHTML = this._renderRuntime(data);
       }
     } catch (e) {
       if (token !== this._renderToken) return;
@@ -481,6 +484,113 @@ class ModernizationIntelligenceView {
   }
 
   // ── Service Chain ───────────────────────────────────────────────────
+  // Conversion parity is measured; the runtime half has no data source yet, so it stays an
+  // explicit pending panel rather than an empty table that reads as "nothing found".
+  _renderRuntime(estate) {
+    const reports = estate?.reports ?? [];
+    const missing = estate?.missingTargets ?? [];
+    const unreadable = estate?.unreadableTargets ?? [];
+
+    const parts = ['<div class="mi-h4">Conversion parity <span class="mi-badge" style="color:#a78bfa;border-color:#a78bfa44;background:#a78bfa18;">preview</span></div>'];
+    parts.push(miNotice(
+      'Structural coverage of generated code against the COBOL it came from. A passing score means procedures, data fields, CALL targets and SQL tables are visible in the output — it is not a statement about behavioural equivalence.'));
+
+    if (reports.length === 0) {
+      parts.push(miNotice(
+        'No conversion parity report found. Run a conversion — the report is written to output/<target>/conversion-parity.json.',
+        'warn'));
+    }
+
+    for (const report of reports) {
+      parts.push(this._renderParityReport(report));
+    }
+
+    if (unreadable.length > 0) {
+      parts.push(miNotice(
+        `Could not read the parity report for: ${unreadable.join(', ')}. The file exists but is not valid JSON.`,
+        'error'));
+    }
+    if (missing.length > 0 && reports.length > 0) {
+      parts.push(`<div class="mi-dim">No parity report for: ${miEscape(missing.join(', '))}.</div>`);
+    }
+
+    parts.push('<div class="mi-h4">Runtime intelligence</div>');
+    parts.push(miPendingPanel('Runtime telemetry', { inline: true }));
+
+    return parts.join('');
+  }
+
+  _renderParityReport(report) {
+    const programs = report.programs ?? [];
+    const evaluated = report.evaluatedCount ?? 0;
+    const notEvaluated = report.notEvaluatedCount ?? 0;
+    const below = report.belowThresholdCount ?? 0;
+    const threshold = report.threshold ?? 0;
+
+    const avg = report.averageScore == null ? '—' : report.averageScore.toFixed(2);
+    const avgHint = report.averageScore == null
+      ? 'Nothing could be evaluated'
+      : `Across ${evaluated} evaluated program(s)`;
+
+    const parts = [`<div class="mi-h4">${miEscape(report.targetLanguage || 'Target')} <span class="mi-dim">· ${miEscape(report.sourcePath || '')}</span></div>`];
+
+    parts.push(`<div class="mi-stats">
+      ${miStat('Evaluated', evaluated, 'Programs with a measured score')}
+      ${miStat('Not evaluated', notEvaluated, 'No score — absence of a gap proves nothing', notEvaluated > 0 ? '#f59e0b' : undefined)}
+      ${miStat('Below threshold', below, `MIN_PROGRAM_SCORE=${threshold}`, below > 0 ? '#ef4444' : '#10b981')}
+      ${miStat('Average score', avg, avgHint)}
+    </div>`);
+
+    const scored = programs
+      .filter(p => p.outcome === 'Evaluated')
+      .sort((a, b) => (a.score ?? 0) - (b.score ?? 0));
+
+    if (scored.length > 0) {
+      parts.push(`<table class="mi-table">
+        <thead><tr><th>COBOL Source</th><th>Generated</th><th>Score</th><th>Missing</th><th>Renamed / merged</th><th>Provenance</th></tr></thead>
+        <tbody>${scored.map(p => this._renderParityRow(p, threshold)).join('')}</tbody>
+      </table>`);
+    }
+
+    const skipped = programs.filter(p => p.outcome !== 'Evaluated');
+    if (skipped.length > 0) {
+      parts.push('<div class="mi-h4">Not evaluated</div>');
+      parts.push(miNotice(
+        'These programs have no parity result. Absence of a gap here is not evidence of a good conversion.',
+        'warn'));
+      parts.push(`<table class="mi-table">
+        <thead><tr><th>COBOL Source</th><th>Reason</th></tr></thead>
+        <tbody>${skipped.map(p => `<tr>
+          <td>${miEscape(p.program)}</td>
+          <td class="mi-dim">${miEscape(p.notEvaluatedReason || 'Not recorded')}</td>
+        </tr>`).join('')}</tbody>
+      </table>`);
+    }
+
+    return parts.join('');
+  }
+
+  _renderParityRow(p, threshold) {
+    const score = p.score ?? 0;
+    const color = score < threshold ? '#ef4444' : '#10b981';
+    const gaps = p.gaps ?? [];
+    const missing = gaps.filter(g => g.kind === 'Missing');
+    const renamed = gaps.filter(g => g.kind === 'PossiblyRenamedOrMerged');
+    const file = (p.generatedFile || '').split(/[\\/]/).pop() || '—';
+    const stub = p.isDiagnosticStub
+      ? ' <span class="mi-badge" style="color:#ef4444;border-color:#ef444444;background:#ef444418;">stub</span>'
+      : '';
+
+    return `<tr>
+      <td>${miEscape(p.program)}${stub}</td>
+      <td class="mi-dim">${miEscape(file)}</td>
+      <td style="color:${color};font-weight:600;">${score.toFixed(2)}</td>
+      <td title="${miEscape(missing.map(g => `${g.axis}: ${g.symbol}`).join('\n'))}">${missing.length}</td>
+      <td class="mi-dim" title="${miEscape(renamed.map(g => `${g.axis}: ${g.symbol}`).join('\n'))}">${renamed.length}</td>
+      <td class="mi-dim">${miEscape(p.provenance || '—')}</td>
+    </tr>`;
+  }
+
   async _renderChain(body, token) {
     const qs = new URLSearchParams();
     if (this._chainJob) qs.set('job', this._chainJob);
