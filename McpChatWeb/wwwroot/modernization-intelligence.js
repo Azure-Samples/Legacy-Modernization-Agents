@@ -60,6 +60,15 @@ function miNotice(text, kind = 'info') {
   return `<div class="mi-notice mi-notice-${kind}">${miEscape(text)}</div>`;
 }
 
+// Procedural detail is unbounded in a large program; render a readable prefix and say so.
+const MI_FLOW_LIST_CAP = 200;
+
+function miFlowOverflow(total) {
+  return total > MI_FLOW_LIST_CAP
+    ? `<div class="mi-dim">Showing the first ${MI_FLOW_LIST_CAP} of ${total}.</div>`
+    : '';
+}
+
 function miPendingPanel(title) {
   return `<div class="mi-pending">
     <div class="mi-pending-icon">🚧</div>
@@ -76,6 +85,7 @@ class ModernizationIntelligenceView {
     this._flowIdentity = null;
     this._chainJob = '';
     this._chainProgram = '';
+    this._renderToken = 0;
     this._renderShell();
   }
 
@@ -135,22 +145,27 @@ class ModernizationIntelligenceView {
     }
 
     body.innerHTML = '<div class="mi-loading">Loading…</div>';
+    const token = ++this._renderToken;
     try {
       if (this._activeSubview === 'health') {
         const data = await this._get('/api/modernization/dependency-health');
+        if (token !== this._renderToken) return;
         body.innerHTML = this._renderDependencyHealth(data);
       } else if (this._activeSubview === 'topology') {
         const data = await this._get('/api/modernization/topology');
+        if (token !== this._renderToken) return;
         body.innerHTML = this._renderTopology(data);
         this._drawTopology(data);
       } else if (this._activeSubview === 'flow') {
         const health = await this._get('/api/modernization/dependency-health');
+        if (token !== this._renderToken) return;
         body.innerHTML = this._renderFlowShell(health);
         this._wireFlow(body, health);
       } else if (this._activeSubview === 'chain') {
-        await this._renderChain(body);
+        await this._renderChain(body, token);
       }
     } catch (e) {
+      if (token !== this._renderToken) return;
       console.error('Modernization Intelligence load error:', e);
       body.innerHTML = miNotice(`Could not load this view: ${e.message}`, 'error');
     }
@@ -363,6 +378,11 @@ class ModernizationIntelligenceView {
       </div>
       <div class="mi-dim mi-mono mi-flow-path">${miEscape(f.relativePath)}</div>
       ${f.note ? miNotice(f.note, 'warn') : ''}
+      ${this._renderFlowStats(f)}
+      ${this._renderFlowSections(f)}
+      ${this._renderPerformEdges(f)}
+      ${this._renderFlowSql(f)}
+      ${this._renderFlowCalls(f)}
       <table class="mi-table mi-table-compact">
         <tbody>
           <tr><td>Procedural flow AST</td><td>${yn(f.hasFlowAst)}</td></tr>
@@ -375,12 +395,98 @@ class ModernizationIntelligenceView {
       ${candidates}`;
   }
 
+  _renderFlowStats(f) {
+    const sections = (f.sections || []).length;
+    const performs = (f.performEdges || []).length;
+    const sql = (f.sqlStatements || []).length;
+    const calls = (f.callTargets || []).length;
+    if (!f.paragraphCount && !sections && !performs && !sql && !calls) return '';
+
+    return `<div class="mi-stats">
+      ${miStat('Paragraphs', f.paragraphCount || 0, 'Named procedure blocks')}
+      ${miStat('Sections', sections, 'PROCEDURE DIVISION sections')}
+      ${miStat('PERFORM edges', performs, 'Resolved control transfers')}
+      ${miStat('SQL statements', sql, 'Embedded EXEC SQL')}
+      ${miStat('CALL targets', calls, 'Static and dynamic')}
+    </div>`;
+  }
+
+  _renderFlowSections(f) {
+    const sections = f.sections || [];
+    if (!sections.length) return '';
+
+    const rows = sections.map(s => `
+      <tr>
+        <td class="mi-mono">${miEscape(s.name)}</td>
+        <td class="mi-dim">${s.startLine}–${s.endLine}</td>
+        <td class="mi-mono mi-dim">${
+          (s.paragraphs || []).length
+            ? s.paragraphs.map(p => miEscape(p.name)).join(', ')
+            : '—'}</td>
+      </tr>`).join('');
+
+    return `<h4 class="mi-h4">Sections and paragraphs</h4>
+      <table class="mi-table mi-table-compact">
+        <thead><tr><th>Section</th><th>Lines</th><th>Paragraphs</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  }
+
+  _renderPerformEdges(f) {
+    const edges = f.performEdges || [];
+    if (!edges.length) return '';
+
+    const shown = edges.slice(0, MI_FLOW_LIST_CAP);
+    const items = shown.map(e =>
+      `<li class="mi-mono">${miEscape(e.from)} → ${miEscape(e.to)}${
+        e.conditional ? ' <span class="mi-dim">(conditional)</span>' : ''}</li>`).join('');
+
+    return `<h4 class="mi-h4">PERFORM graph — ${edges.length}</h4>
+      <ul class="mi-list">${items}</ul>
+      ${miFlowOverflow(edges.length)}`;
+  }
+
+  _renderFlowSql(f) {
+    const statements = f.sqlStatements || [];
+    if (!statements.length) return '';
+
+    const rows = statements.slice(0, MI_FLOW_LIST_CAP).map(s => `
+      <tr>
+        <td class="mi-mono">${miEscape(s.operation || '—')}</td>
+        <td class="mi-mono mi-dim">${(s.tables || []).map(miEscape).join(', ') || '—'}</td>
+        <td class="mi-dim">${s.lineNumber || '—'}</td>
+        <td class="mi-mono mi-dim">${miEscape(s.excerpt || '')}</td>
+      </tr>`).join('');
+
+    return `<h4 class="mi-h4">SQL statements — ${statements.length}</h4>
+      <table class="mi-table mi-table-compact">
+        <thead><tr><th>Operation</th><th>Tables</th><th>Line</th><th>Excerpt</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      ${miFlowOverflow(statements.length)}`;
+  }
+
+  _renderFlowCalls(f) {
+    const calls = f.callTargets || [];
+    if (!calls.length) return '';
+
+    const items = calls.slice(0, MI_FLOW_LIST_CAP).map(c =>
+      `<li class="mi-mono">${miEscape(c.targetProgram)}${
+        c.isDynamic ? ' <span class="mi-dim">(dynamic)</span>' : ''}${
+        c.lineNumber ? ` <span class="mi-dim">line ${c.lineNumber}</span>` : ''}</li>`).join('');
+
+    return `<h4 class="mi-h4">CALL targets — ${calls.length}</h4>
+      <ul class="mi-list">${items}</ul>
+      ${miFlowOverflow(calls.length)}`;
+  }
+
   // ── Service Chain ───────────────────────────────────────────────────
-  async _renderChain(body) {
+  async _renderChain(body, token) {
     const qs = new URLSearchParams();
     if (this._chainJob) qs.set('job', this._chainJob);
     if (this._chainProgram) qs.set('program', this._chainProgram);
     const d = await this._get(`/api/modernization/service-chain${qs.toString() ? `?${qs}` : ''}`);
+    if (token !== undefined && token !== this._renderToken) return;
 
     const jobOptions = ['<option value="">All jobs</option>']
       .concat((d.allJobNames || []).map(name =>

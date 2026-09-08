@@ -95,8 +95,8 @@ public sealed class RektEstateReader
             var ambiguous = basenameCounts.GetValueOrDefault(basename, 0) > 1;
 
             var facts = TryLoadFacts(rektDir, relativePath);
-            var reportDir = ResolveReportDirectory(rektDir, relativePath, basename, stem);
-            var depsPath = ResolveDependencyFile(rektDir, relativePath, basename, stem);
+            var reportDir = ResolveReportDirectory(rektDir, relativePath, basename, stem, ambiguous);
+            var depsPath = ResolveDependencyFile(rektDir, relativePath, basename, stem, ambiguous);
 
             RektScanEntry? scanEntry = null;
             if (!ambiguous) scanEntries.TryGetValue(basename, out scanEntry);
@@ -207,20 +207,26 @@ public sealed class RektEstateReader
     }
 
     // Mirrors the CLI's REKT context loader, so both agree which layout belongs to a program.
+    // When the basename is ambiguous only the source-relative layout is trusted: a flat artifact
+    // cannot say which of the same-named sources produced it, and guessing gives both the wrong facts.
     private static string? ResolveReportDirectory(
-        string rektDir, string relativePath, string basename, string stem)
+        string rektDir, string relativePath, string basename, string stem, bool ambiguous)
     {
         if (!Directory.Exists(rektDir)) return null;
 
         var normalized = SourcePathHelper.NormalizeRelativePath(relativePath);
-        foreach (var candidate in new[]
-                 {
-                     normalized + ".report",
-                     basename + ".report",
-                     $"{stem}.cbl.report",
-                     $"{stem}.report",
-                     $"{stem}.CBL.report",
-                 }.Distinct(StringComparer.OrdinalIgnoreCase))
+        var candidates = ambiguous
+            ? new[] { normalized + ".report" }
+            : new[]
+            {
+                normalized + ".report",
+                basename + ".report",
+                $"{stem}.cbl.report",
+                $"{stem}.report",
+                $"{stem}.CBL.report",
+            };
+
+        foreach (var candidate in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
         {
             var full = Path.Combine(rektDir, SourcePathHelper.ToOsRelativePath(candidate));
             if (Directory.Exists(full)) return full;
@@ -229,7 +235,7 @@ public sealed class RektEstateReader
     }
 
     private static string? ResolveDependencyFile(
-        string rektDir, string relativePath, string basename, string stem)
+        string rektDir, string relativePath, string basename, string stem, bool ambiguous)
     {
         if (!Directory.Exists(rektDir)) return null;
 
@@ -237,12 +243,17 @@ public sealed class RektEstateReader
         var candidates = new List<string>
         {
             Path.Combine(rektDir, SourcePathHelper.ToOsRelativePath($"{normalized}-deps.json")),
-            Path.Combine(rektDir, SourcePathHelper.ToOsRelativePath($"{basename}-deps.json")),
-            Path.Combine(rektDir, $"{stem}-deps.json"),
-            Path.Combine(rektDir, $"{stem}.cbl-deps.json"),
         };
 
-        var reportDir = ResolveReportDirectory(rektDir, relativePath, basename, stem);
+        if (!ambiguous)
+        {
+            candidates.Add(Path.Combine(rektDir, SourcePathHelper.ToOsRelativePath($"{basename}-deps.json")));
+            candidates.Add(Path.Combine(rektDir, $"{stem}-deps.json"));
+            candidates.Add(Path.Combine(rektDir, $"{stem}.cbl-deps.json"));
+        }
+
+        // Safe even when ambiguous: the report directory itself was resolved source-relative.
+        var reportDir = ResolveReportDirectory(rektDir, relativePath, basename, stem, ambiguous);
         if (reportDir is not null)
         {
             candidates.Add(Path.Combine(reportDir, $"{basename}-deps.json"));

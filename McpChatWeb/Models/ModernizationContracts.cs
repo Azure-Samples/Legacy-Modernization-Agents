@@ -71,7 +71,25 @@ public sealed class FlowSnapshot
     public List<string> Candidates { get; set; } = new();
     public string? ReportDirectory { get; set; }
     public string? Note { get; set; }
+
+    public int ParagraphCount { get; set; }
+    public List<FlowSection> Sections { get; set; } = new();
+    public List<FlowPerformEdge> PerformEdges { get; set; } = new();
+    public List<FlowSqlStatement> SqlStatements { get; set; } = new();
+    public List<FlowCallTarget> CallTargets { get; set; } = new();
 }
+
+public sealed record FlowParagraph(string Name, int StartLine, int EndLine);
+
+public sealed record FlowSection(
+    string Name, int StartLine, int EndLine, List<FlowParagraph> Paragraphs);
+
+public sealed record FlowPerformEdge(string From, string To, bool Conditional);
+
+public sealed record FlowSqlStatement(
+    string Operation, List<string> Tables, int LineNumber, string? Excerpt);
+
+public sealed record FlowCallTarget(string TargetProgram, bool IsDynamic, int LineNumber);
 
 public sealed class ServiceChainSnapshot
 {

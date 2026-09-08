@@ -595,6 +595,13 @@ public sealed class RektContextLoader
     {
         if (string.IsNullOrWhiteSpace(sql)) return null;
         var trimmed = sql.TrimStart();
+        // Strip the EXEC SQL preamble so the real verb is reported, not "EXEC".
+        if (trimmed.StartsWith("EXEC", StringComparison.OrdinalIgnoreCase))
+        {
+            var rest = trimmed.Substring("EXEC".Length).TrimStart();
+            if (rest.StartsWith("SQL", StringComparison.OrdinalIgnoreCase))
+                trimmed = rest.Substring("SQL".Length).TrimStart();
+        }
         var firstWord = new string(trimmed.TakeWhile(c => !char.IsWhiteSpace(c)).ToArray()).ToUpperInvariant();
         return firstWord switch
         {

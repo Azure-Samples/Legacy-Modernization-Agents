@@ -103,6 +103,26 @@ internal sealed class EstateFixture : IDisposable
         return this;
     }
 
+    // Flat smojol layout: the loader reads output/rekt/flow-ast-STEM.json with no report directory.
+    public EstateFixture AddFlowAst(string stem)
+    {
+        File.WriteAllText(Path.Combine(RektDir, $"flow-ast-{stem}.json"), """
+        {
+          "nodeType": "SECTION",
+          "name": "MAIN-SECTION",
+          "startLine": 10,
+          "endLine": 60,
+          "children": [
+            { "nodeType": "PARAGRAPH", "name": "MAIN-PARA", "startLine": 11, "endLine": 20 },
+            { "nodeType": "PARAGRAPH", "name": "READ-PARA", "startLine": 21, "endLine": 30 },
+            { "nodeType": "PERFORM", "target": "READ-PARA", "conditional": false, "startLine": 15 },
+            { "nodeType": "DIALECT", "text": "EXEC SQL SELECT NAME FROM CUSTOMER_TBL END-EXEC", "startLine": 25 }
+          ]
+        }
+        """);
+        return this;
+    }
+
     public EstateFixture AddMissingCopybooks(string content)
     {
         File.WriteAllText(Path.Combine(RektDir, "missing-copybooks.txt"), content);

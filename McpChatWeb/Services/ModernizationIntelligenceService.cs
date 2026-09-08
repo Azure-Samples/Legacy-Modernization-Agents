@@ -6,11 +6,13 @@ namespace McpChatWeb.Services;
 
 public sealed class ModernizationIntelligenceService
 {
+    // Anchored to a real JCL statement: '//' in columns 1-2 and a step name that cannot start
+    // with '*', so commented-out and in-stream EXEC text never becomes a job-to-program edge.
     // '-' is accepted beyond the JCL-legal set: real MVS member names cannot contain one,
     // but COBOL estates do, and truncating at the hyphen drops every job-to-program edge.
     private static readonly Regex ExecPgmRegex = new(
-        @"EXEC\s+PGM\s*=\s*([A-Z0-9$@#-]+)",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        @"^//[A-Z0-9$@#-]*\s+EXEC\s+PGM\s*=\s*([A-Z0-9$@#-]+)",
+        RegexOptions.IgnoreCase | RegexOptions.Multiline | RegexOptions.Compiled);
 
     private static readonly Regex JobCardRegex = new(
         @"^//(?<name>[A-Z0-9$@#-]+)\s+JOB",
@@ -238,9 +240,16 @@ public sealed class ModernizationIntelligenceService
 
         if (program.ReportDirectory is null || !Directory.Exists(program.ReportDirectory))
         {
-            snapshot.Note = program.HasDepsOnly
-                ? $"{program.Basename} was parsed deps-only — dependency edges are known, procedural flow is not."
-                : $"No REKT report directory for {program.Basename}. Run ./doctor.sh rekt-full to generate one.";
+            // The loader also reads the older flat layout, which has no report directory,
+            // so only report the gap when it turns up nothing either.
+            PopulateProceduralDetail(snapshot, program.RelativePath);
+            if (snapshot.ParagraphCount == 0 && snapshot.PerformEdges.Count == 0
+                && snapshot.SqlStatements.Count == 0 && snapshot.CallTargets.Count == 0)
+            {
+                snapshot.Note = program.HasDepsOnly
+                    ? $"{program.Basename} was parsed deps-only — dependency edges are known, procedural flow is not."
+                    : $"No REKT report directory for {program.Basename}. Run ./doctor.sh rekt-full to generate one.";
+            }
             return snapshot;
         }
 
@@ -267,7 +276,54 @@ public sealed class ModernizationIntelligenceService
             catch { /* unreadable artifact directory — report what we have */ }
         }
 
+        PopulateProceduralDetail(snapshot, program.RelativePath);
+
         return snapshot;
+    }
+
+    // The AST artifacts are the whole point of this surface: presence flags alone tell a reader
+    // that a program was parsed but not what the parser actually saw.
+    private void PopulateProceduralDetail(FlowSnapshot snapshot, string relativePath)
+    {
+        RektContext context;
+        try
+        {
+            var loader = new RektContextLoader(_estate.RepoRoot, _estate.RektDir);
+            context = loader.Load(relativePath, _estate.SourceFolderName);
+        }
+        catch (Exception)
+        {
+            snapshot.Note ??= "REKT artifacts for this program could not be read.";
+            return;
+        }
+
+        snapshot.Sections = context.Sections
+            .Select(s => new FlowSection(
+                s.Name, s.StartLine, s.EndLine,
+                s.Paragraphs.Select(p => new FlowParagraph(p.Name, p.StartLine, p.EndLine)).ToList()))
+            .ToList();
+
+        snapshot.ParagraphCount = snapshot.Sections.Sum(s => s.Paragraphs.Count);
+
+        snapshot.PerformEdges = context.PerformGraph
+            .Select(e => new FlowPerformEdge(e.From, e.To, e.Conditional))
+            .ToList();
+
+        snapshot.SqlStatements = context.SqlStatements
+            .Select(s => new FlowSqlStatement(s.Operation, s.Tables.ToList(), s.LineNumber, s.Excerpt))
+            .ToList();
+
+        snapshot.CallTargets = context.CallTargets
+            .Select(c => new FlowCallTarget(c.TargetProgram, c.IsDynamic, c.LineNumber))
+            .ToList();
+
+        if (snapshot.HasFlowAst && snapshot.ParagraphCount == 0 && snapshot.PerformEdges.Count == 0)
+            snapshot.Note ??= "Flow AST artifacts exist but contain no paragraphs or PERFORM edges.";
+
+        // The flat layout has no report directory, so HasFlowAst was false above. Harvested
+        // procedural detail proves an AST was read; leaving the flag off contradicts the data.
+        if (snapshot.ParagraphCount > 0 || snapshot.PerformEdges.Count > 0)
+            snapshot.HasFlowAst = true;
     }
 
     // Tiers are tried in order and the first non-empty one wins. A flat OR would let a

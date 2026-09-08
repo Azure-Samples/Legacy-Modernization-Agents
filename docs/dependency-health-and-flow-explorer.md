@@ -129,6 +129,8 @@ Artifacts are resolved per program in this order, the first hit winning:
 
 The fallback chain exists because report directory naming has changed across scanner versions and older output directories remain valid input.
 
+The basename-keyed steps of that chain are **skipped entirely when a basename is ambiguous**. Given `billing/CUSTOMER.cbl` and `legacy/CUSTOMER.cbl`, a flat `CUSTOMER.report` or `CUSTOMER-deps.json` cannot say which produced it, so neither program claims it and both report as unparsed. Attributing it to whichever was enumerated first would show a measured fidelity for a program that may never have been scanned.
+
 Lines of code prefer `facts.summary.loc`. Failing that, line feed *bytes* are counted directly — the corpus contains files with unpaired CR and LF characters, which .NET's universal-newline handling splits on independently and double-counts.
 
 Names are preserved exactly as the parser emitted them and compared case-insensitively. Normalising them for storage would make the UI disagree with the source.
@@ -142,7 +144,7 @@ Names are preserved exactly as the parser emitted them and compared case-insensi
 | `GET /api/modernization/dependency-health` | Fidelity buckets, readiness, coverage, missing copybooks, blocked programs |
 | `GET /api/modernization/topology` | CALL/COPY nodes and edges, plus unresolved edges |
 | `GET /api/modernization/service-chain` | JCL → program → copybook chains and Mermaid source. Optional `?job=` and `?program=` |
-| `GET /api/modernization/flow/{**identity}` | Paragraphs, sections, PERFORM targets and SQL for one program |
+| `GET /api/modernization/flow/{**identity}` | Per-program procedural detail: `sections` (each with its `paragraphs`), `paragraphCount`, `performEdges`, `sqlStatements` (operation, tables, line) and `callTargets`, plus artifact-presence flags. Reads both the report-directory and flat REKT layouts |
 | `GET /api/graph/rekt/runs` | Scan runs with file counts |
 | `GET /api/graph/rekt/architect` | Program inventory with AST availability |
 | `GET /api/graph/rekt/services` | Service-layer projection with call and SQL counts |

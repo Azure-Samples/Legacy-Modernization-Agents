@@ -5,7 +5,15 @@ let servicesView = null;
 
 // Rekt scan run selector
 let _currentScanRunId = 'latest';
-window.getSelectedScanRunId = function () { return _currentScanRunId; };
+let _latestRunId = null;
+
+// 'latest' resolves to a concrete run id so it differs from 'all', which stays unfiltered
+// and lets the backend deduplicate to the newest node per file across every run.
+window.getSelectedScanRunId = function () {
+  if (_currentScanRunId === 'all') return 'all';
+  if (_currentScanRunId === 'latest') return _latestRunId ?? 'all';
+  return _currentScanRunId;
+};
 
 // Populate scan run dropdown on load
 async function loadScanRuns() {
@@ -33,6 +41,9 @@ async function loadScanRuns() {
     // A run covering one or two files is a re-scan of a single program, not a
     // scan of the estate, and picking one would silently empty every view.
     const meaningful = runs.filter(r => r.fileCount > 2).slice(0, 15);
+    _latestRunId = meaningful.length > 0
+      ? meaningful.reduce((max, r) => (r.runId > max ? r.runId : max), meaningful[0].runId)
+      : null;
     for (const run of meaningful) {
       const opt = document.createElement('option');
       opt.value = run.runId;
@@ -73,6 +84,11 @@ function switchDashboard(tabName) {
 
   const toolbar = document.querySelector('.graph-toolbar');
   if (toolbar) toolbar.style.display = tabName === 'dependency' ? '' : 'none';
+
+  // Only the Architecture view reads the selected run; showing it elsewhere implies
+  // a filter those tabs do not apply.
+  const scanPicker = document.getElementById('rekt-scan-picker');
+  if (scanPicker) scanPicker.style.visibility = tabName === 'services' ? '' : 'hidden';
 
   (panels[tabName] || []).forEach(id => {
     const el = document.getElementById(id);

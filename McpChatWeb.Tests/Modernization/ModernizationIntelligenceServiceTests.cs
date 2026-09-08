@@ -276,15 +276,66 @@ public class ModernizationIntelligenceServiceTests
     }
 
     [Fact]
-    public async Task Flow_AmbiguousBasenameStillOffersCandidates()
+    public async Task ServiceChain_IgnoresExecPgmInJclCommentsAndInstreamData()
+    {
+        using var fixture = new EstateFixture();
+        fixture.AddProgram("CUSTOMER.cbl").AddProgram("GHOSTPGM.cbl");
+        fixture.AddJcl("jcl/NIGHTLY.jcl", """
+            //NIGHTLY  JOB (ACCT),'NIGHTLY BATCH',CLASS=A
+            //* STEP005 EXEC PGM=GHOSTPGM
+            //*  decommissioned: EXEC PGM=GHOSTPGM
+            //STEP010  EXEC PGM=CUSTOMER
+            //SYSIN    DD *
+              EXEC PGM=GHOSTPGM
+            /*
+            """);
+
+        var chain = await ServiceFor(fixture).GetServiceChainAsync(null, null, includeUtilities: false);
+
+        var job = Assert.Single(chain.Jobs);
+        Assert.Equal(new[] { "CUSTOMER" }, job.PrimaryPrograms);
+    }
+
+    [Fact]
+    public async Task DependencyHealth_AmbiguousBasenameDoesNotShareFlatArtifacts()
     {
         using var fixture = new EstateFixture();
         fixture.AddProgram("billing/CUSTOMER.cbl");
         fixture.AddProgram("legacy/CUSTOMER.cbl");
+        // A pre-v2 flat artifact cannot say which of the two produced it.
+        fixture.AddDeps("CUSTOMER", "CUSTREC.cpy");
+        fixture.AddReportDirectory("CUSTOMER");
+
+        var health = await ServiceFor(fixture).GetDependencyHealthAsync();
+
+        var rows = health.Programs.Where(p => p.Basename == "CUSTOMER.cbl").ToList();
+        Assert.Equal(2, rows.Count);
+        Assert.All(rows, r => Assert.True(r.AmbiguousBasename));
+        Assert.All(rows, r => Assert.False(r.HasReport));
+        Assert.All(rows, r => Assert.False(r.HasDepsOnly));
+    }
+
+    [Fact]
+    public async Task Flow_ReturnsParagraphsSectionsPerformEdgesAndSql()
+    {
+        using var fixture = new EstateFixture();
+        fixture.AddProgram("CUSTOMER.cbl");
+        fixture.AddFlowAst("CUSTOMER");
 
         var flow = await ServiceFor(fixture).GetProgramFlowAsync("CUSTOMER.cbl");
 
-        Assert.Equal(2, flow.Candidates.Count);
-        Assert.Contains("billing/CUSTOMER.cbl", flow.Candidates);
+        Assert.Equal(2, flow.ParagraphCount);
+        Assert.True(flow.HasFlowAst);
+        var section = Assert.Single(flow.Sections);
+        Assert.Equal("MAIN-SECTION", section.Name);
+        Assert.Equal(2, section.Paragraphs.Count);
+
+        var edge = Assert.Single(flow.PerformEdges);
+        Assert.Equal("MAIN-SECTION", edge.From);
+        Assert.Equal("READ-PARA", edge.To);
+
+        var sql = Assert.Single(flow.SqlStatements);
+        Assert.Equal("SELECT", sql.Operation);
+        Assert.Contains("CUSTOMER_TBL", sql.Tables);
     }
 }

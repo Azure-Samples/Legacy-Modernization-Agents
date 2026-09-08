@@ -326,7 +326,7 @@
         <button class="dashboard-tab active" data-tab="dependency" onclick="switchDashboard('dependency')">🕸 Dependency Graph</button>
         <button class="dashboard-tab" data-tab="services" onclick="switchDashboard('services')">🏗️ Architecture</button>
         <button class="dashboard-tab" data-tab="modernization" onclick="switchDashboard('modernization')">🧭 Modernization Intelligence</button>
-        <span style="margin-left:auto; display:flex; align-items:center; gap:6px;">
+        <span id="rekt-scan-picker" style="margin-left:auto; display:flex; align-items:center; gap:6px;">
           <label style="color:#94a3b8; font-size:11px;">Scan:</label>
           <select id="rekt-scan-select" style="padding:4px 8px; background:#1e293b; color:#e2e8f0; border:1px solid #475569; border-radius:4px; font-size:12px;" onchange="window._onScanRunChange && window._onScanRunChange(this.value)">
             <option value="latest">Latest scan</option>

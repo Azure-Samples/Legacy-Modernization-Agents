@@ -80,7 +80,7 @@ public static class RektGraphEndpoints
                     });
                 }
 
-                var dependencies = await ReadDependenciesAsync(session, cancellationToken);
+                var dependencies = await ReadDependenciesAsync(session, scanRunId, seen, cancellationToken);
                 return Results.Ok(new { programs, dependencies, note = (string?)null });
             }
             catch (Exception ex)
@@ -139,7 +139,7 @@ public static class RektGraphEndpoints
                     });
                 }
 
-                var edges = await ReadDependenciesAsync(session, cancellationToken);
+                var edges = await ReadDependenciesAsync(session, scanRunId, seen, cancellationToken);
                 return Results.Ok(new { nodes, edges, note = (string?)null });
             }
             catch (Exception ex)
@@ -200,12 +200,23 @@ public static class RektGraphEndpoints
         }
     }
 
+    // Edges are scoped to the same run and the same file set as the nodes: an unscoped read
+    // leaks historical edges into a run-specific projection and points at files it does not contain.
     private static async Task<List<object>> ReadDependenciesAsync(
-        IAsyncSession session, CancellationToken cancellationToken)
+        IAsyncSession session,
+        long? scanRunId,
+        IReadOnlySet<string> includedFiles,
+        CancellationToken cancellationToken)
     {
-        var cursor = await session.RunAsync(@"
+        var runFilter = scanRunId.HasValue
+            ? "WHERE a.runId = $scanRunId AND b.runId = $scanRunId"
+            : "";
+
+        var cursor = await session.RunAsync($@"
             MATCH (a:CobolFile)-[d:DEPENDS_ON]->(b:CobolFile)
-            RETURN DISTINCT a.fileName AS source, b.fileName AS target, d.type AS type");
+            {runFilter}
+            RETURN DISTINCT a.fileName AS source, b.fileName AS target, d.type AS type",
+            scanRunId.HasValue ? new { scanRunId = scanRunId.Value } : null);
 
         var edges = new List<object>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -213,6 +224,8 @@ public static class RektGraphEndpoints
         {
             var source = r["source"].As<string>();
             var target = r["target"].As<string>();
+            if (!includedFiles.Contains(source) || !includedFiles.Contains(target)) continue;
+
             var type = r["type"].As<string?>() ?? "DEPENDS_ON";
             if (!seen.Add($"{source}->{target}:{type}")) continue;
             edges.Add(new { source, target, type });

@@ -15,6 +15,9 @@ const SV_MODES = {
 
 const SV_PENDING_MODES = ['deadcode'];
 
+const SV_UNREACHABLE =
+  'REKT graph is unavailable. Start it with ./doctor.sh rekt-full and confirm bolt://localhost:7688 is reachable.';
+
 function svPlural(n, noun) {
   return `${n} ${noun}${n === 1 ? '' : 's'}`;
 }
@@ -30,6 +33,7 @@ class ServicesView {
     this.viewMode = 'layers';
     this.architecture = null;
     this.network = null;
+    this._loadToken = 0;
   }
 
   setViewMode(mode) {
@@ -60,14 +64,17 @@ class ServicesView {
     }
 
     this.host.innerHTML = '<div class="mi-loading">Loading…</div>';
+    const token = ++this._loadToken;
     try {
       if (!this.architecture) {
         const runId = window.getSelectedScanRunId?.() ?? 'latest';
         const qs = /^\d+$/.test(String(runId)) ? `?scanRunId=${runId}` : '';
         const [services, architect] = await Promise.all([
-          fetch(`/api/graph/rekt/services${qs}`).then(r => r.json()),
-          fetch(`/api/graph/rekt/architect${qs}`).then(r => r.json()),
+          fetch(`/api/graph/rekt/services${qs}`).then(r => r.ok ? r.json() : { note: SV_UNREACHABLE }),
+          fetch(`/api/graph/rekt/architect${qs}`).then(r => r.ok ? r.json() : { note: SV_UNREACHABLE }),
         ]);
+        // A run switched while this was in flight; the newer load owns the cache and the DOM.
+        if (token !== this._loadToken) return;
         this.architecture = { services, architect };
       }
 
