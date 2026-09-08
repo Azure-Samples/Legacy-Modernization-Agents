@@ -3434,7 +3434,17 @@ run_rekt_parse() {
     # Preprocess files that need IMS/DLI or dialect compatibility transformations
     echo -e "${BLUE}  Running preprocessor for IMS/DLI and dialect compatibility...${NC}"
     if [[ -x "$REPO_ROOT/tools/preprocess-for-rekt.sh" ]]; then
-        "$REPO_ROOT/tools/preprocess-for-rekt.sh" "$REPO_ROOT/source" 2>/dev/null
+        # The preprocessor rebuilds source/.preprocessed/ from scratch, so a
+        # failure part-way through leaves it incomplete. Surface that instead of
+        # discarding stderr: staging prefers .preprocessed/<file> over the real
+        # source, so a partial rebuild would silently change what gets parsed.
+        local preproc_err="$REPO_ROOT/output/rekt/.preprocess.err"
+        mkdir -p "$REPO_ROOT/output/rekt"
+        if ! "$REPO_ROOT/tools/preprocess-for-rekt.sh" "$REPO_ROOT/source" 2>"$preproc_err"; then
+            echo -e "  ${YELLOW}⚠️  Preprocessor exited with an error — source/.preprocessed/ may be incomplete.${NC}"
+            [[ -s "$preproc_err" ]] && sed 's/^/     /' "$preproc_err" | tail -5
+        fi
+        rm -f "$preproc_err"
         if [[ -d "$REPO_ROOT/source/.preprocessed" ]]; then
             local preproc_count=0
             local pp_p
@@ -3448,6 +3458,12 @@ run_rekt_parse() {
                 echo -e "  ${GREEN}✅ Preprocessed ${preproc_count} file(s) for rekt compatibility${NC}"
             fi
         fi
+    elif [[ -d "$REPO_ROOT/source/.preprocessed" ]]; then
+        # Without the preprocessor there is nothing to refresh the directory,
+        # and staging would keep preferring whatever a previous version left
+        # there over the current source. Drop it so parsing uses source/.
+        echo -e "  ${YELLOW}⚠️  Preprocessor not available — discarding stale source/.preprocessed/.${NC}"
+        rm -rf "$REPO_ROOT/source/.preprocessed"
     fi
 
     # Build a flat staging dir so smojol can resolve copybooks regardless of subdir depth.

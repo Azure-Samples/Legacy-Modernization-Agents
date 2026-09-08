@@ -1,6 +1,6 @@
 # Troubleshooting setup (`./doctor.sh setup`)
 
-**Last updated**: 2026-09-09
+**Last updated**: 2026-09-08
 
 `./doctor.sh setup` is the primary setup path. For Copilot, it writes a complete
 `Config/ai-config.local.env` only after sign-in and model validation succeed.
@@ -241,3 +241,38 @@ When files are rewritten the run reports:
 If a program still reports deps-only, the cause is a different one — check the
 `smojol:` hint and the full `output/rekt/<program>.parse.log`. Missing copybooks
 are the other common cause.
+
+### Stale `source/.preprocessed/` after a framework update
+
+`source/.preprocessed/` holds derived copies of the source: preprocessed
+programs and copybooks, bundled system copybooks such as `SQLCA`, and generated
+stubs for unresolved `COPY` targets. Staging prefers `.preprocessed/<file>` over
+the real source file when one exists.
+
+The directory is rebuilt from scratch on every run. It previously persisted,
+which produced results that did not match the current source, because a file is
+written there only when preprocessing actually *changes* it:
+
+- after a framework update, or a source edit that left a file needing no
+  transformation, the previous version's output remained and was parsed instead
+  of the current source
+- deleted or renamed programs left orphaned copies behind indefinitely
+- bundled system copybooks were skipped when already present, so updated
+  definitions shipped with the framework never reached an existing checkout
+
+Nothing in the directory is user-authored, so it is safe to delete at any time:
+
+```bash
+rm -rf source/.preprocessed
+```
+
+If the preprocessor fails part-way through, the run reports it rather than
+continuing silently, because a partial rebuild changes what actually gets
+parsed:
+
+```
+⚠️  Preprocessor exited with an error — source/.preprocessed/ may be incomplete.
+```
+
+If the preprocessor is missing or not executable, the stale directory is
+discarded and parsing falls back to `source/`.

@@ -15,6 +15,26 @@ set -euo pipefail
 SOURCE_DIR="${1:?Usage: preprocess-for-rekt.sh <source-dir>}"
 PREPROC_DIR="${SOURCE_DIR}/.preprocessed"
 
+# Regenerate .preprocessed/ from scratch on every run.
+#
+# Everything in here is derived: preprocessed copies of source files, bundled
+# system copybooks, and generated stubs. Nothing is user-authored, and all of it
+# is rebuilt by the phases below.
+#
+# It used to persist indefinitely, which went stale in ways that silently
+# changed parse results, because staging prefers .preprocessed/<file> over the
+# real source:
+#   - A file is written here only when preprocessing *changes* it. After a
+#     framework upgrade or a source edit that leaves a file needing no
+#     transformation, the previous version's output stayed behind and was fed to
+#     the parser instead of the current source.
+#   - Deleting or renaming a source file orphaned its copy here forever.
+#   - Bundled system copybooks were skipped when already present, so an updated
+#     definition shipped with the framework never reached existing checkouts.
+#
+# Deleting a subdirectory of source/ does not disturb the ./source:/source bind
+# mount, and matches how doctor.sh already recreates source/.rekt-staging.
+rm -rf "$PREPROC_DIR"
 mkdir -p "$PREPROC_DIR"
 
 # Detect python
