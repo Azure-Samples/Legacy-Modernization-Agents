@@ -6,12 +6,6 @@ using Xunit;
 
 namespace McpChatWeb.Tests.Modernization;
 
-/// <summary>
-/// Verifies the endpoints are mapped, resolve their dependencies, and degrade
-/// to an explanatory payload on a repository with no REKT artifacts. That empty
-/// state is the normal state before <c>./doctor.sh rekt-full</c> has run, so it
-/// has to render rather than error.
-/// </summary>
 public class ModernizationEndpointsTests : IClassFixture<Integration.WebAppFactory>
 {
     private readonly Integration.WebAppFactory _factory;

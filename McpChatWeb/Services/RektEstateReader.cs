@@ -6,50 +6,12 @@ using CobolToQuarkusMigration.Helpers;
 
 namespace McpChatWeb.Services;
 
-/// <summary>
-/// Shared read path over the REKT estate: the COBOL inventory under the source
-/// folder, the scan cache in <c>Data/rekt-scan.db</c>, and the artifacts under
-/// <c>output/rekt</c>.
-///
-/// <para>
-/// Read-only and fail-soft. A missing database, folder or artifact yields an
-/// empty or reduced record with an explanatory note rather than an exception,
-/// so the portal is usable before any scan has run.
-/// </para>
-///
-/// <para>
-/// Parse fidelity resolves in a fixed order:
-/// <list type="number">
-///   <item>the scan cache entry for the program — the deterministic record of
-///         what the parser actually produced;</item>
-///   <item>the <c>confidence</c> recorded in the program's facts artifact;</item>
-///   <item>artifact presence on disk — a <c>.report</c> directory or a
-///         <c>-deps.json</c> file.</item>
-/// </list>
-/// Each record reports which of the three answered via
-/// <see cref="RektProgramRecord.FidelitySource"/>, so the UI never presents an
-/// inferred value as a measured one.
-/// </para>
-///
-/// <para>
-/// Identity follows the same rules as the CLI: programs are enumerated through
-/// <see cref="SourceTypeRegistry"/>, keyed by the normalised source-relative
-/// path from <see cref="SourcePathHelper"/>, and facts are resolved through
-/// <c>ProgramFactsArtifactLocator</c>, which refuses to guess when one basename
-/// maps to several source files. Those collisions are surfaced as
-/// <see cref="RektProgramRecord.AmbiguousBasename"/> instead of being silently
-/// collapsed.
-/// </para>
-/// </summary>
 public sealed class RektEstateReader
 {
     private readonly ILogger<RektEstateReader> _logger;
 
-    /// <param name="repoRoot">
-    /// Overrides repository-root discovery. Left null in production; supplied by
-    /// tests so they can read a synthetic estate without mutating process-global
-    /// environment variables.
-    /// </param>
+    // repoRoot is supplied by tests so a synthetic estate can be read without
+    // mutating process-global environment variables.
     public RektEstateReader(ILogger<RektEstateReader> logger, string? repoRoot = null)
     {
         _logger = logger;
@@ -83,9 +45,6 @@ public sealed class RektEstateReader
         return dir?.FullName ?? Directory.GetCurrentDirectory();
     }
 
-    /// <summary>
-    /// Build the estate snapshot every decision surface reads from.
-    /// </summary>
     public async Task<RektEstate> ReadAsync(CancellationToken cancellationToken = default)
     {
         var sourceRoot = SourceRoot;
@@ -98,10 +57,7 @@ public sealed class RektEstateReader
                 $"Source folder not found: {sourceRoot}.");
         }
 
-        // Copybooks are enumerated alongside programs: a COPY target must be a
-        // resolvable node or every copy edge would be reported as a gap in the
-        // estate. Records carry IsCopybook so callers that measure parse
-        // fidelity can exclude them — a copybook is never parsed on its own.
+        // Copybooks are enumerated too, or every COPY edge would be reported as a gap.
         var relativePaths = SourcePathHelper.EnumerateProgramRelativePaths(sourceRoot)
             .Concat(EnumerateCopybookRelativePaths(sourceRoot))
             .Where(IsScannableSource)
@@ -118,10 +74,8 @@ public sealed class RektEstateReader
                 $"No COBOL programs found under {sourceRoot}.");
         }
 
-        // A basename that maps to more than one source file cannot be resolved
-        // by any basename-keyed lookup (scan cache, missing-copybooks.txt,
-        // EXEC PGM=). Track them so callers can report the ambiguity instead of
-        // attributing one file's state to another.
+        // A basename mapping to several files defeats every basename-keyed lookup, so track
+        // it and report the ambiguity rather than attributing one file's state to another.
         var basenameCounts = relativePaths
             .GroupBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key!, g => g.Count(), StringComparer.OrdinalIgnoreCase);
@@ -144,8 +98,6 @@ public sealed class RektEstateReader
             var reportDir = ResolveReportDirectory(rektDir, relativePath, basename, stem);
             var depsPath = ResolveDependencyFile(rektDir, relativePath, basename, stem);
 
-            // A basename-keyed cache entry cannot be trusted when the basename
-            // is ambiguous — two source files would share one row.
             RektScanEntry? scanEntry = null;
             if (!ambiguous) scanEntries.TryGetValue(basename, out scanEntry);
 
@@ -186,10 +138,8 @@ public sealed class RektEstateReader
         return new RektEstate(RepoRoot, sourceRoot, rektDir, programs, ReadMissingCopybooks(), note);
     }
 
-    /// <summary>
-    /// Staging, preprocessing and conversion scratch folders hold derived copies
-    /// of the same programs; counting them would double the estate.
-    /// </summary>
+    // Staging, preprocessing and conversion scratch folders hold derived copies of
+    // the same programs; counting them would double the estate.
     private static bool IsScannableSource(string relativePath)
     {
         var segments = relativePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
@@ -253,12 +203,8 @@ public sealed class RektEstateReader
             return (fidelity, FidelitySources.Facts);
         }
 
-        // Artifact presence proves a parse ran, not that it succeeded fully.
-        // A stub-backed parse whose structural facts are degraded emits a report
-        // directory indistinguishable from a clean one — same cfg/, flow_ast/ and
-        // data_structures/ payloads. Only the scan cache or facts record the
-        // outcome, so inferring Full here would overstate readiness for exactly
-        // the programs this surface exists to flag.
+        // Artifact presence proves a parse ran, not that it succeeded: a stub-backed parse
+        // emits a report directory indistinguishable from a clean one. Never infer Full.
         if (hasReport) return (ParseFidelity.Partial, FidelitySources.Artifacts);
         if (hasDeps) return (ParseFidelity.DepsOnly, FidelitySources.Artifacts);
         return (ParseFidelity.NotParsed, FidelitySources.None);
@@ -271,10 +217,7 @@ public sealed class RektEstateReader
         catch { return null; }
     }
 
-    /// <summary>
-    /// Mirrors the report-directory candidates the CLI's REKT context loader
-    /// accepts, covering both the flat and source-relative artifact layouts.
-    /// </summary>
+    // Mirrors the CLI's REKT context loader, so both agree which layout belongs to a program.
     private static string? ResolveReportDirectory(
         string rektDir, string relativePath, string basename, string stem)
     {
@@ -321,10 +264,7 @@ public sealed class RektEstateReader
         return candidates.FirstOrDefault(File.Exists);
     }
 
-    /// <summary>
-    /// <c>output/rekt/missing-copybooks.txt</c> lines are
-    /// <c>COPYBOOK\treferenced by: A.cbl, B.cbl</c>.
-    /// </summary>
+    // Line format: COPYBOOK\treferenced by: A.cbl, B.cbl
     public IReadOnlyList<MissingCopybookRow> ReadMissingCopybooks()
     {
         var path = Path.Combine(RektDir, "missing-copybooks.txt");
@@ -364,11 +304,8 @@ public sealed class RektEstateReader
         return rows;
     }
 
-    /// <summary>
-    /// Counts line feeds rather than using <c>File.ReadAllLines</c>. The COBOL
-    /// corpus contains files with unpaired CR and LF characters, which .NET's
-    /// universal-newline handling would split on independently and double-count.
-    /// </summary>
+    // Counts line feeds rather than File.ReadAllLines: the corpus contains unpaired CR
+    // and LF characters, which .NET's universal-newline handling would double-count.
     private static int CountLines(string path)
     {
         try
@@ -382,11 +319,8 @@ public sealed class RektEstateReader
         catch { return 0; }
     }
 
-    /// <summary>
-    /// Last-resort copybook discovery by scanning COPY statements when REKT
-    /// produced no dependency export. Names are kept as written in the source;
-    /// the trailing statement period is not part of the name.
-    /// </summary>
+    // Fallback for when REKT produced no dependency export. Names are kept as written;
+    // the trailing statement period is not part of the name.
     private static List<string> ReadCopyStatements(string sourceRoot, string relativePath)
     {
         var path = Path.Combine(sourceRoot, SourcePathHelper.ToOsRelativePath(relativePath));
@@ -406,13 +340,8 @@ public sealed class RektEstateReader
         SourceTypeRegistry.EnumerateCopybookFiles(root)
             .Select(path => SourcePathHelper.NormalizeRelativePath(Path.GetRelativePath(root, path)));
 
-    /// <summary>
-    /// A REKT <c>-deps.json</c> holds a flat <c>dependencies</c> array of
-    /// <c>{ "name": … }</c> entries where a <c>.cpy</c> suffix marks a copybook
-    /// and everything else is a CALL target. Returns null when no dependency
-    /// export exists, so callers can distinguish "no artifact" from
-    /// "artifact says none".
-    /// </summary>
+    // Returns null when no dependency export exists, so callers can distinguish
+    // "no artifact" from "artifact says none".
     private static List<string>? ReadDependencies(string? depsPath, bool copybooks)
     {
         if (depsPath is null || !File.Exists(depsPath)) return null;
@@ -423,10 +352,8 @@ public sealed class RektEstateReader
                 || deps.ValueKind != JsonValueKind.Array)
                 return null;
 
-            // Names are preserved as REKT emitted them. A copybook name is a
-            // filename that has to match a file on disk, and case-folding it
-            // would both break that match and display a name the source never
-            // contained. Comparisons are case-insensitive instead.
+            // Names are preserved as emitted: a copybook name must match a file on disk,
+            // so case-folding would break the match. Comparisons are case-insensitive.
             return deps.EnumerateArray()
                 .Select(d => d.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String
                     ? n.GetString()

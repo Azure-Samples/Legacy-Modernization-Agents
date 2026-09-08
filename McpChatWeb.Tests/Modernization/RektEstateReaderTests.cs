@@ -7,12 +7,6 @@ using Xunit;
 
 namespace McpChatWeb.Tests.Modernization;
 
-/// <summary>
-/// Covers how parse fidelity is resolved and where it is claimed to come from.
-/// The reported source matters as much as the value: the portal presents this as
-/// a deterministic decision surface, so an inferred verdict must never be shown
-/// as a measured one.
-/// </summary>
 public class RektEstateReaderTests
 {
     private static RektEstateReader ReaderFor(EstateFixture fixture) =>
@@ -23,8 +17,7 @@ public class RektEstateReaderTests
     {
         using var fixture = new EstateFixture();
         fixture.AddProgram("CUSTOMER.cbl");
-        // Facts claim a full parse; the scan cache is the authoritative record
-        // and says the dialect was unavailable.
+        // confidence 3 is a full-parse claim; the cache says the dialect was unavailable.
         fixture.AddFacts("CUSTOMER.cbl", confidence: 3);
         await fixture.AddScanEntryAsync("CUSTOMER.cbl", RektParseOutcome.NoDialect, RektScanConfidence.Partial);
 
@@ -52,8 +45,6 @@ public class RektEstateReaderTests
     public async Task DepsOnlyArtifacts_ReportDepsOnlyFidelity()
     {
         using var fixture = new EstateFixture();
-        // A dependency file without facts or a report is the deps-only fallback:
-        // the program's call graph is known but its body was never parsed.
         fixture.AddProgram("CUSTOMER.cbl").AddDeps("CUSTOMER", "ACCOUNT", "CUSTREC.cpy");
 
         var estate = await ReaderFor(fixture).ReadAsync();
@@ -69,10 +60,8 @@ public class RektEstateReaderTests
     public async Task ReportWithoutScanCacheOrFacts_ReportsPartialNotFull()
     {
         using var fixture = new EstateFixture();
-        // What `./doctor.sh rekt-full` alone leaves on disk: a report directory,
-        // no scan cache and no facts. A stub-backed parse with degraded
-        // structural facts emits a report directory identical to a clean one, so
-        // artifacts cannot establish Full without overstating readiness.
+        // What `rekt-full` alone leaves: a report directory, no cache, no facts. A degraded
+        // parse writes the same directory as a clean one, so artifacts cannot prove Full.
         fixture.AddProgram("CUSTOMER.cbl").AddReportDirectory("CUSTOMER.cbl");
 
         var estate = await ReaderFor(fixture).ReadAsync();
@@ -100,9 +89,8 @@ public class RektEstateReaderTests
     public async Task AmbiguousBasename_DoesNotConsumeScanCacheEntry()
     {
         using var fixture = new EstateFixture();
-        // The scan cache is keyed by basename while sources are keyed by
-        // relative path. Two files sharing a basename cannot be told apart, so
-        // neither may claim the single cache row.
+        // The cache is keyed by basename, sources by relative path, so neither of these
+        // two files may claim the single shared row.
         fixture.AddProgram("billing/CUSTOMER.cbl");
         fixture.AddProgram("legacy/CUSTOMER.cbl");
         await fixture.AddScanEntryAsync("CUSTOMER.cbl", RektParseOutcome.Full, RektScanConfidence.High);

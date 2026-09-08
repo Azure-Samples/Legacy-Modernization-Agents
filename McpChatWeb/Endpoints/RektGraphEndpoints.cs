@@ -3,17 +3,8 @@ using Neo4j.Driver;
 
 namespace McpChatWeb.Endpoints;
 
-/// <summary>
-/// Projections of the Cobol-REKT Neo4j graph populated by
-/// <c>tools/graph-populator</c>.
-///
-/// <para>
-/// The graph is optional: it only exists after <c>./doctor.sh rekt-ingest</c>
-/// has run. When it is unreachable or unconfigured these endpoints return an
-/// empty projection with a <c>note</c> rather than an error, so the portal
-/// renders an explanation instead of a broken panel.
-/// </para>
-/// </summary>
+// The graph only exists after ./doctor.sh rekt-ingest. When unreachable these endpoints
+// return an empty projection with a note, so the portal explains itself rather than breaking.
 public static class RektGraphEndpoints
 {
     public static void MapRektGraphEndpoints(this WebApplication app)
@@ -183,12 +174,8 @@ public static class RektGraphEndpoints
 
     private sealed record FileRecord(string FileName, bool IsCopybook, int LineCount, bool HasAst);
 
-    /// <summary>
-    /// Files for a scan run, collapsed to the newest run per file name so a
-    /// re-ingest does not duplicate every node. <c>hasAst</c> comes from the
-    /// HAS_AST relationship rather than an ASTNode naming convention, so the
-    /// architecture and services projections cannot disagree about it.
-    /// </summary>
+    // Newest run per file name, so a re-ingest does not duplicate nodes. hasAst reads the
+    // HAS_AST edge, not a name convention, so the two projections cannot disagree on it.
     private static async IAsyncEnumerable<FileRecord> QueryFilesAsync(IAsyncSession session, long? scanRunId)
     {
         var runFilter = scanRunId.HasValue ? "AND f.runId = $scanRunId" : "";

@@ -2,11 +2,6 @@ using McpChatWeb.Services;
 
 namespace McpChatWeb.Endpoints;
 
-/// <summary>
-/// Read-only decision surfaces over the REKT estate. Every response is derived
-/// from artifacts on disk or the scan cache, so repeated calls against an
-/// unchanged estate return identical payloads.
-/// </summary>
 public static class ModernizationEndpoints
 {
     public static void MapModernizationEndpoints(this WebApplication app)
@@ -28,8 +23,7 @@ public static class ModernizationEndpoints
             .WithName("GetTopology")
             .WithSummary("Programs and copybooks with their CALL and COPY edges.");
 
-        // Catch-all: the identity may be a source-relative path containing
-        // separators, not just a basename.
+        // Identity may be a source-relative path with separators, not just a basename.
         group.MapGet("/flow/{**identity}", async (
             string identity,
             ModernizationIntelligenceService service,

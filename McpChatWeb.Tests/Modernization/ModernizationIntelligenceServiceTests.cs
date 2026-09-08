@@ -146,9 +146,8 @@ public class ModernizationIntelligenceServiceTests
     public async Task ServiceChain_HyphenatedProgramNames_StillLinkJobsToPrograms()
     {
         using var fixture = new EstateFixture();
-        // COBOL estates carry hyphenated names. A capture that stops at the
-        // hyphen yields CUSTOMER, which matches no program, and the job-to-
-        // program edges vanish without any error being reported.
+        // A capture stopping at the hyphen yields CUSTOMER, which matches no program,
+        // so every job-to-program edge vanishes without an error being reported.
         fixture.AddProgram("CUSTOMER-INQUIRY.cbl").AddProgram("CUSTOMER-DISPLAY.cbl");
         fixture.AddJcl("jcl/NIGHTLY.jcl", """
             //NIGHTLY  JOB (ACCT),'A',CLASS=A

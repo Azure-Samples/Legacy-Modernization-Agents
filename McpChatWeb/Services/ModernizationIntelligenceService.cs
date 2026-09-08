@@ -4,26 +4,10 @@ using CobolToQuarkusMigration.Helpers;
 
 namespace McpChatWeb.Services;
 
-/// <summary>
-/// Deterministic decision surfaces over the REKT estate: what was parsed, how
-/// the estate hangs together, which programs are blocked, and what a job chain
-/// actually touches.
-///
-/// <para>
-/// Every number here is derived from artifacts on disk or from the scan cache —
-/// nothing is inferred by a model. That is the point: these are the surfaces a
-/// human uses to decide what can be converted safely, so they must be
-/// reproducible.
-/// </para>
-/// </summary>
 public sealed class ModernizationIntelligenceService
 {
-    // Program and job names accept '-' beyond the JCL-legal alphanumeric and
-    // national characters. Real MVS member names cannot contain a hyphen, so
-    // permitting it costs nothing there, but modernization estates routinely
-    // carry hyphenated COBOL names such as CUSTOMER-INQUIRY. Without it the
-    // capture truncates at the hyphen to CUSTOMER, which matches no program and
-    // silently drops every job-to-program edge.
+    // '-' is accepted beyond the JCL-legal set: real MVS member names cannot contain one,
+    // but COBOL estates do, and truncating at the hyphen drops every job-to-program edge.
     private static readonly Regex ExecPgmRegex = new(
         @"EXEC\s+PGM\s*=\s*([A-Z0-9$@#-]+)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -32,11 +16,8 @@ public sealed class ModernizationIntelligenceService
         @"^//(?<name>[A-Z0-9$@#-]+)\s+JOB",
         RegexOptions.IgnoreCase | RegexOptions.Multiline | RegexOptions.Compiled);
 
-    /// <summary>
-    /// MVS system utilities. They appear in nearly every JCL chain and would
-    /// swamp the graph without adding modernization signal, since none of them
-    /// is a program to be converted.
-    /// </summary>
+    // MVS system utilities appear in nearly every JCL chain and would swamp the graph;
+    // none of them is a program to be converted.
     private static readonly HashSet<string> SystemUtilities = new(StringComparer.OrdinalIgnoreCase)
     {
         "IDCAMS", "IKJEFT01", "IEFBR14", "SORT", "ICETOOL", "DFSORT", "ADUUMAIN",
@@ -50,10 +31,6 @@ public sealed class ModernizationIntelligenceService
 
     // ── Dependency health ────────────────────────────────────────────────
 
-    /// <summary>
-    /// Parse fidelity across the estate plus the missing copybooks that block
-    /// programs from parsing fully.
-    /// </summary>
     public async Task<DependencyHealthSnapshot> GetDependencyHealthAsync(
         CancellationToken cancellationToken = default)
     {
@@ -62,8 +39,6 @@ public sealed class ModernizationIntelligenceService
 
         foreach (var row in estate.MissingCopybooks) snapshot.MissingCopybooks.Add(row);
 
-        // Which copybooks each program is waiting on, keyed the way
-        // missing-copybooks.txt records them.
         var missingByProgram = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
         foreach (var row in estate.MissingCopybooks)
         {
@@ -108,8 +83,6 @@ public sealed class ModernizationIntelligenceService
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Count();
 
-        // How many programs the scan cache could speak for, rather than a
-        // guess from files on disk.
         snapshot.ScanCacheBackedCount = programs.Count(p => p.FidelitySource == FidelitySources.ScanCache);
 
         if (programs.Count > 0)
@@ -117,9 +90,8 @@ public sealed class ModernizationIntelligenceService
             snapshot.CoveragePct = Math.Round(
                 snapshot.FullFidelityCount * 100.0 / programs.Count, 1);
 
-            // Weighted readiness: only a full parse gives the converter
-            // everything. A partial parse is usable but lossy; a deps-only
-            // result tells you the edges and nothing about the logic.
+            // Weighted: only a full parse gives the converter everything. Partial is lossy;
+            // deps-only gives the edges and nothing about the logic.
             var weighted =
                 snapshot.FullFidelityCount * 1.0
                 + snapshot.PartialFidelityCount * 0.5
@@ -130,10 +102,8 @@ public sealed class ModernizationIntelligenceService
         return snapshot;
     }
 
-    /// <summary>
-    /// missing-copybooks.txt records references by whatever name the
-    /// preprocessor saw, which may be the basename or the stem.
-    /// </summary>
+    // The preprocessor records references by whatever name it saw, so match both
+    // basename and stem.
     private static int CountMissingFor(
         RektProgramRecord program,
         IReadOnlyDictionary<string, HashSet<string>> missingByProgram)
@@ -145,10 +115,6 @@ public sealed class ModernizationIntelligenceService
 
     // ── Topology ─────────────────────────────────────────────────────────
 
-    /// <summary>
-    /// The estate as nodes: one per source file, with the CALL and COPY edges
-    /// that connect them.
-    /// </summary>
     public async Task<TopologySnapshot> GetTopologyAsync(CancellationToken cancellationToken = default)
     {
         var estate = await _estate.ReadAsync(cancellationToken).ConfigureAwait(false);
@@ -168,9 +134,8 @@ public sealed class ModernizationIntelligenceService
                 AmbiguousBasename: program.AmbiguousBasename));
         }
 
-        // Edges are keyed by basename/stem because that is all a CALL or COPY
-        // statement gives us. Resolve to a node only when the name is
-        // unambiguous — a guess here would draw an edge that does not exist.
+        // Keyed by basename/stem because that is all a CALL or COPY gives us. Resolve only
+        // when unambiguous — a guess would draw an edge that does not exist.
         var nodesByKey = BuildNodeIndex(estate.Programs);
 
         foreach (var program in estate.Programs)
@@ -195,10 +160,6 @@ public sealed class ModernizationIntelligenceService
         return snapshot;
     }
 
-    /// <summary>
-    /// Index source files by basename and by stem. Keys that resolve to more
-    /// than one file are dropped rather than resolved arbitrarily.
-    /// </summary>
     private static Dictionary<string, string> BuildNodeIndex(IReadOnlyList<RektProgramRecord> programs)
     {
         var candidates = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
@@ -241,11 +202,8 @@ public sealed class ModernizationIntelligenceService
 
     // ── Semantic flow ────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Which procedural flow artifacts REKT produced for a program. Absence is
-    /// the useful signal: no flow AST means the converter has no control-flow
-    /// model to work from.
-    /// </summary>
+    // Absence is the useful signal: no flow AST means the converter has no
+    // control-flow model to work from.
     public async Task<FlowSnapshot> GetProgramFlowAsync(
         string identity, CancellationToken cancellationToken = default)
     {
@@ -321,10 +279,6 @@ public sealed class ModernizationIntelligenceService
 
     // ── Service chain ────────────────────────────────────────────────────
 
-    /// <summary>
-    /// The JCL → program → copybook chain: what a batch job actually runs and
-    /// what those programs depend on.
-    /// </summary>
     public async Task<ServiceChainSnapshot> GetServiceChainAsync(
         string? jobFilter = null,
         string? programFilter = null,
@@ -398,8 +352,7 @@ public sealed class ModernizationIntelligenceService
             }
         }
 
-        // One stem per program. The same basename staged under several roots is
-        // still one program in the chain.
+        // The same basename staged under several roots is still one program in the chain.
         var seenStems = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var program in estate.Programs.Where(p => !p.IsCopybook))
         {
@@ -415,10 +368,8 @@ public sealed class ModernizationIntelligenceService
                 continue;
             }
 
-            // Scoped to a job: keep only what that job actually runs. This also
-            // applies when a program filter is present, so asking for a program
-            // inside a job that never runs it returns nothing rather than a
-            // standalone entry implying the job runs it.
+            // Applied even when a program filter is present, so asking for a program inside
+            // a job that never runs it returns nothing rather than implying the job runs it.
             if (!string.IsNullOrWhiteSpace(jobFilter) && calledBy.Count == 0) continue;
 
             snapshot.Programs.Add(new ProgramChain(
@@ -470,18 +421,11 @@ public sealed class ModernizationIntelligenceService
             || segment.Equals(".preprocessed", StringComparison.Ordinal));
     }
 
-    /// <summary>
-    /// Renders the chain as a Mermaid flowchart. Capped at
-    /// <c>MaxMermaidEdges</c> because the client-side renderer becomes
-    /// unusable well before a full estate is drawn; the JSON payload still
-    /// carries every edge.
-    /// </summary>
+    // Capped at MaxMermaidEdges because the client-side renderer becomes unusable well
+    // before a full estate is drawn; the JSON payload still carries every edge.
     private const int MaxMermaidEdges = 200;
 
-    /// <summary>
-    /// Renders the snapshot as it already stands. Filtering happens upstream so
-    /// the diagram cannot disagree with the JSON payload beside it.
-    /// </summary>
+    // Filtering happens upstream so the diagram cannot disagree with the JSON beside it.
     private static string BuildServiceChainMermaid(ServiceChainSnapshot snapshot)
     {
         var sb = new StringBuilder();
@@ -605,10 +549,7 @@ public sealed class TopologySnapshot
     public List<TopologyNode> Nodes { get; } = new();
     public List<TopologyEdge> Edges { get; } = new();
 
-    /// <summary>
-    /// CALL and COPY targets with no matching source file, or whose name maps
-    /// to several files. These are the gaps in the estate, not noise.
-    /// </summary>
+    // Targets with no matching source file, or whose name maps to several.
     public List<TopologyEdge> UnresolvedEdges { get; } = new();
 
     public string? Note { get; set; }

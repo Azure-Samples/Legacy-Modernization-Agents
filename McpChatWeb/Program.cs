@@ -96,9 +96,7 @@ builder.Services.AddSingleton<McpChatWeb.Services.ProcessManager>(sp =>
 
 builder.Services.AddSingleton<PortalState>();
 
-// Modernization intelligence — deterministic decision surfaces over the REKT
-// estate. Singletons: both are stateless readers over the filesystem and the
-// scan cache.
+// Singletons: both are stateless readers over the filesystem and the scan cache.
 builder.Services.AddSingleton<McpChatWeb.Services.RektEstateReader>();
 builder.Services.AddSingleton<McpChatWeb.Services.ModernizationIntelligenceService>();
 
@@ -6409,11 +6407,9 @@ app.MapGet("/api/reports/available", () =>
 	}
 });
 
-// Modernization intelligence surfaces and the REKT graph projections.
 app.MapModernizationEndpoints();
 app.MapRektGraphEndpoints();
 
-// The REKT graph driver is process-wide; close its connection pool on shutdown.
 app.Lifetime.ApplicationStopping.Register(() =>
 	McpChatWeb.Services.RektNeo4j.DisposeAsync().AsTask().GetAwaiter().GetResult());
 
