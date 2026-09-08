@@ -219,10 +219,24 @@ case-insensitive for these words, so valid source such as `MOVE zero TO WS-NUM`
 made all three high-fidelity attempts fail and dropped the program to the
 deps-only fallback — losing its AST, CFG and data structures.
 
-The preprocessor now upper-cases these words in the staged copy, for programs
-and copybooks alike. Comment lines and quoted literals are skipped, and hyphen
-counts as a word character, so `WS-ZERO-COUNT` and `'zero'` are left as-is.
-Files under `source/` are never modified; only the staged copy is rewritten.
+These words are now upper-cased in the staged copy, for programs and copybooks
+alike. Comment lines and quoted literals are skipped, and hyphen counts as a
+word character, so `WS-ZERO-COUNT` and `'zero'` are left as-is. Files under
+`source/` are never modified; only the staged copy is rewritten.
+
+The normalisation runs at staging time, immediately before smojol reads the
+files. That matters: the preprocessor writes to `source/.preprocessed/` only
+when it actually changes a file, and staging falls back to the raw source when
+it did not. A fix applied only in the preprocessor was therefore skipped for any
+program it did not otherwise touch - such a run reports `No files needed
+preprocessing` and still parses at reduced fidelity. Staging is the last step
+before the parser, so normalising there covers every path.
+
+When files are rewritten the run reports:
+
+```
+✅ Upper-cased figurative constants in N staged file(s) (smojol requires upper case)
+```
 
 If a program still reports deps-only, the cause is a different one — check the
 `smojol:` hint and the full `output/rekt/<program>.parse.log`. Missing copybooks

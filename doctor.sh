@@ -3509,6 +3509,88 @@ run_rekt_parse() {
     staged_cpy=$(find "$staging_dir" -maxdepth 1 \( -name "*.cpy" -o -name "*.CPY" \) | wc -l | tr -d ' ')
     echo -e "  ${BLUE}Staged: ${staged_cbl} program(s), ${staged_cpy} copybook(s) → source/.rekt-staging/${NC}"
 
+    # Normalise figurative constants in the staged copies.
+    #
+    # smojol's FigurativeConstantMap compares with String.equals against the
+    # upper-case spellings only, so `MOVE zero TO WS-N` throws
+    # UnsupportedOperationException and silently drops the whole program to the
+    # deps-only fallback. COBOL is case-insensitive for these words.
+    #
+    # This runs here, on the staged copy, rather than only in the preprocessor:
+    # the preprocessor writes to source/.preprocessed/ only when it changes a
+    # file, and staging falls back to the raw source when it did not — so a
+    # preprocessor-only fix is bypassed for any file it did not otherwise touch.
+    # Staging is the last step before smojol reads the file, so fixing it here
+    # covers every path. Idempotent, and source/ is never modified.
+    local fig_fixed fig_err
+    fig_err="$REPO_ROOT/output/rekt/.figurative-normalise.err"
+    mkdir -p "$REPO_ROOT/output/rekt"
+    if [[ -z "$PYTHON_CMD" ]]; then
+        # Never fail silently here: without this pass, any program using a
+        # lower-case figurative constant drops to the deps-only fallback and
+        # loses its AST, CFG and data structures.
+        echo -e "  ${YELLOW}⚠️  Python not found — cannot upper-case figurative constants.${NC}"
+        echo -e "     ${YELLOW}Programs using lower-case ZERO/SPACES/etc. will parse at reduced fidelity.${NC}"
+    fi
+    fig_fixed=$([[ -n "$PYTHON_CMD" ]] && "$PYTHON_CMD" - "$staging_dir" <<'PYEOF' 2>"$fig_err" || echo 0
+import os, re, sys
+
+staging_dir = sys.argv[1]
+
+WORDS = ('high-values', 'high-value', 'low-values', 'low-value',
+         'zeroes', 'zeros', 'zero', 'spaces', 'space',
+         'quotes', 'quote', 'null')
+# Hyphen counts as a word character so WS-ZERO-COUNT and zero-total are safe.
+fig_rx = re.compile(r'(?<![A-Za-z0-9_-])(' + '|'.join(WORDS) + r')(?![A-Za-z0-9_-])',
+                    re.IGNORECASE)
+lit_rx = re.compile(r'(\x27[^\x27]*\x27|\x22[^\x22]*\x22)')
+
+def normalise(text):
+    out = []
+    for line in text.split('\n'):
+        if len(line) >= 7 and line[6] in ('*', '/'):
+            out.append(line)
+            continue
+        parts = lit_rx.split(line)
+        for i in range(0, len(parts), 2):
+            parts[i] = fig_rx.sub(lambda m: m.group(1).upper(), parts[i])
+        out.append(''.join(parts))
+    return '\n'.join(out)
+
+changed = 0
+for name in sorted(os.listdir(staging_dir)):
+    if os.path.splitext(name)[1].lower() not in ('.cbl', '.cob', '.cpy'):
+        continue
+    path = os.path.join(staging_dir, name)
+    try:
+        # newline='' disables newline translation on both read and write, so a
+        # CRLF file staged on Windows keeps its exact line endings instead of
+        # being rewritten via os.linesep. COBOL is column-sensitive, so the
+        # bytes must round-trip untouched.
+        with open(path, 'r', encoding='latin-1', newline='') as f:
+            original = f.read()
+        updated = normalise(original)
+        if updated != original:
+            with open(path, 'w', encoding='latin-1', newline='') as f:
+                f.write(updated)
+            changed += 1
+    except OSError:
+        pass
+
+print(changed)
+PYEOF
+)
+    fig_fixed=$(echo "$fig_fixed" | tr -dc '0-9')
+    if [[ -n "$fig_fixed" && "$fig_fixed" -gt 0 ]]; then
+        echo -e "  ${GREEN}✅ Upper-cased figurative constants in ${fig_fixed} staged file(s) (smojol requires upper case)${NC}"
+    fi
+    if [[ -s "$fig_err" ]]; then
+        echo -e "  ${YELLOW}⚠️  Figurative-constant normalisation reported errors:${NC}"
+        sed 's/^/     /' "$fig_err" | tail -5
+    else
+        rm -f "$fig_err"
+    fi
+
     # Sanity-check the container can actually see the staging dir. On macOS
     # Docker Desktop, bind mounts can desync when the host directory's inode
     # changes (folder recreated, restored from a snapshot, etc.). If that
