@@ -1,0 +1,238 @@
+using McpChatWeb.Services;
+using Neo4j.Driver;
+
+namespace McpChatWeb.Endpoints;
+
+/// <summary>
+/// Projections of the Cobol-REKT Neo4j graph populated by
+/// <c>tools/graph-populator</c>.
+///
+/// <para>
+/// The graph is optional: it only exists after <c>./doctor.sh rekt-ingest</c>
+/// has run. When it is unreachable or unconfigured these endpoints return an
+/// empty projection with a <c>note</c> rather than an error, so the portal
+/// renders an explanation instead of a broken panel.
+/// </para>
+/// </summary>
+public static class RektGraphEndpoints
+{
+    public static void MapRektGraphEndpoints(this WebApplication app)
+    {
+        var group = app.MapGroup("/api/graph/rekt").WithTags("REKT Graph");
+
+        group.MapGet("/runs", async (
+            ILoggerFactory loggerFactory,
+            CancellationToken cancellationToken) =>
+        {
+            var logger = loggerFactory.CreateLogger("RektGraph");
+            if (!RektNeo4j.IsConfigured)
+                return Results.Ok(new { runs = Array.Empty<object>(), note = RektNeo4j.NotConfiguredNote });
+
+            try
+            {
+                await using var session = RektNeo4j.Shared.AsyncSession();
+                var cursor = await session.RunAsync(@"
+                    MATCH (f:CobolFile)
+                    WHERE f.runId IS NOT NULL
+                    WITH f.runId AS runId,
+                         count(DISTINCT f.fileName) AS fileCount,
+                         max(COALESCE(f.lineCount, 0)) AS maxLines
+                    RETURN runId, fileCount, maxLines
+                    ORDER BY runId DESC");
+
+                var runs = new List<object>();
+                await cursor.ForEachAsync(r => runs.Add(new
+                {
+                    runId = r["runId"].As<long>(),
+                    fileCount = r["fileCount"].As<int>(),
+                    maxLines = r["maxLines"].As<int>(),
+                }));
+
+                return Results.Ok(new { runs, note = (string?)null });
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "REKT graph unavailable while listing scan runs.");
+                return Results.Ok(new { runs = Array.Empty<object>(), note = Unavailable });
+            }
+        })
+        .WithName("GetRektScanRuns")
+        .WithSummary("Scan runs present in the REKT graph, newest first.");
+
+        group.MapGet("/architect", async (
+            long? scanRunId,
+            ILoggerFactory loggerFactory,
+            CancellationToken cancellationToken) =>
+        {
+            var logger = loggerFactory.CreateLogger("RektGraph");
+            if (!RektNeo4j.IsConfigured)
+                return EmptyArchitecture(RektNeo4j.NotConfiguredNote);
+
+            try
+            {
+                await using var session = RektNeo4j.Shared.AsyncSession();
+
+                // Program names are read from ASTNode separately: joining them
+                // onto the file query multiplies rows by AST size.
+                var astPrograms = new HashSet<string>(StringComparer.Ordinal);
+                var astCursor = await session.RunAsync(
+                    "MATCH (n:ASTNode) WHERE n.program IS NOT NULL RETURN DISTINCT n.program AS program");
+                await astCursor.ForEachAsync(r =>
+                {
+                    if (r["program"].As<string?>() is { Length: > 0 } program) astPrograms.Add(program);
+                });
+
+                var programs = new List<object>();
+                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                await foreach (var record in QueryFilesAsync(session, scanRunId))
+                {
+                    var fileName = record.FileName;
+                    if (!seen.Add(fileName)) continue;
+                    programs.Add(new
+                    {
+                        fileName,
+                        isCopybook = record.IsCopybook,
+                        lineCount = record.LineCount,
+                        hasAst = astPrograms.Contains($"flow-ast-{fileName}"),
+                    });
+                }
+
+                var dependencies = await ReadDependenciesAsync(session);
+                return Results.Ok(new { programs, dependencies, note = (string?)null });
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "REKT graph unavailable while building the architecture projection.");
+                return EmptyArchitecture(Unavailable);
+            }
+        })
+        .WithName("GetRektArchitecture")
+        .WithSummary("Files and dependency edges from the REKT graph.");
+
+        group.MapGet("/services", async (
+            long? scanRunId,
+            ILoggerFactory loggerFactory,
+            CancellationToken cancellationToken) =>
+        {
+            var logger = loggerFactory.CreateLogger("RektGraph");
+            if (!RektNeo4j.IsConfigured)
+                return EmptyServices(RektNeo4j.NotConfiguredNote);
+
+            try
+            {
+                await using var session = RektNeo4j.Shared.AsyncSession();
+
+                var runFilter = scanRunId.HasValue ? "AND f.runId = $scanRunId" : "";
+                var cursor = await session.RunAsync($@"
+                    MATCH (f:CobolFile)
+                    WHERE f.runId IS NOT NULL {runFilter}
+                    WITH f.fileName AS fileName, max(f.runId) AS latestRun, collect(f) AS files
+                    WITH fileName, latestRun, [x IN files WHERE x.runId = latestRun][0] AS f
+                    OPTIONAL MATCH (f)-[:HAS_AST]->(root:ASTNode)
+                    OPTIONAL MATCH (root)-[:CONTAINS*1..3]->(n:ASTNode)
+                    WITH f, fileName, root IS NOT NULL AS hasAst,
+                        count(DISTINCT CASE WHEN n.nodeType IN ['DIALECT','DIALECT_CONTAINER'] THEN n END) AS sqlCount,
+                        count(DISTINCT CASE WHEN n.nodeType = 'CALL' THEN n END) AS callCount,
+                        count(DISTINCT CASE WHEN n.nodeType = 'PERFORM' THEN n END) AS performCount,
+                        count(DISTINCT CASE WHEN n.nodeType = 'DISPLAY' THEN n END) AS displayCount
+                    RETURN DISTINCT fileName, f.isCopybook AS isCopybook, f.lineCount AS lineCount,
+                        hasAst, sqlCount, callCount, performCount, displayCount",
+                    scanRunId.HasValue ? new { scanRunId = scanRunId.Value } : null);
+
+                var nodes = new List<object>();
+                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                await cursor.ForEachAsync(r =>
+                {
+                    var fileName = r["fileName"].As<string>();
+                    if (!seen.Add(fileName)) return;
+                    nodes.Add(new
+                    {
+                        id = fileName,
+                        type = r["isCopybook"].As<bool?>() == true ? "copybook" : "program",
+                        lineCount = r["lineCount"].As<int?>() ?? 0,
+                        hasAst = r["hasAst"].As<bool>(),
+                        sqlCount = r["sqlCount"].As<int>(),
+                        callCount = r["callCount"].As<int>(),
+                        performCount = r["performCount"].As<int>(),
+                        displayCount = r["displayCount"].As<int>(),
+                    });
+                });
+
+                var edges = await ReadDependenciesAsync(session);
+                return Results.Ok(new { nodes, edges, note = (string?)null });
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "REKT graph unavailable while building the services projection.");
+                return EmptyServices(Unavailable);
+            }
+        })
+        .WithName("GetRektServices")
+        .WithSummary("Deduplicated program graph with per-file AST statement counts.");
+    }
+
+    private const string Unavailable =
+        "REKT graph is unavailable. Start it with ./doctor.sh rekt-full and confirm bolt://localhost:7688 is reachable.";
+
+    private static IResult EmptyArchitecture(string note) =>
+        Results.Ok(new
+        {
+            programs = Array.Empty<object>(),
+            dependencies = Array.Empty<object>(),
+            note,
+        });
+
+    private static IResult EmptyServices(string note) =>
+        Results.Ok(new
+        {
+            nodes = Array.Empty<object>(),
+            edges = Array.Empty<object>(),
+            note,
+        });
+
+    private sealed record FileRecord(string FileName, bool IsCopybook, int LineCount);
+
+    /// <summary>
+    /// Files for a scan run, collapsed to the newest run per file name so a
+    /// re-ingest does not duplicate every node.
+    /// </summary>
+    private static async IAsyncEnumerable<FileRecord> QueryFilesAsync(IAsyncSession session, long? scanRunId)
+    {
+        var runFilter = scanRunId.HasValue ? "AND f.runId = $scanRunId" : "";
+        var cursor = await session.RunAsync($@"
+            MATCH (f:CobolFile)
+            WHERE f.runId IS NOT NULL {runFilter}
+            WITH f.fileName AS fileName, max(f.runId) AS latestRun, collect(f) AS files
+            WITH fileName, latestRun, [x IN files WHERE x.runId = latestRun][0] AS f
+            RETURN DISTINCT fileName, f.isCopybook AS isCopybook, f.lineCount AS lineCount",
+            scanRunId.HasValue ? new { scanRunId = scanRunId.Value } : null);
+
+        await foreach (var record in cursor)
+        {
+            yield return new FileRecord(
+                record["fileName"].As<string>(),
+                record["isCopybook"].As<bool?>() ?? false,
+                record["lineCount"].As<int?>() ?? 0);
+        }
+    }
+
+    private static async Task<List<object>> ReadDependenciesAsync(IAsyncSession session)
+    {
+        var cursor = await session.RunAsync(@"
+            MATCH (a:CobolFile)-[d:DEPENDS_ON]->(b:CobolFile)
+            RETURN DISTINCT a.fileName AS source, b.fileName AS target, d.type AS type");
+
+        var edges = new List<object>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        await cursor.ForEachAsync(r =>
+        {
+            var source = r["source"].As<string>();
+            var target = r["target"].As<string>();
+            var type = r["type"].As<string?>() ?? "DEPENDS_ON";
+            if (!seen.Add($"{source}->{target}:{type}")) return;
+            edges.Add(new { source, target, type });
+        });
+        return edges;
+    }
+}
