@@ -2981,6 +2981,22 @@ detect_docker_api_version() {
     fi
 }
 
+# Git Bash / MSYS rewrites arguments that look like absolute POSIX paths into
+# Windows paths before handing them to a native .exe. Every `docker exec` here
+# passes *container* paths, so `/app/smojol-cli.jar` reached docker.exe as
+# `C:/Program Files/Git/app/smojol-cli.jar`:
+#     Error: Unable to access jarfile C:/Program Files/Git/app/smojol-cli.jar
+# The same applies to `--srcDir=/source/...`, `--reportDir=/output`, and so on.
+# Wrapping docker once disables that translation for all current and future
+# call sites; it is a no-op on macOS and Linux, where the wrapper isn't defined.
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+        docker() {
+            MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' command docker "$@"
+        }
+        ;;
+esac
+
 # Resolve the Compose entrypoint once per process.
 #
 # Docker Desktop ships Compose v2 as the `docker compose` *subcommand*; the
