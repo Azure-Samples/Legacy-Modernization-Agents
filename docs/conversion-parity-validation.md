@@ -147,7 +147,7 @@ The default sits between a conversion that is complete and one that has lost a f
 
 ## Portal
 
-`GET /api/modernization/conversion-parity` returns the persisted report for each target language found under `output/`, distinguishing targets that were never converted from reports that exist but could not be read. A corrupt report is never presented as an absent one.
+`GET /api/modernization/conversion-parity` returns the persisted report for each target language, distinguishing targets that were never converted from reports that exist but could not be read. A corrupt report is never presented as an absent one. Reports are looked up under `JAVA_OUTPUT_FOLDER` and `CSHARP_OUTPUT_FOLDER`, falling back to `output/java` and `output/csharp`, so a converted estate written elsewhere is not reported as missing.
 
 The Modernization Intelligence **Runtime** subview renders it. The runtime-telemetry half of that subview has no data source yet and remains a labelled placeholder.
 

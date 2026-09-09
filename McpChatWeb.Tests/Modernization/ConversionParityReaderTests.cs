@@ -17,7 +17,33 @@ public class ConversionParityReaderTests : IDisposable
 
     public void Dispose()
     {
+        Environment.SetEnvironmentVariable("JAVA_OUTPUT_FOLDER", _originalJavaFolder);
         if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true);
+    }
+
+    private readonly string? _originalJavaFolder =
+        Environment.GetEnvironmentVariable("JAVA_OUTPUT_FOLDER");
+
+    [Fact]
+    // The folder is configurable, so hardcoding output/java made the panel report no data at
+    // all for an estate that had been converted into a different folder.
+    public async Task ReadAsync_HonoursConfiguredOutputFolder()
+    {
+        var dir = Path.Combine(_root, "build", "quarkus");
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(
+            Path.Combine(dir, ConversionParityPostPass.ArtifactName),
+            SampleReport("Java", 0.9, ("CUSTOMER.cbl", 0.9)));
+
+        // Proves the report is invisible at the default location, so the assertion below can
+        // only pass because the configured folder was read.
+        Assert.Contains("java", (await Reader().ReadAsync()).MissingTargets);
+
+        Environment.SetEnvironmentVariable("JAVA_OUTPUT_FOLDER", "build/quarkus");
+
+        var estate = await Reader().ReadAsync();
+        Assert.DoesNotContain("java", estate.MissingTargets);
+        Assert.Single(estate.Reports);
     }
 
     private ConversionParityReader Reader() =>

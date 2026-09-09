@@ -5,7 +5,10 @@ namespace McpChatWeb.Services;
 
 public sealed class ConversionParityReader
 {
-    private static readonly string[] OutputFolders = ["java", "csharp"];
+    // The label is the target language; the folder it lives in is configurable, so a custom
+    // JAVA_OUTPUT_FOLDER would otherwise leave the panel permanently reporting no data.
+    private static readonly (string Target, string EnvVar)[] OutputTargets =
+        [("java", "JAVA_OUTPUT_FOLDER"), ("csharp", "CSHARP_OUTPUT_FOLDER")];
 
     private readonly ILogger<ConversionParityReader> _logger;
 
@@ -30,13 +33,25 @@ public sealed class ConversionParityReader
         return dir?.FullName ?? Directory.GetCurrentDirectory();
     }
 
+    private static string ResolveOutputFolder(string envVar, string target)
+    {
+        var configured = Environment.GetEnvironmentVariable(envVar)?.Trim().Trim('"');
+
+        // An absolute path cannot be combined with the repo root, and reading outside the repo
+        // is not something the portal should do on the strength of an env var.
+        return string.IsNullOrEmpty(configured) || Path.IsPathRooted(configured)
+            ? Path.Combine("output", target)
+            : configured;
+    }
+
     public async Task<ConversionParityEstate> ReadAsync(CancellationToken cancellationToken = default)
     {
         var estate = new ConversionParityEstate();
 
-        foreach (var folder in OutputFolders)
+        foreach (var (folder, envVar) in OutputTargets)
         {
-            var path = Path.Combine(RepoRoot, "output", folder, ConversionParityPostPass.ArtifactName);
+            var relative = ResolveOutputFolder(envVar, folder);
+            var path = Path.Combine(RepoRoot, relative, ConversionParityPostPass.ArtifactName);
             if (!File.Exists(path))
             {
                 estate.MissingTargets.Add(folder);
@@ -53,7 +68,7 @@ public sealed class ConversionParityReader
                     continue;
                 }
 
-                report.SourcePath = Path.Combine("output", folder, ConversionParityPostPass.ArtifactName);
+                report.SourcePath = Path.Combine(relative, ConversionParityPostPass.ArtifactName);
                 estate.Reports.Add(report);
             }
             catch (Exception ex)

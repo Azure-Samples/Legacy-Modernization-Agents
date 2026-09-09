@@ -1,6 +1,10 @@
 // Identifies data names that exist only because tools/preprocess-for-rekt.sh synthesised a
 // placeholder copybook for an unresolved COPY. They are preprocessing artefacts, so expecting
 // them in generated code produces gaps no conversion can ever close.
+//
+// Names are pooled across the estate rather than tracked per program. The generator derives
+// them from the copybook name as <NAME>-STUB and <NAME>-VAL, so a real field colliding with
+// one is not a case worth carrying per-program attribution for.
 
 using System.Text.RegularExpressions;
 

@@ -783,6 +783,40 @@ public class ConversionParityValidatorTests
     }
 
     [Fact]
+    // The dynamic rule was enforced only on the fallback path. Facts are the preferred source
+    // and carry dynamic targets unfiltered, so the rule did not hold where it normally applies.
+    public void Evaluate_DynamicCallTargetIsNotExpectedWhenFactsSupplyIt()
+    {
+        var ctx = new RektContext();
+        ctx.Sections.Add(new RektSection { Name = "1000-MAIN" });
+        ctx.CallTargets.Add(new RektCallTarget { TargetProgram = "WS-PROGRAM-NAME", IsDynamic = true });
+        ctx.CallTargets.Add(new RektCallTarget { TargetProgram = "FORMAT-BALANCE" });
+
+        var context = new StructuralContext
+        {
+            Program = "CUST.cbl",
+            Provenance = StructuralProvenance.RektNative,
+            Confidence = 0.95,
+            Context = ctx,
+        };
+
+        const string java = """
+            public class C {
+                void main() { formatBalance(); }
+            }
+            """;
+
+        var result = ConversionParityValidator.Evaluate(
+            "CUST.cbl", "C.java", java, context,
+            FactsWithCallees("WS-PROGRAM-NAME", "FORMAT-BALANCE"));
+
+        var axis = result.Axes.Single(a => a.Name == "callTargets");
+        axis.Expected.Should().Be(1);
+        axis.MatchedInCode.Should().Be(1);
+        result.Gaps.Should().NotContain(g => g.Symbol == "WS-PROGRAM-NAME");
+    }
+
+    [Fact]
     // Renormalising over present axes let a total loss stay above the gate: dropping every CALL
     // target with no SQL present scores 0.65/0.85 = 0.76 against a 0.75 threshold.
     public void Evaluate_TotalLossOfAnAxisIsFlaggedEvenWhenTheScoreClearsTheThreshold()

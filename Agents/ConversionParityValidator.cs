@@ -400,9 +400,15 @@ internal static class ConversionParityValidator
     private static List<ExpectedSymbol> CollectCallTargets(RektContext ctx, ProgramFacts? facts)
     {
         // Dynamic targets name a variable resolved at runtime, so no generated identifier can
-        // be expected to carry them.
+        // be expected to carry them. Facts list callees unfiltered, so the exclusion has to be
+        // reapplied here rather than relying on the source that produced the list.
+        var dynamicTargets = ctx.CallTargets
+            .Where(c => c.IsDynamic && !string.IsNullOrWhiteSpace(c.TargetProgram))
+            .Select(c => c.TargetProgram)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
         var names = facts?.Callees is { Count: > 0 } callees
-            ? callees.ToList()
+            ? callees.Where(n => !dynamicTargets.Contains(n)).ToList()
             : ctx.CallTargets.Where(c => !c.IsDynamic).Select(c => c.TargetProgram).ToList();
 
         return Distinct(names)
