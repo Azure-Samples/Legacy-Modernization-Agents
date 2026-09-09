@@ -3548,7 +3548,14 @@ run_rekt_parse() {
         echo -e "  ${YELLOW}⚠️  Python not found — cannot upper-case figurative constants.${NC}"
         echo -e "     ${YELLOW}Programs using lower-case ZERO/SPACES/etc. will parse at reduced fidelity.${NC}"
     fi
-    fig_fixed=$([[ -n "$PYTHON_CMD" ]] && "$PYTHON_CMD" - "$staging_dir" <<'PYEOF' 2>"$fig_err" || echo 0
+    # Keep the guard and the failure fallback OUTSIDE the command substitution.
+    # A here-document followed by `||` *inside* $( ) parses on bash 3.2 but is a
+    # syntax error on bash 5.x (Git Bash), which reparses the substitution body:
+    #   command substitution: syntax error near unexpected token `||'
+    # That left fig_fixed empty and skipped this pass entirely on Windows.
+    fig_fixed=0
+    if [[ -n "$PYTHON_CMD" ]]; then
+        fig_fixed=$("$PYTHON_CMD" - "$staging_dir" 2>"$fig_err" <<'PYEOF'
 import os, re, sys
 
 staging_dir = sys.argv[1]
@@ -3595,7 +3602,8 @@ for name in sorted(os.listdir(staging_dir)):
 
 print(changed)
 PYEOF
-)
+        ) || fig_fixed=0
+    fi
     fig_fixed=$(echo "$fig_fixed" | tr -dc '0-9')
     if [[ -n "$fig_fixed" && "$fig_fixed" -gt 0 ]]; then
         echo -e "  ${GREEN}✅ Upper-cased figurative constants in ${fig_fixed} staged file(s) (smojol requires upper case)${NC}"

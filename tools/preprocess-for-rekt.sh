@@ -730,16 +730,25 @@ def fix_display_exec_cics(text):
 
 content = fix_display_exec_cics(content)
 
-# Step 25: Replace LENGTH OF <identifier> in COMPUTE statements.
+# Step 25: Replace LENGTH OF <identifier> with a numeric literal.
 # smojol's COBOL Language Support grammar treats LENGTH OF as a CICS
 # dialect token, producing _DIALECT_N nodes with null children → NPE
 # in buildDialectNodeRepository when the referenced variable has children.
+#
+# The operand may be a *qualified* reference (LENGTH OF A IN B IN C). The
+# qualifiers belong to the operand, so they have to be consumed together with
+# it: replacing only "LENGTH OF A" leaves "0 IN B IN C", which qualifies a
+# literal and is not valid COBOL. That parses as a MOVE with an unresolvable
+# source operand, and smojol then throws NoSuchElementException in
+# MoveFlowNode.resolve, dropping the whole program to a deps-only result.
 def fix_length_of(text):
     result = []
     for ln in text.split('\n'):
         is_comment = len(ln) >= 7 and ln[6] == '*'
         if not is_comment:
-            ln = re.sub(r'\bLENGTH\s+OF\s+\w+(?:-\w+)*\b', '0', ln, flags=re.IGNORECASE)
+            ln = re.sub(
+                r'\bLENGTH\s+OF\s+\w+(?:-\w+)*(?:\s+(?:IN|OF)\s+\w+(?:-\w+)*)*',
+                '0', ln, flags=re.IGNORECASE)
         result.append(ln)
     return '\n'.join(result)
 

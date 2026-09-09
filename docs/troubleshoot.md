@@ -1,6 +1,6 @@
 # Troubleshooting setup (`./doctor.sh setup`)
 
-**Last updated**: 2026-09-08
+**Last updated**: 2026-09-09
 
 `./doctor.sh setup` is the primary setup path. For Copilot, it writes a complete
 `Config/ai-config.local.env` only after sign-in and model validation succeed.
@@ -276,3 +276,76 @@ parsed:
 
 If the preprocessor is missing or not executable, the stale directory is
 discarded and parsing falls back to `source/`.
+
+### `syntax error near unexpected token '||'` on Windows (Git Bash)
+
+```
+./doctor.sh: command substitution: line 3646: syntax error near unexpected token `||'
+./doctor.sh: command substitution: line 3646: ` || echo 0)'
+```
+
+The scripts have to run unchanged on macOS `/bin/bash` **3.2** and on Git Bash /
+MSYS2 bash **5.x**. A here-document inside a command substitution followed by
+`||` or `&&` is accepted by bash 3.2 but rejected by bash 5.x, which re-parses
+the substitution body:
+
+```bash
+# Breaks on bash 5.x — guard and fallback are inside the substitution
+x=$([[ -n "$CMD" ]] && "$CMD" - <<'PYEOF' 2>"$err" || echo 0
+...
+PYEOF
+)
+
+# Portable — the substitution contains only the command
+x=0
+if [[ -n "$CMD" ]]; then
+    x=$("$CMD" - 2>"$err" <<'PYEOF'
+...
+PYEOF
+    ) || x=0
+fi
+```
+
+The failure is non-fatal, which is what makes it dangerous: the assignment is
+left empty and the run continues with that step silently skipped.
+
+Neither `bash -n` nor shellcheck reports this — the error appears only when the
+substitution is executed. Run the portability lint instead:
+
+```bash
+tools/check-bash-compat.sh              # all tracked *.sh
+tools/check-bash-compat.sh doctor.sh    # specific files
+```
+
+It also flags bash 4+ only syntax (associative arrays, case-conversion
+expansions, `mapfile`), which breaks macOS, and CRLF line endings, which break
+here-document terminators and shebangs.
+
+### A program parses as deps-only after `LENGTH OF`
+
+smojol's grammar treats `LENGTH OF` as a CICS dialect token, so the preprocessor
+replaces `LENGTH OF <identifier>` with `0`. The operand may be *qualified*, and
+the qualifiers belong to it:
+
+```cobol
+MOVE LENGTH OF SENEST-OPDAT IN REQUEST IN BDSIXXX-PARM
+```
+
+Replacing only `LENGTH OF SENEST-OPDAT` leaves `MOVE 0 IN REQUEST IN
+BDSIXXX-PARM`, which qualifies a literal and is not valid COBOL. smojol parses
+it as a `MOVE` whose source operand cannot be resolved and throws:
+
+```
+java.util.NoSuchElementException
+    at org.smojol.toolkit.ast.MoveFlowNode.resolve(MoveFlowNode.java:66)
+```
+
+The program then falls back to a deps-only result, losing its AST, CFG and data
+structures. The qualifiers are now consumed together with the operand.
+
+To confirm this is the cause, check the parse log for a syntax error on `IN`
+paired with `MoveFlowNode.resolve`:
+
+```bash
+grep -E 'Syntax error on|NoSuchElementException' output/rekt/<PROGRAM>.parse.log
+```
