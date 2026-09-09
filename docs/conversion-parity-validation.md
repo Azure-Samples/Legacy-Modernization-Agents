@@ -89,6 +89,7 @@ An inferred value is never presented as a measured one.
 | No structural context, or provenance `None` | `NotEvaluated`, no score, reason names `./doctor.sh rekt-full` |
 | All four axes have no comparable symbols | `NotEvaluated`, axes still reported |
 | Generated file cannot be mapped back to a source program | `NotEvaluated`, never guessed |
+| Two or more source programs share a file name | `NotEvaluated`, reason names the count |
 | Source program produced **no** generated file | **Evaluated, score 0**, explicit `file` gap |
 | File is a `ConversionOutputGuard` stub or a converter fallback | **Evaluated, score 0**, explicit `file` gap |
 
@@ -164,6 +165,7 @@ Parity is an **identifier-retention check**. It answers "are the names the COBOL
 - Recall depends on what the scan surfaced. A `CALL` nested inside a conditional is emitted by the parser as untyped statement text, and is recovered by scanning that text for quoted targets; a construct that survives in neither form cannot be expected, so its loss would go unreported. The axis reports `Expected = 0` rather than claiming coverage.
 - Compact-form fallback matching can pair a short expected name with a longer identifier that contains it.
 - Parity needs the repository layout to resolve source programs and copybooks. Running from a published image without it, the post-pass logs that it is skipping rather than reporting a false pass.
+- Programs are identified by file name, not by path. Generated files record only the source basename, so `billing/CUSTOMER.cbl` and `claims/CUSTOMER.cbl` cannot be told apart from their output. Rather than merge them into one entry and drop the second from the report, the check reports the collision and measures neither. Renaming one of the two restores coverage.
 - Scan freshness is not verified. `ProgramFacts.SourceHash` covers the *staged, preprocessed* bytes rather than the working-tree source, so it cannot be recomputed from the repository alone; comparing against the raw file would report every program stale. A scan taken before the COBOL last changed is therefore scored as if current. Re-run `./doctor.sh rekt-full` after editing sources.
 
 ### Dimensions not validated

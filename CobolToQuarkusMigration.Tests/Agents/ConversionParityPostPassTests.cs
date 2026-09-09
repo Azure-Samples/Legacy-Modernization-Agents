@@ -19,6 +19,70 @@ public class ConversionParityPostPassTests : IDisposable
     }
 
     [Fact]
+    // Generated files record only the source basename, so two programs of the same name in
+    // different folders merged into one entry and the second vanished from the report.
+    public async Task RunAsync_RefusesToMergeProgramsSharingAFileName()
+    {
+        Environment.SetEnvironmentVariable("ON_LOW_SCORE", "warn");
+
+        var dir = Path.Combine(Path.GetTempPath(), $"parity-dupe-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var billing = Path.Combine(dir, "BillingCustomer.java");
+            var claims = Path.Combine(dir, "ClaimsCustomer.java");
+            await File.WriteAllTextAsync(billing, "class BillingCustomer { void billIt() {} }");
+            await File.WriteAllTextAsync(claims, "class ClaimsCustomer { void claimIt() {} }");
+
+            // Production passes cobolFiles.Select(f => f.FileName), and FileName is a basename,
+            // so two programs in different folders arrive here as the same string twice.
+            await ConversionParityPostPass.RunAsync(
+                [Generated("BillingCustomer.java", billing, "CUSTOMER.cbl"),
+                 Generated("ClaimsCustomer.java", claims, "CUSTOMER.cbl")],
+                dir, "Java", null, ["CUSTOMER.cbl", "CUSTOMER.cbl"]);
+
+            var program = (await ReadReportAsync(dir)).Programs.Should().ContainSingle().Subject;
+            program.Outcome.Should().Be(ParityOutcome.NotEvaluated);
+            program.NotEvaluatedReason.Should().Contain("2 source programs share the file name");
+            program.Score.Should().BeNull();
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    [Fact]
+    // Guards the test above: the same shape with one source program must still be measured,
+    // or the collision check would be silently suppressing legitimate chunked splits.
+    public async Task RunAsync_StillScoresOneProgramSplitAcrossFiles()
+    {
+        Environment.SetEnvironmentVariable("ON_LOW_SCORE", "warn");
+
+        var dir = Path.Combine(Path.GetTempPath(), $"parity-split-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var billing = Path.Combine(dir, "BillingCustomer.java");
+            var claims = Path.Combine(dir, "ClaimsCustomer.java");
+            await File.WriteAllTextAsync(billing, "class BillingCustomer { void billIt() {} }");
+            await File.WriteAllTextAsync(claims, "class ClaimsCustomer { void claimIt() {} }");
+
+            await ConversionParityPostPass.RunAsync(
+                [Generated("BillingCustomer.java", billing, "CUSTOMER.cbl"),
+                 Generated("ClaimsCustomer.java", claims, "CUSTOMER.cbl")],
+                dir, "Java", null, ["CUSTOMER.cbl"]);
+
+            var program = (await ReadReportAsync(dir)).Programs.Should().ContainSingle().Subject;
+            program.NotEvaluatedReason.Should().NotContain("share the file name");
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    [Fact]
     public async Task RunAsync_StopGateFailsWhenNothingCouldBeEvaluated()
     {
         Environment.SetEnvironmentVariable("ON_LOW_SCORE", "stop");

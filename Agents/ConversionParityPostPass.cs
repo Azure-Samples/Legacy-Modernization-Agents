@@ -28,8 +28,19 @@ public static class ConversionParityPostPass
             .Where(f => !string.IsNullOrWhiteSpace(f.FilePath))
             .ToList();
 
-        var expectedPrograms = (sourcePrograms ?? Enumerable.Empty<string>())
+        var namedPrograms = (sourcePrograms ?? Enumerable.Empty<string>())
             .Where(p => !string.IsNullOrWhiteSpace(p))
+            .ToList();
+
+        // Generated files carry only the source basename, so two programs of the same name in
+        // different folders are indistinguishable here. Counting before the dedup below is the
+        // only place the collision is still visible.
+        var ambiguousPrograms = namedPrograms
+            .GroupBy(p => p, StringComparer.OrdinalIgnoreCase)
+            .Where(g => g.Count() > 1)
+            .ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
+
+        var expectedPrograms = namedPrograms
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
@@ -80,6 +91,16 @@ public static class ConversionParityPostPass
             var program = group.Key;
             converted.Add(program);
 
+            if (ambiguousPrograms.TryGetValue(program, out var shareCount))
+            {
+                results.Add(NotEvaluated(
+                    program, DescribeFiles(group),
+                    $"{shareCount} source programs share the file name '{program}'. Generated files " +
+                    "record only the source file name, so their output cannot be told apart and " +
+                    "parity would be measured against the wrong program."));
+                continue;
+            }
+
             var parts = new List<string>();
             var readFailures = new List<string>();
             foreach (var file in group)
@@ -124,7 +145,7 @@ public static class ConversionParityPostPass
         // is invisible if the report only walks generated files.
         foreach (var program in expectedPrograms.Where(p => !converted.Contains(p)))
         {
-            results.Add(NoOutput(program));
+            results.Add(NoOutput(program, ambiguousPrograms.TryGetValue(program, out var n) ? n : 1));
         }
 
         var report = BuildReport(results, targetLanguage, threshold, gate);
@@ -289,7 +310,7 @@ public static class ConversionParityPostPass
         NotEvaluatedReason = reason,
     };
 
-    private static ProgramParityResult NoOutput(string program) => new()
+    private static ProgramParityResult NoOutput(string program, int sharingCount = 1) => new()
     {
         Program = program,
         Outcome = ParityOutcome.Evaluated,
@@ -299,7 +320,10 @@ public static class ConversionParityPostPass
             Axis = "file",
             Symbol = program,
             Kind = ParityGapKind.Missing,
-            Detail = "Conversion produced no output file for this source program.",
+            Detail = sharingCount > 1
+                ? $"Conversion produced no output file for any of the {sharingCount} source " +
+                  $"programs named '{program}'."
+                : "Conversion produced no output file for this source program.",
         }],
     };
 
