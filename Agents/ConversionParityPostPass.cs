@@ -137,6 +137,15 @@ public static class ConversionParityPostPass
                 "[ConversionParity] {Count} program(s) failed parity (MIN_PROGRAM_SCORE={Threshold}); ON_LOW_SCORE=stop set exit code {Code}.",
                 report.BelowThresholdCount, threshold, LowScoreExitCode);
         }
+        else if (gate == ParityGate.Stop && results.Count > 0 && report.EvaluatedCount == 0)
+        {
+            // Exiting 0 here would report "no parity failures" when the truth is that parity was
+            // never measured. Under an explicit gate, absent evidence is not a pass.
+            Environment.ExitCode = LowScoreExitCode;
+            logger?.LogError(
+                "[ConversionParity] No program could be evaluated ({Count} attempted); ON_LOW_SCORE=stop set exit code {Code}.",
+                results.Count, LowScoreExitCode);
+        }
 
         return BuildMarkdown(report);
     }
@@ -151,6 +160,7 @@ public static class ConversionParityPostPass
         List<ProgramParityResult> results, string targetLanguage, double threshold, ParityGate gate)
     {
         var evaluated = results.Where(r => r.Outcome == ParityOutcome.Evaluated && r.Score.HasValue).ToList();
+        var stamped = results.Select(r => r with { Failed = Fails(r, threshold) }).ToList();
 
         return new ConversionParityReport
         {
@@ -158,10 +168,10 @@ public static class ConversionParityPostPass
             TargetLanguage = targetLanguage,
             Threshold = threshold,
             OnLowScore = gate == ParityGate.Stop ? "stop" : "warn",
-            Programs = results,
+            Programs = stamped,
             EvaluatedCount = evaluated.Count,
             NotEvaluatedCount = results.Count - evaluated.Count,
-            BelowThresholdCount = results.Count(r => Fails(r, threshold)),
+            BelowThresholdCount = stamped.Count(r => r.Failed),
             AverageScore = evaluated.Count == 0 ? null : Math.Round(evaluated.Average(r => r.Score!.Value), 4),
         };
     }

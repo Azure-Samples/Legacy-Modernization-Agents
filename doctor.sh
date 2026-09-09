@@ -131,7 +131,7 @@ show_usage() {
   echo -e "  After conversion, generated code is checked for structural coverage of the"
   echo -e "  COBOL it came from. Results go to output/<target>/conversion-parity.json"
   echo -e "  and the migration report. Parity never alters generated output."
-  echo -e "  ${GREEN}MIN_PROGRAM_SCORE${NC}=0.75   Flag programs scoring below this (0 disables)"
+  echo -e "  ${GREEN}MIN_PROGRAM_SCORE${NC}=0.75   Flag programs scoring below this (0 still flags lost axes)"
   echo -e "  ${GREEN}ON_LOW_SCORE${NC}=warn       'stop' also sets exit code 4"
   echo -e "  $0 run               ${CYAN}# default: flag below 0.75, warn only${NC}"
   echo -e "  MIN_PROGRAM_SCORE=0.8 ON_LOW_SCORE=stop $0 run   ${CYAN}# fail CI on a low score${NC}"

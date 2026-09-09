@@ -80,6 +80,10 @@ public sealed record ProgramParityResult
     [JsonPropertyName("lostAxes")] public IReadOnlyList<string> LostAxes =>
         Axes.Where(a => a.IsTotalLoss).Select(a => a.Name).ToList();
 
+    // Stamped by the post-pass once the threshold is known. The portal reads this rather than
+    // re-deriving the verdict from the score, which cannot see total axis loss.
+    [JsonPropertyName("failed")] public bool Failed { get; init; }
+
     [JsonPropertyName("axes")] public IReadOnlyList<ParityAxisResult> Axes { get; init; }
         = Array.Empty<ParityAxisResult>();
 

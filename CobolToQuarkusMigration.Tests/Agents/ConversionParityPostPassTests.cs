@@ -18,6 +18,41 @@ public class ConversionParityPostPassTests : IDisposable
         Environment.ExitCode = _originalExitCode;
     }
 
+    [Fact]
+    public async Task RunAsync_StopGateFailsWhenNothingCouldBeEvaluated()
+    {
+        Environment.SetEnvironmentVariable("ON_LOW_SCORE", "stop");
+        Environment.ExitCode = 0;
+
+        var dir = Path.Combine(Path.GetTempPath(), $"parity-noeval-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var path = Path.Combine(dir, "Thing.java");
+            // Real output, but no structural context in a temp dir, so parity is unmeasurable.
+            await File.WriteAllTextAsync(path, "public class Thing { void run() { } }");
+
+            await ConversionParityPostPass.RunAsync(
+                [new CobolToQuarkusMigration.Models.CodeFile
+                {
+                    FileName = "Thing.java", FilePath = path,
+                    OriginalCobolFileName = "THING.cbl", Content = "x"
+                }],
+                dir, "Java");
+
+            var json = await File.ReadAllTextAsync(Path.Combine(dir, ConversionParityPostPass.ArtifactName));
+            json.Should().Contain("\"NotEvaluated\"", "the premise is that nothing was evaluable");
+
+            Environment.ExitCode.Should().Be(
+                ConversionParityPostPass.LowScoreExitCode,
+                "exiting 0 would report no parity failures when parity was never measured");
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
     [Theory]
     [InlineData("warn", 0)]
     [InlineData("stop", ConversionParityPostPass.LowScoreExitCode)]

@@ -39,11 +39,17 @@ internal static class ConversionParityValidator
         "FROM", "BY", "WITH", "AND", "OR", "NOT", "GIVING", "END-PERFORM", "PERFORM",
     };
 
+    // The guard's own markers, plus the converter fallbacks emitted when the AI service is
+    // unreachable. All are direct evidence of a failed conversion rather than a weak one.
     private static readonly string[] StubMarkers =
     {
         "CONVERSION DID NOT PRODUCE USABLE",
         "CHUNK CONVERSION DID NOT PRODUCE USABLE",
+        "Placeholder implementation generated because the AI conversion service was unavailable",
     };
+
+    private const string StubDetail =
+        "File is a diagnostic stub or converter fallback; no converted code was produced.";
 
     internal static ProgramParityResult Evaluate(
         string program,
@@ -55,7 +61,7 @@ internal static class ConversionParityValidator
     {
         stubCopybooks ??= StubCopybookCatalog.Empty;
         var symbols = new SourceSymbols(generatedCode);
-        var isStub = StubMarkers.Any(m => generatedCode.Contains(m, StringComparison.Ordinal));
+        var isStub = StubMarkers.Any(m => generatedCode.Contains(m, StringComparison.OrdinalIgnoreCase));
 
         // A guard stub is direct evidence the conversion failed, so it is a measured zero even
         // without structural context. Reporting it as unmeasurable would hide a known failure.
@@ -89,7 +95,7 @@ internal static class ConversionParityValidator
                     Axis = "file",
                     Symbol = generatedFile ?? program,
                     Kind = ParityGapKind.Missing,
-                    Detail = "File is a ConversionOutputGuard diagnostic stub; no converted code was produced.",
+                    Detail = StubDetail,
                 }],
             };
         }
@@ -118,9 +124,16 @@ internal static class ConversionParityValidator
         var axes = new List<ParityAxisResult>();
         var gaps = new List<ParityGap>();
 
+        // A CALL target or SQL table named in a string literal is executable, not decorative:
+        // JDBC, JPA @Table and dynamic program invocation can express it no other way. A
+        // procedure or field name in a literal is still only a mention.
+        var literalAxes = new HashSet<string>(StringComparer.Ordinal) { CallTargetsAxis, SqlTablesAxis };
+
         foreach (var (axisName, expected) in expectedByAxis)
         {
-            axes.Add(ScoreAxis(axisName, weights[axisName], expected, symbols, creditComments, gaps));
+            axes.Add(ScoreAxis(
+                axisName, weights[axisName], expected, symbols,
+                creditComments, literalAxes.Contains(axisName), gaps));
         }
 
         var evidenceNotes = stubbed.Count == 0
@@ -157,12 +170,15 @@ internal static class ConversionParityValidator
 
         if (isStub)
         {
+            // A stub converted nothing, so incidental token overlap is not coverage: the
+            // fallback's own Run() method otherwise scored full marks against a RUN paragraph.
+            score = 0;
             gaps.Insert(0, new ParityGap
             {
                 Axis = "file",
                 Symbol = Path.GetFileName(generatedFile ?? program),
                 Kind = ParityGapKind.Missing,
-                Detail = "File is a ConversionOutputGuard diagnostic stub; no converted code was produced.",
+                Detail = StubDetail,
             });
         }
 
@@ -187,6 +203,7 @@ internal static class ConversionParityValidator
         List<ExpectedSymbol> expected,
         SourceSymbols symbols,
         bool creditComments,
+        bool literalsAreCode,
         List<ParityGap> gaps)
     {
         var comparable = expected.Where(e => e.IsComparable).ToList();
@@ -209,15 +226,21 @@ internal static class ConversionParityValidator
 
         int inCode = 0, inCommentsOnly = 0, missing = 0;
 
-        foreach (var symbol in comparable)
+        var codeMatched = symbols.MatchCode(comparable, literalsAreCode);
+        var commentMatched = symbols.MatchComments(comparable, codeMatched, literalsAreCode);
+        var weakEvidence = literalsAreCode ? "comments" : "comments or string literals";
+
+        for (var i = 0; i < comparable.Count; i++)
         {
-            if (symbols.MatchesCode(symbol))
+            var symbol = comparable[i];
+
+            if (codeMatched[i])
             {
                 inCode++;
                 continue;
             }
 
-            if (symbols.MatchesComments(symbol))
+            if (commentMatched[i])
             {
                 if (creditComments)
                 {
@@ -227,7 +250,7 @@ internal static class ConversionParityValidator
                         Axis = axisName,
                         Symbol = symbol.Original,
                         Kind = ParityGapKind.PossiblyRenamedOrMerged,
-                        Detail = symbol.Detail ?? "Present in comments or string literals only.",
+                        Detail = symbol.Detail ?? $"Present in {weakEvidence} only.",
                     });
                     continue;
                 }
@@ -238,7 +261,8 @@ internal static class ConversionParityValidator
                     Axis = axisName,
                     Symbol = symbol.Original,
                     Kind = ParityGapKind.Missing,
-                    Detail = symbol.Detail ?? "Present in comments only, in a file containing no converted code.",
+                    Detail = symbol.Detail
+                             ?? $"Present in {weakEvidence} only, in a file containing no converted code.",
                 });
                 continue;
             }
@@ -470,58 +494,101 @@ internal static class ConversionParityValidator
     // inside a comment is distinguishable from one that survives in code.
     internal sealed class SourceSymbols
     {
-        private readonly List<List<string>> _codeTokens = new();
-        private readonly List<List<string>> _commentTokens = new();
-        private readonly List<string> _codeCompact = new();
-        private readonly List<string> _commentCompact = new();
+        private readonly List<Candidate> _code = new();
+        private readonly List<Candidate> _comments = new();
+        private readonly List<Candidate> _literals = new();
 
         internal SourceSymbols(string source)
         {
-            var (code, comments) = Tokenizer.SplitCodeAndComments(source);
-            Load(code, _codeTokens, _codeCompact, joinHyphens: false);
-            // Comments carry original COBOL names verbatim, so hyphens there join a single
-            // symbol rather than separating operands as they would in code.
-            Load(comments, _commentTokens, _commentCompact, joinHyphens: true);
+            var (code, comments, literals) = Tokenizer.Split(source);
+            Load(code, _code, joinHyphens: false);
+            // Comments and literals carry original COBOL names verbatim, so hyphens there join a
+            // single symbol rather than separating operands as they would in code.
+            Load(comments, _comments, joinHyphens: true);
+            Load(literals, _literals, joinHyphens: true);
         }
 
-        internal bool HasCode => _codeTokens.Count > 0;
+        internal bool HasCode => _code.Count > 0;
 
-        private static void Load(string text, List<List<string>> tokens, List<string> compact, bool joinHyphens)
+        // Distinct forms only. Twelve fields named WS-LINE-01..12 all reduce to the same
+        // comparable tokens, so without deduplication plus consumption a single generated
+        // wsLine01 would satisfy all twelve and report a 92% loss as complete parity.
+        private static void Load(string text, List<Candidate> pool, bool joinHyphens)
         {
+            var seen = new HashSet<string>(StringComparer.Ordinal);
             foreach (var identifier in Tokenizer.ExtractIdentifiers(text, joinHyphens))
             {
                 var parts = Tokenizer.SplitIdentifier(identifier);
                 if (parts.Count == 0) continue;
-                tokens.Add(parts);
-                compact.Add(string.Concat(parts.Where(p => !p.All(char.IsDigit))));
+
+                var key = string.Join("\u0001", parts);
+                if (seen.Add(key))
+                    pool.Add(new Candidate(parts, string.Concat(parts.Where(p => !p.All(char.IsDigit)))));
             }
         }
 
-        internal bool MatchesCode(ExpectedSymbol symbol) => Matches(symbol, _codeTokens, _codeCompact);
+        internal bool[] MatchCode(IReadOnlyList<ExpectedSymbol> expected, bool literalsAreCode)
+            => Assign(expected, literalsAreCode ? Concat(_code, _literals) : _code, null);
 
-        internal bool MatchesComments(ExpectedSymbol symbol) => Matches(symbol, _commentTokens, _commentCompact);
+        internal bool[] MatchComments(
+            IReadOnlyList<ExpectedSymbol> expected, bool[] alreadyMatched, bool literalsAreCode)
+            => Assign(expected, literalsAreCode ? _comments : Concat(_comments, _literals), alreadyMatched);
 
-        private static bool Matches(ExpectedSymbol symbol, List<List<string>> tokens, List<string> compact)
+        private static List<Candidate> Concat(List<Candidate> a, List<Candidate> b)
         {
-            foreach (var candidate in tokens)
-            {
-                if (ContainsSequence(candidate, symbol.Tokens)) return true;
-                if (!ReferenceEquals(symbol.CoreTokens, symbol.Tokens)
-                    && ContainsSequence(candidate, symbol.CoreTokens)) return true;
-            }
-
-            // COBOL names are unhyphenated inside a word (SUBPGM01), so word boundaries alone
-            // miss conversions that reintroduce them (SubPgm01Service).
-            foreach (var candidate in compact)
-            {
-                if (symbol.Compact.Length >= MinimumCompactLength
-                    && candidate.Contains(symbol.Compact, StringComparison.Ordinal)) return true;
-                if (symbol.CompactCore.Length >= MinimumCompactLength
-                    && candidate.Contains(symbol.CompactCore, StringComparison.Ordinal)) return true;
-            }
-
-            return false;
+            var merged = new List<Candidate>(a.Count + b.Count);
+            merged.AddRange(a);
+            merged.AddRange(b);
+            return merged;
         }
+
+        // Each candidate satisfies at most one expected symbol. Exact token sequences are
+        // assigned first so a short name cannot consume the candidate a longer one needs:
+        // customerId would otherwise be taken by CUSTOMER, leaving CUSTOMER-ID unmatched.
+        private static bool[] Assign(
+            IReadOnlyList<ExpectedSymbol> expected, List<Candidate> pool, bool[]? skip)
+        {
+            var matched = new bool[expected.Count];
+            var used = new bool[pool.Count];
+
+            for (var pass = 0; pass < 2; pass++)
+            {
+                for (var i = 0; i < expected.Count; i++)
+                {
+                    if (matched[i] || (skip is not null && skip[i])) continue;
+
+                    for (var j = 0; j < pool.Count; j++)
+                    {
+                        if (used[j]) continue;
+
+                        var hit = pass == 0
+                            ? MatchesSequence(pool[j], expected[i])
+                            : MatchesCompact(pool[j], expected[i]);
+
+                        if (!hit) continue;
+
+                        matched[i] = true;
+                        used[j] = true;
+                        break;
+                    }
+                }
+            }
+
+            return matched;
+        }
+
+        private static bool MatchesSequence(Candidate candidate, ExpectedSymbol symbol) =>
+            ContainsSequence(candidate.Tokens, symbol.Tokens)
+            || (!ReferenceEquals(symbol.CoreTokens, symbol.Tokens)
+                && ContainsSequence(candidate.Tokens, symbol.CoreTokens));
+
+        // COBOL names are unhyphenated inside a word (SUBPGM01), so word boundaries alone
+        // miss conversions that reintroduce them (SubPgm01Service).
+        private static bool MatchesCompact(Candidate candidate, ExpectedSymbol symbol) =>
+            (symbol.Compact.Length >= MinimumCompactLength
+             && candidate.Compact.Contains(symbol.Compact, StringComparison.Ordinal))
+            || (symbol.CompactCore.Length >= MinimumCompactLength
+                && candidate.Compact.Contains(symbol.CompactCore, StringComparison.Ordinal));
 
         private static bool ContainsSequence(List<string> haystack, List<string> needle)
         {
@@ -544,16 +611,26 @@ internal static class ConversionParityValidator
 
             return false;
         }
-    }
 
+        private sealed record Candidate(List<string> Tokens, string Compact);
+    }
     internal static class Tokenizer
     {
         // Ambiguity resolves toward the comment bucket: under-counting code produces a visible
         // gap, whereas leaking comment text into code produces a silent false pass.
         internal static (string Code, string Comments) SplitCodeAndComments(string source)
         {
+            var (code, comments, literals) = Split(source);
+            return (code, comments + " " + literals);
+        }
+
+        // Literals are kept apart from comments because for CALL targets and SQL tables the
+        // literal is the executable form: JDBC and JPA can only name a table inside a string.
+        internal static (string Code, string Comments, string Literals) Split(string source)
+        {
             var code = new StringBuilder(source.Length);
             var comments = new StringBuilder();
+            var literals = new StringBuilder();
             var i = 0;
 
             while (i < source.Length)
@@ -575,19 +652,19 @@ internal static class ConversionParityValidator
 
                 if (c == '"' && next == '"' && i + 2 < source.Length && source[i + 2] == '"')
                 {
-                    i = ConsumeUntil(source, i + 3, comments, "\"\"\"");
+                    i = ConsumeUntil(source, i + 3, literals, "\"\"\"");
                     continue;
                 }
 
                 if (c == '@' && next == '"')
                 {
-                    i = ConsumeVerbatim(source, i + 2, comments);
+                    i = ConsumeVerbatim(source, i + 2, literals);
                     continue;
                 }
 
                 if (c is '"' or '\'')
                 {
-                    i = ConsumeQuoted(source, i + 1, comments, c);
+                    i = ConsumeQuoted(source, i + 1, literals, c);
                     continue;
                 }
 
@@ -595,7 +672,7 @@ internal static class ConversionParityValidator
                 i++;
             }
 
-            return (code.ToString(), comments.ToString());
+            return (code.ToString(), comments.ToString(), literals.ToString());
         }
 
         private static int Consume(string source, int start, StringBuilder sink, Func<char, bool> stop)

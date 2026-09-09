@@ -1,4 +1,4 @@
-**Last updated**: 2026-09-08
+**Last updated**: 2026-09-09
 
 # Conversion Parity Validation
 
@@ -44,6 +44,10 @@ flowchart TD
 
 Ambiguity in the code/comment split always resolves toward the comment bucket. Under-counting code produces a visible gap; leaking comment text into the code bucket produces a silent false pass.
 
+String literals are held in a third bucket rather than folded into either. For most axes they are weak evidence and count as comments, but on the `callTargets` and `sqlTables` axes the literal *is* the executable form — a table name reaches the database as a string inside a JDBC query or a `@Table` annotation, and a dynamically invoked program name reaches the dispatcher the same way. Treating those as comment text failed a correct JDBC conversion outright, which is the false positive most likely to get the check switched off.
+
+Each expected symbol consumes at most one candidate in the generated file, matched exact-token-sequence first and compact-containment second. Without consumption a single surviving `wsLine01` satisfied all twelve of `WS-LINE-01`…`WS-LINE-12`, because purely numeric segments are dropped and the family collapses to one comparable form. The two passes stop a short name taking the candidate a longer one needs.
+
 ### Gap classification
 
 | Symbol found in | Kind | Score credit |
@@ -86,11 +90,13 @@ An inferred value is never presented as a measured one.
 | All four axes have no comparable symbols | `NotEvaluated`, axes still reported |
 | Generated file cannot be mapped back to a source program | `NotEvaluated`, never guessed |
 | Source program produced **no** generated file | **Evaluated, score 0**, explicit `file` gap |
-| File is a `ConversionOutputGuard` diagnostic stub | **Evaluated, score 0**, explicit `file` gap |
+| File is a `ConversionOutputGuard` stub or a converter fallback | **Evaluated, score 0**, explicit `file` gap |
 
 The two score-0 cases outrank the missing-context rule. A missing output and a stub marker are both direct evidence that conversion failed, so they are measured zeros even when nothing is known about the source. Parity therefore starts from the inventory of source programs, not from the list of files that happen to exist — a program that silently produced nothing is the most severe failure the check can find, and reading only the output directory would miss it entirely.
 
 That case also drives the comment rule: the guard embeds the rejected model output inside a block comment. If comment matches earned full credit, a stub whose rejected output happened to be Java-shaped would score 1.0 — precisely the failure this feature exists to catch. Comment credit is therefore withheld entirely from any file containing no converted code.
+
+The score is forced to zero rather than computed for these files. A converter fallback carries its own `run()` method, which otherwise scored full marks against a `RUN` paragraph; incidental token overlap with a file that converted nothing is not coverage.
 
 ## Where it runs
 
@@ -106,6 +112,8 @@ Each run writes `conversion-parity.json` beside the generated code and appends a
 |---|---|---|
 | `MIN_PROGRAM_SCORE` | `0.75` | Score below which a program is counted as below threshold. Clamped to `[0,1]`; an unparseable value logs a warning and falls back to the default. |
 | `ON_LOW_SCORE` | `warn` | `warn` reports only. `stop` additionally sets exit code `4`. |
+
+Under `stop`, exit code `4` is also set when programs were found but none could be evaluated. Exiting `0` there would report "no parity failures" when the truth is that parity was never measured; under an explicit gate, absent evidence is not a pass.
 
 Both are read from the environment, which takes precedence over `Config/ai-config.local.env`.
 

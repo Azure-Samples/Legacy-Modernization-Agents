@@ -572,7 +572,10 @@ class ModernizationIntelligenceView {
 
   _renderParityRow(p, threshold) {
     const score = p.score ?? 0;
-    const color = score < threshold ? '#ef4444' : '#10b981';
+    // Read the verdict the gate wrote. Colouring on score alone renders a program green when
+    // an entire axis is absent but the weighted score still clears the threshold.
+    const failed = p.failed ?? (score < threshold);
+    const color = failed ? '#ef4444' : '#10b981';
     const gaps = p.gaps ?? [];
     const missing = gaps.filter(g => g.kind === 'Missing');
     const renamed = gaps.filter(g => g.kind === 'PossiblyRenamedOrMerged');
@@ -580,11 +583,14 @@ class ModernizationIntelligenceView {
     const stub = p.isDiagnosticStub
       ? ' <span class="mi-badge" style="color:#ef4444;border-color:#ef444444;background:#ef444418;">stub</span>'
       : '';
+    const lost = (p.lostAxes ?? []).length
+      ? ` <span class="mi-badge" style="color:#ef4444;border-color:#ef444444;background:#ef444418;" title="No symbol on this axis appears in code">${miEscape((p.lostAxes ?? []).join(', '))} lost</span>`
+      : '';
 
     return `<tr>
       <td>${miEscape(p.program)}${stub}</td>
       <td class="mi-dim">${miEscape(file)}</td>
-      <td style="color:${color};font-weight:600;">${score.toFixed(2)}</td>
+      <td style="color:${color};font-weight:600;">${score.toFixed(2)}${lost}</td>
       <td title="${miEscape(missing.map(g => `${g.axis}: ${g.symbol}`).join('\n'))}">${missing.length}</td>
       <td class="mi-dim" title="${miEscape(renamed.map(g => `${g.axis}: ${g.symbol}`).join('\n'))}">${renamed.length}</td>
       <td class="mi-dim">${miEscape(p.provenance || '—')}</td>

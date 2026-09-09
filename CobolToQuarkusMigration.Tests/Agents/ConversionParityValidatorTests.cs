@@ -60,6 +60,217 @@ public class ConversionParityValidatorTests
     }
 
     [Fact]
+    public void Split_KeepsLiteralsApartFromComments()
+    {
+        const string source = "// readCustomer\nvar q = \"FROM CUSTOMER_MASTER\"; runQuery(q);";
+
+        var (code, comments, literals) = ConversionParityValidator.Tokenizer.Split(source);
+
+        code.Should().Contain("runQuery").And.NotContain("CUSTOMER_MASTER");
+        comments.Should().Contain("readCustomer").And.NotContain("CUSTOMER_MASTER");
+        literals.Should().Contain("CUSTOMER_MASTER").And.NotContain("readCustomer");
+    }
+
+    // JDBC and JPA can only name a table inside a string, so scoring the literal as weak
+    // evidence failed correct conversions: the axis hit MatchedInCode == 0 and IsTotalLoss.
+    [Fact]
+    public void Evaluate_SqlTableInQueryLiteralCountsAsCode()
+    {
+        const string code = """
+            public class CustService {
+                public void loadCustomer(long id) {
+                    var sql = "SELECT NAME, BALANCE FROM CUSTOMER_MASTER WHERE ID = ?";
+                    try (var ps = conn.prepareStatement(sql)) { ps.setLong(1, id); }
+                }
+            }
+            """;
+
+        var result = ConversionParityValidator.Evaluate(
+            "CUST.cbl", "CustService.java", code,
+            Context(new[] { "LOAD-CUSTOMER" }, Array.Empty<string>(), Array.Empty<string>(), new[] { "CUSTOMER_MASTER" }),
+            null);
+
+        var sql = result.Axes.Single(a => a.Name == "sqlTables");
+        sql.MatchedInCode.Should().Be(1);
+        sql.IsTotalLoss.Should().BeFalse();
+        result.LostAxes.Should().BeEmpty();
+        ConversionParityPostPass.Fails(result, 0.75).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Evaluate_CallTargetInInvocationLiteralCountsAsCode()
+    {
+        const string code = """
+            public class CustService {
+                public void mainRoutine() { invokeProgram("FORMAT-BALANCE"); }
+            }
+            """;
+
+        var result = ConversionParityValidator.Evaluate(
+            "CUST.cbl", "CustService.java", code,
+            Context(new[] { "MAIN-ROUTINE" }, Array.Empty<string>(), new[] { "FORMAT-BALANCE" }, Array.Empty<string>()),
+            null);
+
+        var calls = result.Axes.Single(a => a.Name == "callTargets");
+        calls.MatchedInCode.Should().Be(1);
+        calls.IsTotalLoss.Should().BeFalse();
+        ConversionParityPostPass.Fails(result, 0.75).Should().BeFalse();
+    }
+
+    // A procedure named only in a log message is still a mention, not an implementation.
+    [Fact]
+    public void Evaluate_ProcedureInLiteralIsNotCodeEvidence()
+    {
+        const string code = """
+            public class CustService {
+                public void run() { log.info("starting COMPUTE-TOTALS"); }
+            }
+            """;
+
+        var result = ConversionParityValidator.Evaluate(
+            "CUST.cbl", "CustService.java", code,
+            Context(new[] { "COMPUTE-TOTALS" }, Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>()),
+            null);
+
+        var procedures = result.Axes.Single(a => a.Name == "procedures");
+        procedures.MatchedInCode.Should().Be(0);
+        procedures.MatchedInCommentsOnly.Should().Be(1);
+    }
+
+    // Numbers are dropped when comparing, so WS-LINE-01..12 share one comparable form. Without
+    // consuming each generated identifier once, a single survivor scored the whole family.
+    [Fact]
+    public void Evaluate_OneSurvivorDoesNotSatisfyWholeNumberedFamily()
+    {
+        var fields = Enumerable.Range(1, 12).Select(i => $"WS-LINE-{i:D2}").ToArray();
+        const string code = "public class C { void report(){ String wsLine01 = \"\"; } }";
+
+        var result = ConversionParityValidator.Evaluate(
+            "CUST.cbl", "C.java", code,
+            Context(new[] { "REPORT" }, fields, Array.Empty<string>(), Array.Empty<string>()),
+            null);
+
+        var data = result.Axes.Single(a => a.Name == "dataFields");
+        data.Expected.Should().Be(12);
+        data.MatchedInCode.Should().Be(1);
+        data.Missing.Should().Be(11);
+        result.Score.Should().BeLessThan(0.75);
+    }
+
+    [Fact]
+    public void Evaluate_AllMembersOfNumberedFamilyPresentScoresFull()
+    {
+        var fields = Enumerable.Range(1, 4).Select(i => $"WS-LINE-{i:D2}").ToArray();
+        const string code = """
+            public class C {
+                void report(){ String wsLine01, wsLine02, wsLine03, wsLine04; }
+            }
+            """;
+
+        var result = ConversionParityValidator.Evaluate(
+            "CUST.cbl", "C.java", code,
+            Context(new[] { "REPORT" }, fields, Array.Empty<string>(), Array.Empty<string>()),
+            null);
+
+        result.Axes.Single(a => a.Name == "dataFields").MatchedInCode.Should().Be(4);
+    }
+
+    // customerId contains both comparable forms; only one of them may claim it.
+    [Fact]
+    public void Evaluate_OneIdentifierDoesNotSatisfyTwoNestedNames()
+    {
+        const string code = "public class C { void main(){ long customerId; } }";
+
+        var result = ConversionParityValidator.Evaluate(
+            "CUST.cbl", "C.java", code,
+            Context(new[] { "MAIN" }, new[] { "CUSTOMER", "CUSTOMER-ID" }, Array.Empty<string>(), Array.Empty<string>()),
+            null);
+
+        var data = result.Axes.Single(a => a.Name == "dataFields");
+        data.MatchedInCode.Should().Be(1);
+        data.Missing.Should().Be(1);
+    }
+
+    [Fact]
+    public void Evaluate_ConverterFallbackIsTreatedAsStubAndScoresZero()
+    {
+        var context = Context(
+            sections: new[] { "RUN" },
+            fields: Array.Empty<string>(),
+            calls: Array.Empty<string>(),
+            tables: Array.Empty<string>());
+
+        // The fallback's own Run() method matched the RUN paragraph and scored a clean 1.0
+        // before fallback text was recognised as a stub.
+        var result = ConversionParityValidator.Evaluate(
+            "PROG", "Prog.java",
+            """
+            // Placeholder implementation generated because the AI conversion service was unavailable.
+            public class Prog { public void run() { } }
+            """,
+            context, null);
+
+        Assert.True(result.IsDiagnosticStub);
+        Assert.Equal(0d, result.Score);
+        Assert.Contains(result.Gaps, g => g.Axis == "file");
+
+        // Same code without the fallback banner scores full marks, so the banner alone is what
+        // changes the verdict. Without this the test would pass even if scoring broke entirely.
+        var withoutBanner = ConversionParityValidator.Evaluate(
+            "PROG", "Prog.java", "public class Prog { public void run() { } }", context, null);
+        Assert.Equal(1d, withoutBanner.Score);
+    }
+
+    [Fact]
+    public void BuildReport_StampsFailedFlagIncludingTotalAxisLoss()
+    {
+        var context = Context(
+            sections: new[] { "MAIN" },
+            fields: new[] { "WS-CUSTOMER-ID" },
+            calls: new[] { "SUBPGM01" },
+            tables: Array.Empty<string>());
+
+        // Sections and fields intact hold the renormalised score above the threshold while the
+        // call axis is entirely absent, which is the case the portal previously rendered green.
+        var result = ConversionParityValidator.Evaluate(
+            "PROG", "Prog.java",
+            "public class Prog { private String customerId; void main() { } }",
+            context, null);
+
+        var report = ConversionParityPostPass.BuildReport(
+            new List<ProgramParityResult> { result }, "java", 0.75,
+            ConversionParityPostPass.ParityGate.Warn);
+
+        Assert.Contains("callTargets", report.Programs[0].LostAxes);
+        Assert.True(report.Programs[0].Failed);
+        Assert.Equal(1, report.BelowThresholdCount);
+
+        // The score must clear the threshold, or this would be an ordinary low-score failure
+        // rather than the total-axis-loss case the flag exists to carry.
+        Assert.True(report.Programs[0].Score >= 0.75);
+    }
+
+    [Fact]
+    public void BuildReport_LeavesFailedUnsetForAPassingProgram()
+    {
+        var context = Context(
+            sections: new[] { "MAIN" },
+            fields: Array.Empty<string>(),
+            calls: Array.Empty<string>(),
+            tables: Array.Empty<string>());
+
+        var result = ConversionParityValidator.Evaluate(
+            "PROG", "Prog.java", "public class Prog { void main() { } }",
+            context, null);
+
+        var report = ConversionParityPostPass.BuildReport(
+            new List<ProgramParityResult> { result }, "java", 0.75,
+            ConversionParityPostPass.ParityGate.Warn);
+
+        Assert.False(report.Programs[0].Failed);
+    }
+
+    [Fact]
     public void Evaluate_FullyRepresentedConversion_ScoresOne()
     {
         var context = Context(
