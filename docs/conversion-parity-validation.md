@@ -159,11 +159,12 @@ The Modernization Intelligence **Runtime** subview renders it. The runtime-telem
 Parity is an **identifier-retention check**. It answers "are the names the COBOL declared still visible in the generated code", which is a proxy for structural representation and nothing more. The limits below follow from that and are not defects.
 
 - Matching is name-based. A conversion that faithfully reproduces behaviour under entirely unrelated names scores low; one that keeps the names while discarding the logic scores high. Parity is evidence of structural representation, not of correctness.
-- Matching is not one-to-one. `1000-INIT` and `2000-INIT` both normalise to `init`, so one generated `init` method satisfies both. The check is designed to catch wholesale loss, not near-duplicates.
+- Names that normalise identically are counted, not distinguished. `1000-INIT` and `2000-INIT` both reduce to `init`, so two generated `init` methods are needed to satisfy both; a single one leaves the second reported as a gap. Two paragraphs deliberately merged into one method therefore read as one loss. That direction is chosen on purpose: an under-count is a visible gap, whereas crediting one match to many names is a silent false pass.
 - Scope is one source program against its own generated files. A field declared in a copybook and rendered into a shared record class belonging to a *different* program is reported missing, because the check never looks outside the program's own output. Where the section is known, the gap carries it — a `LINKAGE` field is annotated as supplied by the caller — so the reader can tell this case from a genuine drop.
 - Recall depends on what the scan surfaced. A `CALL` nested inside a conditional is emitted by the parser as untyped statement text, and is recovered by scanning that text for quoted targets; a construct that survives in neither form cannot be expected, so its loss would go unreported. The axis reports `Expected = 0` rather than claiming coverage.
 - Compact-form fallback matching can pair a short expected name with a longer identifier that contains it.
 - Parity needs the repository layout to resolve source programs and copybooks. Running from a published image without it, the post-pass logs that it is skipping rather than reporting a false pass.
+- Scan freshness is not verified. `ProgramFacts.SourceHash` covers the *staged, preprocessed* bytes rather than the working-tree source, so it cannot be recomputed from the repository alone; comparing against the raw file would report every program stale. A scan taken before the COBOL last changed is therefore scored as if current. Re-run `./doctor.sh rekt-full` after editing sources.
 
 ### Dimensions not validated
 
