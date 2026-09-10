@@ -19,6 +19,8 @@ public sealed class ConversionStagingTests : IDisposable
 
     private string FactsDir => Path.Combine(_root, "facts");
 
+    private string ManifestPath => Path.Combine(_root, "conversion-selection.json");
+
     [Fact]
     public void NoSelectorConvertsTheWholeEstateFromTheSourceDirectory()
     {
@@ -128,6 +130,61 @@ public sealed class ConversionStagingTests : IDisposable
         result.SelectorMode.Should().NotBe("true");
     }
 
+    [Fact]
+    public void SelectorRunRecordsWhatWasSelectedAndWhy()
+    {
+        WriteProgram("finance/LEDGER.cbl");
+        WriteProgram("shared/POSTING.cbl");
+        WriteFacts("finance/LEDGER.cbl", callees: ["POSTING"]);
+        WriteFacts("shared/POSTING.cbl");
+
+        var result = StageConversionScope(selector: "LEDGER", includeCallees: true);
+
+        result.ExitCode.Should().Be(0);
+        File.Exists(ManifestPath).Should().BeTrue(
+            "a focused run is only reproducible if the scope it used is recorded");
+
+        using var manifest = JsonDocument.Parse(File.ReadAllText(ManifestPath));
+        var root = manifest.RootElement;
+
+        root.GetProperty("programs").EnumerateArray().Select(p => p.GetString())
+            .Should().BeEquivalentTo(["finance/LEDGER.cbl", "shared/POSTING.cbl"]);
+
+        var reasons = root.GetProperty("matches").EnumerateArray()
+            .ToDictionary(m => m.GetProperty("program").GetString()!, m => m.GetProperty("reason").GetString()!);
+
+        reasons["finance/LEDGER.cbl"].Should().Contain("LEDGER");
+        reasons["shared/POSTING.cbl"].Should().Contain("called by",
+            "the manifest has to distinguish what was asked for from what closure pulled in");
+
+        root.GetProperty("selectors").GetProperty("includeCallees").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
+    public void RefusedSelectorWritesNoManifest()
+    {
+        WriteProgram("finance/LEDGER.cbl");
+        WriteProgram("billing/LEDGER.cbl");
+
+        var result = StageConversionScope(selector: "LEDGER");
+
+        result.ExitCode.Should().NotBe(0);
+        File.Exists(ManifestPath).Should().BeFalse(
+            "a manifest for a scope that was never converted would misreport the run");
+    }
+
+    [Fact]
+    public void UnfilteredRunWritesNoManifest()
+    {
+        WriteProgram("finance/LEDGER.cbl");
+
+        var result = StageConversionScope(selector: "");
+
+        result.ExitCode.Should().Be(0);
+        File.Exists(ManifestPath).Should().BeFalse(
+            "a whole-estate run has no selection to record");
+    }
+
     private IReadOnlyList<string> StagedPrograms() => StagedFiles(".cbl", ".cob");
 
     private IReadOnlyList<string> StagedCopybooks() => StagedFiles(".cpy");
@@ -185,7 +242,7 @@ public sealed class ConversionStagingTests : IDisposable
             stage_conversion_scope "{{SourceDir}}" "{{StagingDir}}" "{{selector}}" \
                 "{{includeCallers.ToString().ToLowerInvariant()}}" \
                 "{{includeCallees.ToString().ToLowerInvariant()}}" \
-                "{{FactsDir}}"
+                "{{FactsDir}}" "{{ManifestPath}}"
             echo "SELECTOR_MODE=${SELECTOR_MODE:-}"
             """;
 
