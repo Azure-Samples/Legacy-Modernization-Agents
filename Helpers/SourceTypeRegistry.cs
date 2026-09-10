@@ -58,6 +58,7 @@ public static class SourceTypeRegistry
         path.Split('/', '\\', StringSplitOptions.RemoveEmptyEntries).Any(segment =>
             segment.StartsWith(".convert-", StringComparison.Ordinal)
             || segment.Equals(".rekt-staging", StringComparison.Ordinal)
+            || segment.Equals(".conversion-staging", StringComparison.Ordinal)
             || segment.Equals(".preprocessed", StringComparison.Ordinal));
 
     private static IEnumerable<string> EnumerateByPredicate(string root, Func<string, bool> predicate)

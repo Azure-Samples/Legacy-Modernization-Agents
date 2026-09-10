@@ -236,13 +236,16 @@ public sealed class ConversionStagingTests : IDisposable
         string selector, bool includeCallers = false, bool includeCallees = false)
     {
         var repoRoot = LocateRepoRoot();
+        // Exercises the wrapper the production call sites use. stage_conversion_scope itself runs in
+        // a command substitution, so anything it exports is discarded before the converter starts.
         var script = $$"""
             set -euo pipefail
             DOCTOR_SOURCE_ONLY=1 source "{{Path.Combine(repoRoot, "doctor.sh")}}"
-            stage_conversion_scope "{{SourceDir}}" "{{StagingDir}}" "{{selector}}" \
+            resolve_conversion_source "{{SourceDir}}" "{{StagingDir}}" "{{selector}}" \
                 "{{includeCallers.ToString().ToLowerInvariant()}}" \
                 "{{includeCallees.ToString().ToLowerInvariant()}}" \
                 "{{FactsDir}}" "{{ManifestPath}}"
+            echo "$CONVERSION_SOURCE"
             echo "SELECTOR_MODE=${SELECTOR_MODE:-}"
             """;
 

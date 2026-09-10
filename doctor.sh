@@ -1947,11 +1947,12 @@ run_migration() {
     echo -e "${CYAN}💾 Database: $MIGRATION_DB_PATH${NC}"
 
     local conversion_source
-    if ! conversion_source="$(stage_conversion_scope "$REPO_ROOT/source" \
+    if ! resolve_conversion_source "$REPO_ROOT/source" \
         "$REPO_ROOT/source/.conversion-staging" "${CONVERSION_PROGRAM_SELECTOR:-}" \
-        "${CONVERSION_INCLUDE_CALLERS:-false}" "${CONVERSION_INCLUDE_CALLEES:-false}")"; then
+        "${CONVERSION_INCLUDE_CALLERS:-false}" "${CONVERSION_INCLUDE_CALLEES:-false}"; then
         return 1
     fi
+    conversion_source="$CONVERSION_SOURCE"
 
     "$DOTNET_CMD" run -- --source "$conversion_source" $skip_reverse_eng
     local migration_exit=$?
@@ -2392,13 +2393,28 @@ stage_conversion_scope() {
     fi
 
     # Tells the converter the copybooks are COPY context for the selection, not conversion units.
-    export SELECTOR_MODE=true
+    # Set by resolve_conversion_source: this function is called in a command substitution, so an
+    # export here would be discarded with the subshell.
 
     echo -e "  ${BLUE}Conversion scope: ${staged_count} program(s) from selector '${selector}'.${NC}" >&2
     echo -e "  ${BLUE}Selection manifest: ${manifest}${NC}" >&2
     rm -f "$resolved_file" "$diagnostics_file"
 
     echo "$staging_dir"
+}
+
+# Wraps the command substitution so environment the converter needs is set in the caller's shell.
+# Publishes the directory to convert as CONVERSION_SOURCE.
+resolve_conversion_source() {
+    local selector="${3:-}"
+
+    CONVERSION_SOURCE="$(stage_conversion_scope "$@")" || return 1
+
+    if [[ -n "$selector" ]]; then
+        export SELECTOR_MODE=true
+    fi
+
+    return 0
 }
 
 run_conversion_only() {
@@ -2497,11 +2513,12 @@ run_conversion_only() {
     fi
 
     local conversion_source
-    if ! conversion_source="$(stage_conversion_scope "$REPO_ROOT/source" \
+    if ! resolve_conversion_source "$REPO_ROOT/source" \
         "$REPO_ROOT/source/.conversion-staging" "${CONVERSION_PROGRAM_SELECTOR:-}" \
-        "${CONVERSION_INCLUDE_CALLERS:-false}" "${CONVERSION_INCLUDE_CALLEES:-false}")"; then
+        "${CONVERSION_INCLUDE_CALLERS:-false}" "${CONVERSION_INCLUDE_CALLEES:-false}"; then
         return 1
     fi
+    conversion_source="$CONVERSION_SOURCE"
 
     "$DOTNET_CMD" run -- --source "$conversion_source" --skip-reverse-engineering $reuse_re_flag $resume_flag
     local migration_exit=$?

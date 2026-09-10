@@ -97,6 +97,24 @@ public sealed class ConversionScopeStagerTests : IDisposable
         Directory.Exists(StagingDir).Should().BeFalse();
     }
 
+    // Staging begins by recursively deleting its target, so a staging directory that contains the
+    // source would destroy the estate it is about to copy from.
+    [Theory]
+    [InlineData("")]
+    [InlineData("..")]
+    public void RefusesAStagingDirectoryThatWouldDeleteTheSource(string relativeToSource)
+    {
+        WriteProgram("finance/ACCOUNTS.cbl");
+        var stagingDir = Path.GetFullPath(Path.Combine(SourceDir, relativeToSource));
+
+        var stage = () => new ConversionScopeStager(SourceDir, stagingDir).Stage(
+            new ProgramSelection { Programs = ["finance/ACCOUNTS.cbl"] },
+            Path.Combine(_root, "facts"));
+
+        stage.Should().Throw<InvalidOperationException>();
+        File.Exists(Path.Combine(SourceDir, "finance", "ACCOUNTS.cbl")).Should().BeTrue();
+    }
+
     private ConversionScopeStagingResult Stage(string selector) =>
         new ConversionScopeStager(SourceDir, StagingDir).Stage(
             new ProgramSelection { Programs = [selector] },

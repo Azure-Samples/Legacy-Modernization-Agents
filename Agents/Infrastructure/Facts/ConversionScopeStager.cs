@@ -12,9 +12,22 @@ public sealed class ConversionScopeStager
 
     public ConversionScopeStager(string sourceDir, string stagingDir)
     {
-        _sourceDir = sourceDir;
-        _stagingDir = stagingDir;
+        _sourceDir = Path.GetFullPath(sourceDir);
+        _stagingDir = Path.GetFullPath(stagingDir);
+
+        // Staging opens by deleting its target recursively, so a target that contains the source
+        // would destroy the estate before anything is read. Staging under the source is the
+        // expected layout and stays allowed.
+        if (_sourceDir == _stagingDir || IsAncestorOf(_stagingDir, _sourceDir))
+            throw new InvalidOperationException(
+                $"Staging directory '{_stagingDir}' contains the conversion source '{_sourceDir}'; "
+                + "staging would delete the estate. Choose a directory outside the source.");
     }
+
+    private static bool IsAncestorOf(string candidate, string path) =>
+        path.StartsWith(
+            candidate.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar,
+            StringComparison.Ordinal);
 
     public ConversionScopeStagingResult Stage(
         ProgramSelection selection,
