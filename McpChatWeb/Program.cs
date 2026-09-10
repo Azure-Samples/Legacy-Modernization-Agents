@@ -98,6 +98,7 @@ builder.Services.AddSingleton<PortalState>();
 
 // Singletons: stateless readers over the filesystem and the scan cache.
 builder.Services.AddSingleton<McpChatWeb.Services.RektEstateReader>();
+builder.Services.AddSingleton<McpChatWeb.Services.ProgramCatalogService>();
 builder.Services.AddSingleton<McpChatWeb.Services.ConversionParityReader>();
 builder.Services.AddSingleton<McpChatWeb.Services.ModernizationIntelligenceService>();
 
