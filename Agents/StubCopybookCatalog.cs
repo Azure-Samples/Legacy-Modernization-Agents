@@ -2,9 +2,10 @@
 // placeholder copybook for an unresolved COPY. They are preprocessing artefacts, so expecting
 // them in generated code produces gaps no conversion can ever close.
 //
-// Names are pooled across the estate rather than tracked per program. The generator derives
-// them from the copybook name as <NAME>-STUB and <NAME>-VAL, so a real field colliding with
-// one is not a case worth carrying per-program attribution for.
+// Names are pooled across the estate rather than tracked per program. A stub exists only where
+// the copybook is absent from source/ entirely, so no other program can COPY a real field of
+// the same <NAME>-STUB / <NAME>-VAL shape; a collision needs a hand-declared field mirroring
+// the generator's naming, which is not worth per-program attribution.
 
 using System.Text.RegularExpressions;
 

@@ -14,7 +14,7 @@ Tests must protect observable behavior and data integrity.
 2. Exercise the smallest real boundary that can expose the defect. A helper test cannot establish command exit status, persistence, orchestration, or UI state.
 3. Choose inputs that actually execute the relevant branches. For cross-chunk context, create multiple chunks; for resume, include a failed middle chunk and earlier persisted output.
 4. Assert exact outcomes and important side effects. Explain why the test would fail for the intended regression; demonstrate failure before the fix when practical.
-5. If a failure exposes a  bug, fix the bug when in scope. For test-only work, report the blocker rather than weakening expectations, swallowing exceptions, skipping the test, or enshrining incorrect behavior.
+5. If a failure exposes a bug, fix the bug when in scope. For test-only work, report the blocker rather than weakening expectations, swallowing exceptions, skipping the test, or enshrining incorrect behavior.
 6. Run the affected cases, inspect the results, and expand the scope when dependencies or results justify it. Coverage may locate gaps; it does not prove correctness.
 
 Change an expected value only when the intended contract changed or the old expectation was demonstrably wrong. State the independent evidence.
