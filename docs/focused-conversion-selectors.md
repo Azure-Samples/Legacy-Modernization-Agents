@@ -73,14 +73,21 @@ flowchart TD
     RP["resolve-programs --stage"] --> Stager["ConversionScopeStager"]
     Stager --> Cat["ProgramSourceCatalog<br/>resolution + ambiguity rule"]
     Stager --> Staged["source/.conversion-staging/"]
-    Stager --> Man["output/conversion-selection.json"]
+    Stager --> Man["selection manifest"]
     Staged --> Run["ordinary conversion run"]
 
     style Cat stroke-width:3px
     style Man stroke-width:3px
 ```
 
-Both write the same manifest and stage into the same layout, because both call the same two classes.
+Both write the same manifest and stage into the same layout, because both call the same two classes. They differ only in *where* those artefacts land, because the portal can have several conversions in flight at once and the CLI cannot.
+
+| | Staged scope | Manifest |
+|---|---|---|
+| `doctor.sh` | `source/.conversion-staging/` | `output/conversion-selection.json` |
+| Portal | `source/.conversion-staging/<scopeId>/` | `output/conversion-selection/<scopeId>.json` |
+
+`scopeId` is an eight-character random identifier minted per portal conversion. Two portal runs started seconds apart would otherwise stage into one directory and overwrite each other's manifest, and the second would convert a scope the first had already replaced. Staged copies of a scope are reclaimed once no live run is using them; the manifests are kept, because they are the record of what a run actually converted.
 
 ### Staging
 
@@ -103,7 +110,7 @@ When a selector is active, `doctor.sh` exports `SELECTOR_MODE=true`. Copybooks i
 
 ## The selection manifest
 
-Every focused run writes `output/conversion-selection.json`, from both front doors:
+Every focused run writes a selection manifest — `output/conversion-selection.json` from the CLI, `output/conversion-selection/<scopeId>.json` from the portal. Both are written by the same code, so the shape is identical:
 
 ```json
 {

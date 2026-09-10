@@ -6105,10 +6105,19 @@ app.MapPost("/api/runs/convert", (
 	McpChatWeb.Services.ConversionScope scope;
 	try
 	{
+		// Only live runs still hold their staged tree; finished ones can be reclaimed.
+		var activeSourceFolders = pm.GetAllRuns()
+			.Where(r => r.Status is "running" or "paused")
+			.Select(r => r.SourceFolder)
+			.Where(folder => !string.IsNullOrWhiteSpace(folder))
+			.Select(folder => folder!)
+			.ToList();
+
 		scope = scopes.Stage(
 			programs,
 			request.IncludeCallers,
 			request.IncludeCallees,
+			activeSourceFolders,
 			loggerFactory.CreateLogger("FocusedConversion"));
 	}
 	catch (InvalidOperationException ex)
@@ -6135,7 +6144,7 @@ app.MapPost("/api/runs/convert", (
 		return Results.BadRequest(ex.Message);
 	}
 
-	return Results.Ok(new
+	var body = new
 	{
 		run = new McpChatWeb.Models.RunStatusDto(
 			run.RunId, run.Name, run.Command, run.TargetLanguage, run.SpeedProfile,
@@ -6143,12 +6152,19 @@ app.MapPost("/api/runs/convert", (
 		scope = new
 		{
 			sourceFolder = scope.SourceFolder,
+			manifestPath = scope.ManifestPath,
 			programs = scope.Programs,
 			copybooks = scope.Copybooks,
 			matches = scope.Matches.Select(m => new { program = m.Program, reason = m.Reason }),
 			unresolvedCallTargets = scope.UnresolvedCallTargets,
 		},
-	});
+	};
+
+	// StartRun reports a launch failure on the run rather than throwing, so a 200 here would
+	// tell the operator a conversion is under way that never started.
+	return run.Status == "failed"
+		? Results.Json(body, statusCode: StatusCodes.Status502BadGateway)
+		: Results.Ok(body);
 });
 
 app.MapPost("/api/runs/stop", (McpChatWeb.Models.StopRunRequest request, McpChatWeb.Services.ProcessManager pm) =>

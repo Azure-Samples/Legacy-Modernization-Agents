@@ -10,6 +10,7 @@
 
   let catalog = null;
   let selected = new Set();
+  let lastFocused = null;
 
   function esc(value) {
     return String(value ?? '').replace(/[&<>"']/g, c => (
@@ -94,6 +95,7 @@
       </div>`;
 
     document.body.appendChild(modal);
+    document.addEventListener('keydown', onKeydown);
     modal.addEventListener('click', e => { if (e.target === modal) close(); });
     modal.querySelector('#fc-close').addEventListener('click', close);
     modal.querySelector('#fc-cancel').addEventListener('click', close);
@@ -262,18 +264,57 @@
       ${unresolved.length > 0 ? `<div class="fc-warn">Call targets with no matching source: ${unresolved.map(esc).join(', ')}. They are not in the run.</div>` : ''}`;
   }
 
+  function focusableIn(modal) {
+    return Array.from(modal.querySelectorAll(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'))
+      .filter(el => !el.disabled && el.getClientRects().length > 0);
+  }
+
+  // A dialog that leaves focus behind it is unusable by keyboard and screen reader: Tab would walk
+  // the page underneath while the overlay covers it.
+  function onKeydown(e) {
+    const modal = document.getElementById(MODAL_ID);
+    if (!modal || !modal.classList.contains('fc-open')) return;
+
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      close();
+      return;
+    }
+
+    if (e.key !== 'Tab') return;
+
+    const items = focusableIn(modal);
+    if (items.length === 0) return;
+
+    const first = items[0];
+    const last = items[items.length - 1];
+
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
+
   function open() {
     const modal = ensureModal();
+    lastFocused = document.activeElement;
     modal.classList.add('fc-open');
     selected = new Set();
     document.getElementById('fc-search').value = '';
     document.getElementById('fc-result').innerHTML = '';
+    document.getElementById('fc-search').focus();
     load();
   }
 
   function close() {
     const modal = document.getElementById(MODAL_ID);
     if (modal) modal.classList.remove('fc-open');
+    if (lastFocused && typeof lastFocused.focus === 'function') lastFocused.focus();
+    lastFocused = null;
   }
 
   window.openFocusedConvertModal = open;

@@ -24,9 +24,9 @@ public sealed class ConversionScopeServiceTests : IDisposable
 
         var scope = Service().Stage(new[] { "finance/ACCOUNTS.cbl" }, false, false);
 
-        Assert.Equal("source/.conversion-staging", scope.SourceFolder);
+        Assert.StartsWith("source/.conversion-staging/", scope.SourceFolder);
         Assert.Equal(new[] { "finance/ACCOUNTS.cbl" }, scope.Programs.ToArray());
-        Assert.True(File.Exists(Path.Combine(_root, "source", ".conversion-staging", "finance", "ACCOUNTS.cbl")));
+        Assert.True(File.Exists(Path.Combine(_root, scope.SourceFolder, "finance", "ACCOUNTS.cbl")));
     }
 
     // ProcessManager rejects traversal and odd characters, then prefixes "./" when building the
@@ -52,12 +52,11 @@ public sealed class ConversionScopeServiceTests : IDisposable
         WriteProgram("finance/ACCOUNTS.cbl");
         WriteProgram("archive/LEDGER.cbl");
 
-        Service().Stage(new[] { "finance/ACCOUNTS.cbl" }, false, false);
+        var scope = Service().Stage(new[] { "finance/ACCOUNTS.cbl" }, false, false);
 
-        var manifestPath = Path.Combine(_root, "output", "conversion-selection.json");
-        Assert.True(File.Exists(manifestPath), $"expected a selection manifest at {manifestPath}");
+        Assert.True(File.Exists(scope.ManifestPath), $"expected a selection manifest at {scope.ManifestPath}");
 
-        using var manifest = JsonDocument.Parse(File.ReadAllText(manifestPath));
+        using var manifest = JsonDocument.Parse(File.ReadAllText(scope.ManifestPath));
         var root = manifest.RootElement;
         Assert.Equal(
             new[] { "finance/ACCOUNTS.cbl" },
@@ -70,24 +69,6 @@ public sealed class ConversionScopeServiceTests : IDisposable
         // resolve-programs records the directory it resolved against. The portal has to record the
         // same thing or the field means one of two directories depending on who wrote the file.
         Assert.Equal(Path.Combine(_root, "source"), root.GetProperty("stagingDir").GetString());
-    }
-
-    // The manifest has to describe the run that actually happened, not the one before it.
-    [Fact]
-    public void ManifestReflectsTheLatestSelection()
-    {
-        WriteProgram("finance/ACCOUNTS.cbl");
-        WriteProgram("archive/LEDGER.cbl");
-
-        var service = Service();
-        service.Stage(new[] { "finance/ACCOUNTS.cbl" }, false, false);
-        service.Stage(new[] { "archive/LEDGER.cbl" }, false, false);
-
-        using var manifest = JsonDocument.Parse(
-            File.ReadAllText(Path.Combine(_root, "output", "conversion-selection.json")));
-        Assert.Equal(
-            new[] { "archive/LEDGER.cbl" },
-            manifest.RootElement.GetProperty("programs").EnumerateArray().Select(p => p.GetString()).ToArray());
     }
 
     [Fact]
@@ -122,6 +103,76 @@ public sealed class ConversionScopeServiceTests : IDisposable
 
         Assert.Throws<InvalidOperationException>(
             () => Service().Stage(Array.Empty<string>(), false, false));
+    }
+
+    // ProcessManager places no cap on live runs, so a second focused conversion must not stage over
+    // the first: the converter is still reading that tree through --source.
+    [Fact]
+    public void ConcurrentScopesDoNotShareAStagingDirectory()
+    {
+        WriteProgram("finance/ACCOUNTS.cbl");
+        WriteProgram("archive/LEDGER.cbl");
+
+        var service = Service();
+        var first = service.Stage(new[] { "finance/ACCOUNTS.cbl" }, false, false);
+        var second = service.Stage(new[] { "archive/LEDGER.cbl" }, false, false, new[] { first.SourceFolder });
+
+        Assert.NotEqual(first.SourceFolder, second.SourceFolder);
+        Assert.True(
+            File.Exists(Path.Combine(_root, first.SourceFolder, "finance", "ACCOUNTS.cbl")),
+            "the first run's staged source must survive a second run being staged");
+    }
+
+    [Fact]
+    public void ConcurrentScopesKeepSeparateManifests()
+    {
+        WriteProgram("finance/ACCOUNTS.cbl");
+        WriteProgram("archive/LEDGER.cbl");
+
+        var service = Service();
+        var first = service.Stage(new[] { "finance/ACCOUNTS.cbl" }, false, false);
+        var second = service.Stage(new[] { "archive/LEDGER.cbl" }, false, false, new[] { first.SourceFolder });
+
+        Assert.NotEqual(first.ManifestPath, second.ManifestPath);
+        Assert.Equal(new[] { "finance/ACCOUNTS.cbl" }, ManifestPrograms(first.ManifestPath));
+        Assert.Equal(new[] { "archive/LEDGER.cbl" }, ManifestPrograms(second.ManifestPath));
+    }
+
+    // Isolated scopes would otherwise accumulate one staged copy of the estate per focused run.
+    [Fact]
+    public void ReclaimsStagedScopesThatNoLiveRunIsUsing()
+    {
+        WriteProgram("finance/ACCOUNTS.cbl");
+        WriteProgram("archive/LEDGER.cbl");
+
+        var service = Service();
+        var abandoned = service.Stage(new[] { "finance/ACCOUNTS.cbl" }, false, false);
+        service.Stage(new[] { "archive/LEDGER.cbl" }, false, false, Array.Empty<string>());
+
+        Assert.False(
+            Directory.Exists(Path.Combine(_root, abandoned.SourceFolder)),
+            "a scope no live run is using should be reclaimed");
+    }
+
+    // The manifest is the record of what a run converted, so reclaiming a scope must not take it.
+    [Fact]
+    public void ReclaimingAScopeKeepsItsManifest()
+    {
+        WriteProgram("finance/ACCOUNTS.cbl");
+        WriteProgram("archive/LEDGER.cbl");
+
+        var service = Service();
+        var abandoned = service.Stage(new[] { "finance/ACCOUNTS.cbl" }, false, false);
+        service.Stage(new[] { "archive/LEDGER.cbl" }, false, false, Array.Empty<string>());
+
+        Assert.True(File.Exists(abandoned.ManifestPath));
+    }
+
+    private string?[] ManifestPrograms(string manifestPath)
+    {
+        using var manifest = JsonDocument.Parse(File.ReadAllText(manifestPath));
+        return manifest.RootElement.GetProperty("programs")
+            .EnumerateArray().Select(p => p.GetString()).ToArray();
     }
 
     private ConversionScopeService Service() => new(_root);
