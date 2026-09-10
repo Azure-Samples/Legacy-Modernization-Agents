@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using CobolToQuarkusMigration.Agents;
 using McpChatWeb.Services;
@@ -124,6 +125,19 @@ public class ConversionParityReaderTests : IDisposable
         Assert.Equal(["java"], estate.UnreadableTargets);
         // A corrupt report must not be reported as "never converted".
         Assert.DoesNotContain("java", estate.MissingTargets);
+    }
+
+    [Fact]
+    // A cancelled request must abort, not be reported as a corrupt report: "unreadable" is a
+    // claim about the estate, and making it because the caller went away is simply false.
+    public async Task Cancellation_AbortsInsteadOfReportingTheReportUnreadable()
+    {
+        WriteReport("java", SampleReport("Java", 0.9, ("CUSTOMER.cbl", 0.9)));
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => Reader().ReadAsync(cts.Token));
     }
 
     [Fact]

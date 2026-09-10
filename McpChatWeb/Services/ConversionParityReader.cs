@@ -71,7 +71,7 @@ public sealed class ConversionParityReader
                 report.SourcePath = Path.Combine(relative, ConversionParityPostPass.ArtifactName);
                 estate.Reports.Add(report);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 _logger.LogWarning(ex, "Could not read conversion parity report at {Path}", path);
                 estate.UnreadableTargets.Add(folder);
