@@ -30,7 +30,8 @@ internal static class Program
         Directory.CreateDirectory(logsDirectory);
 
         // Only enable live logging for migration runs (not MCP server or conversation modes)
-        var isMigrationRun = !args.Contains("mcp") && !args.Contains("conversation");
+        var isMigrationRun = !args.Contains("mcp") && !args.Contains("conversation")
+                             && !WritesMachineReadableStdout(args);
         LiveLogWriter? liveLogWriter = null;
 
         if (isMigrationRun)
@@ -54,7 +55,7 @@ internal static class Program
             var fileHelper = new FileHelper(loggerFactory.CreateLogger<FileHelper>());
             var settingsHelper = new SettingsHelper(loggerFactory.CreateLogger<SettingsHelper>());
 
-            if (!ValidateAndLoadConfiguration(RequiresAiSettings(args)))
+            if (!ValidateAndLoadConfiguration(RequiresAiSettings(args), WritesMachineReadableStdout(args)))
             {
                 return 1;
             }
@@ -153,6 +154,9 @@ internal static class Program
 
         // Curated program-facts.json extraction from REKT artifacts.
         rootCommand.AddCommand(CobolToQuarkusMigration.Cli.ProgramFactsCommand.Build(loggerFactory));
+
+        // Focused conversion scope resolution (preview).
+        rootCommand.AddCommand(CobolToQuarkusMigration.Cli.ResolveProgramsCommand.Build(loggerFactory));
 
         rootCommand.SetHandler(async (string cobolSource, string javaOutput, string reverseEngineerOutput, bool reverseEngineerOnly, bool skipReverseEngineering, bool reuseRe, string configPath, bool resume) =>
         {
@@ -896,7 +900,7 @@ internal static class Program
         }
     }
 
-    private static void LoadEnvironmentVariables()
+    private static void LoadEnvironmentVariables(bool quiet = false)
     {
         try
         {
@@ -908,7 +912,7 @@ internal static class Program
             {
                 LoadEnvFile(localConfigFile);
             }
-            else
+            else if (!quiet)
             {
                 Console.WriteLine("💡 Consider creating Config/ai-config.local.env for your personal settings");
                 Console.WriteLine("   You can copy from Config/ai-config.env.example");
@@ -1275,7 +1279,20 @@ internal static class Program
         // doctor.sh calls list-models during setup to populate the model picker, before any
         // config file has been written; its handler talks to the Copilot SDK, not Azure.
         return command is not
-            ("program-facts" or "rekt-scan-cache" or "conversation" or "list-models");
+            ("program-facts" or "rekt-scan-cache" or "resolve-programs" or "conversation" or "list-models");
+    }
+
+    // doctor.sh redirects these commands' stdout to a file and parses it positionally, so the
+    // live-log header and the config hint would be read as data rather than skipped.
+    internal static bool WritesMachineReadableStdout(string[] args)
+    {
+        if (args.Any(a => a is "--help" or "-h" or "-?" or "--version"))
+        {
+            return false;
+        }
+
+        return args.FirstOrDefault(a => !a.StartsWith('-')) is
+            ("rekt-scan-cache" or "resolve-programs");
     }
 
     // Matched against the literals shipped in ai-config.env.example. An unedited placeholder that
@@ -1286,11 +1303,11 @@ internal static class Program
         value.Contains("your-api-key", StringComparison.OrdinalIgnoreCase) ||
         value.Contains("placeholder", StringComparison.OrdinalIgnoreCase);
 
-    private static bool ValidateAndLoadConfiguration(bool requireAiSettings)
+    private static bool ValidateAndLoadConfiguration(bool requireAiSettings, bool quiet = false)
     {
         try
         {
-            LoadEnvironmentVariables();
+            LoadEnvironmentVariables(quiet);
 
             if (!requireAiSettings)
             {
