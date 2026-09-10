@@ -111,6 +111,9 @@ public sealed record ConversionParityReport
     // null when nothing could be evaluated, so an empty run never reads as a clean run.
     [JsonPropertyName("averageScore")] public double? AverageScore { get; init; }
 
-    // Set by the portal reader, not persisted by the writer.
-    [JsonIgnore] public string? SourcePath { get; set; }
+    // Set by the portal reader, not persisted by the writer. Ignoring it unconditionally would
+    // also strip it from the API response, leaving the panel with no report path to show.
+    [JsonPropertyName("sourcePath")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? SourcePath { get; set; }
 }

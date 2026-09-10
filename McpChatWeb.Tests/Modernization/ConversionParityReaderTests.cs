@@ -165,6 +165,20 @@ public class ConversionParityReaderTests : IDisposable
     }
 
     [Fact]
+    // The reader sets SourcePath so the panel can name the file it is showing. [JsonIgnore]
+    // without a condition also strips it from the API response, blanking it in the portal.
+    public async Task SourcePath_SurvivesSerialisationToThePortal()
+    {
+        WriteReport("csharp", SampleReport("C#", 0.8, ("CUSTOMER.cbl", 0.8)));
+
+        var estate = await Reader().ReadAsync();
+        var json = JsonSerializer.Serialize(estate);
+
+        Assert.Contains("\"sourcePath\"", json);
+        Assert.Contains(ConversionParityPostPass.ArtifactName, json);
+    }
+
+    [Fact]
     public async Task NotEvaluatedPrograms_SurviveTheRoundTrip()
     {
         WriteReport("java", SampleReport("Java", null, ("CUSTOMER.cbl", null)));
