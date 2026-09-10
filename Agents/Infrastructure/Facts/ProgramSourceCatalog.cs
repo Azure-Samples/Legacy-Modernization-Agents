@@ -3,7 +3,8 @@ using CobolToQuarkusMigration.Helpers;
 
 namespace CobolToQuarkusMigration.Agents.Infrastructure.Facts;
 
-internal sealed class ProgramSourceCatalog
+// Public rather than internal because the portal resolves conversion scope from a separate assembly.
+public sealed class ProgramSourceCatalog
 {
     private readonly Dictionary<string, string> _exactByRelativePath;
     private readonly Dictionary<string, List<string>> _pathsByBasename;

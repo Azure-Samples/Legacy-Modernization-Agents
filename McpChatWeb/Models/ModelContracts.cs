@@ -70,6 +70,18 @@ public sealed record StartRunRequest(
 
 public sealed record StopRunRequest(string RunId);
 
+// Focused conversion (preview): convert a named slice of the estate rather than the whole thing.
+public sealed record FocusedConvertRequest(
+    IReadOnlyList<string>? Programs = null,
+    bool IncludeCallers = false,
+    bool IncludeCallees = false,
+    string? Name = null,
+    string TargetLanguage = "Java",
+    string SpeedProfile = "balanced",
+    string Provider = "AzureOpenAI",
+    string? ModelId = null
+);
+
 public sealed record RunStatusDto(
     string RunId,
     string Name,

@@ -124,6 +124,7 @@
             <button class="mc-cmd-btn" data-run-command="reverse-engineer" title="Reverse engineering only">🔍 RE Only</button>
             <button class="mc-cmd-btn" data-run-command="convert-only" title="Code conversion only (skip RE)">🔄 Convert Only</button>
             <button class="mc-cmd-btn" data-run-command="resume" title="Resume interrupted migration">⏩ Resume</button>
+            <button class="mc-cmd-btn" id="mc-focused-convert-btn" title="Convert selected programs only (preview)">🎯 Focused Convert</button>
           </div>
 
           <!-- Stop / Pause Controls -->
@@ -1280,6 +1281,7 @@ curl http://localhost:5028/api/data-retrieval-guide</code></pre>
   <script src="mission-control.js"></script>
   <script src="services-view.js"></script>
   <script src="modernization-intelligence.js"></script>
+  <script src="convert-modal.js"></script>
   <script src="dashboard-tabs.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script type="module">

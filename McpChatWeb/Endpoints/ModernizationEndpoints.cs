@@ -51,5 +51,29 @@ public static class ModernizationEndpoints
                 Results.Ok(await reader.ReadAsync(cancellationToken)))
             .WithName("GetConversionParity")
             .WithSummary("Structural coverage of generated code against the COBOL it came from.");
+
+        group.MapGet("/program-catalog", async (
+            string? q,
+            ProgramCatalogService service,
+            CancellationToken cancellationToken) =>
+        {
+            var catalog = await service.BuildCatalogAsync(cancellationToken);
+            var matches = service.Search(catalog, q);
+
+            return Results.Ok(new
+            {
+                sourceRoot = catalog.SourceRoot,
+                // The unfiltered total travels with every response so an empty filtered list
+                // reads as a narrow query rather than an empty estate.
+                totalPrograms = catalog.Programs.Count,
+                query = q ?? "",
+                programs = matches,
+                closureAvailable = catalog.ClosureAvailable,
+                closureUnavailableReason = catalog.ClosureUnavailableReason,
+                deferredSelectors = catalog.DeferredSelectors,
+            });
+        })
+            .WithName("GetProgramCatalog")
+            .WithSummary("Programs selectable for a focused conversion, with closure availability (preview).");
     }
 }
