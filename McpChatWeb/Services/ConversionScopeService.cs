@@ -30,16 +30,23 @@ public sealed class ConversionScopeService
 
         var sourceDir = Path.Combine(_repoRoot, "source");
         var stagingDir = Path.Combine(_repoRoot, "source", ".conversion-staging");
+        var factsDir = Path.Combine(_repoRoot, "output", "rekt");
 
-        var staged = new ConversionScopeStager(sourceDir, stagingDir).Stage(
-            new ProgramSelection
-            {
-                Programs = selectors,
-                IncludeCallers = includeCallers,
-                IncludeCallees = includeCallees,
-            },
-            Path.Combine(_repoRoot, "output", "rekt"),
-            logger);
+        var selection = new ProgramSelection
+        {
+            Programs = selectors,
+            IncludeCallers = includeCallers,
+            IncludeCallees = includeCallees,
+        };
+
+        var staged = new ConversionScopeStager(sourceDir, stagingDir).Stage(selection, factsDir, logger);
+
+        SelectionManifestWriter.Write(
+            Path.Combine(_repoRoot, "output", "conversion-selection.json"),
+            stagingDir,
+            factsDir,
+            selection,
+            staged.Selection);
 
         return new ConversionScope(
             StagedSourceFolder,

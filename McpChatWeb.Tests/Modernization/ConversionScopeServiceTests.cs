@@ -44,6 +44,48 @@ public sealed class ConversionScopeServiceTests : IDisposable
         Assert.Matches(@"^[a-zA-Z0-9_\-./]+$", scope.SourceFolder);
     }
 
+    // Without a manifest a portal-launched focused conversion leaves no record of what was
+    // selected, so a partial output cannot be told apart from a deliberately narrow scope.
+    [Fact]
+    public void RecordsTheSelectionManifestSoAPortalRunIsReproducible()
+    {
+        WriteProgram("finance/ACCOUNTS.cbl");
+        WriteProgram("archive/LEDGER.cbl");
+
+        Service().Stage(new[] { "finance/ACCOUNTS.cbl" }, false, false);
+
+        var manifestPath = Path.Combine(_root, "output", "conversion-selection.json");
+        Assert.True(File.Exists(manifestPath), $"expected a selection manifest at {manifestPath}");
+
+        using var manifest = JsonDocument.Parse(File.ReadAllText(manifestPath));
+        var root = manifest.RootElement;
+        Assert.Equal(
+            new[] { "finance/ACCOUNTS.cbl" },
+            root.GetProperty("programs").EnumerateArray().Select(p => p.GetString()).ToArray());
+        Assert.Equal(
+            new[] { "finance/ACCOUNTS.cbl" },
+            root.GetProperty("selectors").GetProperty("programs").EnumerateArray().Select(p => p.GetString()).ToArray());
+        Assert.False(root.GetProperty("selectors").GetProperty("includeCallees").GetBoolean());
+    }
+
+    // The manifest has to describe the run that actually happened, not the one before it.
+    [Fact]
+    public void ManifestReflectsTheLatestSelection()
+    {
+        WriteProgram("finance/ACCOUNTS.cbl");
+        WriteProgram("archive/LEDGER.cbl");
+
+        var service = Service();
+        service.Stage(new[] { "finance/ACCOUNTS.cbl" }, false, false);
+        service.Stage(new[] { "archive/LEDGER.cbl" }, false, false);
+
+        using var manifest = JsonDocument.Parse(
+            File.ReadAllText(Path.Combine(_root, "output", "conversion-selection.json")));
+        Assert.Equal(
+            new[] { "archive/LEDGER.cbl" },
+            manifest.RootElement.GetProperty("programs").EnumerateArray().Select(p => p.GetString()).ToArray());
+    }
+
     [Fact]
     public void ClosureStagesTheCalleeAlongsideTheSelectedProgram()
     {
