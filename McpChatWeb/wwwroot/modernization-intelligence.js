@@ -138,13 +138,16 @@ class ModernizationIntelligenceView {
     const body = this.root.querySelector('#mi-body');
     if (!body) return;
 
+    // Bump first: a placeholder switch must also invalidate a live request still in flight,
+    // or its late response overwrites the placeholder on a tab the user already left.
+    const token = ++this._renderToken;
+
     if (!MI_LIVE_SUBVIEWS.includes(this._activeSubview)) {
       body.innerHTML = miPendingPanel(MI_PENDING_SUBVIEWS[this._activeSubview] || 'Subview');
       return;
     }
 
     body.innerHTML = '<div class="mi-loading">Loading…</div>';
-    const token = ++this._renderToken;
     try {
       if (this._activeSubview === 'health') {
         const data = await this._get('/api/modernization/dependency-health');
