@@ -8,10 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Dependency Health & Semantic Flow Explorer** (preview) — Deterministic decision surfaces for judging conversion readiness from REKT scan evidence rather than model output. Adds `/api/modernization/{dependency-health,topology,service-chain,flow}` and `/api/graph/rekt/{runs,architect,services}`, plus two portal panels covering parse-fidelity buckets, readiness and coverage scoring, missing copybooks, the CALL/COPY topology, JCL→program→copybook chains, and per-program procedural flow. Fidelity is reported alongside its evidence source (`scan-cache`, `facts`, `artifacts`, `none`) so an inferred value is never presented as a measured one, and unresolved CALL targets are surfaced rather than dropped. Six subviews are labelled placeholders pending later features. See [docs/dependency-health-and-flow-explorer.md](docs/dependency-health-and-flow-explorer.md).
 - **External Prompt Templates** — All agent system prompts are now loaded from Markdown files in `Agents/Prompts/` (`CobolAnalyzer.md`, `BusinessLogicExtractor.md`, `JavaConverter.md`, `CSharpConverter.md`, `DependencyMapper.md`, `ChunkAwareJavaConverter.md`, `ChunkAwareCSharpConverter.md`). Prompts are no longer embedded as inline strings in `.cs` agent files.
 - **`{{CodebaseProfile}}` auto-injection** — Prompt templates may include the `{{CodebaseProfile}}` placeholder, which is replaced at runtime with a codebase summary (detected features, file stats, SQL usage). See `## SECTION: Name` delimiter syntax in prompt files.
 
 ### Fixed
+- **`EXEC SQL` operation misreported as `EXEC`** — `RektContextLoader.ExtractSqlOperation` took the first word of a statement, so every embedded `EXEC SQL SELECT …` was recorded with the operation `EXEC` instead of `SELECT`. This propagated into extracted program facts, where `DbTableAccess` listed `EXEC` as the only access mode for affected tables. The `EXEC SQL` preamble is now skipped and the real verb is reported.
 - **`ChatClientFactory` `InvalidOperationException`** — `CreateFromSettings()` now throws a descriptive `InvalidOperationException` when called with an unrecognised `ServiceType`, instead of returning `null` and causing a downstream null-reference crash.
 - **Provider label display** — AI provider labels in the portal header now correctly reflect the active provider (was showing `AzureOpenAI` for all providers).
 - **XSS hardening** — API-supplied model names are HTML-escaped before DOM insertion in the portal setup modal.

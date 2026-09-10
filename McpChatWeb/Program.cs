@@ -8,6 +8,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using McpChatWeb.Configuration;
+using McpChatWeb.Endpoints;
 using McpChatWeb.Models;
 using McpChatWeb.Services;
 using Neo4j.Driver;
@@ -94,6 +95,11 @@ builder.Services.AddSingleton<McpChatWeb.Services.ProcessManager>(sp =>
 });
 
 builder.Services.AddSingleton<PortalState>();
+
+// Singletons: both are stateless readers over the filesystem and the scan cache.
+builder.Services.AddSingleton<McpChatWeb.Services.RektEstateReader>();
+builder.Services.AddSingleton<McpChatWeb.Services.ModernizationIntelligenceService>();
+
 builder.Services.AddOpenApi();
 
 var app = builder.Build();
@@ -6400,5 +6406,11 @@ app.MapGet("/api/reports/available", () =>
 		return Results.Problem($"Failed to list reports: {ex.Message}");
 	}
 });
+
+app.MapModernizationEndpoints();
+app.MapRektGraphEndpoints();
+
+app.Lifetime.ApplicationStopping.Register(() =>
+	McpChatWeb.Services.RektNeo4j.DisposeAsync().AsTask().GetAwaiter().GetResult());
 
 app.Run();

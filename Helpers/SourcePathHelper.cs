@@ -1,6 +1,6 @@
 namespace CobolToQuarkusMigration.Helpers;
 
-internal static class SourcePathHelper
+public static class SourcePathHelper
 {
     public static string NormalizeRelativePath(string path)
     {

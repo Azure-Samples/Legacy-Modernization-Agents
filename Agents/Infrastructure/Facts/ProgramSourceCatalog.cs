@@ -237,7 +237,7 @@ internal sealed class ProgramSourceCatalog
     }
 }
 
-internal static class ProgramFactsArtifactLocator
+public static class ProgramFactsArtifactLocator
 {
     public const string FactsSuffix = ".facts.json";
 

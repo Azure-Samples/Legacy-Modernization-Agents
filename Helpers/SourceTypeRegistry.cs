@@ -51,17 +51,24 @@ public static class SourceTypeRegistry
     public static IEnumerable<string> EnumerateCopybookFiles(string root) =>
         EnumerateByPredicate(root, IsCopybook);
 
+    // Staging, preprocessing and conversion folders hold derived copies of the same
+    // programs, so counting them would double the estate. Matches whole segments and
+    // both separators, which a substring check on "/.convert-" gets wrong on Windows.
+    public static bool IsScratchPath(string path) =>
+        path.Split('/', '\\', StringSplitOptions.RemoveEmptyEntries).Any(segment =>
+            segment.StartsWith(".convert-", StringComparison.Ordinal)
+            || segment.Equals(".rekt-staging", StringComparison.Ordinal)
+            || segment.Equals(".preprocessed", StringComparison.Ordinal));
+
     private static IEnumerable<string> EnumerateByPredicate(string root, Func<string, bool> predicate)
     {
         if (!Directory.Exists(root)) yield break;
 
         foreach (var path in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
         {
-            // Skip well-known internal staging dirs — they contain copies of the
-            // same files and would inflate counts.
-            if (path.Contains($"{Path.DirectorySeparatorChar}.rekt-staging{Path.DirectorySeparatorChar}") ||
-                path.Contains($"{Path.DirectorySeparatorChar}.preprocessed{Path.DirectorySeparatorChar}"))
-                continue;
+            // Relative to root, so a repository that itself sits under one of these
+            // names does not exclude its own estate.
+            if (IsScratchPath(Path.GetRelativePath(root, path))) continue;
 
             if (predicate(path)) yield return path;
         }
