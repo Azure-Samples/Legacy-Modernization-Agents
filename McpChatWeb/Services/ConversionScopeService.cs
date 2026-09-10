@@ -43,7 +43,7 @@ public sealed class ConversionScopeService
 
         SelectionManifestWriter.Write(
             Path.Combine(_repoRoot, "output", "conversion-selection.json"),
-            stagingDir,
+            sourceDir,
             factsDir,
             selection,
             staged.Selection);

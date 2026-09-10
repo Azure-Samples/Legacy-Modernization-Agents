@@ -66,6 +66,10 @@ public sealed class ConversionScopeServiceTests : IDisposable
             new[] { "finance/ACCOUNTS.cbl" },
             root.GetProperty("selectors").GetProperty("programs").EnumerateArray().Select(p => p.GetString()).ToArray());
         Assert.False(root.GetProperty("selectors").GetProperty("includeCallees").GetBoolean());
+
+        // resolve-programs records the directory it resolved against. The portal has to record the
+        // same thing or the field means one of two directories depending on who wrote the file.
+        Assert.Equal(Path.Combine(_root, "source"), root.GetProperty("stagingDir").GetString());
     }
 
     // The manifest has to describe the run that actually happened, not the one before it.
