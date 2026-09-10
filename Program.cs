@@ -1260,9 +1260,10 @@ internal static class Program
             chatProfile.MaxOutputTokens = chatMaxVal;
     }
 
-    // These subcommands only read and write files. Requiring AI credentials for them was
-    // masked while Config/ai-config.env shipped placeholder values that satisfied validation.
-    private static bool RequiresAiSettings(string[] args)
+    // These subcommands only read and write files, or run before configuration exists at all.
+    // Requiring AI credentials for them was masked while Config/ai-config.env shipped
+    // placeholder values that satisfied validation.
+    internal static bool RequiresAiSettings(string[] args)
     {
         if (args.Any(a => a is "--help" or "-h" or "-?" or "--version"))
         {
@@ -1270,7 +1271,11 @@ internal static class Program
         }
 
         var command = args.FirstOrDefault(a => !a.StartsWith('-'));
-        return command is not ("program-facts" or "rekt-scan-cache" or "conversation");
+
+        // doctor.sh calls list-models during setup to populate the model picker, before any
+        // config file has been written; its handler talks to the Copilot SDK, not Azure.
+        return command is not
+            ("program-facts" or "rekt-scan-cache" or "conversation" or "list-models");
     }
 
     // Matched against the literals shipped in ai-config.env.example. An unedited placeholder that
