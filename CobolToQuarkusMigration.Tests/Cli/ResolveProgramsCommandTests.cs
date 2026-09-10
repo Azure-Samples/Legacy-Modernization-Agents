@@ -148,6 +148,33 @@ public sealed class ResolveProgramsCommandTests : IDisposable
         File.Exists(manifestPath).Should().BeFalse("a refused selection must not leave a manifest claiming a scope");
     }
 
+    [Fact]
+    public void StageFlagCopiesTheResolvedScopeAndReportsTheStagedDirectory()
+    {
+        WriteProgram("finance/ACCOUNTS.cbl");
+        WriteProgram("archive/ACCOUNTS.cbl");
+        var stagedDir = Path.Combine(_root, "scope");
+
+        var result = RunCli("resolve-programs", StagingDir, "--program", "finance/ACCOUNTS.cbl", "--stage", stagedDir);
+
+        result.ExitCode.Should().Be(0);
+        File.Exists(Path.Combine(stagedDir, "finance", "ACCOUNTS.cbl")).Should().BeTrue();
+        File.Exists(Path.Combine(stagedDir, "archive", "ACCOUNTS.cbl")).Should().BeFalse();
+        // Stdout stays the resolved paths so callers that only wanted the list are unaffected.
+        StdoutLines(result.Stdout).Should().Equal(["finance/ACCOUNTS.cbl"]);
+    }
+
+    [Fact]
+    public void WithoutStageFlagNothingIsCopied()
+    {
+        WriteProgram("finance/ACCOUNTS.cbl");
+        var stagedDir = Path.Combine(_root, "scope");
+
+        RunCli("resolve-programs", StagingDir, "--program", "finance/ACCOUNTS.cbl");
+
+        Directory.Exists(stagedDir).Should().BeFalse();
+    }
+
     private static string[] StdoutLines(string stdout) =>
         stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 

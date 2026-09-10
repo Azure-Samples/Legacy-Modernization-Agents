@@ -2355,12 +2355,11 @@ stage_conversion_scope() {
         return 0
     fi
 
-    # Clearing first keeps a previous run's staged copies out of the catalog, where they would
-    # duplicate every basename, and guarantees a refused selector leaves no stale scope behind.
-    rm -rf "$staging_dir"
-
+    # Resolution and staging both live in resolve-programs so the portal, which cannot run this
+    # interactive script, narrows a conversion to exactly the same files.
     local resolve_args=(resolve-programs "$source_dir" --program "$selector"
-        --facts-dir "$facts_dir" --manifest "$manifest" --repo-root "$REPO_ROOT")
+        --facts-dir "$facts_dir" --manifest "$manifest" --repo-root "$REPO_ROOT"
+        --stage "$staging_dir")
     [[ "$include_callers" == "true" ]] && resolve_args+=(--include-callers)
     [[ "$include_callees" == "true" ]] && resolve_args+=(--include-callees)
 
@@ -2379,14 +2378,9 @@ stage_conversion_scope() {
         return 1
     fi
 
-    mkdir -p "$staging_dir"
-
-    local staged_count=0 rel target
+    local staged_count=0 rel
     while IFS= read -r rel; do
         [[ -z "$rel" ]] && continue
-        target="$staging_dir/$rel"
-        mkdir -p "$(dirname "$target")"
-        cp "$source_dir/$rel" "$target"
         staged_count=$((staged_count + 1))
     done < "$resolved_file"
 
@@ -2396,13 +2390,6 @@ stage_conversion_scope() {
         rm -f "$resolved_file" "$diagnostics_file"
         return 1
     fi
-
-    # Copybooks stage flat because COPY targets resolve by basename. Hidden directories are
-    # pruned so a previous staging run cannot contribute duplicates.
-    local copybook
-    while IFS= read -r -d '' copybook; do
-        cp "$copybook" "$staging_dir/$(basename "$copybook")" 2>/dev/null || true
-    done < <(find "$source_dir" -name '.*' -prune -o -type f -iname '*.cpy' -print0)
 
     # Tells the converter the copybooks are COPY context for the selection, not conversion units.
     export SELECTOR_MODE=true

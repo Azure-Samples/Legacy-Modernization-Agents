@@ -44,6 +44,11 @@ public static class ResolveProgramsCommand
         { Arity = ArgumentArity.ZeroOrOne };
         cmd.AddOption(repoRootOption);
 
+        var stageOption = new Option<string?>("--stage",
+            "Copy the resolved scope into this directory and use it as the conversion source. Programs keep their source-relative folders; copybooks stage flat.")
+        { Arity = ArgumentArity.ZeroOrOne };
+        cmd.AddOption(stageOption);
+
         cmd.SetHandler(context =>
         {
             var parsed = context.ParseResult;
@@ -55,7 +60,8 @@ public static class ResolveProgramsCommand
                 parsed.GetValueForOption(includeCalleesOption),
                 parsed.GetValueForOption(factsDirOption),
                 parsed.GetValueForOption(manifestOption),
-                parsed.GetValueForOption(repoRootOption));
+                parsed.GetValueForOption(repoRootOption),
+                parsed.GetValueForOption(stageOption));
         });
 
         return cmd;
@@ -69,7 +75,8 @@ public static class ResolveProgramsCommand
         bool includeCallees,
         string? factsDir,
         string? manifestPath,
-        string? repoRoot)
+        string? repoRoot,
+        string? stageDir = null)
     {
         var logger = loggerFactory.CreateLogger("ResolvePrograms");
 
@@ -89,14 +96,26 @@ public static class ResolveProgramsCommand
             IncludeCallees = includeCallees,
         };
 
-        var resolver = new ProgramSelectionResolver(
-            ProgramSourceCatalog.FromStagingDirectory(stagingDir),
-            new FactsClosureSource(resolvedFactsDir));
-
         ProgramSelectionResult result;
+        var stagedCopybooks = 0;
         try
         {
-            result = resolver.Resolve(selection);
+            if (string.IsNullOrWhiteSpace(stageDir))
+            {
+                var resolver = new ProgramSelectionResolver(
+                    ProgramSourceCatalog.FromStagingDirectory(stagingDir),
+                    new FactsClosureSource(resolvedFactsDir));
+
+                result = resolver.Resolve(selection);
+            }
+            else
+            {
+                var staged = new ConversionScopeStager(stagingDir, stageDir)
+                    .Stage(selection, resolvedFactsDir, logger);
+
+                result = staged.Selection;
+                stagedCopybooks = staged.Copybooks;
+            }
         }
         catch (InvalidOperationException ex)
         {
@@ -117,8 +136,12 @@ public static class ResolveProgramsCommand
         foreach (var program in result.Programs)
             Console.Out.WriteLine(program);
 
+        var stagedNote = string.IsNullOrWhiteSpace(stageDir)
+            ? ""
+            : $" staged into {stageDir} with {stagedCopybooks} copybook(s);";
+
         Console.Error.WriteLine(
-            $"resolve-programs: selected {result.Programs.Count} program(s); " +
+            $"resolve-programs: selected {result.Programs.Count} program(s);{stagedNote} " +
             $"{result.UnresolvedCallTargets.Count} unresolved CALL target(s).");
 
         return 0;
