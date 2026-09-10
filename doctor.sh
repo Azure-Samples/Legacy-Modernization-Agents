@@ -136,6 +136,18 @@ show_usage() {
   echo -e "  $0 run               ${CYAN}# default: flag below 0.75, warn only${NC}"
   echo -e "  MIN_PROGRAM_SCORE=0.8 ON_LOW_SCORE=stop $0 run   ${CYAN}# fail CI on a low score${NC}"
   echo
+  echo -e "${BOLD}Focused Conversion (preview):${NC}"
+  echo -e "  Convert a slice of the estate instead of everything. The selection is staged to"
+  echo -e "  source/.conversion-staging/ and recorded in output/conversion-selection.json."
+  echo -e "  ${GREEN}--program${NC} <name>       Program to convert; repeat or comma-separate for several."
+  echo -e "                          Accepts a basename or a source-relative path. An ambiguous"
+  echo -e "                          basename is refused rather than guessed."
+  echo -e "  ${GREEN}--include-callees${NC}      Also convert what the selection calls (needs --program)"
+  echo -e "  ${GREEN}--include-callers${NC}      Also convert what calls the selection (needs --program)"
+  echo -e "  Closure needs call facts from ${GREEN}$0 rekt-scan${NC}; missing evidence is refused, not assumed."
+  echo -e "  $0 convert-only --program LEDGER.cbl              ${CYAN}# one program${NC}"
+  echo -e "  $0 run --program finance/LEDGER.cbl --include-callees   ${CYAN}# it and its callees${NC}"
+  echo
 }
 
 # Resolve the migration database path (absolute) from config or environment
@@ -1933,8 +1945,15 @@ run_migration() {
     
     echo -e "${CYAN}🎯 Target: ${TARGET_LANGUAGE}${NC}"
     echo -e "${CYAN}💾 Database: $MIGRATION_DB_PATH${NC}"
-    
-    "$DOTNET_CMD" run -- --source ./source $skip_reverse_eng
+
+    local conversion_source
+    if ! conversion_source="$(stage_conversion_scope "$REPO_ROOT/source" \
+        "$REPO_ROOT/source/.conversion-staging" "${CONVERSION_PROGRAM_SELECTOR:-}" \
+        "${CONVERSION_INCLUDE_CALLERS:-false}" "${CONVERSION_INCLUDE_CALLEES:-false}")"; then
+        return 1
+    fi
+
+    "$DOTNET_CMD" run -- --source "$conversion_source" $skip_reverse_eng
     local migration_exit=$?
 
     if [[ $migration_exit -ne 0 ]]; then
@@ -1970,6 +1989,14 @@ run_migration() {
 
 # Function to resume migration
 run_resume() {
+    # Resume continues the scope recorded by the interrupted run; honouring a new selector here
+    # would convert a different set than the one being resumed.
+    if [[ -n "${CONVERSION_PROGRAM_SELECTOR:-}" ]]; then
+        echo -e "${RED}❌ --program is not supported on resume.${NC}"
+        echo -e "${YELLOW}   Resume continues the interrupted run's scope. Start a new focused run instead.${NC}"
+        return 2
+    fi
+
     echo -e "${BLUE}🔄 Resuming COBOL to Java Migration...${NC}"
     echo "======================================"
 
@@ -1995,6 +2022,7 @@ run_resume() {
 
     # Run with resume logic
     export MIGRATION_DB_PATH="$REPO_ROOT/Data/migration.db"
+
     "$DOTNET_CMD" run -- --source ./source --resume
 }
 
@@ -2255,6 +2283,137 @@ run_reverse_engineering() {
 }
 
 # Function to run conversion-only (skip reverse engineering)
+# Focused conversion (preview): selector flags sit alongside the subcommand, so they must be
+# stripped before the command dispatch sees them. Populates CONVERSION_REMAINING_ARGS.
+parse_conversion_selector_flags() {
+    CONVERSION_PROGRAM_SELECTOR=""
+    CONVERSION_INCLUDE_CALLERS="false"
+    CONVERSION_INCLUDE_CALLEES="false"
+    CONVERSION_REMAINING_ARGS=()
+
+    local selectors=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --program)
+                if [[ $# -lt 2 || -z "$2" || "$2" == --* ]]; then
+                    echo -e "${RED}❌ --program requires a program name or source-relative path.${NC}" >&2
+                    return 2
+                fi
+                selectors+=("$2")
+                shift 2
+                ;;
+            --program=*)
+                if [[ -z "${1#--program=}" ]]; then
+                    echo -e "${RED}❌ --program requires a program name or source-relative path.${NC}" >&2
+                    return 2
+                fi
+                selectors+=("${1#--program=}")
+                shift
+                ;;
+            --include-callers)
+                CONVERSION_INCLUDE_CALLERS="true"
+                shift
+                ;;
+            --include-callees)
+                CONVERSION_INCLUDE_CALLEES="true"
+                shift
+                ;;
+            *)
+                CONVERSION_REMAINING_ARGS+=("$1")
+                shift
+                ;;
+        esac
+    done
+
+    if [[ ${#selectors[@]} -gt 0 ]]; then
+        CONVERSION_PROGRAM_SELECTOR="$(IFS=,; echo "${selectors[*]}")"
+    fi
+
+    # A closure without a seed would expand to the whole estate, which is the opposite of focusing.
+    if [[ -z "$CONVERSION_PROGRAM_SELECTOR" ]] \
+        && { [[ "$CONVERSION_INCLUDE_CALLERS" == "true" ]] || [[ "$CONVERSION_INCLUDE_CALLEES" == "true" ]]; }; then
+        echo -e "${RED}❌ --include-callers/--include-callees need --program to seed the closure.${NC}" >&2
+        return 2
+    fi
+
+    return 0
+}
+
+# Focused conversion (preview): stage the selected programs and repoint --source at the copy,
+# so the converter itself needs no selector awareness. Echoes the directory to convert from.
+stage_conversion_scope() {
+    local source_dir="$1"
+    local staging_dir="$2"
+    local selector="$3"
+    local include_callers="${4:-false}"
+    local include_callees="${5:-false}"
+    local facts_dir="${6:-$REPO_ROOT/output/rekt}"
+    local manifest="${7:-$REPO_ROOT/output/conversion-selection.json}"
+
+    if [[ -z "$selector" ]]; then
+        echo "$source_dir"
+        return 0
+    fi
+
+    # Clearing first keeps a previous run's staged copies out of the catalog, where they would
+    # duplicate every basename, and guarantees a refused selector leaves no stale scope behind.
+    rm -rf "$staging_dir"
+
+    local resolve_args=(resolve-programs "$source_dir" --program "$selector"
+        --facts-dir "$facts_dir" --manifest "$manifest" --repo-root "$REPO_ROOT")
+    [[ "$include_callers" == "true" ]] && resolve_args+=(--include-callers)
+    [[ "$include_callees" == "true" ]] && resolve_args+=(--include-callees)
+
+    local resolved_file diagnostics_file
+    resolved_file="$(mktemp)"
+    diagnostics_file="$(mktemp)"
+
+    if ! (cd "$REPO_ROOT" && "$DOTNET_CMD" run --project CobolToQuarkusMigration.csproj --no-build -- \
+            "${resolve_args[@]}" >"$resolved_file" 2>"$diagnostics_file"); then
+        echo -e "${RED}❌ Conversion selector did not resolve.${NC}" >&2
+        while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            echo -e "    ${YELLOW}↳ ${line}${NC}" >&2
+        done < "$diagnostics_file"
+        rm -f "$resolved_file" "$diagnostics_file"
+        return 1
+    fi
+
+    mkdir -p "$staging_dir"
+
+    local staged_count=0 rel target
+    while IFS= read -r rel; do
+        [[ -z "$rel" ]] && continue
+        target="$staging_dir/$rel"
+        mkdir -p "$(dirname "$target")"
+        cp "$source_dir/$rel" "$target"
+        staged_count=$((staged_count + 1))
+    done < "$resolved_file"
+
+    if [[ "$staged_count" -eq 0 ]]; then
+        echo -e "${RED}❌ Conversion selector resolved to no programs.${NC}" >&2
+        rm -rf "$staging_dir"
+        rm -f "$resolved_file" "$diagnostics_file"
+        return 1
+    fi
+
+    # Copybooks stage flat because COPY targets resolve by basename. Hidden directories are
+    # pruned so a previous staging run cannot contribute duplicates.
+    local copybook
+    while IFS= read -r -d '' copybook; do
+        cp "$copybook" "$staging_dir/$(basename "$copybook")" 2>/dev/null || true
+    done < <(find "$source_dir" -name '.*' -prune -o -type f -iname '*.cpy' -print0)
+
+    # Tells the converter the copybooks are COPY context for the selection, not conversion units.
+    export SELECTOR_MODE=true
+
+    echo -e "  ${BLUE}Conversion scope: ${staged_count} program(s) from selector '${selector}'.${NC}" >&2
+    echo -e "  ${BLUE}Selection manifest: ${manifest}${NC}" >&2
+    rm -f "$resolved_file" "$diagnostics_file"
+
+    echo "$staging_dir"
+}
+
 run_conversion_only() {
     echo -e "${BLUE}🔄 Starting COBOL to Java Conversion (Skip Reverse Engineering)${NC}"
     echo "================================================================"
@@ -2349,8 +2508,15 @@ run_conversion_only() {
     if [[ "$1" == "--resume" ]]; then
         resume_flag="--resume"
     fi
-    
-    "$DOTNET_CMD" run -- --source ./source --skip-reverse-engineering $reuse_re_flag $resume_flag
+
+    local conversion_source
+    if ! conversion_source="$(stage_conversion_scope "$REPO_ROOT/source" \
+        "$REPO_ROOT/source/.conversion-staging" "${CONVERSION_PROGRAM_SELECTOR:-}" \
+        "${CONVERSION_INCLUDE_CALLERS:-false}" "${CONVERSION_INCLUDE_CALLEES:-false}")"; then
+        return 1
+    fi
+
+    "$DOTNET_CMD" run -- --source "$conversion_source" --skip-reverse-engineering $reuse_re_flag $resume_flag
     local migration_exit=$?
 
     if [[ $migration_exit -ne 0 ]]; then
@@ -3373,6 +3539,9 @@ main() {
     # Create required directories if they don't exist
     mkdir -p "$REPO_ROOT/source" "$REPO_ROOT/output" "$REPO_ROOT/Logs"
 
+    parse_conversion_selector_flags "$@" || exit $?
+    set -- "${CONVERSION_REMAINING_ARGS[@]:-}"
+
     case "${1:-doctor}" in
         "setup")
             run_setup
@@ -3608,4 +3777,7 @@ check_chunking_health() {
 }
 
 # Run main function with all arguments
-main "$@"
+# Tests source this script to exercise individual functions, which must not run a command.
+if [[ "${DOCTOR_SOURCE_ONLY:-0}" != "1" ]]; then
+    main "$@"
+fi
