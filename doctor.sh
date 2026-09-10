@@ -127,6 +127,15 @@ show_usage() {
     echo -e "  - RE-Only Mode: Uses ChunkedReverseEngineeringProcess for analysis"
     echo -e "  No manual chunking flags required - detection is automatic."
     echo
+  echo -e "${BOLD}Conversion Parity (preview):${NC}"
+  echo -e "  After conversion, generated code is checked for structural coverage of the"
+  echo -e "  COBOL it came from. Results go to output/<target>/conversion-parity.json"
+  echo -e "  and the migration report. Parity never alters generated output."
+  echo -e "  ${GREEN}MIN_PROGRAM_SCORE${NC}=0.75   Flag programs scoring below this (0 still flags lost axes)"
+  echo -e "  ${GREEN}ON_LOW_SCORE${NC}=warn       'stop' also sets exit code 4"
+  echo -e "  $0 run               ${CYAN}# default: flag below 0.75, warn only${NC}"
+  echo -e "  MIN_PROGRAM_SCORE=0.8 ON_LOW_SCORE=stop $0 run   ${CYAN}# fail CI on a low score${NC}"
+  echo
 }
 
 # Resolve the migration database path (absolute) from config or environment
@@ -717,11 +726,11 @@ run_doctor() {
 
     config_files_ok=true
 
-    # Check template configuration
-    if [[ -f "$REPO_ROOT/Config/ai-config.env" ]]; then
-        echo -e "${GREEN}✅ Template configuration found: Config/ai-config.env${NC}"
+    # Check the example that local config is created from
+    if [[ -f "$REPO_ROOT/Config/ai-config.env.example" ]]; then
+        echo -e "${GREEN}✅ Example configuration found: Config/ai-config.env.example${NC}"
     else
-        echo -e "${RED}❌ Missing template configuration: Config/ai-config.env${NC}"
+        echo -e "${RED}❌ Missing example configuration: Config/ai-config.env.example${NC}"
         config_files_ok=false
     fi
 
@@ -2024,7 +2033,7 @@ run_validate() {
 
     # Check configuration files
     required_files=(
-        "Config/ai-config.env"
+        "Config/ai-config.env.example"
         "Config/load-config.sh"
         "Config/appsettings.json"
         "CobolToQuarkusMigration.csproj"

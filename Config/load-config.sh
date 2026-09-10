@@ -5,9 +5,11 @@
 # =============================================================================
 # This script loads AI configuration from centralized config files.
 # It supports multiple configuration sources with priority order:
-# 1. ai-config.local.env (local overrides - not in git)
-# 2. ai-config.env (template/defaults)
-# 3. Environment variables (if already set)
+# 1. Environment variables (if already set)
+# 2. ai-config.local.env (your settings - not in git)
+#
+# ai-config.env.example is a copy source for ai-config.local.env, never loaded:
+# its placeholder values would otherwise fill in for anything you left unset.
 # =============================================================================
 
 # Colors for output
@@ -23,7 +25,7 @@ CONFIG_DIR="$SCRIPT_DIR"
 
 # Configuration file paths
 LOCAL_CONFIG="$CONFIG_DIR/ai-config.local.env"
-TEMPLATE_CONFIG="$CONFIG_DIR/ai-config.env"
+EXAMPLE_CONFIG="$CONFIG_DIR/ai-config.env.example"
 
 # Function to log messages
 log_info() {
@@ -177,11 +179,11 @@ show_config_summary() {
     echo "  Output Folder: ${JAVA_OUTPUT_FOLDER:-'JavaOutput'}"
 }
 
-# Function to create local config from template
+# Function to create local config from the example
 create_local_config() {
-    if [ ! -f "$LOCAL_CONFIG" ] && [ -f "$TEMPLATE_CONFIG" ]; then
+    if [ ! -f "$LOCAL_CONFIG" ] && [ -f "$EXAMPLE_CONFIG" ]; then
         log_info "Creating local configuration file..."
-        cp "$TEMPLATE_CONFIG" "$LOCAL_CONFIG"
+        cp "$EXAMPLE_CONFIG" "$LOCAL_CONFIG"
         log_warning "Please edit $LOCAL_CONFIG with your actual Azure OpenAI credentials"
         log_warning "Remember to add ai-config.local.env to your .gitignore file"
         return 1
@@ -195,25 +197,18 @@ load_ai_config() {
     
     log_info "Loading AI configuration..."
     
-    # Create local config if it doesn't exist
     if ! create_local_config && [ "$validate_only" = "false" ]; then
         log_error "Local configuration needs to be updated before proceeding"
         return 1
     fi
     
-    # Load configuration files in priority order (local overrides first)
     load_env_file "$LOCAL_CONFIG" "local configuration"
     
-    # Then load template defaults for any remaining unset values
-    load_env_file "$TEMPLATE_CONFIG" "template configuration"
-    
-    # 3. Validate configuration
     if ! validate_config; then
         log_error "Configuration validation failed"
         return 1
     fi
     
-    # 4. Show summary
     show_config_summary
     
     log_success "Configuration loaded successfully"

@@ -84,6 +84,9 @@ public sealed class RektDataItem
     public string? Value { get; set; }
     public string? Redefines { get; set; }
     public int? Occurs { get; set; }
+    // Where the item was declared. smojol reports PROCEDURE_DIVISION for special registers it
+    // synthesises (WHEN-COMPILED, TALLY), which are not source-declared storage.
+    public string? SourceSection { get; set; }
     public List<RektDataItem> Children { get; set; } = new();
 }
 

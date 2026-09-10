@@ -976,7 +976,7 @@ This project uses a **layered configuration system** where `.env` files can over
 | File | Purpose | Git Tracked? |
 |------|---------|--------------|
 | `Config/appsettings.json` | **All settings** - models, chunking, Neo4j, output paths | ✅ Yes |
-| `Config/ai-config.env` | Template defaults | ✅ Yes |
+| `Config/ai-config.env.example` | Copy source for your local config | ✅ Yes |
 | `Config/ai-config.local.env` | **Your secrets** - API keys, endpoints | ❌ No (gitignored) |
 
 #### What Goes Where?
@@ -992,13 +992,13 @@ When you run `./doctor.sh run`, configuration loads in this order:
 
 ```mermaid
 flowchart LR
-    A["1. appsettings.json<br/>(base config)"] --> B["2. ai-config.env<br/>(template defaults)"]
-    B --> C["3. ai-config.local.env<br/>(your overrides)"]
-    C --> D["4. Environment vars<br/>(highest priority)"]
-    
+    A["1. appsettings.json<br/>(base config)"] --> C["2. ai-config.local.env<br/>(your settings)"]
+    C --> D["3. Environment vars<br/>(highest priority)"]
+
+    X["ai-config.env.example<br/>(copy source)"] -.->|copied once| C
     E["./doctor.sh setup<br/>(CLI)"] -.->|writes| C
     F["Portal Setup Modal<br/>(Browser)"] -.->|writes| C
-    
+
     style C fill:#90EE90
     style D fill:#FFD700
     style E fill:#4B8BBE
@@ -1009,6 +1009,9 @@ flowchart LR
 - `ai-config.local.env` overrides `appsettings.json`
 - Environment variables override everything
 
+`ai-config.env.example` is only ever copied to create your local config. It is not
+loaded at runtime, so its placeholder values cannot stand in for a setting you left unset.
+
 #### How doctor.sh Loads Config
 
 ```bash
@@ -1018,10 +1021,9 @@ load_ai_config                              # Executes loading
 ```
 
 The `load-config.sh` script:
-1. Reads `ai-config.local.env` first (your secrets)
-2. Falls back to `ai-config.env` for any unset values
-3. Exports all values as environment variables
-4. .NET app reads these env vars, which override `appsettings.json`
+1. Reads `ai-config.local.env` (your settings)
+2. Exports all values as environment variables
+3. .NET app reads these env vars, which override `appsettings.json`
 
 #### Quick Reference: Key Settings
 
@@ -1101,6 +1103,8 @@ See [Parallel Jobs Formula](#parallel-jobs-formula) for chunking configuration d
 - [Smart Chunking & Token Architecture](docs/smart-chunking-architecture.md) - Full diagrams, constants reference, and complexity scoring details
 - [Smart Chunking Guide](docs/smart-chunking-deep-dive.md) - Deep technical details
 - [Architecture Documentation](docs/REVERSE_ENGINEERING_ARCHITECTURE.md) - System design
+- [Dependency Health & Semantic Flow Explorer](docs/dependency-health-and-flow-explorer.md) - Deterministic parse-fidelity, topology and JCL chain surfaces for deciding conversion order
+- [Conversion Parity Validation](docs/conversion-parity-validation.md) - Deterministic check that generated code represents the COBOL it came from, with per-axis coverage and a configurable threshold
 - [Speed Profiles](docs/speed-profiles.md) - TURBO/FAST/BALANCED/THOROUGH env var overrides and complexity scoring
 - [Azure AD / Entra ID Authentication Guide](docs/az-login-auth-guide.md) - Keyless auth setup
 - [Changelog](CHANGELOG.md) - Version history
