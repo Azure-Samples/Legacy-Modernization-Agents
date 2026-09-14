@@ -28,14 +28,16 @@ public sealed class RektEstateReader
             ? folder
             : "source";
 
+    // Path.Combine, not Path.Join: COBOL_SOURCE_FOLDER may be an absolute path to an estate
+    // outside the repository, and letting a rooted value win is the intended behaviour here.
     public string SourceRoot => Path.Combine(RepoRoot, SourceFolderName);
 
-    public string RektDir => Path.Combine(RepoRoot, "output", "rekt");
+    public string RektDir => Path.Join(RepoRoot, "output", "rekt");
 
     public string ScanCacheDbPath =>
         Environment.GetEnvironmentVariable("REKT_SCAN_DB") is { Length: > 0 } db
             ? db
-            : Path.Combine(RepoRoot, RektScanCacheCommand.DefaultDbPath);
+            : Path.Join(RepoRoot, RektScanCacheCommand.DefaultDbPath);
 
     private static string ResolveRepoRoot()
     {
@@ -43,7 +45,7 @@ public sealed class RektEstateReader
         if (!string.IsNullOrEmpty(envRoot) && Directory.Exists(envRoot)) return envRoot;
 
         var dir = new DirectoryInfo(Directory.GetCurrentDirectory());
-        while (dir != null && !File.Exists(Path.Combine(dir.FullName, "doctor.sh")))
+        while (dir != null && !File.Exists(Path.Join(dir.FullName, "doctor.sh")))
             dir = dir.Parent;
         return dir?.FullName ?? Directory.GetCurrentDirectory();
     }
@@ -187,7 +189,7 @@ public sealed class RektEstateReader
             programs.Add(new RektProgramRecord(
                 Basename: basename,
                 RelativePath: relativePath,
-                LinesOfCode: facts?.Summary.Loc ?? CountLines(Path.Combine(sourceRoot, SourcePathHelper.ToOsRelativePath(relativePath))),
+                LinesOfCode: facts?.Summary.Loc ?? CountLines(Path.Join(sourceRoot, SourcePathHelper.ToOsRelativePath(relativePath))),
                 IsCopybook: facts?.Summary.IsCopybook ?? SourceTypeRegistry.IsCopybook(relativePath),
                 HasFacts: facts is not null,
                 FactsConfidence: (int)(facts?.Confidence ?? FactConfidence.None),
@@ -337,7 +339,7 @@ public sealed class RektEstateReader
 
         foreach (var candidate in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
         {
-            var full = Path.Combine(rektDir, SourcePathHelper.ToOsRelativePath(candidate));
+            var full = Path.Join(rektDir, SourcePathHelper.ToOsRelativePath(candidate));
             if (Directory.Exists(full)) return full;
         }
         return null;
@@ -351,23 +353,23 @@ public sealed class RektEstateReader
         var normalized = SourcePathHelper.NormalizeRelativePath(relativePath);
         var candidates = new List<string>
         {
-            Path.Combine(rektDir, SourcePathHelper.ToOsRelativePath($"{normalized}-deps.json")),
+            Path.Join(rektDir, SourcePathHelper.ToOsRelativePath($"{normalized}-deps.json")),
         };
 
         if (!ambiguous)
         {
-            candidates.Add(Path.Combine(rektDir, SourcePathHelper.ToOsRelativePath($"{basename}-deps.json")));
-            candidates.Add(Path.Combine(rektDir, $"{stem}-deps.json"));
-            candidates.Add(Path.Combine(rektDir, $"{stem}.cbl-deps.json"));
+            candidates.Add(Path.Join(rektDir, SourcePathHelper.ToOsRelativePath($"{basename}-deps.json")));
+            candidates.Add(Path.Join(rektDir, $"{stem}-deps.json"));
+            candidates.Add(Path.Join(rektDir, $"{stem}.cbl-deps.json"));
         }
 
         // Safe even when ambiguous: the report directory itself was resolved source-relative.
         var reportDir = ResolveReportDirectory(rektDir, relativePath, basename, stem, ambiguous);
         if (reportDir is not null)
         {
-            candidates.Add(Path.Combine(reportDir, $"{basename}-deps.json"));
-            candidates.Add(Path.Combine(reportDir, $"{stem}-deps.json"));
-            candidates.Add(Path.Combine(reportDir, $"{stem}.cbl-deps.json"));
+            candidates.Add(Path.Join(reportDir, $"{basename}-deps.json"));
+            candidates.Add(Path.Join(reportDir, $"{stem}-deps.json"));
+            candidates.Add(Path.Join(reportDir, $"{stem}.cbl-deps.json"));
         }
 
         return candidates.FirstOrDefault(File.Exists);
@@ -376,7 +378,7 @@ public sealed class RektEstateReader
     // Line format: COPYBOOK\treferenced by: A.cbl, B.cbl
     public IReadOnlyList<MissingCopybookRow> ReadMissingCopybooks()
     {
-        var path = Path.Combine(RektDir, "missing-copybooks.txt");
+        var path = Path.Join(RektDir, "missing-copybooks.txt");
         if (!File.Exists(path)) return Array.Empty<MissingCopybookRow>();
 
         var rows = new List<MissingCopybookRow>();
@@ -433,7 +435,7 @@ public sealed class RektEstateReader
     // the trailing statement period is not part of the name.
     private static List<string> ReadCopyStatements(string sourceRoot, string relativePath)
     {
-        var path = Path.Combine(sourceRoot, SourcePathHelper.ToOsRelativePath(relativePath));
+        var path = Path.Join(sourceRoot, SourcePathHelper.ToOsRelativePath(relativePath));
         if (!File.Exists(path)) return new List<string>();
         try
         {

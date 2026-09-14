@@ -277,8 +277,8 @@ public sealed class ModernizationIntelligenceService
 
         var flowAstDir = Path.Join(program.ReportDirectory, "flow_ast");
         snapshot.HasFlowAst = Directory.Exists(flowAstDir);
-        snapshot.HasCfg = Directory.Exists(Path.Combine(program.ReportDirectory, "cfg"));
-        snapshot.HasDataStructures = Directory.Exists(Path.Combine(program.ReportDirectory, "data_structures"));
+        snapshot.HasCfg = Directory.Exists(Path.Join(program.ReportDirectory, "cfg"));
+        snapshot.HasDataStructures = Directory.Exists(Path.Join(program.ReportDirectory, "data_structures"));
 
         if (snapshot.HasFlowAst)
         {
