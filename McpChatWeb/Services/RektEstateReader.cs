@@ -291,7 +291,7 @@ public sealed class RektEstateReader
     {
         try
         {
-            var flowAstDir = Path.Combine(reportDir, "flow_ast");
+            var flowAstDir = Path.Join(reportDir, "flow_ast");
             return Directory.Exists(flowAstDir) && Directory.EnumerateFiles(flowAstDir, "*.json").Any();
         }
         // An unreadable directory is indistinguishable from an absent flow AST, and both mean

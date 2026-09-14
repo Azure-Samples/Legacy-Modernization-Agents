@@ -275,7 +275,7 @@ public sealed class ModernizationIntelligenceService
 
         snapshot.ReportDirectory = Path.GetRelativePath(estate.RepoRoot, program.ReportDirectory);
 
-        var flowAstDir = Path.Combine(program.ReportDirectory, "flow_ast");
+        var flowAstDir = Path.Join(program.ReportDirectory, "flow_ast");
         snapshot.HasFlowAst = Directory.Exists(flowAstDir);
         snapshot.HasCfg = Directory.Exists(Path.Combine(program.ReportDirectory, "cfg"));
         snapshot.HasDataStructures = Directory.Exists(Path.Combine(program.ReportDirectory, "data_structures"));

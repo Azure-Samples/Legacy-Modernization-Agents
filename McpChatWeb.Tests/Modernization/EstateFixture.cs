@@ -106,9 +106,9 @@ internal sealed class EstateFixture : IDisposable
     // Nested layout, as rekt-full writes it: <stem>.report/flow_ast/<stem>.json.
     public EstateFixture AddReportFlowAst(string stem)
     {
-        var dir = Path.Combine(RektDir, $"{stem}.report", "flow_ast");
+        var dir = Path.Join(RektDir, $"{stem}.report", "flow_ast");
         Directory.CreateDirectory(dir);
-        File.WriteAllText(Path.Combine(dir, $"{stem}.json"), """
+        File.WriteAllText(Path.Join(dir, $"{stem}.json"), """
         { "nodeType": "SECTION", "name": "MAIN-SECTION", "startLine": 10, "endLine": 60, "children": [] }
         """);
         return this;

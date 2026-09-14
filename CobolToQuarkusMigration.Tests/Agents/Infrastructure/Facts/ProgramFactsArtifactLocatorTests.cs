@@ -28,8 +28,8 @@ public sealed class ProgramFactsArtifactLocatorTests : IDisposable
     [Fact]
     public void TryLoad_IgnoresFactsWrittenBeforeTheCurrentSchema()
     {
-        var factsDir = Path.Combine(_root, "facts");
-        var factsPath = Path.Combine(factsDir, "ACCOUNTS.cbl.facts.json");
+        var factsDir = Path.Join(_root, "facts");
+        var factsPath = Path.Join(factsDir, "ACCOUNTS.cbl.facts.json");
         Directory.CreateDirectory(factsDir);
         // Schema 1 recorded `EXEC` as a table's access mode for every embedded SQL statement,
         // and the file carries no other marker of that defect.
