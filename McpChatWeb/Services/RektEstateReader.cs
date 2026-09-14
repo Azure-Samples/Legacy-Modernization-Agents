@@ -92,9 +92,11 @@ public sealed class RektEstateReader
                         .Append(info.LastWriteTimeUtc.Ticks).Append('|');
                 }
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
             {
                 // An unreadable tree cannot be stamped reliably, so fall back to always reloading.
+                // Narrow deliberately: anything else is a defect and should surface, not be
+                // silently downgraded to a cache miss.
                 _logger.LogDebug(ex, "Could not stamp {Root}; estate cache disabled for this call.", root);
                 return Guid.NewGuid().ToString();
             }
@@ -291,7 +293,12 @@ public sealed class RektEstateReader
             var flowAstDir = Path.Combine(reportDir, "flow_ast");
             return Directory.Exists(flowAstDir) && Directory.EnumerateFiles(flowAstDir, "*.json").Any();
         }
-        catch { return false; }
+        // An unreadable directory is indistinguishable from an absent flow AST, and both mean
+        // the same thing here. Anything else is a defect and must not be reported as fidelity.
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            return false;
+        }
     }
 
     private static ProgramFacts? TryLoadFacts(string rektDir, string relativePath)
