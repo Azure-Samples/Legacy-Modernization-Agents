@@ -104,9 +104,14 @@ public sealed class ServiceChainSnapshot
     // Every job name in the estate, so a filtered response can still populate the picker.
     public List<string> AllJobNames { get; } = new();
     public List<ProgramChain> Programs { get; } = new();
+    // Steps whose program could not be determined. Without these a PROC-driven estate
+    // looks unscheduled, which reads as a finding rather than as missing evidence.
+    public List<UnresolvedStep> UnresolvedSteps { get; } = new();
     public string Mermaid { get; set; } = "";
     public string? Note { get; set; }
 }
+
+public sealed record UnresolvedStep(string JobName, string StepName, string ProcName);
 
 public sealed record JclJob(
     string JobName,
