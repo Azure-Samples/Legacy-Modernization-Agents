@@ -192,7 +192,8 @@ class ModernizationIntelligenceView {
     </div>
     <div class="mi-stats">
       ${miStat('Readiness', `${(d.readinessScore ?? 0).toFixed(1)}%`, 'full=1 · partial=0.5 · deps-only=0.25')}
-      ${miStat('Coverage', `${(d.coveragePct ?? 0).toFixed(1)}%`, 'Full fidelity share')}
+      ${miStat('Coverage', d.coverageMeasured ? `${(d.coveragePct ?? 0).toFixed(1)}%` : '—',
+        d.coverageMeasured ? 'Full fidelity share' : 'Not measured — no scan cache')}
       ${miStat('Scan-cache backed', d.scanCacheBackedCount, 'Measured, not inferred')}
       ${miStat('Missing copybooks', d.totalMissingCopybooks, 'Distinct names unresolved', d.totalMissingCopybooks ? MI_FIDELITY.failed.color : undefined)}
       ${miStat('Blocked programs', d.programsBlockedByMissing, 'Reference a missing copybook', d.programsBlockedByMissing ? MI_FIDELITY.partial.color : undefined)}

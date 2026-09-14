@@ -9,6 +9,9 @@ public sealed class DependencyHealthSnapshot
     public int FailedCount { get; set; }
     public int NotParsedCount { get; set; }
     public int ScanCacheBackedCount { get; set; }
+    // False when nothing in the estate carries a measured outcome, so a zero coverage figure
+    // would report absent evidence as a bad result.
+    public bool CoverageMeasured { get; set; }
     public double CoveragePct { get; set; }
     public int TotalMissingCopybooks { get; set; }
     public int ProgramsBlockedByMissing { get; set; }

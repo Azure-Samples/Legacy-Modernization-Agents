@@ -97,6 +97,11 @@ public sealed class ModernizationIntelligenceService
 
         snapshot.ScanCacheBackedCount = programs.Count(p => p.FidelitySource == FidelitySources.ScanCache);
 
+        // Only a measured outcome can establish Full, so without one a 0% coverage figure
+        // describes the evidence rather than the estate.
+        snapshot.CoverageMeasured = programs.Count > 0
+            && programs.Any(p => p.FidelitySource is FidelitySources.ScanCache or FidelitySources.Facts);
+
         // Derived from the rows above so the headline cannot disagree with the table: the
         // report also names copybooks, which are not conversion units and not counted here.
         snapshot.ProgramsBlockedByMissing = snapshot.Programs.Count(p => p.MissingCopybookCount > 0);

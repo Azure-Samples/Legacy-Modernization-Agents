@@ -102,7 +102,7 @@ public sealed class RektEstateReader
             if (!ambiguous) scanEntries.TryGetValue(basename, out scanEntry);
 
             var (fidelity, fidelitySource) = ResolveFidelity(
-                scanEntry, facts, reportDir is not null, depsPath is not null);
+                scanEntry, facts, reportDir, depsPath is not null);
 
             programs.Add(new RektProgramRecord(
                 Basename: basename,
@@ -164,7 +164,7 @@ public sealed class RektEstateReader
     private static (string Fidelity, string Source) ResolveFidelity(
         RektScanEntry? scanEntry,
         ProgramFacts? facts,
-        bool hasReport,
+        string? reportDir,
         bool hasDeps)
     {
         if (scanEntry is not null)
@@ -192,11 +192,28 @@ public sealed class RektEstateReader
             return (fidelity, FidelitySources.Facts);
         }
 
-        // Artifact presence proves a parse ran, not that it succeeded: a stub-backed parse
-        // emits a report directory indistinguishable from a clean one. Never infer Full.
-        if (hasReport) return (ParseFidelity.Partial, FidelitySources.Artifacts);
+        // Graded by content rather than presence. Still never Full: a stub-backed parse writes
+        // the same directories as a clean one, so only a measured outcome can establish that.
+        // A report without a flow AST is a degenerate parse, which presence alone overstates.
+        if (reportDir is not null)
+        {
+            return HasFlowAstContent(reportDir)
+                ? (ParseFidelity.Partial, FidelitySources.Artifacts)
+                : (ParseFidelity.DepsOnly, FidelitySources.Artifacts);
+        }
+
         if (hasDeps) return (ParseFidelity.DepsOnly, FidelitySources.Artifacts);
         return (ParseFidelity.NotParsed, FidelitySources.None);
+    }
+
+    private static bool HasFlowAstContent(string reportDir)
+    {
+        try
+        {
+            var flowAstDir = Path.Combine(reportDir, "flow_ast");
+            return Directory.Exists(flowAstDir) && Directory.EnumerateFiles(flowAstDir, "*.json").Any();
+        }
+        catch { return false; }
     }
 
     private static ProgramFacts? TryLoadFacts(string rektDir, string relativePath)
