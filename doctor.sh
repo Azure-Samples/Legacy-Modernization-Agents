@@ -3090,6 +3090,24 @@ PYEOF
         fi
     fi
 
+    # smojol resolves a program by filename and searches --srcDir recursively, so a
+    # source-relative path never matches and every nested program is reported missing.
+    # It is invoked by basename and its output is moved back to the nested layout, which
+    # the artifact locators and the v2-source-relative identity scheme depend on.
+    relocate_rekt_report() {
+        local flat_name="$1" nested_rel="$2"
+        [[ "$flat_name" == "$nested_rel" ]] && return 0
+
+        local out_root="$REPO_ROOT/output/rekt"
+        local flat_path="$out_root/${flat_name}.report"
+        local nested_path="$out_root/${nested_rel}.report"
+        [[ -d "$flat_path" ]] || return 0
+
+        mkdir -p "$(dirname "$nested_path")"
+        rm -rf "$nested_path"
+        mv "$flat_path" "$nested_path"
+    }
+
     # Use process substitution so succeeded/failed counters persist outside the loop
     while IFS= read -r cbl_file; do
         [[ -e "$cbl_file" ]] || continue
@@ -3150,7 +3168,7 @@ PYEOF
         fi
 
         # Attempt 1: Standard dialect (handles CICS, SQL, standard COBOL)
-        if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$rel_program" \
+        if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
             --commands="BUILD_BASE_ANALYSIS WRITE_FLOW_AST WRITE_CFG WRITE_DATA_STRUCTURES" \
             --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
             --dialectJarPath=/app/dialect-idms.jar \
@@ -3162,7 +3180,7 @@ PYEOF
             parse_outcome="Full"
         else
             # Attempt 2: Retry without dialect JAR (for IMS/DL/I and other dialects)
-            if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$rel_program" \
+            if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
                 --commands="BUILD_BASE_ANALYSIS WRITE_FLOW_AST WRITE_CFG WRITE_DATA_STRUCTURES" \
                 --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
                 --reportDir=/output \
@@ -3173,7 +3191,7 @@ PYEOF
                 parse_outcome="NoDialect"
             else
                 # Attempt 3: Raw AST only (tolerates more parse errors)
-                if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$rel_program" \
+                if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
                     --commands="WRITE_RAW_AST" \
                     --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
                     --reportDir=/output \
@@ -3185,14 +3203,14 @@ PYEOF
                 else
                     # Dependency extraction can remain useful when AST writing fails.
                     local dep_ok=false
-                    if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar dependency "$rel_program" \
+                    if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar dependency "$fname" \
                         --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
                         --dialectJarPath=/app/dialect-idms.jar \
                         --export=/output/"${rel_program}"-deps.json >/dev/null 2>>"$err_log"; then
                         dep_ok=true
                     fi
                     # Also try validate (may report warnings but still useful)
-                    docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar validate "$rel_program" \
+                    docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar validate "$fname" \
                         --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
                         --dialectJarPath=/app/dialect-idms.jar >/dev/null 2>>"$err_log" || true
 
@@ -3219,6 +3237,10 @@ PYEOF
                 fi
             fi
         fi
+
+        # Relocated per program rather than after the loop, so two programs sharing a
+        # basename cannot overwrite each other's flat report.
+        relocate_rekt_report "$fname" "$rel_program"
 
         if [[ -n "$stub_warnings" ]]; then
             if [[ "$parse_outcome" == "Full" || "$parse_outcome" == "NoDialect" ]]; then
