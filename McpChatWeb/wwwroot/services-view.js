@@ -68,7 +68,10 @@ class ServicesView {
     try {
       if (!this.architecture) {
         const runId = window.getSelectedScanRunId?.() ?? 'latest';
-        const qs = /^\d+$/.test(String(runId)) ? `?scanRunId=${runId}` : '';
+        // Sent verbatim: the server resolves "latest" to the most recent scan and "all" to
+        // every run. Dropping a non-numeric value made the two options identical and showed
+        // programs from estates that no longer exist.
+        const qs = `?scanRunId=${encodeURIComponent(String(runId))}`;
         const [services, architect] = await Promise.all([
           fetch(`/api/graph/rekt/services${qs}`).then(r => r.ok ? r.json() : { note: SV_UNREACHABLE }),
           fetch(`/api/graph/rekt/architect${qs}`).then(r => r.ok ? r.json() : { note: SV_UNREACHABLE }),
