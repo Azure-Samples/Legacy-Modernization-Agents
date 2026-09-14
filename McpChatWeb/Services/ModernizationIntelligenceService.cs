@@ -622,10 +622,13 @@ public sealed class ModernizationIntelligenceService
         var renderedPrograms = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var renderedCopybooks = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var edges = 0;
+        // Set only where a break leaves an unrendered item, so a diagram that ends exactly
+        // on the cap is not reported as truncated.
+        var truncated = false;
 
         foreach (var job in snapshot.Jobs)
         {
-            if (edges >= MaxMermaidEdges) break;
+            if (edges >= MaxMermaidEdges) { truncated = true; break; }
 
             var jobId = Sanitize($"j_{job.JobName}");
             if (renderedJobs.Add(job.JobName))
@@ -633,7 +636,7 @@ public sealed class ModernizationIntelligenceService
 
             foreach (var pgm in job.PrimaryPrograms)
             {
-                if (edges >= MaxMermaidEdges) break;
+                if (edges >= MaxMermaidEdges) { truncated = true; break; }
 
                 var pgmId = Sanitize($"p_{pgm}");
                 if (renderedPrograms.Add(pgm))
@@ -644,7 +647,7 @@ public sealed class ModernizationIntelligenceService
                 if (!programByStem.TryGetValue(pgm, out var chain)) continue;
                 foreach (var copybook in chain.Copybooks)
                 {
-                    if (edges >= MaxMermaidEdges) break;
+                    if (edges >= MaxMermaidEdges) { truncated = true; break; }
                     AppendCopybook(sb, renderedCopybooks, pgmId, copybook);
                     edges++;
                 }
@@ -655,7 +658,7 @@ public sealed class ModernizationIntelligenceService
         // rather than dropping it.
         foreach (var program in snapshot.Programs)
         {
-            if (edges >= MaxMermaidEdges) break;
+            if (edges >= MaxMermaidEdges) { truncated = true; break; }
             if (renderedPrograms.Contains(program.Stem)) continue;
 
             var pgmId = Sanitize($"p_{program.Stem}");
@@ -664,13 +667,13 @@ public sealed class ModernizationIntelligenceService
 
             foreach (var copybook in program.Copybooks)
             {
-                if (edges >= MaxMermaidEdges) break;
+                if (edges >= MaxMermaidEdges) { truncated = true; break; }
                 AppendCopybook(sb, renderedCopybooks, pgmId, copybook);
                 edges++;
             }
         }
 
-        return new MermaidDiagram(sb.ToString(), edges, edges >= MaxMermaidEdges);
+        return new MermaidDiagram(sb.ToString(), edges, truncated);
     }
 
     private static void AppendCopybook(

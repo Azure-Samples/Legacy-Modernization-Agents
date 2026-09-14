@@ -217,6 +217,22 @@ public class ModernizationIntelligenceServiceTests
     }
 
     [Fact]
+    public async Task ServiceChain_DiagramWithinCap_IsNotReportedTruncated()
+    {
+        using var fixture = new EstateFixture();
+        fixture.AddProgram("CUSTOMER.cbl");
+        fixture.AddJcl("jcl/NIGHTLY.jcl", """
+            //NIGHTLY  JOB (ACCT),'A',CLASS=A
+            //STEP010  EXEC PGM=CUSTOMER
+            """);
+
+        var chain = await ServiceFor(fixture).GetServiceChainAsync(null, null, includeUtilities: false);
+
+        Assert.False(chain.MermaidTruncated);
+        Assert.NotEqual(0, chain.MermaidEdgeCount);
+    }
+
+    [Fact]
     public async Task ServiceChain_HyphenatedProgramNames_StillLinkJobsToPrograms()
     {
         using var fixture = new EstateFixture();

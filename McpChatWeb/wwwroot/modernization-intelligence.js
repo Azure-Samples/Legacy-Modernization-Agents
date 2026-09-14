@@ -105,13 +105,13 @@ class ModernizationIntelligenceView {
           </div>
         </div>
         <div class="mi-subnav">
-          <button class="mi-subtab" data-sub="dashboard">📊 Modernization Dashboard</button>
-          <button class="mi-subtab" data-sub="applications">📚 Application Explorer</button>
           <button class="mi-subtab mi-subtab-active" data-sub="health">⚕️ Dependency Health</button>
           <button class="mi-subtab" data-sub="chain">🔗 Service Chain (JCL→Pgm→Cpy)</button>
-          <button class="mi-subtab" data-sub="runtime">⏱ Runtime &amp; Conversion Intelligence</button>
           <button class="mi-subtab" data-sub="topology">🕸 Dependency Topology</button>
           <button class="mi-subtab" data-sub="flow">🌊 Semantic Flow Explorer</button>
+          <button class="mi-subtab" data-sub="dashboard">📊 Modernization Dashboard</button>
+          <button class="mi-subtab" data-sub="applications">📚 Application Explorer</button>
+          <button class="mi-subtab" data-sub="runtime">⏱ Runtime &amp; Conversion Intelligence</button>
           <button class="mi-subtab" data-sub="services">🧩 Service Candidates</button>
           <button class="mi-subtab" data-sub="waves">🚀 Migration Wave Planner</button>
           <button class="mi-subtab" data-sub="capabilities">🎯 Capabilities &amp; Locator</button>
