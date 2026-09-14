@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using CobolToQuarkusMigration.Helpers;
 
@@ -292,7 +293,10 @@ public sealed class ModernizationIntelligenceService
                     .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
                     .ToList();
             }
-            catch { /* unreadable artifact directory — report what we have */ }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+            {
+                // Unreadable artifact directory — report what we have.
+            }
         }
 
         PopulateProceduralDetail(snapshot, program.RelativePath);
@@ -310,7 +314,7 @@ public sealed class ModernizationIntelligenceService
             var loader = new RektContextLoader(_estate.RepoRoot, _estate.RektDir);
             context = loader.Load(relativePath, _estate.SourceFolderName);
         }
-        catch (Exception)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException or JsonException)
         {
             snapshot.Note ??= "REKT artifacts for this program could not be read.";
             return;
@@ -404,7 +408,7 @@ public sealed class ModernizationIntelligenceService
 
             string content;
             try { content = File.ReadAllText(jclFile); }
-            catch { continue; }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException) { continue; }
 
             var jobName = JobCardRegex.Match(content) is { Success: true } m
                 ? m.Groups["name"].Value.ToUpperInvariant()
@@ -595,7 +599,7 @@ public sealed class ModernizationIntelligenceService
                 .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
                 .ToList();
         }
-        catch { return new List<string>(); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException) { return new List<string>(); }
     }
 
     // Capped at MaxMermaidEdges because the client-side renderer becomes unusable well

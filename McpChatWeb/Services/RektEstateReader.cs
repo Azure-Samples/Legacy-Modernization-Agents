@@ -234,7 +234,8 @@ public sealed class RektEstateReader
                 .ConfigureAwait(false);
             return new Dictionary<string, RektScanEntry>(entries, StringComparer.OrdinalIgnoreCase);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException
+            or Microsoft.Data.Sqlite.SqliteException)
         {
             _logger.LogWarning(ex, "Scan cache unreadable at {DbPath}; falling back to artifacts.", dbPath);
             return empty;
@@ -305,7 +306,13 @@ public sealed class RektEstateReader
     {
         if (!Directory.Exists(rektDir)) return null;
         try { return ProgramFactsArtifactLocator.TryLoad(rektDir, relativePath); }
-        catch { return null; }
+        // Unreadable or malformed facts are indistinguishable from absent ones here. Anything
+        // else is a defect, and must not be reported as a program lacking facts.
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+            or System.Security.SecurityException or JsonException)
+        {
+            return null;
+        }
     }
 
     // Mirrors the CLI's REKT context loader, so both agree which layout belongs to a program.
@@ -399,7 +406,8 @@ public sealed class RektEstateReader
                 rows.Add(new MissingCopybookRow(copybook, references));
             }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+            or System.Security.SecurityException)
         {
             _logger.LogWarning(ex, "Could not read {Path}.", path);
         }
@@ -418,7 +426,7 @@ public sealed class RektEstateReader
             if (bytes.Length > 0 && bytes[^1] != (byte)'\n') lines++;
             return lines;
         }
-        catch { return 0; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException) { return 0; }
     }
 
     // Fallback for when REKT produced no dependency export. Names are kept as written;
@@ -435,7 +443,7 @@ public sealed class RektEstateReader
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
         }
-        catch { return new List<string>(); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException) { return new List<string>(); }
     }
 
     private static IEnumerable<string> EnumerateCopybookRelativePaths(string root) =>
@@ -466,7 +474,7 @@ public sealed class RektEstateReader
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
         }
-        catch { return null; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException or JsonException) { return null; }
     }
 
     internal static readonly System.Text.RegularExpressions.Regex CopyStatementRegex = new(
