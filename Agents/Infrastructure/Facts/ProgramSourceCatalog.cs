@@ -323,7 +323,13 @@ public static class ProgramFactsArtifactLocator
 
         try
         {
-            return JsonSerializer.Deserialize<ProgramFacts>(File.ReadAllText(path));
+            var facts = JsonSerializer.Deserialize<ProgramFacts>(File.ReadAllText(path));
+            // Facts written before the current schema are treated as absent rather than
+            // trusted: schema 1 recorded `EXEC` as a table's access mode for every embedded
+            // SQL statement, and nothing in the file distinguishes that from a correct value.
+            return facts is null || facts.SchemaVersion < ProgramFacts.CurrentSchemaVersion
+                ? null
+                : facts;
         }
         catch
         {

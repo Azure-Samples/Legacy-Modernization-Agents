@@ -692,8 +692,27 @@ public sealed class ModernizationIntelligenceService
 
     private readonly record struct MermaidDiagram(string Text, int EdgeCount, bool Truncated);
 
-    private static string Sanitize(string value) =>
-        new(value.Select(c => char.IsLetterOrDigit(c) || c == '_' ? c : '_').ToArray());
+    // Two names differing only in punctuation would otherwise collapse to the same node id
+    // and silently merge into one box, so a short digest of the original disambiguates them.
+    private static string Sanitize(string value)
+    {
+        var mapped = new string(value.Select(c => char.IsLetterOrDigit(c) || c == '_' ? c : '_').ToArray());
+        return $"{mapped}_{StableDigest(value)}";
+    }
+
+    // FNV-1a: stable across processes, unlike string.GetHashCode.
+    private static string StableDigest(string value)
+    {
+        const uint offset = 2166136261;
+        const uint prime = 16777619;
+        var hash = offset;
+        foreach (var b in System.Text.Encoding.UTF8.GetBytes(value))
+        {
+            hash ^= b;
+            hash *= prime;
+        }
+        return hash.ToString("x8");
+    }
 
     private static string Escape(string value) =>
         (value ?? "").Replace("\"", "'").Replace('\n', ' ').Replace('\r', ' ');

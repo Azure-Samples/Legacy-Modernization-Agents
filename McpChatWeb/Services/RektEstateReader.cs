@@ -9,6 +9,9 @@ namespace McpChatWeb.Services;
 public sealed class RektEstateReader
 {
     private readonly ILogger<RektEstateReader> _logger;
+    private readonly SemaphoreSlim _cacheGate = new(1, 1);
+    private RektEstate? _cached;
+    private string? _cachedStamp;
 
     // repoRoot is supplied by tests so a synthetic estate can be read without
     // mutating process-global environment variables.
@@ -45,7 +48,82 @@ public sealed class RektEstateReader
         return dir?.FullName ?? Directory.GetCurrentDirectory();
     }
 
+    // One dashboard load calls four endpoints, and each one walked the whole estate: without
+    // facts every program was re-read to count lines and re-scanned for COPY statements.
+    // The stamp is recomputed each call, which is one directory walk instead of four full reads.
     public async Task<RektEstate> ReadAsync(CancellationToken cancellationToken = default)
+    {
+        var stamp = ComputeEstateStamp();
+
+        await _cacheGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_cached is not null && _cachedStamp == stamp) return _cached;
+
+            var estate = await ReadUncachedAsync(cancellationToken).ConfigureAwait(false);
+            _cached = estate;
+            _cachedStamp = stamp;
+            return estate;
+        }
+        finally
+        {
+            _cacheGate.Release();
+        }
+    }
+
+    // Size and write time of every source and artifact entry. A re-parse rewrites artifacts,
+    // and an edited program changes its own entry, so either invalidates the cache.
+    private string ComputeEstateStamp()
+    {
+        var builder = new System.Text.StringBuilder();
+        foreach (var root in new[] { SourceRoot, RektDir })
+        {
+            builder.Append(root).Append('|');
+            if (!Directory.Exists(root)) continue;
+            try
+            {
+                foreach (var entry in Directory
+                    .EnumerateFileSystemEntries(root, "*", SearchOption.AllDirectories)
+                    .OrderBy(p => p, StringComparer.Ordinal))
+                {
+                    var info = new FileInfo(entry);
+                    builder.Append(entry).Append(':')
+                        .Append(info.Exists ? info.Length : -1).Append(':')
+                        .Append(info.LastWriteTimeUtc.Ticks).Append('|');
+                }
+            }
+            catch (Exception ex)
+            {
+                // An unreadable tree cannot be stamped reliably, so fall back to always reloading.
+                _logger.LogDebug(ex, "Could not stamp {Root}; estate cache disabled for this call.", root);
+                return Guid.NewGuid().ToString();
+            }
+        }
+
+        var db = ScanCacheDbPath;
+        if (File.Exists(db))
+        {
+            var info = new FileInfo(db);
+            builder.Append(db).Append(':').Append(info.Length).Append(':').Append(info.LastWriteTimeUtc.Ticks);
+        }
+
+        return StableDigest(builder.ToString());
+    }
+
+    private static string StableDigest(string value)
+    {
+        const ulong offset = 14695981039346656037;
+        const ulong prime = 1099511628211;
+        var hash = offset;
+        foreach (var b in System.Text.Encoding.UTF8.GetBytes(value))
+        {
+            hash ^= b;
+            hash *= prime;
+        }
+        return hash.ToString("x16");
+    }
+
+    private async Task<RektEstate> ReadUncachedAsync(CancellationToken cancellationToken)
     {
         var sourceRoot = SourceRoot;
         if (!Directory.Exists(sourceRoot))

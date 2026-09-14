@@ -188,4 +188,23 @@ public class RektEstateReaderTests
         Assert.Empty(estate.Programs);
         Assert.NotNull(estate.Note);
     }
+
+    [Fact]
+    public async Task RepeatedRead_ReturnsCachedEstateUntilTheEstateChanges()
+    {
+        using var fixture = new EstateFixture();
+        fixture.AddProgram("CUSTOMER.cbl");
+        var reader = ReaderFor(fixture);
+
+        var first = await reader.ReadAsync();
+        var second = await reader.ReadAsync();
+        Assert.Same(first, second);
+
+        // A re-parse rewrites artifacts, which must be picked up rather than served stale.
+        fixture.AddProgram("BILLING.cbl");
+        var third = await reader.ReadAsync();
+
+        Assert.NotSame(first, third);
+        Assert.Equal(2, third.Programs.Count);
+    }
 }

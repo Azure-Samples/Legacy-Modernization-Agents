@@ -22,12 +22,14 @@ public static class RektNeo4j
         Environment.GetEnvironmentVariable("REKT_NEO4J_PASSWORD")
         ?? Environment.GetEnvironmentVariable("NEO4J_PASSWORD");
 
-    // Endpoints check this first so an unconfigured environment returns a note, not a 500.
-    public static bool IsConfigured => !string.IsNullOrEmpty(Password);
+    // A password is not required: a local graph may run with auth disabled, which is a normal
+    // development setup. Connecting unauthenticated is attempted rather than reported as
+    // "not configured", so the banner never blames credentials for a reachable graph.
+    public static bool IsConfigured => true;
 
     public const string NotConfiguredNote =
-        "REKT graph credentials are not configured. Set REKT_NEO4J_PASSWORD (or NEO4J_PASSWORD) " +
-        "and run ./doctor.sh rekt-full to populate the graph.";
+        "REKT graph is not reachable. Start it with ./doctor.sh rekt-full, and set " +
+        "REKT_NEO4J_PASSWORD (or NEO4J_PASSWORD) if the instance requires authentication.";
 
     // Process-wide shared driver. Never dispose per request.
     public static IDriver Shared
@@ -40,12 +42,13 @@ public static class RektNeo4j
                 if (_driver is not null) return _driver;
 
                 var password = Password;
-                if (string.IsNullOrEmpty(password))
-                    throw new InvalidOperationException(NotConfiguredNote);
+                var auth = string.IsNullOrEmpty(password)
+                    ? AuthTokens.None
+                    : AuthTokens.Basic(User, password);
 
                 _driver = GraphDatabase.Driver(
                     Uri,
-                    AuthTokens.Basic(User, password),
+                    auth,
                     o => o
                         .WithMaxConnectionPoolSize(50)
                         // Fail fast: the default is 60s, long enough to look like a hang.

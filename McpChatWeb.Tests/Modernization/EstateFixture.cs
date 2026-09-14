@@ -58,7 +58,7 @@ internal sealed class EstateFixture : IDisposable
 
         var json = $$"""
         {
-          "schemaVersion": 1,
+          "schemaVersion": {{CobolToQuarkusMigration.Agents.Infrastructure.Facts.ProgramFacts.CurrentSchemaVersion}},
           "identitySchemeVersion": "v2-source-relative",
           "basename": "{{Path.GetFileName(normalized)}}",
           "stem": "{{Path.GetFileNameWithoutExtension(normalized)}}",
