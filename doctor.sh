@@ -3058,12 +3058,17 @@ PYEOF
 
     declare rekt_skip_set=""
     local rekt_manifest=""
+    # The outcome is measured for every program on every run. Recording it unconditionally is
+    # what lets the portal report the fidelity the parser observed instead of inferring it
+    # from which directories happen to exist.
+    if command -v dotnet >/dev/null 2>&1 && [[ -f "$REPO_ROOT/CobolToQuarkusMigration.csproj" ]]; then
+        rekt_manifest=$(mktemp -t rekt-scan-manifest.XXXXXX)
+    fi
     if [[ "$rekt_inc" == "true" ]]; then
         if command -v dotnet >/dev/null 2>&1 && [[ -f "$REPO_ROOT/CobolToQuarkusMigration.csproj" ]]; then
             local rekt_db="${_REKT_SCAN_DB:-$REPO_ROOT/Data/rekt-scan.db}"
             local rekt_plan_file
             rekt_plan_file=$(mktemp -t rekt-scan-plan.XXXXXX)
-            rekt_manifest=$(mktemp -t rekt-scan-manifest.XXXXXX)
             echo -e "  ${BLUE}Incremental REKT cache: planning…${NC}"
             # Forward the filter so the planner only considers targeted programs.
             local _plan_programs_arg=()
@@ -3265,19 +3270,22 @@ PYEOF
         fi
 
         # Append outcomes for batch recording after the loop.
-        if [[ "$rekt_inc" == "true" && -n "$rekt_manifest" ]]; then
+        if [[ -n "$rekt_manifest" ]]; then
             printf '%s\t%s\t%s\n' "$fname" "$parse_outcome" "$stub_warnings" >> "$rekt_manifest"
         fi
     done < <(find "$staging_dir" -type f \( -name "*.cbl" -o -name "*.CBL" -o -name "*.cob" -o -name "*.COB" \) | sort)
 
     # Persist outcomes in one dotnet invocation.
-    if [[ "$rekt_inc" == "true" && -n "$rekt_manifest" && -s "$rekt_manifest" ]]; then
+    if [[ -n "$rekt_manifest" && -s "$rekt_manifest" ]]; then
         local rekt_db="${_REKT_SCAN_DB:-$REPO_ROOT/Data/rekt-scan.db}"
+        # The cache is keyed by basename, so duplicates would overwrite each other. The portal
+        # already refuses to trust an entry whose basename is ambiguous, so recording is safe.
         (cd "$REPO_ROOT" && dotnet run --project CobolToQuarkusMigration.csproj --no-build -- \
                 rekt-scan-cache record-batch "$rekt_manifest" \
                 --staging-dir "$staging_dir" \
-                --db "$rekt_db" >/dev/null 2>&1) || \
-            echo -e "  ${YELLOW}⚠️  Incremental cache record-batch failed (results not persisted).${NC}"
+                --db "$rekt_db" >/dev/null 2>&1) && \
+            echo -e "  ${GREEN}✅ Parse outcomes recorded to $(basename "$rekt_db")${NC}" || \
+            echo -e "  ${YELLOW}⚠️  Could not record parse outcomes; fidelity falls back to artifacts.${NC}"
         rm -f "$rekt_manifest"
     fi
 
