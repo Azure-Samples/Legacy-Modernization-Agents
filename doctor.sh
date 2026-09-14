@@ -2599,6 +2599,21 @@ run_rekt_parse() {
     detect_docker_api_version
     ensure_rekt_containers || return 1
 
+    # The portal resolves the estate through COBOL_SOURCE_FOLDER while this script parses
+    # source/. When they disagree the parse succeeds and every portal view reads empty,
+    # with nothing to explain why.
+    local configured_source="${COBOL_SOURCE_FOLDER:-source}"
+    if [[ "$configured_source" != "source" ]]; then
+        echo -e "${RED}❌ COBOL_SOURCE_FOLDER is '$configured_source' but the parser reads source/${NC}"
+        echo ""
+        echo "Artifacts would be written for source/ while the portal reads"
+        echo "$configured_source/, leaving every modernization view empty."
+        echo ""
+        echo "Set this in Config/ai-config.local.env:"
+        echo "  COBOL_SOURCE_FOLDER=\"source\""
+        return 1
+    fi
+
     local cobol_count
     cobol_count=$(find "$REPO_ROOT/source" \
         \( -name "*.cbl" -o -name "*.CBL" -o -name "*.cob" -o -name "*.COB" \) \
