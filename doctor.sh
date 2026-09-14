@@ -406,6 +406,24 @@ load_configuration() {
             fi
         fi
 
+        if [[ -z "${REKT_NEO4J_PASSWORD:-}" && -f "$REPO_ROOT/Config/ai-config.local.env" ]]; then
+            local rekt_line
+            rekt_line=$(grep -E '^REKT_NEO4J_PASSWORD=' "$REPO_ROOT/Config/ai-config.local.env" | tail -1)
+            if [[ -n "$rekt_line" ]]; then
+                REKT_NEO4J_PASSWORD="${rekt_line#REKT_NEO4J_PASSWORD=}"
+                REKT_NEO4J_PASSWORD="${REKT_NEO4J_PASSWORD%\"}"
+                REKT_NEO4J_PASSWORD="${REKT_NEO4J_PASSWORD#\"}"
+                REKT_NEO4J_PASSWORD="${REKT_NEO4J_PASSWORD%\'}"
+                REKT_NEO4J_PASSWORD="${REKT_NEO4J_PASSWORD#\'}"
+                export REKT_NEO4J_PASSWORD
+            fi
+        fi
+
+        # The REKT graph is a second instance; unset means it shares the migration credential.
+        if [[ -z "${REKT_NEO4J_PASSWORD:-}" && -n "${NEO4J_PASSWORD:-}" ]]; then
+            export REKT_NEO4J_PASSWORD="$NEO4J_PASSWORD"
+        fi
+
         if [[ -n "${NEO4J_PASSWORD:-}" ]]; then
             export ApplicationSettings__Neo4j__Password="$NEO4J_PASSWORD"
         fi
@@ -1377,6 +1395,10 @@ AISETTINGS__CHATENDPOINT="https://copilot-sdk-placeholder"
 # Username: neo4j
 # NOT FOR PRODUCTION, ENSURE TO CHANGE PASSWORD
 NEO4J_PASSWORD="cobol-rekt-2026"
+
+# The REKT graph is a second Neo4j instance. Leave unset to share the value above; set it
+# only when that instance's data volume already exists with a different password.
+#REKT_NEO4J_PASSWORD=""
 EOF
 
         # Append GitHub host if not default
@@ -2526,6 +2548,26 @@ ensure_rekt_containers() {
     done
     echo -e " ${GREEN}✅${NC}"
 
+    # The loop above authenticates inside the container, which always agrees with itself.
+    # The populator connects from the host, so verify that credential separately: Neo4j keeps
+    # the password in its data volume, so a reused volume silently outranks NEO4J_AUTH.
+    if ! docker exec "$REKT_NEO4J_CONTAINER" \
+        cypher-shell -u neo4j -p "${REKT_NEO4J_PASSWORD:-$NEO4J_PASSWORD}" "RETURN 1" >/dev/null 2>&1; then
+        echo -e "${RED}❌ REKT_NEO4J_PASSWORD does not authenticate against $REKT_NEO4J_CONTAINER${NC}"
+        echo ""
+        echo "The password was fixed when the data volume was first created, and NEO4J_AUTH"
+        echo "is ignored on every start after that."
+        echo ""
+        echo "Either set the value the volume was created with, in Config/ai-config.local.env:"
+        echo "  REKT_NEO4J_PASSWORD=<existing-password>"
+        echo ""
+        echo "or discard the graph and let it re-initialise (parsed artifacts are kept):"
+        echo "  docker-compose rm -sf $REKT_NEO4J_CONTAINER"
+        echo "  docker volume rm $(basename "$REPO_ROOT" | tr '[:upper:]' '[:lower:]')_rekt_neo4j_data"
+        return 1
+    fi
+    echo -e "  ${GREEN}✅ REKT graph credentials accepted${NC}"
+
     # Verify rekt CLI is available
     if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar --version >/dev/null 2>&1; then
         echo -e "  ${GREEN}✅ Cobol-REKT CLI available${NC}"
@@ -2677,7 +2719,17 @@ PYEOF
     # Copybooks remain flat at the root because smojol resolves COPY targets by basename.
     # The container sees this as /source/.rekt-staging (bind-mounted from source/).
     local staging_dir="$REPO_ROOT/source/.rekt-staging"
-    rm -rf "$staging_dir"
+    rm -rf "$staging_dir" 2>/dev/null || true
+    # A failed clean leaves the previous run staged, and the next parse then reports success
+    # while emitting a fraction of the artifacts. Refuse rather than degrade silently.
+    if [[ -d "$staging_dir" && -n "$(ls -A "$staging_dir" 2>/dev/null)" ]]; then
+        echo -e "${RED}❌ Could not clear $staging_dir${NC}"
+        echo ""
+        echo "Stale staging makes the parse emit far fewer artifacts than it reports."
+        echo "The container mounts /source read-only, so clear it from the host:"
+        echo "  rm -rf source/.rekt-staging"
+        return 1
+    fi
     mkdir -p "$staging_dir"
     local generated_stubs_file="$staging_dir/.generated-stubs"
     : > "$generated_stubs_file"
@@ -3287,11 +3339,46 @@ run_rekt_ingest() {
     # separately running graph-populator container.
     local populator_dir="$REPO_ROOT/tools/graph-populator"
     ensure_graph_populator_environment || return 1
-    (cd "$populator_dir" && .venv/bin/python populator.py ingest \
+    if ! (cd "$populator_dir" && .venv/bin/python populator.py ingest \
         --source-dir "$REPO_ROOT/source" \
         --rekt-output "$REPO_ROOT/output/rekt" \
         --run-id "$run_id" \
-        "${sqlite_args[@]}")
+        "${sqlite_args[@]}"); then
+        echo -e "\n${RED}❌ Ingest failed — the graph was not updated.${NC}"
+        return 1
+    fi
+
+    # A populator that exits clean having written nothing is indistinguishable from success
+    # at the console, and the portal then reports an empty estate as a finding.
+    local ingested
+    ingested=$(docker exec "$REKT_NEO4J_CONTAINER" cypher-shell -u neo4j \
+        -p "${REKT_NEO4J_PASSWORD:-$NEO4J_PASSWORD}" --format plain \
+        "MATCH (n) WHERE n.runId = $run_id RETURN count(n)" 2>/dev/null | tail -1 | tr -d '[:space:]')
+
+    if [[ -z "$ingested" || "$ingested" == "0" ]]; then
+        echo -e "\n${RED}❌ Ingest reported success but run ${run_id} has no nodes in the graph.${NC}"
+        echo -e "${YELLOW}  Check that output/rekt contains parsed artifacts:${NC}  ./doctor.sh rekt-status"
+        return 1
+    fi
+
+    # Node count alone passes on the CobolFile rows the scan always writes, so compare against
+    # the artifacts on disk: reports present with no AST ingested means the run lost its output.
+    local report_dirs
+    report_dirs=$(find "$REPO_ROOT/output/rekt" -name '*.report' -type d 2>/dev/null | wc -l | tr -d ' ')
+    if [[ "$report_dirs" -gt 0 ]]; then
+        local ast_files
+        ast_files=$(docker exec "$REKT_NEO4J_CONTAINER" cypher-shell -u neo4j \
+            -p "${REKT_NEO4J_PASSWORD:-$NEO4J_PASSWORD}" --format plain \
+            "MATCH (:CobolFile {runId: $run_id})-[:HAS_AST]->() RETURN count(*)" \
+            2>/dev/null | tail -1 | tr -d '[:space:]')
+        if [[ -z "$ast_files" || "$ast_files" == "0" ]]; then
+            echo -e "\n${RED}❌ ${report_dirs} report director(ies) on disk but no AST reached the graph.${NC}"
+            echo -e "${YELLOW}  Clear stale staging and re-parse:${NC}  rm -rf source/.rekt-staging && ./doctor.sh rekt-full"
+            return 1
+        fi
+        echo -e "  ${GREEN}✅ ${ast_files} program AST(s) linked in the graph${NC}"
+    fi
+    echo -e "  ${GREEN}✅ ${ingested} node(s) ingested for run ${run_id}${NC}"
 
     echo -e "\n${GREEN}  Neo4j Browser: http://localhost:$REKT_NEO4J_HTTP_PORT${NC}"
     echo -e "${GREEN}  Connection URL: neo4j://localhost:$REKT_NEO4J_BOLT_PORT${NC}"

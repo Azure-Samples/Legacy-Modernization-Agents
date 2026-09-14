@@ -42,6 +42,15 @@ def artifact_source_path(
             break
     candidates.append(artifact_name)
 
+    # A deps-only parse writes <source>-deps.json beside the source layout and no .report
+    # directory, so leaving the suffix on makes every degraded program unresolvable.
+    if artifact_name.endswith("-deps"):
+        stripped = artifact_name.removesuffix("-deps")
+        candidates.append(
+            Path(*relative_artifact.parts[:-1], stripped).as_posix()
+        )
+        candidates.append(stripped)
+
     normalized_sources = [Path(source).as_posix() for source in source_files]
     for candidate in candidates:
         if candidate in normalized_sources:
