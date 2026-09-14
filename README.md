@@ -1101,6 +1101,7 @@ See [Parallel Jobs Formula](#parallel-jobs-formula) for chunking configuration d
 - [Smart Chunking & Token Architecture](docs/smart-chunking-architecture.md) - Full diagrams, constants reference, and complexity scoring details
 - [Smart Chunking Guide](docs/smart-chunking-deep-dive.md) - Deep technical details
 - [Architecture Documentation](docs/REVERSE_ENGINEERING_ARCHITECTURE.md) - System design
+- [Dependency Health & Semantic Flow Explorer](docs/dependency-health-and-flow-explorer.md) - Deterministic parse-fidelity, topology and JCL chain surfaces for deciding conversion order
 - [Speed Profiles](docs/speed-profiles.md) - TURBO/FAST/BALANCED/THOROUGH env var overrides and complexity scoring
 - [Azure AD / Entra ID Authentication Guide](docs/az-login-auth-guide.md) - Keyless auth setup
 - [Changelog](CHANGELOG.md) - Version history

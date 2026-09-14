@@ -64,12 +64,7 @@ public sealed class RektContextLoader
         var results = new List<string>();
         foreach (var p in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
         {
-            // Skip transient REKT / convert directories so we never surface
-            // the same program multiple times from staging mirrors.
-            if (p.Contains("/.convert-", StringComparison.Ordinal)
-                || p.Contains("/.rekt-staging", StringComparison.Ordinal)
-                || p.Contains("/.preprocessed", StringComparison.Ordinal))
-                continue;
+            if (SourceTypeRegistry.IsScratchPath(Path.GetRelativePath(dir, p))) continue;
             var name = Path.GetFileName(p);
             if (name is null) continue;
             var ext = Path.GetExtension(p);
@@ -124,10 +119,7 @@ public sealed class RektContextLoader
         return Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories)
             .Where(p =>
             {
-                if (p.Contains("/.convert-", StringComparison.Ordinal)
-                    || p.Contains("/.rekt-staging", StringComparison.Ordinal)
-                    || p.Contains("/.preprocessed", StringComparison.Ordinal))
-                    return false;
+                if (SourceTypeRegistry.IsScratchPath(Path.GetRelativePath(dir, p))) return false;
                 var ext = Path.GetExtension(p);
                 return ext.Equals(".cpy", StringComparison.OrdinalIgnoreCase);
             })
@@ -603,6 +595,13 @@ public sealed class RektContextLoader
     {
         if (string.IsNullOrWhiteSpace(sql)) return null;
         var trimmed = sql.TrimStart();
+        // Strip the EXEC SQL preamble so the real verb is reported, not "EXEC".
+        if (trimmed.StartsWith("EXEC", StringComparison.OrdinalIgnoreCase))
+        {
+            var rest = trimmed.Substring("EXEC".Length).TrimStart();
+            if (rest.StartsWith("SQL", StringComparison.OrdinalIgnoreCase))
+                trimmed = rest.Substring("SQL".Length).TrimStart();
+        }
         var firstWord = new string(trimmed.TakeWhile(c => !char.IsWhiteSpace(c)).ToArray()).ToUpperInvariant();
         return firstWord switch
         {
