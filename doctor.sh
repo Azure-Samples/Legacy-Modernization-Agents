@@ -2794,6 +2794,18 @@ PYEOF
         ! -path "*/.rekt-staging/*" \
         ! -path "*/.preprocessed/*")
 
+    # Stage eight-character aliases before stubs. They are copies of real copybooks under a
+    # shortened name, so recording them as generated stubs would mark every program using a
+    # long copybook name as stub-backed and degrade its reported fidelity.
+    if [[ -d "$preprocessed_dir/aliases" ]]; then
+        while IFS= read -r alias_cpy; do
+            local alias_name
+            alias_name="$(basename "$alias_cpy")"
+            local alias_target="$staging_dir/$alias_name"
+            [[ -f "$alias_target" ]] || cp "$alias_cpy" "$alias_target" 2>/dev/null || true
+        done < <(find "$preprocessed_dir/aliases" -maxdepth 1 \( -name "*.cpy" -o -name "*.CPY" \) -type f 2>/dev/null)
+    fi
+
     # Stage generated stubs after real copybooks without overwriting real files.
     if [[ -d "$preprocessed_dir" ]]; then
         while IFS= read -r stub_cpy; do
