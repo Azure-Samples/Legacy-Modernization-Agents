@@ -4689,6 +4689,17 @@ app.MapGet("/api/source/content", async (string file, int? startLine, int? endLi
 {
 	try
 	{
+		// The caller names a program within the estate, which may sit in a subdirectory, so the
+		// name cannot simply be reduced to its last segment. Traversal is rejected here instead,
+		// before the value reaches the file system: the containment check further down guards the
+		// read, but without this an unchecked name still probes for files outside the estate.
+		if (string.IsNullOrWhiteSpace(file)
+			|| Path.IsPathRooted(file)
+			|| file.Split('/', '\\').Any(segment => segment == ".."))
+		{
+			return Results.BadRequest(new { error = "Invalid file name" });
+		}
+
 		// Path.Combine, not Join: COBOL_SOURCE_FOLDER may be absolute, and there the
 		// configured path is meant to win over the working directory.
 		var configuredFolder = Environment.GetEnvironmentVariable("COBOL_SOURCE_FOLDER") ?? "source";

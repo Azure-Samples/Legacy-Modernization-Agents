@@ -598,7 +598,16 @@ class ASTExplorer {
   }
 
   _escHtml(s) { return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
-  _escAttr(s) { return (s || '').replace(/'/g, "\\'").replace(/"/g, '&quot;'); }
+  // Output lands inside a single-quoted JS string inside an HTML attribute, so it needs both
+  // escapings. Backslash must come first: doing it later would re-escape the escapes added
+  // below, and leaving it out lets a name ending in a backslash close the string early.
+  _escAttr(s) {
+    return (s || '')
+      .replace(/\\/g, '\\\\')
+      .replace(/'/g, "\\'")
+      .replace(/"/g, '&quot;')
+      .replace(/</g, '&lt;');
+  }
 
   refresh() {
     if (this.currentFile) this.loadView(this.currentFile);

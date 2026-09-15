@@ -202,7 +202,15 @@ public static class RektGraphEndpoints
 
                 return Results.Ok(files);
             }
-            catch (Exception ex)
+            // Cancellation is the caller's decision, not a graph failure.
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (
+                ex is Neo4j.Driver.Neo4jException      // driver and server-side errors
+                or IOException                        // connection torn down mid-read
+                or InvalidOperationException)
             {
                 Console.WriteLine($"⚠️ Rekt files endpoint: {ex.Message}");
                 return Results.Ok(Array.Empty<object>());
@@ -335,7 +343,15 @@ public static class RektGraphEndpoints
                 Console.WriteLine($"⏱ Structure endpoint timeout for {file}: {nex.Message}");
                 return Results.Json(new { error = "structure_query_timeout", file, message = "Cypher exceeded 12s ceiling — graph is large or query plan suboptimal." }, statusCode: 504);
             }
-            catch (Exception ex)
+            // Cancellation is the caller's decision, not a graph failure.
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (
+                ex is Neo4j.Driver.Neo4jException      // driver and server-side errors
+                or IOException                        // connection torn down mid-read
+                or InvalidOperationException)
             {
                 Console.WriteLine($"⚠️ Structure endpoint: {ex.Message}");
                 return Results.Problem(ex.Message);
@@ -413,7 +429,15 @@ public static class RektGraphEndpoints
 
                 return Results.Ok(new { nodes, edges });
             }
-            catch (Exception ex)
+            // Cancellation is the caller's decision, not a graph failure.
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (
+                ex is Neo4j.Driver.Neo4jException      // driver and server-side errors
+                or IOException                        // connection torn down mid-read
+                or InvalidOperationException)
             {
                 Console.WriteLine($"⚠️ AST endpoint: {ex.Message}");
                 return Results.Problem(ex.Message);
