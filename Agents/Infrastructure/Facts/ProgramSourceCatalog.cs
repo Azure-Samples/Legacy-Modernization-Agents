@@ -263,18 +263,34 @@ public static class ProgramFactsArtifactLocator
         if (string.IsNullOrWhiteSpace(factsDir) || string.IsNullOrWhiteSpace(programIdentity))
             return null;
 
-        foreach (var candidate in EnumerateCandidatePaths(factsDir, programIdentity))
-        {
-            var facts = TryLoadFromPath(candidate);
-            if (facts is not null)
-                return facts;
-        }
-
-        if (!Directory.Exists(factsDir)) return null;
-
         var normalizedIdentity = SourcePathHelper.NormalizeRelativePath(programIdentity);
         var basename = Path.GetFileName(normalizedIdentity);
         if (string.IsNullOrWhiteSpace(basename)) return null;
+
+        // The artifact stored at the source-relative path is unambiguous: its location is the
+        // identity being asked for.
+        var exactPath = GetFactsFilePath(factsDir, normalizedIdentity);
+        var exact = TryLoadFromPath(exactPath);
+        if (exact is not null) return exact;
+
+        // Every other location is shared by any program with the same basename. A caller that
+        // names a directory is asking about one specific program, so such an artifact may only
+        // answer if it records the path being asked for. Without that check a single legacy flat
+        // artifact is handed to billing/CUSTOMER.cbl and claims/CUSTOMER.cbl alike, and both
+        // report the other's paragraphs, fields and SQL tables as their own. A caller that names
+        // only a basename has expressed no preference, so a unique match still answers it.
+        var namesADirectory = normalizedIdentity.Contains('/');
+
+        foreach (var candidate in EnumerateCandidatePaths(factsDir, normalizedIdentity))
+        {
+            if (string.Equals(candidate, exactPath, StringComparison.OrdinalIgnoreCase)) continue;
+
+            var facts = TryLoadFromPath(candidate);
+            if (facts is null) continue;
+            if (!namesADirectory || Describes(facts, normalizedIdentity)) return facts;
+        }
+
+        if (!Directory.Exists(factsDir)) return null;
 
         var recursiveMatches = Directory.EnumerateFiles(
                 factsDir,
@@ -283,7 +299,7 @@ public static class ProgramFactsArtifactLocator
             .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        if (recursiveMatches.Count == 1)
+        if (recursiveMatches.Count == 1 && !namesADirectory)
             return TryLoadFromPath(recursiveMatches[0]);
 
         var exactRelativeMatch = recursiveMatches
@@ -292,15 +308,17 @@ public static class ProgramFactsArtifactLocator
                 Path = path,
                 Facts = TryLoadFromPath(path),
             })
-            .FirstOrDefault(match =>
-                match.Facts is not null &&
-                string.Equals(
-                    SourcePathHelper.NormalizeRelativePath(match.Facts.RelativePath ?? ""),
-                    normalizedIdentity,
-                    StringComparison.OrdinalIgnoreCase));
+            .FirstOrDefault(match => Describes(match.Facts, normalizedIdentity));
 
         return exactRelativeMatch?.Facts;
     }
+
+    private static bool Describes(ProgramFacts? facts, string normalizedIdentity) =>
+        facts is not null &&
+        string.Equals(
+            SourcePathHelper.NormalizeRelativePath(facts.RelativePath ?? ""),
+            normalizedIdentity,
+            StringComparison.OrdinalIgnoreCase);
 
     private static IEnumerable<string> EnumerateCandidatePaths(string factsDir, string programIdentity)
     {

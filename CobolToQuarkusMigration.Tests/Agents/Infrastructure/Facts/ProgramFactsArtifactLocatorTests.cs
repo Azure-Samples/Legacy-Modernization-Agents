@@ -26,6 +26,26 @@ public sealed class ProgramFactsArtifactLocatorTests : IDisposable
     }
 
     [Fact]
+    public void TryLoad_DoesNotAnswerANestedRequestWithAnotherProgramsFacts()
+    {
+        // Two programs share a basename and only one flat artifact exists, recording that it
+        // describes the billing copy. A request naming the claims directory must not be answered
+        // with it: both programs would otherwise report the same paragraphs, fields and SQL.
+        var factsDir = Path.Join(_root, "facts");
+        Directory.CreateDirectory(factsDir);
+        File.WriteAllText(
+            Path.Join(factsDir, "CUSTOMER.cbl.facts.json"),
+            CreateFactsJson("billing/CUSTOMER.cbl", "CUSTOMER.cbl"));
+
+        var billing = ProgramFactsArtifactLocator.TryLoad(factsDir, "billing/CUSTOMER.cbl");
+        var claims = ProgramFactsArtifactLocator.TryLoad(factsDir, "claims/CUSTOMER.cbl");
+
+        billing.Should().NotBeNull("the artifact records that it describes this program");
+        billing!.RelativePath.Should().Be("billing/CUSTOMER.cbl");
+        claims.Should().BeNull("no artifact describes this program, and absent beats wrong");
+    }
+
+    [Fact]
     public void TryLoad_IgnoresFactsWrittenBeforeTheCurrentSchema()
     {
         var factsDir = Path.Join(_root, "facts");

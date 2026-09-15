@@ -458,25 +458,37 @@ public sealed class RektContextLoader
 
     private string? FindRektFile(string programRelativePath, string basename, string stem, string prefix)
     {
+        // A flat artifact is addressed by basename alone, so it cannot say which of two programs
+        // sharing that basename it describes. When the caller names a directory it is asking
+        // about one specific program, and answering from the flat layout gives billing/CUSTOMER
+        // and claims/CUSTOMER the same paragraphs, PERFORM edges and CALL targets. The nested
+        // layout below is addressed by source-relative path and is unambiguous, so it is the only
+        // layout consulted for such a request; a nested estate whose artifacts predate that
+        // layout is re-parsed rather than silently attributed to the wrong program.
+        var namesADirectory = SourcePathHelper
+            .NormalizeRelativePath(programRelativePath)
+            .Contains('/');
+
         // Layout 1 (legacy / flat): output/rekt/flow-ast-PROG.json
-        foreach (var candidate in new[]
-                 {
-                     $"{prefix}{stem}.json",
-                     $"{prefix}{stem}.cbl.json",
-                     $"{prefix}{basename}.json",
-                 })
+        if (!namesADirectory)
         {
-            var p = Path.Combine(_rektDir, candidate);
-            if (File.Exists(p)) return p;
+            var flat = new[]
+                {
+                    $"{prefix}{stem}.json",
+                    $"{prefix}{stem}.cbl.json",
+                    $"{prefix}{basename}.json",
+                }
+                .Select(candidate => Path.Join(_rektDir, candidate))
+                .FirstOrDefault(File.Exists);
+
+            if (flat is not null) return flat;
         }
 
         // smojol v2 nests artifacts under a per-program report directory.
-        var reportDirs = EnumerateReportDirectories(programRelativePath, basename, stem);
-        foreach (var reportDir in reportDirs)
+        foreach (var rdir in EnumerateReportDirectories(programRelativePath, basename, stem)
+                     .Select(reportDir => Path.Join(_rektDir, SourcePathHelper.ToOsRelativePath(reportDir)))
+                     .Where(Directory.Exists))
         {
-            var rdir = Path.Combine(_rektDir, SourcePathHelper.ToOsRelativePath(reportDir));
-            if (!Directory.Exists(rdir)) continue;
-
             // Try standard subdirectory mappings
             var subPaths = prefix switch
             {
