@@ -100,6 +100,9 @@ output/*
 !output/.gitkeep
 Output/
 generated-java/
+# Conversion writes Java derived from the source estate here, so it carries whatever the
+# estate carries. Ignored for the same reason output/ is.
+java-output/
 reverse-engineering-output/
 
 # =============================================================================

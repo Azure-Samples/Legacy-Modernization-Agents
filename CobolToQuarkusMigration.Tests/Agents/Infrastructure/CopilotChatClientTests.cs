@@ -4,7 +4,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Moq;
 using CobolToQuarkusMigration.Agents.Infrastructure;
-using GitHub.Copilot.SDK;
+using GitHub.Copilot;
 
 using AIChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
@@ -43,7 +43,7 @@ public class CopilotChatClientTests
     [Fact]
     public void Constructor_WithOptions_DoesNotThrow()
     {
-        var options = new CopilotClientOptions { UseStdio = true };
+        var options = new CopilotClientOptions { Mode = CopilotClientMode.CopilotCli };
         using var client = CreateClient(options: options);
         client.Should().NotBeNull();
     }

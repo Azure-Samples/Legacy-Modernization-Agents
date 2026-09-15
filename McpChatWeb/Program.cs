@@ -4387,13 +4387,13 @@ app.MapPost("/api/models/connect", async (McpChatWeb.Models.ConnectProviderReque
 			// ── GitHub Copilot SDK: list models via CopilotClient ──
 			try
 			{
-				var options = new GitHub.Copilot.SDK.CopilotClientOptions { UseStdio = true };
+				var options = new GitHub.Copilot.CopilotClientOptions { Mode = GitHub.Copilot.CopilotClientMode.CopilotCli };
 				if (!string.IsNullOrWhiteSpace(request.ApiKey))
 				{
 					options.GitHubToken = request.ApiKey;
 				}
 
-				var client = new GitHub.Copilot.SDK.CopilotClient(options);
+				var client = new GitHub.Copilot.CopilotClient(options);
 				var copilotModels = await client.ListModelsAsync();
 
 				foreach (var m in copilotModels.OrderBy(m => m.Name))

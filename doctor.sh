@@ -145,6 +145,15 @@ show_usage() {
     echo -e "  - RE-Only Mode: Uses ChunkedReverseEngineeringProcess for analysis"
     echo -e "  No manual chunking flags required - detection is automatic."
     echo
+  echo -e "${BOLD}Conversion Parity (preview):${NC}"
+  echo -e "  After conversion, generated code is checked for structural coverage of the"
+  echo -e "  COBOL it came from. Results go to output/<target>/conversion-parity.json"
+  echo -e "  and the migration report. Parity never alters generated output."
+  echo -e "  ${GREEN}MIN_PROGRAM_SCORE${NC}=0.75   Flag programs scoring below this (0 still flags lost axes)"
+  echo -e "  ${GREEN}ON_LOW_SCORE${NC}=warn       'stop' also sets exit code 4"
+  echo -e "  $0 run               ${CYAN}# default: flag below 0.75, warn only${NC}"
+  echo -e "  MIN_PROGRAM_SCORE=0.8 ON_LOW_SCORE=stop $0 run   ${CYAN}# fail CI on a low score${NC}"
+  echo
 }
 
 # Resolve the migration database path (absolute) from config or environment
@@ -753,11 +762,11 @@ run_doctor() {
 
     config_files_ok=true
 
-    # Check template configuration
-    if [[ -f "$REPO_ROOT/Config/ai-config.env" ]]; then
-        echo -e "${GREEN}✅ Template configuration found: Config/ai-config.env${NC}"
+    # Check the example that local config is created from
+    if [[ -f "$REPO_ROOT/Config/ai-config.env.example" ]]; then
+        echo -e "${GREEN}✅ Example configuration found: Config/ai-config.env.example${NC}"
     else
-        echo -e "${RED}❌ Missing template configuration: Config/ai-config.env${NC}"
+        echo -e "${RED}❌ Missing example configuration: Config/ai-config.env.example${NC}"
         config_files_ok=false
     fi
 
@@ -1477,9 +1486,24 @@ EOF
     # Get AI Endpoint
     read -p "AI Endpoint (e.g., https://your-resource.openai.azure.com/): " endpoint
     if [[ -n "$endpoint" ]]; then
+        # Checked by shape, not by calling it: a request would have to cross the customer's
+        # proxy and TLS inspection, so a blocked call says nothing about whether the value is
+        # right. Warn rather than reject, since only the resource itself knows what it accepts.
+        if [[ "$endpoint" == *"/api/projects/"* ]]; then
+            echo -e "${YELLOW}⚠️  That looks like an AI Foundry project URL.${NC}"
+            echo -e "${YELLOW}   The Azure OpenAI client expects the resource root, and a project${NC}"
+            echo -e "${YELLOW}   path returns 401 on every call.${NC}"
+            local suggested="${endpoint%%/api/projects/*}/"
+            read -p "   Use ${suggested} instead? [Y/n]: " use_root
+            [[ ! "$use_root" =~ ^[Nn]$ ]] && endpoint="$suggested"
+        elif [[ "$endpoint" != https://* ]]; then
+            echo -e "${YELLOW}⚠️  Endpoint does not start with https:// — check it is the full URL.${NC}"
+        fi
+
         # Ensure endpoint ends with /
         [[ "${endpoint}" != */ ]] && endpoint="${endpoint}/"
         sed -i.bak "s|_MAIN_ENDPOINT=\".*\"|_MAIN_ENDPOINT=\"$endpoint\"|" "$LOCAL_CONFIG"
+        echo -e "${GREEN}✅ Endpoint: $endpoint${NC}"
     fi
 
     # Get API Key
@@ -1488,10 +1512,23 @@ EOF
     if [[ -n "$api_key" ]]; then
         sed -i.bak "s|_MAIN_API_KEY=\".*\"|_MAIN_API_KEY=\"$api_key\"|" "$LOCAL_CONFIG"
     else
+        # Clear it rather than leaving the previous value in place. The client only falls back
+        # to Entra ID when the key is empty, so a leftover key or the template placeholder is
+        # used as a credential and every call fails with 401 while this message claims otherwise.
+        sed -i.bak "s|_MAIN_API_KEY=\".*\"|_MAIN_API_KEY=\"\"|" "$LOCAL_CONFIG"
         echo -e "${BLUE}ℹ️  No API key set — will use Azure AD (Entra ID) via 'az login'.${NC}"
         echo -e "${BLUE}   Make sure you have the 'Cognitive Services OpenAI User' role.${NC}"
         echo -e "${BLUE}   See: docs/az-login-auth-guide.md for details.${NC}"
     fi
+
+    # Get Chat Model Deployment Name
+    # Prompted like the code model: it was previously left at whatever the file already held,
+    # so a stale deployment name survived setup and was used without ever being shown.
+    local existing_chat_model
+    existing_chat_model=$(read_local_config_value _CHAT_MODEL)
+    read -p "Chat Model Deployment Name (default: ${existing_chat_model:-gpt-4o}): " chat_model
+    chat_model=${chat_model:-${existing_chat_model:-gpt-4o}}
+    sed -i.bak "s|_CHAT_MODEL=\".*\"|_CHAT_MODEL=\"$chat_model\"|" "$LOCAL_CONFIG"
 
     # Get Code Model Deployment Name
     read -p "Code Model Deployment Name (default: gpt-5.1-codex-mini): " code_model
@@ -2083,7 +2120,7 @@ run_validate() {
 
     # Check configuration files
     required_files=(
-        "Config/ai-config.env"
+        "Config/ai-config.env.example"
         "Config/load-config.sh"
         "Config/appsettings.json"
         "CobolToQuarkusMigration.csproj"

@@ -115,9 +115,13 @@ public class ModelCapabilities
         }
 
         // ── OpenAI GPT models ───────────────────────────────────────────
-        if (id.Contains("gpt-5") || id.Contains("gpt-4") || id.Contains("gpt-4o"))
+        // Matched by major version rather than a fixed list: gpt-6 fell through to the
+        // permissive default, which claims temperature support, and every call was rejected
+        // with "temperature does not support 0.1 with this model".
+        var gptMajor = GptMajorVersion(id);
+        if (gptMajor is not null)
         {
-            var isGpt5Plus = id.Contains("gpt-5");
+            var isGpt5Plus = gptMajor >= 5;
             return new ModelCapabilities
             {
                 Family = ModelFamily.OpenAI,
@@ -130,6 +134,15 @@ public class ModelCapabilities
         }
 
         return Default();
+    }
+
+    // "gpt-6-astra" -> 6, "gpt-4o" -> 4, null when the id names no GPT major version.
+    private static int? GptMajorVersion(string id)
+    {
+        var match = System.Text.RegularExpressions.Regex.Match(id, @"gpt-(\d+)");
+        return match.Success && int.TryParse(match.Groups[1].Value, out var major)
+            ? major
+            : null;
     }
 
     private static ModelCapabilities Default() => new()
