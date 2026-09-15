@@ -56,7 +56,7 @@ public static class ConversionParityPostPass
         var threshold = ReadThreshold(logger);
         var gate = ReadGate(logger);
         var sourceFolder = Environment.GetEnvironmentVariable("COBOL_SOURCE_FOLDER") ?? "source";
-        var factsDir = Path.Combine(repoRoot, "output", "rekt");
+        var factsDir = Path.Join(repoRoot, "output", "rekt");
 
         var provider = new StructuralContextProvider(repoRoot, sourceFolder, fallbackToAi: false);
         var stubCopybooks = StubCopybookCatalog.Load(repoRoot, sourceFolder);
@@ -203,7 +203,7 @@ public static class ConversionParityPostPass
         try
         {
             Directory.CreateDirectory(outputFolder);
-            var path = Path.Combine(outputFolder, ArtifactName);
+            var path = Path.Join(outputFolder, ArtifactName);
             var json = JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true });
             await File.WriteAllTextAsync(path, json);
             logger?.LogInformation("[ConversionParity] Wrote {Path}", path);
@@ -366,7 +366,7 @@ public static class ConversionParityPostPass
     private static string? FindRepoRoot()
     {
         var d = new DirectoryInfo(AppContext.BaseDirectory);
-        while (d != null && !File.Exists(Path.Combine(d.FullName, "doctor.sh"))) d = d.Parent;
+        while (d != null && !File.Exists(Path.Join(d.FullName, "doctor.sh"))) d = d.Parent;
         return d?.FullName;
     }
 

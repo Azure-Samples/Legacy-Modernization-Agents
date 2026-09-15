@@ -309,40 +309,31 @@ internal static class ConversionParityValidator
             if (!string.IsNullOrWhiteSpace(section.Name) && section.Name != "(implicit)")
                 names.Add(section.Name);
 
-            foreach (var paragraph in section.Paragraphs)
-            {
-                if (!string.IsNullOrWhiteSpace(paragraph.Name))
-                    names.Add(paragraph.Name);
-            }
+            names.AddRange(section.Paragraphs
+                .Select(paragraph => paragraph.Name)
+                .Where(name => !string.IsNullOrWhiteSpace(name)));
         }
 
         // PERFORM targets are the only source of procedure names when a program's paragraphs
         // were not recorded, but a PERFORM ... UNTIL condition names a data item, not a procedure.
-        foreach (var edge in ctx.PerformGraph)
-        {
-            foreach (var word in SplitPerformTarget(edge.To))
-            {
-                if (fieldNames.Contains(word)) continue;
-                names.Add(word);
-            }
-        }
+        names.AddRange(ctx.PerformGraph
+            .SelectMany(edge => SplitPerformTarget(edge.To))
+            .Where(word => !fieldNames.Contains(word)));
 
         return Distinct(names).Select(n => new ExpectedSymbol(n)).ToList();
     }
 
     private static IEnumerable<string> SplitPerformTarget(string target)
     {
-        if (string.IsNullOrWhiteSpace(target)) yield break;
+        if (string.IsNullOrWhiteSpace(target)) return Enumerable.Empty<string>();
 
-        foreach (var word in target.Split(
-            new[] { ' ', '\t', ',', '(', ')' }, StringSplitOptions.RemoveEmptyEntries))
-        {
-            var trimmed = word.Trim().Trim('\'', '"', '.');
-            if (trimmed.Length == 0) continue;
-            if (PerformKeywords.Contains(trimmed)) continue;
-            if (!trimmed.Any(char.IsLetter)) continue;
-            yield return trimmed;
-        }
+        return target
+            .Split(new[] { ' ', '\t', ',', '(', ')' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(word => word.Trim().Trim('\'', '"', '.'))
+            .Where(trimmed =>
+                trimmed.Length != 0
+                && !PerformKeywords.Contains(trimmed)
+                && trimmed.Any(char.IsLetter));
     }
 
     private static List<ExpectedSymbol> CollectDataFields(
@@ -522,11 +513,10 @@ internal static class ConversionParityValidator
         private static void Load(string text, List<Candidate> pool, bool joinHyphens)
         {
             var seen = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var identifier in Tokenizer.ExtractIdentifiers(text, joinHyphens))
+            foreach (var parts in Tokenizer.ExtractIdentifiers(text, joinHyphens)
+                         .Select(Tokenizer.SplitIdentifier)
+                         .Where(parts => parts.Count > 0))
             {
-                var parts = Tokenizer.SplitIdentifier(identifier);
-                if (parts.Count == 0) continue;
-
                 var key = string.Join("\u0001", parts);
                 if (seen.Add(key))
                     pool.Add(new Candidate(parts, string.Concat(parts.Where(p => !p.All(char.IsDigit)))));
@@ -569,8 +559,11 @@ internal static class ConversionParityValidator
 
             for (var pass = 0; pass < 2; pass++)
             {
-                foreach (var i in order)
+                // Indexed rather than foreach: the guard below reads `matched`, which earlier
+                // iterations mutate, so the filter cannot be hoisted into the sequence.
+                for (var k = 0; k < order.Length; k++)
                 {
+                    var i = order[k];
                     if (matched[i] || (skip is not null && skip[i])) continue;
 
                     for (var j = 0; j < pool.Count; j++)

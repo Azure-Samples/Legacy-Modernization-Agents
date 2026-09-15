@@ -594,9 +594,11 @@ public sealed class RektContextLoader
     // name, and recording the variable as a callee would invent a dependency that does not exist.
     private static void HarvestLiteralCalls(string statementText, int startLine, RektContext ctx)
     {
-        foreach (System.Text.RegularExpressions.Match m in LiteralCallPattern.Matches(statementText))
+        // The duplicate check reads entries added by earlier iterations, so only the projection
+        // is lifted out; collapsing the body into a query would lose that running de-duplication.
+        foreach (var target in LiteralCallPattern.Matches(statementText)
+                     .Select(m => m.Groups[1].Value))
         {
-            var target = m.Groups[1].Value;
             if (ctx.CallTargets.Any(c => string.Equals(c.TargetProgram, target, StringComparison.OrdinalIgnoreCase)))
                 continue;
 

@@ -94,7 +94,7 @@ public class ExitCodePropagationTests
         bool withoutAiCredentials,
         IDictionary<string, string>? env = null)
     {
-        var dll = Path.Combine(AppContext.BaseDirectory, "CobolToQuarkusMigration.dll");
+        var dll = Path.Join(AppContext.BaseDirectory, "CobolToQuarkusMigration.dll");
         File.Exists(dll).Should().BeTrue($"the CLI assembly should sit beside the test assembly at {dll}");
 
         // The CLI resolves Config/ relative to its working directory, and the build copies
@@ -148,13 +148,13 @@ public class ExitCodePropagationTests
     // added here deliberately, so a future machine-specific file cannot silently steer a test.
     private static string CreateIsolatedWorkingDirectory()
     {
-        var directory = Path.Combine(Path.GetTempPath(), "lma-cli-tests-" + Guid.NewGuid().ToString("n"));
-        Directory.CreateDirectory(Path.Combine(directory, "Config"));
+        var directory = Path.Join(Path.GetTempPath(), "lma-cli-tests-" + Guid.NewGuid().ToString("n"));
+        Directory.CreateDirectory(Path.Join(directory, "Config"));
 
-        var appSettings = Path.Combine(AppContext.BaseDirectory, "Config", "appsettings.json");
+        var appSettings = Path.Join(AppContext.BaseDirectory, "Config", "appsettings.json");
         if (File.Exists(appSettings))
         {
-            File.Copy(appSettings, Path.Combine(directory, "Config", "appsettings.json"));
+            File.Copy(appSettings, Path.Join(directory, "Config", "appsettings.json"));
         }
 
         return directory;
