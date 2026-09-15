@@ -594,14 +594,18 @@ public sealed class RektContextLoader
     // name, and recording the variable as a callee would invent a dependency that does not exist.
     private static void HarvestLiteralCalls(string statementText, int startLine, RektContext ctx)
     {
-        // The duplicate check reads entries added by earlier iterations, so only the projection
-        // is lifted out; collapsing the body into a query would lose that running de-duplication.
-        foreach (var target in LiteralCallPattern.Matches(statementText)
-                     .Select(m => m.Groups[1].Value))
-        {
-            if (ctx.CallTargets.Any(c => string.Equals(c.TargetProgram, target, StringComparison.OrdinalIgnoreCase)))
-                continue;
+        // Seeded from the targets already recorded and mutated as each new one is accepted, so a
+        // single set rejects both a target seen on an earlier statement and a repeat within this
+        // one. That keeps the de-duplication the previous running Any() check provided while
+        // making it a filter over the sequence, and turns an O(n) scan per match into a lookup.
+        var seen = new HashSet<string>(
+            ctx.CallTargets.Select(c => c.TargetProgram),
+            StringComparer.OrdinalIgnoreCase);
 
+        foreach (var target in LiteralCallPattern.Matches(statementText)
+                     .Select(m => m.Groups[1].Value)
+                     .Where(target => seen.Add(target)))
+        {
             ctx.CallTargets.Add(new RektCallTarget
             {
                 TargetProgram = target,
