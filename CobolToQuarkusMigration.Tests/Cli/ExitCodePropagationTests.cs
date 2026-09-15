@@ -97,11 +97,19 @@ public class ExitCodePropagationTests
         var dll = Path.Combine(AppContext.BaseDirectory, "CobolToQuarkusMigration.dll");
         File.Exists(dll).Should().BeTrue($"the CLI assembly should sit beside the test assembly at {dll}");
 
+        // The CLI resolves Config/ relative to its working directory, and the build copies
+        // Config/ai-config.local.env — which is gitignored and therefore whatever the developer
+        // happens to have — next to the test assembly. Running there makes the outcome depend on
+        // one machine's credentials: a config declaring GitHubCopilot sends validation down a
+        // branch that never inspects AZURE_OPENAI_ENDPOINT, so the placeholder assertions below
+        // cannot fire. Run from a directory holding only the tracked configuration instead.
+        var workingDirectory = CreateIsolatedWorkingDirectory();
+
         var psi = new ProcessStartInfo("dotnet")
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
-            WorkingDirectory = AppContext.BaseDirectory,
+            WorkingDirectory = workingDirectory,
         };
         psi.ArgumentList.Add(dll);
         foreach (var a in args) psi.ArgumentList.Add(a);
@@ -129,6 +137,26 @@ public class ExitCodePropagationTests
         var stderr = process.StandardError.ReadToEnd();
         process.WaitForExit(milliseconds: 120_000).Should().BeTrue("the CLI should not hang");
 
+        try { Directory.Delete(workingDirectory, recursive: true); }
+        catch (IOException) { /* the CLI may still hold a log file open */ }
+        catch (UnauthorizedAccessException) { }
+
         return (process.ExitCode, stdout + stderr);
+    }
+
+    // Only the tracked configuration is copied in. Anything the CLI needs from Config/ must be
+    // added here deliberately, so a future machine-specific file cannot silently steer a test.
+    private static string CreateIsolatedWorkingDirectory()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "lma-cli-tests-" + Guid.NewGuid().ToString("n"));
+        Directory.CreateDirectory(Path.Combine(directory, "Config"));
+
+        var appSettings = Path.Combine(AppContext.BaseDirectory, "Config", "appsettings.json");
+        if (File.Exists(appSettings))
+        {
+            File.Copy(appSettings, Path.Combine(directory, "Config", "appsettings.json"));
+        }
+
+        return directory;
     }
 }
