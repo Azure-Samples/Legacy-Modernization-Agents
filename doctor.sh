@@ -39,6 +39,24 @@ resolve_sqlite3() {
 # Get repository root (directory containing this script)
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Read a single key from the local config, without quotes, empty when absent.
+# Neo4j fixes each instance's password in its data volume on first start and ignores the
+# setting afterwards, so a value that opens an existing volume has to survive re-running setup.
+read_local_config_value() {
+    local key="$1"
+    local file="$REPO_ROOT/Config/ai-config.local.env"
+    [[ -f "$file" ]] || return 0
+
+    local line
+    line=$(grep -E "^${key}=" "$file" 2>/dev/null | tail -1) || true
+    [[ -n "$line" ]] || return 0
+
+    local value="${line#"${key}"=}"
+    value="${value%\"}"; value="${value#\"}"
+    value="${value%\'}"; value="${value#\'}"
+    printf '%s' "$value"
+}
+
 # Determine the preferred dotnet CLI (favor .NET 10 installations when available)
 detect_dotnet_cli() {
     local default_cli="dotnet"
@@ -413,6 +431,24 @@ load_configuration() {
                 NEO4J_PASSWORD="${NEO4J_PASSWORD#\'}"
                 export NEO4J_PASSWORD
             fi
+        fi
+
+        if [[ -z "${REKT_NEO4J_PASSWORD:-}" && -f "$REPO_ROOT/Config/ai-config.local.env" ]]; then
+            local rekt_line
+            rekt_line=$(grep -E '^REKT_NEO4J_PASSWORD=' "$REPO_ROOT/Config/ai-config.local.env" | tail -1)
+            if [[ -n "$rekt_line" ]]; then
+                REKT_NEO4J_PASSWORD="${rekt_line#REKT_NEO4J_PASSWORD=}"
+                REKT_NEO4J_PASSWORD="${REKT_NEO4J_PASSWORD%\"}"
+                REKT_NEO4J_PASSWORD="${REKT_NEO4J_PASSWORD#\"}"
+                REKT_NEO4J_PASSWORD="${REKT_NEO4J_PASSWORD%\'}"
+                REKT_NEO4J_PASSWORD="${REKT_NEO4J_PASSWORD#\'}"
+                export REKT_NEO4J_PASSWORD
+            fi
+        fi
+
+        # The REKT graph is a second instance; unset means it shares the migration credential.
+        if [[ -z "${REKT_NEO4J_PASSWORD:-}" && -n "${NEO4J_PASSWORD:-}" ]]; then
+            export REKT_NEO4J_PASSWORD="$NEO4J_PASSWORD"
         fi
 
         if [[ -n "${NEO4J_PASSWORD:-}" ]]; then
@@ -1352,6 +1388,21 @@ run_setup() {
         echo -e "${GREEN}✅ Chat model: $ghcp_chat_model${NC}"
         echo -e "${GREEN}✅ Code model: $ghcp_code_model${NC}"
 
+        # Preserve anything already configured: these values may be the only ones that open
+        # the existing Neo4j volumes, and setup rewrites this file wholesale.
+        local existing_neo4j existing_rekt existing_source
+        existing_neo4j=$(read_local_config_value NEO4J_PASSWORD)
+        existing_rekt=$(read_local_config_value REKT_NEO4J_PASSWORD)
+        existing_source=$(read_local_config_value COBOL_SOURCE_FOLDER)
+
+        local neo4j_password="${existing_neo4j:-cobol-rekt-2026}"
+        local rekt_password="${existing_rekt:-$neo4j_password}"
+        local source_folder="${existing_source:-source}"
+
+        if [[ -n "$existing_neo4j" || -n "$existing_rekt" || -n "$existing_source" ]]; then
+            echo -e "${BLUE}  Keeping existing Neo4j and source settings from $(basename "$LOCAL_CONFIG")${NC}"
+        fi
+
         # Write local config for GitHub Copilot
         cat > "$LOCAL_CONFIG" <<EOF
 # =============================================================================
@@ -1385,7 +1436,15 @@ AISETTINGS__CHATENDPOINT="https://copilot-sdk-placeholder"
 # Neo4j local development credentials
 # Username: neo4j
 # NOT FOR PRODUCTION, ENSURE TO CHANGE PASSWORD
-NEO4J_PASSWORD="cobol-rekt-2026"
+#
+# Two instances run side by side: the migration graph on 7687 and the REKT graph on 7688.
+# Each fixes its password in its own data volume the first time it starts, so these must
+# match the volumes that already exist. Re-running setup keeps whatever is set here.
+NEO4J_PASSWORD="$neo4j_password"
+REKT_NEO4J_PASSWORD="$rekt_password"
+
+# The parser reads this folder and the portal resolves the estate through it; they must agree.
+COBOL_SOURCE_FOLDER="$source_folder"
 EOF
 
         # Append GitHub host if not default
@@ -1427,9 +1486,24 @@ EOF
     # Get AI Endpoint
     read -p "AI Endpoint (e.g., https://your-resource.openai.azure.com/): " endpoint
     if [[ -n "$endpoint" ]]; then
+        # Checked by shape, not by calling it: a request would have to cross the customer's
+        # proxy and TLS inspection, so a blocked call says nothing about whether the value is
+        # right. Warn rather than reject, since only the resource itself knows what it accepts.
+        if [[ "$endpoint" == *"/api/projects/"* ]]; then
+            echo -e "${YELLOW}⚠️  That looks like an AI Foundry project URL.${NC}"
+            echo -e "${YELLOW}   The Azure OpenAI client expects the resource root, and a project${NC}"
+            echo -e "${YELLOW}   path returns 401 on every call.${NC}"
+            local suggested="${endpoint%%/api/projects/*}/"
+            read -p "   Use ${suggested} instead? [Y/n]: " use_root
+            [[ ! "$use_root" =~ ^[Nn]$ ]] && endpoint="$suggested"
+        elif [[ "$endpoint" != https://* ]]; then
+            echo -e "${YELLOW}⚠️  Endpoint does not start with https:// — check it is the full URL.${NC}"
+        fi
+
         # Ensure endpoint ends with /
         [[ "${endpoint}" != */ ]] && endpoint="${endpoint}/"
         sed -i.bak "s|_MAIN_ENDPOINT=\".*\"|_MAIN_ENDPOINT=\"$endpoint\"|" "$LOCAL_CONFIG"
+        echo -e "${GREEN}✅ Endpoint: $endpoint${NC}"
     fi
 
     # Get API Key
@@ -1438,10 +1512,23 @@ EOF
     if [[ -n "$api_key" ]]; then
         sed -i.bak "s|_MAIN_API_KEY=\".*\"|_MAIN_API_KEY=\"$api_key\"|" "$LOCAL_CONFIG"
     else
+        # Clear it rather than leaving the previous value in place. The client only falls back
+        # to Entra ID when the key is empty, so a leftover key or the template placeholder is
+        # used as a credential and every call fails with 401 while this message claims otherwise.
+        sed -i.bak "s|_MAIN_API_KEY=\".*\"|_MAIN_API_KEY=\"\"|" "$LOCAL_CONFIG"
         echo -e "${BLUE}ℹ️  No API key set — will use Azure AD (Entra ID) via 'az login'.${NC}"
         echo -e "${BLUE}   Make sure you have the 'Cognitive Services OpenAI User' role.${NC}"
         echo -e "${BLUE}   See: docs/az-login-auth-guide.md for details.${NC}"
     fi
+
+    # Get Chat Model Deployment Name
+    # Prompted like the code model: it was previously left at whatever the file already held,
+    # so a stale deployment name survived setup and was used without ever being shown.
+    local existing_chat_model
+    existing_chat_model=$(read_local_config_value _CHAT_MODEL)
+    read -p "Chat Model Deployment Name (default: ${existing_chat_model:-gpt-4o}): " chat_model
+    chat_model=${chat_model:-${existing_chat_model:-gpt-4o}}
+    sed -i.bak "s|_CHAT_MODEL=\".*\"|_CHAT_MODEL=\"$chat_model\"|" "$LOCAL_CONFIG"
 
     # Get Code Model Deployment Name
     read -p "Code Model Deployment Name (default: gpt-5.1-codex-mini): " code_model
@@ -2535,6 +2622,26 @@ ensure_rekt_containers() {
     done
     echo -e " ${GREEN}✅${NC}"
 
+    # The loop above authenticates inside the container, which always agrees with itself.
+    # The populator connects from the host, so verify that credential separately: Neo4j keeps
+    # the password in its data volume, so a reused volume silently outranks NEO4J_AUTH.
+    if ! docker exec "$REKT_NEO4J_CONTAINER" \
+        cypher-shell -u neo4j -p "${REKT_NEO4J_PASSWORD:-$NEO4J_PASSWORD}" "RETURN 1" >/dev/null 2>&1; then
+        echo -e "${RED}❌ REKT_NEO4J_PASSWORD does not authenticate against $REKT_NEO4J_CONTAINER${NC}"
+        echo ""
+        echo "The password was fixed when the data volume was first created, and NEO4J_AUTH"
+        echo "is ignored on every start after that."
+        echo ""
+        echo "Either set the value the volume was created with, in Config/ai-config.local.env:"
+        echo "  REKT_NEO4J_PASSWORD=<existing-password>"
+        echo ""
+        echo "or discard the graph and let it re-initialise (parsed artifacts are kept):"
+        echo "  docker-compose rm -sf $REKT_NEO4J_CONTAINER"
+        echo "  docker volume rm $(basename "$REPO_ROOT" | tr '[:upper:]' '[:lower:]')_rekt_neo4j_data"
+        return 1
+    fi
+    echo -e "  ${GREEN}✅ REKT graph credentials accepted${NC}"
+
     # Verify rekt CLI is available
     if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar --version >/dev/null 2>&1; then
         echo -e "  ${GREEN}✅ Cobol-REKT CLI available${NC}"
@@ -2565,6 +2672,21 @@ run_rekt_parse() {
 
     detect_docker_api_version
     ensure_rekt_containers || return 1
+
+    # The portal resolves the estate through COBOL_SOURCE_FOLDER while this script parses
+    # source/. When they disagree the parse succeeds and every portal view reads empty,
+    # with nothing to explain why.
+    local configured_source="${COBOL_SOURCE_FOLDER:-source}"
+    if [[ "$configured_source" != "source" ]]; then
+        echo -e "${RED}❌ COBOL_SOURCE_FOLDER is '$configured_source' but the parser reads source/${NC}"
+        echo ""
+        echo "Artifacts would be written for source/ while the portal reads"
+        echo "$configured_source/, leaving every modernization view empty."
+        echo ""
+        echo "Set this in Config/ai-config.local.env:"
+        echo "  COBOL_SOURCE_FOLDER=\"source\""
+        return 1
+    fi
 
     local cobol_count
     cobol_count=$(find "$REPO_ROOT/source" \
@@ -2686,7 +2808,17 @@ PYEOF
     # Copybooks remain flat at the root because smojol resolves COPY targets by basename.
     # The container sees this as /source/.rekt-staging (bind-mounted from source/).
     local staging_dir="$REPO_ROOT/source/.rekt-staging"
-    rm -rf "$staging_dir"
+    rm -rf "$staging_dir" 2>/dev/null || true
+    # A failed clean leaves the previous run staged, and the next parse then reports success
+    # while emitting a fraction of the artifacts. Refuse rather than degrade silently.
+    if [[ -d "$staging_dir" && -n "$(ls -A "$staging_dir" 2>/dev/null)" ]]; then
+        echo -e "${RED}❌ Could not clear $staging_dir${NC}"
+        echo ""
+        echo "Stale staging makes the parse emit far fewer artifacts than it reports."
+        echo "The container mounts /source read-only, so clear it from the host:"
+        echo "  rm -rf source/.rekt-staging"
+        return 1
+    fi
     mkdir -p "$staging_dir"
     local generated_stubs_file="$staging_dir/.generated-stubs"
     : > "$generated_stubs_file"
@@ -2735,6 +2867,18 @@ PYEOF
     done < <(find "$REPO_ROOT/source" \( -name "*.cpy" -o -name "*.CPY" \) \
         ! -path "*/.rekt-staging/*" \
         ! -path "*/.preprocessed/*")
+
+    # Stage eight-character aliases before stubs. They are copies of real copybooks under a
+    # shortened name, so recording them as generated stubs would mark every program using a
+    # long copybook name as stub-backed and degrade its reported fidelity.
+    if [[ -d "$preprocessed_dir/aliases" ]]; then
+        while IFS= read -r alias_cpy; do
+            local alias_name
+            alias_name="$(basename "$alias_cpy")"
+            local alias_target="$staging_dir/$alias_name"
+            [[ -f "$alias_target" ]] || cp "$alias_cpy" "$alias_target" 2>/dev/null || true
+        done < <(find "$preprocessed_dir/aliases" -maxdepth 1 \( -name "*.cpy" -o -name "*.CPY" \) -type f 2>/dev/null)
+    fi
 
     # Stage generated stubs after real copybooks without overwriting real files.
     if [[ -d "$preprocessed_dir" ]]; then
@@ -3000,12 +3144,17 @@ PYEOF
 
     declare rekt_skip_set=""
     local rekt_manifest=""
+    # The outcome is measured for every program on every run. Recording it unconditionally is
+    # what lets the portal report the fidelity the parser observed instead of inferring it
+    # from which directories happen to exist.
+    if command -v dotnet >/dev/null 2>&1 && [[ -f "$REPO_ROOT/CobolToQuarkusMigration.csproj" ]]; then
+        rekt_manifest=$(mktemp -t rekt-scan-manifest.XXXXXX)
+    fi
     if [[ "$rekt_inc" == "true" ]]; then
         if command -v dotnet >/dev/null 2>&1 && [[ -f "$REPO_ROOT/CobolToQuarkusMigration.csproj" ]]; then
             local rekt_db="${_REKT_SCAN_DB:-$REPO_ROOT/Data/rekt-scan.db}"
             local rekt_plan_file
             rekt_plan_file=$(mktemp -t rekt-scan-plan.XXXXXX)
-            rekt_manifest=$(mktemp -t rekt-scan-manifest.XXXXXX)
             echo -e "  ${BLUE}Incremental REKT cache: planning…${NC}"
             # Forward the filter so the planner only considers targeted programs.
             local _plan_programs_arg=()
@@ -3046,6 +3195,24 @@ PYEOF
             rekt_inc=false
         fi
     fi
+
+    # smojol resolves a program by filename and searches --srcDir recursively, so a
+    # source-relative path never matches and every nested program is reported missing.
+    # It is invoked by basename and its output is moved back to the nested layout, which
+    # the artifact locators and the v2-source-relative identity scheme depend on.
+    relocate_rekt_report() {
+        local flat_name="$1" nested_rel="$2"
+        [[ "$flat_name" == "$nested_rel" ]] && return 0
+
+        local out_root="$REPO_ROOT/output/rekt"
+        local flat_path="$out_root/${flat_name}.report"
+        local nested_path="$out_root/${nested_rel}.report"
+        [[ -d "$flat_path" ]] || return 0
+
+        mkdir -p "$(dirname "$nested_path")"
+        rm -rf "$nested_path"
+        mv "$flat_path" "$nested_path"
+    }
 
     # Use process substitution so succeeded/failed counters persist outside the loop
     while IFS= read -r cbl_file; do
@@ -3107,7 +3274,7 @@ PYEOF
         fi
 
         # Attempt 1: Standard dialect (handles CICS, SQL, standard COBOL)
-        if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$rel_program" \
+        if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
             --commands="BUILD_BASE_ANALYSIS WRITE_FLOW_AST WRITE_CFG WRITE_DATA_STRUCTURES" \
             --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
             --dialectJarPath=/app/dialect-idms.jar \
@@ -3119,7 +3286,7 @@ PYEOF
             parse_outcome="Full"
         else
             # Attempt 2: Retry without dialect JAR (for IMS/DL/I and other dialects)
-            if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$rel_program" \
+            if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
                 --commands="BUILD_BASE_ANALYSIS WRITE_FLOW_AST WRITE_CFG WRITE_DATA_STRUCTURES" \
                 --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
                 --reportDir=/output \
@@ -3130,7 +3297,7 @@ PYEOF
                 parse_outcome="NoDialect"
             else
                 # Attempt 3: Raw AST only (tolerates more parse errors)
-                if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$rel_program" \
+                if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
                     --commands="WRITE_RAW_AST" \
                     --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
                     --reportDir=/output \
@@ -3142,14 +3309,14 @@ PYEOF
                 else
                     # Dependency extraction can remain useful when AST writing fails.
                     local dep_ok=false
-                    if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar dependency "$rel_program" \
+                    if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar dependency "$fname" \
                         --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
                         --dialectJarPath=/app/dialect-idms.jar \
                         --export=/output/"${rel_program}"-deps.json >/dev/null 2>>"$err_log"; then
                         dep_ok=true
                     fi
                     # Also try validate (may report warnings but still useful)
-                    docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar validate "$rel_program" \
+                    docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar validate "$fname" \
                         --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
                         --dialectJarPath=/app/dialect-idms.jar >/dev/null 2>>"$err_log" || true
 
@@ -3177,6 +3344,10 @@ PYEOF
             fi
         fi
 
+        # Relocated per program rather than after the loop, so two programs sharing a
+        # basename cannot overwrite each other's flat report.
+        relocate_rekt_report "$fname" "$rel_program"
+
         if [[ -n "$stub_warnings" ]]; then
             if [[ "$parse_outcome" == "Full" || "$parse_outcome" == "NoDialect" ]]; then
                 parse_outcome="StubBacked"
@@ -3185,19 +3356,22 @@ PYEOF
         fi
 
         # Append outcomes for batch recording after the loop.
-        if [[ "$rekt_inc" == "true" && -n "$rekt_manifest" ]]; then
+        if [[ -n "$rekt_manifest" ]]; then
             printf '%s\t%s\t%s\n' "$fname" "$parse_outcome" "$stub_warnings" >> "$rekt_manifest"
         fi
     done < <(find "$staging_dir" -type f \( -name "*.cbl" -o -name "*.CBL" -o -name "*.cob" -o -name "*.COB" \) | sort)
 
     # Persist outcomes in one dotnet invocation.
-    if [[ "$rekt_inc" == "true" && -n "$rekt_manifest" && -s "$rekt_manifest" ]]; then
+    if [[ -n "$rekt_manifest" && -s "$rekt_manifest" ]]; then
         local rekt_db="${_REKT_SCAN_DB:-$REPO_ROOT/Data/rekt-scan.db}"
+        # The cache is keyed by basename, so duplicates would overwrite each other. The portal
+        # already refuses to trust an entry whose basename is ambiguous, so recording is safe.
         (cd "$REPO_ROOT" && dotnet run --project CobolToQuarkusMigration.csproj --no-build -- \
                 rekt-scan-cache record-batch "$rekt_manifest" \
                 --staging-dir "$staging_dir" \
-                --db "$rekt_db" >/dev/null 2>&1) || \
-            echo -e "  ${YELLOW}⚠️  Incremental cache record-batch failed (results not persisted).${NC}"
+                --db "$rekt_db" >/dev/null 2>&1) && \
+            echo -e "  ${GREEN}✅ Parse outcomes recorded to $(basename "$rekt_db")${NC}" || \
+            echo -e "  ${YELLOW}⚠️  Could not record parse outcomes; fidelity falls back to artifacts.${NC}"
         rm -f "$rekt_manifest"
     fi
 
@@ -3296,11 +3470,46 @@ run_rekt_ingest() {
     # separately running graph-populator container.
     local populator_dir="$REPO_ROOT/tools/graph-populator"
     ensure_graph_populator_environment || return 1
-    (cd "$populator_dir" && .venv/bin/python populator.py ingest \
+    if ! (cd "$populator_dir" && .venv/bin/python populator.py ingest \
         --source-dir "$REPO_ROOT/source" \
         --rekt-output "$REPO_ROOT/output/rekt" \
         --run-id "$run_id" \
-        "${sqlite_args[@]}")
+        "${sqlite_args[@]}"); then
+        echo -e "\n${RED}❌ Ingest failed — the graph was not updated.${NC}"
+        return 1
+    fi
+
+    # A populator that exits clean having written nothing is indistinguishable from success
+    # at the console, and the portal then reports an empty estate as a finding.
+    local ingested
+    ingested=$(docker exec "$REKT_NEO4J_CONTAINER" cypher-shell -u neo4j \
+        -p "${REKT_NEO4J_PASSWORD:-$NEO4J_PASSWORD}" --format plain \
+        "MATCH (n) WHERE n.runId = $run_id RETURN count(n)" 2>/dev/null | tail -1 | tr -d '[:space:]')
+
+    if [[ -z "$ingested" || "$ingested" == "0" ]]; then
+        echo -e "\n${RED}❌ Ingest reported success but run ${run_id} has no nodes in the graph.${NC}"
+        echo -e "${YELLOW}  Check that output/rekt contains parsed artifacts:${NC}  ./doctor.sh rekt-status"
+        return 1
+    fi
+
+    # Node count alone passes on the CobolFile rows the scan always writes, so compare against
+    # the artifacts on disk: reports present with no AST ingested means the run lost its output.
+    local report_dirs
+    report_dirs=$(find "$REPO_ROOT/output/rekt" -name '*.report' -type d 2>/dev/null | wc -l | tr -d ' ')
+    if [[ "$report_dirs" -gt 0 ]]; then
+        local ast_files
+        ast_files=$(docker exec "$REKT_NEO4J_CONTAINER" cypher-shell -u neo4j \
+            -p "${REKT_NEO4J_PASSWORD:-$NEO4J_PASSWORD}" --format plain \
+            "MATCH (:CobolFile {runId: $run_id})-[:HAS_AST]->() RETURN count(*)" \
+            2>/dev/null | tail -1 | tr -d '[:space:]')
+        if [[ -z "$ast_files" || "$ast_files" == "0" ]]; then
+            echo -e "\n${RED}❌ ${report_dirs} report director(ies) on disk but no AST reached the graph.${NC}"
+            echo -e "${YELLOW}  Clear stale staging and re-parse:${NC}  rm -rf source/.rekt-staging && ./doctor.sh rekt-full"
+            return 1
+        fi
+        echo -e "  ${GREEN}✅ ${ast_files} program AST(s) linked in the graph${NC}"
+    fi
+    echo -e "  ${GREEN}✅ ${ingested} node(s) ingested for run ${run_id}${NC}"
 
     echo -e "\n${GREEN}  Neo4j Browser: http://localhost:$REKT_NEO4J_HTTP_PORT${NC}"
     echo -e "${GREEN}  Connection URL: neo4j://localhost:$REKT_NEO4J_BOLT_PORT${NC}"

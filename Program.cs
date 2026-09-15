@@ -10,7 +10,7 @@ using Microsoft.Extensions.Logging;
 using System.CommandLine;
 using System.Globalization;
 using Microsoft.Extensions.Logging.Console;
-using GitHub.Copilot.SDK;
+using GitHub.Copilot;
 
 namespace CobolToQuarkusMigration;
 
@@ -265,7 +265,7 @@ internal static class Program
             Console.WriteLine("Querying models via GitHub Copilot SDK (CLI)...");
             try
             {
-                var client = new CopilotClient(new CopilotClientOptions { UseStdio = true });
+                using var client = new CopilotClient(new CopilotClientOptions { Mode = CopilotClientMode.CopilotCli });
                 var models = await client.ListModelsAsync();
                 Console.WriteLine($"Available models ({models.Count}):");
                 foreach (var model in models.OrderBy(m => m.Name))

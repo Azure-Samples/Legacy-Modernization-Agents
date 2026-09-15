@@ -843,15 +843,19 @@ else
     echo "  No files needed preprocessing"
 fi
 
-# Create eight-character aliases for long copybook names.
+# Create eight-character aliases for long copybook names. They live beside the preprocessed
+# output rather than in the source tree, which would otherwise grow an extra copybook per long
+# name on every run. They are real content, not stubs, so they are kept apart from those.
+ALIAS_DIR="$PREPROC_DIR/aliases"
 while IFS= read -r -d '' cpy; do
     fname=$(basename "$cpy")
     base="${fname%.*}"
     ext="${fname##*.}"
     if [[ ${#base} -gt 8 ]]; then
         short="${base:0:8}"
-        target="$SOURCE_DIR/${short}.${ext}"
-        if [[ ! -e "$target" ]]; then
+        target="$ALIAS_DIR/${short}.${ext}"
+        if [[ ! -e "$target" && ! -e "$SOURCE_DIR/${short}.${ext}" ]]; then
+            mkdir -p "$ALIAS_DIR"
             cp "$cpy" "$target"
             echo "  Created 8-char alias: ${short}.${ext} → $fname"
         fi

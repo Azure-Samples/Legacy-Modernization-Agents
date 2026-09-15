@@ -20,6 +20,10 @@ services:
       - ApplicationSettings__Neo4j__Uri=bolt://neo4j:7687
       - ApplicationSettings__Neo4j__Username=neo4j
       - ApplicationSettings__Neo4j__Password=${NEO4J_PASSWORD:?Run ./doctor.sh setup and set NEO4J_PASSWORD in Config/ai-config.local.env}
+      # The REKT graph is a second instance with its own credential, so the portal cannot
+      # reach it on the migration settings above.
+      - REKT_NEO4J_URI=bolt://cobol-rekt-neo4j:7687
+      - REKT_NEO4J_PASSWORD=${REKT_NEO4J_PASSWORD:-${NEO4J_PASSWORD}}
     depends_on:
       - neo4j
 
@@ -60,8 +64,11 @@ services:
       - "127.0.0.1:7475:7474"  # HTTP (rekt)
       - "127.0.0.1:7688:7687"  # Bolt (rekt)
     environment:
-      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:?Run ./doctor.sh setup and set NEO4J_PASSWORD in Config/ai-config.local.env}
-      - HEALTHCHECK_PASSWORD=${NEO4J_PASSWORD:?Run ./doctor.sh setup and set NEO4J_PASSWORD in Config/ai-config.local.env}
+      # Defaults to NEO4J_PASSWORD so a fresh install needs one value, but stays overridable:
+      # Neo4j bakes the password into its data volume on first start and ignores NEO4J_AUTH
+      # afterwards, so an existing estate cannot be realigned by changing the shared value.
+      - NEO4J_AUTH=neo4j/${REKT_NEO4J_PASSWORD:-${NEO4J_PASSWORD}}
+      - HEALTHCHECK_PASSWORD=${REKT_NEO4J_PASSWORD:-${NEO4J_PASSWORD}}
       - NEO4J_PLUGINS=["apoc","graph-data-science"]
       - NEO4J_dbms_security_procedures_unrestricted=apoc.*,gds.*
       - NEO4J_server_bolt_advertised__address=localhost:7688

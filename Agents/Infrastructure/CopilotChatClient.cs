@@ -1,4 +1,4 @@
-using GitHub.Copilot.SDK;
+using GitHub.Copilot;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using System.Runtime.CompilerServices;
@@ -134,24 +134,22 @@ public sealed class CopilotChatClient : IChatClient, IAsyncDisposable
         var done = new TaskCompletionSource();
         string? errorMessage = null;
 
-        using var _ = session.On(evt =>
+        // SDK 1.x replaced the single non-generic On(evt => switch) overload with one typed
+        // subscription per event, so each case below becomes its own handler.
+        using var subMessage = session.On<AssistantMessageEvent>(msg =>
         {
-            switch (evt)
-            {
-                case AssistantMessageEvent msg:
-                    responseBuilder.Append(msg.Data.Content);
-                    break;
-                case SessionErrorEvent err:
-                    errorMessage = err.Data.Message;
-                    if (!done.Task.IsCompleted) done.TrySetResult();
-                    break;
-                case SessionIdleEvent:
-                    if (!done.Task.IsCompleted) done.TrySetResult();
-                    break;
-                default:
-                    _logger?.LogDebug("CopilotChatClient: unhandled event {EventType}", evt.GetType().Name);
-                    break;
-            }
+            responseBuilder.Append(msg.Data.Content);
+        });
+
+        using var subError = session.On<SessionErrorEvent>(err =>
+        {
+            errorMessage = err.Data.Message;
+            if (!done.Task.IsCompleted) done.TrySetResult();
+        });
+
+        using var subIdle = session.On<SessionIdleEvent>(_ =>
+        {
+            if (!done.Task.IsCompleted) done.TrySetResult();
         });
 
         await session.SendAsync(new MessageOptions { Prompt = userPromptBuilder.ToString() });
@@ -245,24 +243,23 @@ public sealed class CopilotChatClient : IChatClient, IAsyncDisposable
         var channel = System.Threading.Channels.Channel.CreateUnbounded<ChatResponseUpdate>();
         var writer = channel.Writer;
 
-        using var subscription = session.On(evt =>
+        using var subDelta = session.On<AssistantMessageDeltaEvent>(delta =>
         {
-            switch (evt)
+            writer.TryWrite(new ChatResponseUpdate
             {
-                case AssistantMessageDeltaEvent delta:
-                    writer.TryWrite(new ChatResponseUpdate
-                    {
-                        Role = ChatRole.Assistant,
-                        Contents = [new TextContent(delta.Data.DeltaContent)]
-                    });
-                    break;
-                case SessionErrorEvent err:
-                    writer.TryComplete(new InvalidOperationException($"Copilot SDK error: {err.Data.Message}"));
-                    break;
-                case SessionIdleEvent:
-                    writer.TryComplete();
-                    break;
-            }
+                Role = ChatRole.Assistant,
+                Contents = [new TextContent(delta.Data.DeltaContent)]
+            });
+        });
+
+        using var subError = session.On<SessionErrorEvent>(err =>
+        {
+            writer.TryComplete(new InvalidOperationException($"Copilot SDK error: {err.Data.Message}"));
+        });
+
+        using var subIdle = session.On<SessionIdleEvent>(_ =>
+        {
+            writer.TryComplete();
         });
 
         await session.SendAsync(new MessageOptions { Prompt = userPromptBuilder.ToString() });
