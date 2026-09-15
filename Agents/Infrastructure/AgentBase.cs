@@ -496,6 +496,12 @@ public abstract class AgentBase
     /// </summary>
     protected virtual bool IsTransientError(Exception ex)
     {
+        // Type first. A timeout is transient however its message happens to be worded, and the
+        // Copilot client's own timeout says "did not respond within 5 minutes", in which the
+        // substring checks below never find the word "timeout".
+        if (ex is TimeoutException or HttpRequestException or TaskCanceledException)
+            return true;
+
         var message = ex.Message.ToLowerInvariant();
         return message.Contains("timeout") ||
                message.Contains("temporarily unavailable") ||
@@ -504,8 +510,10 @@ public abstract class AgentBase
                message.Contains("503") ||
                message.Contains("504") ||
                message.Contains("connection") ||
-               ex is HttpRequestException ||
-               ex is TaskCanceledException;
+               // The Copilot CLI reports a network that is missing or not yet back as a failure
+               // to reach the model catalogue. A laptop waking from sleep produces exactly this,
+               // and treating it as permanent drops the program from the run for good.
+               message.Contains("failed to list models");
     }
 
     /// <summary>

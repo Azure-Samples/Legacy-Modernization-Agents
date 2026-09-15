@@ -155,6 +155,33 @@ public class AISettings
     /// If not present, the system will auto-detect from ModelCapabilities.
     /// </summary>
     public int? ContextWindowSize { get; set; }
+
+    /// <summary>
+    /// Resolves a per-agent model override against its fallback.
+    ///
+    /// The per-agent and chat model IDs are all documented as optional, but the settings
+    /// binder produces an empty string for an absent key rather than null, so a
+    /// null-coalescing fallback never fires. Treating whitespace as unset is what makes
+    /// "defaults to ModelId if not set" actually true.
+    /// </summary>
+    private static string Resolve(string? preferred, string fallback) =>
+        string.IsNullOrWhiteSpace(preferred) ? fallback : preferred;
+
+    public string ResolveCobolAnalyzerModelId() => Resolve(CobolAnalyzerModelId, ModelId);
+
+    public string ResolveJavaConverterModelId() => Resolve(JavaConverterModelId, ModelId);
+
+    public string ResolveUnitTestModelId() => Resolve(UnitTestModelId, ModelId);
+
+    public string ResolveDependencyMapperModelId() =>
+        Resolve(DependencyMapperModelId, ResolveCobolAnalyzerModelId());
+
+    /// <summary>
+    /// The chat model falls back to the code model, not to a deployment name: a deployment
+    /// name is an Azure concept and is meaningless to the Copilot SDK, which resolves models
+    /// by catalogue id.
+    /// </summary>
+    public string ResolveChatModelId() => Resolve(ChatModelId, ModelId);
 }
 
 /// <summary>

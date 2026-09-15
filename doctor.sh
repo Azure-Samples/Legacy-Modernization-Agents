@@ -1421,8 +1421,14 @@ _CHAT_MODEL="$ghcp_chat_model"
 _CODE_MODEL="$ghcp_code_model"
 
 # System mapping (model IDs for the application)
+# Two naming schemes are required and neither is redundant: the CLI reads AZURE_OPENAI_*
+# explicitly, while the portal is ASP.NET Core and binds AISETTINGS__* automatically. The CLI
+# never calls AddEnvironmentVariables(), so an AISETTINGS__ value alone is invisible to it and
+# the tracked appsettings.json default silently wins instead.
 AZURE_OPENAI_MODEL_ID="\$_CODE_MODEL"
 AZURE_OPENAI_DEPLOYMENT_NAME="\$_CODE_MODEL"
+AZURE_OPENAI_CHAT_MODEL_ID="\$_CHAT_MODEL"
+AZURE_OPENAI_CHAT_DEPLOYMENT_NAME="\$_CHAT_MODEL"
 AISETTINGS__MODELID="\$_CODE_MODEL"
 AISETTINGS__DEPLOYMENTNAME="\$_CODE_MODEL"
 AISETTINGS__CHATMODELID="\$_CHAT_MODEL"
