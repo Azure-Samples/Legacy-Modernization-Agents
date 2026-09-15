@@ -1,4 +1,4 @@
-**Last updated**: 2026-09-14
+**Last updated**: 2026-09-15
 
 # Dependency Health and Semantic Flow Explorer
 
@@ -6,7 +6,7 @@ This feature answers one question: **which programs can be converted safely righ
 
 Every other portal surface is model-assisted and therefore probabilistic. This one is not. It reports only what the REKT parser actually observed — parse fidelity, resolved CALL/COPY edges, JCL job chains and paragraph-level flow — so that conversion order can be decided from evidence rather than from an LLM's summary of the estate.
 
-It is a **preview feature**, like the REKT scan it reads from. Six subviews are labelled placeholders whose endpoints ship with later features; see [Placeholders](#placeholders).
+It is a **preview feature**, like the REKT scan it reads from. Five subviews are labelled placeholders whose endpoints ship with later features; see [Placeholders](#placeholders).
 
 ---
 
@@ -185,11 +185,12 @@ These subviews render a labelled empty state. Their endpoints are not part of th
 
 - Modernization Dashboard
 - Application Explorer
-- Runtime Intelligence
 - Service Inventory
 - Wave Planning
 - Capability Mapping
 - Reachability, within the services view
+
+The Runtime subview is no longer wholly a placeholder: it renders the [conversion parity report](conversion-parity-validation.md), while its runtime-telemetry half still has no data source.
 
 ---
 

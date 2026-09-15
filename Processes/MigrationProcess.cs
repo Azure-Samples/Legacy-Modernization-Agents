@@ -542,6 +542,12 @@ public class MigrationProcess
             report.AppendLine();
         }
 
+        var langLabel = targetLang == TargetLanguage.CSharp ? "C#" : "Java";
+        var parity = await ConversionParityPostPass.RunAsync(
+            generatedFiles, outputFolder, langLabel, _logger,
+            cobolFiles.Select(f => f.FileName));
+        if (!string.IsNullOrWhiteSpace(parity)) report.Append(parity);
+
         // File mapping section
         report.AppendLine("## 🗂️ File Mapping");
         report.AppendLine($"| COBOL File | {langName} File | Type |");

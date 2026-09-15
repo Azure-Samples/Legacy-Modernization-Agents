@@ -44,5 +44,12 @@ public static class ModernizationEndpoints
                     job, program, includeUtilities ?? false, cancellationToken)))
             .WithName("GetServiceChain")
             .WithSummary("JCL to program to copybook chain, with a Mermaid rendering.");
+
+        group.MapGet("/conversion-parity", async (
+            ConversionParityReader reader,
+            CancellationToken cancellationToken) =>
+                Results.Ok(await reader.ReadAsync(cancellationToken)))
+            .WithName("GetConversionParity")
+            .WithSummary("Structural coverage of generated code against the COBOL it came from.");
     }
 }

@@ -6,7 +6,6 @@ services:
     ports:
       - "5028:5028"
     env_file:
-      - ./Config/ai-config.env
       - ./Config/ai-config.local.env
     volumes:
       - ./Data:/app/Data
