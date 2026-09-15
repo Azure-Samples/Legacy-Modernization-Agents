@@ -26,6 +26,25 @@ public sealed class ProgramFactsArtifactLocatorTests : IDisposable
     }
 
     [Fact]
+    public void TryLoad_IgnoresFactsWrittenBeforeTheCurrentSchema()
+    {
+        var factsDir = Path.Join(_root, "facts");
+        var factsPath = Path.Join(factsDir, "ACCOUNTS.cbl.facts.json");
+        Directory.CreateDirectory(factsDir);
+        // Schema 1 recorded `EXEC` as a table's access mode for every embedded SQL statement,
+        // and the file carries no other marker of that defect.
+        File.WriteAllText(
+            factsPath,
+            CreateFactsJson("ACCOUNTS.cbl", "ACCOUNTS.cbl").Replace(
+                $"\"schemaVersion\": {ProgramFacts.CurrentSchemaVersion}",
+                "\"schemaVersion\": 1"));
+
+        var facts = ProgramFactsArtifactLocator.TryLoad(factsDir, "ACCOUNTS.cbl");
+
+        facts.Should().BeNull();
+    }
+
+    [Fact]
     public void TryLoad_DoesNotGuessAcrossAmbiguousBasenames()
     {
         var factsDir = Path.Combine(_root, "facts");
@@ -50,7 +69,7 @@ public sealed class ProgramFactsArtifactLocatorTests : IDisposable
     private static string CreateFactsJson(string relativePath, string basename) =>
         $$"""
         {
-          "schemaVersion": 1,
+          "schemaVersion": {{ProgramFacts.CurrentSchemaVersion}},
           "identitySchemeVersion": "{{ProgramFacts.CurrentIdentitySchemeVersion}}",
           "basename": "{{basename}}",
           "stem": "{{Path.GetFileNameWithoutExtension(basename)}}",

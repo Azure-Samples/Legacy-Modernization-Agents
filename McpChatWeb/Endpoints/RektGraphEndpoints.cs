@@ -54,7 +54,7 @@ public static class RektGraphEndpoints
         .WithSummary("Scan runs present in the REKT graph, newest first.");
 
         group.MapGet("/architect", async (
-            long? scanRunId,
+            string? scanRunId,
             CancellationToken cancellationToken) =>
         {
             if (!RektNeo4j.IsConfigured)
@@ -63,11 +63,12 @@ public static class RektGraphEndpoints
             try
             {
                 await using var session = RektNeo4j.Shared.AsyncSession();
+                var runId = await ResolveScanRunIdAsync(session, scanRunId, cancellationToken);
 
                 var programs = new List<object>();
                 var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-                await foreach (var record in QueryFilesAsync(session, scanRunId, cancellationToken))
+                await foreach (var record in QueryFilesAsync(session, runId, cancellationToken))
                 {
                     var fileName = record.FileName;
                     if (!seen.Add(fileName)) continue;
@@ -80,7 +81,7 @@ public static class RektGraphEndpoints
                     });
                 }
 
-                var dependencies = await ReadDependenciesAsync(session, scanRunId, seen, cancellationToken);
+                var dependencies = await ReadDependenciesAsync(session, runId, seen, cancellationToken);
                 return Results.Ok(new { programs, dependencies, note = (string?)null });
             }
             catch (Exception ex)
@@ -93,7 +94,7 @@ public static class RektGraphEndpoints
         .WithSummary("Files and dependency edges from the REKT graph.");
 
         group.MapGet("/services", async (
-            long? scanRunId,
+            string? scanRunId,
             CancellationToken cancellationToken) =>
         {
             if (!RektNeo4j.IsConfigured)
@@ -102,8 +103,9 @@ public static class RektGraphEndpoints
             try
             {
                 await using var session = RektNeo4j.Shared.AsyncSession();
+                var runId = await ResolveScanRunIdAsync(session, scanRunId, cancellationToken);
 
-                var runFilter = scanRunId.HasValue ? "AND f.runId = $scanRunId" : "";
+                var runFilter = runId.HasValue ? "AND f.runId = $scanRunId" : "";
                 var cursor = await session.RunAsync($@"
                     MATCH (f:CobolFile)
                     WHERE f.runId IS NOT NULL {runFilter}
@@ -118,7 +120,7 @@ public static class RektGraphEndpoints
                         count(DISTINCT CASE WHEN n.nodeType = 'DISPLAY' THEN n END) AS displayCount
                     RETURN DISTINCT fileName, f.isCopybook AS isCopybook, f.lineCount AS lineCount,
                         hasAst, sqlCount, callCount, performCount, displayCount",
-                    scanRunId.HasValue ? new { scanRunId = scanRunId.Value } : null);
+                    runId.HasValue ? new { scanRunId = runId.Value } : null);
 
                 var nodes = new List<object>();
                 var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -139,7 +141,7 @@ public static class RektGraphEndpoints
                     });
                 }
 
-                var edges = await ReadDependenciesAsync(session, scanRunId, seen, cancellationToken);
+                var edges = await ReadDependenciesAsync(session, runId, seen, cancellationToken);
                 return Results.Ok(new { nodes, edges, note = (string?)null });
             }
             catch (Exception ex)
@@ -172,6 +174,22 @@ public static class RektGraphEndpoints
         });
 
     private sealed record FileRecord(string FileName, bool IsCopybook, int LineCount, bool HasAst);
+
+    // "latest" must mean the most recent scan, not the most recent version of every file ever
+    // scanned: without this an estate shows programs that were deleted several scans ago.
+    // Only an explicit "all" spans runs.
+    private static async Task<long?> ResolveScanRunIdAsync(
+        IAsyncSession session, string? requested, CancellationToken cancellationToken)
+    {
+        if (string.Equals(requested, "all", StringComparison.OrdinalIgnoreCase)) return null;
+        if (long.TryParse(requested, out var explicitRun)) return explicitRun;
+
+        var cursor = await session.RunAsync(
+            "MATCH (f:CobolFile) WHERE f.runId IS NOT NULL RETURN max(f.runId) AS latest");
+        await foreach (var record in cursor.WithCancellation(cancellationToken))
+            return record["latest"].As<long?>();
+        return null;
+    }
 
     // Newest run per file name, so a re-ingest does not duplicate nodes. hasAst reads the
     // HAS_AST edge, not a name convention, so the two projections cannot disagree on it.

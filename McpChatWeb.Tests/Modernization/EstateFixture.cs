@@ -58,7 +58,7 @@ internal sealed class EstateFixture : IDisposable
 
         var json = $$"""
         {
-          "schemaVersion": 1,
+          "schemaVersion": {{CobolToQuarkusMigration.Agents.Infrastructure.Facts.ProgramFacts.CurrentSchemaVersion}},
           "identitySchemeVersion": "v2-source-relative",
           "basename": "{{Path.GetFileName(normalized)}}",
           "stem": "{{Path.GetFileNameWithoutExtension(normalized)}}",
@@ -100,6 +100,17 @@ internal sealed class EstateFixture : IDisposable
         var dir = Path.Combine(RektDir, $"{stem}.report");
         Directory.CreateDirectory(dir);
         File.WriteAllText(Path.Combine(dir, "index.html"), "<html></html>");
+        return this;
+    }
+
+    // Nested layout, as rekt-full writes it: <stem>.report/flow_ast/<stem>.json.
+    public EstateFixture AddReportFlowAst(string stem)
+    {
+        var dir = Path.Join(RektDir, $"{stem}.report", "flow_ast");
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Join(dir, $"{stem}.json"), """
+        { "nodeType": "SECTION", "name": "MAIN-SECTION", "startLine": 10, "endLine": 60, "children": [] }
+        """);
         return this;
     }
 

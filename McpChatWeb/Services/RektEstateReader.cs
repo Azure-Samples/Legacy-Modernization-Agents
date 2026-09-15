@@ -9,6 +9,9 @@ namespace McpChatWeb.Services;
 public sealed class RektEstateReader
 {
     private readonly ILogger<RektEstateReader> _logger;
+    private readonly SemaphoreSlim _cacheGate = new(1, 1);
+    private RektEstate? _cached;
+    private string? _cachedStamp;
 
     // repoRoot is supplied by tests so a synthetic estate can be read without
     // mutating process-global environment variables.
@@ -25,14 +28,16 @@ public sealed class RektEstateReader
             ? folder
             : "source";
 
+    // Path.Combine, not Path.Join: COBOL_SOURCE_FOLDER may be an absolute path to an estate
+    // outside the repository, and letting a rooted value win is the intended behaviour here.
     public string SourceRoot => Path.Combine(RepoRoot, SourceFolderName);
 
-    public string RektDir => Path.Combine(RepoRoot, "output", "rekt");
+    public string RektDir => Path.Join(RepoRoot, "output", "rekt");
 
     public string ScanCacheDbPath =>
         Environment.GetEnvironmentVariable("REKT_SCAN_DB") is { Length: > 0 } db
             ? db
-            : Path.Combine(RepoRoot, RektScanCacheCommand.DefaultDbPath);
+            : Path.Join(RepoRoot, RektScanCacheCommand.DefaultDbPath);
 
     private static string ResolveRepoRoot()
     {
@@ -40,12 +45,89 @@ public sealed class RektEstateReader
         if (!string.IsNullOrEmpty(envRoot) && Directory.Exists(envRoot)) return envRoot;
 
         var dir = new DirectoryInfo(Directory.GetCurrentDirectory());
-        while (dir != null && !File.Exists(Path.Combine(dir.FullName, "doctor.sh")))
+        while (dir != null && !File.Exists(Path.Join(dir.FullName, "doctor.sh")))
             dir = dir.Parent;
         return dir?.FullName ?? Directory.GetCurrentDirectory();
     }
 
+    // One dashboard load calls four endpoints, and each one walked the whole estate: without
+    // facts every program was re-read to count lines and re-scanned for COPY statements.
+    // The stamp is recomputed each call, which is one directory walk instead of four full reads.
     public async Task<RektEstate> ReadAsync(CancellationToken cancellationToken = default)
+    {
+        var stamp = ComputeEstateStamp();
+
+        await _cacheGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_cached is not null && _cachedStamp == stamp) return _cached;
+
+            var estate = await ReadUncachedAsync(cancellationToken).ConfigureAwait(false);
+            _cached = estate;
+            _cachedStamp = stamp;
+            return estate;
+        }
+        finally
+        {
+            _cacheGate.Release();
+        }
+    }
+
+    // Size and write time of every source and artifact entry. A re-parse rewrites artifacts,
+    // and an edited program changes its own entry, so either invalidates the cache.
+    private string ComputeEstateStamp()
+    {
+        var builder = new System.Text.StringBuilder();
+        foreach (var root in new[] { SourceRoot, RektDir })
+        {
+            builder.Append(root).Append('|');
+            if (!Directory.Exists(root)) continue;
+            try
+            {
+                foreach (var entry in Directory
+                    .EnumerateFileSystemEntries(root, "*", SearchOption.AllDirectories)
+                    .OrderBy(p => p, StringComparer.Ordinal))
+                {
+                    var info = new FileInfo(entry);
+                    builder.Append(entry).Append(':')
+                        .Append(info.Exists ? info.Length : -1).Append(':')
+                        .Append(info.LastWriteTimeUtc.Ticks).Append('|');
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+            {
+                // An unreadable tree cannot be stamped reliably, so fall back to always reloading.
+                // Narrow deliberately: anything else is a defect and should surface, not be
+                // silently downgraded to a cache miss.
+                _logger.LogDebug(ex, "Could not stamp {Root}; estate cache disabled for this call.", root);
+                return Guid.NewGuid().ToString();
+            }
+        }
+
+        var db = ScanCacheDbPath;
+        if (File.Exists(db))
+        {
+            var info = new FileInfo(db);
+            builder.Append(db).Append(':').Append(info.Length).Append(':').Append(info.LastWriteTimeUtc.Ticks);
+        }
+
+        return StableDigest(builder.ToString());
+    }
+
+    private static string StableDigest(string value)
+    {
+        const ulong offset = 14695981039346656037;
+        const ulong prime = 1099511628211;
+        var hash = offset;
+        foreach (var b in System.Text.Encoding.UTF8.GetBytes(value))
+        {
+            hash ^= b;
+            hash *= prime;
+        }
+        return hash.ToString("x16");
+    }
+
+    private async Task<RektEstate> ReadUncachedAsync(CancellationToken cancellationToken)
     {
         var sourceRoot = SourceRoot;
         if (!Directory.Exists(sourceRoot))
@@ -102,12 +184,12 @@ public sealed class RektEstateReader
             if (!ambiguous) scanEntries.TryGetValue(basename, out scanEntry);
 
             var (fidelity, fidelitySource) = ResolveFidelity(
-                scanEntry, facts, reportDir is not null, depsPath is not null);
+                scanEntry, facts, reportDir, depsPath is not null);
 
             programs.Add(new RektProgramRecord(
                 Basename: basename,
                 RelativePath: relativePath,
-                LinesOfCode: facts?.Summary.Loc ?? CountLines(Path.Combine(sourceRoot, SourcePathHelper.ToOsRelativePath(relativePath))),
+                LinesOfCode: facts?.Summary.Loc ?? CountLines(Path.Join(sourceRoot, SourcePathHelper.ToOsRelativePath(relativePath))),
                 IsCopybook: facts?.Summary.IsCopybook ?? SourceTypeRegistry.IsCopybook(relativePath),
                 HasFacts: facts is not null,
                 FactsConfidence: (int)(facts?.Confidence ?? FactConfidence.None),
@@ -154,7 +236,8 @@ public sealed class RektEstateReader
                 .ConfigureAwait(false);
             return new Dictionary<string, RektScanEntry>(entries, StringComparer.OrdinalIgnoreCase);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException
+            or Microsoft.Data.Sqlite.SqliteException)
         {
             _logger.LogWarning(ex, "Scan cache unreadable at {DbPath}; falling back to artifacts.", dbPath);
             return empty;
@@ -164,7 +247,7 @@ public sealed class RektEstateReader
     private static (string Fidelity, string Source) ResolveFidelity(
         RektScanEntry? scanEntry,
         ProgramFacts? facts,
-        bool hasReport,
+        string? reportDir,
         bool hasDeps)
     {
         if (scanEntry is not null)
@@ -192,18 +275,46 @@ public sealed class RektEstateReader
             return (fidelity, FidelitySources.Facts);
         }
 
-        // Artifact presence proves a parse ran, not that it succeeded: a stub-backed parse
-        // emits a report directory indistinguishable from a clean one. Never infer Full.
-        if (hasReport) return (ParseFidelity.Partial, FidelitySources.Artifacts);
+        // Graded by content rather than presence. Still never Full: a stub-backed parse writes
+        // the same directories as a clean one, so only a measured outcome can establish that.
+        // A report without a flow AST is a degenerate parse, which presence alone overstates.
+        if (reportDir is not null)
+        {
+            return HasFlowAstContent(reportDir)
+                ? (ParseFidelity.Partial, FidelitySources.Artifacts)
+                : (ParseFidelity.DepsOnly, FidelitySources.Artifacts);
+        }
+
         if (hasDeps) return (ParseFidelity.DepsOnly, FidelitySources.Artifacts);
         return (ParseFidelity.NotParsed, FidelitySources.None);
+    }
+
+    private static bool HasFlowAstContent(string reportDir)
+    {
+        try
+        {
+            var flowAstDir = Path.Join(reportDir, "flow_ast");
+            return Directory.Exists(flowAstDir) && Directory.EnumerateFiles(flowAstDir, "*.json").Any();
+        }
+        // An unreadable directory is indistinguishable from an absent flow AST, and both mean
+        // the same thing here. Anything else is a defect and must not be reported as fidelity.
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            return false;
+        }
     }
 
     private static ProgramFacts? TryLoadFacts(string rektDir, string relativePath)
     {
         if (!Directory.Exists(rektDir)) return null;
         try { return ProgramFactsArtifactLocator.TryLoad(rektDir, relativePath); }
-        catch { return null; }
+        // Unreadable or malformed facts are indistinguishable from absent ones here. Anything
+        // else is a defect, and must not be reported as a program lacking facts.
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+            or System.Security.SecurityException or JsonException)
+        {
+            return null;
+        }
     }
 
     // Mirrors the CLI's REKT context loader, so both agree which layout belongs to a program.
@@ -228,7 +339,7 @@ public sealed class RektEstateReader
 
         foreach (var candidate in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
         {
-            var full = Path.Combine(rektDir, SourcePathHelper.ToOsRelativePath(candidate));
+            var full = Path.Join(rektDir, SourcePathHelper.ToOsRelativePath(candidate));
             if (Directory.Exists(full)) return full;
         }
         return null;
@@ -242,23 +353,23 @@ public sealed class RektEstateReader
         var normalized = SourcePathHelper.NormalizeRelativePath(relativePath);
         var candidates = new List<string>
         {
-            Path.Combine(rektDir, SourcePathHelper.ToOsRelativePath($"{normalized}-deps.json")),
+            Path.Join(rektDir, SourcePathHelper.ToOsRelativePath($"{normalized}-deps.json")),
         };
 
         if (!ambiguous)
         {
-            candidates.Add(Path.Combine(rektDir, SourcePathHelper.ToOsRelativePath($"{basename}-deps.json")));
-            candidates.Add(Path.Combine(rektDir, $"{stem}-deps.json"));
-            candidates.Add(Path.Combine(rektDir, $"{stem}.cbl-deps.json"));
+            candidates.Add(Path.Join(rektDir, SourcePathHelper.ToOsRelativePath($"{basename}-deps.json")));
+            candidates.Add(Path.Join(rektDir, $"{stem}-deps.json"));
+            candidates.Add(Path.Join(rektDir, $"{stem}.cbl-deps.json"));
         }
 
         // Safe even when ambiguous: the report directory itself was resolved source-relative.
         var reportDir = ResolveReportDirectory(rektDir, relativePath, basename, stem, ambiguous);
         if (reportDir is not null)
         {
-            candidates.Add(Path.Combine(reportDir, $"{basename}-deps.json"));
-            candidates.Add(Path.Combine(reportDir, $"{stem}-deps.json"));
-            candidates.Add(Path.Combine(reportDir, $"{stem}.cbl-deps.json"));
+            candidates.Add(Path.Join(reportDir, $"{basename}-deps.json"));
+            candidates.Add(Path.Join(reportDir, $"{stem}-deps.json"));
+            candidates.Add(Path.Join(reportDir, $"{stem}.cbl-deps.json"));
         }
 
         return candidates.FirstOrDefault(File.Exists);
@@ -267,7 +378,7 @@ public sealed class RektEstateReader
     // Line format: COPYBOOK\treferenced by: A.cbl, B.cbl
     public IReadOnlyList<MissingCopybookRow> ReadMissingCopybooks()
     {
-        var path = Path.Combine(RektDir, "missing-copybooks.txt");
+        var path = Path.Join(RektDir, "missing-copybooks.txt");
         if (!File.Exists(path)) return Array.Empty<MissingCopybookRow>();
 
         var rows = new List<MissingCopybookRow>();
@@ -297,7 +408,8 @@ public sealed class RektEstateReader
                 rows.Add(new MissingCopybookRow(copybook, references));
             }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+            or System.Security.SecurityException)
         {
             _logger.LogWarning(ex, "Could not read {Path}.", path);
         }
@@ -316,14 +428,14 @@ public sealed class RektEstateReader
             if (bytes.Length > 0 && bytes[^1] != (byte)'\n') lines++;
             return lines;
         }
-        catch { return 0; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException) { return 0; }
     }
 
     // Fallback for when REKT produced no dependency export. Names are kept as written;
     // the trailing statement period is not part of the name.
     private static List<string> ReadCopyStatements(string sourceRoot, string relativePath)
     {
-        var path = Path.Combine(sourceRoot, SourcePathHelper.ToOsRelativePath(relativePath));
+        var path = Path.Join(sourceRoot, SourcePathHelper.ToOsRelativePath(relativePath));
         if (!File.Exists(path)) return new List<string>();
         try
         {
@@ -333,7 +445,7 @@ public sealed class RektEstateReader
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
         }
-        catch { return new List<string>(); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException) { return new List<string>(); }
     }
 
     private static IEnumerable<string> EnumerateCopybookRelativePaths(string root) =>
@@ -364,7 +476,7 @@ public sealed class RektEstateReader
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
         }
-        catch { return null; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException or JsonException) { return null; }
     }
 
     internal static readonly System.Text.RegularExpressions.Regex CopyStatementRegex = new(

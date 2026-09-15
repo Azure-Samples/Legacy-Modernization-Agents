@@ -143,6 +143,96 @@ public class ModernizationIntelligenceServiceTests
     }
 
     [Fact]
+    public async Task ServiceChain_Db2BatchStep_LinksProgramNamedInInStreamSystsin()
+    {
+        using var fixture = new EstateFixture();
+        fixture.AddProgram("KYGHB013.cbl");
+        // The EXEC card names the TSO monitor; only SYSTSIN names the workload, so reading
+        // the card alone reports a scheduled program as standalone.
+        fixture.AddJcl("jcl/EYGHJ014.jcl", """
+            //EYGHJ014 JOB (OPC0,001),'KYGH',CLASS=3
+            //KYGHB013 EXEC PGM=IKJEFT01
+            //SYSTSIN  DD *
+              RUN PROGRAM(KYGHB013) PLAN(KYGHB013)
+            """);
+
+        var chain = await ServiceFor(fixture).GetServiceChainAsync(null, null, includeUtilities: false);
+
+        Assert.Equal(new[] { "KYGHB013" }, Assert.Single(chain.Jobs).PrimaryPrograms);
+        Assert.Contains("EYGHJ014", Assert.Single(chain.Programs).CalledByJobs);
+    }
+
+    [Fact]
+    public async Task ServiceChain_ProcStepNamedAfterProgram_LinksWhenSourceExists()
+    {
+        using var fixture = new EstateFixture();
+        fixture.AddProgram("KYGHB016.cbl");
+        fixture.AddJcl("jcl/EYGHJ015.jcl", """
+            //EYGHJ015 JOB (OPC0,001),'KYGH',CLASS=3
+            //KYGHB016 EXEC PROC=EXPRP02P,
+            //         SSID='DS0E'
+            //SORT001  EXEC PROC=EXPRP23P
+            """);
+
+        var chain = await ServiceFor(fixture).GetServiceChainAsync(null, null, includeUtilities: false);
+
+        Assert.Equal(new[] { "KYGHB016" }, Assert.Single(chain.Jobs).PrimaryPrograms);
+        // SORT001 matches no source file, so the step is reported rather than inferred away.
+        var unresolved = Assert.Single(chain.UnresolvedSteps);
+        Assert.Equal("SORT001", unresolved.StepName);
+        Assert.Equal("EXPRP23P", unresolved.ProcName);
+    }
+
+    [Fact]
+    public async Task ServiceChain_UnresolvedSteps_QualifyTheStandaloneVerdict()
+    {
+        using var fixture = new EstateFixture();
+        fixture.AddProgram("ORPHAN.cbl");
+        fixture.AddJcl("jcl/EYGHJ001.jcl", """
+            //EYGHJ001 JOB (OPC0,001),'KYGH',CLASS=3
+            //SORT001  EXEC PROC=EXPRP23P
+            """);
+
+        var chain = await ServiceFor(fixture).GetServiceChainAsync(null, null, includeUtilities: false);
+
+        Assert.Empty(Assert.Single(chain.Programs).CalledByJobs);
+        Assert.NotNull(chain.Note);
+        Assert.Contains("standalone", chain.Note);
+    }
+
+    [Fact]
+    public async Task ServiceChain_CommentedExecCard_IsNotAStep()
+    {
+        using var fixture = new EstateFixture();
+        fixture.AddProgram("CUSTOMER.cbl");
+        fixture.AddJcl("jcl/NIGHTLY.jcl", """
+            //NIGHTLY  JOB (ACCT),'A',CLASS=A
+            //*STEP010 EXEC PGM=CUSTOMER
+            //*  RUN PROGRAM(CUSTOMER)
+            """);
+
+        var chain = await ServiceFor(fixture).GetServiceChainAsync(null, null, includeUtilities: false);
+
+        Assert.Empty(Assert.Single(chain.Jobs).PrimaryPrograms);
+    }
+
+    [Fact]
+    public async Task ServiceChain_DiagramWithinCap_IsNotReportedTruncated()
+    {
+        using var fixture = new EstateFixture();
+        fixture.AddProgram("CUSTOMER.cbl");
+        fixture.AddJcl("jcl/NIGHTLY.jcl", """
+            //NIGHTLY  JOB (ACCT),'A',CLASS=A
+            //STEP010  EXEC PGM=CUSTOMER
+            """);
+
+        var chain = await ServiceFor(fixture).GetServiceChainAsync(null, null, includeUtilities: false);
+
+        Assert.False(chain.MermaidTruncated);
+        Assert.NotEqual(0, chain.MermaidEdgeCount);
+    }
+
+    [Fact]
     public async Task ServiceChain_HyphenatedProgramNames_StillLinkJobsToPrograms()
     {
         using var fixture = new EstateFixture();

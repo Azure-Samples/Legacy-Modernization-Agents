@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using CobolToQuarkusMigration.Helpers;
 
@@ -6,13 +7,28 @@ namespace McpChatWeb.Services;
 
 public sealed class ModernizationIntelligenceService
 {
-    // Anchored to a real JCL statement: '//' in columns 1-2 and a step name that cannot start
-    // with '*', so commented-out and in-stream EXEC text never becomes a job-to-program edge.
+    // A step card opens a block that runs until the next one, so in-stream data stays with
+    // the step that submitted it. '//' in columns 1-2 with a name that cannot start with '*'
+    // keeps commented-out cards from becoming steps.
+    private static readonly Regex ExecStepRegex = new(
+        @"^//(?<step>[A-Z0-9$@#-]*)\s+EXEC\s+(?<operand>[^\r\n]*)",
+        RegexOptions.IgnoreCase | RegexOptions.Multiline | RegexOptions.Compiled);
+
     // '-' is accepted beyond the JCL-legal set: real MVS member names cannot contain one,
     // but COBOL estates do, and truncating at the hyphen drops every job-to-program edge.
-    private static readonly Regex ExecPgmRegex = new(
-        @"^//[A-Z0-9$@#-]*\s+EXEC\s+PGM\s*=\s*([A-Z0-9$@#-]+)",
-        RegexOptions.IgnoreCase | RegexOptions.Multiline | RegexOptions.Compiled);
+    private static readonly Regex PgmOperandRegex = new(
+        @"^PGM\s*=\s*(?<pgm>[A-Z0-9$@#-]+)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex ProcOperandRegex = new(
+        @"^(?:PROC\s*=\s*)?(?<proc>[A-Z0-9$@#-]+)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    // DB2 batch names the program in in-stream SYSTSIN; the EXEC card only ever names the
+    // TSO monitor or the PROC wrapping it, so the edge is invisible without reading this.
+    private static readonly Regex RunProgramRegex = new(
+        @"\bRUN\s+PROGRAM\s*\(\s*(?<pgm>[A-Z0-9$@#]+)\s*\)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex JobCardRegex = new(
         @"^//(?<name>[A-Z0-9$@#-]+)\s+JOB",
@@ -80,12 +96,16 @@ public sealed class ModernizationIntelligenceService
         snapshot.NotParsedCount = programs.Count(p => p.ParseFidelity == ParseFidelity.NotParsed);
         snapshot.TotalMissingCopybooks = estate.MissingCopybooks.Count;
 
-        snapshot.ProgramsBlockedByMissing = estate.MissingCopybooks
-            .SelectMany(row => row.ReferencedBy)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Count();
-
         snapshot.ScanCacheBackedCount = programs.Count(p => p.FidelitySource == FidelitySources.ScanCache);
+
+        // Only a measured outcome can establish Full, so without one a 0% coverage figure
+        // describes the evidence rather than the estate.
+        snapshot.CoverageMeasured = programs.Count > 0
+            && programs.Any(p => p.FidelitySource is FidelitySources.ScanCache or FidelitySources.Facts);
+
+        // Derived from the rows above so the headline cannot disagree with the table: the
+        // report also names copybooks, which are not conversion units and not counted here.
+        snapshot.ProgramsBlockedByMissing = snapshot.Programs.Count(p => p.MissingCopybookCount > 0);
 
         if (programs.Count > 0)
         {
@@ -255,10 +275,10 @@ public sealed class ModernizationIntelligenceService
 
         snapshot.ReportDirectory = Path.GetRelativePath(estate.RepoRoot, program.ReportDirectory);
 
-        var flowAstDir = Path.Combine(program.ReportDirectory, "flow_ast");
+        var flowAstDir = Path.Join(program.ReportDirectory, "flow_ast");
         snapshot.HasFlowAst = Directory.Exists(flowAstDir);
-        snapshot.HasCfg = Directory.Exists(Path.Combine(program.ReportDirectory, "cfg"));
-        snapshot.HasDataStructures = Directory.Exists(Path.Combine(program.ReportDirectory, "data_structures"));
+        snapshot.HasCfg = Directory.Exists(Path.Join(program.ReportDirectory, "cfg"));
+        snapshot.HasDataStructures = Directory.Exists(Path.Join(program.ReportDirectory, "data_structures"));
 
         if (snapshot.HasFlowAst)
         {
@@ -273,7 +293,10 @@ public sealed class ModernizationIntelligenceService
                     .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
                     .ToList();
             }
-            catch { /* unreadable artifact directory — report what we have */ }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+            {
+                // Unreadable artifact directory — report what we have.
+            }
         }
 
         PopulateProceduralDetail(snapshot, program.RelativePath);
@@ -291,7 +314,7 @@ public sealed class ModernizationIntelligenceService
             var loader = new RektContextLoader(_estate.RepoRoot, _estate.RektDir);
             context = loader.Load(relativePath, _estate.SourceFolderName);
         }
-        catch (Exception)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException or JsonException)
         {
             snapshot.Note ??= "REKT artifacts for this program could not be read.";
             return;
@@ -370,23 +393,29 @@ public sealed class ModernizationIntelligenceService
 
         var allJobs = new List<JclJob>();
 
+        // A PROC step is only conventionally named after the program it runs, so that
+        // inference is accepted only against source that actually exists.
+        var knownProgramStems = estate.Programs
+            .Where(p => !p.IsCopybook)
+            .Select(p => p.Stem)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var unresolvedSteps = new List<UnresolvedStep>();
+
         foreach (var jclFile in jclFiles)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
             string content;
             try { content = File.ReadAllText(jclFile); }
-            catch { continue; }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException) { continue; }
 
             var jobName = JobCardRegex.Match(content) is { Success: true } m
                 ? m.Groups["name"].Value.ToUpperInvariant()
                 : Path.GetFileNameWithoutExtension(jclFile).ToUpperInvariant();
 
-            var steps = ExecPgmRegex.Matches(content)
-                .Select(match => match.Groups[1].Value.ToUpperInvariant())
-                .Where(pgm => includeUtilities || !SystemUtilities.Contains(pgm))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
+            var steps = ExtractStepPrograms(
+                content, jobName, knownProgramStems, includeUtilities, unresolvedSteps);
 
             allJobs.Add(new JclJob(
                 JobName: jobName,
@@ -471,8 +500,89 @@ public sealed class ModernizationIntelligenceService
         snapshot.JobToProgramEdges = snapshot.Jobs.Sum(j => j.PrimaryPrograms.Count);
         snapshot.ProgramToCopybookEdges = snapshot.Programs.Sum(p => p.Copybooks.Count);
 
+        var selectedJobNames = snapshot.Jobs
+            .Select(j => j.JobName)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var step in unresolvedSteps.Where(s => selectedJobNames.Contains(s.JobName)))
+            snapshot.UnresolvedSteps.Add(step);
+
+        // A standalone verdict is only sound once every step is accounted for; while steps
+        // remain unresolved, absence of a caller is missing evidence rather than a finding.
+        if (snapshot.UnresolvedSteps.Count > 0)
+        {
+            var warning = $"{snapshot.UnresolvedSteps.Count} step(s) invoke a PROC that is not in "
+                + "source, so programs they run cannot be attributed and may appear standalone.";
+            // Appended, not coalesced: the estate note is usually already set, which would
+            // otherwise discard the one caveat that qualifies the standalone column.
+            snapshot.Note = string.IsNullOrWhiteSpace(snapshot.Note)
+                ? warning
+                : $"{snapshot.Note} {warning}";
+        }
+
         ApplyMermaid(snapshot);
         return snapshot;
+    }
+
+    // Three sources of evidence, strongest first: the EXEC card, in-stream SYSTSIN, then the
+    // step name. Anything still unattributed is recorded rather than dropped.
+    private static List<string> ExtractStepPrograms(
+        string content,
+        string jobName,
+        IReadOnlySet<string> knownProgramStems,
+        bool includeUtilities,
+        List<UnresolvedStep> unresolved)
+    {
+        var programs = new List<string>();
+
+        void Accept(string name)
+        {
+            if (name.Length == 0) return;
+            if (!includeUtilities && SystemUtilities.Contains(name)) return;
+            if (!programs.Contains(name, StringComparer.OrdinalIgnoreCase)) programs.Add(name);
+        }
+
+        foreach (var (step, operand, body) in EnumerateSteps(content))
+        {
+            // Read before the card is classified: IKJEFT01 and the PROCs wrapping it are the
+            // TSO monitor, so filtering the step as a utility discards the real workload.
+            var inStream = RunProgramRegex.Matches(body)
+                .Select(match => match.Groups["pgm"].Value.ToUpperInvariant())
+                .ToList();
+            foreach (var program in inStream) Accept(program);
+
+            var pgmOperand = PgmOperandRegex.Match(operand);
+            if (pgmOperand.Success)
+            {
+                Accept(pgmOperand.Groups["pgm"].Value.ToUpperInvariant());
+                continue;
+            }
+
+            if (inStream.Count > 0) continue;
+            if (knownProgramStems.Contains(step)) { Accept(step); continue; }
+
+            var proc = ProcOperandRegex.Match(operand);
+            unresolved.Add(new UnresolvedStep(
+                JobName: jobName,
+                StepName: step,
+                ProcName: proc.Success ? proc.Groups["proc"].Value.ToUpperInvariant() : operand));
+        }
+
+        return programs;
+    }
+
+    private static IEnumerable<(string Step, string Operand, string Body)> EnumerateSteps(string content)
+    {
+        var matches = ExecStepRegex.Matches(content);
+        for (var i = 0; i < matches.Count; i++)
+        {
+            var match = matches[i];
+            var bodyStart = match.Index + match.Length;
+            var bodyEnd = i + 1 < matches.Count ? matches[i + 1].Index : content.Length;
+            yield return (
+                match.Groups["step"].Value.ToUpperInvariant(),
+                match.Groups["operand"].Value.Trim(),
+                content[bodyStart..bodyEnd]);
+        }
     }
 
     private static List<string> EnumerateJclFiles(string sourceRoot)
@@ -489,7 +599,7 @@ public sealed class ModernizationIntelligenceService
                 .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
                 .ToList();
         }
-        catch { return new List<string>(); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException) { return new List<string>(); }
     }
 
     // Capped at MaxMermaidEdges because the client-side renderer becomes unusable well
@@ -521,10 +631,13 @@ public sealed class ModernizationIntelligenceService
         var renderedPrograms = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var renderedCopybooks = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var edges = 0;
+        // Set only where a break leaves an unrendered item, so a diagram that ends exactly
+        // on the cap is not reported as truncated.
+        var truncated = false;
 
         foreach (var job in snapshot.Jobs)
         {
-            if (edges >= MaxMermaidEdges) break;
+            if (edges >= MaxMermaidEdges) { truncated = true; break; }
 
             var jobId = Sanitize($"j_{job.JobName}");
             if (renderedJobs.Add(job.JobName))
@@ -532,7 +645,7 @@ public sealed class ModernizationIntelligenceService
 
             foreach (var pgm in job.PrimaryPrograms)
             {
-                if (edges >= MaxMermaidEdges) break;
+                if (edges >= MaxMermaidEdges) { truncated = true; break; }
 
                 var pgmId = Sanitize($"p_{pgm}");
                 if (renderedPrograms.Add(pgm))
@@ -543,7 +656,7 @@ public sealed class ModernizationIntelligenceService
                 if (!programByStem.TryGetValue(pgm, out var chain)) continue;
                 foreach (var copybook in chain.Copybooks)
                 {
-                    if (edges >= MaxMermaidEdges) break;
+                    if (edges >= MaxMermaidEdges) { truncated = true; break; }
                     AppendCopybook(sb, renderedCopybooks, pgmId, copybook);
                     edges++;
                 }
@@ -554,7 +667,7 @@ public sealed class ModernizationIntelligenceService
         // rather than dropping it.
         foreach (var program in snapshot.Programs)
         {
-            if (edges >= MaxMermaidEdges) break;
+            if (edges >= MaxMermaidEdges) { truncated = true; break; }
             if (renderedPrograms.Contains(program.Stem)) continue;
 
             var pgmId = Sanitize($"p_{program.Stem}");
@@ -563,13 +676,13 @@ public sealed class ModernizationIntelligenceService
 
             foreach (var copybook in program.Copybooks)
             {
-                if (edges >= MaxMermaidEdges) break;
+                if (edges >= MaxMermaidEdges) { truncated = true; break; }
                 AppendCopybook(sb, renderedCopybooks, pgmId, copybook);
                 edges++;
             }
         }
 
-        return new MermaidDiagram(sb.ToString(), edges, edges >= MaxMermaidEdges);
+        return new MermaidDiagram(sb.ToString(), edges, truncated);
     }
 
     private static void AppendCopybook(
@@ -583,8 +696,27 @@ public sealed class ModernizationIntelligenceService
 
     private readonly record struct MermaidDiagram(string Text, int EdgeCount, bool Truncated);
 
-    private static string Sanitize(string value) =>
-        new(value.Select(c => char.IsLetterOrDigit(c) || c == '_' ? c : '_').ToArray());
+    // Two names differing only in punctuation would otherwise collapse to the same node id
+    // and silently merge into one box, so a short digest of the original disambiguates them.
+    private static string Sanitize(string value)
+    {
+        var mapped = new string(value.Select(c => char.IsLetterOrDigit(c) || c == '_' ? c : '_').ToArray());
+        return $"{mapped}_{StableDigest(value)}";
+    }
+
+    // FNV-1a: stable across processes, unlike string.GetHashCode.
+    private static string StableDigest(string value)
+    {
+        const uint offset = 2166136261;
+        const uint prime = 16777619;
+        var hash = offset;
+        foreach (var b in System.Text.Encoding.UTF8.GetBytes(value))
+        {
+            hash ^= b;
+            hash *= prime;
+        }
+        return hash.ToString("x8");
+    }
 
     private static string Escape(string value) =>
         (value ?? "").Replace("\"", "'").Replace('\n', ' ').Replace('\r', ' ');

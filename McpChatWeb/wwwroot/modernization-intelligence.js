@@ -104,13 +104,13 @@ class ModernizationIntelligenceView {
           </div>
         </div>
         <div class="mi-subnav">
-          <button class="mi-subtab" data-sub="dashboard">📊 Modernization Dashboard</button>
-          <button class="mi-subtab" data-sub="applications">📚 Application Explorer</button>
           <button class="mi-subtab mi-subtab-active" data-sub="health">⚕️ Dependency Health</button>
           <button class="mi-subtab" data-sub="chain">🔗 Service Chain (JCL→Pgm→Cpy)</button>
-          <button class="mi-subtab" data-sub="runtime">⏱ Runtime &amp; Conversion Intelligence</button>
           <button class="mi-subtab" data-sub="topology">🕸 Dependency Topology</button>
           <button class="mi-subtab" data-sub="flow">🌊 Semantic Flow Explorer</button>
+          <button class="mi-subtab" data-sub="runtime">⏱ Runtime &amp; Conversion Intelligence</button>
+          <button class="mi-subtab" data-sub="dashboard">📊 Modernization Dashboard</button>
+          <button class="mi-subtab" data-sub="applications">📚 Application Explorer</button>
           <button class="mi-subtab" data-sub="services">🧩 Service Candidates</button>
           <button class="mi-subtab" data-sub="waves">🚀 Migration Wave Planner</button>
           <button class="mi-subtab" data-sub="capabilities">🎯 Capabilities &amp; Locator</button>
@@ -198,7 +198,8 @@ class ModernizationIntelligenceView {
     </div>
     <div class="mi-stats">
       ${miStat('Readiness', `${(d.readinessScore ?? 0).toFixed(1)}%`, 'full=1 · partial=0.5 · deps-only=0.25')}
-      ${miStat('Coverage', `${(d.coveragePct ?? 0).toFixed(1)}%`, 'Full fidelity share')}
+      ${miStat('Coverage', d.coverageMeasured ? `${(d.coveragePct ?? 0).toFixed(1)}%` : '—',
+        d.coverageMeasured ? 'Full fidelity share' : 'Not measured — no scan cache')}
       ${miStat('Scan-cache backed', d.scanCacheBackedCount, 'Measured, not inferred')}
       ${miStat('Missing copybooks', d.totalMissingCopybooks, 'Distinct names unresolved', d.totalMissingCopybooks ? MI_FIDELITY.failed.color : undefined)}
       ${miStat('Blocked programs', d.programsBlockedByMissing, 'Reference a missing copybook', d.programsBlockedByMissing ? MI_FIDELITY.partial.color : undefined)}

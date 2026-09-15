@@ -4,7 +4,9 @@ namespace CobolToQuarkusMigration.Agents.Infrastructure.Facts;
 
 public sealed record ProgramFacts
 {
-    public const int CurrentSchemaVersion = 1;
+    // 2: EXEC SQL statements recorded the operation as `EXEC` rather than the real verb, so
+    // schema 1 facts carry wrong DbTableAccess values and are no longer read.
+    public const int CurrentSchemaVersion = 2;
 
     public const string CurrentIdentitySchemeVersion = "v2-source-relative";
 

@@ -9,6 +9,9 @@ public sealed class DependencyHealthSnapshot
     public int FailedCount { get; set; }
     public int NotParsedCount { get; set; }
     public int ScanCacheBackedCount { get; set; }
+    // False when nothing in the estate carries a measured outcome, so a zero coverage figure
+    // would report absent evidence as a bad result.
+    public bool CoverageMeasured { get; set; }
     public double CoveragePct { get; set; }
     public int TotalMissingCopybooks { get; set; }
     public int ProgramsBlockedByMissing { get; set; }
@@ -104,9 +107,14 @@ public sealed class ServiceChainSnapshot
     // Every job name in the estate, so a filtered response can still populate the picker.
     public List<string> AllJobNames { get; } = new();
     public List<ProgramChain> Programs { get; } = new();
+    // Steps whose program could not be determined. Without these a PROC-driven estate
+    // looks unscheduled, which reads as a finding rather than as missing evidence.
+    public List<UnresolvedStep> UnresolvedSteps { get; } = new();
     public string Mermaid { get; set; } = "";
     public string? Note { get; set; }
 }
+
+public sealed record UnresolvedStep(string JobName, string StepName, string ProcName);
 
 public sealed record JclJob(
     string JobName,

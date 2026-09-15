@@ -57,12 +57,29 @@ public class RektEstateReaderTests
     }
 
     [Fact]
-    public async Task ReportWithoutScanCacheOrFacts_ReportsPartialNotFull()
+    public async Task ReportWithoutFlowAst_ReportsDepsOnlyNotPartial()
     {
         using var fixture = new EstateFixture();
-        // What `rekt-full` alone leaves: a report directory, no cache, no facts. A degraded
-        // parse writes the same directory as a clean one, so artifacts cannot prove Full.
+        // A report directory with no flow AST is a degenerate parse. Presence alone would
+        // call it partial, which credits the program with procedural detail it does not have.
         fixture.AddProgram("CUSTOMER.cbl").AddReportDirectory("CUSTOMER.cbl");
+
+        var estate = await ReaderFor(fixture).ReadAsync();
+        var record = Assert.Single(estate.Programs);
+
+        Assert.Equal(ParseFidelity.DepsOnly, record.ParseFidelity);
+        Assert.Equal(FidelitySources.Artifacts, record.FidelitySource);
+    }
+
+    [Fact]
+    public async Task ReportWithFlowAst_ReportsPartialNotFull()
+    {
+        using var fixture = new EstateFixture();
+        // What `rekt-full` alone leaves: artifacts, no cache, no facts. A stub-backed parse
+        // writes the same directories as a clean one, so artifacts still cannot prove Full.
+        fixture.AddProgram("CUSTOMER.cbl")
+            .AddReportDirectory("CUSTOMER.cbl")
+            .AddReportFlowAst("CUSTOMER.cbl");
 
         var estate = await ReaderFor(fixture).ReadAsync();
         var record = Assert.Single(estate.Programs);
@@ -170,5 +187,24 @@ public class RektEstateReaderTests
 
         Assert.Empty(estate.Programs);
         Assert.NotNull(estate.Note);
+    }
+
+    [Fact]
+    public async Task RepeatedRead_ReturnsCachedEstateUntilTheEstateChanges()
+    {
+        using var fixture = new EstateFixture();
+        fixture.AddProgram("CUSTOMER.cbl");
+        var reader = ReaderFor(fixture);
+
+        var first = await reader.ReadAsync();
+        var second = await reader.ReadAsync();
+        Assert.Same(first, second);
+
+        // A re-parse rewrites artifacts, which must be picked up rather than served stale.
+        fixture.AddProgram("BILLING.cbl");
+        var third = await reader.ReadAsync();
+
+        Assert.NotSame(first, third);
+        Assert.Equal(2, third.Programs.Count);
     }
 }

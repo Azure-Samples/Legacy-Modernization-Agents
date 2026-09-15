@@ -1,4 +1,4 @@
-**Last updated**: 2026-09-08
+**Last updated**: 2026-09-15
 
 # Dependency Health and Semantic Flow Explorer
 
@@ -6,7 +6,7 @@ This feature answers one question: **which programs can be converted safely righ
 
 Every other portal surface is model-assisted and therefore probabilistic. This one is not. It reports only what the REKT parser actually observed — parse fidelity, resolved CALL/COPY edges, JCL job chains and paragraph-level flow — so that conversion order can be decided from evidence rather than from an LLM's summary of the estate.
 
-It is a **preview feature**, like the REKT scan it reads from. Six subviews are labelled placeholders whose endpoints ship with later features; see [Placeholders](#placeholders).
+It is a **preview feature**, like the REKT scan it reads from. Five subviews are labelled placeholders whose endpoints ship with later features; see [Placeholders](#placeholders).
 
 ---
 
@@ -82,9 +82,21 @@ flowchart LR
 
 Within an estate that has JCL, programs no job executes are rendered standalone rather than hidden — an unscheduled program is a real finding, since it is either dead code or invoked by something outside the scanned estate. An estate with no JCL at all is a different case: the view returns an explanatory note instead of a job-less program list, because "nothing is scheduled" and "there is no schedule to read" are not the same conclusion.
 
+A step is read for three kinds of evidence, strongest first:
+
+| Evidence | Example | Why |
+|---|---|---|
+| `EXEC PGM=` on the step card | `//STEP010 EXEC PGM=CUSTRPT` | Names the program directly |
+| `RUN PROGRAM(...)` in in-stream SYSTSIN | `RUN PROGRAM(KYGHB013) PLAN(...)` | DB2 batch runs under the TSO monitor, so the card names `IKJEFT01` rather than the workload |
+| The step name, when a source file of that name exists | `//KYGHB016 EXEC PROC=EXPRP02P` | A PROC step is conventionally named after the program it runs; accepted only when corroborated by a real file |
+
+In-stream data is read *before* the system-utility filter is applied, because `IKJEFT01` and the PROCs wrapping it are the monitor rather than the program to convert; discarding the step would discard the only record of what it ran.
+
+Steps whose program cannot be determined — typically `EXEC PROC=` naming a procedure that is not in the scanned estate — are reported in `unresolvedSteps` rather than dropped, and the response note qualifies the standalone column accordingly. A standalone verdict is only sound once every step is accounted for; until then, absence of a caller is missing evidence rather than a finding.
+
 Program names are matched allowing hyphens, so `EXEC PGM=CUSTOMER-INQUIRY` resolves to the program of that name. Strict JCL member names cannot contain a hyphen, but modernization estates routinely carry hyphenated COBOL names, and truncating at the hyphen silently drops every job-to-program edge.
 
-Filters narrow by job or by program, and combine: requesting a program inside a job that never runs it returns an empty result rather than the program on its own, which would imply a schedule relationship that does not exist. Mermaid output is capped at 200 edges and flags the truncation; the JSON response always carries the complete graph.
+Filters narrow by job or by program, and combine: requesting a program inside a job that never runs it returns an empty result rather than the program on its own, which would imply a schedule relationship that does not exist. Mermaid output is capped at 200 edges and flags the truncation only when edges were actually withheld; the JSON response always carries the complete graph.
 
 ### Semantic Flow Explorer
 
@@ -173,11 +185,12 @@ These subviews render a labelled empty state. Their endpoints are not part of th
 
 - Modernization Dashboard
 - Application Explorer
-- Runtime Intelligence
 - Service Inventory
 - Wave Planning
 - Capability Mapping
 - Reachability, within the services view
+
+The Runtime subview is no longer wholly a placeholder: it renders the [conversion parity report](conversion-parity-validation.md), while its runtime-telemetry half still has no data source.
 
 ---
 
