@@ -83,7 +83,7 @@ public class MigrationProcess
         _cobolAnalyzerAgent = CobolAnalyzerAgent.Create(
             _responsesClient, _chatClient,
             loggerFactory.CreateLogger<CobolAnalyzerAgent>(),
-            _settings.AISettings.CobolAnalyzerModelId,
+            _settings.AISettings.ResolveCobolAnalyzerModelId(),
             _enhancedLogger, _chatLogger, settings: _settings);
 
         // Initialize converter based on target language - uses Responses API (codex for code generation)
@@ -96,7 +96,7 @@ public class MigrationProcess
             _codeConverterAgent = CSharpConverterAgent.Create(
                 _responsesClient, _chatClient,
                 loggerFactory.CreateLogger<CSharpConverterAgent>(),
-                _settings.AISettings.JavaConverterModelId,
+                _settings.AISettings.ResolveJavaConverterModelId(),
                 _enhancedLogger, _chatLogger, settings: _settings);
         }
         else
@@ -104,7 +104,7 @@ public class MigrationProcess
             var javaAgent = JavaConverterAgent.Create(
                 _responsesClient, _chatClient,
                 loggerFactory.CreateLogger<JavaConverterAgent>(),
-                _settings.AISettings.JavaConverterModelId,
+                _settings.AISettings.ResolveJavaConverterModelId(),
                 _enhancedLogger, _chatLogger, settings: _settings);
 
             _javaConverterAgent = javaAgent;
@@ -116,7 +116,7 @@ public class MigrationProcess
         _dependencyMapperAgent = DependencyMapperAgent.Create(
             _responsesClient, _chatClient,
             loggerFactory.CreateLogger<DependencyMapperAgent>(),
-            _settings.AISettings.DependencyMapperModelId ?? _settings.AISettings.CobolAnalyzerModelId,
+            _settings.AISettings.ResolveDependencyMapperModelId(),
             _enhancedLogger, _chatLogger, settings: _settings);
 
         _enhancedLogger.ShowSuccess("All agents initialized (provider: " + (_responsesClient != null ? "Responses API" : "IChatClient") + ")");

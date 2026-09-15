@@ -166,7 +166,10 @@ public sealed class CopilotChatClient : IChatClient, IAsyncDisposable
                 else
                     done.TrySetException(new TimeoutException(
                         $"Copilot SDK did not respond within {RequestTimeout.TotalMinutes} minutes. " +
-                        "This usually indicates an authentication issue — ensure you are logged in via 'gh auth login'."));
+                        "The Copilot CLI holds this credential, not the GitHub CLI, so 'gh auth login' " +
+                        "does not affect it; sign in from the CLI with /login if the session has expired. " +
+                        "A long reasoning request on a large program, or a machine resuming from sleep, " +
+                        "can also exceed the timeout without anything being wrong with the credential."));
             }
         });
 

@@ -474,7 +474,10 @@ internal static class Program
         }
 
         // 2. USE MODEL CAPABILITIES DETECTION (replaces magic string matching):
-        var targetModel = settings.AISettings.ModelId ?? chatDeployment ?? settings.AISettings.ChatModelId;
+        // Same precedence as before, but whitespace-aware: these settings bind to an empty
+        // string when absent, so `??` would hand an empty model name to Detect().
+        var targetModel = new[] { settings.AISettings.ModelId, chatDeployment, settings.AISettings.ChatModelId }
+            .FirstOrDefault(m => !string.IsNullOrWhiteSpace(m)) ?? string.Empty;
 
         if (!string.IsNullOrEmpty(targetModel))
         {
@@ -492,8 +495,45 @@ internal static class Program
         }
     }
 
-    private static async Task RunMigrationAsync(ILoggerFactory loggerFactory, ILogger logger, FileHelper fileHelper, SettingsHelper settingsHelper, string cobolSource, string javaOutput, string reverseEngineerOutput, bool reverseEngineerOnly, bool skipReverseEngineering, bool reuseRe, string configPath, bool resume)
+    /// <summary>
+    /// Stops a run whose configured models the provider does not offer, before any COBOL is read.
+    /// Returns false when the caller should abort.
+    /// </summary>
+    private static async Task<bool> PreflightModelsAsync(AppSettings settings, string serviceType, ILogger logger)
     {
+        var isCopilot = serviceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase) ||
+                        serviceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase);
+        if (!isCopilot)
+        {
+            // Azure deployments cannot be enumerated with the credentials we hold here, so the
+            // provider's own error remains the source of truth for that path.
+            return true;
+        }
+
+        var error = await Helpers.ModelPreflight.ValidateCopilotModelsAsync(
+            new[]
+            {
+                settings.AISettings.ResolveCobolAnalyzerModelId(),
+                settings.AISettings.ResolveJavaConverterModelId(),
+                settings.AISettings.ResolveDependencyMapperModelId(),
+                settings.AISettings.ResolveChatModelId(),
+            },
+            logger);
+
+        if (error is null)
+        {
+            return true;
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("❌ Model Validation Failed");
+        Console.WriteLine("=====================================");
+        Console.WriteLine(error);
+        Console.WriteLine();
+        return false;
+    }
+
+    private static async Task RunMigrationAsync(ILoggerFactory loggerFactory, ILogger logger, FileHelper fileHelper, SettingsHelper settingsHelper, string cobolSource, string javaOutput, string reverseEngineerOutput, bool reverseEngineerOnly, bool skipReverseEngineering, bool reuseRe, string configPath, bool resume)    {
         try
         {
             logger.LogInformation("Loading settings from {ConfigPath}", configPath);
@@ -578,6 +618,12 @@ internal static class Program
             }
 
             // IChatClient for code agents — used when provider is GitHubCopilot/OpenAI or model doesn't support Responses API
+            if (!await PreflightModelsAsync(settings, serviceType, logger))
+            {
+                Environment.ExitCode = 1;
+                return;
+            }
+
             IChatClient codeClient = ChatClientFactory.CreateFromSettings(settings.AISettings, logger: logger);
             logger.LogInformation("Code IChatClient initialized via {Provider} for model: {Model}",
                 serviceType, settings.AISettings.ModelId);
@@ -586,7 +632,7 @@ internal static class Program
             var chatDeployment = settings.AISettings.ChatDeploymentName ?? settings.AISettings.DeploymentName;
             IChatClient chatClient = ChatClientFactory.CreateChatClientFromSettings(settings.AISettings, logger);
             logger.LogInformation("Chat IChatClient initialized via {Provider} for model: {ChatModel}",
-                serviceType, settings.AISettings.ChatModelId ?? chatDeployment);
+                serviceType, settings.AISettings.ResolveChatModelId());
 
             var providerName = codeClient is Agents.Infrastructure.CopilotChatClient ? "GitHub Copilot" : "Azure OpenAI";
             var chatLogger = new ChatLogger(loggerFactory.CreateLogger<ChatLogger>(), providerName: providerName);
@@ -657,20 +703,20 @@ internal static class Program
                 var cobolAnalyzerAgent = CobolAnalyzerAgent.Create(
                     responsesApiClient, codeClient,
                     loggerFactory.CreateLogger<CobolAnalyzerAgent>(),
-                    settings.AISettings.CobolAnalyzerModelId,
+                    settings.AISettings.ResolveCobolAnalyzerModelId(),
                     enhancedLogger, chatLogger, settings: settings);
 
                 var businessLogicExtractorAgent = BusinessLogicExtractorAgent.Create(
                     responsesApiClient, chatClient,
                     loggerFactory.CreateLogger<BusinessLogicExtractorAgent>(),
-                    settings.AISettings.ChatModelId ?? chatDeployment,
+                    settings.AISettings.ResolveChatModelId(),
                     enhancedLogger, chatLogger,
                     chunkingOrchestrator: chunkingOrchestrator, settings: settings);
 
                 var dependencyMapperAgent = DependencyMapperAgent.Create(
                     responsesApiClient, codeClient,
                     loggerFactory.CreateLogger<DependencyMapperAgent>(),
-                    settings.AISettings.DependencyMapperModelId ?? settings.AISettings.CobolAnalyzerModelId,
+                    settings.AISettings.ResolveDependencyMapperModelId(),
                     enhancedLogger, chatLogger, settings: settings);
 
                 // Smart routing: check for large files to decide between chunked vs direct RE
@@ -1298,10 +1344,15 @@ internal static class Program
             }
 
             var serviceType = Environment.GetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE") ?? "AzureOpenAI";
-            var isGitHubCopilot = serviceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase) ||
-                                   serviceType.Equals("GitHub", StringComparison.OrdinalIgnoreCase) ||
+
+            // ChatClientFactory routes both "GitHubCopilot" and "GitHubCopilotSDK" to the Copilot
+            // SDK with githubToken: null — the Copilot CLI holds the credential — so neither needs
+            // a token here. "GitHub" and "GitHubModels" fall through to the OpenAI-compatible
+            // client instead and genuinely do require one.
+            var isGitHubCopilotSdk = serviceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase) ||
+                                     serviceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase);
+            var isGitHubCopilot = serviceType.Equals("GitHub", StringComparison.OrdinalIgnoreCase) ||
                                    serviceType.Equals("GitHubModels", StringComparison.OrdinalIgnoreCase);
-            var isGitHubCopilotSdk = serviceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase);
             var isDirectOpenAI = serviceType.Equals("OpenAI", StringComparison.OrdinalIgnoreCase);
 
             var requiredSettings = new Dictionary<string, string?>();
@@ -1526,6 +1577,12 @@ internal static class Program
             }
 
             // Create IChatClient for all models
+            if (!await PreflightModelsAsync(settings, reServiceType, logger))
+            {
+                Environment.ExitCode = 1;
+                return;
+            }
+
             IChatClient codeClient = ChatClientFactory.CreateFromSettings(settings.AISettings, logger: logger);
             var chatDeployment = settings.AISettings.ChatDeploymentName ?? settings.AISettings.DeploymentName;
             IChatClient chatClient = ChatClientFactory.CreateChatClientFromSettings(settings.AISettings, logger);
@@ -1549,20 +1606,20 @@ internal static class Program
             var cobolAnalyzerAgent = CobolAnalyzerAgent.Create(
                 responsesApiClient, codeClient,
                 loggerFactory.CreateLogger<CobolAnalyzerAgent>(),
-                settings.AISettings.CobolAnalyzerModelId,
+                settings.AISettings.ResolveCobolAnalyzerModelId(),
                 enhancedLogger, chatLogger, settings: settings);
 
             var businessLogicExtractorAgent = BusinessLogicExtractorAgent.Create(
                 responsesApiClient, chatClient,
                 loggerFactory.CreateLogger<BusinessLogicExtractorAgent>(),
-                settings.AISettings.ChatModelId ?? chatDeployment,
+                settings.AISettings.ResolveChatModelId(),
                 enhancedLogger, chatLogger,
                 chunkingOrchestrator: chunkingOrchestrator, settings: settings);
 
             var dependencyMapperAgent = DependencyMapperAgent.Create(
                 responsesApiClient, codeClient,
                 loggerFactory.CreateLogger<DependencyMapperAgent>(),
-                settings.AISettings.DependencyMapperModelId ?? settings.AISettings.CobolAnalyzerModelId,
+                settings.AISettings.ResolveDependencyMapperModelId(),
                 enhancedLogger, chatLogger, settings: settings);
 
             // Smart routing: check for large files to decide between chunked vs direct RE

@@ -87,7 +87,7 @@ public class ChunkedMigrationProcess
             _chunkAwareConverter = ChunkAwareCSharpConverter.Create(
                 _responsesApiClient, _chatClient,
                 loggerFactory.CreateLogger<ChunkAwareCSharpConverter>(),
-                _settings.AISettings.JavaConverterModelId,
+                _settings.AISettings.ResolveJavaConverterModelId(),
                 _settings.ConversionSettings,
                 _enhancedLogger, _chatLogger, settings: _settings);
         }
@@ -96,7 +96,7 @@ public class ChunkedMigrationProcess
             _chunkAwareConverter = ChunkAwareJavaConverter.Create(
                 _responsesApiClient, _chatClient,
                 loggerFactory.CreateLogger<ChunkAwareJavaConverter>(),
-                _settings.AISettings.JavaConverterModelId,
+                _settings.AISettings.ResolveJavaConverterModelId(),
                 _settings.ConversionSettings,
                 _enhancedLogger, _chatLogger, settings: _settings);
         }
@@ -106,14 +106,14 @@ public class ChunkedMigrationProcess
         _cobolAnalyzerAgent = CobolAnalyzerAgent.Create(
             _responsesApiClient, _chatClient,
             loggerFactory.CreateLogger<CobolAnalyzerAgent>(),
-            _settings.AISettings.CobolAnalyzerModelId,
+            _settings.AISettings.ResolveCobolAnalyzerModelId(),
             _enhancedLogger, _chatLogger, settings: _settings);
 
         _enhancedLogger.ShowStep(4, 4, "DependencyMapperAgent", "Cross-file dependency mapping");
         _dependencyMapperAgent = DependencyMapperAgent.Create(
             _responsesApiClient, _chatClient,
             loggerFactory.CreateLogger<DependencyMapperAgent>(),
-            _settings.AISettings.DependencyMapperModelId ?? _settings.AISettings.CobolAnalyzerModelId,
+            _settings.AISettings.ResolveDependencyMapperModelId(),
             _enhancedLogger, _chatLogger, settings: _settings);
 
         _enhancedLogger.ShowSuccess("All chunked migration agents initialized");

@@ -69,10 +69,14 @@ public static class ChatClientFactory
         AISettings settings,
         ILogger? logger = null)
     {
-        var chatEndpoint = settings.ChatEndpoint ?? settings.Endpoint;
-        var chatApiKey = settings.ChatApiKey ?? settings.ApiKey;
-        var chatModel = settings.ChatModelId ?? settings.ChatDeploymentName ?? settings.ModelId;
-        var serviceType = settings.ServiceType?.Trim() ?? "AzureOpenAI";
+        // These settings bind to an empty string when absent, so `??` silently yields "" instead
+        // of falling through. Chat deliberately falls back to the code model rather than to
+        // ChatDeploymentName: a deployment name is an Azure concept and means nothing to the
+        // Copilot SDK, which resolves models by catalogue id.
+        var chatEndpoint = Coalesce(settings.ChatEndpoint, settings.Endpoint);
+        var chatApiKey = Coalesce(settings.ChatApiKey, settings.ApiKey);
+        var chatModel = settings.ResolveChatModelId();
+        var serviceType = string.IsNullOrWhiteSpace(settings.ServiceType) ? "AzureOpenAI" : settings.ServiceType.Trim();
 
         // Route through CreateFromSettings which handles AzureOpenAI and CopilotSDK
         var chatSettings = new AISettings
@@ -81,11 +85,14 @@ public static class ChatClientFactory
             Endpoint = chatEndpoint,
             ApiKey = chatApiKey,
             ModelId = chatModel,
-            DeploymentName = settings.ChatDeploymentName ?? settings.DeploymentName
+            DeploymentName = Coalesce(settings.ChatDeploymentName, settings.DeploymentName)
         };
 
         return CreateFromSettings(chatSettings, chatModel, logger);
     }
+
+    private static string Coalesce(string? preferred, string fallback) =>
+        string.IsNullOrWhiteSpace(preferred) ? fallback : preferred;
 
     // ═══════════════════════════════════════════════════════════════════════
     // AZURE OPENAI
