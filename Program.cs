@@ -798,28 +798,32 @@ internal static class Program
                 // --skip-reverse-engineering: only load persisted business logic when --reuse-re is also set
                 if (reuseRe)
                 {
-                    var latestRun = await migrationRepository.GetLatestRunAsync();
-                    if (latestRun != null && latestRun.RunId > 0)
+                    // The newest run is not necessarily the one holding reverse-engineering
+                    // output: a run terminated before its business logic was persisted leaves a
+                    // newer id with nothing behind it, and selecting that silently converted the
+                    // whole estate without any business-logic context.
+                    var sourceRunId = await migrationRepository.GetLatestRunIdWithBusinessLogicAsync();
+                    if (sourceRunId is int reuseRunId)
                     {
-                        var savedLogic = await migrationRepository.GetBusinessLogicAsync(latestRun.RunId);
+                        var savedLogic = await migrationRepository.GetBusinessLogicAsync(reuseRunId);
                         if (savedLogic.Count > 0)
                         {
-                            Console.WriteLine($"♻️  Loaded {savedLogic.Count} business logic entries from Run #{latestRun.RunId} (use --reuse-re with a specific run by passing --resume).");
+                            Console.WriteLine($"♻️  Loaded {savedLogic.Count} business logic entries from Run #{reuseRunId}.");
                             reverseEngResultForMigration = new ReverseEngineeringResult
                             {
                                 Success = true,
-                                RunId = latestRun.RunId,
+                                RunId = reuseRunId,
                                 BusinessLogicExtracts = savedLogic.ToList()
                             };
                         }
                         else
                         {
-                            Console.WriteLine($"⚠️  --reuse-re: no persisted business logic found for Run #{latestRun.RunId}. Migration will proceed without business logic context.");
+                            Console.WriteLine($"⚠️  --reuse-re: Run #{reuseRunId} holds no business logic. Migration will proceed without business logic context.");
                         }
                     }
                     else
                     {
-                        Console.WriteLine("⚠️  --reuse-re: no previous run found. Migration will proceed without business logic context.");
+                        Console.WriteLine("⚠️  --reuse-re: no previous run has persisted business logic. Run a reverse-engineering pass first, or drop --skip-reverse-engineering. Migration will proceed without business logic context.");
                     }
                 }
                 else
