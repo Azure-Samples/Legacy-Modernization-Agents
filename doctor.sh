@@ -39,6 +39,24 @@ resolve_sqlite3() {
 # Get repository root (directory containing this script)
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Read a single key from the local config, without quotes, empty when absent.
+# Neo4j fixes each instance's password in its data volume on first start and ignores the
+# setting afterwards, so a value that opens an existing volume has to survive re-running setup.
+read_local_config_value() {
+    local key="$1"
+    local file="$REPO_ROOT/Config/ai-config.local.env"
+    [[ -f "$file" ]] || return 0
+
+    local line
+    line=$(grep -E "^${key}=" "$file" 2>/dev/null | tail -1) || true
+    [[ -n "$line" ]] || return 0
+
+    local value="${line#"${key}"=}"
+    value="${value%\"}"; value="${value#\"}"
+    value="${value%\'}"; value="${value#\'}"
+    printf '%s' "$value"
+}
+
 # Determine the preferred dotnet CLI (favor .NET 10 installations when available)
 detect_dotnet_cli() {
     local default_cli="dotnet"
@@ -1361,6 +1379,21 @@ run_setup() {
         echo -e "${GREEN}✅ Chat model: $ghcp_chat_model${NC}"
         echo -e "${GREEN}✅ Code model: $ghcp_code_model${NC}"
 
+        # Preserve anything already configured: these values may be the only ones that open
+        # the existing Neo4j volumes, and setup rewrites this file wholesale.
+        local existing_neo4j existing_rekt existing_source
+        existing_neo4j=$(read_local_config_value NEO4J_PASSWORD)
+        existing_rekt=$(read_local_config_value REKT_NEO4J_PASSWORD)
+        existing_source=$(read_local_config_value COBOL_SOURCE_FOLDER)
+
+        local neo4j_password="${existing_neo4j:-cobol-rekt-2026}"
+        local rekt_password="${existing_rekt:-$neo4j_password}"
+        local source_folder="${existing_source:-source}"
+
+        if [[ -n "$existing_neo4j" || -n "$existing_rekt" || -n "$existing_source" ]]; then
+            echo -e "${BLUE}  Keeping existing Neo4j and source settings from $(basename "$LOCAL_CONFIG")${NC}"
+        fi
+
         # Write local config for GitHub Copilot
         cat > "$LOCAL_CONFIG" <<EOF
 # =============================================================================
@@ -1394,11 +1427,15 @@ AISETTINGS__CHATENDPOINT="https://copilot-sdk-placeholder"
 # Neo4j local development credentials
 # Username: neo4j
 # NOT FOR PRODUCTION, ENSURE TO CHANGE PASSWORD
-NEO4J_PASSWORD="cobol-rekt-2026"
+#
+# Two instances run side by side: the migration graph on 7687 and the REKT graph on 7688.
+# Each fixes its password in its own data volume the first time it starts, so these must
+# match the volumes that already exist. Re-running setup keeps whatever is set here.
+NEO4J_PASSWORD="$neo4j_password"
+REKT_NEO4J_PASSWORD="$rekt_password"
 
-# The REKT graph is a second Neo4j instance. Leave unset to share the value above; set it
-# only when that instance's data volume already exists with a different password.
-#REKT_NEO4J_PASSWORD=""
+# The parser reads this folder and the portal resolves the estate through it; they must agree.
+COBOL_SOURCE_FOLDER="$source_folder"
 EOF
 
         # Append GitHub host if not default
