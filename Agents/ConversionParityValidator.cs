@@ -557,9 +557,19 @@ internal static class ConversionParityValidator
             var matched = new bool[expected.Count];
             var used = new bool[pool.Count];
 
+            // Ordering by pass alone is not enough, because CUSTOMER and CUSTOMER-ID both match
+            // customerId by sequence and so compete within the same pass. Whichever the structural
+            // context happens to list first wins, and the loser cannot fall back to a shorter
+            // candidate, since a longer token sequence never fits inside one. Claiming the most
+            // specific symbol first keeps a conversion that produced both from losing credit.
+            var order = Enumerable.Range(0, expected.Count)
+                .OrderByDescending(i => expected[i].Tokens.Count)
+                .ThenByDescending(i => expected[i].Compact.Length)
+                .ToArray();
+
             for (var pass = 0; pass < 2; pass++)
             {
-                for (var i = 0; i < expected.Count; i++)
+                foreach (var i in order)
                 {
                     if (matched[i] || (skip is not null && skip[i])) continue;
 

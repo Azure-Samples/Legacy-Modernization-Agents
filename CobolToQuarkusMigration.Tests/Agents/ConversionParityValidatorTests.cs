@@ -192,6 +192,26 @@ public class ConversionParityValidatorTests
     }
 
     [Fact]
+    public void Evaluate_BothNestedNamesPresentAreBothCredited()
+    {
+        // Both fields were genuinely converted. The less specific CUSTOMER is listed first and
+        // matches customerId as a sub-sequence, so a first-fit assignment consumes the candidate
+        // CUSTOMER-ID uniquely needs — CUSTOMER-ID cannot match the shorter `customer`, because a
+        // longer token sequence never fits a shorter candidate. A correct conversion then scores
+        // half marks. Declaration order decides, which makes the result arbitrary.
+        const string code = "public class C { void main(){ long customerId; String customer; } }";
+
+        var result = ConversionParityValidator.Evaluate(
+            "CUST.cbl", "C.java", code,
+            Context(new[] { "MAIN" }, new[] { "CUSTOMER", "CUSTOMER-ID" }, Array.Empty<string>(), Array.Empty<string>()),
+            null);
+
+        var data = result.Axes.Single(a => a.Name == "dataFields");
+        data.MatchedInCode.Should().Be(2);
+        data.Missing.Should().Be(0);
+    }
+
+    [Fact]
     public void Evaluate_ConverterFallbackIsTreatedAsStubAndScoresZero()
     {
         var context = Context(
