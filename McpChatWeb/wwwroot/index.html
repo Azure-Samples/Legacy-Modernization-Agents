@@ -326,6 +326,7 @@
         <button class="dashboard-tab active" data-tab="dependency" onclick="switchDashboard('dependency')">🕸 Dependency Graph</button>
         <button class="dashboard-tab" data-tab="services" onclick="switchDashboard('services')">🏗️ Architecture</button>
         <button class="dashboard-tab" data-tab="modernization" onclick="switchDashboard('modernization')">🧭 Modernization Intelligence</button>
+        <button class="dashboard-tab" data-tab="ast" onclick="switchDashboard('ast')">🌳 AST Explorer</button>
         <span id="rekt-scan-picker" style="margin-left:auto; display:flex; align-items:center; gap:6px;">
           <label style="color:#94a3b8; font-size:11px;">Scan:</label>
           <select id="rekt-scan-select" style="padding:4px 8px; background:#1e293b; color:#e2e8f0; border:1px solid #475569; border-radius:4px; font-size:12px;" onchange="window._onScanRunChange && window._onScanRunChange(this.value)">
@@ -513,6 +514,31 @@
       </div>
 
       <div id="dependency-graph"></div>
+
+      <!-- AST Explorer — what the parser produced for one program, and the source behind it -->
+      <div id="ast-explorer-container" class="dashboard-panel" style="display: none;">
+        <div id="ast-controls" style="padding: 8px; display: flex; gap: 8px; align-items: center; background: rgba(15,23,42,0.8); border-bottom: 1px solid #334155;">
+          <select id="ast-file-select" style="flex: 1; padding: 6px; background: #1e293b; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; font-size: 13px;">
+            <option value="">Select file to explore...</option>
+          </select>
+          <select id="ast-view-mode" style="padding: 6px; background: #1e293b; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; font-size: 13px;">
+            <option value="structure">Structure</option>
+            <option value="ast">Raw AST</option>
+          </select>
+          <button onclick="astExplorer?.refresh()" class="btn-small">Refresh</button>
+        </div>
+        <div id="ast-stats-bar" style="padding: 4px 12px; background: rgba(15,23,42,0.6); border-bottom: 1px solid #1e293b; font-size: 12px; color: #94a3b8; display: flex; gap: 12px; align-items: center;"></div>
+        <div style="display: flex; height: calc(100% - 78px);">
+          <div id="ast-graph" style="flex: 3; min-width: 0; overflow-y: auto; border-right: 1px solid #334155;"></div>
+          <div id="ast-source-panel" style="flex: 4; min-width: 0; overflow: hidden; background: #0c1222; border-right: 1px solid #334155;">
+            <div class="source-placeholder">Select a section or paragraph to view source</div>
+          </div>
+          <div id="ast-node-inspector" style="flex: 2; min-width: 180px; max-width: 300px; background: #0f172a; padding: 12px; overflow-y: auto; font-size: 13px; color: #cbd5e1;">
+            <h4 style="margin: 0 0 8px; color: #60a5fa;">Inspector</h4>
+            <div id="ast-inspector-content">Select a paragraph to inspect statements</div>
+          </div>
+        </div>
+      </div>
 
       <!-- Architecture & Services — REKT graph projections -->
       <div id="services-container" class="dashboard-panel" style="display: none;">
@@ -1278,6 +1304,7 @@ curl http://localhost:5028/api/data-retrieval-guide</code></pre>
   <script src="model-prompt-panel.js"></script>
   <script src="model-setup-modal.js"></script>
   <script src="mission-control.js"></script>
+  <script src="ast-explorer.js"></script>
   <script src="services-view.js"></script>
   <script src="modernization-intelligence.js"></script>
   <script src="dashboard-tabs.js"></script>
