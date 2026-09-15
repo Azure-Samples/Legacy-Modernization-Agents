@@ -10,7 +10,7 @@
   <ItemGroup>
     <PackageReference Include="Azure.AI.OpenAI" Version="2.1.0" />
     <PackageReference Include="Azure.Identity" Version="1.17.1" />
-    <PackageReference Include="GitHub.Copilot.SDK" Version="0.1.32" />
+    <PackageReference Include="GitHub.Copilot.SDK" Version="1.0.0" />
     <PackageReference Include="Microsoft.Extensions.AI" Version="10.0.1" />
     <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.3.0" />
     <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.0" />
@@ -46,4 +46,17 @@
   <ItemGroup>
     <Compile Remove="output\**" />
   </ItemGroup>
+
+  <!-- Record the Copilot CLI version this SDK package expects so the running app can compare
+       it against the CLI actually on the machine and report a version mismatch instead of an
+       opaque protocol error. Runs as a target rather than a plain ItemGroup so it reads the
+       property after the SDK's props are imported, and no-ops on any SDK that does not define it. -->
+  <Target Name="_EmbedCopilotCliVersion" BeforeTargets="GetAssemblyAttributes" Condition="'$(CopilotCliVersion)' != ''">
+    <ItemGroup>
+      <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+        <_Parameter1>CopilotCliVersion</_Parameter1>
+        <_Parameter2>$(CopilotCliVersion)</_Parameter2>
+      </AssemblyAttribute>
+    </ItemGroup>
+  </Target>
 </Project>
