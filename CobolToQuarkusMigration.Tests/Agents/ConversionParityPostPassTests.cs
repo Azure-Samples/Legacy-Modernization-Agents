@@ -25,12 +25,12 @@ public class ConversionParityPostPassTests : IDisposable
     {
         Environment.SetEnvironmentVariable("ON_LOW_SCORE", "warn");
 
-        var dir = Path.Combine(Path.GetTempPath(), $"parity-dupe-{Guid.NewGuid():N}");
+        var dir = Path.Join(Path.GetTempPath(), $"parity-dupe-{Guid.NewGuid():N}");
         Directory.CreateDirectory(dir);
         try
         {
-            var billing = Path.Combine(dir, "BillingCustomer.java");
-            var claims = Path.Combine(dir, "ClaimsCustomer.java");
+            var billing = Path.Join(dir, "BillingCustomer.java");
+            var claims = Path.Join(dir, "ClaimsCustomer.java");
             await File.WriteAllTextAsync(billing, "class BillingCustomer { void billIt() {} }");
             await File.WriteAllTextAsync(claims, "class ClaimsCustomer { void claimIt() {} }");
 
@@ -59,12 +59,12 @@ public class ConversionParityPostPassTests : IDisposable
     {
         Environment.SetEnvironmentVariable("ON_LOW_SCORE", "warn");
 
-        var dir = Path.Combine(Path.GetTempPath(), $"parity-split-{Guid.NewGuid():N}");
+        var dir = Path.Join(Path.GetTempPath(), $"parity-split-{Guid.NewGuid():N}");
         Directory.CreateDirectory(dir);
         try
         {
-            var billing = Path.Combine(dir, "BillingCustomer.java");
-            var claims = Path.Combine(dir, "ClaimsCustomer.java");
+            var billing = Path.Join(dir, "BillingCustomer.java");
+            var claims = Path.Join(dir, "ClaimsCustomer.java");
             await File.WriteAllTextAsync(billing, "class BillingCustomer { void billIt() {} }");
             await File.WriteAllTextAsync(claims, "class ClaimsCustomer { void claimIt() {} }");
 
@@ -88,11 +88,11 @@ public class ConversionParityPostPassTests : IDisposable
         Environment.SetEnvironmentVariable("ON_LOW_SCORE", "stop");
         Environment.ExitCode = 0;
 
-        var dir = Path.Combine(Path.GetTempPath(), $"parity-noeval-{Guid.NewGuid():N}");
+        var dir = Path.Join(Path.GetTempPath(), $"parity-noeval-{Guid.NewGuid():N}");
         Directory.CreateDirectory(dir);
         try
         {
-            var path = Path.Combine(dir, "Thing.java");
+            var path = Path.Join(dir, "Thing.java");
             // Real output, but no structural context in a temp dir, so parity is unmeasurable.
             await File.WriteAllTextAsync(path, "public class Thing { void run() { } }");
 
@@ -104,7 +104,7 @@ public class ConversionParityPostPassTests : IDisposable
                 }],
                 dir, "Java");
 
-            var json = await File.ReadAllTextAsync(Path.Combine(dir, ConversionParityPostPass.ArtifactName));
+            var json = await File.ReadAllTextAsync(Path.Join(dir, ConversionParityPostPass.ArtifactName));
             json.Should().Contain("\"NotEvaluated\"", "the premise is that nothing was evaluable");
 
             Environment.ExitCode.Should().Be(
@@ -126,11 +126,11 @@ public class ConversionParityPostPassTests : IDisposable
         Environment.SetEnvironmentVariable("MIN_PROGRAM_SCORE", "0.9");
         Environment.ExitCode = 0;
 
-        var dir = Path.Combine(Path.GetTempPath(), $"parity-gate-{Guid.NewGuid():N}");
+        var dir = Path.Join(Path.GetTempPath(), $"parity-gate-{Guid.NewGuid():N}");
         Directory.CreateDirectory(dir);
         try
         {
-            var path = Path.Combine(dir, "Thing.java");
+            var path = Path.Join(dir, "Thing.java");
             // A guard stub always scores 0, so it is below any non-zero threshold.
             await File.WriteAllTextAsync(path, "// CONVERSION DID NOT PRODUCE USABLE OUTPUT");
 
@@ -143,7 +143,7 @@ public class ConversionParityPostPassTests : IDisposable
                 dir, "Java");
 
             Environment.ExitCode.Should().Be(expectedExitCode);
-            File.Exists(Path.Combine(dir, ConversionParityPostPass.ArtifactName))
+            File.Exists(Path.Join(dir, ConversionParityPostPass.ArtifactName))
                 .Should().BeTrue("the gate must not suppress the artifact");
         }
         finally
@@ -324,12 +324,12 @@ public class ConversionParityPostPassTests : IDisposable
         Environment.SetEnvironmentVariable("ON_LOW_SCORE", "warn");
         Environment.SetEnvironmentVariable("MIN_PROGRAM_SCORE", "0.75");
 
-        var dir = Path.Combine(Path.GetTempPath(), $"parity-group-{Guid.NewGuid():N}");
+        var dir = Path.Join(Path.GetTempPath(), $"parity-group-{Guid.NewGuid():N}");
         Directory.CreateDirectory(dir);
         try
         {
-            var service = Path.Combine(dir, "CustomerService.java");
-            var dto = Path.Combine(dir, "CustomerDto.java");
+            var service = Path.Join(dir, "CustomerService.java");
+            var dto = Path.Join(dir, "CustomerDto.java");
             await File.WriteAllTextAsync(service, "class CustomerService { void mainLogic() {} }");
             await File.WriteAllTextAsync(dto, "class CustomerDto { int customerTotal; }");
 
@@ -357,11 +357,11 @@ public class ConversionParityPostPassTests : IDisposable
         Environment.SetEnvironmentVariable("MIN_PROGRAM_SCORE", "0.75");
         Environment.ExitCode = 0;
 
-        var dir = Path.Combine(Path.GetTempPath(), $"parity-missing-{Guid.NewGuid():N}");
+        var dir = Path.Join(Path.GetTempPath(), $"parity-missing-{Guid.NewGuid():N}");
         Directory.CreateDirectory(dir);
         try
         {
-            var path = Path.Combine(dir, "Converted.java");
+            var path = Path.Join(dir, "Converted.java");
             await File.WriteAllTextAsync(path, "class Converted {}");
 
             await ConversionParityPostPass.RunAsync(
@@ -408,7 +408,7 @@ public class ConversionParityPostPassTests : IDisposable
     private static async Task<ConversionParityReport> ReadReportAsync(string dir)
     {
         var json = await System.IO.File.ReadAllTextAsync(
-            Path.Combine(dir, ConversionParityPostPass.ArtifactName));
+            Path.Join(dir, ConversionParityPostPass.ArtifactName));
         return System.Text.Json.JsonSerializer.Deserialize<ConversionParityReport>(json)!;
     }
 
