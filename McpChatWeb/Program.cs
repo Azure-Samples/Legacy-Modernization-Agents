@@ -4393,7 +4393,7 @@ app.MapPost("/api/models/connect", async (McpChatWeb.Models.ConnectProviderReque
 					options.GitHubToken = request.ApiKey;
 				}
 
-				var client = new GitHub.Copilot.CopilotClient(options);
+				using var client = new GitHub.Copilot.CopilotClient(options);
 				var copilotModels = await client.ListModelsAsync();
 
 				foreach (var m in copilotModels.OrderBy(m => m.Name))

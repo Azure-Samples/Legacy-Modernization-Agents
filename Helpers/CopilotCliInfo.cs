@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Reflection;
 using System.Text.RegularExpressions;
@@ -37,34 +38,24 @@ public static class CopilotCliInfo
 
     public static string? ResolvePath()
     {
-        foreach (var name in ExecutableNames)
-        {
-            var bundled = Path.Combine(AppContext.BaseDirectory, name);
-            if (File.Exists(bundled))
-                return bundled;
-        }
+        // Path.Join rather than Path.Combine: the executable names are never
+        // rooted, and Join never discards the directory it is given.
+        var bundled = ExecutableNames
+            .Select(name => Path.Join(AppContext.BaseDirectory, name))
+            .FirstOrDefault(File.Exists);
+        if (bundled is not null)
+            return bundled;
 
         var pathVariable = Environment.GetEnvironmentVariable("PATH");
         if (string.IsNullOrEmpty(pathVariable))
             return null;
 
-        foreach (var directory in pathVariable.Split(Path.PathSeparator))
-        {
-            if (string.IsNullOrWhiteSpace(directory))
-                continue;
-
-            foreach (var name in ExecutableNames)
-            {
-                string candidate;
-                try { candidate = Path.Combine(directory.Trim(), name); }
-                catch (ArgumentException) { continue; }
-
-                if (File.Exists(candidate))
-                    return candidate;
-            }
-        }
-
-        return null;
+        return pathVariable
+            .Split(Path.PathSeparator)
+            .Where(directory => !string.IsNullOrWhiteSpace(directory))
+            .SelectMany(directory => ExecutableNames
+                .Select(name => Path.Join(directory.Trim(), name)))
+            .FirstOrDefault(File.Exists);
     }
 
     /// <summary>
@@ -99,7 +90,18 @@ public static class CopilotCliInfo
 
             if (!process.WaitForExit((int)timeout.TotalMilliseconds))
             {
-                try { process.Kill(entireProcessTree: true); } catch { }
+                // The CLI hung. Killing is best-effort: it may have exited on
+                // its own between the timeout and the kill, and we return null
+                // either way.
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch (InvalidOperationException) { /* already exited */ }
+                catch (NotSupportedException) { /* not a local process */ }
+                catch (AggregateException) { /* one or more children survived */ }
+                catch (Win32Exception) { /* OS refused the kill */ }
+
                 return null;
             }
 
@@ -109,7 +111,25 @@ public static class CopilotCliInfo
             var match = Regex.Match($"{stdout} {stderr}", @"\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?");
             return match.Success ? match.Value.TrimEnd('.') : null;
         }
-        catch
+        catch (Win32Exception)
+        {
+            // CLI is not executable on this platform, or launching it failed.
+            return null;
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
+        catch (IOException)
+        {
+            // Pipe broke while reading the CLI's output.
+            return null;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
+        catch (PlatformNotSupportedException)
         {
             return null;
         }
