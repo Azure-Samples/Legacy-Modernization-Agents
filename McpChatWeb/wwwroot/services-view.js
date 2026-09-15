@@ -51,6 +51,11 @@ class ServicesView {
   async loadAndRender() {
     if (!this.host) return;
 
+    // Claimed before the pending-mode return below, not after it: selecting a placeholder mode
+    // must invalidate an architecture request already in flight, or that request completes,
+    // still believes it owns the view, and replaces the placeholder with the previous graph.
+    const token = ++this._loadToken;
+
     if (SV_PENDING_MODES.includes(this.viewMode)) {
       this._destroyNetwork();
       this.host.innerHTML = `<div class="mi-pending">
@@ -64,7 +69,6 @@ class ServicesView {
     }
 
     this.host.innerHTML = '<div class="mi-loading">Loading…</div>';
-    const token = ++this._loadToken;
     try {
       if (!this.architecture) {
         const runId = window.getSelectedScanRunId?.() ?? 'latest';
@@ -95,6 +99,9 @@ class ServicesView {
       this._render(services, architect);
     } catch (e) {
       console.error('Services view load error:', e);
+      // A failure only owns the view if it is still the current load. Without this a request
+      // abandoned by a run switch or a mode change stamps its error over the newer panel.
+      if (token !== this._loadToken) return;
       this.host.innerHTML =
         `<div class="mi-notice mi-notice-error">Could not load the projection: ${svEscape(e.message)}</div>`;
     }
