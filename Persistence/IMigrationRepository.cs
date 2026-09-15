@@ -79,6 +79,13 @@ public interface IMigrationRepository
     /// <summary>Returns all business logic entries for the run, or an empty list if none.</summary>
     Task<IReadOnlyList<BusinessLogic>> GetBusinessLogicAsync(int runId, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Returns the most recent run that actually holds business logic, or null when none does.
+    /// The newest run is not necessarily that run: one terminated before its reverse engineering
+    /// was persisted leaves a newer id with nothing behind it.
+    /// </summary>
+    Task<int?> GetLatestRunIdWithBusinessLogicAsync(CancellationToken cancellationToken = default);
+
     /// <summary>Deletes all business logic for the run.</summary>
     Task DeleteBusinessLogicAsync(int runId, CancellationToken cancellationToken = default);
 }

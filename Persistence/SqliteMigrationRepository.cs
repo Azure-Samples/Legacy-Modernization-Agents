@@ -833,9 +833,19 @@ VALUES ($runId, $fileName, $filePath, $isCopybook, $businessPurpose, $userStorie
         _logger.LogInformation("Persisted business logic for {Count} files in run {RunId}", list.Count, runId);
     }
 
-    public async Task<IReadOnlyList<BusinessLogic>> GetBusinessLogicAsync(int runId, CancellationToken cancellationToken = default)
+    public async Task<int?> GetLatestRunIdWithBusinessLogicAsync(CancellationToken cancellationToken = default)
     {
         await using var connection = CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT MAX(run_id) FROM business_logic";
+
+        var value = await cmd.ExecuteScalarAsync(cancellationToken);
+        return value is null or DBNull ? null : Convert.ToInt32(value);
+    }
+
+    public async Task<IReadOnlyList<BusinessLogic>> GetBusinessLogicAsync(int runId, CancellationToken cancellationToken = default)
+    {        await using var connection = CreateConnection();
         await connection.OpenAsync(cancellationToken);
         await using var cmd = connection.CreateCommand();
         cmd.CommandText = @"
