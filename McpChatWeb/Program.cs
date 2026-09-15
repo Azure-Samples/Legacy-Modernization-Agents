@@ -85,19 +85,23 @@ builder.Services.PostConfigure<McpOptions>(options =>
 builder.Services.AddSingleton<IMcpClient, McpProcessClient>();
 
 // Register ProcessManager for run management from the portal
+var portalRepoRoot = ResolveRepoRoot();
 builder.Services.AddSingleton<McpChatWeb.Services.ProcessManager>(sp =>
+	new McpChatWeb.Services.ProcessManager(portalRepoRoot));
+
+string ResolveRepoRoot()
 {
 	var contentRoot = builder.Environment.ContentRootPath;
-	var repoRoot = Path.GetFullPath("..", contentRoot);
-	if (!File.Exists(Path.Combine(repoRoot, "doctor.sh")))
-		repoRoot = contentRoot; // fallback
-	return new McpChatWeb.Services.ProcessManager(repoRoot);
-});
+	var candidate = Path.GetFullPath("..", contentRoot);
+	return File.Exists(Path.Combine(candidate, "doctor.sh")) ? candidate : contentRoot;
+}
 
 builder.Services.AddSingleton<PortalState>();
 
 // Singletons: stateless readers over the filesystem and the scan cache.
 builder.Services.AddSingleton<McpChatWeb.Services.RektEstateReader>();
+builder.Services.AddSingleton<McpChatWeb.Services.ProgramCatalogService>();
+builder.Services.AddSingleton(new McpChatWeb.Services.ConversionScopeService(portalRepoRoot));
 builder.Services.AddSingleton<McpChatWeb.Services.ConversionParityReader>();
 builder.Services.AddSingleton<McpChatWeb.Services.ModernizationIntelligenceService>();
 
@@ -6086,6 +6090,81 @@ app.MapPost("/api/runs/start", (McpChatWeb.Models.StartRunRequest request, McpCh
 	return Results.Ok(new McpChatWeb.Models.RunStatusDto(
 		run.RunId, run.Name, run.Command, run.TargetLanguage, run.SpeedProfile,
 		run.Status, run.StartedAt, run.CompletedAt, run.ExitCode, run.ProcessId));
+});
+
+app.MapPost("/api/runs/convert", (
+	McpChatWeb.Models.FocusedConvertRequest request,
+	McpChatWeb.Services.ProcessManager pm,
+	McpChatWeb.Services.ConversionScopeService scopes,
+	ILoggerFactory loggerFactory) =>
+{
+	var programs = request.Programs ?? Array.Empty<string>();
+	if (programs.Count == 0 || programs.All(string.IsNullOrWhiteSpace))
+		return Results.BadRequest("Select at least one program to convert.");
+
+	McpChatWeb.Services.ConversionScope scope;
+	try
+	{
+		// Only live runs still hold their staged tree; finished ones can be reclaimed.
+		var activeSourceFolders = pm.GetAllRuns()
+			.Where(r => r.Status is "running" or "paused")
+			.Select(r => r.SourceFolder)
+			.Where(folder => !string.IsNullOrWhiteSpace(folder))
+			.Select(folder => folder!)
+			.ToList();
+
+		scope = scopes.Stage(
+			programs,
+			request.IncludeCallers,
+			request.IncludeCallees,
+			activeSourceFolders,
+			loggerFactory.CreateLogger("FocusedConversion"));
+	}
+	catch (InvalidOperationException ex)
+	{
+		// An unresolvable or ambiguous selector must stop the run, not widen it.
+		return Results.BadRequest(ex.Message);
+	}
+
+	McpChatWeb.Services.ManagedRun run;
+	try
+	{
+		run = pm.StartRun(
+			"convert-only",
+			request.Name ?? "",
+			request.TargetLanguage,
+			request.SpeedProfile,
+			scope.SourceFolder,
+			request.Provider,
+			request.ModelId,
+			new Dictionary<string, string> { ["SELECTOR_MODE"] = "true" });
+	}
+	catch (ArgumentException ex)
+	{
+		return Results.BadRequest(ex.Message);
+	}
+
+	var body = new
+	{
+		run = new McpChatWeb.Models.RunStatusDto(
+			run.RunId, run.Name, run.Command, run.TargetLanguage, run.SpeedProfile,
+			run.Status, run.StartedAt, run.CompletedAt, run.ExitCode, run.ProcessId),
+		scope = new
+		{
+			sourceFolder = scope.SourceFolder,
+			manifestPath = scope.ManifestPath,
+			programs = scope.Programs,
+			copybooks = scope.Copybooks,
+			matches = scope.Matches.Select(m => new { program = m.Program, reason = m.Reason }),
+			unresolvedCallTargets = scope.UnresolvedCallTargets,
+		},
+	};
+
+	// StartRun reports a launch failure on the run rather than throwing, so a 200 here would
+	// tell the operator a conversion is under way that never started.
+	return run.Status == "failed"
+		? Results.Json(body, statusCode: StatusCodes.Status502BadGateway)
+		: Results.Ok(body);
 });
 
 app.MapPost("/api/runs/stop", (McpChatWeb.Models.StopRunRequest request, McpChatWeb.Services.ProcessManager pm) =>

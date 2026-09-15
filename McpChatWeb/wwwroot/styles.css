@@ -7756,3 +7756,73 @@ main.three-panel-layout {
 .sv-swatch { width: 11px; height: 11px; border-radius: 3px; flex: none; }
 .sv-dim { color: #64748b; font-size: 11px; }
 .sv-detail-name { color: #60a5fa; font-weight: 600; margin-bottom: 6px; font-family: ui-monospace, monospace; }
+
+/* ── Focused conversion modal (preview) ─────────────────────────────────── */
+.fc-backdrop {
+  display: none; position: fixed; inset: 0; z-index: 900;
+  background: rgba(2, 6, 23, 0.72); align-items: center; justify-content: center;
+}
+.fc-backdrop.fc-open { display: flex; }
+.fc-modal {
+  width: min(860px, 94vw); max-height: 90vh; display: flex; flex-direction: column;
+  background: #0f172a; border: 1px solid #334155; border-radius: 10px;
+}
+.fc-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 18px; border-bottom: 1px solid #1e293b;
+}
+.fc-title { font-size: 15px; font-weight: 600; color: #e2e8f0; }
+.fc-badge {
+  margin-left: 8px; padding: 2px 7px; border-radius: 10px; font-size: 10px;
+  text-transform: uppercase; letter-spacing: 0.06em;
+  background: #1e1b4b; border: 1px solid #6366f1; color: #c7d2fe;
+}
+.fc-x { background: none; border: 1px solid #334155; border-radius: 5px; color: #94a3b8; cursor: pointer; padding: 3px 8px; }
+.fc-body { padding: 14px 18px; overflow-y: auto; }
+.fc-foot {
+  display: flex; justify-content: flex-end; gap: 8px;
+  padding: 12px 18px; border-top: 1px solid #1e293b;
+}
+.fc-label { display: block; font-size: 11px; color: #94a3b8; margin: 10px 0 4px; }
+.fc-in {
+  width: 100%; box-sizing: border-box; padding: 6px 9px; font-size: 12px;
+  background: #0b1220; border: 1px solid #334155; border-radius: 5px; color: #e2e8f0;
+}
+.fc-programs {
+  max-height: 260px; overflow-y: auto; margin-top: 8px;
+  border: 1px solid #1e293b; border-radius: 6px; background: #0b1220;
+}
+.fc-prog {
+  display: grid; grid-template-columns: auto 150px 1fr auto auto; gap: 8px;
+  align-items: center; padding: 6px 10px; font-size: 12px;
+  border-bottom: 1px solid #111c33; cursor: pointer;
+}
+.fc-prog:last-child { border-bottom: none; }
+.fc-prog-name { color: #e2e8f0; font-family: ui-monospace, monospace; }
+.fc-prog-path { color: #64748b; font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
+.fc-prog-meta { color: #64748b; font-size: 11px; white-space: nowrap; }
+.fc-prog-warn { color: #fbbf24; font-size: 10px; white-space: nowrap; }
+.fc-closure { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin-top: 12px; }
+.fc-chk { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #cbd5e1; }
+.fc-chk-off { color: #475569; }
+.fc-row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+.fc-status { font-size: 12px; color: #94a3b8; }
+.fc-hint { font-size: 11px; color: #64748b; margin-top: 6px; flex-basis: 100%; }
+.fc-warn { color: #fbbf24; }
+.fc-dim { color: #64748b; }
+.fc-pending {
+  display: flex; gap: 10px; align-items: flex-start; margin-top: 14px;
+  padding: 10px 12px; border: 1px dashed #334155; border-radius: 6px; color: #64748b;
+}
+.fc-pending-icon { font-size: 18px; opacity: 0.75; }
+.fc-pending-title { font-size: 12px; color: #94a3b8; font-weight: 600; }
+.fc-pending-body { font-size: 11px; }
+.fc-result { margin-top: 14px; font-size: 12px; color: #cbd5e1; }
+.fc-ok-title { color: #34d399; font-weight: 600; margin-bottom: 6px; }
+.fc-scope { margin: 0; padding-left: 18px; }
+.fc-btn {
+  padding: 6px 14px; font-size: 12px; border-radius: 5px; cursor: pointer;
+  background: #1e293b; border: 1px solid #334155; color: #cbd5e1;
+}
+.fc-btn-go { background: #065f46; border-color: #10b981; color: #fff; font-weight: 600; }
+.fc-btn:disabled { opacity: 0.5; cursor: not-allowed; }

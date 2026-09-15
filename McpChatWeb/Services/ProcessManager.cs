@@ -16,6 +16,8 @@ public class ManagedRun
     public string Command { get; init; } = "";
     public string TargetLanguage { get; set; } = "Java";
     public string SpeedProfile { get; set; } = "balanced";
+    // Lets a focused conversion tell which staged scopes are still being read.
+    public string? SourceFolder { get; init; }
     public string Status { get; set; } = "pending";  // pending | running | paused | completed | failed | stopped
     public DateTime StartedAt { get; set; } = DateTime.UtcNow;
     public DateTime? CompletedAt { get; set; }
@@ -107,6 +109,7 @@ public class ProcessManager : IDisposable
             Name = string.IsNullOrWhiteSpace(name) ? $"{command}-{DateTime.Now:HHmmss}" : name,
             TargetLanguage = targetLanguage,
             SpeedProfile = speedProfile,
+            SourceFolder = sourceFolder,
             Status = "running",
             StartedAt = DateTime.UtcNow
         };

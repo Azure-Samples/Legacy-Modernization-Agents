@@ -11,6 +11,7 @@ public class RequiresAiSettingsTests
     [Theory]
     [InlineData("program-facts")]
     [InlineData("rekt-scan-cache")]
+    [InlineData("resolve-programs")]
     [InlineData("conversation")]
     public void FileOnlyCommands_DoNotRequireAiSettings(string command)
     {

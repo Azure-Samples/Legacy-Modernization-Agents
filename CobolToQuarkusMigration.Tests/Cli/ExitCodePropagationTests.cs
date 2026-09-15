@@ -31,6 +31,7 @@ public class ExitCodePropagationTests
     [InlineData("--help")]
     [InlineData("program-facts,extract,/nonexistent-staging-directory")]
     [InlineData("rekt-scan-cache,plan,/nonexistent-staging-directory")]
+    [InlineData("resolve-programs,/nonexistent-staging-directory,--program,ANY")]
     public void DeterministicCommands_RunWithoutAiCredentials(string commaSeparatedArgs)
     {
         var result = RunCli(commaSeparatedArgs.Split(','), withoutAiCredentials: true);
