@@ -47,7 +47,19 @@ public static class ModelPreflight
                 .Select(id => id!)
                 .ToList();
         }
-        catch (Exception ex)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Cancellation is the caller's decision, not a catalogue failure. Swallowing it here
+            // would let a cancelled run carry on into the estate.
+            throw;
+        }
+        catch (Exception ex) when (
+            ex is IOException            // the SDK wraps a broken CLI pipe in this
+            or InvalidOperationException // and reports its own protocol errors as this
+            or TimeoutException
+            or HttpRequestException
+            or TaskCanceledException
+            or UnauthorizedAccessException)
         {
             // The catalogue is a convenience, not a gate. If the CLI cannot be reached the run
             // should still proceed and fail with the provider's own error.
