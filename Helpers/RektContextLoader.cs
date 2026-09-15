@@ -472,25 +472,23 @@ public sealed class RektContextLoader
         // Layout 1 (legacy / flat): output/rekt/flow-ast-PROG.json
         if (!namesADirectory)
         {
-            foreach (var candidate in new[]
-                     {
-                         $"{prefix}{stem}.json",
-                         $"{prefix}{stem}.cbl.json",
-                         $"{prefix}{basename}.json",
-                     })
-            {
-                var p = Path.Combine(_rektDir, candidate);
-                if (File.Exists(p)) return p;
-            }
+            var flat = new[]
+                {
+                    $"{prefix}{stem}.json",
+                    $"{prefix}{stem}.cbl.json",
+                    $"{prefix}{basename}.json",
+                }
+                .Select(candidate => Path.Join(_rektDir, candidate))
+                .FirstOrDefault(File.Exists);
+
+            if (flat is not null) return flat;
         }
 
         // smojol v2 nests artifacts under a per-program report directory.
-        var reportDirs = EnumerateReportDirectories(programRelativePath, basename, stem);
-        foreach (var reportDir in reportDirs)
+        foreach (var rdir in EnumerateReportDirectories(programRelativePath, basename, stem)
+                     .Select(reportDir => Path.Join(_rektDir, SourcePathHelper.ToOsRelativePath(reportDir)))
+                     .Where(Directory.Exists))
         {
-            var rdir = Path.Combine(_rektDir, SourcePathHelper.ToOsRelativePath(reportDir));
-            if (!Directory.Exists(rdir)) continue;
-
             // Try standard subdirectory mappings
             var subPaths = prefix switch
             {
