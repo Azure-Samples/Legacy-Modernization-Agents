@@ -23,9 +23,14 @@
     <Compile Remove="McpChatWeb\**\*.cs" />
     <Compile Remove="McpChatWeb.Tests\**\*.cs" />
     <Compile Remove="CobolToQuarkusMigration.Tests\**\*.cs" />
+    <!-- demos/ holds standalone applications with their own project files. Without this the
+         default **/*.cs glob compiles them, and their generated assembly attributes collide
+         with this project's own. -->
+    <Compile Remove="demos\**\*.cs" />
     <EmbeddedResource Remove="McpChatWeb\**\*" />
     <EmbeddedResource Remove="McpChatWeb.Tests\**\*" />
     <EmbeddedResource Remove="CobolToQuarkusMigration.Tests\**\*" />
+    <EmbeddedResource Remove="demos\**\*" />
     <None Remove="McpChatWeb\**\*" />
     <None Remove="McpChatWeb.Tests\**\*" />
     <None Remove="CobolToQuarkusMigration.Tests\**\*" />
