@@ -152,6 +152,292 @@ public static class RektGraphEndpoints
         })
         .WithName("GetRektServices")
         .WithSummary("Deduplicated program graph with per-file AST statement counts.");
+
+        // Programs the graph holds AST for, which is the inventory the explorer offers.
+        group.MapGet("/files", async (long? scanRunId, CancellationToken cancellationToken) =>
+        {
+            if (!RektNeo4j.IsConfigured)
+                return Results.Ok(Array.Empty<object>());
+            try
+            {
+
+                var driver = McpChatWeb.Services.RektNeo4j.Shared;
+                await using var session = driver.AsyncSession();
+
+                // Return files with AST data + flag which ones have CFG edges.
+                // When a specific scan run is requested, filter to that run only.
+                // Otherwise deduplicate by max(runId) so each program appears once (latest scan).
+                var result = scanRunId.HasValue
+                    ? await session.RunAsync(@"
+                        MATCH (a:ASTNode) WHERE a.program IS NOT NULL AND coalesce(a.runId, 0) = $runId
+                        WITH DISTINCT a.program AS program
+                        OPTIONAL MATCH (cfg:ASTNode {program: program})-[:FOLLOWED_BY|JUMPS_TO]->()
+                        WHERE coalesce(cfg.runId, 0) = $runId
+                        WITH program, count(cfg) > 0 AS hasCfg
+                        RETURN program AS name, hasCfg
+                        ORDER BY program",
+                        new { runId = scanRunId.Value })
+                    : await session.RunAsync(@"
+                        MATCH (a:ASTNode) WHERE a.program IS NOT NULL
+                        WITH a.program AS program, max(coalesce(a.runId, 0)) AS _r
+                        OPTIONAL MATCH (cfg:ASTNode {program: program})-[:FOLLOWED_BY|JUMPS_TO]->()
+                        WHERE coalesce(cfg.runId, 0) = _r
+                        WITH program, count(cfg) > 0 AS hasCfg
+                        RETURN program AS name, hasCfg
+                        ORDER BY program");
+
+                var files = new List<object>();
+                await result.ForEachAsync(r => files.Add(new
+                {
+                    name = r["name"].As<string>(),
+                    hasAst = true,
+                    hasCfg = r["hasCfg"].As<bool>()
+                }));
+
+                return Results.Ok(files);
+            }
+            // Cancellation is the caller's decision, not a graph failure.
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (
+                ex is Neo4j.Driver.Neo4jException      // driver and server-side errors
+                or IOException                        // connection torn down mid-read
+                or InvalidOperationException)
+            {
+                Console.WriteLine($"⚠️ Rekt files endpoint: {ex.Message}");
+                return Results.Ok(Array.Empty<object>());
+            }
+        });
+
+        // Sections and paragraphs for one program, with statement counts gathered separately so a
+        // slow count cannot take the whole response down with it.
+        group.MapGet("/structure", async (string file, long? scanRunId, CancellationToken cancellationToken) =>
+        {
+            if (!RektNeo4j.IsConfigured)
+                return Results.Ok(new { nodes = Array.Empty<object>(), edges = Array.Empty<object>(), note = RektNeo4j.NotConfiguredNote });
+            try
+            {
+
+                var driver = McpChatWeb.Services.RektNeo4j.Shared;
+                await using var session = driver.AsyncSession();
+
+                // Server-side ceiling on every Cypher call — without this, a large
+                // rekt graph (300K+ nodes) can stall the unbounded CONTAINS* walks
+                // for minutes, holding the HTTP request hostage. 12s is enough for
+                // healthy programs and ensures the UI's 15s fetch timeout always
+                // wins before the connection drops.
+                Action<Neo4j.Driver.TransactionConfigBuilder> txTimeout = b => b.WithTimeout(TimeSpan.FromSeconds(12));
+
+                // Resolve file name (exact, flow-ast- prefix, stripped)
+                var candidates = new[] { file, $"flow-ast-{file}", file.Replace("flow-ast-", "") };
+                string? matchedProgram = null;
+                var sections = new List<object>();
+
+                foreach (var candidate in candidates)
+                {
+                    // Use pinned scanRunId if provided, otherwise auto-select the latest run for this file.
+                    var structRunId = scanRunId.GetValueOrDefault(0);
+                    var structRunInit = structRunId > 0
+                        ? "WITH $runId AS _r"
+                        : "MATCH (a0:ASTNode {program: $file}) WITH max(coalesce(a0.runId, 0)) AS _r";
+                    // PHASE 1: get sections + paragraphs WITHOUT statement counts.
+                    // This is the cheap, almost-certain-to-finish part — just a
+                    // 2-hop walk from the program root. We do the statement counts
+                    // in a separate query (Phase 2) so a slow stmt count doesn't
+                    // kill the whole response. Each phase is independently bounded
+                    // by txTimeout.
+                    var result = await session.RunAsync($@"
+                        {structRunInit}
+                        MATCH (root:ASTNode {{program: $file}})-[:CONTAINS*1..2]->(sec:ASTNode)
+                        WHERE coalesce(root.runId, 0) = _r
+                          AND coalesce(sec.runId, 0) = _r
+                          AND sec.nodeType IN ['SECTION', 'PARAGRAPHS']
+                        OPTIONAL MATCH (sec)-[:CONTAINS*1..2]->(para:ASTNode)
+                        WHERE para.nodeType IN ['PARAGRAPH', 'PARAGRAPH_NAME']
+                          AND coalesce(para.runId, 0) = _r
+                        RETURN sec.id AS sectionId, sec.name AS sectionName, sec.nodeType AS sectionType,
+                               sec.startLine AS secStart, sec.endLine AS secEnd,
+                               para.id AS paraId, para.name AS paraName, para.nodeType AS paraType,
+                               para.startLine AS paraStart, para.endLine AS paraEnd
+                        ORDER BY sec.name, para.name",
+                        new Dictionary<string, object> { ["file"] = candidate, ["runId"] = structRunId },
+                        txTimeout);
+
+                    await result.ForEachAsync(r => sections.Add(new
+                    {
+                        sectionId = r["sectionId"].As<string?>() ?? "",
+                        sectionName = r["sectionName"].As<string?>() ?? "UNNAMED",
+                        sectionType = r["sectionType"].As<string?>() ?? "",
+                        secStart = r["secStart"].As<int?>() ?? -1,
+                        secEnd = r["secEnd"].As<int?>() ?? -1,
+                        paraId = r["paraId"].As<string?>() ?? "",
+                        paraName = r["paraName"].As<string?>() ?? "",
+                        paraType = r["paraType"].As<string?>() ?? "",
+                        paraStart = r["paraStart"].As<int?>() ?? -1,
+                        paraEnd = r["paraEnd"].As<int?>() ?? -1,
+                        stmtCount = 0,
+                        sqlCount = 0,
+                        performCount = 0,
+                        moveCount = 0,
+                        branchCount = 0,
+                        callCount = 0
+                    }));
+
+                    if (sections.Count > 0) { matchedProgram = candidate; break; }
+                }
+
+                if (matchedProgram == null)
+                    return Results.NotFound(new { error = $"No structure data for {file}" });
+
+                // PERFORM edges between paragraphs (control flow) — latest-run-per-program.
+                // CONTAINS depth bounded to keep the query under the 12s ceiling on
+                // large rekt graphs (300K+ nodes). Wrapped in its own try/catch so a
+                // CFG timeout still returns the sections payload with empty edges
+                // rather than failing the whole request.
+                var performEdges = new List<object>();
+                try
+                {
+                    var cfgResult = await session.RunAsync(@"
+                        MATCH (a0:ASTNode {program: $file})
+                        WITH max(coalesce(a0.runId, 0)) AS _r
+                        MATCH (p:ASTNode {program: $file, nodeType: 'PERFORM'})
+                        WHERE coalesce(p.runId, 0) = _r AND p.name IS NOT NULL AND p.name <> ''
+                        MATCH (caller:ASTNode {program: $file})-[c:CONTAINS*1..6]->(p)
+                        WHERE coalesce(caller.runId, 0) = _r
+                          AND caller.nodeType IN ['PARAGRAPH', 'PARAGRAPHS', 'SECTION']
+                          AND caller.name IS NOT NULL AND caller.name <> '' AND caller.name <> 'para-group:'
+                        WITH p, caller.name AS callerName, size(c) AS dist
+                        ORDER BY dist ASC
+                        WITH p, head(collect(callerName)) AS caller
+                        RETURN DISTINCT caller AS caller, p.name AS target, p.label AS label
+                        ORDER BY caller
+                        LIMIT 800",
+                        new Dictionary<string, object> { ["file"] = matchedProgram! },
+                        txTimeout);
+
+                    await cfgResult.ForEachAsync(r => performEdges.Add(new
+                    {
+                        from = r["caller"].As<string?>() ?? "MAIN",
+                        to = r["target"].As<string?>() ?? "",
+                        label = r["label"].As<string?>() ?? "PERFORM"
+                    }));
+                }
+                catch (Neo4j.Driver.Neo4jException cfgEx) when (cfgEx.Message.Contains("timeout", StringComparison.OrdinalIgnoreCase) || cfgEx.Message.Contains("transaction has been terminated", StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.WriteLine($"⏱ CFG sub-query timed out for {matchedProgram} — returning sections without performEdges.");
+                }
+
+                return Results.Ok(new { program = matchedProgram, sections, performEdges });
+            }
+            catch (Neo4j.Driver.Neo4jException nex) when (nex.Message.Contains("timeout", StringComparison.OrdinalIgnoreCase) || nex.Message.Contains("transaction has been terminated", StringComparison.OrdinalIgnoreCase))
+            {
+                // Server-side 12s ceiling hit — let the UI fall back to deps-only.
+                Console.WriteLine($"⏱ Structure endpoint timeout for {file}: {nex.Message}");
+                return Results.Json(new { error = "structure_query_timeout", file, message = "Cypher exceeded 12s ceiling — graph is large or query plan suboptimal." }, statusCode: 504);
+            }
+            // Cancellation is the caller's decision, not a graph failure.
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (
+                ex is Neo4j.Driver.Neo4jException      // driver and server-side errors
+                or IOException                        // connection torn down mid-read
+                or InvalidOperationException)
+            {
+                Console.WriteLine($"⚠️ Structure endpoint: {ex.Message}");
+                return Results.Problem(ex.Message);
+            }
+        });
+
+        // The raw AST as stored, for reading what the parser actually produced rather than a projection of it.
+        group.MapGet("/ast", async (string file, long? scanRunId, CancellationToken cancellationToken) =>
+        {
+            if (!RektNeo4j.IsConfigured)
+                return Results.Ok(new { nodes = Array.Empty<object>(), edges = Array.Empty<object>(), note = RektNeo4j.NotConfiguredNote });
+            try
+            {
+
+                var driver = McpChatWeb.Services.RektNeo4j.Shared;
+                await using var session = driver.AsyncSession();
+
+                // Try exact match first, then with flow-ast- prefix (rekt naming convention)
+                var candidates = new[] { file, $"flow-ast-{file}", file.Replace("flow-ast-", "") };
+                var nodes = new List<object>();
+                var edges = new List<object>();
+                string? matchedProgram = null;
+                var astRunId = scanRunId.GetValueOrDefault(0);
+                var astRunInit = astRunId > 0
+                    ? "WITH $runId AS _r"
+                    : "MATCH (a0:ASTNode {program: $file}) WITH max(coalesce(a0.runId, 0)) AS _r";
+
+                foreach (var candidate in candidates)
+                {
+                    var nodeResult = await session.RunAsync($@"
+                        {astRunInit}
+                        MATCH (a:ASTNode {{program: $file}})
+                        WHERE coalesce(a.runId, 0) = _r
+                        RETURN a.id AS id, a.nodeType AS nodeType, a.label AS label,
+                               a.originalText AS originalText, a.startLine AS startLine,
+                               a.endLine AS endLine, a.name AS name,
+                               a.section AS section, a.paragraph AS paragraph",
+                        new { file = candidate, runId = astRunId });
+
+                    await nodeResult.ForEachAsync(r => nodes.Add(new
+                    {
+                        id = r["id"].As<string>(),
+                        nodeType = r["nodeType"].As<string?>() ?? "",
+                        label = r["label"].As<string?>() ?? r["nodeType"].As<string?>() ?? "",
+                        originalText = r["originalText"].As<string?>() ?? "",
+                        startLine = r["startLine"].As<int?>() ?? 0,
+                        endLine = r["endLine"].As<int?>() ?? 0,
+                        name = r["name"].As<string?>() ?? "",
+                        section = r["section"].As<string?>() ?? "",
+                        paragraph = r["paragraph"].As<string?>() ?? ""
+                    }));
+
+                    if (nodes.Count > 0) { matchedProgram = candidate; break; }
+                }
+
+                if (matchedProgram != null)
+                {
+                    var edgeResult = await session.RunAsync($@"
+                        {astRunInit}
+                        MATCH (a:ASTNode {{program: $file}})-[r:CONTAINS|FOLLOWED_BY|JUMPS_TO]->(b:ASTNode {{program: $file}})
+                        WHERE coalesce(a.runId, 0) = _r AND coalesce(b.runId, 0) = _r
+                        RETURN a.id AS source, b.id AS target, type(r) AS type",
+                        new { file = matchedProgram, runId = astRunId });
+
+                    await edgeResult.ForEachAsync(r => edges.Add(new
+                    {
+                        source = r["source"].As<string>(),
+                        target = r["target"].As<string>(),
+                        type = r["type"].As<string>()
+                    }));
+                }
+
+                if (nodes.Count == 0)
+                    return Results.NotFound(new { error = $"No AST data for {file}. Run: ./doctor.sh rekt" });
+
+                return Results.Ok(new { nodes, edges });
+            }
+            // Cancellation is the caller's decision, not a graph failure.
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (
+                ex is Neo4j.Driver.Neo4jException      // driver and server-side errors
+                or IOException                        // connection torn down mid-read
+                or InvalidOperationException)
+            {
+                Console.WriteLine($"⚠️ AST endpoint: {ex.Message}");
+                return Results.Problem(ex.Message);
+            }
+        });
+
     }
 
     private const string Unavailable =

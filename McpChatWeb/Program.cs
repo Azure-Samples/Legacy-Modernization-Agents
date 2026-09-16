@@ -4681,6 +4681,151 @@ app.MapPost("/api/models/save-config", async (McpChatWeb.Models.SaveModelConfigR
 // SOURCE FILES SCANNING
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// ── Source content, with an optional line range ───────────────────────
+// Serves the COBOL behind a selected AST node so the explorer can show the
+// statements a paragraph actually contains, falling back to SourceBlock nodes in
+// the graph when the file is not on disk.
+app.MapGet("/api/source/content", async (string file, int? startLine, int? endLine) =>
+{
+	try
+	{
+		// The caller names a program within the estate, which may sit in a subdirectory, so the
+		// name cannot simply be reduced to its last segment. Traversal is rejected here instead,
+		// before the value reaches the file system: the containment check further down guards the
+		// read, but without this an unchecked name still probes for files outside the estate.
+		if (string.IsNullOrWhiteSpace(file)
+			|| Path.IsPathRooted(file)
+			|| file.Split('/', '\\').Any(segment => segment == ".."))
+		{
+			return Results.BadRequest(new { error = "Invalid file name" });
+		}
+
+		// Path.Combine, not Join: COBOL_SOURCE_FOLDER may be absolute, and there the
+		// configured path is meant to win over the working directory.
+		var configuredFolder = Environment.GetEnvironmentVariable("COBOL_SOURCE_FOLDER") ?? "source";
+		var sourceDir = Path.Combine(Directory.GetCurrentDirectory(), configuredFolder);
+		if (!Directory.Exists(sourceDir))
+		{
+			var parent = Directory.GetParent(Directory.GetCurrentDirectory())?.FullName ?? "";
+			if (Directory.Exists(Path.Combine(parent, configuredFolder)))
+				sourceDir = Path.Combine(parent, configuredFolder);
+		}
+
+		// Try exact name, then strip flow-ast- prefix
+		var baseName = file.Replace("flow-ast-", "");
+		var candidates = new[] { file, baseName, Path.GetFileNameWithoutExtension(baseName) + ".cbl",
+		                         Path.GetFileNameWithoutExtension(baseName) + ".cpy" };
+
+		// Containment is checked before each candidate is put to the file system rather than once
+		// on the winner. Validating afterwards still lets a name outside the estate be probed for
+		// existence, and leaves the guard depending on which candidate happened to match first.
+		var estateRoot = Path.GetFullPath(sourceDir);
+		if (!estateRoot.EndsWith(Path.DirectorySeparatorChar))
+			estateRoot += Path.DirectorySeparatorChar;
+
+		// Path.Join here, not Combine: a rooted name was already rejected above, so no candidate
+		// can discard the estate directory, and Join cannot do so in any case.
+		var foundPath = candidates
+			.Select(c => Path.GetFullPath(Path.Join(sourceDir, c)))
+			.Where(p => p.StartsWith(estateRoot, StringComparison.Ordinal))
+			.FirstOrDefault(System.IO.File.Exists);
+
+		if (foundPath != null)
+		{
+			// Already proven inside the estate by the loop above, which rejects a candidate
+			// before touching the file system rather than after choosing one.
+			var fullPath = foundPath;
+
+			var allLines = System.IO.File.ReadAllLines(fullPath);
+			var start = Math.Max(0, (startLine ?? 1) - 1);
+			var end = Math.Min(allLines.Length, endLine ?? allLines.Length);
+			var lines = allLines.Skip(start).Take(end - start).ToArray();
+
+			return Results.Ok(new
+			{
+				file = Path.GetFileName(foundPath),
+				totalLines = allLines.Length,
+				startLine = start + 1,
+				endLine = end,
+				content = string.Join("\n", lines),
+				lines = lines.Select((l, i) => new { lineNumber = start + i + 1, text = l }),
+				source = "file"
+			});
+		}
+
+		// Fallback: load from Neo4j SourceBlock nodes (persisted during ingest)
+		try
+		{
+
+			var driver = McpChatWeb.Services.RektNeo4j.Shared;
+			await using var session = driver.AsyncSession();
+
+			// Try multiple name patterns
+			var nameCandidates = new[] { baseName, file, baseName.Replace(".cbl", "").Replace(".cpy", "") };
+			var allContent = new System.Text.StringBuilder();
+			int totalLineCount = 0;
+
+			foreach (var nameCandidate in nameCandidates)
+			{
+				var blockResult = await session.RunAsync(@"
+					MATCH (sb:SourceBlock)
+					WHERE sb.program = $name OR sb.program CONTAINS $name
+					RETURN sb.content AS content, sb.startLine AS startLine, sb.endLine AS endLine
+					ORDER BY sb.blockIndex",
+					new { name = nameCandidate });
+
+				await blockResult.ForEachAsync(r =>
+				{
+					var content = r["content"].As<string?>() ?? "";
+					allContent.AppendLine(content);
+					var eLine = r["endLine"].As<int>();
+					if (eLine > totalLineCount) totalLineCount = eLine;
+				});
+
+				if (allContent.Length > 0) break;
+			}
+
+			if (allContent.Length > 0)
+			{
+				var allLines = allContent.ToString().Split('\n');
+				totalLineCount = Math.Max(totalLineCount, allLines.Length);
+				var start = Math.Max(0, (startLine ?? 1) - 1);
+				var end = Math.Min(allLines.Length, endLine ?? allLines.Length);
+				var lines = allLines.Skip(start).Take(end - start).ToArray();
+
+				return Results.Ok(new
+				{
+					file = baseName,
+					totalLines = totalLineCount,
+					startLine = start + 1,
+					endLine = end,
+					content = string.Join("\n", lines),
+					lines = lines.Select((l, i) => new { lineNumber = start + i + 1, text = l }),
+					source = "neo4j"
+				});
+			}
+		}
+		catch (Exception ex) when (
+			ex is Neo4j.Driver.Neo4jException      // the graph fallback below is best-effort
+			or IOException
+			or InvalidOperationException)
+		{
+			Console.WriteLine($"⚠️ Neo4j source fallback failed: {ex.Message}");
+		}
+
+		return Results.NotFound(new { error = $"Source file not found: {file}" });
+	}
+	catch (Exception ex) when (
+		ex is IOException                      // reading the source off disk
+		or UnauthorizedAccessException
+		or Neo4j.Driver.Neo4jException
+		or InvalidOperationException)
+	{
+		Console.WriteLine($"⚠️ Source content endpoint: {ex.Message}");
+		return Results.Problem(ex.Message);
+	}
+});
+
 app.MapGet("/api/source/files", () =>
 {
 	try

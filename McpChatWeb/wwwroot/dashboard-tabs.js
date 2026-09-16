@@ -75,6 +75,7 @@ function switchDashboard(tabName) {
     dependency: ['dependency-graph', 'graph-toolbar'],
     services: ['services-container'],
     modernization: ['modernization-intelligence-container'],
+    ast: ['ast-explorer-container'],
   };
 
   Object.values(panels).flat().forEach(id => {
@@ -102,6 +103,13 @@ function switchDashboard(tabName) {
       window.servicesView = servicesView;
     }
     servicesView.loadAndRender();
+  }
+
+  if (tabName === 'ast') {
+    if (!window.astExplorer) {
+      window.astExplorer = new ASTExplorer('ast-graph');
+    }
+    window.astExplorer.loadFileList();
   }
 
   if (tabName === 'modernization') {

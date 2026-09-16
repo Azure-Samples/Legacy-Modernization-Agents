@@ -550,16 +550,55 @@ public sealed class RektContextLoader
         string stem)
     {
         var normalizedRelativePath = SourcePathHelper.NormalizeRelativePath(programRelativePath);
-        foreach (var reportDir in new[]
-                 {
-                     normalizedRelativePath + ".report",
-                     basename + ".report",
-                     $"{stem}.cbl.report",
-                     $"{stem}.report",
-                     $"{stem}.CBL.report",
-                 }.Distinct(StringComparer.OrdinalIgnoreCase))
+        var named = new[]
+        {
+            normalizedRelativePath + ".report",
+            basename + ".report",
+            $"{stem}.cbl.report",
+            $"{stem}.report",
+            $"{stem}.CBL.report",
+        }.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+        foreach (var reportDir in named)
         {
             yield return reportDir;
+        }
+
+        // The conversion identifies a program by file name, while the parser writes its report
+        // under the program's source-relative path, so on an estate that stages programs in
+        // subdirectories none of the names above exists and the program is reported as having no
+        // structural context at all. Searching for the report recovers it.
+        //
+        // Only a unique match is offered, and only when the caller named no directory itself: a
+        // report found by basename alone cannot say which of two programs sharing that basename it
+        // describes, and answering with the wrong program's paragraphs is worse than answering
+        // with none. A caller that did name a directory has already been served above.
+        if (normalizedRelativePath.Contains('/') || !Directory.Exists(_rektDir))
+            yield break;
+
+        var alreadyTried = new HashSet<string>(named, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var pattern in new[] { $"{basename}.report", $"{stem}.cbl.report", $"{stem}.report" }
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            List<string> found;
+            try
+            {
+                found = Directory
+                    .EnumerateDirectories(_rektDir, pattern, SearchOption.AllDirectories)
+                    .Take(2)
+                    .ToList();
+            }
+            catch (IOException) { yield break; }
+            catch (UnauthorizedAccessException) { yield break; }
+
+            if (found.Count != 1) continue;
+
+            var relative = SourcePathHelper.NormalizeRelativePath(
+                Path.GetRelativePath(_rektDir, found[0]));
+
+            if (alreadyTried.Add(relative))
+                yield return relative;
         }
     }
 
