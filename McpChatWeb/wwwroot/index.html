@@ -327,6 +327,7 @@
         <button class="dashboard-tab" data-tab="services" onclick="switchDashboard('services')">🏗️ Architecture</button>
         <button class="dashboard-tab" data-tab="modernization" onclick="switchDashboard('modernization')">🧭 Modernization Intelligence</button>
         <button class="dashboard-tab" data-tab="ast" onclick="switchDashboard('ast')">🌳 AST Explorer</button>
+        <button class="dashboard-tab" data-tab="programs" onclick="switchDashboard('programs')">🎯 Convert Programs</button>
         <span id="rekt-scan-picker" style="margin-left:auto; display:flex; align-items:center; gap:6px;">
           <label style="color:#94a3b8; font-size:11px;">Scan:</label>
           <select id="rekt-scan-select" style="padding:4px 8px; background:#1e293b; color:#e2e8f0; border:1px solid #475569; border-radius:4px; font-size:12px;" onchange="window._onScanRunChange && window._onScanRunChange(this.value)">
@@ -572,6 +573,9 @@
       <!-- Modernization Intelligence — deterministic decision surface -->
       <div id="modernization-intelligence-container" class="dashboard-panel" style="display: none;">
         <div id="modernization-intelligence-root" style="height:100%;overflow:auto;background:#0a0e1a;"></div>
+      </div>
+      <div id="program-picker-container" class="dashboard-panel" style="display: none;">
+        <div id="program-picker-root" style="height:100%;overflow:auto;background:#0a0e1a;"></div>
       </div>
       <div id="graph-info" class="graph-info"></div>
       <div id="node-details" class="node-details" hidden>
@@ -1307,6 +1311,7 @@ curl http://localhost:5028/api/data-retrieval-guide</code></pre>
   <script src="ast-explorer.js"></script>
   <script src="services-view.js"></script>
   <script src="modernization-intelligence.js"></script>
+  <script src="program-picker.js"></script>
   <script src="dashboard-tabs.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script type="module">

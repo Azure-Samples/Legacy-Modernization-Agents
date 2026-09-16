@@ -383,6 +383,65 @@ public sealed class ModernizationIntelligenceService
     /// converted leaves calls pointing at nothing, so the view states the reachable set rather than
     /// leaving the caller to walk it.
     /// </summary>
+    /// <summary>
+    /// Every convertible program, for a picker. Copybooks are counted but not listed: they are
+    /// carried into a conversion by the programs that COPY them, never selected on their own.
+    /// </summary>
+    public async Task<ProgramListSnapshot> GetProgramListAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var estate = await _estate.ReadAsync(cancellationToken).ConfigureAwait(false);
+        var snapshot = new ProgramListSnapshot { Note = estate.Note };
+
+        var programs = estate.Programs.Where(p => !p.IsCopybook).ToList();
+        snapshot.TotalPrograms = programs.Count;
+        snapshot.TotalCopybooks = estate.Programs.Count - programs.Count;
+
+        // Counted once here rather than per program: the alternative is a scan of every missing
+        // copybook row for each of them.
+        var missingByProgram = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in estate.MissingCopybooks)
+        {
+            foreach (var referrer in row.ReferencedBy)
+            {
+                missingByProgram.TryGetValue(referrer, out var count);
+                missingByProgram[referrer] = count + 1;
+            }
+        }
+
+        var callerCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var program in programs)
+        {
+            foreach (var callee in program.Callees.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                callerCounts.TryGetValue(callee, out var count);
+                callerCounts[callee] = count + 1;
+            }
+        }
+
+        foreach (var program in programs.OrderBy(p => p.Basename, StringComparer.OrdinalIgnoreCase))
+        {
+            callerCounts.TryGetValue(program.Basename, out var directCallers);
+            if (directCallers == 0) callerCounts.TryGetValue(program.Stem, out directCallers);
+            missingByProgram.TryGetValue(program.Basename, out var missing);
+
+            snapshot.Programs.Add(new ProgramListEntry
+            {
+                Basename = program.Basename,
+                RelativePath = program.RelativePath,
+                LinesOfCode = program.LinesOfCode,
+                ParseFidelity = program.ParseFidelity,
+                HasFacts = program.HasFacts,
+                MissingCopybookCount = missing,
+                CallClosureCount = ReachableFrom(estate.Programs, program).Count,
+                CalledByCount = Math.Max(directCallers, program.Callers.Count),
+                AmbiguousBasename = program.AmbiguousBasename,
+            });
+        }
+
+        return snapshot;
+    }
+
     public async Task<ProgramSnapshot> GetProgramAsync(
         string identity, CancellationToken cancellationToken = default)
     {
