@@ -20,6 +20,14 @@ public class FileHelper
     private readonly ILogger<FileHelper> _logger;
 
     /// <summary>
+    /// Gets or sets the programs the run is restricted to. Empty means the whole estate.
+    /// Applied here rather than at each caller because every process reaches its source
+    /// files through <see cref="ScanDirectoryForCobolFilesAsync"/>; a caller that forgot to
+    /// filter would silently convert everything.
+    /// </summary>
+    public IReadOnlyList<string> ProgramSelection { get; set; } = Array.Empty<string>();
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="FileHelper"/> class.
     /// </summary>
     /// <param name="logger">The logger.</param>
@@ -87,6 +95,21 @@ public class FileHelper
 
         _logger.LogInformation("Found {Count} COBOL files ({CblCount} programs, {CpyCount} copybooks)",
             cobolFiles.Count, cblFiles.Length, cpyFiles.Length);
+
+        if (ProgramSelection.Count > 0)
+        {
+            cobolFiles = Helpers.ProgramSelection.Apply(cobolFiles, ProgramSelection, out var unmatched);
+
+            foreach (var name in unmatched)
+            {
+                _logger.LogWarning(
+                    "Selected program '{Program}' matched no source file under {Directory}", name, directory);
+            }
+
+            _logger.LogInformation(
+                "Program selection applied: {Count} files retained ({ProgramCount} programs)",
+                cobolFiles.Count, cobolFiles.Count(f => !f.IsCopybook));
+        }
 
         return cobolFiles;
     }

@@ -217,6 +217,13 @@ public class ApplicationSettings
     public string CobolSourceFolder { get; set; } = string.Empty;
 
     /// <summary>
+    /// Program identities to convert. Empty means the whole estate. Copybooks are never excluded
+    /// by a selection: a program without its record layouts is converted against layouts the model
+    /// invents instead.
+    /// </summary>
+    public List<string> ProgramSelection { get; set; } = new();
+
+    /// <summary>
     /// Gets or sets the folder for Java output files.
     /// </summary>
     public string JavaOutputFolder { get; set; } = string.Empty;
