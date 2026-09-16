@@ -430,16 +430,12 @@ public sealed class ModernizationIntelligenceService
         // field was not populated, which reads identically to a program that genuinely is a
         // root — the opposite conclusion for someone choosing what to convert.
         var callers = new HashSet<string>(program.Callers, StringComparer.OrdinalIgnoreCase);
-        foreach (var other in estate.Programs)
-        {
-            if (other.IsCopybook || ReferenceEquals(other, program)) continue;
-            if (other.Callees.Any(c =>
-                    string.Equals(c, program.Basename, StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(c, program.Stem, StringComparison.OrdinalIgnoreCase)))
-            {
-                callers.Add(other.Basename);
-            }
-        }
+        callers.UnionWith(estate.Programs
+            .Where(other => !other.IsCopybook && !ReferenceEquals(other, program))
+            .Where(other => other.Callees.Any(c =>
+                string.Equals(c, program.Basename, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(c, program.Stem, StringComparison.OrdinalIgnoreCase)))
+            .Select(other => other.Basename));
 
         snapshot.CalledBy.AddRange(callers.OrderBy(c => c, StringComparer.OrdinalIgnoreCase));
         snapshot.Copybooks.AddRange(program.Copybooks.OrderBy(c => c, StringComparer.OrdinalIgnoreCase));
@@ -484,13 +480,16 @@ public sealed class ModernizationIntelligenceService
 
         while (queue.Count > 0)
         {
-            foreach (var callee in queue.Dequeue().Callees)
-            {
-                if (!seen.Add(callee)) continue;
-                if (!byName.TryGetValue(callee, out var next)) continue;
-                if (!seen.Add(next.Basename)) continue;
+            // Lazily evaluated on purpose: seen.Add is the filter as well as the record of having
+            // visited, so the sequence must be walked once, in order, as the queue drains.
+            var discovered = queue.Dequeue().Callees
+                .Where(seen.Add)
+                .Select(callee => byName.TryGetValue(callee, out var match) ? match : null)
+                .Where(match => match is not null && seen.Add(match.Basename));
 
-                order.Add(next.RelativePath);
+            foreach (var next in discovered)
+            {
+                order.Add(next!.RelativePath);
                 queue.Enqueue(next);
             }
         }
