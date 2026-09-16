@@ -7946,3 +7946,9 @@ main.three-panel-layout {
   border-radius: 6px; padding: 10px; color: #a5f3fc; font-size: 11.5px;
   font-family: ui-monospace, monospace; white-space: pre-wrap; word-break: break-all; margin: 0; }
 .pp-command-hint { color: #64748b; font-size: 11px; margin-top: 7px; }
+
+.pp-legend { display: flex; gap: 14px; align-items: center; margin-top: 7px; flex-wrap: wrap; }
+.pp-legend-item { font-size: 11px; color: #cbd5e1; cursor: help; }
+.pp-legend-note { font-size: 11px; color: #64748b; font-style: italic; }
+.pp-detail-why { background: rgba(148,163,184,.08); border-left: 2px solid #64748b;
+  padding: 7px 10px; margin: 10px 0; font-size: 11.5px; color: #cbd5e1; line-height: 1.5; }

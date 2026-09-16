@@ -13,12 +13,34 @@
 // a program whose paragraphs were never recovered produces a plausible-looking result built
 // from less than the source.
 
+// Parse fidelity is how much of a program the COBOL parser actually recovered. It is not a
+// quality score for the program: it describes what the converter will have to work from.
+//
+// The usual reason for Partial is a COPY target that is not in the source drop. The parser
+// generates a stub so it can finish, but a stub has no record layout, so every field the
+// program reads through that copybook is unknown. A conversion still produces code; it
+// invents the structure it could not read.
 const PP_FIDELITY = {
-  full: { label: 'Full', color: '#10b981' },
-  partial: { label: 'Partial', color: '#f59e0b' },
-  'deps-only': { label: 'Deps only', color: '#38bdf8' },
-  failed: { label: 'Failed', color: '#ef4444' },
-  'not-parsed': { label: 'Not parsed', color: '#64748b' },
+  full: {
+    label: 'Full', color: '#10b981',
+    why: 'Every COPY target was found and the program parsed completely. The conversion works from the real record layouts.',
+  },
+  partial: {
+    label: 'Partial', color: '#f59e0b',
+    why: 'The program parsed, but at least one copybook it COPYs was not in the source. The parser substituted a generated stub, so the fields behind that copybook have no known layout and the conversion will infer them.',
+  },
+  'deps-only': {
+    label: 'Deps only', color: '#38bdf8',
+    why: 'Only the dependency list was recovered. Paragraphs, control flow and SQL were not, so there is far less for a conversion to work from.',
+  },
+  failed: {
+    label: 'Failed', color: '#ef4444',
+    why: 'The parser could not read this program. Converting it means working from the raw source alone.',
+  },
+  'not-parsed': {
+    label: 'Not parsed', color: '#64748b',
+    why: 'No parse output exists yet. Run ./doctor.sh rekt-full to produce it.',
+  },
 };
 
 class ProgramPickerView {
@@ -95,8 +117,17 @@ class ProgramPickerView {
           <div>
             <h2 class="pp-title">Choose programs to convert</h2>
             <div class="pp-sub">
-              ${this.totals.programs} programs in this estate.
-              ${this.totals.copybooks} copybooks travel with whatever you select.
+              Every row is a COBOL program — a compilable unit with a PROGRAM-ID and a
+              PROCEDURE DIVISION. The ${this.totals.copybooks} copybooks in this estate are
+              not listed: they are record layouts, not programs, and are always carried in by
+              whichever programs COPY them.
+            </div>
+            <div class="pp-legend">
+              ${Object.entries(PP_FIDELITY)
+                .filter(([k]) => this.programs.some(p => p.parseFidelity === k))
+                .map(([, f]) => `<span class="pp-legend-item" title="${this.escape(f.why)}">
+                    <span style="color:${f.color}">●</span> ${f.label}</span>`).join('')}
+              <span class="pp-legend-note">Parse fidelity — hover for what each means</span>
             </div>
           </div>
           <input id="pp-filter" class="pp-filter" type="text" placeholder="Filter by name or path"
@@ -172,7 +203,7 @@ class ProgramPickerView {
         </label>
         <div class="pp-row-meta">
           <span class="pp-loc">${p.linesOfCode.toLocaleString()} lines</span>
-          <span class="pp-fid" style="color:${fid.color}" title="Parse fidelity: how much of this program the parser recovered">${fid.label}</span>
+          <span class="pp-fid" style="color:${fid.color}" title="${this.escape(fid.why)}">${fid.label}</span>
           ${p.callClosureCount > 0 ? `<span class="pp-closure-count" title="Programs in this estate reachable by CALL from here">+${p.callClosureCount} called</span>` : ''}
           ${warn}
           <button class="pp-inspect" data-identity="${this.escape(id)}">Details</button>
@@ -212,9 +243,10 @@ class ProgramPickerView {
         <div class="pp-detail-path">${this.escape(d.relativePath || '')}</div>
         <div class="pp-detail-stats">
           <span>${(d.linesOfCode || 0).toLocaleString()} lines</span>
-          <span style="color:${fid.color}">Parse: ${fid.label}</span>
+          <span style="color:${fid.color}" title="${this.escape(fid.why)}">Parse: ${fid.label}</span>
           <span title="How confident the extractor was in the facts it recorded">Facts confidence: ${d.factsConfidence ?? 0}</span>
         </div>
+        <div class="pp-detail-why">${this.escape(fid.why)}</div>
         ${d.note ? `<div class="pp-detail-note">${this.escape(d.note)}</div>` : ''}
         ${list('Calls', d.calls, 'Names this program CALLs. Some may be external modules that are not part of this estate.')}
         ${list('Call closure in this estate', d.callClosure, 'Programs here that are reachable by CALL. These are the ones "Add call closure" would include.')}

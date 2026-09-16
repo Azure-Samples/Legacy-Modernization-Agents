@@ -501,11 +501,28 @@ public sealed class ModernizationIntelligenceService
 
         // A copybook the parser could not find is the difference between a conversion that carries
         // the real record layout and one that invents it, so it is named rather than counted.
+        // missing-copybooks.txt names the referring program by source-relative path, while
+        // other estate sources use the basename. Comparing against only one of them matched
+        // nothing, which reported every program as having no missing copybooks — the reassuring
+        // answer, and the wrong one.
         var missing = new HashSet<string>(
             estate.MissingCopybooks
-                .Where(m => m.ReferencedBy.Any(r => string.Equals(r, program.Basename, StringComparison.OrdinalIgnoreCase)))
+                .Where(m => m.ReferencedBy.Any(r => IsSameProgram(r, program)))
                 .Select(m => m.Copybook),
             StringComparer.OrdinalIgnoreCase);
+
+        // A copybook the program COPYs that is not on disk is missing whether or not the
+        // parser's own list recorded it; that list is empty for stub-backed parses.
+        var present = new HashSet<string>(
+            estate.Programs.Where(p => p.IsCopybook).Select(p => p.Stem),
+            StringComparer.OrdinalIgnoreCase);
+        foreach (var copybook in program.Copybooks)
+        {
+            if (!present.Contains(Path.GetFileNameWithoutExtension(copybook)))
+            {
+                missing.Add(copybook);
+            }
+        }
         snapshot.MissingCopybooks.AddRange(missing.OrderBy(c => c, StringComparer.OrdinalIgnoreCase));
 
         snapshot.CallClosure.AddRange(ReachableFrom(estate.Programs, program));
@@ -518,6 +535,12 @@ public sealed class ModernizationIntelligenceService
 
         return snapshot;
     }
+
+    // Accepts either identity an estate source may use for the same program.
+    private static bool IsSameProgram(string reference, RektProgramRecord program) =>
+        string.Equals(reference, program.Basename, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(reference, program.RelativePath, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(reference, program.Stem, StringComparison.OrdinalIgnoreCase);
 
     // Programs reachable by CALL from the starting program, excluding itself. Breadth-first so the
     // order reads as distance from the program being converted, and cycle-safe because COBOL
