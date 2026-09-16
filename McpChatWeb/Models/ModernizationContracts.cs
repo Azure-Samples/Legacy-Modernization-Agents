@@ -130,3 +130,38 @@ public sealed record ProgramChain(
     string ParseFidelity,
     List<string> Copybooks,
     List<string> CalledByJobs);
+
+/// <summary>
+/// Everything known about one program, gathered for the view a person uses when deciding whether
+/// to convert it: what it depends on, what depends on it, and how much of that is actually known.
+/// </summary>
+public sealed class ProgramSnapshot
+{
+    public string Identity { get; set; } = "";
+    public string? RelativePath { get; set; }
+    public string? Basename { get; set; }
+    public int LinesOfCode { get; set; }
+    public bool IsCopybook { get; set; }
+
+    // How far the parser got. A conversion decision made without this is a guess: a program with
+    // deps-only output has no paragraphs behind it, however confident the rest of the view looks.
+    public string? ParseFidelity { get; set; }
+    public string? FidelitySource { get; set; }
+    public bool HasFacts { get; set; }
+    public int FactsConfidence { get; set; }
+    public int FactsWarnings { get; set; }
+
+    public List<string> Calls { get; } = new();
+    public List<string> CalledBy { get; } = new();
+    public List<string> Copybooks { get; } = new();
+    public List<string> MissingCopybooks { get; } = new();
+    public List<string> SqlTables { get; } = new();
+    public List<string> CalledByJobs { get; } = new();
+
+    /// <summary>Programs reachable from this one, so a caller can convert a whole closure.</summary>
+    public List<string> CallClosure { get; } = new();
+
+    public bool AmbiguousBasename { get; set; }
+    public List<string> Candidates { get; } = new();
+    public string? Note { get; set; }
+}
