@@ -76,6 +76,7 @@ function switchDashboard(tabName) {
     services: ['services-container'],
     modernization: ['modernization-intelligence-container'],
     ast: ['ast-explorer-container'],
+    programs: ['program-picker-container'],
   };
 
   Object.values(panels).flat().forEach(id => {
@@ -110,6 +111,13 @@ function switchDashboard(tabName) {
       window.astExplorer = new ASTExplorer('ast-graph');
     }
     window.astExplorer.loadFileList();
+  }
+
+  if (tabName === 'programs') {
+    if (!window.programPickerView) {
+      window.programPickerView = new ProgramPickerView('program-picker-root');
+    }
+    window.programPickerView.loadAndRender();
   }
 
   if (tabName === 'modernization') {

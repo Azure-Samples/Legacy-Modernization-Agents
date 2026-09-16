@@ -122,6 +122,14 @@ internal static class Program
         reuseReOption.AddAlias("-reuse-re");
         rootCommand.AddOption(reuseReOption);
 
+        var programsOption = new Option<string>(
+            "--programs",
+            () => "",
+            "Comma-separated programs to convert, by name or source-relative path. "
+            + "Empty converts the whole estate. Copybooks always travel with the selection.");
+        programsOption.AddAlias("-programs");
+        rootCommand.AddOption(programsOption);
+
         var configOption = new Option<string>("--config", () => "Config/appsettings.json", "Path to the configuration file")
         {
             Arity = ArgumentArity.ZeroOrOne
@@ -154,10 +162,22 @@ internal static class Program
         // Curated program-facts.json extraction from REKT artifacts.
         rootCommand.AddCommand(CobolToQuarkusMigration.Cli.ProgramFactsCommand.Build(loggerFactory));
 
-        rootCommand.SetHandler(async (string cobolSource, string javaOutput, string reverseEngineerOutput, bool reverseEngineerOnly, bool skipReverseEngineering, bool reuseRe, string configPath, bool resume) =>
+        rootCommand.SetHandler(async (context) =>
         {
-            await RunMigrationAsync(loggerFactory, logger, fileHelper, settingsHelper, cobolSource, javaOutput, reverseEngineerOutput, reverseEngineerOnly, skipReverseEngineering, reuseRe, configPath, resume);
-        }, cobolSourceOption, javaOutputOption, reverseEngineerOutputOption, reverseEngineerOnlyOption, skipReverseEngineeringOption, reuseReOption, configOption, resumeOption);
+            var cobolSource = context.ParseResult.GetValueForOption(cobolSourceOption)!;
+            var javaOutput = context.ParseResult.GetValueForOption(javaOutputOption)!;
+            var reverseEngineerOutput = context.ParseResult.GetValueForOption(reverseEngineerOutputOption)!;
+            var reverseEngineerOnly = context.ParseResult.GetValueForOption(reverseEngineerOnlyOption);
+            var skipReverseEngineering = context.ParseResult.GetValueForOption(skipReverseEngineeringOption);
+            var reuseRe = context.ParseResult.GetValueForOption(reuseReOption);
+            var configPath = context.ParseResult.GetValueForOption(configOption)!;
+            var resume = context.ParseResult.GetValueForOption(resumeOption);
+            var programs = context.ParseResult.GetValueForOption(programsOption) ?? "";
+
+            await RunMigrationAsync(loggerFactory, logger, fileHelper, settingsHelper, cobolSource,
+                javaOutput, reverseEngineerOutput, reverseEngineerOnly, skipReverseEngineering,
+                reuseRe, configPath, resume, SplitPrograms(programs));
+        });
 
         return rootCommand;
     }
@@ -533,7 +553,8 @@ internal static class Program
         return false;
     }
 
-    private static async Task RunMigrationAsync(ILoggerFactory loggerFactory, ILogger logger, FileHelper fileHelper, SettingsHelper settingsHelper, string cobolSource, string javaOutput, string reverseEngineerOutput, bool reverseEngineerOnly, bool skipReverseEngineering, bool reuseRe, string configPath, bool resume)    {
+    private static async Task RunMigrationAsync(ILoggerFactory loggerFactory, ILogger logger, FileHelper fileHelper, SettingsHelper settingsHelper, string cobolSource, string javaOutput, string reverseEngineerOutput, bool reverseEngineerOnly, bool skipReverseEngineering, bool reuseRe, string configPath, bool resume, IReadOnlyList<string>? programSelection = null)
+    {
         try
         {
             logger.LogInformation("Loading settings from {ConfigPath}", configPath);
@@ -542,6 +563,18 @@ internal static class Program
 
             LoadEnvironmentVariables();
             OverrideSettingsFromEnvironment(settings);
+
+            if (programSelection is { Count: > 0 })
+            {
+                settings.ApplicationSettings.ProgramSelection = programSelection.ToList();
+                fileHelper.ProgramSelection = settings.ApplicationSettings.ProgramSelection;
+                Console.WriteLine(
+                    $"🎯 Converting {programSelection.Count} selected program(s): {string.Join(", ", programSelection)}");
+            }
+            else if (settings.ApplicationSettings.ProgramSelection.Count > 0)
+            {
+                fileHelper.ProgramSelection = settings.ApplicationSettings.ProgramSelection;
+            }
 
             if (string.IsNullOrEmpty(settings.ApplicationSettings.CobolSourceFolder))
             {
@@ -1707,4 +1740,10 @@ internal static class Program
             Environment.Exit(1);
         }
     }
+    // A selection arrives as one comma-separated value so it survives being passed through a shell,
+    // a container argument list and the portal's process launcher without quoting rules differing
+    // at each step.
+    private static IReadOnlyList<string> SplitPrograms(string value) =>
+        value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
 }

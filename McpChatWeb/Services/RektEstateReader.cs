@@ -194,12 +194,18 @@ public sealed class RektEstateReader
                 HasFacts: facts is not null,
                 FactsConfidence: (int)(facts?.Confidence ?? FactConfidence.None),
                 FactsWarnings: facts?.Warnings.Count ?? 0,
-                Copybooks: facts?.Data.CopybooksUsed.ToList()
-                    ?? ReadDependencies(depsPath, copybooks: true)
-                    ?? ReadCopyStatements(sourceRoot, relativePath),
-                Callees: facts?.Callees.ToList()
-                    ?? ReadDependencies(depsPath, copybooks: false)
-                    ?? new List<string>(),
+                // Each source is tried until one yields something. An empty list is treated as
+                // absent rather than as an answer: the fact extractor records copybooksUsed as
+                // empty for programs it parsed with stubs, and taking that at face value reports
+                // "no copybooks" for a program with fifteen COPY statements — which reads as a
+                // program that is safe to convert alone.
+                Copybooks: FirstNonEmpty(
+                    facts?.Data.CopybooksUsed.ToList(),
+                    ReadDependencies(depsPath, copybooks: true),
+                    ReadCopyStatements(sourceRoot, relativePath)),
+                Callees: FirstNonEmpty(
+                    facts?.Callees.ToList(),
+                    ReadDependencies(depsPath, copybooks: false)),
                 Callers: facts?.Callers.ToList() ?? new List<string>(),
                 ParseFidelity: fidelity,
                 FidelitySource: fidelitySource,
@@ -376,6 +382,21 @@ public sealed class RektEstateReader
     }
 
     // Line format: COPYBOOK\treferenced by: A.cbl, B.cbl
+    // Returns the first candidate that actually carries values. Null and empty are both
+    // treated as "this source did not know", so a later source still gets a chance.
+    private static List<string> FirstNonEmpty(params List<string>?[] candidates)
+    {
+        foreach (var candidate in candidates)
+        {
+            if (candidate is { Count: > 0 })
+            {
+                return candidate;
+            }
+        }
+
+        return new List<string>();
+    }
+
     public IReadOnlyList<MissingCopybookRow> ReadMissingCopybooks()
     {
         var path = Path.Join(RektDir, "missing-copybooks.txt");

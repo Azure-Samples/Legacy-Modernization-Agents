@@ -135,6 +135,36 @@ public sealed record ProgramChain(
 /// Everything known about one program, gathered for the view a person uses when deciding whether
 /// to convert it: what it depends on, what depends on it, and how much of that is actually known.
 /// </summary>
+/// <summary>
+/// One row in the program picker. Carries only what a conversion decision needs: how big the
+/// program is, how well it parsed, and whether converting it drags other programs along.
+/// </summary>
+public sealed class ProgramListEntry
+{
+    public string Basename { get; set; } = "";
+    public string RelativePath { get; set; } = "";
+    public int LinesOfCode { get; set; }
+    public string ParseFidelity { get; set; } = "";
+    public bool HasFacts { get; set; }
+    public int MissingCopybookCount { get; set; }
+
+    /// <summary>Programs this one calls, directly or transitively.</summary>
+    public int CallClosureCount { get; set; }
+
+    public int CalledByCount { get; set; }
+
+    /// <summary>True when the basename is not unique, so only the path identifies it.</summary>
+    public bool AmbiguousBasename { get; set; }
+}
+
+public sealed class ProgramListSnapshot
+{
+    public List<ProgramListEntry> Programs { get; } = new();
+    public int TotalPrograms { get; set; }
+    public int TotalCopybooks { get; set; }
+    public string? Note { get; set; }
+}
+
 public sealed class ProgramSnapshot
 {
     public string Identity { get; set; } = "";

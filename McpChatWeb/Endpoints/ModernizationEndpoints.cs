@@ -35,6 +35,13 @@ public static class ModernizationEndpoints
             .WithSummary("Procedural flow artifacts available for one program.");
 
         // Identity may be a source-relative path with separators, not just a basename.
+        group.MapGet("/programs", async (
+            ModernizationIntelligenceService service,
+            CancellationToken cancellationToken) =>
+                Results.Ok(await service.GetProgramListAsync(cancellationToken)))
+            .WithName("GetProgramList")
+            .WithSummary("Every convertible program, for choosing what to convert.");
+
         group.MapGet("/program/{**identity}", async (
             string identity,
             ModernizationIntelligenceService service,

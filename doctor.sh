@@ -113,6 +113,23 @@ show_usage() {
     echo -e "  ${GREEN}chunking-health${NC} Check smart chunking infrastructure"
     echo -e "  ${GREEN}validate${NC}        Validate system requirements"
     echo -e "  ${GREEN}conversation${NC}    Generate conversation log from migration data"
+    echo -e "  ${GREEN}programs${NC}        List convertible programs with size, parse fidelity and call counts"
+    echo ""
+    echo -e "${BOLD}Converting a subset:${NC}"
+    echo -e "  ${GREEN}--program NAME${NC}       Convert only this program (repeatable, or comma-separated)"
+    echo -e "  ${GREEN}--include-callees${NC}    Also convert everything the selection CALLs"
+    echo -e "  ${GREEN}--language L${NC}         Java or CSharp (skips the interactive prompt)"
+    echo -e "  ${GREEN}--dry-run${NC}            Show what would convert, call no model"
+    echo -e "  ${GREEN}--clean-output${NC}       Clear the target output folder first"
+    echo ""
+    echo -e "  Copybooks are always included; they are never selected directly."
+    echo -e "  A selected name that matches no source file stops the run rather than"
+    echo -e "  quietly converting less than you asked for."
+    echo ""
+    echo -e "  ${CYAN}./doctor.sh programs${NC}"
+    echo -e "  ${CYAN}./doctor.sh run --program KYGHB005.cbl --language Java --dry-run${NC}"
+    echo -e "  ${CYAN}./doctor.sh convert-only --program KYGHB005.cbl --program KYGHB006.cbl${NC}"
+    echo -e "  ${CYAN}./doctor.sh run --program KYGHB005.cbl --include-callees --clean-output${NC}"
     echo
     echo -e "${BOLD}Cobol-REKT (deterministic static analysis):${NC}"
     echo -e "  ${GREEN}rekt-parse${NC}      Parse COBOL into ASTs/flowcharts under output/rekt/"
@@ -2027,7 +2044,7 @@ run_migration() {
     echo -e "${CYAN}🎯 Target: ${TARGET_LANGUAGE}${NC}"
     echo -e "${CYAN}💾 Database: $MIGRATION_DB_PATH${NC}"
     
-    "$DOTNET_CMD" run -- --source ./source $skip_reverse_eng
+    "$DOTNET_CMD" run -- --source ./source $skip_reverse_eng $(program_args)
     local migration_exit=$?
 
     if [[ $migration_exit -ne 0 ]]; then
@@ -2088,7 +2105,7 @@ run_resume() {
 
     # Run with resume logic
     export MIGRATION_DB_PATH="$REPO_ROOT/Data/migration.db"
-    "$DOTNET_CMD" run -- --source ./source --resume
+    "$DOTNET_CMD" run -- --source ./source --resume $(program_args)
 }
 
 # Function to monitor migration
@@ -2307,7 +2324,7 @@ run_reverse_engineering() {
 
     # Run the reverse engineering command - chunking is auto-detected
     export MIGRATION_DB_PATH="$REPO_ROOT/Data/migration.db"
-    "$DOTNET_CMD" run reverse-engineer --source ./source
+    "$DOTNET_CMD" run reverse-engineer --source ./source $(program_args)
 
     local exit_code=$?
 
@@ -2443,7 +2460,7 @@ run_conversion_only() {
         resume_flag="--resume"
     fi
     
-    "$DOTNET_CMD" run -- --source ./source --skip-reverse-engineering $reuse_re_flag $resume_flag
+    "$DOTNET_CMD" run -- --source ./source --skip-reverse-engineering $reuse_re_flag $resume_flag $(program_args)
     local migration_exit=$?
 
     if [[ $migration_exit -ne 0 ]]; then
@@ -3583,10 +3600,254 @@ run_rekt_status() {
     echo -e "    Rekt Neo4j:     http://localhost:$REKT_NEO4J_HTTP_PORT (bolt://localhost:$REKT_NEO4J_BOLT_PORT)"
 }
 
+# Emits the --programs argument when a selection is active, and nothing otherwise,
+# so an unscoped run is byte-identical to what it was before selection existed.
+program_args() {
+    if [[ -n "${PROGRAM_SELECTION:-}" ]]; then
+        printf '%s' "--programs $PROGRAM_SELECTION"
+    fi
+}
+
+# Stale files from an earlier run are counted by the parity report as though this run
+# produced them, which inflates coverage.
+clean_output_if_requested() {
+    if [[ "$CLEAN_OUTPUT" != "true" ]]; then
+        return 0
+    fi
+    local target_dir="$REPO_ROOT/output/${1:-java}"
+    if [[ -d "$target_dir" ]]; then
+        echo -e "${YELLOW}🧹 Clearing $target_dir before conversion${NC}"
+        find "$target_dir" -mindepth 1 -delete 2>/dev/null || true
+    fi
+}
+
+# Every conversion entry point runs this: refuse to start beside another run, honour
+# --dry-run, and clear output when asked.
+conversion_preflight() {
+    guard_concurrent_run || exit 1
+    if [[ "$DRY_RUN" == "true" ]]; then
+        show_dry_run
+        exit 0
+    fi
+    local lang_dir="java"
+    [[ "${TARGET_LANGUAGE:-Java}" == "CSharp" ]] && lang_dir="csharp"
+    clean_output_if_requested "$lang_dir"
+}
+
+# ── Program selection ───────────────────────────────────────────────────────
+#
+# Scopes a conversion to chosen programs. The selection narrows which programs are
+# converted; it does not narrow what the conversion can see, because copybooks are
+# always retained by the CLI. Nothing is copied to a staging folder: the source root
+# stays put, so report, parity and output paths mean the same thing in a scoped run
+# as in a full one.
+
+SELECTED_PROGRAMS=()
+INCLUDE_CALLEES=false
+DRY_RUN=false
+CLEAN_OUTPUT=false
+
+portal_base() { echo "http://localhost:${DEFAULT_MCP_PORT}"; }
+
+# Reachability is not enough: the portal serves its SPA fallback with HTTP 200 for
+# routes it does not know, so an older build answers this URL with HTML. Checking the
+# content type distinguishes "portal is down" from "portal predates this endpoint",
+# which need different fixes.
+portal_is_up() {
+    local ctype
+    ctype=$(curl -s -o /dev/null --max-time 3 -w '%{content_type}' \
+        "$(portal_base)/api/modernization/programs" 2>/dev/null)
+    [[ "$ctype" == application/json* ]]
+}
+
+portal_reachable() {
+    curl -s -o /dev/null --max-time 3 "$(portal_base)/" 2>/dev/null
+}
+
+# The estate lives behind the portal API, which is the same source the dashboard
+# reads. Asking it keeps one definition of "which programs exist" rather than a
+# second one written in bash that can drift from it.
+require_portal_for_selection() {
+    if portal_is_up; then
+        return 0
+    fi
+    if portal_reachable; then
+        echo -e "${YELLOW}⚠️  The portal is running but does not serve the program list.${NC}"
+        echo -e "   It is an older build. Restart it from this checkout:"
+        echo -e "   ${GREEN}./doctor.sh portal${NC}"
+    else
+        echo -e "${YELLOW}⚠️  The portal is not running, so program data is unavailable.${NC}"
+        echo -e "   Start it with ${GREEN}./doctor.sh portal${NC} in another terminal, then retry."
+    fi
+    return 1
+}
+
+# Expands the selection to every program reachable by CALL. Without this a converted
+# program can call something that was never converted.
+expand_callees() {
+    local expanded_file
+    expanded_file="$(mktemp)"
+    printf '%s\n' "${SELECTED_PROGRAMS[@]}" > "$expanded_file"
+
+    local identity
+    for identity in "${SELECTED_PROGRAMS[@]}"; do
+        curl -s --max-time 10 "$(portal_base)/api/modernization/program/${identity}" \
+            | "$PYTHON_CMD" -c "
+import json,sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for p in d.get('callClosure') or []:
+    print(p)
+" >> "$expanded_file" 2>/dev/null
+    done
+
+    local before=${#SELECTED_PROGRAMS[@]}
+    SELECTED_PROGRAMS=()
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && SELECTED_PROGRAMS+=("$line")
+    done < <(sort -u "$expanded_file")
+    rm -f "$expanded_file"
+
+    local added=$((${#SELECTED_PROGRAMS[@]} - before))
+    if [[ $added -gt 0 ]]; then
+        echo -e "  ${BLUE}Call closure added $added program(s).${NC}"
+    else
+        echo -e "  ${BLUE}Call closure added nothing: the selection calls no other program in this estate.${NC}"
+    fi
+}
+
+# A selected name that matches no source file converts fewer programs than asked for,
+# which looks exactly like a run that succeeded. Checked before any model is called.
+validate_selection() {
+    local unmatched=()
+    local identity
+    for identity in "${SELECTED_PROGRAMS[@]}"; do
+        if [[ -z "$(find "$REPO_ROOT/${COBOL_SOURCE_FOLDER:-source}" -path "*${identity}" -print -quit 2>/dev/null)" ]] \
+           && [[ -z "$(find "$REPO_ROOT/${COBOL_SOURCE_FOLDER:-source}" -name "${identity}" -print -quit 2>/dev/null)" ]] \
+           && [[ -z "$(find "$REPO_ROOT/${COBOL_SOURCE_FOLDER:-source}" -name "${identity}.*" -print -quit 2>/dev/null)" ]]; then
+            unmatched+=("$identity")
+        fi
+    done
+
+    if [[ ${#unmatched[@]} -gt 0 ]]; then
+        echo -e "${RED}❌ No source file matches:${NC}"
+        printf '   %s\n' "${unmatched[@]}"
+        echo -e "   Run ${GREEN}./doctor.sh programs${NC} to see what is convertible."
+        return 1
+    fi
+    return 0
+}
+
+# Two runs writing to one output directory interleave their files, and the result
+# looks like a single successful conversion.
+guard_concurrent_run() {
+    # Matches a conversion, which always carries --source. The same assembly also runs
+    # persistently as the MCP server and for short-lived subcommands; neither writes to
+    # the output folder, and treating them as a run would block every conversion.
+    local running
+    running=$(pgrep -f "CobolToQuarkusMigration.dll .*--source" 2>/dev/null | wc -l | tr -d ' ')
+    if [[ "${running:-0}" -gt 0 ]]; then
+        echo -e "${RED}❌ A migration is already running ($running process(es)).${NC}"
+        echo -e "   Two runs share one output folder and overwrite each other's files."
+        echo -e "   Wait for it to finish, or stop it, then retry."
+        return 1
+    fi
+    return 0
+}
+
+# Lists what can be converted, so a selection is made from real names rather than guesses.
+run_program_list() {
+    require_portal_for_selection || return 1
+
+    echo -e "${BOLD}Convertible programs${NC}"
+    echo ""
+    curl -s --max-time 15 "$(portal_base)/api/modernization/programs" | "$PYTHON_CMD" -c "
+import json,sys
+d = json.load(sys.stdin)
+progs = d.get('programs') or []
+print(f\"{'PROGRAM':<24}{'LINES':>8}  {'PARSE':<10}{'CALLS':>6}{'CALLED BY':>11}  PATH\")
+print('-' * 96)
+for p in progs:
+    warn = '  ⚠ %d missing cpy' % p['missingCopybookCount'] if p.get('missingCopybookCount') else ''
+    print(f\"{p['basename']:<24}{p['linesOfCode']:>8}  {p['parseFidelity']:<10}\"
+          f\"{p['callClosureCount']:>6}{p['calledByCount']:>11}  {p['relativePath']}{warn}\")
+print()
+print(f\"{d.get('totalPrograms',0)} programs, {d.get('totalCopybooks',0)} copybooks.\")
+print('Copybooks are always included in a conversion and are not selected directly.')
+" 2>/dev/null || {
+        echo -e "${RED}❌ Could not read the program list from the portal.${NC}"
+        return 1
+    }
+}
+
+# Shows what a selection would convert, without calling a model.
+show_dry_run() {
+    echo ""
+    echo -e "${BOLD}Dry run — nothing will be converted${NC}"
+    echo ""
+    echo -e "  Target language: ${GREEN}${TARGET_LANGUAGE:-Java}${NC}"
+    echo -e "  Programs (${#SELECTED_PROGRAMS[@]}):"
+    printf '    %s\n' "${SELECTED_PROGRAMS[@]}"
+    echo ""
+    echo -e "  ${BLUE}All copybooks are included regardless of selection.${NC}"
+    echo -e "  Remove ${GREEN}--dry-run${NC} to convert."
+    echo ""
+}
+
 # Main command routing
 main() {
     # Create required directories if they don't exist
     mkdir -p "$REPO_ROOT/source" "$REPO_ROOT/output" "$REPO_ROOT/Logs"
+
+    # Selector flags are pre-parsed so they may appear in any position. Repeating
+    # --program selects more programs; the flags are removed before command routing.
+    local positional=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --program|--programs)
+                if [[ -z "${2:-}" ]]; then
+                    echo -e "${RED}❌ $1 requires a program name or path${NC}"; exit 1
+                fi
+                IFS=',' read -ra _names <<< "$2"
+                local _n
+                for _n in "${_names[@]}"; do
+                    _n="$(echo "$_n" | xargs)"
+                    [[ -n "$_n" ]] && SELECTED_PROGRAMS+=("$_n")
+                done
+                shift 2 ;;
+            --include-callees)
+                INCLUDE_CALLEES=true; shift ;;
+            --dry-run)
+                DRY_RUN=true; shift ;;
+            --clean-output)
+                CLEAN_OUTPUT=true; shift ;;
+            --language|--target-language)
+                if [[ -z "${2:-}" ]]; then
+                    echo -e "${RED}❌ $1 requires Java or CSharp${NC}"; exit 1
+                fi
+                case "$(echo "$2" | tr '[:upper:]' '[:lower:]')" in
+                    java) export TARGET_LANGUAGE="Java" ;;
+                    csharp|c#|cs) export TARGET_LANGUAGE="CSharp" ;;
+                    *) echo -e "${RED}❌ Unknown language: $2 (use Java or CSharp)${NC}"; exit 1 ;;
+                esac
+                shift 2 ;;
+            *)
+                positional+=("$1"); shift ;;
+        esac
+    done
+    set -- "${positional[@]}"
+
+    if [[ ${#SELECTED_PROGRAMS[@]} -gt 0 ]]; then
+        if [[ "$INCLUDE_CALLEES" == "true" ]]; then
+            require_portal_for_selection || exit 1
+            expand_callees
+        fi
+        validate_selection || exit 1
+        export PROGRAM_SELECTION="$(IFS=','; echo "${SELECTED_PROGRAMS[*]}")"
+        echo -e "${CYAN}🎯 Selection: ${#SELECTED_PROGRAMS[@]} program(s)${NC}"
+    fi
 
     case "${1:-doctor}" in
         "setup")
@@ -3597,10 +3858,15 @@ main() {
             ;;
         "run"|"run-chunked"|"chunked")
             # All run commands use the same function - chunking is auto-detected
+            conversion_preflight
             run_migration
             ;;
         "convert-only"|"conversion-only"|"convert")
+            conversion_preflight
             run_conversion_only
+            ;;
+        "programs"|"list-programs")
+            run_program_list
             ;;
         "portal"|"web"|"ui")
             run_portal
@@ -3612,6 +3878,7 @@ main() {
             run_reverse_engineering
             ;;
         "resume")
+            guard_concurrent_run || exit 1
             run_resume
             ;;
         "monitor")
