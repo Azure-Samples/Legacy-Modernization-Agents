@@ -2970,12 +2970,21 @@ PYEOF
     # Report missing copybooks before parsing so reduced coverage is explicit.
     local missing_report="$REPO_ROOT/output/rekt/missing-copybooks.txt"
     mkdir -p "$REPO_ROOT/output/rekt"
-    "$PYTHON_CMD" - "$staging_dir" "$missing_report" >/dev/null 2>&1 <<'PYEOF' || true
+    "$PYTHON_CMD" - "$staging_dir" "$missing_report" "$generated_stubs_file" >/dev/null 2>&1 <<'PYEOF' || true
 import os, re, sys
 from collections import defaultdict
 
 staging_dir = sys.argv[1]
 report_path = sys.argv[2]
+stubs_path = sys.argv[3] if len(sys.argv) > 3 else ''
+
+# Names that exist in staging only because a placeholder was synthesised for them. Staging
+# happens before this scan, so treating the staged file as evidence of availability would
+# report a copybook as present precisely because it was missing.
+synthesised = set()
+if stubs_path and os.path.exists(stubs_path):
+    with open(stubs_path, encoding='utf-8') as handle:
+        synthesised = {line.strip().upper() for line in handle if line.strip()}
 
 # Available copybook stems (case-insensitive), as staged
 available = set()
@@ -2984,6 +2993,7 @@ for root, _, files in os.walk(staging_dir):
         stem, ext = os.path.splitext(name)
         if ext.lower() == '.cpy':
             available.add(stem.upper())
+available -= synthesised
 
 # Match COPY / -COPY directives in non-comment lines.
 # Handles: COPY NAME., COPY 'NAME'., COPY NAME REPLACING ...

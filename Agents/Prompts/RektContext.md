@@ -62,6 +62,28 @@ CALL TARGET → SERVICE INJECTION RULES:
 
 WARNINGS (preserved from REKT extraction — surface in the generated code as TODOs where relevant):
 
+## SECTION: SyntheticLayoutPolicy
+
+SYNTHETIC LAYOUTS — THESE COPYBOOKS WERE NOT FOUND IN THE SOURCE DROP:
+{{StubCopybooks}}
+  The parser needed a definition to resolve the COPY directive, so a placeholder holding a
+  single filler field was generated. That placeholder is a tooling artefact. It is NOT the
+  customer's layout, and the real field names, types, sizes and REDEFINES are unknown here.
+
+  For the copybooks named above, and ONLY for those, the completeness rules above do not apply:
+  • Do NOT invent fields, types or sizes to make the structure look plausible.
+  • Do NOT carry the generated `-STUB` / `-VAL` filler into the output as if it were real.
+  • Emit the type with no invented members, and mark it:
+    `TODO: layout unknown — <COPYBOOK> was missing from the source drop; supply the copybook
+     and regenerate before relying on this type.`
+  • In comments and documentation, do not describe what these fields mean or what the
+    structure is for. Nothing in the available evidence supports such a description.
+  • Keep any reference to the structure compiling, but leave the shape unresolved.
+
+  Every other data group in this context came from a real parse and must still be generated
+  completely, exactly as the rules above require.
+
+
 ## SECTION: PreprocessHeader
 
 PREPROCESSOR TRANSFORMS APPLIED (the source you see has been rewritten — preserve original semantics):
