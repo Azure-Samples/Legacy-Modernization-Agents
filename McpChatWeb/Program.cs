@@ -4716,22 +4716,26 @@ app.MapGet("/api/source/content", async (string file, int? startLine, int? endLi
 		var candidates = new[] { file, baseName, Path.GetFileNameWithoutExtension(baseName) + ".cbl",
 		                         Path.GetFileNameWithoutExtension(baseName) + ".cpy" };
 
+		// Containment is checked before each candidate is put to the file system rather than once
+		// on the winner. Validating afterwards still lets a name outside the estate be probed for
+		// existence, and leaves the guard depending on which candidate happened to match first.
+		var estateRoot = Path.GetFullPath(sourceDir);
+		if (!estateRoot.EndsWith(Path.DirectorySeparatorChar))
+			estateRoot += Path.DirectorySeparatorChar;
+
 		string? foundPath = null;
 		foreach (var c in candidates)
 		{
-			var p = Path.Combine(sourceDir, c);
+			var p = Path.GetFullPath(Path.Combine(sourceDir, c));
+			if (!p.StartsWith(estateRoot, StringComparison.Ordinal)) continue;
 			if (System.IO.File.Exists(p)) { foundPath = p; break; }
 		}
 
 		if (foundPath != null)
 		{
-			// Security: ensure path is within sourceDir
-			var fullPath = Path.GetFullPath(foundPath);
-			var rootPath = Path.GetFullPath(sourceDir);
-			if (!rootPath.EndsWith(Path.DirectorySeparatorChar))
-				rootPath += Path.DirectorySeparatorChar;
-			if (!fullPath.StartsWith(rootPath, StringComparison.Ordinal))
-				return Results.BadRequest(new { error = "Invalid file path" });
+			// Already proven inside the estate by the loop above, which rejects a candidate
+			// before touching the file system rather than after choosing one.
+			var fullPath = foundPath;
 
 			var allLines = System.IO.File.ReadAllLines(fullPath);
 			var start = Math.Max(0, (startLine ?? 1) - 1);
@@ -4802,14 +4806,21 @@ app.MapGet("/api/source/content", async (string file, int? startLine, int? endLi
 				});
 			}
 		}
-		catch (Exception ex)
+		catch (Exception ex) when (
+			ex is Neo4j.Driver.Neo4jException      // the graph fallback below is best-effort
+			or IOException
+			or InvalidOperationException)
 		{
 			Console.WriteLine($"⚠️ Neo4j source fallback failed: {ex.Message}");
 		}
 
 		return Results.NotFound(new { error = $"Source file not found: {file}" });
 	}
-	catch (Exception ex)
+	catch (Exception ex) when (
+		ex is IOException                      // reading the source off disk
+		or UnauthorizedAccessException
+		or Neo4j.Driver.Neo4jException
+		or InvalidOperationException)
 	{
 		Console.WriteLine($"⚠️ Source content endpoint: {ex.Message}");
 		return Results.Problem(ex.Message);
