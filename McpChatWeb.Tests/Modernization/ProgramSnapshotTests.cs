@@ -99,4 +99,54 @@ public class ProgramSnapshotTests
 
         Assert.Contains("deps-only", snapshot.Note);
     }
+
+    // Program Explorer opens this snapshot from a row in the list. If the two disagree about how
+    // well a program parsed, the view contradicts the thing that was clicked to reach it.
+    [Fact]
+    public async Task TheSnapshotAgreesWithTheListAboutFidelity()
+    {
+        using var fixture = new EstateFixture();
+        fixture.AddProgram("billing/ORDER.cbl");
+        await fixture.AddScanEntryAsync("ORDER.cbl", RektParseOutcome.Full, RektScanConfidence.High);
+        fixture.AddMissingCopybooks("ORDERREC\treferenced by: billing/ORDER.cbl\n");
+
+        var service = ServiceFor(fixture);
+        var snapshot = await service.GetProgramAsync("billing/ORDER.cbl");
+        var list = await service.GetProgramListAsync();
+
+        Assert.Equal("partial", snapshot.ParseFidelity);
+        Assert.Equal("partial", list.Programs.Single(p => p.Basename == "ORDER.cbl").ParseFidelity);
+    }
+
+    // The explorer renders each absent copybook by name, so the names have to survive the lookup
+    // even though the scan records the referring program by path and the estate by basename.
+    [Fact]
+    public async Task NamesTheAbsentCopybooksRatherThanCountingThem()
+    {
+        using var fixture = new EstateFixture();
+        fixture.AddProgram("billing/ORDER.cbl");
+        fixture.AddMissingCopybooks(
+            "ORDERREC\treferenced by: billing/ORDER.cbl\nTAXTBL\treferenced by: billing/ORDER.cbl\n");
+
+        var snapshot = await ServiceFor(fixture).GetProgramAsync("billing/ORDER.cbl");
+
+        Assert.Contains("ORDERREC", snapshot.MissingCopybooks);
+        Assert.Contains("TAXTBL", snapshot.MissingCopybooks);
+    }
+
+    // The explorer offers the candidates as links; without them the user is told the name is
+    // ambiguous and given no way forward.
+    [Fact]
+    public async Task AnAmbiguousNameReturnsTheCandidatesToChooseFrom()
+    {
+        using var fixture = new EstateFixture();
+        fixture.AddProgram("a/SHARED.cbl").AddProgram("b/SHARED.cbl");
+
+        var snapshot = await ServiceFor(fixture).GetProgramAsync("SHARED.cbl");
+
+        Assert.True(snapshot.AmbiguousBasename);
+        Assert.Equal(2, snapshot.Candidates.Count);
+        Assert.Contains("a/SHARED.cbl", snapshot.Candidates);
+        Assert.False(string.IsNullOrWhiteSpace(snapshot.Note));
+    }
 }

@@ -606,6 +606,10 @@ public sealed class ModernizationIntelligenceService
         var missing = MissingCopybooksFor(program, missingIndex, estate.Programs);
         snapshot.MissingCopybooks.AddRange(missing.OrderBy(c => c, StringComparer.OrdinalIgnoreCase));
 
+        // Applied here as well as in the list, so opening a program cannot show a healthier
+        // verdict than the row that was clicked to reach it.
+        snapshot.ParseFidelity = EffectiveFidelity(program.ParseFidelity, missing.Count);
+
         snapshot.CallClosure.AddRange(ReachableFrom(estate.Programs, program));
 
         if (program.HasDepsOnly)
