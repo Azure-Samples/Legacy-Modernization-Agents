@@ -111,6 +111,12 @@ public sealed record ConversionParityReport
     // null when nothing could be evaluated, so an empty run never reads as a clean run.
     [JsonPropertyName("averageScore")] public double? AverageScore { get; init; }
 
+    // Programs whose score was computed with stub-derived fields excluded. Their scores are
+    // honest about what could be checked, but they were checked against less: a copybook that
+    // was never delivered has no fields to verify against. Without this beside it, a high
+    // average reads as broad confidence when part of it is narrow.
+    [JsonPropertyName("reducedEvidenceCount")] public int ReducedEvidenceCount { get; init; }
+
     // Set by the portal reader, not persisted by the writer. Ignoring it unconditionally would
     // also strip it from the API response, leaving the panel with no report path to show.
     [JsonPropertyName("sourcePath")]
