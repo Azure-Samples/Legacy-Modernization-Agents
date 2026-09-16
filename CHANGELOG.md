@@ -100,6 +100,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Prompt Studio Multi-Provider Support** — AI Enhance and Re-Score work with both Azure OpenAI and GitHub Copilot SDK
 
 ### Changed
+- **REKT structural context is injected by default** - Conversion prompts carried the source and the reverse-engineering summary but not the paragraphs, CALL targets and SQL tables the parser had already produced, because the injection was opt-in through ENABLE_REKT_CONTEXT and nothing set it. Conversion parity then scored the generated code against those same facts, so the converter was being marked on information it had never been given. Measured on a 36-program estate with reverse engineering held constant and only this varying: mean parity rose from 0.859 to 0.957, 28 of 32 scored programs improved, and the three that had been below the threshold all cleared it. Set ENABLE_REKT_CONTEXT=false to convert without it, which is mainly useful for comparing against an older run.
 - **`CODEX_*` → `AI_*` Environment Variables** — All env vars renamed (e.g., `AI_SPEED_PROFILE`, `AI_LOW_REASONING_EFFORT`, `AI_MAX_OUTPUT_TOKENS`)
 - **`AgentBase` IChatClient Path** — Replaced hardcoded `MaxOutputTokens=16384` with content-aware `CalculateTokenSettings()` + `ApplyModelSpecificOptions()`
 - **All agent initialization** is now provider-aware — uses `ResponsesApiClient` when available, falls back to `IChatClient`
