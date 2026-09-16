@@ -156,14 +156,27 @@ public class FileHelper
             // Create output directory with retry logic for Windows
             EnsureDirectoryExists(outputDirectory);
 
-            // Sanitize and validate namespace/package name
+            // The declaration inside the file decides where the file goes. NamespaceName is what
+            // the converter intended; the declaration is what the compiler will read, and when the
+            // two disagree it is the declaration that has to be honoured. Java will not build a
+            // file whose package and folder differ, and every generated file was landing in the
+            // fallback directory while declaring something else entirely.
+            var declaredNamespace = ExtractPackageNameFromContent(codeFile.Content);
             var sanitizedNamespace = SanitizePackageName(codeFile.NamespaceName);
+
             if (string.IsNullOrEmpty(sanitizedNamespace))
             {
-                // Extract namespace/package from content if invalid
-                sanitizedNamespace = ExtractPackageNameFromContent(codeFile.Content);
+                sanitizedNamespace = declaredNamespace;
                 _logger.LogWarning("Invalid namespace '{OriginalNamespace}' replaced with '{SanitizedNamespace}'",
                     codeFile.NamespaceName, sanitizedNamespace);
+            }
+            else if (!string.Equals(sanitizedNamespace, declaredNamespace, StringComparison.Ordinal)
+                     && declaredNamespace != "com.example.generated")
+            {
+                _logger.LogWarning(
+                    "{FileName} declares '{Declared}' but was assigned '{Assigned}'; filing it under the declaration so it compiles",
+                    sanitizedFileName, declaredNamespace, sanitizedNamespace);
+                sanitizedNamespace = declaredNamespace;
             }
 
             // Create namespace/package directory structure using OS-specific separator
@@ -386,28 +399,49 @@ public class FileHelper
             firstLine = firstLine.Replace("..", ".");
         }
 
-        // Validate it looks like a package name (only lowercase letters, dots, numbers)
         if (string.IsNullOrEmpty(firstLine) || !firstLine.Contains('.'))
         {
             return "com.example.generated";
         }
 
-        return firstLine.ToLowerInvariant();
+        // Case is preserved rather than lowered. Lowercasing is a Java package convention, and
+        // applying it to C# turns Contoso.Billing into contoso.billing, which then disagrees with
+        // the namespace the file declares — reintroducing the mismatch this is meant to remove.
+        return firstLine;
     }
 
     /// <summary>
     /// Extracts the package name from Java content
     /// </summary>
+    /// <summary>
+    /// Reads the package or namespace the file declares for itself.
+    ///
+    /// The declaration is what a compiler reads, so it decides where the file has to live. Java
+    /// requires the two to agree: a file declaring <c>com.example.billing</c> must sit in
+    /// <c>com/example/billing</c>, and one that does not will not build, however correct its
+    /// contents. C# does not require it, but a namespace that disagrees with its folder is still
+    /// the kind of thing a reviewer stops on.
+    /// </summary>
     private string ExtractPackageNameFromContent(string content)
     {
-        var lines = content.Split('\n');
-        foreach (var line in lines)
+        foreach (var line in content.Split('\n'))
         {
             var trimmedLine = line.Trim();
-            if (trimmedLine.StartsWith("package ") && trimmedLine.EndsWith(";"))
+
+            // Java, and C#'s file-scoped form: `package x.y;` / `namespace X.Y;`
+            if (trimmedLine.StartsWith("package ", StringComparison.Ordinal) && trimmedLine.EndsWith(";", StringComparison.Ordinal))
+                return SanitizePackageName(trimmedLine[8..^1].Trim());
+
+            if (trimmedLine.StartsWith("namespace ", StringComparison.Ordinal))
             {
-                var packageName = trimmedLine.Substring(8, trimmedLine.Length - 9).Trim();
-                return SanitizePackageName(packageName);
+                // `namespace X.Y;`, `namespace X.Y {`, or `namespace X.Y` with the brace below.
+                var declared = trimmedLine[10..].TrimEnd();
+                var brace = declared.IndexOf('{');
+                if (brace >= 0) declared = declared[..brace];
+                declared = declared.TrimEnd(';').Trim();
+
+                if (!string.IsNullOrWhiteSpace(declared))
+                    return SanitizePackageName(declared);
             }
         }
 
