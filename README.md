@@ -1111,6 +1111,9 @@ See [Parallel Jobs Formula](#parallel-jobs-formula) for chunking configuration d
 - [Conversion Parity Validation](docs/conversion-parity-validation.md) - Deterministic check that generated code represents the COBOL it came from, with per-axis coverage and a configurable threshold
 - [Speed Profiles](docs/speed-profiles.md) - TURBO/FAST/BALANCED/THOROUGH env var overrides and complexity scoring
 - [Azure AD / Entra ID Authentication Guide](docs/az-login-auth-guide.md) - Keyless auth setup
+- [Building behind an NPM registry block](docs/building-behind-an-npm-registry-block.md) - Restoring the Copilot CLI download on a network that blocks the public registry
+- [Legacy Modernization Flow](docs/legacy-modernization-flow.md) - How a run moves from COBOL through reverse engineering to generated code
+- [Spec-Driven Code Generation](docs/spec-approach-concept.md) - A considered approach, deferred and not implemented; kept for the reasoning rather than as a description of the tool
 - [Changelog](CHANGELOG.md) - Version history
 
 ---
