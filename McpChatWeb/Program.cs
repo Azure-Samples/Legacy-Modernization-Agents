@@ -4986,6 +4986,16 @@ app.MapPost("/api/prompts/update", (McpChatWeb.Models.UpdatePromptRequest reques
 					sb.Append(body);
 				}
 
+				var droppedOnUpdate = CobolToQuarkusMigration.Helpers.PromptPlaceholders.Dropped(
+					File.Exists(promptFile) ? File.ReadAllText(promptFile) : null,
+					sb.ToString());
+				if (droppedOnUpdate.Count > 0)
+				{
+					var reason = CobolToQuarkusMigration.Helpers.PromptPlaceholders.DescribeLoss(request.Id, droppedOnUpdate);
+					Console.WriteLine($"🛑 Refused to save prompt '{request.Id}': {reason}");
+					return Results.BadRequest(new { error = reason, dropped = droppedOnUpdate });
+				}
+
 				File.WriteAllText(promptFile, sb.ToString());
 				Console.WriteLine($"💾 Prompt '{request.Id}' saved to disk: {promptFile}");
 			}
@@ -5161,9 +5171,19 @@ app.MapPost("/api/prompts/generate-all", () =>
 					sb.Append(body);
 				}
 
-				File.WriteAllText(promptFile, sb.ToString());
-				savedToDisk = true;
-				Console.WriteLine($"💾 Generated prompt for '{id}' saved to disk");
+				var droppedOnGenerate = CobolToQuarkusMigration.Helpers.PromptPlaceholders.Dropped(
+					File.Exists(promptFile) ? File.ReadAllText(promptFile) : null,
+					sb.ToString());
+				if (droppedOnGenerate.Count > 0)
+				{
+					Console.WriteLine($"🛑 Skipped '{id}': {CobolToQuarkusMigration.Helpers.PromptPlaceholders.DescribeLoss(id, droppedOnGenerate)}");
+				}
+				else
+				{
+					File.WriteAllText(promptFile, sb.ToString());
+					savedToDisk = true;
+					Console.WriteLine($"💾 Generated prompt for '{id}' saved to disk");
+				}
 			}
 			catch (Exception ex)
 			{
@@ -5546,8 +5566,18 @@ app.MapPost("/api/prompts/enhance-all", async () =>
 					sb.Append(body);
 				}
 
-				File.WriteAllText(promptFile, sb.ToString());
-				savedToDisk = true;
+				var droppedOnEnhance = CobolToQuarkusMigration.Helpers.PromptPlaceholders.Dropped(
+					File.Exists(promptFile) ? File.ReadAllText(promptFile) : null,
+					sb.ToString());
+				if (droppedOnEnhance.Count > 0)
+				{
+					Console.WriteLine($"🛑 Skipped '{id}': {CobolToQuarkusMigration.Helpers.PromptPlaceholders.DescribeLoss(id, droppedOnEnhance)}");
+				}
+				else
+				{
+					File.WriteAllText(promptFile, sb.ToString());
+					savedToDisk = true;
+				}
 			}
 			catch (Exception ex)
 			{
