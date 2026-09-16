@@ -55,8 +55,6 @@ public sealed class ModernizationIntelligenceService
         var estate = await _estate.ReadAsync(cancellationToken).ConfigureAwait(false);
         var snapshot = new DependencyHealthSnapshot { Note = estate.Note };
 
-        foreach (var row in estate.MissingCopybooks) snapshot.MissingCopybooks.Add(row);
-
         var missingByProgram = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
         foreach (var row in estate.MissingCopybooks)
         {
@@ -72,7 +70,7 @@ public sealed class ModernizationIntelligenceService
 
         foreach (var program in programs)
         {
-            var missing = CountMissingFor(program, missingByProgram);
+            var missing = MissingCopybooksFor(program, missingByProgram, estate.Programs).Count;
             snapshot.Programs.Add(new ProgramHealthRow(
                 Basename: program.Basename,
                 RelativePath: program.RelativePath,
@@ -94,7 +92,27 @@ public sealed class ModernizationIntelligenceService
         snapshot.DepsOnlyCount = programs.Count(p => p.ParseFidelity == ParseFidelity.DepsOnly);
         snapshot.FailedCount = programs.Count(p => p.ParseFidelity == ParseFidelity.Failed);
         snapshot.NotParsedCount = programs.Count(p => p.ParseFidelity == ParseFidelity.NotParsed);
-        snapshot.TotalMissingCopybooks = estate.MissingCopybooks.Count;
+        // Rebuilt from the same resolution the rows use. Reading the count straight from
+        // missing-copybooks.txt reported seven while thirty programs were blocked, because
+        // that file records only what the last scan happened to notice.
+        var referencedBy = new Dictionary<string, SortedSet<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in snapshot.Programs)
+        {
+            var program = programs.First(p => p.RelativePath == row.RelativePath);
+            foreach (var copybook in MissingCopybooksFor(program, missingByProgram, estate.Programs))
+            {
+                if (!referencedBy.TryGetValue(copybook, out var refs))
+                    referencedBy[copybook] = refs = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+                refs.Add(program.RelativePath);
+            }
+        }
+
+        foreach (var (copybook, refs) in referencedBy.OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            snapshot.MissingCopybooks.Add(new MissingCopybookRow(copybook, refs.ToList()));
+        }
+
+        snapshot.TotalMissingCopybooks = snapshot.MissingCopybooks.Count;
 
         snapshot.ScanCacheBackedCount = programs.Count(p => p.FidelitySource == FidelitySources.ScanCache);
 
@@ -128,11 +146,51 @@ public sealed class ModernizationIntelligenceService
     // basename and stem.
     private static int CountMissingFor(
         RektProgramRecord program,
-        IReadOnlyDictionary<string, HashSet<string>> missingByProgram)
+        IReadOnlyDictionary<string, HashSet<string>> missingByProgram) =>
+        MissingCopybooksFor(program, missingByProgram, Array.Empty<RektProgramRecord>()).Count;
+
+    /// <summary>
+    /// The copybooks a program COPYs that are not on disk.
+    /// </summary>
+    /// <remarks>
+    /// Two sources are combined because neither is sufficient alone. missing-copybooks.txt is
+    /// written by the scan and keys the referring program by source-relative path, while the
+    /// rest of the estate uses the basename; matching only one identity found nothing and
+    /// reported every program as healthy. The file is also only as current as the last scan, so
+    /// each COPY target is additionally checked against the copybooks actually present.
+    /// </remarks>
+    private static HashSet<string> MissingCopybooksFor(
+        RektProgramRecord program,
+        IReadOnlyDictionary<string, HashSet<string>> missingByProgram,
+        IReadOnlyList<RektProgramRecord> allPrograms)
     {
-        if (missingByProgram.TryGetValue(program.Basename, out var byBasename)) return byBasename.Count;
-        if (missingByProgram.TryGetValue(program.Stem, out var byStem)) return byStem.Count;
-        return 0;
+        var missing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var identity in new[] { program.RelativePath, program.Basename, program.Stem })
+        {
+            if (!string.IsNullOrEmpty(identity)
+                && missingByProgram.TryGetValue(identity, out var recorded))
+            {
+                missing.UnionWith(recorded);
+            }
+        }
+
+        if (allPrograms.Count > 0)
+        {
+            var present = new HashSet<string>(
+                allPrograms.Where(p => p.IsCopybook).Select(p => p.Stem),
+                StringComparer.OrdinalIgnoreCase);
+
+            foreach (var copybook in program.Copybooks)
+            {
+                if (!present.Contains(Path.GetFileNameWithoutExtension(copybook)))
+                {
+                    missing.Add(copybook);
+                }
+            }
+        }
+
+        return missing;
     }
 
     // ── Topology ─────────────────────────────────────────────────────────
@@ -505,24 +563,18 @@ public sealed class ModernizationIntelligenceService
         // other estate sources use the basename. Comparing against only one of them matched
         // nothing, which reported every program as having no missing copybooks — the reassuring
         // answer, and the wrong one.
-        var missing = new HashSet<string>(
-            estate.MissingCopybooks
-                .Where(m => m.ReferencedBy.Any(r => IsSameProgram(r, program)))
-                .Select(m => m.Copybook),
-            StringComparer.OrdinalIgnoreCase);
-
-        // A copybook the program COPYs that is not on disk is missing whether or not the
-        // parser's own list recorded it; that list is empty for stub-backed parses.
-        var present = new HashSet<string>(
-            estate.Programs.Where(p => p.IsCopybook).Select(p => p.Stem),
-            StringComparer.OrdinalIgnoreCase);
-        foreach (var copybook in program.Copybooks)
+        var missingIndex = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in estate.MissingCopybooks)
         {
-            if (!present.Contains(Path.GetFileNameWithoutExtension(copybook)))
+            foreach (var referrer in row.ReferencedBy)
             {
-                missing.Add(copybook);
+                if (!missingIndex.TryGetValue(referrer, out var set))
+                    missingIndex[referrer] = set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                set.Add(row.Copybook);
             }
         }
+
+        var missing = MissingCopybooksFor(program, missingIndex, estate.Programs);
         snapshot.MissingCopybooks.AddRange(missing.OrderBy(c => c, StringComparer.OrdinalIgnoreCase));
 
         snapshot.CallClosure.AddRange(ReachableFrom(estate.Programs, program));
