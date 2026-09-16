@@ -17,6 +17,7 @@ public class ModernizationEndpointsTests : IClassFixture<Integration.WebAppFacto
     [InlineData("/api/modernization/topology")]
     [InlineData("/api/modernization/service-chain")]
     [InlineData("/api/modernization/conversion-parity")]
+    [InlineData("/api/modernization/program-catalog")]
     [InlineData("/api/modernization/flow/CUSTOMER.cbl")]
     [InlineData("/api/graph/rekt/runs")]
     [InlineData("/api/graph/rekt/architect")]
@@ -79,5 +80,35 @@ public class ModernizationEndpointsTests : IClassFixture<Integration.WebAppFacto
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var payload = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal("billing/CUSTOMER.cbl", payload.GetProperty("identity").GetString());
+    }
+
+    [Fact]
+    public async Task ProgramCatalog_ExposesSelectableProgramsAndClosureAvailability()
+    {
+        var client = _factory.CreateClient();
+
+        var payload = await client.GetFromJsonAsync<JsonElement>("/api/modernization/program-catalog");
+
+        Assert.Equal(JsonValueKind.Array, payload.GetProperty("programs").ValueKind);
+        // Closure has to declare itself unusable rather than silently offering an empty result.
+        Assert.True(payload.TryGetProperty("closureAvailable", out var available));
+        Assert.Contains(available.ValueKind, new[] { JsonValueKind.True, JsonValueKind.False });
+        Assert.True(payload.TryGetProperty("closureUnavailableReason", out _));
+        Assert.Equal(JsonValueKind.Array, payload.GetProperty("deferredSelectors").ValueKind);
+    }
+
+    [Fact]
+    public async Task ProgramCatalog_SearchNarrowsWithoutInventingEntries()
+    {
+        var client = _factory.CreateClient();
+
+        var all = await client.GetFromJsonAsync<JsonElement>("/api/modernization/program-catalog");
+        var filtered = await client.GetFromJsonAsync<JsonElement>(
+            "/api/modernization/program-catalog?q=zzz-no-such-program");
+
+        Assert.Equal(0, filtered.GetProperty("programs").GetArrayLength());
+        // The unfiltered count must survive filtering so an empty result is visibly a filter, not a failure.
+        Assert.True(all.GetProperty("totalPrograms").GetInt32() >= filtered.GetProperty("programs").GetArrayLength());
+        Assert.Equal("zzz-no-such-program", filtered.GetProperty("query").GetString());
     }
 }
