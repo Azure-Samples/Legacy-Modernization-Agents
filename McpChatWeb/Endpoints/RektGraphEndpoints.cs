@@ -167,10 +167,8 @@ public static class RektGraphEndpoints
                 // Return files with AST data + flag which ones have CFG edges.
                 // When a specific scan run is requested, filter to that run only.
                 // Otherwise deduplicate by max(runId) so each program appears once (latest scan).
-                IResultCursor result;
-                if (scanRunId.HasValue)
-                {
-                    result = await session.RunAsync(@"
+                var result = scanRunId.HasValue
+                    ? await session.RunAsync(@"
                         MATCH (a:ASTNode) WHERE a.program IS NOT NULL AND coalesce(a.runId, 0) = $runId
                         WITH DISTINCT a.program AS program
                         OPTIONAL MATCH (cfg:ASTNode {program: program})-[:FOLLOWED_BY|JUMPS_TO]->()
@@ -178,11 +176,8 @@ public static class RektGraphEndpoints
                         WITH program, count(cfg) > 0 AS hasCfg
                         RETURN program AS name, hasCfg
                         ORDER BY program",
-                        new { runId = scanRunId.Value });
-                }
-                else
-                {
-                    result = await session.RunAsync(@"
+                        new { runId = scanRunId.Value })
+                    : await session.RunAsync(@"
                         MATCH (a:ASTNode) WHERE a.program IS NOT NULL
                         WITH a.program AS program, max(coalesce(a.runId, 0)) AS _r
                         OPTIONAL MATCH (cfg:ASTNode {program: program})-[:FOLLOWED_BY|JUMPS_TO]->()
@@ -190,7 +185,6 @@ public static class RektGraphEndpoints
                         WITH program, count(cfg) > 0 AS hasCfg
                         RETURN program AS name, hasCfg
                         ORDER BY program");
-                }
 
                 var files = new List<object>();
                 await result.ForEachAsync(r => files.Add(new

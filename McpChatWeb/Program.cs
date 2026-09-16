@@ -4723,13 +4723,12 @@ app.MapGet("/api/source/content", async (string file, int? startLine, int? endLi
 		if (!estateRoot.EndsWith(Path.DirectorySeparatorChar))
 			estateRoot += Path.DirectorySeparatorChar;
 
-		string? foundPath = null;
-		foreach (var c in candidates)
-		{
-			var p = Path.GetFullPath(Path.Combine(sourceDir, c));
-			if (!p.StartsWith(estateRoot, StringComparison.Ordinal)) continue;
-			if (System.IO.File.Exists(p)) { foundPath = p; break; }
-		}
+		// Path.Join here, not Combine: a rooted name was already rejected above, so no candidate
+		// can discard the estate directory, and Join cannot do so in any case.
+		var foundPath = candidates
+			.Select(c => Path.GetFullPath(Path.Join(sourceDir, c)))
+			.Where(p => p.StartsWith(estateRoot, StringComparison.Ordinal))
+			.FirstOrDefault(System.IO.File.Exists);
 
 		if (foundPath != null)
 		{
