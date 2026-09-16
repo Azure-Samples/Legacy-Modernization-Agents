@@ -73,7 +73,7 @@ Here is the analysis of the COBOL program to help you understand its structure:
 
 IMPORTANT REQUIREMENTS:
 1. Return ONLY the Java code - NO explanations, NO markdown blocks, NO additional text
-2. Start with: package com.example.something; (single line, lowercase, no comments)
+2. Start with the package assigned in the TARGET NAMESPACE section above (single line, lowercase, no comments)
 3. Do NOT include newlines or explanatory text in the package declaration
 4. Your response must be valid, compilable Java code starting with 'package' and ending with the class closing brace
 

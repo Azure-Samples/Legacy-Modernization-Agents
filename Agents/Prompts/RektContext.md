@@ -133,15 +133,33 @@ EXTERNAL EFFECTS (use to choose .NET libraries / DI registrations):
 ---
 SHARED COPYBOOK TYPES:
 
-These copybooks are referenced by more than one program in this batch.
-Do not emit a top-level type for them because another converted program may
-emit the same name. If this program needs the copybook's value-object, define
-it as a nested type inside this program's generated class. This keeps the
-type local and prevents duplicate top-level declarations.
+These copybooks are referenced by more than one program in this estate, so the types
+built from them belong to no single program. They live in the shared namespace below
+and are the same type for every program that uses them.
+
+  shared namespace: {{SharedNamespace}}
 
 {{SharedTypes}}
 
-Use the expected type name below for the nested type.
+  • Do NOT define these types in this program's namespace, and do NOT nest them inside
+    this program's class. Another converted program declares the same layout, and a
+    record that exists once per caller is a record that can drift apart.
+  • Reference them from the shared namespace instead (Java: import; C#: using).
+  • Use exactly the expected type name given above so the reference resolves.
+
+## SECTION: NamespacePolicy
+
+---
+TARGET NAMESPACE (assigned — do not invent one):
+
+  this program: {{ProgramNamespace}}
+  shared types: {{SharedNamespace}}
+
+  • Declare this program's types in the program namespace above, exactly as written.
+  • Do NOT substitute a placeholder such as com.example, com.bank or CobolMigration.
+  • Programs in the same service share a namespace deliberately: they are one deployable
+    unit, and cross-service references go through the shared namespace only.
+
 
 ## SECTION: DataStructureGuidance
 

@@ -44,6 +44,18 @@ public static class RektPromptInjector
             logger?.LogInformation("[RektPromptInjector] Repo root: {Root}, source: {Src}, file: {File}",
                 d.FullName, srcFolder, fileName);
 
+            // Assigned before any structural context, and independently of it: a program still
+            // needs a namespace when REKT is switched off, and leaving the choice to the model
+            // scattered one estate across five unrelated roots.
+            var relativePath = ResolveSourceRelativePath(d.FullName, srcFolder, fileName);
+            sb.AppendLine();
+            sb.AppendLine(PromptLoader.LoadSectionValidated(
+                "RektContext", "NamespacePolicy", new Dictionary<string, string>
+                {
+                    ["ProgramNamespace"] = ConversionNamespacePolicy.ForProgram(targetLanguage, relativePath),
+                    ["SharedNamespace"] = ConversionNamespacePolicy.ForSharedTypes(targetLanguage),
+                }));
+
             if (enabled)
             {
                 var fallback = string.Equals(
@@ -228,6 +240,43 @@ public static class RektPromptInjector
     internal static bool IsEnabled(string? configured) =>
         string.IsNullOrWhiteSpace(configured)
         || !string.Equals(configured.Trim(), "false", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The program's path relative to the source folder, which is what names its service.
+    /// </summary>
+    /// <remarks>
+    /// Callers pass a bare file name, so the path is recovered from the source tree. A basename
+    /// shared by two programs cannot be resolved this way; the first match is used, and both
+    /// land in the same namespace only if they really do sit in the same folder.
+    /// </remarks>
+    private static string? ResolveSourceRelativePath(string repoRoot, string sourceFolder, string fileName)
+    {
+        var root = Path.Combine(repoRoot, sourceFolder);
+        if (!Directory.Exists(root)) return null;
+
+        var bare = Path.GetFileName(fileName);
+        if (string.IsNullOrEmpty(bare)) return null;
+
+        try
+        {
+            var match = Directory
+                .EnumerateFiles(root, bare, SearchOption.AllDirectories)
+                .FirstOrDefault(p => !p.Contains(".rekt-staging", StringComparison.OrdinalIgnoreCase)
+                                  && !p.Contains(".preprocessed", StringComparison.OrdinalIgnoreCase));
+
+            return match is null
+                ? null
+                : Path.GetRelativePath(root, match).Replace(Path.DirectorySeparatorChar, '/');
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
 
     /// <summary>
     /// Names the copybooks this program uses whose layouts were synthesised rather than parsed.
