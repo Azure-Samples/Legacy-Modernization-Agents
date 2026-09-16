@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Modernized Banking Services</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <div class="brand-mark">M</div>
+    <div class="brand-text">
+      <h1>Modernized Banking Services</h1>
+      <p>COBOL function modules, running as a .NET service</p>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <div class="status" id="health-status">
+      <span class="dot dot-idle"></span><span id="health-text">checking…</span>
+    </div>
+  </div>
+</header>
+
+<div class="layout">
+
+  <nav class="sidenav" id="sidenav">
+    <div class="nav-section">Capabilities</div>
+    <!-- populated from /api/catalog -->
+  </nav>
+
+  <main class="content">
+
+    <!-- Overview -->
+    <section class="panel" data-panel="overview">
+      <div class="panel-head">
+        <h2>Service overview</h2>
+        <p>Five function modules from the legacy estate, each exposed as an endpoint you can call.</p>
+      </div>
+      <div class="cards" id="capability-cards"></div>
+      <div class="note">
+        <strong>Why origins are shown.</strong> The question in a modernization review is always
+        whether behaviour is preserved. Each capability names the program it came from so the
+        answer can be checked rather than asserted.
+      </div>
+    </section>
+
+    <!-- Banking calendar -->
+    <section class="panel hidden" data-panel="bankdate">
+      <div class="panel-head">
+        <h2>Banking calendar</h2>
+        <p>Resolves the applicable banking date, shifting past weekends and public holidays.</p>
+        <span class="origin">BDSDA23 · source/bd/BDSDA23.cbl</span>
+      </div>
+
+      <div class="split">
+        <form class="form" id="form-resolve">
+          <h3>Resolve a banking date</h3>
+          <label>As of date
+            <input type="date" name="asOf" id="resolve-asof" />
+          </label>
+          <label>Offset in days
+            <input type="number" name="offsetDays" value="0" min="-365" max="365" />
+          </label>
+          <button type="submit">Resolve</button>
+          <p class="hint">Leave the date empty to use today.</p>
+        </form>
+        <div class="result" id="result-resolve"><div class="placeholder">Run the form to see a result.</div></div>
+      </div>
+
+      <div class="split">
+        <form class="form" id="form-validate">
+          <h3>Validate a date value</h3>
+          <label>Date text
+            <input type="text" name="value" placeholder="20260916 or 2026-09-16" />
+          </label>
+          <button type="submit">Validate</button>
+          <p class="hint">Accepts the unseparated numeric forms used in the estate.</p>
+        </form>
+        <div class="result" id="result-validate"><div class="placeholder">Run the form to see a result.</div></div>
+      </div>
+
+      <div class="split">
+        <form class="form" id="form-holidays">
+          <h3>Holidays in a year</h3>
+          <label>Year
+            <input type="number" name="year" value="2026" min="1900" max="2200" />
+          </label>
+          <button type="submit">List holidays</button>
+        </form>
+        <div class="result" id="result-holidays"><div class="placeholder">Run the form to see a result.</div></div>
+      </div>
+    </section>
+
+    <!-- Throughput -->
+    <section class="panel hidden" data-panel="throughput">
+      <div class="panel-head">
+        <h2>Batch throughput</h2>
+        <p>Reports how many logical units a batch run handles per minute.</p>
+        <span class="origin">BDSM043 · source/bd/BDSM043.cbl</span>
+      </div>
+      <div class="split">
+        <form class="form" id="form-throughput">
+          <h3>Measure a run</h3>
+          <label>Label <input type="text" name="label" value="NIGHTLY-POSTING" /></label>
+          <label>Units processed <input type="number" name="unitsProcessed" value="145000" min="0" /></label>
+          <label>Elapsed seconds <input type="number" name="elapsedSeconds" value="420" min="0" step="0.1" /></label>
+          <button type="submit">Measure</button>
+        </form>
+        <div class="result" id="result-throughput"><div class="placeholder">Run the form to see a result.</div></div>
+      </div>
+    </section>
+
+    <!-- SQL diagnostics -->
+    <section class="panel hidden" data-panel="diagnostics">
+      <div class="panel-head">
+        <h2>Database diagnostics</h2>
+        <p>Classifies a database return code and says whether the work is worth retrying.</p>
+        <span class="origin">BDSMFJL · source/bd/BDSMFJL.cbl</span>
+      </div>
+      <div class="split">
+        <form class="form" id="form-sql">
+          <h3>Diagnose a return code</h3>
+          <label>SQLCODE
+            <select name="sqlCode" id="sql-code-select">
+              <option value="0">0 — success</option>
+              <option value="100">100 — not found</option>
+              <option value="-803">-803 — duplicate key</option>
+              <option value="-904">-904 — resource unavailable</option>
+              <option value="-911" selected>-911 — deadlock / timeout</option>
+              <option value="-180">-180 — invalid datetime</option>
+              <option value="-407">-407 — null into NOT NULL</option>
+              <option value="-502">-502 — cursor already open</option>
+              <option value="-805">-805 — package not found</option>
+              <option value="-999">-999 — unclassified</option>
+            </select>
+          </label>
+          <label>Rows affected <input type="number" name="rowsAffected" value="0" min="0" /></label>
+          <label>Statement (optional) <input type="text" name="statement" placeholder="UPDATE ACCOUNT SET ..." /></label>
+          <button type="submit">Diagnose</button>
+        </form>
+        <div class="result" id="result-sql"><div class="placeholder">Run the form to see a result.</div></div>
+      </div>
+    </section>
+
+    <!-- Rate reconciliation -->
+    <section class="panel hidden" data-panel="rates">
+      <div class="panel-head">
+        <h2>Rate reconciliation</h2>
+        <p>Reconciles two sets of interest rates, rejecting fictitious and out-of-category entries.</p>
+        <span class="origin">RGNB649 · source/bd/RGNB649.cbl</span>
+      </div>
+      <div class="split wide">
+        <form class="form" id="form-rates">
+          <h3>Reconcile two rate sets</h3>
+          <label>Required category <input type="text" name="requiredCategory" value="KRD" /></label>
+          <label>Primary set (JSON)
+            <textarea name="primary" rows="8"></textarea>
+          </label>
+          <label>Secondary set (JSON)
+            <textarea name="secondary" rows="8"></textarea>
+          </label>
+          <div class="btn-row">
+            <button type="submit">Reconcile</button>
+            <button type="button" class="ghost" id="rates-sample">Load sample</button>
+          </div>
+        </form>
+        <div class="result" id="result-rates"><div class="placeholder">Run the form to see a result.</div></div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
