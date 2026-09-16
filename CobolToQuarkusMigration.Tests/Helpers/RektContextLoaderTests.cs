@@ -214,6 +214,59 @@ public sealed class RektContextLoaderTests : IDisposable
             .Should().Contain("BILLING-ONLY-PARAGRAPH");
     }
 
+    [Fact]
+    public void Load_FindsANestedReportWhenAskedByBasename()
+    {
+        // The conversion identifies a program by file name, while the parser writes its report
+        // under the program's source-relative path. On an estate that stages programs in
+        // subdirectories the two never met, so every such program was reported as having no
+        // structural context and parity could not score it.
+        var rektDir = Path.Join(_root, "rekt");
+        var reportDir = Path.Join(rektDir, "FUENTES", "KYGGR005.cbl.report", "flow_ast");
+        Directory.CreateDirectory(reportDir);
+        File.WriteAllText(
+            Path.Join(reportDir, "flow-ast-KYGGR005.cbl.json"),
+            """
+            {
+              "type": "PROCEDURE_DIVISION_BODY", "name": "body", "children": [
+                { "type": "PARAGRAPH", "name": "MAIN-LOGIC", "children": [] }
+              ]
+            }
+            """);
+
+        var ctx = new RektContextLoader(_root, rektDir).Load("KYGGR005.cbl", "source");
+
+        ctx.Sections.SelectMany(s => s.Paragraphs).Select(p => p.Name)
+            .Should().Contain("MAIN-LOGIC");
+    }
+
+    [Fact]
+    public void Load_DoesNotGuessBetweenTwoNestedReportsSharingABasename()
+    {
+        // Two programs with the same basename, each with its own report. A request naming only the
+        // basename cannot say which is meant, and answering with either would give one program the
+        // other's paragraphs. Absent structural context is the safe answer.
+        var rektDir = Path.Join(_root, "rekt");
+        foreach (var (dir, para) in new[] { ("billing", "BILLING-ONLY"), ("claims", "CLAIMS-ONLY") })
+        {
+            var reportDir = Path.Join(rektDir, dir, "CUSTOMER.cbl.report", "flow_ast");
+            Directory.CreateDirectory(reportDir);
+            File.WriteAllText(
+                Path.Join(reportDir, "flow-ast-CUSTOMER.cbl.json"),
+                $$"""
+                {
+                  "type": "PROCEDURE_DIVISION_BODY", "name": "body", "children": [
+                    { "type": "PARAGRAPH", "name": "{{para}}", "children": [] }
+                  ]
+                }
+                """);
+        }
+
+        var ctx = new RektContextLoader(_root, rektDir).Load("CUSTOMER.cbl", "source");
+
+        ctx.Sections.SelectMany(s => s.Paragraphs).Should().BeEmpty();
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_root))
