@@ -2493,6 +2493,10 @@ REKT_NEO4J_HTTP_PORT=7475
 REKT_NEO4J_BOLT_PORT=7688
 REKT_CONTAINER="cobol-rekt"
 REKT_POPULATOR_CONTAINER="cobol-graph-populator"
+# Written by tools/preprocess-for-rekt.sh into synthesised copybooks and read by
+# StubCopybookCatalog.Marker. It is the only reliable way to tell an invented layout from
+# real content, because both live in source/.preprocessed/.
+REKT_STUB_MARKER="AUTO-GENERATED STUB COPYBOOK"
 NEO4J_IMAGE="neo4j:5.15.0"
 
 # Match the Docker daemon API instead of forcing a client version.
@@ -2903,7 +2907,13 @@ PYEOF
         done < <(find "$preprocessed_dir/aliases" -maxdepth 1 \( -name "*.cpy" -o -name "*.CPY" \) -type f 2>/dev/null)
     fi
 
-    # Stage generated stubs after real copybooks without overwriting real files.
+    # Stage the remaining preprocessed copybooks after real copybooks without overwriting them.
+    #
+    # .preprocessed/ holds three kinds of file: rewritten copies of real source copybooks,
+    # bundled system copybooks such as SQLCA, and synthesised stubs. Only the last kind
+    # degrades a program's fidelity, and only the last kind carries the generator's marker.
+    # Recording by directory instead of by marker reported real content as invented, which
+    # downgraded every program reaching a bundled copybook to StubBacked.
     if [[ -d "$preprocessed_dir" ]]; then
         while IFS= read -r stub_cpy; do
             local stub_name
@@ -2912,7 +2922,9 @@ PYEOF
             # Don't overwrite a real copybook that was already staged
             if [[ ! -f "$stub_target" ]]; then
                 cp "$stub_cpy" "$stub_target" 2>/dev/null || true
-                printf '%s\n' "${stub_name%.*}" | tr '[:lower:]' '[:upper:]' >> "$generated_stubs_file"
+                if grep -qF "$REKT_STUB_MARKER" "$stub_cpy" 2>/dev/null; then
+                    printf '%s\n' "${stub_name%.*}" | tr '[:lower:]' '[:upper:]' >> "$generated_stubs_file"
+                fi
                 if [[ -f "$stub_cpy.preprocess.json" ]]; then
                     cp "$stub_cpy.preprocess.json" "$stub_target.preprocess.json" 2>/dev/null || true
                 fi
