@@ -75,7 +75,7 @@ public sealed class ModernizationIntelligenceService
                 Basename: program.Basename,
                 RelativePath: program.RelativePath,
                 LinesOfCode: program.LinesOfCode,
-                ParseFidelity: program.ParseFidelity,
+                ParseFidelity: EffectiveFidelity(program.ParseFidelity, missing),
                 FidelitySource: program.FidelitySource,
                 ScanOutcome: program.ScanOutcome,
                 FactsConfidence: program.FactsConfidence,
@@ -87,11 +87,13 @@ public sealed class ModernizationIntelligenceService
         }
 
         snapshot.TotalPrograms = programs.Count;
-        snapshot.FullFidelityCount = programs.Count(p => p.ParseFidelity == ParseFidelity.Full);
-        snapshot.PartialFidelityCount = programs.Count(p => p.ParseFidelity == ParseFidelity.Partial);
-        snapshot.DepsOnlyCount = programs.Count(p => p.ParseFidelity == ParseFidelity.DepsOnly);
-        snapshot.FailedCount = programs.Count(p => p.ParseFidelity == ParseFidelity.Failed);
-        snapshot.NotParsedCount = programs.Count(p => p.ParseFidelity == ParseFidelity.NotParsed);
+        // Counted from the rows so the headline and the table cannot disagree: the rows carry
+        // the fidelity that absent copybooks have already been applied to.
+        snapshot.FullFidelityCount = snapshot.Programs.Count(p => p.ParseFidelity == ParseFidelity.Full);
+        snapshot.PartialFidelityCount = snapshot.Programs.Count(p => p.ParseFidelity == ParseFidelity.Partial);
+        snapshot.DepsOnlyCount = snapshot.Programs.Count(p => p.ParseFidelity == ParseFidelity.DepsOnly);
+        snapshot.FailedCount = snapshot.Programs.Count(p => p.ParseFidelity == ParseFidelity.Failed);
+        snapshot.NotParsedCount = snapshot.Programs.Count(p => p.ParseFidelity == ParseFidelity.NotParsed);
         // Rebuilt from the same resolution the rows use. Reading the count straight from
         // missing-copybooks.txt reported seven while thirty programs were blocked, because
         // that file records only what the last scan happened to notice.
@@ -148,6 +150,18 @@ public sealed class ModernizationIntelligenceService
         RektProgramRecord program,
         IReadOnlyDictionary<string, HashSet<string>> missingByProgram) =>
         MissingCopybooksFor(program, missingByProgram, Array.Empty<RektProgramRecord>()).Count;
+
+    /// <summary>
+    /// The fidelity to report once absent copybooks are taken into account.
+    /// </summary>
+    /// <remarks>
+    /// The parser only degrades its outcome when a placeholder was synthesised for a missing
+    /// COPY target. A copybook that never got one leaves a full-parse label on a program that
+    /// is missing an entire data structure, which reads as a clean bill of health for the one
+    /// case most likely to produce wrong code.
+    /// </remarks>
+    private static string EffectiveFidelity(string reported, int missingCopybooks) =>
+        reported == ParseFidelity.Full && missingCopybooks > 0 ? ParseFidelity.Partial : reported;
 
     // Copybooks supplied by the compiler or precompiler rather than by the application. They are
     // absent from every source drop by design, so counting them as gaps reports a complete estate
@@ -468,15 +482,17 @@ public sealed class ModernizationIntelligenceService
         snapshot.TotalPrograms = programs.Count;
         snapshot.TotalCopybooks = estate.Programs.Count - programs.Count;
 
-        // Counted once here rather than per program: the alternative is a scan of every missing
-        // copybook row for each of them.
-        var missingByProgram = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        // Resolved through the shared helper rather than counted here, because the scan keys a
+        // referring program by source-relative path while this loop walks basenames. Counting
+        // locally matched almost nothing and reported the estate as healthy.
+        var missingByProgram = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
         foreach (var row in estate.MissingCopybooks)
         {
             foreach (var referrer in row.ReferencedBy)
             {
-                missingByProgram.TryGetValue(referrer, out var count);
-                missingByProgram[referrer] = count + 1;
+                if (!missingByProgram.TryGetValue(referrer, out var set))
+                    missingByProgram[referrer] = set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                set.Add(row.Copybook);
             }
         }
 
@@ -494,14 +510,14 @@ public sealed class ModernizationIntelligenceService
         {
             callerCounts.TryGetValue(program.Basename, out var directCallers);
             if (directCallers == 0) callerCounts.TryGetValue(program.Stem, out directCallers);
-            missingByProgram.TryGetValue(program.Basename, out var missing);
+            var missing = MissingCopybooksFor(program, missingByProgram, estate.Programs).Count;
 
             snapshot.Programs.Add(new ProgramListEntry
             {
                 Basename = program.Basename,
                 RelativePath = program.RelativePath,
                 LinesOfCode = program.LinesOfCode,
-                ParseFidelity = program.ParseFidelity,
+                ParseFidelity = EffectiveFidelity(program.ParseFidelity, missing),
                 HasFacts = program.HasFacts,
                 MissingCopybookCount = missing,
                 CallClosureCount = ReachableFrom(estate.Programs, program).Count,
