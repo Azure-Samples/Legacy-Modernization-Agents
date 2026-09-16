@@ -374,6 +374,130 @@ public sealed class ModernizationIntelligenceService
 
     // ── Service chain ────────────────────────────────────────────────────
 
+    /// <summary>
+    /// One program as a person deciding whether to convert it would want to see it: what it calls,
+    /// what calls it, which copybooks it needs and which of those are missing, and how much of that
+    /// is actually known rather than assumed.
+    ///
+    /// The closure matters more than the direct edges. Converting a program whose callees are not
+    /// converted leaves calls pointing at nothing, so the view states the reachable set rather than
+    /// leaving the caller to walk it.
+    /// </summary>
+    public async Task<ProgramSnapshot> GetProgramAsync(
+        string identity, CancellationToken cancellationToken = default)
+    {
+        var estate = await _estate.ReadAsync(cancellationToken).ConfigureAwait(false);
+        var normalized = SourcePathHelper.NormalizeRelativePath(identity ?? "");
+        var matches = ResolveByIdentity(estate.Programs, normalized);
+
+        if (matches.Count == 0)
+            return new ProgramSnapshot { Identity = identity ?? "", Note = $"No source file matches '{identity}'." };
+
+        if (matches.Count > 1)
+        {
+            var ambiguous = new ProgramSnapshot
+            {
+                Identity = identity ?? "",
+                AmbiguousBasename = true,
+                Note = $"'{identity}' matches {matches.Count} source files. "
+                       + "Request a source-relative path to say which one.",
+            };
+            ambiguous.Candidates.AddRange(matches.Select(m => m.RelativePath).OrderBy(p => p, StringComparer.OrdinalIgnoreCase));
+            return ambiguous;
+        }
+
+        var program = matches[0];
+        var snapshot = new ProgramSnapshot
+        {
+            Identity = identity ?? "",
+            Basename = program.Basename,
+            RelativePath = program.RelativePath,
+            LinesOfCode = program.LinesOfCode,
+            IsCopybook = program.IsCopybook,
+            ParseFidelity = program.ParseFidelity,
+            FidelitySource = program.FidelitySource,
+            HasFacts = program.HasFacts,
+            FactsConfidence = program.FactsConfidence,
+            FactsWarnings = program.FactsWarnings,
+            AmbiguousBasename = program.AmbiguousBasename,
+        };
+
+        snapshot.Calls.AddRange(program.Callees.OrderBy(c => c, StringComparer.OrdinalIgnoreCase));
+
+        // Callers are taken from the facts file when the parser recorded them, and otherwise
+        // derived by asking which programs name this one among their callees. Relying on the
+        // recorded value alone leaves the view claiming nothing calls a program whenever that
+        // field was not populated, which reads identically to a program that genuinely is a
+        // root — the opposite conclusion for someone choosing what to convert.
+        var callers = new HashSet<string>(program.Callers, StringComparer.OrdinalIgnoreCase);
+        foreach (var other in estate.Programs)
+        {
+            if (other.IsCopybook || ReferenceEquals(other, program)) continue;
+            if (other.Callees.Any(c =>
+                    string.Equals(c, program.Basename, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(c, program.Stem, StringComparison.OrdinalIgnoreCase)))
+            {
+                callers.Add(other.Basename);
+            }
+        }
+
+        snapshot.CalledBy.AddRange(callers.OrderBy(c => c, StringComparer.OrdinalIgnoreCase));
+        snapshot.Copybooks.AddRange(program.Copybooks.OrderBy(c => c, StringComparer.OrdinalIgnoreCase));
+
+        // A copybook the parser could not find is the difference between a conversion that carries
+        // the real record layout and one that invents it, so it is named rather than counted.
+        var missing = new HashSet<string>(
+            estate.MissingCopybooks
+                .Where(m => m.ReferencedBy.Any(r => string.Equals(r, program.Basename, StringComparison.OrdinalIgnoreCase)))
+                .Select(m => m.Copybook),
+            StringComparer.OrdinalIgnoreCase);
+        snapshot.MissingCopybooks.AddRange(missing.OrderBy(c => c, StringComparer.OrdinalIgnoreCase));
+
+        snapshot.CallClosure.AddRange(ReachableFrom(estate.Programs, program));
+
+        if (program.HasDepsOnly)
+        {
+            snapshot.Note = $"{program.Basename} was parsed deps-only. Its dependencies are known; "
+                            + "its paragraphs, flow and SQL are not, so a conversion has less to work from.";
+        }
+
+        return snapshot;
+    }
+
+    // Programs reachable by CALL from the starting program, excluding itself. Breadth-first so the
+    // order reads as distance from the program being converted, and cycle-safe because COBOL
+    // estates legitimately contain them.
+    private static List<string> ReachableFrom(
+        IReadOnlyList<RektProgramRecord> programs, RektProgramRecord start)
+    {
+        var byName = new Dictionary<string, RektProgramRecord>(StringComparer.OrdinalIgnoreCase);
+        foreach (var p in programs.Where(p => !p.IsCopybook))
+        {
+            byName.TryAdd(p.Basename, p);
+            byName.TryAdd(p.Stem, p);
+        }
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { start.Basename, start.Stem };
+        var queue = new Queue<RektProgramRecord>();
+        var order = new List<string>();
+        queue.Enqueue(start);
+
+        while (queue.Count > 0)
+        {
+            foreach (var callee in queue.Dequeue().Callees)
+            {
+                if (!seen.Add(callee)) continue;
+                if (!byName.TryGetValue(callee, out var next)) continue;
+                if (!seen.Add(next.Basename)) continue;
+
+                order.Add(next.RelativePath);
+                queue.Enqueue(next);
+            }
+        }
+
+        return order;
+    }
+
     public async Task<ServiceChainSnapshot> GetServiceChainAsync(
         string? jobFilter = null,
         string? programFilter = null,
