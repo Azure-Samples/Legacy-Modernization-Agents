@@ -134,7 +134,7 @@ class ProgramPickerView {
           </div>
           <label class="pp-closure">
             <input type="checkbox" id="pp-include-closure" ${this.includeClosure ? 'checked' : ''} />
-            <span title="Adds every program reachable by CALL from your selection, so a converted program does not call something that was never converted.">Add call closure</span>
+            <span title="Adds every program reachable by CALL from your selection, so a converted program does not call something that was never converted. Same as --include-callees.">Add call closure</span>
           </label>
           <select id="pp-language" class="pp-language">
             <option value="java" ${this.language === 'java' ? 'selected' : ''}>Java</option>
@@ -282,13 +282,14 @@ class ProgramPickerView {
           Converting <strong>${identities.length}</strong> program${identities.length === 1 ? '' : 's'} to
           <strong>${this.language === 'java' ? 'Java' : 'C#'}</strong>${added > 0 ? ` (${added} added by call closure)` : ''}
         </div>
-        <pre class="pp-command-text">TARGET_LANGUAGE=${this.language === 'java' ? 'Java' : 'CSharp'} \\
-dotnet run -- --source source \\
-  --programs "${identities.join(',')}"</pre>
+        <pre class="pp-command-text">./doctor.sh convert-only \\
+  --language ${this.language === 'java' ? 'Java' : 'CSharp'} \\
+${identities.map(i => `  --program ${i}`).join(' \\\n')}</pre>
         <div class="pp-command-hint">
-          Copybooks are always included, so they are not listed. The language is an
-          environment variable rather than a flag because the converter reads it before
-          arguments are parsed.
+          Copybooks are always included, so they are not listed. Add
+          <code>--dry-run</code> to see what this would convert without calling a model.
+          Running through <code>doctor.sh</code> rather than the CLI directly picks up the
+          concurrent-run guard and the existing failure and retry handling.
         </div>
       </div>
     `;
