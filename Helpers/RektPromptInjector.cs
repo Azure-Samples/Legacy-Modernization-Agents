@@ -213,18 +213,23 @@ public static class RektPromptInjector
 
             try
             {
-                var registry = SharedTypeRegistryHolder.GetOrBuild(d.FullName, srcFolder);
-                var sharedBlock = registry.ToPromptBlock(targetLanguage);
-                if (!string.IsNullOrEmpty(sharedBlock))
+                // Replaces the shared-types block, which told every file not to declare these
+                // types and told none of them to declare it. Each file needs the type to compile,
+                // so each declared it — seven copies of one record. Ownership is now assigned.
+                var ownership = CopybookOwnershipRegistryHolder.GetOrBuild(d.FullName, srcFolder);
+                var stem = Path.GetFileNameWithoutExtension(Path.GetFileName(fileName));
+                var ownershipBlock = ownership.ToPromptBlock(stem, targetLanguage);
+                if (!string.IsNullOrEmpty(ownershipBlock))
                 {
-                    sb.Append(sharedBlock);
-                    logger?.LogInformation("[RektPromptInjector] Injected shared-types registry for {File} ({Count} shared names)",
-                        fileName, registry.SharedTypeNames.Count);
+                    sb.Append(ownershipBlock);
+                    logger?.LogInformation(
+                        "[RektPromptInjector] Injected copybook ownership for {File} ({Count} owned copybooks estate-wide)",
+                        fileName, ownership.Ownerships.Count);
                 }
             }
             catch (Exception ex)
             {
-                logger?.LogWarning("[RektPromptInjector] Shared-types injection failed for {File}: {Msg}", fileName, ex.Message);
+                logger?.LogWarning("[RektPromptInjector] Copybook-ownership injection failed for {File}: {Msg}", fileName, ex.Message);
             }
 
             try

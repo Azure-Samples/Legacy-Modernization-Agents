@@ -147,6 +147,28 @@ and are the same type for every program that uses them.
   • Reference them from the shared namespace instead (Java: import; C#: using).
   • Use exactly the expected type name given above so the reference resolves.
 
+## SECTION: CopybookOwnership
+
+---
+COPYBOOK TYPE OWNERSHIP (assigned — exactly one file declares each type):
+
+A copybook is converted in its own right, so the type built from it has one owner and
+every other file references that owner. Declaring it again is what makes a service fail
+to compile: seven files declaring the same record is seven records that can drift apart.
+
+  shared namespace: {{SharedNamespace}}
+
+DECLARE these types — you own them, and no other file will declare them:
+{{Declares}}
+
+REFERENCE these and do NOT declare them — another file owns them:
+{{References}}
+
+  • Use exactly the type names given. The files referencing them use the same names.
+  • Reference through the shared namespace (Java: import; C#: using).
+  • If you need a field from a referenced type, read it from that type rather than
+    re-declaring the layout locally.
+
 ## SECTION: CallTargetContracts
 
 ---
