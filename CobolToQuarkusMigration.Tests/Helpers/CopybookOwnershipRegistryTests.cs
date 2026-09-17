@@ -52,21 +52,22 @@ public sealed class CopybookOwnershipRegistryTests : IDisposable
     [Fact]
     public void EveryUserIsToldToReferenceAndOnlyTheOwnerToDeclare()
     {
+        string[] users = ["BDSDA11", "BDSDA12", "BDSDA23"];
+
         Copybook("BDSDATOI");
-        foreach (var user in new[] { "BDSDA11", "BDSDA12", "BDSDA23" })
-            Program(user, "BDSDATOI");
+        foreach (var user in users) Program(user, "BDSDATOI");
 
         var registry = Build();
 
-        registry.ToPromptBlock("BDSDATOI", "C#").Should().Contain("You are the only file that declares it");
+        registry.ToPromptBlock("BDSDATOI", "C#")
+            .Should().Contain("You are the only file that declares it");
 
-        foreach (var user in new[] { "BDSDA11", "BDSDA12", "BDSDA23" })
+        users.Select(user => registry.ToPromptBlock(user, "C#")).Should().AllSatisfy(block =>
         {
-            var block = registry.ToPromptBlock(user, "C#");
             block.Should().Contain("do NOT declare them");
             block.Should().Contain("declared by the conversion of BDSDATOI");
             block.Should().NotContain("You are the only file that declares it");
-        }
+        });
     }
 
     // A copybook copied by another copybook produces a file that would declare the type again.
