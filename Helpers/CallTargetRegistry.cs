@@ -158,8 +158,10 @@ public static class CallTargetRegistryHolder
 
     public static CallTargetRegistry GetOrBuild(string repoRoot, string sourceFolder)
     {
-        // Combine, not Join: sourceFolder may be absolute, in which case it is meant to win.
-        var key = Path.Combine(repoRoot, sourceFolder);
+        // An absolute source folder replaces the repository root rather than being appended to
+        // it. Written as a test so the cache key cannot quietly become a path that exists
+        // nowhere — a miss here is silent, which is the worst place for an implicit rule.
+        var key = Path.IsPathRooted(sourceFolder) ? sourceFolder : Path.Join(repoRoot, sourceFolder);
         lock (Lock)
         {
             if (Cache.TryGetValue(key, out var existing)) return existing;

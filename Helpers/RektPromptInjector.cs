@@ -275,9 +275,10 @@ public static class RektPromptInjector
     /// </remarks>
     private static string? ResolveSourceRelativePath(string repoRoot, string sourceFolder, string fileName)
     {
-        // Combine, not Join: COBOL_SOURCE_FOLDER may be an absolute path, and an absolute source
-        // folder is meant to win outright rather than be appended to the repository root.
-        var root = Path.Combine(repoRoot, sourceFolder);
+        // An absolute COBOL_SOURCE_FOLDER is meant to win outright rather than be appended to the
+        // repository root. Stating that with a test rather than relying on Path.Combine's
+        // argument-dropping makes the intent readable and the behaviour identical.
+        var root = Path.IsPathRooted(sourceFolder) ? sourceFolder : Path.Join(repoRoot, sourceFolder);
         if (!Directory.Exists(root)) return null;
 
         var bare = Path.GetFileName(fileName);
