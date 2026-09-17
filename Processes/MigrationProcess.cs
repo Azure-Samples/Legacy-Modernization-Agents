@@ -384,6 +384,34 @@ public class MigrationProcess
                     $"Saved {logFileName} ({logContentLen} chars)");
                 progressCallback?.Invoke($"Saving {saveLangName} files ({i + 1}/{javaFiles.Count})", 5, totalSteps);
             }            // Step 6: Generate migration report
+
+            // A run folder of loose .cs files is not something a compiler can be pointed at. The
+            // converter emits a fixed using block that does not cover the framework types it goes
+            // on to use, which on a measured run accounted for 1028 of 1140 compiler errors. The
+            // usings and package references are read out of the generated code and written beside
+            // it, so the folder can be built without one being written by hand.
+            if (targetLang == TargetLanguage.CSharp)
+            {
+                try
+                {
+                    var scaffold = GeneratedProjectScaffold.Write(
+                        javaOutputFolder, ConversionNamespacePolicy.Root("C#"));
+
+                    if (scaffold.WroteAnything)
+                    {
+                        _logger.LogInformation(
+                            "Wrote build scaffolding for the generated output: {Usings} global using(s), {Packages} package reference(s)",
+                            scaffold.Usings.Count, scaffold.Packages.Count);
+                    }
+                }
+                catch (IOException ex)
+                {
+                    // Scaffolding is additive. A run that produced code is still a successful run
+                    // even if the project file could not be written beside it.
+                    _logger.LogWarning("Could not write build scaffolding: {Message}", ex.Message);
+                }
+            }
+
             _enhancedLogger.ShowStep(6, totalSteps, "Report Generation", "Creating migration summary and metrics");
             _enhancedLogger.ShowDashboardSummary(runId, targetName, "RUNNING", "Report Generation", 95);
             _enhancedLogger.LogBehindTheScenes("MIGRATION", "STEP_6_START",

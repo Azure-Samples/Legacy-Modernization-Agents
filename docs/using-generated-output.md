@@ -50,7 +50,17 @@ that is one cause:
 | Types referenced but never declared | 6 | `CS0246` |
 | Interface not implemented | 2 | `CS0535` |
 
-### The dominant cause is boilerplate, not business logic
+### Build scaffolding is now written with the output
+
+Each C# run folder receives a `GlobalUsings.g.cs` and a `.csproj`, generated from the code itself:
+the sources are scanned for the framework types they actually use, and only the matching namespaces
+and package references are declared. Code that uses none of them gets no dependencies, because an
+unused package reference is a false claim about what the converted code needs.
+
+That takes the measured run from **1140 errors to 112** with no hand-written project file and no
+change to converted logic. The remainder is listed below.
+
+### The dominant cause was boilerplate, not business logic
 
 Generated files open with a fixed block:
 
@@ -110,12 +120,12 @@ not a decision to take from a post-pass.
 
 ## What would make compilation possible
 
-In descending order of measured effect, and none of it attempted in this change:
+In descending order of measured effect:
 
-1. **Emit the `using` directives the generated code actually uses**, or a global-usings file
-   alongside it. Worth 1028 of 1140 errors.
-2. **Emit a project file and dependency manifest** with the run, so a run folder is buildable
-   without one being written by hand.
+1. ~~Emit the `using` directives the generated code actually uses~~ — **done**, worth 1028 of
+   1140 errors.
+2. ~~Emit a project file and dependency manifest with the run~~ — **done**, written from the
+   code's own references.
 3. **Re-measure duplicate declarations** after the copybook-ownership and call-target work in this
    branch. Expected to address the 88, unproven until a conversion is run.
 4. **Stop emitting a second namespace declaration** part-way through a file.
