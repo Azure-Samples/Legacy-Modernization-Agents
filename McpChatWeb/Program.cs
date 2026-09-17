@@ -2314,7 +2314,7 @@ app.MapGet("/api/runs/{runId}/agent-conversations", async (string runId, string?
 			return Results.BadRequest(new { error = "Invalid runId" });
 		}
 		var conversations = new List<object>();
-		var logsPath = Path.GetFullPath(Path.Combine("..", "Logs", "ApiCalls"), Directory.GetCurrentDirectory());
+		var logsPath = McpChatWeb.Services.RepositoryRoot.PathTo(null, "Logs", "ApiCalls");
 		
 		if (!Directory.Exists(logsPath))
 		{
@@ -2584,7 +2584,7 @@ app.MapGet("/api/activity-feed", async (int? runId) =>
 		}
 
 		// Get recent API calls from logs
-		var logsPath = Path.GetFullPath(Path.Combine("..", "Logs", "ApiCalls"), Directory.GetCurrentDirectory());
+		var logsPath = McpChatWeb.Services.RepositoryRoot.PathTo(null, "Logs", "ApiCalls");
 		var liveCallsPath = Path.Combine(logsPath, "live_api_calls.json");
 		
 		if (File.Exists(liveCallsPath))
@@ -2658,7 +2658,7 @@ app.MapGet("/api/runs/{runId}/migration-log", async (string runId, int? lines, s
 		{
 			return Results.BadRequest(new { error = "Invalid runId" });
 		}
-		var logsBasePath = Path.GetFullPath(Path.Combine("..", "Logs"), Directory.GetCurrentDirectory());
+		var logsBasePath = McpChatWeb.Services.RepositoryRoot.PathTo(null, "Logs");
 		var migrationPath = Path.Combine(logsBasePath, "Migration");
 		
 		// Get run information
@@ -2686,7 +2686,7 @@ app.MapGet("/api/runs/{runId}/migration-log", async (string runId, int? lines, s
 		}
 		
 		// Detect target language from output folders
-		var outputBasePath = Path.GetFullPath(Path.Combine("..", "output"), Directory.GetCurrentDirectory());
+		var outputBasePath = McpChatWeb.Services.RepositoryRoot.PathTo(null, "output");
 		var csharpOutputPath = Path.Combine(outputBasePath, "csharp");
 		var javaOutputPath = Path.Combine(outputBasePath, "java");
 		
@@ -3301,8 +3301,8 @@ app.MapGet("/api/documentation/reverse-engineering-report", async () =>
 {
 	try
 	{
-		var reportPath = Path.Combine("..", "output", "reverse-engineering-details.md");
-		var fullPath = Path.GetFullPath(reportPath, app.Environment.ContentRootPath);
+		var fullPath = McpChatWeb.Services.RepositoryRoot.PathTo(
+			app.Environment.ContentRootPath, "output", "reverse-engineering-details.md");
 
 		if (!File.Exists(fullPath))
 		{

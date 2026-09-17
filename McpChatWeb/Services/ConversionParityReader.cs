@@ -23,16 +23,7 @@ public sealed class ConversionParityReader
 
     public string RepoRoot { get; }
 
-    private static string ResolveRepoRoot()
-    {
-        var envRoot = Environment.GetEnvironmentVariable("REPO_ROOT");
-        if (!string.IsNullOrEmpty(envRoot) && Directory.Exists(envRoot)) return envRoot;
-
-        var dir = new DirectoryInfo(Directory.GetCurrentDirectory());
-        while (dir != null && !File.Exists(Path.Combine(dir.FullName, "doctor.sh")))
-            dir = dir.Parent;
-        return dir?.FullName ?? Directory.GetCurrentDirectory();
-    }
+    private static string ResolveRepoRoot() => RepositoryRoot.Resolve();
 
     private static string ResolveOutputFolder(string envVar, string target)
     {
