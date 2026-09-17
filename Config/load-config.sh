@@ -177,6 +177,10 @@ show_config_summary() {
     fi
     echo "  Source Folder: ${COBOL_SOURCE_FOLDER:-'SampleCobol'}"
     echo "  Output Folder: ${JAVA_OUTPUT_FOLDER:-'JavaOutput'}"
+    # Shown because it decides where every generated type lands. Left unset it defaults per
+    # language, which is easy to miss when the question being asked is "why is my output
+    # scattered across five roots".
+    echo "  Root Namespace: ${TARGET_ROOT_NAMESPACE:-"(default: com.modernized | Modernized)"}"
 }
 
 # Function to create local config from the example

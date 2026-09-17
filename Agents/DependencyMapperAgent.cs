@@ -18,6 +18,31 @@ public class DependencyMapperAgent : AgentBase, IDependencyMapperAgent
     /// <inheritdoc/>
     protected override string AgentName => "DependencyMapperAgent";
 
+    private RektDiscovery? _discovery;
+
+    /// <summary>
+    /// Dependencies read from the REKT parse where it is trustworthy, falling back to the text
+    /// scan below. Resolved lazily from the repository root rather than taken as a constructor
+    /// argument, so the two public constructors and their factory keep their signatures.
+    /// </summary>
+    private RektDiscovery Discovery
+    {
+        get
+        {
+            if (_discovery is not null) return _discovery;
+
+            var dir = new DirectoryInfo(AppContext.BaseDirectory);
+            while (dir != null && !File.Exists(Path.Join(dir.FullName, "doctor.sh")))
+                dir = dir.Parent;
+
+            var factsDirectory = dir is null
+                ? Path.Join("output", "rekt")
+                : Path.Join(dir.FullName, "output", "rekt");
+
+            return _discovery = new RektDiscovery(factsDirectory);
+        }
+    }
+
     /// <summary>
     /// Creates a DependencyMapperAgent, routing to Responses API or Chat API based on availability.
     /// </summary>
@@ -126,9 +151,16 @@ public class DependencyMapperAgent : AgentBase, IDependencyMapperAgent
 
         foreach (var cobolFile in cobolFiles.Where(f => f.FileName.EndsWith(".cbl")))
         {
-            var copybooks = ExtractCopybookReferences(cobolFile.Content);
-            copybookUsage[cobolFile.FileName] = copybooks;
+            // The parse answers where it is trustworthy; the regex scan is the fallback, not the
+            // default. A pattern match cannot see a COPY nested inside another copybook.
+            var copybooks = Discovery.Copybooks(
+                cobolFile.FileName,
+                () => ExtractCopybookReferences(cobolFile.Content));
+
+            copybookUsage[cobolFile.FileName] = copybooks.Value;
         }
+
+        Logger.LogInformation("[DependencyMapperAgent] {Summary}", Discovery.Summarise());
 
         return Task.FromResult(copybookUsage);
     }

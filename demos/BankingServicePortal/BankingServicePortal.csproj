@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Modernized.Banking.Portal</RootNamespace>
+    <!-- Deliberately outside Legacy-Modernization-Agents.sln: this is a demonstration of what a
+         converted service looks like once it is running, not part of the migration toolchain,
+         and building the toolchain should not depend on it. -->
+  </PropertyGroup>
+
+</Project>

@@ -74,6 +74,7 @@ public sealed class SharedTypeRegistry
             "RektContext", "SharedTypes", new Dictionary<string, string>
             {
                 ["TargetLanguage"] = targetLanguage,
+                ["SharedNamespace"] = ConversionNamespacePolicy.ForSharedTypes(targetLanguage),
                 ["SharedTypes"] = items.ToString().TrimEnd()
             });
     }
