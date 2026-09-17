@@ -162,4 +162,33 @@ public sealed class CallTargetRegistryTests : IDisposable
 
         Build().Contracts.Single().InterfaceName.Should().Be(expected);
     }
+
+    // Most of the duplicate service interfaces in the measured output came from copybooks: a
+    // copybook containing a CALL becomes a converted file that invents its own interface for the
+    // callee, and the registry only ever looked at programs.
+    [Fact]
+    public void ACopybookContainingACallIsACallerToo()
+    {
+        Program("PRICING");
+        File.WriteAllText(Path.Join(_root, "SEQIO.cpy"),
+            "       01 REC.\n           CALL 'PRICING' USING WS-PARM");
+
+        var contract = Build().Contracts.Should().ContainSingle().Subject;
+
+        contract.DeclaredBy.Should().Be("PRICING");
+        contract.Callers.Should().Contain("SEQIO");
+    }
+
+    [Fact]
+    public void ACopybookCallerIsToldToReferenceNotDeclare()
+    {
+        Program("PRICING");
+        File.WriteAllText(Path.Join(_root, "SEQIO.cpy"),
+            "       01 REC.\n           CALL 'PRICING' USING WS-PARM");
+
+        var block = Build().ToPromptBlock("SEQIO", "C#");
+
+        block.Should().Contain("IPricingService");
+        block.Should().Contain("do NOT declare");
+    }
 }

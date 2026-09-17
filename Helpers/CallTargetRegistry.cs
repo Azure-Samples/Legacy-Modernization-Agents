@@ -51,26 +51,19 @@ public sealed class CallTargetRegistry
         var registry = new CallTargetRegistry();
         if (!Directory.Exists(sourceFolder)) return registry;
 
-        var programs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var path in SourceTypeRegistry.EnumerateProgramFiles(sourceFolder))
-        {
-            try
-            {
-                programs[Stem(path)] = File.ReadAllText(path);
-            }
-            catch (IOException)
-            {
-                // A program that cannot be read contributes no CALL edges, so a callee it alone
-                // calls may be assigned a different declarer than it would otherwise have been.
-                // Counted rather than swallowed, because the effect is not local to this file.
-                registry.UnreadableSources++;
-            }
-        }
+        // Programs are what a CALL can name; copybooks are read as callers only. A copybook
+        // containing a CALL becomes a converted file that would otherwise invent its own
+        // interface for the callee, which is where most of the duplicate service interfaces in
+        // the measured output came from.
+        var programs = Read(SourceTypeRegistry.EnumerateProgramFiles(sourceFolder), registry);
+        var callingFiles = programs
+            .Concat(Read(SourceTypeRegistry.EnumerateCopybookFiles(sourceFolder), registry))
+            .ToDictionary(e => e.Key, e => e.Value, StringComparer.OrdinalIgnoreCase);
 
         // Every (callee, caller) pair the source states, grouped by callee. A program calling
         // itself is dropped: recursion needs no interface, and handing a program one for itself
         // would have it declare and inject a service that is already the class being written.
-        var callers = programs
+        var callers = callingFiles
             .SelectMany(program => CallDirective
                 .Matches(StripComments(program.Value))
                 .Select(match => (Target: match.Groups[1].Value, Caller: program.Key)))
@@ -139,6 +132,27 @@ public sealed class CallTargetRegistry
                 ["Declares"] = declares.Length == 0 ? "  (none)" : declares.ToString().TrimEnd(),
                 ["References"] = references.Length == 0 ? "  (none)" : references.ToString().TrimEnd(),
             });
+    }
+
+    private static Dictionary<string, string> Read(
+        IEnumerable<string> paths, CallTargetRegistry registry)
+    {
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in paths)
+        {
+            try
+            {
+                map[Stem(path)] = File.ReadAllText(path);
+            }
+            catch (IOException)
+            {
+                // A file that cannot be read contributes no CALL edges, so a callee it alone
+                // calls may be assigned a different declarer than it would otherwise have been.
+                // Counted rather than swallowed, because the effect is not local to this file.
+                registry.UnreadableSources++;
+            }
+        }
+        return map;
     }
 
     private static string Stem(string path) =>
