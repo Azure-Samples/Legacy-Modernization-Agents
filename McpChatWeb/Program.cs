@@ -350,10 +350,12 @@ app.MapPost("/api/chat", async (ChatRequest request, IMcpClient client, Cancella
 					repoRoot = Path.GetFullPath("..");
 			}
 
-			var reportPath = Path.GetFullPath(Path.Combine(repoRoot, request.ReportContext));
-			var reportRoot = Path.GetFullPath(repoRoot);
-			// Security: ensure path stays within repo
-			if (reportPath.StartsWith(reportRoot) && File.Exists(reportPath))
+			// The path comes from the browser. Containment has to be tested on a directory
+			// boundary: a plain prefix test lets "<repo>-notes" satisfy "<repo>", so a sibling
+			// directory reads as inside the repository.
+			var reportPath = RepositoryPath.ResolveInside(repoRoot, request.ReportContext);
+
+			if (reportPath is not null && File.Exists(reportPath))
 			{
 				var reportContent = await File.ReadAllTextAsync(reportPath, cancellationToken);
 				// Truncate if very large (keep first 50K chars)
@@ -382,10 +384,16 @@ app.MapPost("/api/chat", async (ChatRequest request, IMcpClient client, Cancella
 		// Extract filename from either capture group
 		var fileName = fileMatch.Groups[1].Success ? fileMatch.Groups[1].Value : fileMatch.Groups[2].Value;
 
-		// Try to determine run ID from context, default to 43
-		var fileRunIdPattern = new System.Text.RegularExpressions.Regex(@"\brun\s*(?:id\s*)?(\d+)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-		var runMatch = fileRunIdPattern.Match(request.Prompt);
-		var targetRunId = runMatch.Success && int.TryParse(runMatch.Groups[1].Value, out int rid) ? rid : 43;
+		// The run the question names, or the newest one on record. This previously fell back to
+		// run 43 — the run the feature was developed against — which on any other estate answers
+		// from an old run, or one that does not exist, while sounding equally certain.
+		var targetRunId = await RunResolver.ResolveAsync(request.Prompt, GetMigrationDbPath(), cancellationToken);
+		if (targetRunId is null)
+		{
+			return Results.Ok(new ChatResponse(
+				"There are no migration runs on record yet, so there is nothing to answer from. "
+				+ "Run a migration first, then ask again.", null));
+		}
 
 		// Try to get analysis from MCP
 		var analysisUri = $"insights://runs/{targetRunId}/analyses/{fileName}";
@@ -771,7 +779,7 @@ app.MapPost("/api/chat", async (ChatRequest request, IMcpClient client, Cancella
 1. Use the browser console: `fetch('/api/search/run/{requestedRunId}').then(r => r.json()).then(console.log)`
 2. Or use curl: `curl http://localhost:5028/api/search/run/{requestedRunId} | jq .`
 
-Note: The MCP server currently provides detailed analysis only for Run 43. For other runs, use the direct database queries above or the /api/search/run endpoint.";
+Note: Detailed MCP analysis is available for runs the MCP server has indexed. For any other run, use the direct database queries above or the /api/search/run endpoint.";
 
 			return Results.Ok(new ChatResponse(directResponse, requestedRunId));
 		}
