@@ -400,3 +400,7 @@ ${identities.map(i => `  --program ${i}`).join(' \\\n')}</pre>
 }
 
 window.ProgramPickerView = ProgramPickerView;
+
+// Program Explorer shows the same labels for the same estate, so it reads this map rather than
+// keeping a second copy that could describe "Partial" differently on the next tab along.
+window.PP_FIDELITY = PP_FIDELITY;

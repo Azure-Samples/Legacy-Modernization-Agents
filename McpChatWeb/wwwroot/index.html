@@ -328,6 +328,7 @@
         <button class="dashboard-tab" data-tab="modernization" onclick="switchDashboard('modernization')">🧭 Modernization Intelligence</button>
         <button class="dashboard-tab" data-tab="ast" onclick="switchDashboard('ast')">🌳 AST Explorer</button>
         <button class="dashboard-tab" data-tab="programs" onclick="switchDashboard('programs')">🎯 Convert Programs</button>
+        <button class="dashboard-tab" data-tab="explorer" onclick="switchDashboard('explorer')">🔎 Program Explorer</button>
         <button class="dashboard-tab" data-tab="missing" onclick="switchDashboard('missing')">🧩 Missing Copybooks</button>
         <span id="rekt-scan-picker" style="margin-left:auto; display:flex; align-items:center; gap:6px;">
           <label style="color:#94a3b8; font-size:11px;">Scan:</label>
@@ -579,7 +580,9 @@
         <div id="program-picker-root" style="height:100%;overflow:auto;background:#0a0e1a;"></div>
       </div>
       <div id="missing-copybooks-container" class="dashboard-panel" style="display: none;">
-        <div id="missing-copybooks-root" style="height:100%;overflow:auto;background:#0a0e1a;"></div>
+        <div id="missing-copybooks-root" style="height:100%;overflow:auto;background:#0a0e1a;"></div>      </div>
+      <div id="program-explorer-container" class="dashboard-panel" style="display: none;">
+        <div id="program-explorer-root" style="height:100%;overflow:auto;background:#0a0e1a;"></div>
       </div>
       <div id="graph-info" class="graph-info"></div>
       <div id="node-details" class="node-details" hidden>
@@ -1317,6 +1320,7 @@ curl http://localhost:5028/api/data-retrieval-guide</code></pre>
   <script src="modernization-intelligence.js"></script>
   <script src="program-picker.js"></script>
   <script src="missing-copybooks.js"></script>
+  <script src="program-explorer.js"></script>
   <script src="dashboard-tabs.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script type="module">

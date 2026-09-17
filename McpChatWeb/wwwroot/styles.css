@@ -7987,3 +7987,113 @@ main.three-panel-layout {
 .mc-ref { background: rgba(59,130,246,.14); border: 1px solid rgba(59,130,246,.3);
   color: #bfdbfe; border-radius: 4px; padding: 2px 8px; font-size: 11px;
   font-family: ui-monospace, monospace; }
+
+/* ── Program Explorer ────────────────────────────────────────────────────────
+   Shares the palette and density of the Convert Programs tab: this is the same
+   estate seen one program at a time, so it should not look like a different tool. */
+
+.px-wrap { display: flex; flex-direction: column; height: 100%; color: #e2e8f0;
+  padding: 16px 18px; gap: 12px; box-sizing: border-box; }
+.px-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.px-title { margin: 0 0 4px; font-size: 17px; color: #f1f5f9; font-weight: 600; }
+.px-sub { color: #94a3b8; font-size: 12px; max-width: 640px; }
+.px-filter { background: #0f172a; border: 1px solid rgba(148,163,184,.3); border-radius: 6px;
+  color: #e2e8f0; padding: 7px 10px; font-size: 12px; min-width: 240px; }
+.px-filter:focus { outline: none; border-color: #3b82f6; }
+.px-note { background: rgba(245,158,11,.12); border: 1px solid rgba(245,158,11,.35);
+  color: #fcd34d; border-radius: 6px; padding: 8px 12px; font-size: 12px; }
+
+.px-body { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1.35fr);
+  gap: 14px; flex: 1; min-height: 0; }
+
+.px-list-pane { display: flex; flex-direction: column; min-height: 0;
+  border: 1px solid rgba(148,163,184,.18); border-radius: 8px; background: #0f172a; }
+.px-list-head { padding: 8px 12px; border-bottom: 1px solid rgba(148,163,184,.18);
+  color: #94a3b8; font-size: 11px; }
+.px-list { overflow: auto; flex: 1; }
+.px-empty, .px-detail-empty { padding: 24px; color: #64748b; text-align: center; font-size: 12px; }
+
+.px-row { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 8px 12px; border-bottom: 1px solid rgba(148,163,184,.08); cursor: pointer; }
+.px-row:hover { background: rgba(59,130,246,.07); }
+.px-row-selected { background: rgba(59,130,246,.13); }
+.px-row-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.px-name { color: #e2e8f0; font-family: ui-monospace, monospace; font-size: 12.5px; }
+.px-path { color: #64748b; font-size: 10.5px; font-family: ui-monospace, monospace; }
+.px-row-meta { display: flex; align-items: center; gap: 10px; flex-shrink: 0; font-size: 11px; }
+.px-loc { color: #94a3b8; }
+.px-fid { font-weight: 600; }
+.px-warn { color: #f59e0b; }
+
+.px-detail-pane { overflow: auto; border: 1px solid rgba(148,163,184,.18);
+  border-radius: 8px; background: #0f172a; padding: 16px 18px; }
+.px-detail-title { font-size: 15px; color: #f1f5f9; font-weight: 600;
+  font-family: ui-monospace, monospace; }
+.px-detail-path { color: #64748b; font-size: 11px; font-family: ui-monospace, monospace;
+  margin-top: 2px; }
+.px-detail-stats { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11.5px;
+  color: #94a3b8; margin: 10px 0 4px; padding-bottom: 12px;
+  border-bottom: 1px solid rgba(148,163,184,.14); }
+
+.px-sec { border-bottom: 1px solid rgba(148,163,184,.1); }
+.px-sec:last-child { border-bottom: 0; }
+.px-sec-head { display: flex; align-items: center; gap: 8px; padding: 11px 0;
+  cursor: pointer; user-select: none; }
+.px-sec-head:hover .px-sec-title { color: #bfdbfe; }
+.px-caret { color: #64748b; font-size: 10px; width: 10px; }
+.px-sec-title { color: #e2e8f0; font-size: 12.5px; font-weight: 600; }
+.px-sec-badge, .px-sec-count { margin-left: auto; font-size: 10.5px; }
+.px-sec-count { color: #64748b; font-family: ui-monospace, monospace; }
+.px-badge-ok { background: rgba(16,185,129,.15); color: #6ee7b7; border-radius: 4px;
+  padding: 2px 8px; font-size: 10.5px; }
+.px-badge-warn { background: rgba(245,158,11,.15); color: #fcd34d; border-radius: 4px;
+  padding: 2px 8px; font-size: 10.5px; }
+.px-sec-body { padding: 2px 0 14px 18px; }
+
+.px-kv { display: grid; grid-template-columns: minmax(130px,auto) 1fr; gap: 5px 14px; margin: 0 0 10px; }
+.px-kv dt { color: #64748b; font-size: 11.5px; }
+.px-kv dd { margin: 0; color: #cbd5e1; font-size: 11.5px; }
+.px-kv code { font-family: ui-monospace, monospace; font-size: 11px; color: #94a3b8; }
+
+.px-callout { background: rgba(59,130,246,.08); border-left: 3px solid #3b82f6;
+  border-radius: 0 5px 5px 0; padding: 9px 12px; margin: 0 0 12px;
+  color: #cbd5e1; font-size: 11.5px; line-height: 1.6; }
+.px-callout-warn { background: rgba(245,158,11,.09); border-left-color: #f59e0b; color: #fcd34d; }
+.px-callout-ok { background: rgba(16,185,129,.09); border-left-color: #10b981; color: #a7f3d0; }
+
+.px-group-title { color: #64748b; font-size: 10.5px; text-transform: uppercase;
+  letter-spacing: .06em; margin: 12px 0 6px; }
+.px-none { color: #64748b; font-size: 11.5px; font-style: italic; }
+
+.px-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.px-chip { background: rgba(148,163,184,.1); border: 1px solid rgba(148,163,184,.2);
+  color: #cbd5e1; border-radius: 4px; padding: 2px 8px; font-size: 11px;
+  font-family: ui-monospace, monospace; }
+.px-chip-warn { background: rgba(245,158,11,.14); border-color: rgba(245,158,11,.3); color: #fcd34d; }
+.px-link { cursor: pointer; }
+.px-link:hover { border-color: #3b82f6; color: #bfdbfe; }
+
+.px-table { width: 100%; border-collapse: collapse; font-size: 11.5px; margin-top: 4px; }
+.px-table th { text-align: left; padding: 5px 8px; color: #64748b; font-size: 10.5px;
+  text-transform: uppercase; letter-spacing: .05em;
+  border-bottom: 1px solid rgba(148,163,184,.2); font-weight: 500; }
+.px-table td { padding: 5px 8px; border-bottom: 1px solid rgba(148,163,184,.08);
+  color: #cbd5e1; font-family: ui-monospace, monospace; }
+
+.px-sections { display: flex; flex-direction: column; gap: 3px; }
+.px-flow-sec { display: flex; justify-content: space-between; align-items: center;
+  padding: 4px 8px; background: rgba(148,163,184,.05); border-radius: 4px; }
+.px-flow-name { font-family: ui-monospace, monospace; font-size: 11.5px; color: #cbd5e1; }
+.px-flow-count { font-size: 10.5px; color: #64748b; }
+
+.px-cmd-row { display: flex; align-items: stretch; gap: 8px; }
+.px-cmd { flex: 1; background: #0b1220; border: 1px solid rgba(148,163,184,.22);
+  border-radius: 5px; padding: 8px 10px; color: #a7f3d0;
+  font-family: ui-monospace, monospace; font-size: 11px; overflow-x: auto; }
+.px-copy { background: transparent; border: 1px solid rgba(148,163,184,.3); color: #94a3b8;
+  border-radius: 5px; padding: 0 14px; font-size: 11px; cursor: pointer; }
+.px-copy:hover { border-color: #3b82f6; color: #bfdbfe; }
+.px-hint { color: #64748b; font-size: 11px; margin-top: 8px; line-height: 1.6; }
+.px-hint code { color: #94a3b8; font-family: ui-monospace, monospace; }
+
+@media (max-width: 1100px) { .px-body { grid-template-columns: 1fr; } }

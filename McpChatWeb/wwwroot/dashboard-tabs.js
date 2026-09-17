@@ -78,6 +78,7 @@ function switchDashboard(tabName) {
     ast: ['ast-explorer-container'],
     programs: ['program-picker-container'],
     missing: ['missing-copybooks-container'],
+    explorer: ['program-explorer-container'],
   };
 
   Object.values(panels).flat().forEach(id => {
@@ -126,6 +127,13 @@ function switchDashboard(tabName) {
       window.missingCopybooksView = new MissingCopybooksView('missing-copybooks-root');
     }
     window.missingCopybooksView.loadAndRender();
+  }
+
+  if (tabName === 'explorer') {
+    if (!window.programExplorerView) {
+      window.programExplorerView = new ProgramExplorerView('program-explorer-root');
+    }
+    window.programExplorerView.loadAndRender();
   }
 
   if (tabName === 'modernization') {
