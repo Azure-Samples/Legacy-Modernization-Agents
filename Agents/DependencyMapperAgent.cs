@@ -32,12 +32,12 @@ public class DependencyMapperAgent : AgentBase, IDependencyMapperAgent
             if (_discovery is not null) return _discovery;
 
             var dir = new DirectoryInfo(AppContext.BaseDirectory);
-            while (dir != null && !File.Exists(Path.Combine(dir.FullName, "doctor.sh")))
+            while (dir != null && !File.Exists(Path.Join(dir.FullName, "doctor.sh")))
                 dir = dir.Parent;
 
             var factsDirectory = dir is null
-                ? Path.Combine("output", "rekt")
-                : Path.Combine(dir.FullName, "output", "rekt");
+                ? Path.Join("output", "rekt")
+                : Path.Join(dir.FullName, "output", "rekt");
 
             return _discovery = new RektDiscovery(factsDirectory);
         }

@@ -140,34 +140,23 @@ public static class ConversionNamespacePolicy
 
         // Each segment is cased exactly once. Substituting first and casing afterwards would
         // re-case an already-cased value, turning "MyService" into "Myservice".
-        var rendered = new List<string>();
-
-        foreach (var part in template.Split('.', StringSplitOptions.RemoveEmptyEntries))
+        string Resolve(string token) => token switch
         {
-            var token = part.Trim();
+            // Already cased, and may itself contain dots ("Bankdata.Core").
+            _ when Matches(token, "root") => Root(targetLanguage),
+            _ when Matches(token, "service") => Case(segment, csharp),
+            _ when Matches(token, "shared") => Case(SharedSegment, csharp),
+            // A literal the template author wrote, or an unknown placeholder; either way it is
+            // emitted as written rather than silently dropped.
+            _ => Case(token.Trim('{', '}'), csharp),
+        };
 
-            if (Matches(token, "root"))
-            {
-                // Already cased, and may itself contain dots ("Bankdata.Core").
-                rendered.Add(Root(targetLanguage));
-            }
-            else if (Matches(token, "service"))
-            {
-                rendered.Add(Case(segment, csharp));
-            }
-            else if (Matches(token, "shared"))
-            {
-                rendered.Add(Case(SharedSegment, csharp));
-            }
-            else
-            {
-                // A literal the template author wrote, or an unknown placeholder; either way it
-                // is emitted as written rather than silently dropped.
-                rendered.Add(Case(token.Trim('{', '}'), csharp));
-            }
-        }
+        var rendered = template
+            .Split('.', StringSplitOptions.RemoveEmptyEntries)
+            .Select(part => Resolve(part.Trim()))
+            .Where(part => part.Length > 0);
 
-        return string.Join('.', rendered.Where(p => p.Length > 0));
+        return string.Join('.', rendered);
     }
 
     private static bool Matches(string token, string name) =>

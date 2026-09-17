@@ -249,6 +249,10 @@ public static class RektPromptInjector
         }
         catch (Exception ex)
         {
+            // Deliberately broad, and the outermost of three. Everything this method does is
+            // additive context for a prompt: a conversion without it is weaker, a conversion that
+            // throws here produces nothing at all. No failure in assembling context is worth
+            // ending a run that would otherwise succeed, so the type is not narrowed.
             logger?.LogDebug("[RektPromptInjector] Could not locate repo root for {File}: {Msg}", fileName, ex.Message);
         }
     }

@@ -32,7 +32,7 @@ public static class ConversionOutputFolder
     /// </param>
     public static string ResolveLatest(string repoRoot, string languageRoot, string marker)
     {
-        var absoluteRoot = Path.Combine(repoRoot, languageRoot);
+        var absoluteRoot = Path.Join(repoRoot, languageRoot);
         if (!Directory.Exists(absoluteRoot)) return languageRoot;
 
         string[] candidates;
@@ -41,12 +41,12 @@ public static class ConversionOutputFolder
 
         var newest = candidates
             .Where(dir => LooksLikeRun(Path.GetFileName(dir)))
-            .Where(dir => File.Exists(Path.Combine(dir, marker)))
+            .Where(dir => File.Exists(Path.Join(dir, marker)))
             .OrderByDescending(dir => Path.GetFileName(dir), StringComparer.Ordinal)
             .FirstOrDefault();
 
         if (newest is not null)
-            return Path.Combine(languageRoot, Path.GetFileName(newest));
+            return Path.Join(languageRoot, Path.GetFileName(newest));
 
         // Output written before runs were dated sits directly in the language folder.
         return languageRoot;
@@ -55,7 +55,7 @@ public static class ConversionOutputFolder
     /// <summary>Every run folder under a language root, newest first.</summary>
     public static IReadOnlyList<string> RunsIn(string repoRoot, string languageRoot)
     {
-        var absoluteRoot = Path.Combine(repoRoot, languageRoot);
+        var absoluteRoot = Path.Join(repoRoot, languageRoot);
         if (!Directory.Exists(absoluteRoot)) return Array.Empty<string>();
 
         try

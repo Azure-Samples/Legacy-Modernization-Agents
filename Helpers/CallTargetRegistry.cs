@@ -69,21 +69,19 @@ public sealed class CallTargetRegistry
             }
         }
 
-        foreach (var (target, callingPrograms) in callers)
-        {
-            // The called program knows its own contract, so it declares it. When the target is not
-            // in this source drop there is no such program, and the first caller in a stable order
-            // is made responsible — an arbitrary choice, but the same arbitrary choice on every
-            // run and for every caller, which is what stops the duplicate.
-            var declaredBy = programs.ContainsKey(target) ? target : callingPrograms.First();
+        // The called program knows its own contract, so it declares it. When the target is not in
+        // this source drop there is no such program, and the first caller in a stable order is
+        // made responsible — an arbitrary choice, but the same arbitrary choice on every run and
+        // for every caller, which is what stops the duplicate.
+        var contracts = callers.Select(entry => new CallTargetContract(
+            Target: entry.Key,
+            InterfaceName: "I" + ToPascalCase(entry.Key) + "Service",
+            MethodName: EntryPointMethod,
+            DeclaredBy: programs.ContainsKey(entry.Key) ? entry.Key : entry.Value.First(),
+            Callers: entry.Value.ToList()));
 
-            _ = registry._byTarget.TryAdd(target, new CallTargetContract(
-                Target: target,
-                InterfaceName: "I" + ToPascalCase(target) + "Service",
-                MethodName: EntryPointMethod,
-                DeclaredBy: declaredBy,
-                Callers: callingPrograms.ToList()));
-        }
+        foreach (var contract in contracts)
+            registry._byTarget[contract.Target] = contract;
 
         return registry;
     }
