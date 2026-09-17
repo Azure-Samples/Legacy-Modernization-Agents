@@ -43,6 +43,9 @@ public sealed class CallTargetRegistry
 
     public IReadOnlyCollection<CallTargetContract> Contracts => _byTarget.Values;
 
+    /// <summary>Source files that could not be read, so their CALL statements were not seen.</summary>
+    public int UnreadableSources { get; private set; }
+
     public static CallTargetRegistry Build(string sourceFolder)
     {
         var registry = new CallTargetRegistry();
@@ -51,8 +54,17 @@ public sealed class CallTargetRegistry
         var programs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var path in SourceTypeRegistry.EnumerateProgramFiles(sourceFolder))
         {
-            try { programs[Stem(path)] = File.ReadAllText(path); }
-            catch (IOException) { }
+            try
+            {
+                programs[Stem(path)] = File.ReadAllText(path);
+            }
+            catch (IOException)
+            {
+                // A program that cannot be read contributes no CALL edges, so a callee it alone
+                // calls may be assigned a different declarer than it would otherwise have been.
+                // Counted rather than swallowed, because the effect is not local to this file.
+                registry.UnreadableSources++;
+            }
         }
 
         // Every (callee, caller) pair the source states, grouped by callee. A program calling

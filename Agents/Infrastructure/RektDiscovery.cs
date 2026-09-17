@@ -103,6 +103,9 @@ public sealed class RektDiscovery
         return new DiscoveryResult<List<string>>(fallback(), DiscoverySource.TextScan);
     }
 
+    /// <summary>Facts files that exist but could not be read, so their programs fell back.</summary>
+    public int UnreadableFacts { get; private set; }
+
     private ProgramFacts? Load(string programFileName)
     {
         var basename = Path.GetFileName(programFileName);
@@ -111,8 +114,17 @@ public sealed class RektDiscovery
         ProgramFacts? facts = null;
         if (Available)
         {
-            try { facts = ProgramFactsArtifactLocator.TryLoad(_factsDirectory, basename); }
-            catch (IOException) { }
+            try
+            {
+                facts = ProgramFactsArtifactLocator.TryLoad(_factsDirectory, basename);
+            }
+            catch (IOException)
+            {
+                // Unreadable facts are indistinguishable from absent ones in the result, but not
+                // in the cause: absent means the program was never parsed, unreadable means it
+                // was and the answer was lost. Counted so a run can say which happened.
+                UnreadableFacts++;
+            }
         }
 
         return _cache[basename] = facts;
@@ -125,8 +137,12 @@ public sealed class RektDiscovery
         if (total == 0) return "No dependency discovery was performed.";
 
         var percent = AnsweredByParse * 100 / total;
-        return $"Dependency discovery: {AnsweredByParse} of {total} answers came from the REKT parse "
+        var summary = $"Dependency discovery: {AnsweredByParse} of {total} answers came from the REKT parse "
              + $"({percent}%); {AnsweredByTextScan} fell back to a text scan because no parse output "
              + "was trustworthy for that program.";
+
+        return UnreadableFacts == 0
+            ? summary
+            : summary + $" {UnreadableFacts} facts file(s) existed but could not be read.";
     }
 }

@@ -25,7 +25,17 @@ public sealed class RepositoryRootTests : IDisposable
     public void Dispose()
     {
         Environment.SetEnvironmentVariable(RepositoryRoot.Variable, _original);
-        try { Directory.Delete(_estate, recursive: true); } catch (IOException) { }
+
+        // A directory the operating system still holds open is not a test failure, but silence
+        // means a leak is never noticed either.
+        try
+        {
+            Directory.Delete(_estate, recursive: true);
+        }
+        catch (IOException ex)
+        {
+            Console.Error.WriteLine($"Could not remove {_estate}: {ex.Message}");
+        }
     }
 
     [Fact]
