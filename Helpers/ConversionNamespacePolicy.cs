@@ -85,25 +85,96 @@ public static class ConversionNamespacePolicy
     };
 
     /// <summary>The namespace or package for a converted program.</summary>
-    public static string ForProgram(string targetLanguage, string? sourceRelativePath)
-    {
-        var service = ServiceSegment(sourceRelativePath);
-        return Join(targetLanguage, Root(targetLanguage), service);
-    }
+    public static string ForProgram(string targetLanguage, string? sourceRelativePath) =>
+        Render(targetLanguage, ServiceSegment(sourceRelativePath), Kind.Program);
 
     /// <summary>
     /// Where a type produced from a copybook used by more than one program lives. It belongs to
     /// no single program, so nesting it inside one of them duplicates it into all of them.
     /// </summary>
     public static string ForSharedTypes(string targetLanguage) =>
-        Join(targetLanguage, Root(targetLanguage), SharedSegment);
+        Render(targetLanguage, SharedSegment, Kind.Shared);
 
-    private static string Join(string targetLanguage, string root, string segment)
+    private enum Kind { Program, Shared }
+
+    /// <summary>
+    /// The layout beneath the root. Estates arrive with a house style already decided, so the
+    /// structure is chosen rather than imposed; leaving it unset keeps the service-per-folder
+    /// layout that was here before.
+    /// </summary>
+    public const string ArchitectureVariable = "TARGET_ARCHITECTURE";
+
+    public const string TemplateVariable = "TARGET_NAMESPACE_TEMPLATE";
+
+    public static string Architecture()
     {
-        var csharp = IsCSharp(targetLanguage);
-        var tail = csharp ? ToPascalCase(segment) : segment.ToLowerInvariant();
-        return $"{root}.{tail}";
+        var configured = Environment.GetEnvironmentVariable(ArchitectureVariable)?.Trim();
+        return string.IsNullOrWhiteSpace(configured) ? "service" : configured.ToLowerInvariant();
     }
+
+    /// <summary>The template a layout resolves to, before its placeholders are filled.</summary>
+    public static string TemplateFor(string architecture, bool shared) => architecture switch
+    {
+        // Every program of a source folder is one deployable unit; shared records sit beside them.
+        "service" => shared ? "{root}.{shared}" : "{root}.{service}",
+
+        // Records from copybooks are the domain; converted programs are what acts on it.
+        "layered" or "ddd" => shared ? "{root}.domain" : "{root}.{service}.application",
+
+        // One namespace for everything, for an estate small enough not to need dividing.
+        "flat" => "{root}",
+
+        "custom" => Environment.GetEnvironmentVariable(TemplateVariable)?.Trim() is { Length: > 0 } t
+            ? t
+            : "{root}.{service}",
+
+        // An unrecognised value is treated as the default rather than failing a conversion that
+        // is otherwise fine; the name it was given appears in the prompt so the typo is visible.
+        _ => shared ? "{root}.{shared}" : "{root}.{service}",
+    };
+
+    private static string Render(string targetLanguage, string segment, Kind kind)
+    {
+        var template = TemplateFor(Architecture(), kind == Kind.Shared);
+        var csharp = IsCSharp(targetLanguage);
+
+        // Each segment is cased exactly once. Substituting first and casing afterwards would
+        // re-case an already-cased value, turning "MyService" into "Myservice".
+        var rendered = new List<string>();
+
+        foreach (var part in template.Split('.', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var token = part.Trim();
+
+            if (Matches(token, "root"))
+            {
+                // Already cased, and may itself contain dots ("Bankdata.Core").
+                rendered.Add(Root(targetLanguage));
+            }
+            else if (Matches(token, "service"))
+            {
+                rendered.Add(Case(segment, csharp));
+            }
+            else if (Matches(token, "shared"))
+            {
+                rendered.Add(Case(SharedSegment, csharp));
+            }
+            else
+            {
+                // A literal the template author wrote, or an unknown placeholder; either way it
+                // is emitted as written rather than silently dropped.
+                rendered.Add(Case(token.Trim('{', '}'), csharp));
+            }
+        }
+
+        return string.Join('.', rendered.Where(p => p.Length > 0));
+    }
+
+    private static bool Matches(string token, string name) =>
+        token.Equals("{" + name + "}", StringComparison.OrdinalIgnoreCase);
+
+    private static string Case(string value, bool csharp) =>
+        csharp ? ToPascalCase(value) : value.ToLowerInvariant();
 
     /// <summary>Keeps only characters both languages accept in an identifier segment.</summary>
     private static string Sanitize(string value)

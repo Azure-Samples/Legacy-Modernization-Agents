@@ -16,7 +16,24 @@ public class ConversionNamespacePolicyTests : IDisposable
     private static void SetRoot(string? value) =>
         Environment.SetEnvironmentVariable(ConversionNamespacePolicy.RootVariable, value);
 
-    public void Dispose() => SetRoot(_original);
+    private static void SetArchitecture(string? value) =>
+        Environment.SetEnvironmentVariable(ConversionNamespacePolicy.ArchitectureVariable, value);
+
+    private static void SetTemplate(string? value) =>
+        Environment.SetEnvironmentVariable(ConversionNamespacePolicy.TemplateVariable, value);
+
+    private readonly string? _originalArchitecture =
+        Environment.GetEnvironmentVariable(ConversionNamespacePolicy.ArchitectureVariable);
+
+    private readonly string? _originalTemplate =
+        Environment.GetEnvironmentVariable(ConversionNamespacePolicy.TemplateVariable);
+
+    public void Dispose()
+    {
+        SetRoot(_original);
+        SetArchitecture(_originalArchitecture);
+        SetTemplate(_originalTemplate);
+    }
 
     [Fact]
     public void UsesALanguageAppropriateRootWhenNoneIsConfigured()
@@ -125,5 +142,101 @@ public class ConversionNamespacePolicyTests : IDisposable
     {
         SetRoot("...");
         ConversionNamespacePolicy.Root("C#").Should().Be("Modernized");
+    }
+
+    // ── Choosing a layout ────────────────────────────────────────────────
+    //
+    // Estates arrive with a house style already decided. Imposing one structure means the output
+    // has to be reorganised by hand before it can be merged into anything.
+
+    [Fact]
+    public void AnUnsetArchitectureKeepsTheLayoutThatWasHereBefore()
+    {
+        SetArchitecture(null);
+
+        ConversionNamespacePolicy.ForProgram("C#", "bd/BDSDA23.cbl").Should().Be("Modernized.Bd");
+        ConversionNamespacePolicy.ForSharedTypes("C#").Should().Be("Modernized.Shared");
+    }
+
+    [Theory]
+    [InlineData("ddd")]
+    [InlineData("layered")]
+    [InlineData("DDD")]
+    public void ALayeredEstatePutsRecordsInTheDomainAndProgramsInTheApplication(string architecture)
+    {
+        SetArchitecture(architecture);
+
+        ConversionNamespacePolicy.ForProgram("C#", "bd/BDSDA23.cbl")
+            .Should().Be("Modernized.Bd.Application");
+        ConversionNamespacePolicy.ForSharedTypes("C#").Should().Be("Modernized.Domain");
+    }
+
+    [Fact]
+    public void ALayeredEstateReadsCorrectlyInJavaToo()
+    {
+        SetArchitecture("ddd");
+
+        ConversionNamespacePolicy.ForProgram("Java", "bd/BDSDA23.cbl")
+            .Should().Be("com.modernized.bd.application");
+        ConversionNamespacePolicy.ForSharedTypes("Java").Should().Be("com.modernized.domain");
+    }
+
+    [Fact]
+    public void AFlatEstatePutsEverythingInOneNamespace()
+    {
+        SetArchitecture("flat");
+
+        ConversionNamespacePolicy.ForProgram("C#", "bd/BDSDA23.cbl").Should().Be("Modernized");
+        ConversionNamespacePolicy.ForSharedTypes("C#").Should().Be("Modernized");
+    }
+
+    [Fact]
+    public void AnEstateCanSupplyItsOwnShape()
+    {
+        SetArchitecture("custom");
+        SetTemplate("{root}.services.{service}.impl");
+
+        ConversionNamespacePolicy.ForProgram("Java", "bd/BDSDA23.cbl")
+            .Should().Be("com.modernized.services.bd.impl");
+    }
+
+    [Fact]
+    public void ACustomShapeWithNoTemplateFallsBackRatherThanEmittingNothing()
+    {
+        SetArchitecture("custom");
+        SetTemplate(null);
+
+        ConversionNamespacePolicy.ForProgram("C#", "bd/BDSDA23.cbl").Should().Be("Modernized.Bd");
+    }
+
+    // A typo in the architecture name should not fail a conversion that is otherwise fine.
+    [Fact]
+    public void AnUnrecognisedArchitectureFallsBackToTheDefault()
+    {
+        SetArchitecture("hexagonal-ish");
+
+        ConversionNamespacePolicy.ForProgram("C#", "bd/BDSDA23.cbl").Should().Be("Modernized.Bd");
+    }
+
+    [Fact]
+    public void AConfiguredRootSurvivesEveryLayout()
+    {
+        SetRoot("bankdata.core");
+
+        foreach (var architecture in new[] { "service", "ddd", "flat" })
+        {
+            SetArchitecture(architecture);
+            ConversionNamespacePolicy.ForProgram("C#", "bd/X.cbl")
+                .Should().StartWith("Bankdata.Core", $"architecture '{architecture}' must honour the root");
+        }
+    }
+
+    [Fact]
+    public void ALayeredEstateStillSeparatesSharedTypesFromPrograms()
+    {
+        SetArchitecture("ddd");
+
+        ConversionNamespacePolicy.ForSharedTypes("C#")
+            .Should().NotBe(ConversionNamespacePolicy.ForProgram("C#", "bd/X.cbl"));
     }
 }
