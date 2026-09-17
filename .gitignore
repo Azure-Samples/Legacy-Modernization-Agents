@@ -198,7 +198,3 @@ Temporary Items
 # Database files (auto-created on first run)
 Data/*.db
 Data/*.db-*
-
-# Demo portal build output
-demos/**/bin/
-demos/**/obj/
