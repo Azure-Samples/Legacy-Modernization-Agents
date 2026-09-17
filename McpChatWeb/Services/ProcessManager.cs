@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
 using System.Text.RegularExpressions;
+using CobolToQuarkusMigration.Helpers;
 
 namespace McpChatWeb.Services;
 
@@ -135,10 +136,14 @@ public class ProcessManager : IDisposable
         psi.Environment["MIGRATION_DB_PATH"] = Path.Combine(_repoRoot, "Data", "migration.db");
         psi.Environment["COBOL_SOURCE_FOLDER"] = sourceFolder ?? "source";
 
+        // Dated per run for the same reason doctor.sh dates it: a second conversion writing to
+        // the same folder silently overwrote the first, leaving two runs indistinguishable.
+        var runFolder = ConversionOutputFolder.NewRunName(DateTimeOffset.Now);
+
         if (targetLanguage.Equals("CSharp", StringComparison.OrdinalIgnoreCase))
-            psi.Environment["CSHARP_OUTPUT_FOLDER"] = "output/csharp";
+            psi.Environment["CSHARP_OUTPUT_FOLDER"] = $"output/csharp/{runFolder}";
         else
-            psi.Environment["JAVA_OUTPUT_FOLDER"] = "output/java";
+            psi.Environment["JAVA_OUTPUT_FOLDER"] = $"output/java/{runFolder}";
 
         // Speed profile env vars
         ApplySpeedProfile(psi.Environment, speedProfile);

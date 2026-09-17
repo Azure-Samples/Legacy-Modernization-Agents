@@ -220,4 +220,50 @@ public class ConversionParityReaderTests : IDisposable
             ParityGapKind.Missing,
             Assert.Single(Assert.Single(Assert.Single(estate.Reports).Programs).Gaps).Kind);
     }
+
+    // Conversions now write to a dated folder under output/<lang>, and the portal starts
+    // independently of any conversion so it is never told which one. Reading the language folder
+    // directly would report no data at all the moment runs became dated.
+    [Fact]
+    public async Task ReadAsync_ReadsTheNewestDatedRun()
+    {
+        WriteDatedReport("csharp", "20260917-080000", SampleReport("CSharp", 0.5, ("OLD.cbl", 0.5)));
+        WriteDatedReport("csharp", "20260917-140000", SampleReport("CSharp", 0.9, ("NEW.cbl", 0.9)));
+
+        var estate = await Reader().ReadAsync();
+
+        Assert.DoesNotContain("csharp", estate.MissingTargets);
+        var report = Assert.Single(estate.Reports);
+        Assert.Equal(0.9, report.AverageScore);
+    }
+
+    // A run that failed before writing its report must not shadow the last good one.
+    [Fact]
+    public async Task ReadAsync_SkipsARunThatNeverWroteItsReport()
+    {
+        WriteDatedReport("csharp", "20260917-080000", SampleReport("CSharp", 0.5, ("OLD.cbl", 0.5)));
+        Directory.CreateDirectory(Path.Combine(_root, "output", "csharp", "20260917-140000"));
+
+        var estate = await Reader().ReadAsync();
+
+        Assert.Equal(0.5, Assert.Single(estate.Reports).AverageScore);
+    }
+
+    // Output produced before runs were dated sits flat in the language folder.
+    [Fact]
+    public async Task ReadAsync_StillReadsUndatedOutput()
+    {
+        WriteReport("csharp", SampleReport("CSharp", 0.7, ("FLAT.cbl", 0.7)));
+
+        var estate = await Reader().ReadAsync();
+
+        Assert.Equal(0.7, Assert.Single(estate.Reports).AverageScore);
+    }
+
+    private void WriteDatedReport(string target, string stamp, string json)
+    {
+        var dir = Path.Combine(_root, "output", target, stamp);
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, ConversionParityPostPass.ArtifactName), json);
+    }
 }

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using CobolToQuarkusMigration.Agents;
+using CobolToQuarkusMigration.Helpers;
 
 namespace McpChatWeb.Services;
 
@@ -51,6 +52,13 @@ public sealed class ConversionParityReader
         foreach (var (folder, envVar) in OutputTargets)
         {
             var relative = ResolveOutputFolder(envVar, folder);
+
+            // A conversion writes to a dated run folder under the language root, so the language
+            // root is where to look but not what to read. The portal starts independently of any
+            // conversion and cannot be told the timestamp, so the newest run is resolved here.
+            relative = ConversionOutputFolder.ResolveLatest(
+                RepoRoot, relative, ConversionParityPostPass.ArtifactName);
+
             var path = Path.Combine(RepoRoot, relative, ConversionParityPostPass.ArtifactName);
             if (!File.Exists(path))
             {
