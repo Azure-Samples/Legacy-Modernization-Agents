@@ -69,9 +69,12 @@ public class ApiEndpointTests : IClassFixture<WebApplicationFactory<Program>>
     {
         var catalog = await GetJson("/api/catalog");
 
-        foreach (var entry in catalog.EnumerateArray())
+        var endpoints = catalog.EnumerateArray()
+            .Select(entry => entry.GetProperty("endpoint").GetString()!)
+            .ToList();
+
+        foreach (var endpoint in endpoints)
         {
-            var endpoint = entry.GetProperty("endpoint").GetString()!;
             var resp = await _client.PostAsJsonAsync(endpoint, new { }, Json);
             resp.StatusCode.Should().NotBe(HttpStatusCode.NotFound,
                 $"{endpoint} is advertised in the catalogue");

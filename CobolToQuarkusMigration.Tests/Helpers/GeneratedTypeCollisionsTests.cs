@@ -10,18 +10,29 @@ namespace CobolToQuarkusMigration.Tests.Helpers;
 // disagreement has to be found rather than discovered at compile time.
 public sealed class GeneratedTypeCollisionsTests : IDisposable
 {
-    private readonly string _root = Path.Combine(
+    // Join rather than Combine: every segment here is a relative name this test builds, so the
+    // argument-dropping Combine performs for an absolute second segment would only hide a mistake.
+    private readonly string _root = Path.Join(
         Path.GetTempPath(), "type-collisions-" + Guid.NewGuid().ToString("N"));
 
     public GeneratedTypeCollisionsTests() => Directory.CreateDirectory(_root);
 
     public void Dispose()
     {
-        try { Directory.Delete(_root, recursive: true); } catch (IOException) { }
+        // A temp directory the operating system still holds open is not a test failure, but
+        // swallowing the reason silently means a leak is never noticed either.
+        try
+        {
+            Directory.Delete(_root, recursive: true);
+        }
+        catch (IOException ex)
+        {
+            Console.Error.WriteLine($"Could not remove {_root}: {ex.Message}");
+        }
     }
 
     private void Write(string name, string body) =>
-        File.WriteAllText(Path.Combine(_root, name), body);
+        File.WriteAllText(Path.Join(_root, name), body);
 
     [Fact]
     public void AnEstateWithNoDuplicatesReportsNothing()
@@ -93,9 +104,9 @@ public sealed class GeneratedTypeCollisionsTests : IDisposable
     [Fact]
     public void FilesAreSearchedRecursively()
     {
-        Directory.CreateDirectory(Path.Combine(_root, "sub"));
+        Directory.CreateDirectory(Path.Join(_root, "sub"));
         Write("A.cs", "namespace X;\npublic class Thing { }\n");
-        File.WriteAllText(Path.Combine(_root, "sub", "B.cs"), "namespace X;\npublic class Thing { }\n");
+        File.WriteAllText(Path.Join(_root, "sub", "B.cs"), "namespace X;\npublic class Thing { }\n");
 
         GeneratedTypeCollisions.Find(_root).Should().ContainSingle();
     }
@@ -118,7 +129,7 @@ public sealed class GeneratedTypeCollisionsTests : IDisposable
     [Fact]
     public void ADirectoryThatDoesNotExistIsNotAnError()
     {
-        GeneratedTypeCollisions.Find(Path.Combine(_root, "absent")).Should().BeEmpty();
+        GeneratedTypeCollisions.Find(Path.Join(_root, "absent")).Should().BeEmpty();
     }
 
     [Fact]

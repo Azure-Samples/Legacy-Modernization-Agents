@@ -136,17 +136,18 @@ public static class ProgramSelection
     /// </remarks>
     private static IEnumerable<string> CopyTargets(string? content)
     {
-        if (string.IsNullOrEmpty(content)) yield break;
+        if (string.IsNullOrEmpty(content)) return Enumerable.Empty<string>();
 
-        foreach (var line in content.Split('\n'))
-        {
-            if (line.Length > 6 && (line[6] == '*' || line[6] == '/')) continue;
-            if (line.TrimStart().StartsWith("*", StringComparison.Ordinal)) continue;
-
-            var match = CopyDirective.Match(line);
-            if (match.Success) yield return match.Groups[1].Value;
-        }
+        return content.Split('\n')
+            .Where(line => !IsComment(line))
+            .Select(line => CopyDirective.Match(line))
+            .Where(match => match.Success)
+            .Select(match => match.Groups[1].Value);
     }
+
+    private static bool IsComment(string line) =>
+        (line.Length > 6 && (line[6] == '*' || line[6] == '/'))
+        || line.TrimStart().StartsWith("*", StringComparison.Ordinal);
 
     private static bool Matches(CobolFile file, string identity)
     {
