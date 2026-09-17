@@ -226,6 +226,26 @@ public static class RektPromptInjector
             {
                 logger?.LogWarning("[RektPromptInjector] Shared-types injection failed for {File}: {Msg}", fileName, ex.Message);
             }
+
+            try
+            {
+                var callTargets = CallTargetRegistryHolder.GetOrBuild(d.FullName, srcFolder);
+                var stem = Path.GetFileNameWithoutExtension(Path.GetFileName(fileName));
+                var contractBlock = callTargets.ToPromptBlock(stem, targetLanguage);
+                if (!string.IsNullOrEmpty(contractBlock))
+                {
+                    sb.Append(contractBlock);
+                    logger?.LogInformation(
+                        "[RektPromptInjector] Injected call-target contracts for {File} ({Count} known targets)",
+                        fileName, callTargets.Contracts.Count);
+                }
+            }
+            catch (Exception ex)
+            {
+                logger?.LogWarning(
+                    "[RektPromptInjector] Call-target contract injection failed for {File}: {Msg}",
+                    fileName, ex.Message);
+            }
         }
         catch (Exception ex)
         {

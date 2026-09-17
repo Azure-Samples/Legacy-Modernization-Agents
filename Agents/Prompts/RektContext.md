@@ -147,6 +147,30 @@ and are the same type for every program that uses them.
   • Reference them from the shared namespace instead (Java: import; C#: using).
   • Use exactly the expected type name given above so the reference resolves.
 
+## SECTION: CallTargetContracts
+
+---
+CALL TARGET CONTRACTS (assigned — do not invent interface names or methods):
+
+A called COBOL program has exactly one entry point, so its interface has exactly one method.
+Where several programs call the same module, they must all use the same interface, declared
+once. The assignment below is fixed; deviating from it produces a second declaration of the
+same type and the service will not compile.
+
+  shared namespace: {{SharedNamespace}}
+
+DECLARE these interfaces in the shared namespace (you are responsible for them):
+{{Declares}}
+
+REFERENCE these and do NOT declare them (another program declares them):
+{{References}}
+
+  • Use exactly the interface and method names given. Do not rename them to suit this
+    program's vocabulary — the other callers use the same names.
+  • Inject the interface (Java: @Inject; C#: constructor injection) and call its method at
+    the point where the COBOL CALL appears.
+  • Do NOT inline the called program's logic.
+
 ## SECTION: NamespacePolicy
 
 ---
