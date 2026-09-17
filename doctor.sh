@@ -2493,6 +2493,10 @@ REKT_NEO4J_HTTP_PORT=7475
 REKT_NEO4J_BOLT_PORT=7688
 REKT_CONTAINER="cobol-rekt"
 REKT_POPULATOR_CONTAINER="cobol-graph-populator"
+# Written by tools/preprocess-for-rekt.sh into synthesised copybooks and read by
+# StubCopybookCatalog.Marker. It is the only reliable way to tell an invented layout from
+# real content, because both live in source/.preprocessed/.
+REKT_STUB_MARKER="AUTO-GENERATED STUB COPYBOOK"
 NEO4J_IMAGE="neo4j:5.15.0"
 
 # Match the Docker daemon API instead of forcing a client version.
@@ -2903,7 +2907,13 @@ PYEOF
         done < <(find "$preprocessed_dir/aliases" -maxdepth 1 \( -name "*.cpy" -o -name "*.CPY" \) -type f 2>/dev/null)
     fi
 
-    # Stage generated stubs after real copybooks without overwriting real files.
+    # Stage the remaining preprocessed copybooks after real copybooks without overwriting them.
+    #
+    # .preprocessed/ holds three kinds of file: rewritten copies of real source copybooks,
+    # bundled system copybooks such as SQLCA, and synthesised stubs. Only the last kind
+    # degrades a program's fidelity, and only the last kind carries the generator's marker.
+    # Recording by directory instead of by marker reported real content as invented, which
+    # downgraded every program reaching a bundled copybook to StubBacked.
     if [[ -d "$preprocessed_dir" ]]; then
         while IFS= read -r stub_cpy; do
             local stub_name
@@ -2912,7 +2922,9 @@ PYEOF
             # Don't overwrite a real copybook that was already staged
             if [[ ! -f "$stub_target" ]]; then
                 cp "$stub_cpy" "$stub_target" 2>/dev/null || true
-                printf '%s\n' "${stub_name%.*}" | tr '[:lower:]' '[:upper:]' >> "$generated_stubs_file"
+                if grep -qF "$REKT_STUB_MARKER" "$stub_cpy" 2>/dev/null; then
+                    printf '%s\n' "${stub_name%.*}" | tr '[:lower:]' '[:upper:]' >> "$generated_stubs_file"
+                fi
                 if [[ -f "$stub_cpy.preprocess.json" ]]; then
                     cp "$stub_cpy.preprocess.json" "$stub_target.preprocess.json" 2>/dev/null || true
                 fi
@@ -2958,12 +2970,21 @@ PYEOF
     # Report missing copybooks before parsing so reduced coverage is explicit.
     local missing_report="$REPO_ROOT/output/rekt/missing-copybooks.txt"
     mkdir -p "$REPO_ROOT/output/rekt"
-    "$PYTHON_CMD" - "$staging_dir" "$missing_report" >/dev/null 2>&1 <<'PYEOF' || true
+    "$PYTHON_CMD" - "$staging_dir" "$missing_report" "$generated_stubs_file" >/dev/null 2>&1 <<'PYEOF' || true
 import os, re, sys
 from collections import defaultdict
 
 staging_dir = sys.argv[1]
 report_path = sys.argv[2]
+stubs_path = sys.argv[3] if len(sys.argv) > 3 else ''
+
+# Names that exist in staging only because a placeholder was synthesised for them. Staging
+# happens before this scan, so treating the staged file as evidence of availability would
+# report a copybook as present precisely because it was missing.
+synthesised = set()
+if stubs_path and os.path.exists(stubs_path):
+    with open(stubs_path, encoding='utf-8') as handle:
+        synthesised = {line.strip().upper() for line in handle if line.strip()}
 
 # Available copybook stems (case-insensitive), as staged
 available = set()
@@ -2972,6 +2993,7 @@ for root, _, files in os.walk(staging_dir):
         stem, ext = os.path.splitext(name)
         if ext.lower() == '.cpy':
             available.add(stem.upper())
+available -= synthesised
 
 # Match COPY / -COPY directives in non-comment lines.
 # Handles: COPY NAME., COPY 'NAME'., COPY NAME REPLACING ...

@@ -9,6 +9,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = REPO_ROOT / "tools" / "preprocess-for-rekt.sh"
 WORK_ROOT = REPO_ROOT / "tools" / "tests" / "_work"
+# Mirrors StubCopybookCatalog.Marker and REKT_STUB_MARKER in doctor.sh.
+MARKER = "AUTO-GENERATED STUB COPYBOOK"
 
 
 class PreprocessForRektTests(unittest.TestCase):
@@ -28,9 +30,9 @@ class PreprocessForRektTests(unittest.TestCase):
         if WORK_ROOT.exists() and not any(WORK_ROOT.iterdir()):
             WORK_ROOT.rmdir()
 
-    def run_preprocessor(self):
+    def run_preprocessor(self, stubs=False):
         env = os.environ.copy()
-        env["REKT_NO_STUB_COPYBOOKS"] = "true"
+        env["REKT_NO_STUB_COPYBOOKS"] = "false" if stubs else "true"
         return subprocess.run(
             [str(SCRIPT_PATH), str(self.source_dir)],
             cwd=REPO_ROOT,
@@ -140,6 +142,34 @@ class PreprocessForRektTests(unittest.TestCase):
             ),
             output,
         )
+
+    def test_marks_synthesised_stubs_but_not_bundled_system_copybooks(self):
+        # doctor.sh decides a program's fidelity by looking for this marker, because
+        # .preprocessed/ mixes invented layouts with real content. If a bundled copybook
+        # ever gained the marker, every program reaching it would be reported as
+        # stub-backed even though its layout is real.
+        (self.source_dir / "sqlprog.cbl").write_text(
+            "\n".join(
+                [
+                    "       IDENTIFICATION DIVISION.",
+                    "       PROGRAM-ID. SQLPROG.",
+                    "       DATA DIVISION.",
+                    "       WORKING-STORAGE SECTION.",
+                    "           EXEC SQL INCLUDE SQLCA END-EXEC.",
+                    "       COPY ABSENTCB.",
+                    "       PROCEDURE DIVISION.",
+                    "           GOBACK.",
+                    "",
+                ]
+            ),
+            encoding="latin-1",
+        )
+
+        self.run_preprocessor(stubs=True)
+
+        self.assertNotIn(MARKER, self.preprocessed_text("SQLCA.cpy"))
+        self.assertIn("SQLCODE", self.preprocessed_text("SQLCA.cpy"))
+        self.assertIn(MARKER, self.preprocessed_text("ABSENTCB.cpy"))
 
 
 if __name__ == "__main__":

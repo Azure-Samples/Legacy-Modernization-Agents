@@ -194,6 +194,7 @@ public static class ConversionParityPostPass
             NotEvaluatedCount = results.Count - evaluated.Count,
             BelowThresholdCount = stamped.Count(r => r.Failed),
             AverageScore = evaluated.Count == 0 ? null : Math.Round(evaluated.Average(r => r.Score!.Value), 4),
+            ReducedEvidenceCount = evaluated.Count(r => r.EvidenceNotes.Count > 0),
         };
     }
 
@@ -234,6 +235,13 @@ public static class ConversionParityPostPass
         sb.AppendLine();
         sb.AppendLine($"- Evaluated: **{report.EvaluatedCount}**, not evaluated: **{report.NotEvaluatedCount}**");
         sb.AppendLine(FormattableString.Invariant($"- Average score: **{report.AverageScore:0.00}**"));
+        if (report.ReducedEvidenceCount > 0)
+        {
+            sb.AppendLine(FormattableString.Invariant(
+                $"- Scored against reduced evidence: **{report.ReducedEvidenceCount}** of {report.EvaluatedCount}"));
+            sb.AppendLine("  (a copybook these programs COPY was not in the source, so its fields "
+                + "could not be verified and were excluded from the score)");
+        }
         sb.AppendLine($"- Failing parity: **{report.BelowThresholdCount}**");
         sb.AppendLine();
 

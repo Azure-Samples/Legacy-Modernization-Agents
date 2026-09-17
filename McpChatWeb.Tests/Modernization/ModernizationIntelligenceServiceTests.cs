@@ -428,4 +428,46 @@ public class ModernizationIntelligenceServiceTests
         Assert.Equal("SELECT", sql.Operation);
         Assert.Contains("CUSTOMER_TBL", sql.Tables);
     }
+
+    // The scan records the referring program by source-relative path while the rest of the
+    // estate carries the basename, so a list that matches only one identity reports every
+    // program as healthy however many copybooks are absent.
+    [Fact]
+    public async Task ProgramList_CountsMissingCopybooksRecordedAgainstASourceRelativePath()
+    {
+        using var fixture = new EstateFixture();
+        fixture.AddProgram("FUENTES/SRC/CUSTOMER.cbl").AddProgram("FUENTES/SRC/ACCOUNT.cbl");
+        fixture.AddMissingCopybooks(
+            "CUSTREC\treferenced by: FUENTES/SRC/CUSTOMER.cbl\n");
+
+        var list = await ServiceFor(fixture).GetProgramListAsync();
+
+        Assert.Equal(1, list.Programs.Single(p => p.Basename == "CUSTOMER.cbl").MissingCopybookCount);
+        Assert.Equal(0, list.Programs.Single(p => p.Basename == "ACCOUNT.cbl").MissingCopybookCount);
+    }
+
+    // smojol only degrades its outcome when a placeholder was synthesised for the absent COPY
+    // target. Where none was, a full-parse label survives on a program missing a whole data
+    // structure — a clean bill of health for the case most likely to produce wrong code.
+    [Fact]
+    public async Task AProgramMissingACopybookIsNeverReportedAsFullyParsed()
+    {
+        using var fixture = new EstateFixture();
+        fixture.AddProgram("CUSTOMER.cbl").AddProgram("ACCOUNT.cbl");
+        await fixture.AddScanEntryAsync("CUSTOMER.cbl", RektParseOutcome.Full, RektScanConfidence.High);
+        await fixture.AddScanEntryAsync("ACCOUNT.cbl", RektParseOutcome.Full, RektScanConfidence.High);
+        fixture.AddMissingCopybooks("CUSTREC\treferenced by: CUSTOMER.cbl\n");
+
+        var service = ServiceFor(fixture);
+        var health = await service.GetDependencyHealthAsync();
+        var list = await service.GetProgramListAsync();
+
+        Assert.Equal("partial", health.Programs.Single(p => p.Basename == "CUSTOMER.cbl").ParseFidelity);
+        Assert.Equal("full", health.Programs.Single(p => p.Basename == "ACCOUNT.cbl").ParseFidelity);
+        Assert.Equal("partial", list.Programs.Single(p => p.Basename == "CUSTOMER.cbl").ParseFidelity);
+
+        // The headline is counted from the rows, so it cannot disagree with the table.
+        Assert.Equal(1, health.FullFidelityCount);
+        Assert.Equal(1, health.PartialFidelityCount);
+    }
 }

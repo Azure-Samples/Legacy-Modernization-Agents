@@ -6,6 +6,7 @@ using System.Text;
 using Microsoft.Extensions.Logging;
 using CobolToQuarkusMigration.Helpers.PromptProjections;
 using CobolToQuarkusMigration.Agents.Infrastructure.Facts;
+using CobolToQuarkusMigration.Agents;
 
 public static class RektPromptInjector
 {
@@ -138,6 +139,8 @@ public static class RektPromptInjector
                                 }));
                             rektBuilder.AppendLine(PromptLoader.LoadSectionValidated(
                                 "RektContext", "RawTargetPolicy", new Dictionary<string, string>()));
+                            rektBuilder.Append(SyntheticLayoutNotice.Build(
+                                StubWarningsFor(sc.Context.CopybookUsage, d.FullName, srcFolder)));
                             rektBuilder.AppendLine(RektContextFormatter.ToPromptBlock(sc));
                             var rektBlock = rektBuilder.ToString();
                             var rawRektTokens = TokenHelper.EstimateTokens(rektBlock);
@@ -226,4 +229,26 @@ public static class RektPromptInjector
         string.IsNullOrWhiteSpace(configured)
         || !string.Equals(configured.Trim(), "false", StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// Names the copybooks this program uses whose layouts were synthesised rather than parsed.
+    /// The facts path reads them from program-facts.json; the raw-AST path has no facts file, so
+    /// it recovers the same answer by matching the program's copybook usage against the stub
+    /// catalog on disk.
+    /// </summary>
+    private static IReadOnlyList<string> StubWarningsFor(
+        IReadOnlyList<string> copybooksUsed, string repoRoot, string sourceFolder)
+    {
+        if (copybooksUsed.Count == 0) return Array.Empty<string>();
+
+        var catalog = StubCopybookCatalog.Load(repoRoot, sourceFolder);
+        if (catalog.Copybooks.Count == 0) return Array.Empty<string>();
+
+        var stubs = catalog.Copybooks.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return copybooksUsed
+            .Select(name => Path.GetFileNameWithoutExtension(name.Trim()))
+            .Where(stubs.Contains)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(name => $"generated-copybook-stub:{name.ToUpperInvariant()}")
+            .ToList();
+    }
 }

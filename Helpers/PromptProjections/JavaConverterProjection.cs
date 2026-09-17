@@ -36,6 +36,7 @@ public static class JavaConverterProjection
                 sb.AppendLine($"  • {w}");
             sb.AppendLine();
         }
+        sb.Append(SyntheticLayoutNotice.Build(facts.Warnings));
         if (facts.PreprocessNotes.Count > 0)
         {
             sb.AppendLine(PromptLoader.LoadSectionValidated(

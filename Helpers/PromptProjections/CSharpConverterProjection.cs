@@ -33,6 +33,7 @@ public static class CSharpConverterProjection
             foreach (var w in facts.Warnings) sb.AppendLine($"  • {w}");
             sb.AppendLine();
         }
+        sb.Append(SyntheticLayoutNotice.Build(facts.Warnings));
         if (facts.PreprocessNotes.Count > 0)
         {
             sb.AppendLine(PromptLoader.LoadSectionValidated(
