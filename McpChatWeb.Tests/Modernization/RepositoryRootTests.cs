@@ -13,13 +13,13 @@ public sealed class RepositoryRootTests : IDisposable
 {
     private readonly string? _original = Environment.GetEnvironmentVariable(RepositoryRoot.Variable);
 
-    private readonly string _estate = Path.Combine(
+    private readonly string _estate = Path.Join(
         Path.GetTempPath(), "repo-root-" + Guid.NewGuid().ToString("N"));
 
     public RepositoryRootTests()
     {
-        Directory.CreateDirectory(Path.Combine(_estate, "output"));
-        File.WriteAllText(Path.Combine(_estate, "doctor.sh"), "#!/bin/bash\n");
+        Directory.CreateDirectory(Path.Join(_estate, "output"));
+        File.WriteAllText(Path.Join(_estate, "doctor.sh"), "#!/bin/bash\n");
     }
 
     public void Dispose()
@@ -42,7 +42,7 @@ public sealed class RepositoryRootTests : IDisposable
     public void APathResolvesIntoTheConfiguredRootNotTheCallersDirectory()
     {
         Environment.SetEnvironmentVariable(RepositoryRoot.Variable, _estate);
-        var elsewhere = Path.Combine(Path.GetTempPath(), "some-other-checkout", "McpChatWeb");
+        var elsewhere = Path.Join(Path.GetTempPath(), "some-other-checkout", "McpChatWeb");
 
         var resolved = RepositoryRoot.PathTo(elsewhere, "output", "reverse-engineering-details.md");
 
@@ -54,7 +54,7 @@ public sealed class RepositoryRootTests : IDisposable
     public void AConfiguredRootThatDoesNotExistIsIgnored()
     {
         Environment.SetEnvironmentVariable(
-            RepositoryRoot.Variable, Path.Combine(_estate, "no-such-directory"));
+            RepositoryRoot.Variable, Path.Join(_estate, "no-such-directory"));
 
         var resolved = RepositoryRoot.Resolve(_estate);
 
@@ -65,7 +65,7 @@ public sealed class RepositoryRootTests : IDisposable
     public void WithoutConfigurationItWalksUpToTheRepository()
     {
         Environment.SetEnvironmentVariable(RepositoryRoot.Variable, null);
-        var nested = Path.Combine(_estate, "McpChatWeb", "bin");
+        var nested = Path.Join(_estate, "McpChatWeb", "bin");
         Directory.CreateDirectory(nested);
 
         Assert.Equal(Path.GetFullPath(_estate), Path.GetFullPath(RepositoryRoot.Resolve(nested)));
@@ -75,7 +75,7 @@ public sealed class RepositoryRootTests : IDisposable
     public void WithNothingToFindItReturnsWhereItStarted()
     {
         Environment.SetEnvironmentVariable(RepositoryRoot.Variable, null);
-        var orphan = Path.Combine(Path.GetTempPath(), "orphan-" + Guid.NewGuid().ToString("N"));
+        var orphan = Path.Join(Path.GetTempPath(), "orphan-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(orphan);
 
         try

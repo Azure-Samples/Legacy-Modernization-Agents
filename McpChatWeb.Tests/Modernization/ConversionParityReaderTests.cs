@@ -13,7 +13,7 @@ namespace McpChatWeb.Tests.Modernization;
 
 public class ConversionParityReaderTests : IDisposable
 {
-    private readonly string _root = Path.Combine(
+    private readonly string _root = Path.Join(
         Path.GetTempPath(), "parity-reader-" + Guid.NewGuid().ToString("N"));
 
     public void Dispose()
@@ -30,10 +30,10 @@ public class ConversionParityReaderTests : IDisposable
     // all for an estate that had been converted into a different folder.
     public async Task ReadAsync_HonoursConfiguredOutputFolder()
     {
-        var dir = Path.Combine(_root, "build", "quarkus");
+        var dir = Path.Join(_root, "build", "quarkus");
         Directory.CreateDirectory(dir);
         File.WriteAllText(
-            Path.Combine(dir, ConversionParityPostPass.ArtifactName),
+            Path.Join(dir, ConversionParityPostPass.ArtifactName),
             SampleReport("Java", 0.9, ("CUSTOMER.cbl", 0.9)));
 
         // Proves the report is invisible at the default location, so the assertion below can
@@ -52,9 +52,9 @@ public class ConversionParityReaderTests : IDisposable
 
     private void WriteReport(string target, string json)
     {
-        var dir = Path.Combine(_root, "output", target);
+        var dir = Path.Join(_root, "output", target);
         Directory.CreateDirectory(dir);
-        File.WriteAllText(Path.Combine(dir, ConversionParityPostPass.ArtifactName), json);
+        File.WriteAllText(Path.Join(dir, ConversionParityPostPass.ArtifactName), json);
     }
 
     private static string SampleReport(string language, double? average, params (string Program, double? Score)[] programs)
@@ -160,7 +160,7 @@ public class ConversionParityReaderTests : IDisposable
 
         var report = Assert.Single(estate.Reports);
         Assert.Equal(
-            Path.Combine("output", "csharp", ConversionParityPostPass.ArtifactName),
+            Path.Join("output", "csharp", ConversionParityPostPass.ArtifactName),
             report.SourcePath);
     }
 
@@ -210,7 +210,7 @@ public class ConversionParityReaderTests : IDisposable
         WriteReport("java", JsonSerializer.Serialize(report));
 
         var json = await File.ReadAllTextAsync(
-            Path.Combine(_root, "output", "java", ConversionParityPostPass.ArtifactName));
+            Path.Join(_root, "output", "java", ConversionParityPostPass.ArtifactName));
 
         Assert.Contains("\"Evaluated\"", json);
         Assert.Contains("\"Missing\"", json);
@@ -242,7 +242,7 @@ public class ConversionParityReaderTests : IDisposable
     public async Task ReadAsync_SkipsARunThatNeverWroteItsReport()
     {
         WriteDatedReport("csharp", "20260917-080000", SampleReport("CSharp", 0.5, ("OLD.cbl", 0.5)));
-        Directory.CreateDirectory(Path.Combine(_root, "output", "csharp", "20260917-140000"));
+        Directory.CreateDirectory(Path.Join(_root, "output", "csharp", "20260917-140000"));
 
         var estate = await Reader().ReadAsync();
 
@@ -262,8 +262,8 @@ public class ConversionParityReaderTests : IDisposable
 
     private void WriteDatedReport(string target, string stamp, string json)
     {
-        var dir = Path.Combine(_root, "output", target, stamp);
+        var dir = Path.Join(_root, "output", target, stamp);
         Directory.CreateDirectory(dir);
-        File.WriteAllText(Path.Combine(dir, ConversionParityPostPass.ArtifactName), json);
+        File.WriteAllText(Path.Join(dir, ConversionParityPostPass.ArtifactName), json);
     }
 }

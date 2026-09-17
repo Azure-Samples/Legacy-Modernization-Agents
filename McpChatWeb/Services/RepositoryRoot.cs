@@ -27,7 +27,7 @@ public static class RepositoryRoot
         var start = string.IsNullOrWhiteSpace(startFrom) ? Directory.GetCurrentDirectory() : startFrom;
 
         var dir = new DirectoryInfo(start);
-        while (dir != null && !File.Exists(Path.Combine(dir.FullName, "doctor.sh")))
+        while (dir != null && !File.Exists(Path.Join(dir.FullName, "doctor.sh")))
             dir = dir.Parent;
 
         return dir?.FullName ?? start;
@@ -35,5 +35,5 @@ public static class RepositoryRoot
 
     /// <summary>A path inside the repository, wherever the portal happens to be running from.</summary>
     public static string PathTo(string? startFrom, params string[] segments) =>
-        Path.GetFullPath(Path.Combine(new[] { Resolve(startFrom) }.Concat(segments).ToArray()));
+        Path.GetFullPath(Path.Join(new[] { Resolve(startFrom) }.Concat(segments).ToArray()));
 }
