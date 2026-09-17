@@ -55,19 +55,19 @@ public sealed class CallTargetRegistry
             catch (IOException) { }
         }
 
-        var callers = new Dictionary<string, SortedSet<string>>(StringComparer.OrdinalIgnoreCase);
-        foreach (var (name, content) in programs)
-        {
-            foreach (Match match in CallDirective.Matches(StripComments(content)))
-            {
-                var target = match.Groups[1].Value;
-                if (string.Equals(target, name, StringComparison.OrdinalIgnoreCase)) continue;
-
-                if (!callers.TryGetValue(target, out var set))
-                    callers[target] = set = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
-                set.Add(name);
-            }
-        }
+        // Every (callee, caller) pair the source states, grouped by callee. A program calling
+        // itself is dropped: recursion needs no interface, and handing a program one for itself
+        // would have it declare and inject a service that is already the class being written.
+        var callers = programs
+            .SelectMany(program => CallDirective
+                .Matches(StripComments(program.Value))
+                .Select(match => (Target: match.Groups[1].Value, Caller: program.Key)))
+            .Where(edge => !string.Equals(edge.Target, edge.Caller, StringComparison.OrdinalIgnoreCase))
+            .GroupBy(edge => edge.Target, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => new SortedSet<string>(group.Select(e => e.Caller), StringComparer.OrdinalIgnoreCase),
+                StringComparer.OrdinalIgnoreCase);
 
         // The called program knows its own contract, so it declares it. When the target is not in
         // this source drop there is no such program, and the first caller in a stable order is
