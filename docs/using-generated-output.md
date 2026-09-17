@@ -35,35 +35,66 @@ not independent evidence, and must not be presented as verification.
 Measured on a real conversion of five COBOL programs and their 65 copybooks —
 70 generated `.cs` files, run `20260917-102951`.
 
-**It does not compile.** In order of what blocks first:
+**It does not compile.** But the reason is not what the raw error count suggests, and the
+distinction decides what is worth fixing.
 
-| Blocker | Evidence |
-|---|---|
-| No project file | 0 `.csproj` or `.sln` in the run folder |
-| No entry point | 0 files declaring `Main` |
-| No dependency declarations | nothing states the runtime packages the generated code refers to |
-| Syntax errors in generated code | 2 files, below |
-| Duplicate types and members | 62 `CS0101` + 26 `CS0111` |
-| Unresolved types | 1022 `CS0246`, 18 `CS0234` |
+Compiled with a hand-written project file the run produces **10 syntax errors**. Patching those two
+files raises it to **1140**, because the compiler can then reach type resolution. Almost all of
+that is one cause:
 
-Compiling the run with a hand-written project file — the only way to get a figure at all —
-produced **10 syntax errors**. Patching just those two files raised **1140 errors**, because the
-compiler could then reach type resolution.
+| Cause | Errors | Nature |
+|---|---|---|
+| Missing `using` directives | **1028** | Generator emits a fixed `using` block |
+| Duplicate declarations | 88 | `CS0101` + `CS0111` |
+| Two namespaces in one file | 16 | `CS8954` + `CS0234`, 4 files |
+| Types referenced but never declared | 6 | `CS0246` |
+| Interface not implemented | 2 | `CS0535` |
 
-The two syntax defects are worth naming because they are generation bugs rather than missing
-scaffolding:
+### The dominant cause is boilerplate, not business logic
+
+Generated files open with a fixed block:
 
 ```csharp
-// Db2diagi.cs:210 — HTML entities leaked into the emitted source
+using System;
+using System.Collections.Generic;
+using System.Linq;
+```
+
+They then use `[Column]`, `[Key]`, `[Table]`, `[MaxLength]`, `DbSet<>`, `DbContext`,
+`ILogger<>`, `IConfiguration` and `IServiceCollection` — none of which that block covers.
+
+Adding six `global using` directives and the corresponding package references takes the run from
+**1140 errors to 112**. Nothing about the converted logic changes.
+
+```
+System.ComponentModel.DataAnnotations          Microsoft.Extensions.Logging
+System.ComponentModel.DataAnnotations.Schema   Microsoft.Extensions.Configuration
+Microsoft.EntityFrameworkCore                  Microsoft.Extensions.DependencyInjection
+```
+
+### What remains after that
+
+- **88 duplicate declarations** — the same problem `CopybookOwnershipRegistry` and
+  `CallTargetRegistry` were written to remove, by naming a single declaring file for each copybook
+  type and call-target interface. Those are in this branch but **have not been re-measured**
+  against a fresh conversion.
+- **16 from four files emitting a second file-scoped namespace** part-way through, producing
+  `Modernized.Banking.Shared.Modernized.Banking`.
+- **8** genuinely individual: two undeclared types and one `IComparer` implementation whose
+  signature does not match the interface.
+
+So of 1140 errors, roughly 1132 are systematic and mechanically addressable. Two look like real
+defects in converted logic.
+
+### Two generation defects worth naming
+
+```csharp
+// Db2diagi.cs:210 — HTML entities leaked into emitted source
 set { if (value &amp;&amp; !DerVarNogetAndet) WsVarDerAndet = 1; }
 
 // Reni303.cs:72 — comma where the accessor needs a semicolon
 get => FromCode(_prisMinSatsKd),
 ```
-
-The bulk of `CS0246` is the generated code referring to framework and runtime types that nothing
-declares a dependency on. That is scaffolding, not a conversion defect — but it does mean a run
-folder is not a buildable project as it stands.
 
 ## Diagnostics this repository does provide
 
@@ -79,13 +110,16 @@ not a decision to take from a post-pass.
 
 ## What would make compilation possible
 
-Not attempted in this change, and listed so the gap is explicit rather than implied:
+In descending order of measured effect, and none of it attempted in this change:
 
-1. Emit a project file and dependency manifest alongside the generated sources.
-2. Resolve duplicate declarations at their source — see
-   `CopybookOwnershipRegistry` and `CallTargetRegistry`, which assign a single declaring file for
-   copybook types and call-target interfaces.
-3. Fix the entity-escaping defect in the generation path.
-4. Provide the runtime shims the generated code assumes.
+1. **Emit the `using` directives the generated code actually uses**, or a global-usings file
+   alongside it. Worth 1028 of 1140 errors.
+2. **Emit a project file and dependency manifest** with the run, so a run folder is buildable
+   without one being written by hand.
+3. **Re-measure duplicate declarations** after the copybook-ownership and call-target work in this
+   branch. Expected to address the 88, unproven until a conversion is run.
+4. **Stop emitting a second namespace declaration** part-way through a file.
+5. **Fix the entity-escaping defect** in the generation path.
 
-Only after 1–3 does question 2 become answerable, and only then does 3 become meaningful.
+Only after 1 and 2 does "does the generated code compile" become a question CI can answer, and
+only then does running it mean anything.
