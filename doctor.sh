@@ -92,6 +92,10 @@ detect_python() {
 PYTHON_CMD="$(detect_python)"
 DEFAULT_MCP_HOST="localhost"
 DEFAULT_MCP_PORT=5028
+CONTAINER_RUNTIME=""
+CONTAINER_RUNTIME_LABEL=""
+CONTAINER_COMPOSE_LABEL=""
+declare -a CONTAINER_COMPOSE_CMD=()
 
 # Function to show usage
 show_usage() {
@@ -2514,31 +2518,82 @@ detect_docker_api_version() {
     fi
 }
 
-ensure_neo4j_image() {
-    detect_docker_api_version
-
-    if ! command -v docker >/dev/null 2>&1; then
-        echo -e "${RED}❌ Docker is required to install the Neo4j image.${NC}"
-        return 1
-    fi
-
-    if docker image inspect "$NEO4J_IMAGE" >/dev/null 2>&1; then
-        echo -e "${GREEN}✅ Neo4j image is available: $NEO4J_IMAGE${NC}"
+detect_container_runtime() {
+    if [[ -n "$CONTAINER_RUNTIME" ]]; then
         return 0
     fi
 
-    echo -e "${BLUE}📦 Pulling Neo4j image: $NEO4J_IMAGE${NC}"
+    if command -v podman >/dev/null 2>&1; then
+        if podman info >/dev/null 2>&1; then
+            CONTAINER_RUNTIME="podman"
+            CONTAINER_RUNTIME_LABEL="Podman"
+            if podman compose version >/dev/null 2>&1; then
+                CONTAINER_COMPOSE_CMD=(podman compose -f "$REPO_ROOT/docker-compose.yml")
+                CONTAINER_COMPOSE_LABEL="podman compose"
+                return 0
+            fi
+
+            echo -e "${RED}❌ Podman is available, but 'podman compose' is not.${NC}"
+            echo "Install podman-compose support or use Docker Compose."
+            return 1
+        fi
+    fi
+
+    if command -v docker >/dev/null 2>&1; then
+        detect_docker_api_version
+        if docker info >/dev/null 2>&1; then
+            CONTAINER_RUNTIME="docker"
+            CONTAINER_RUNTIME_LABEL="Docker"
+            if docker compose version >/dev/null 2>&1; then
+                CONTAINER_COMPOSE_CMD=(docker compose -f "$REPO_ROOT/docker-compose.yml")
+                CONTAINER_COMPOSE_LABEL="docker compose"
+                return 0
+            fi
+
+            if command -v docker-compose >/dev/null 2>&1; then
+                CONTAINER_COMPOSE_CMD=(docker-compose -f "$REPO_ROOT/docker-compose.yml")
+                CONTAINER_COMPOSE_LABEL="docker-compose"
+                return 0
+            fi
+
+            echo -e "${RED}❌ Docker is available, but no compose command was found.${NC}"
+            echo "Install Docker Compose or use Podman with 'podman compose'."
+            return 1
+        fi
+    fi
+
+    if command -v podman >/dev/null 2>&1; then
+        echo -e "${RED}❌ Podman is installed, but it is not running.${NC}"
+        echo "Start it with:"
+        echo "  podman machine start"
+        return 1
+    fi
+
+    echo -e "${RED}❌ A container runtime is required to install the Neo4j image.${NC}"
+    echo "Use Podman ('podman machine start') or Docker."
+    return 1
+}
+
+ensure_neo4j_image() {
+    detect_container_runtime || return 1
+
+    if "$CONTAINER_RUNTIME" image inspect "$NEO4J_IMAGE" >/dev/null 2>&1; then
+        echo -e "${GREEN}✅ Neo4j image is available in $CONTAINER_RUNTIME_LABEL: $NEO4J_IMAGE${NC}"
+        return 0
+    fi
+
+    echo -e "${BLUE}📦 Pulling Neo4j image via $CONTAINER_RUNTIME_LABEL: $NEO4J_IMAGE${NC}"
     local pull_output
-    if ! pull_output=$(docker pull "$NEO4J_IMAGE" 2>&1); then
+    if ! pull_output=$("$CONTAINER_RUNTIME" pull "$NEO4J_IMAGE" 2>&1); then
         echo -e "${RED}❌ Failed to pull Neo4j image:${NC}"
         printf '%s\n' "$pull_output" | sed 's/^/  /'
         echo ""
         echo -e "${YELLOW}Retry with:${NC}"
-        echo "  docker pull $NEO4J_IMAGE"
+        echo "  $CONTAINER_RUNTIME pull $NEO4J_IMAGE"
         return 1
     fi
 
-    echo -e "${GREEN}✅ Neo4j image downloaded: $NEO4J_IMAGE${NC}"
+    echo -e "${GREEN}✅ Neo4j image downloaded into $CONTAINER_RUNTIME_LABEL: $NEO4J_IMAGE${NC}"
 }
 
 ensure_graph_populator_environment() {
@@ -2583,7 +2638,7 @@ ensure_graph_populator_environment() {
 }
 
 ensure_rekt_containers() {
-    detect_docker_api_version
+    detect_container_runtime || return 1
     echo -e "${BLUE}🔧 Ensuring rekt containers are running...${NC}"
 
     if [[ -z "${NEO4J_PASSWORD:-}" ]]; then
@@ -2612,13 +2667,13 @@ ensure_rekt_containers() {
 
     # Start only the rekt services (leave existing neo4j untouched).
     local compose_output
-    if ! compose_output=$(docker-compose up -d "$REKT_NEO4J_CONTAINER" "$REKT_CONTAINER" 2>&1); then
+    if ! compose_output=$("${CONTAINER_COMPOSE_CMD[@]}" up -d "$REKT_NEO4J_CONTAINER" "$REKT_CONTAINER" 2>&1); then
         echo -e "${RED}❌ Failed to start Cobol-REKT containers:${NC}"
         printf '%s\n' "$compose_output" | sed 's/^/  /'
         echo ""
         echo -e "${YELLOW}Debug with:${NC}"
-        echo "  docker-compose ps"
-        echo "  docker-compose logs --tail=100 $REKT_NEO4J_CONTAINER $REKT_CONTAINER"
+        echo "  $CONTAINER_COMPOSE_LABEL ps"
+        echo "  $CONTAINER_COMPOSE_LABEL logs --tail=100 $REKT_NEO4J_CONTAINER $REKT_CONTAINER"
         return 1
     fi
 
@@ -2626,7 +2681,7 @@ ensure_rekt_containers() {
     local max_wait=60
     local waited=0
     echo -ne "  Waiting for $REKT_NEO4J_CONTAINER"
-    while ! docker exec "$REKT_NEO4J_CONTAINER" sh -c \
+    while ! "$CONTAINER_RUNTIME" exec "$REKT_NEO4J_CONTAINER" sh -c \
         'cypher-shell -u neo4j -p "$HEALTHCHECK_PASSWORD" "RETURN 1"' >/dev/null 2>&1; do
         sleep 2
         waited=$((waited + 2))
@@ -2634,16 +2689,16 @@ ensure_rekt_containers() {
         if [[ $waited -ge $max_wait ]]; then
             echo -e "\n${RED}❌ $REKT_NEO4J_CONTAINER did not become healthy in ${max_wait}s${NC}"
             echo -e "${YELLOW}Container state:${NC}"
-            docker inspect --format \
+            "$CONTAINER_RUNTIME" inspect --format \
                 '  Status={{.State.Status}} ExitCode={{.State.ExitCode}} Error={{.State.Error}} Health={{if .State.Health}}{{.State.Health.Status}}{{else}}n/a{{end}}' \
                 "$REKT_NEO4J_CONTAINER" 2>&1 || true
             echo ""
             echo -e "${YELLOW}Recent $REKT_NEO4J_CONTAINER logs:${NC}"
-            docker logs --tail 50 "$REKT_NEO4J_CONTAINER" 2>&1 | sed 's/^/  /'
+            "$CONTAINER_RUNTIME" logs --tail 50 "$REKT_NEO4J_CONTAINER" 2>&1 | sed 's/^/  /'
             echo ""
             echo -e "${YELLOW}Debug with:${NC}"
-            echo "  docker-compose ps"
-            echo "  docker-compose logs --tail=100 $REKT_NEO4J_CONTAINER"
+            echo "  $CONTAINER_COMPOSE_LABEL ps"
+            echo "  $CONTAINER_COMPOSE_LABEL logs --tail=100 $REKT_NEO4J_CONTAINER"
             return 1
         fi
     done
@@ -2652,7 +2707,7 @@ ensure_rekt_containers() {
     # The loop above authenticates inside the container, which always agrees with itself.
     # The populator connects from the host, so verify that credential separately: Neo4j keeps
     # the password in its data volume, so a reused volume silently outranks NEO4J_AUTH.
-    if ! docker exec "$REKT_NEO4J_CONTAINER" \
+    if ! "$CONTAINER_RUNTIME" exec "$REKT_NEO4J_CONTAINER" \
         cypher-shell -u neo4j -p "${REKT_NEO4J_PASSWORD:-$NEO4J_PASSWORD}" "RETURN 1" >/dev/null 2>&1; then
         echo -e "${RED}❌ REKT_NEO4J_PASSWORD does not authenticate against $REKT_NEO4J_CONTAINER${NC}"
         echo ""
@@ -2663,14 +2718,14 @@ ensure_rekt_containers() {
         echo "  REKT_NEO4J_PASSWORD=<existing-password>"
         echo ""
         echo "or discard the graph and let it re-initialise (parsed artifacts are kept):"
-        echo "  docker-compose rm -sf $REKT_NEO4J_CONTAINER"
-        echo "  docker volume rm $(basename "$REPO_ROOT" | tr '[:upper:]' '[:lower:]')_rekt_neo4j_data"
+        echo "  $CONTAINER_COMPOSE_LABEL rm -sf $REKT_NEO4J_CONTAINER"
+        echo "  $CONTAINER_RUNTIME volume rm $(basename "$REPO_ROOT" | tr '[:upper:]' '[:lower:]')_rekt_neo4j_data"
         return 1
     fi
     echo -e "  ${GREEN}✅ REKT graph credentials accepted${NC}"
 
     # Verify rekt CLI is available
-    if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar --version >/dev/null 2>&1; then
+    if "$CONTAINER_RUNTIME" exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar --version >/dev/null 2>&1; then
         echo -e "  ${GREEN}✅ Cobol-REKT CLI available${NC}"
     else
         echo -e "  ${YELLOW}⚠️  Cobol-REKT CLI not responding (container may still be building)${NC}"
@@ -2678,14 +2733,14 @@ ensure_rekt_containers() {
 
     # Verify /output bind mount is writable — rm -rf on the host changes the inode and breaks it.
     # Restart the container to re-establish the mount if needed.
-    if ! docker exec "$REKT_CONTAINER" bash -c \
+    if ! "$CONTAINER_RUNTIME" exec "$REKT_CONTAINER" bash -c \
         "touch /output/.write_probe && rm -f /output/.write_probe" >/dev/null 2>&1; then
         echo -e "  ${YELLOW}⚠️  /output bind mount stale — restarting $REKT_CONTAINER...${NC}"
-        docker restart "$REKT_CONTAINER" >/dev/null
+        "$CONTAINER_RUNTIME" restart "$REKT_CONTAINER" >/dev/null
         sleep 3
-        if ! docker exec "$REKT_CONTAINER" bash -c \
+        if ! "$CONTAINER_RUNTIME" exec "$REKT_CONTAINER" bash -c \
             "touch /output/.write_probe && rm -f /output/.write_probe" >/dev/null 2>&1; then
-            echo -e "  ${RED}❌ /output still not writable after restart. Check Docker volume mount.${NC}"
+            echo -e "  ${RED}❌ /output still not writable after restart. Check the container volume mount.${NC}"
             return 1
         fi
         echo -e "  ${GREEN}✅ Bind mount restored${NC}"
@@ -2697,7 +2752,7 @@ run_rekt_parse() {
     echo -e "${CYAN}║   Cobol-REKT: Parse COBOL → AST/CFG/Data JSON              ║${NC}"
     echo -e "${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
 
-    detect_docker_api_version
+    detect_container_runtime || return 1
     ensure_rekt_containers || return 1
 
     # The portal resolves the estate through COBOL_SOURCE_FOLDER while this script parses
@@ -2944,18 +2999,18 @@ PYEOF
     staged_cpy=$(find "$staging_dir" -type f \( -name "*.cpy" -o -name "*.CPY" \) | wc -l | tr -d ' ')
     echo -e "  ${BLUE}Staged: ${staged_cbl} program(s), ${staged_cpy} copybook(s) → source/.rekt-staging/${NC}"
 
-    # Restart stale Docker Desktop bind mounts before they produce empty parser output.
+    # Restart stale container bind mounts before they produce empty parser output.
     if [[ "$staged_cbl" -gt 0 ]]; then
         local container_visible
-        container_visible=$(docker exec "$REKT_CONTAINER" sh -c "ls /source/.rekt-staging 2>/dev/null | wc -l" 2>/dev/null | tr -d ' ')
+        container_visible=$("$CONTAINER_RUNTIME" exec "$REKT_CONTAINER" sh -c "ls /source/.rekt-staging 2>/dev/null | wc -l" 2>/dev/null | tr -d ' ')
         if [[ -z "$container_visible" || "$container_visible" -eq 0 ]]; then
             echo -e "  ${YELLOW}⚠️  Container can't see /source/.rekt-staging — bind mount is stale. Restarting cobol-rekt…${NC}"
-            docker compose -f "$REPO_ROOT/docker-compose.yml" restart "$REKT_CONTAINER" >/dev/null 2>&1 || true
+            "${CONTAINER_COMPOSE_CMD[@]}" restart "$REKT_CONTAINER" >/dev/null 2>&1 || true
             sleep 3
-            container_visible=$(docker exec "$REKT_CONTAINER" sh -c "ls /source/.rekt-staging 2>/dev/null | wc -l" 2>/dev/null | tr -d ' ')
+            container_visible=$("$CONTAINER_RUNTIME" exec "$REKT_CONTAINER" sh -c "ls /source/.rekt-staging 2>/dev/null | wc -l" 2>/dev/null | tr -d ' ')
             if [[ -z "$container_visible" || "$container_visible" -eq 0 ]]; then
                 echo -e "  ${RED}❌ Container still can't see staging files after restart.${NC}"
-                echo -e "     Try: ${BLUE}docker compose down && docker compose up -d${NC} from the repo root."
+                echo -e "     Try: ${BLUE}$CONTAINER_COMPOSE_LABEL down && $CONTAINER_COMPOSE_LABEL up -d${NC} from the repo root."
                 return 1
             fi
             echo -e "  ${GREEN}✅ Container now sees ${container_visible} staged file(s).${NC}"
@@ -2963,7 +3018,7 @@ PYEOF
     fi
 
     # Clear previous run outputs first so the missing-copybook report below survives.
-    # Use find-delete rather than rm -rf dir to preserve the Docker bind mount (./output/rekt:/output).
+    # Use find-delete rather than rm -rf dir to preserve the bind mount (./output/rekt:/output).
     mkdir -p "$REPO_ROOT/output/rekt"
     find "$REPO_ROOT/output/rekt" -mindepth 1 -delete 2>/dev/null || true
 
@@ -4054,15 +4109,15 @@ check_chunking_health() {
     echo -e "${CYAN}6. Container Health${NC}"
     
     # Check if container is running
-    if command -v docker >/dev/null 2>&1; then
-        if docker ps --format '{{.Names}}' | grep -q "cobol-migration-portal"; then
+    if detect_container_runtime >/dev/null 2>&1; then
+        if "$CONTAINER_RUNTIME" ps --format '{{.Names}}' | grep -q "cobol-migration-portal"; then
             echo -e "   ${GREEN}✅ Container 'cobol-migration-portal' is running${NC}"
         else
             echo -e "   ${YELLOW}⚠️  Container 'cobol-migration-portal' is NOT running${NC}"
-            echo -e "      (Run 'docker-compose up -d' to start the containerized portal)"
+            echo -e "      (Run '$CONTAINER_COMPOSE_LABEL up -d portal' to start the containerized portal)"
         fi
     else
-        echo -e "   ${YELLOW}⚠️  Docker not available - skipping container checks${NC}"
+        echo -e "   ${YELLOW}⚠️  No container runtime available - skipping container checks${NC}"
     fi
     echo ""
     
