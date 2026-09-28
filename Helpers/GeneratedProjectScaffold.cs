@@ -22,9 +22,13 @@ public sealed record ScaffoldResult(
     IReadOnlyList<string> Usings,
     IReadOnlyList<string> Packages,
     string? GlobalUsingsPath,
-    string? ProjectPath)
+    string? ProjectPath,
+    IReadOnlyList<string>? NormalizedFiles = null)
 {
     public bool WroteAnything => GlobalUsingsPath is not null;
+
+    /// <summary>Generated files rewritten from several file-scoped namespaces to block-scoped ones.</summary>
+    public IReadOnlyList<string> Normalized => NormalizedFiles ?? [];
 }
 
 public static class GeneratedProjectScaffold
@@ -57,7 +61,9 @@ public static class GeneratedProjectScaffold
     /// </summary>
     /// <remarks>
     /// Both are generated artefacts and are overwritten on each run. Neither contains converted
-    /// logic, so regenerating them can lose nothing.
+    /// logic, so regenerating them can lose nothing. Before writing them, any generated file that
+    /// declares several file-scoped namespaces is rewritten to block-scoped ones — a syntax-only
+    /// change, see <see cref="FileScopedNamespaceNormalizer"/>.
     /// </remarks>
     public static ScaffoldResult Write(
         string runFolder, string assemblyName, string targetFramework = "net10.0")
@@ -71,6 +77,10 @@ public static class GeneratedProjectScaffold
             .ToList();
 
         if (sources.Count == 0) return new ScaffoldResult([], [], null, null);
+
+        var normalized = FileScopedNamespaceNormalizer.NormalizeFolder(runFolder)
+            .Where(f => !Path.GetFileName(f).Equals(GlobalUsingsFile, StringComparison.OrdinalIgnoreCase))
+            .ToList();
 
         var needed = Detect(sources);
 
@@ -96,7 +106,8 @@ public static class GeneratedProjectScaffold
             usings,
             packages.Select(p => p.Package).ToList(),
             usingsPath,
-            projectPath);
+            projectPath,
+            normalized);
     }
 
     /// <summary>The dependencies the given sources actually reference.</summary>

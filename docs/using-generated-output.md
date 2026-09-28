@@ -84,17 +84,48 @@ Microsoft.EntityFrameworkCore                  Microsoft.Extensions.DependencyIn
 
 ### What remains after that
 
-- **88 duplicate declarations** — the same problem `CopybookOwnershipRegistry` and
-  `CallTargetRegistry` were written to remove, by naming a single declaring file for each copybook
-  type and call-target interface. Those are in this branch but **have not been re-measured**
-  against a fresh conversion.
+At the time of the measurement above:
+
+- **88 duplicate declarations**, the problem `CopybookOwnershipRegistry` and `CallTargetRegistry`
+  address by naming a single declaring file for each copybook type and call-target interface.
 - **16 from four files emitting a second file-scoped namespace** part-way through, producing
   `Modernized.Banking.Shared.Modernized.Banking`.
 - **8** genuinely individual: two undeclared types and one `IComparer` implementation whose
   signature does not match the interface.
 
-So of 1140 errors, roughly 1132 are systematic and mechanically addressable. Two look like real
-defects in converted logic.
+### Re-measured after copybook ownership
+
+The same five programs were converted again with the ownership and call-target registries in
+place (run `20260917-185339`). Both runs below are compiled with the same generated scaffolding,
+with the `&amp;` defect patched so the compiler reaches type resolution, and errors are counted
+once per location. These numbers are therefore not comparable with the 1140 / 112 above.
+
+| | Run `102951` | Run `185339` | `185339` normalized |
+|---|---|---|---|
+| Unique errors | 56 | 107 | **71** |
+| Duplicate declarations (`CS0101` + `CS0111`) | 44 | 26 | 26 |
+| Type or namespace not found (`CS0246` + `CS0234`) | 7 | 50 | 26 |
+| Files with more than one namespace | 4 | 14 | 0 |
+
+Ownership worked where it was aimed: duplicate declarations fell from 44 to 26. It also made the
+namespace defect much more common. A copybook that contains a `CALL` is treated as a caller, so
+its file now declares its record type in `.Shared` and its service code in `.Bd`, and the model
+writes that as two file-scoped namespaces (`CS8954`) or a file-scoped one followed by a block
+(`CS8955`). The compiler nests the second inside the first, and the phantom
+`Modernized.Banking.Bd.Modernized.Banking.Shared` it creates captures every
+`using Modernized.Banking.Shared;` in `.Bd`. Types that do exist then stop resolving estate-wide.
+
+`FileScopedNamespaceNormalizer` now runs as part of scaffolding and rewrites such files into block
+namespaces. It changes syntax only: the same types land in the same namespaces, and files with a
+single namespace are never touched. The chunked migration path previously wrote no scaffolding at
+all; it now does. Every remaining `CS0246` in the normalized run names a type that is declared
+nowhere in the output, such as `IBdsparmService`, `Bdsparmx` and `BdsDa01Entity`: missing
+copybooks or callees that were not part of the conversion.
+
+The 71 break down as 26 not found, 26 duplicate declarations, 8 unimplemented interface members
+(`CS0535`), 6 invalid partial declarations (`CS8863`) and 5 duplicate attributes (`CS0579`).
+One generated file also escapes the configured root:
+`CobolMigration/Fallback/CeeigzctFallback.cs` declares `namespace CobolMigration.Fallback`.
 
 ### Two generation defects worth naming
 
@@ -126,10 +157,13 @@ In descending order of measured effect:
    1140 errors.
 2. ~~Emit a project file and dependency manifest with the run~~ — **done**, written from the
    code's own references.
-3. **Re-measure duplicate declarations** after the copybook-ownership and call-target work in this
-   branch. Expected to address the 88, unproven until a conversion is run.
-4. **Stop emitting a second namespace declaration** part-way through a file.
-5. **Fix the entity-escaping defect** in the generation path.
+3. ~~Re-measure duplicate declarations~~ after copybook ownership: **done**, 44 → 26 on a like-for-like
+   count. The remaining 26 still need a fix at generation time.
+4. ~~Stop a second namespace declaration from breaking the build~~: **done** by normalizing to block
+   namespaces, 107 → 71.
+5. **Fix the entity-escaping defect** in the generation path. It recurs across runs
+   (`Db2diagi.cs`, `Rgni656.cs`) and hides every type-level error until patched.
+6. **Supply or stub the missing callees and copybooks** behind the 26 undeclared types.
 
 Only after 1 and 2 does "does the generated code compile" become a question CI can answer, and
 only then does running it mean anything.

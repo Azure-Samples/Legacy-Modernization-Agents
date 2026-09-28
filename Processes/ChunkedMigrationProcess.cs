@@ -327,6 +327,29 @@ public class ChunkedMigrationProcess
             var allFiles = smallFileResults.Concat(assembledFiles).ToList();
             await SaveOutputFilesAsync(allFiles, outputFolder);
 
+            // Same scaffolding as the unchunked path, so a run with a large program in it can be
+            // compiled too. Chunk assembly concatenates per-chunk output, which is exactly where a
+            // second file-scoped namespace appears, and the scaffold rewrites those.
+            if (_settings.ApplicationSettings.TargetLanguage == TargetLanguage.CSharp)
+            {
+                try
+                {
+                    var scaffold = GeneratedProjectScaffold.Write(
+                        outputFolder, ConversionNamespacePolicy.Root("C#"));
+
+                    if (scaffold.WroteAnything)
+                    {
+                        _logger.LogInformation(
+                            "Wrote build scaffolding for the generated output: {Usings} global using(s), {Packages} package reference(s), {Normalized} file(s) rewritten to block-scoped namespaces",
+                            scaffold.Usings.Count, scaffold.Packages.Count, scaffold.Normalized.Count);
+                    }
+                }
+                catch (IOException ex)
+                {
+                    _logger.LogWarning("Could not write build scaffolding: {Message}", ex.Message);
+                }
+            }
+
             // Generate reports
             await GenerateChunkedMigrationReportAsync(
                 cobolFiles, allFiles, largeFileResults, dependencyMap, outputFolder, startTime);

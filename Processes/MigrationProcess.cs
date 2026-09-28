@@ -400,8 +400,8 @@ public class MigrationProcess
                     if (scaffold.WroteAnything)
                     {
                         _logger.LogInformation(
-                            "Wrote build scaffolding for the generated output: {Usings} global using(s), {Packages} package reference(s)",
-                            scaffold.Usings.Count, scaffold.Packages.Count);
+                            "Wrote build scaffolding for the generated output: {Usings} global using(s), {Packages} package reference(s), {Normalized} file(s) rewritten to block-scoped namespaces",
+                            scaffold.Usings.Count, scaffold.Packages.Count, scaffold.Normalized.Count);
                     }
                 }
                 catch (IOException ex)
