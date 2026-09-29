@@ -10,7 +10,9 @@ using Microsoft.Extensions.Logging;
 
 namespace CobolToQuarkusMigration.Helpers;
 
-public sealed record CompileRound(int Round, int Errors, int FilesRepaired, int RepairsRejected, IReadOnlyDictionary<string, int> ByCode);
+public sealed record CompileRound(
+    int Round, int Errors, int FilesRepaired, int RepairsRejected, IReadOnlyDictionary<string, int> ByCode,
+    bool RolledBack = false);
 
 public sealed record CompileGateResult(
     bool Compiled,
@@ -38,7 +40,11 @@ public sealed record CompileGateResult(
         sb.AppendLine();
         sb.AppendLine("| Round | Errors | Files repaired | Repairs rejected |");
         sb.AppendLine("|---|---|---|---|");
-        foreach (var r in Rounds) sb.AppendLine($"| {r.Round} | {r.Errors} | {r.FilesRepaired} | {r.RepairsRejected} |");
+        foreach (var r in Rounds)
+        {
+            var errors = r.RolledBack ? $"{r.Errors} (worse than before; the round's repairs were undone)" : r.Errors.ToString();
+            sb.AppendLine($"| {r.Round} | {errors} | {r.FilesRepaired} | {r.RepairsRejected} |");
+        }
         sb.AppendLine();
 
         if (ExternalContracts.Count > 0)
@@ -81,6 +87,8 @@ public static class CSharpCompileGate
         var maxRounds = Math.Max(0, settings.MaxRepairRounds);
         var rounds = new List<CompileRound>();
         BuildOutcome outcome;
+        BuildOutcome? previous = null;
+        var undo = new Dictionary<string, string>(StringComparer.Ordinal);
         var round = 0;
 
         while (true)
@@ -88,6 +96,21 @@ public static class CSharpCompileGate
             outcome = await GeneratedBuildRunner.BuildAsync(runFolder, timeout, cancellationToken);
             if (!outcome.Ran)
                 return Finish(runFolder, new CompileGateResult(false, false, outcome.FailureReason, rounds, [], []), logger);
+
+            if (previous is not null && IsWorse(outcome.Errors, previous.Errors))
+            {
+                // A round must not leave the code worse than it found it. Its files are restored and
+                // repair stops, since the same plan would be tried again.
+                logger.LogWarning("[CompileGate] Round {Round}: {Errors} error(s), more than {Before}; undoing its repairs",
+                    round, outcome.Errors.Count, previous.Errors.Count);
+                foreach (var (file, text) in undo)
+                    await File.WriteAllTextAsync(Path.Join(runFolder, file), text, cancellationToken);
+                GeneratedProjectScaffold.Write(runFolder, rootNamespace);
+                rounds = [.. rounds, new CompileRound(round, outcome.Errors.Count, 0, 0,
+                    outcome.Errors.GroupBy(e => e.Code).ToDictionary(g => g.Key, g => g.Count()), RolledBack: true)];
+                outcome = previous;
+                break;
+            }
 
             logger.LogInformation("[CompileGate] Round {Round}: {Errors} compiler error(s)", round, outcome.Errors.Count);
 
@@ -102,9 +125,21 @@ public static class CSharpCompileGate
             if (outcome.Succeeded || repairAgent is null || round >= maxRounds) break;
 
             var sources = ReadSources(runFolder);
-            var tasks = CompileRepairPlanner.Plan(outcome.Errors, GeneratedTypeIndex.FromSources(sources), sources, sharedNamespace, settings, cobolByName);
+            var typeIndex = GeneratedTypeIndex.FromSources(sources);
+            undo = new Dictionary<string, string>(StringComparer.Ordinal);
 
-            var repaired = 0;
+            var (imported, toRepair) = CompileRepairPlanner.ImportUniqueNamespaces(outcome.Errors, typeIndex, sources);
+            foreach (var (file, text) in imported)
+            {
+                undo[file] = sources[file];
+                sources[file] = text;
+                await File.WriteAllTextAsync(Path.Join(runFolder, file), text, cancellationToken);
+                logger.LogInformation("[CompileGate] Round {Round}: imported a missing namespace in {File}", round, file);
+            }
+
+            var tasks = CompileRepairPlanner.Plan(toRepair, typeIndex, sources, sharedNamespace, settings, cobolByName);
+
+            var repaired = imported.Count;
             var rejected = 0;
             using var gate = new SemaphoreSlim(Math.Max(1, settings.MaxConcurrentRepairs));
             await Task.WhenAll(tasks.Select(async task =>
@@ -114,7 +149,9 @@ public static class CSharpCompileGate
                 {
                     var result = await repairAgent.RepairAsync(task, sources[task.File]);
                     if (result is null) { Interlocked.Increment(ref rejected); return; }
+                    lock (undo) undo.TryAdd(task.File, sources[task.File]);
                     await File.WriteAllTextAsync(Path.Join(runFolder, task.File), result, cancellationToken);
+                    logger.LogInformation("[CompileGate] Round {Round}: repaired {File}", round, task.File);
                     Interlocked.Increment(ref repaired);
                 }
                 finally
@@ -129,15 +166,36 @@ public static class CSharpCompileGate
             // A repair can introduce a framework type or a second namespace; scaffold again so the
             // next build judges the code, not stale scaffolding.
             GeneratedProjectScaffold.Write(runFolder, rootNamespace);
+            previous = outcome;
             round++;
         }
 
-        if (rounds.Count == 0 || rounds[^1].Round != round) rounds = Append(rounds, round, outcome, 0, 0);
+        if (rounds.Count == 0 || (rounds[^1].Round != round && !rounds[^1].RolledBack)) rounds = Append(rounds, round, outcome, 0, 0);
 
         return Finish(runFolder, new CompileGateResult(
             outcome.Succeeded, true,
-            outcome.Succeeded ? null : $"{rounds.Count - 1} repair round(s) did not converge",
+            outcome.Succeeded ? null : $"{rounds.Count(r => r.Round > 0)} repair round(s) did not converge",
             rounds, outcome.Errors, ExternalContracts(runFolder)), logger);
+    }
+
+    // Errors that stop the compiler before it binds method bodies. While any remain, body errors are
+    // not reported at all, so fixing the last of them can reveal hundreds that were always there.
+    private static readonly HashSet<string> EarlyPhase = new(StringComparer.Ordinal)
+    {
+        "CS1001", "CS1002", "CS1003", "CS1022", "CS1026", "CS1031", "CS1513", "CS1514", "CS1519", "CS1525", "CS1529", "CS1733",
+        "CS0101", "CS0102", "CS0111", "CS0115", "CS0234", "CS0246", "CS0260", "CS0263", "CS0506", "CS0508", "CS0527",
+        "CS0535", "CS0542", "CS0738",
+    };
+
+    /// <summary>
+    /// Whether a round left the code worse: more errors that block the compiler, or as many and more
+    /// errors overall. Fewer blocking errors is progress even when it reveals the body errors behind them.
+    /// </summary>
+    public static bool IsWorse(IReadOnlyList<CompilerDiagnostic> now, IReadOnlyList<CompilerDiagnostic> before)
+    {
+        var early = now.Count(e => EarlyPhase.Contains(e.Code));
+        var earlyBefore = before.Count(e => EarlyPhase.Contains(e.Code));
+        return early != earlyBefore ? early > earlyBefore : now.Count > before.Count;
     }
 
     private static List<CompileRound> Append(List<CompileRound> rounds, int round, BuildOutcome outcome, int repaired, int rejected) =>

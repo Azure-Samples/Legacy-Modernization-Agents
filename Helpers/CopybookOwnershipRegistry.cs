@@ -36,6 +36,8 @@ public sealed class CopybookOwnershipRegistry
 
     private readonly HashSet<string> _copybookStems = new(StringComparer.OrdinalIgnoreCase);
 
+    private readonly Dictionary<string, IReadOnlyList<CopybookMember>> _members = new(StringComparer.OrdinalIgnoreCase);
+
     public IReadOnlyCollection<CopybookOwnership> Ownerships => _byCopybook.Values;
 
     public static CopybookOwnershipRegistry Build(string sourceFolder)
@@ -70,11 +72,14 @@ public sealed class CopybookOwnershipRegistry
             // they are, and the missing-copybook reporting already accounts for them.
             if (!copybooks.ContainsKey(copybook)) continue;
 
+            var typeName = ToPascalCase(copybook);
             registry._byCopybook[copybook] = new CopybookOwnership(
                 Copybook: copybook,
-                TypeName: ToPascalCase(copybook),
+                TypeName: typeName,
                 OwnedBy: copybook,
                 UsedBy: usedBy.ToList());
+            registry._members[copybook] = CopybookMemberContract.Parse(
+                copybooks[copybook], typeName, name => copybooks.GetValueOrDefault(name));
         }
 
         return registry;
@@ -104,12 +109,14 @@ public sealed class CopybookOwnershipRegistry
             declares.AppendLine(
                 $"  • {o.TypeName} — from {o.Copybook}, used by {o.UsedBy.Count} other file(s). "
                 + "You are the only file that declares it.");
+            declares.Append(MembersOf(o, targetLanguage));
         }
 
         var references = new StringBuilder();
         foreach (var o in referenced)
         {
             references.AppendLine($"  • {o.TypeName} — declared by the conversion of {o.Copybook}.");
+            references.Append(MembersOf(o, targetLanguage));
         }
 
         return Environment.NewLine + PromptLoader.LoadSectionValidated(
@@ -122,6 +129,18 @@ public sealed class CopybookOwnershipRegistry
                     ? PromptLoader.LoadSectionValidated("RektContext", "CopybookScope", new Dictionary<string, string>())
                     : string.Empty,
             });
+    }
+
+    public IReadOnlyList<CopybookMember> MembersOf(string copybook) =>
+        _members.TryGetValue(copybook, out var members) ? members : [];
+
+    private string MembersOf(CopybookOwnership o, string targetLanguage)
+    {
+        var members = MembersOf(o.Copybook);
+        return members.Count == 0
+            ? string.Empty
+            : "      members:" + Environment.NewLine
+              + CopybookMemberContract.Render(members, targetLanguage, "        ") + Environment.NewLine;
     }
 
     private static Dictionary<string, string> Read(IEnumerable<string> paths)

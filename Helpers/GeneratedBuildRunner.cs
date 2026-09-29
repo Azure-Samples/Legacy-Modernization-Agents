@@ -34,12 +34,19 @@ public static class GeneratedBuildRunner
         @"^.*?\berror\s+(?<code>(?:NU|MSB|NETSDK)\d+):\s+(?<msg>.*?)(?:\s+\[[^\]\r\n]+\])?\s*$",
         RegexOptions.Multiline | RegexOptions.Compiled);
 
+    /// <summary>The full path of the first project file in <paramref name="runFolder"/>, or null.</summary>
+    public static string? FindProject(string runFolder) =>
+        Directory.EnumerateFiles(Path.GetFullPath(runFolder), "*.csproj", SearchOption.TopDirectoryOnly)
+            .OrderBy(p => p, StringComparer.Ordinal)
+            .FirstOrDefault();
+
     public static async Task<BuildOutcome> BuildAsync(
         string runFolder, TimeSpan timeout, CancellationToken cancellationToken = default)
     {
-        var project = Directory.EnumerateFiles(runFolder, "*.csproj", SearchOption.TopDirectoryOnly)
-            .OrderBy(p => p, StringComparer.Ordinal)
-            .FirstOrDefault();
+        // The migration passes the run folder relative to the repository; dotnet runs inside it,
+        // so a relative project path would be resolved twice.
+        runFolder = Path.GetFullPath(runFolder);
+        var project = FindProject(runFolder);
         if (project is null)
             return new BuildOutcome(false, [], [], "no project file in the run folder");
 

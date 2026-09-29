@@ -28,6 +28,44 @@ public static class CompileRepairPlanner
 
     private static readonly Regex Quoted = new(@"'(?<name>[A-Za-z_][A-Za-z0-9_]*)", RegexOptions.Compiled);
 
+    private static readonly Regex TopLevelUsing = new(@"^\s*using\s+[A-Za-z_][A-Za-z0-9_.]*\s*;", RegexOptions.Compiled);
+
+    /// <summary>
+    /// Types a file cannot see only because their one namespace is not imported get the import, without a
+    /// model: it is the whole fix, and a model given a large file to change one line may change more.
+    /// </summary>
+    public static (IReadOnlyDictionary<string, string> Fixed, IReadOnlyList<CompilerDiagnostic> Remaining) ImportUniqueNamespaces(
+        IReadOnlyList<CompilerDiagnostic> errors,
+        GeneratedTypeIndex index,
+        IReadOnlyDictionary<string, string> sources)
+    {
+        var fixedSources = new Dictionary<string, string>(StringComparer.Ordinal);
+        var remaining = new List<CompilerDiagnostic>();
+
+        foreach (var error in errors)
+        {
+            var match = error.Code == "CS0246" ? NotFound.Match(error.Message) : Match.Empty;
+            var namespaces = match.Success
+                ? index.Find(match.Groups["name"].Value).Select(d => d.Namespace).Where(n => n.Length > 0).Distinct().ToList()
+                : [];
+            var source = fixedSources.TryGetValue(error.File, out var f) ? f : sources.GetValueOrDefault(error.File);
+            if (namespaces.Count != 1 || source is null) { remaining.Add(error); continue; }
+
+            var ns = namespaces[0];
+            var lines = source.Split('\n').ToList();
+            if (!lines.Any(l => l.Trim() == $"using {ns};"))
+            {
+                var firstNamespace = lines.FindIndex(l => l.TrimStart().StartsWith("namespace ", StringComparison.Ordinal));
+                var searchEnd = firstNamespace < 0 ? lines.Count : firstNamespace;
+                var lastUsing = lines.Take(searchEnd).ToList().FindLastIndex(l => TopLevelUsing.IsMatch(l));
+                lines.Insert(lastUsing + 1, $"using {ns};");
+                fixedSources[error.File] = string.Join('\n', lines);
+            }
+        }
+
+        return (fixedSources, remaining);
+    }
+
     public static IReadOnlyList<CompileRepairTask> Plan(
         IReadOnlyList<CompilerDiagnostic> errors,
         GeneratedTypeIndex index,
@@ -58,6 +96,12 @@ public static class CompileRepairPlanner
             if (declarers.Count < 2) continue;
 
             var owner = GeneratedTypeIndex.ChooseOwner(group.Key.Name, declarers);
+
+            // The owner keeps its declaration, so the error gives it nothing to do; left in, a repair
+            // would read it as a request to delete the copy that is meant to stay.
+            if (work.TryGetValue(owner, out var kept))
+                kept.Errors.RemoveAll(e => group.Any(x => ReferenceEquals(x.Error, e)));
+
             foreach (var file in declarers.Where(f => f != owner))
             {
                 var task = For(file);
@@ -98,7 +142,19 @@ public static class CompileRepairPlanner
 
             var uses = UsesOf(name, referencing, sources, limits.MaxUsesShown);
             string owner;
-            if (cobol.TryGetValue(Key(name), out var layout))
+            var implementer = FindImplementer(name, sources);
+            if (implementer is { } impl)
+            {
+                // A converted class lists it as a base type, so its contract is that class's own
+                // public surface and belongs beside it rather than being guessed from call sites.
+                owner = impl.File;
+                For(owner).Instructions.Add(
+                    $"`{name}` is implemented by `{impl.Type}` in this file, but no file declares it. Declare it once, " +
+                    $"in namespace `{sharedNamespace}` (a separate block namespace in this file), with exactly the " +
+                    $"public members of `{impl.Type}` that the uses below need. Do not change `{impl.Type}`." +
+                    Environment.NewLine + uses);
+            }
+            else if (cobol.TryGetValue(Key(name), out var layout))
             {
                 // The COBOL was converted, but its own type was left out. It is declared from the
                 // layout, preferably by the file that converted it.
@@ -148,11 +204,26 @@ public static class CompileRepairPlanner
         }
 
         return work
-            .Where(w => sources.ContainsKey(w.Key))
+            .Where(w => sources.ContainsKey(w.Key) && (w.Value.Errors.Count > 0 || w.Value.Instructions.Count > 0))
             .Select(w => new CompileRepairTask(
                 w.Key, w.Value.Errors, w.Value.Instructions.Distinct().ToList(),
                 w.Value.Declarations.Values.ToList(), w.Value.MayRemove))
             .ToList();
+    }
+
+    /// <summary>The first generated class, record or struct that lists <paramref name="name"/> as a base type.</summary>
+    public static (string File, string Type)? FindImplementer(string name, IReadOnlyDictionary<string, string> sources)
+    {
+        var baseList = new Regex(
+            $@"\b(?:class|record|struct)[ \t]+(?<type>[A-Za-z_][A-Za-z0-9_]*)[^{{;]*?:[^{{;]*?\b{Regex.Escape(name)}\b",
+            RegexOptions.Multiline);
+        foreach (var (file, text) in sources.OrderBy(s => s.Key, StringComparer.Ordinal))
+        {
+            var match = baseList.Match(text);
+            if (match.Success) return (file, match.Groups["type"].Value);
+        }
+
+        return null;
     }
 
     // COBOL member names and the C# names derived from them differ only in case and separators.

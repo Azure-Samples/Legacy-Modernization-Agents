@@ -80,6 +80,15 @@ public sealed class CompileRepairAgent : AgentBase
         var lost = TypeNames(before).Where(t => !mayRemove.Contains(t) && !kept.Contains(t)).ToList();
         if (lost.Count > 0) return "removed type(s) it was not told to remove: " + string.Join(", ", lost);
 
+        // Other files find these types by namespace; moving one breaks every reference to it.
+        var namespacesAfter = Declarations(after).ToLookup(d => d.Name, d => d.Namespace);
+        var moved = Declarations(before)
+            .Where(d => kept.Contains(d.Name) && !namespacesAfter[d.Name].Contains(d.Namespace))
+            .Select(d => $"{d.Name} ({d.Namespace})")
+            .Distinct()
+            .ToList();
+        if (moved.Count > 0) return "moved type(s) out of their namespace: " + string.Join(", ", moved);
+
         var opens = after.Count(c => c == '{');
         var closes = after.Count(c => c == '}');
         if (opens != closes) return $"unbalanced braces ({opens}/{closes})";
@@ -89,7 +98,9 @@ public sealed class CompileRepairAgent : AgentBase
         return null;
     }
 
+    private static IReadOnlyList<TypeDeclaration> Declarations(string source) =>
+        GeneratedTypeIndex.FromSources(new Dictionary<string, string> { ["f"] = source }).Declarations;
+
     private static HashSet<string> TypeNames(string source) =>
-        GeneratedTypeIndex.FromSources(new Dictionary<string, string> { ["f"] = source })
-            .Declarations.Select(d => d.Name).ToHashSet(StringComparer.Ordinal);
+        Declarations(source).Select(d => d.Name).ToHashSet(StringComparer.Ordinal);
 }

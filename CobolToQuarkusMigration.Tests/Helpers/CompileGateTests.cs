@@ -91,7 +91,7 @@ public class CompileGateTests : IDisposable
         repair.File.Should().Be("Shared/Bdsiini1.cs");
         repair.MayRemove.Should().BeEquivalentTo(["Sysinfor"]);
         repair.Declarations.Should().ContainSingle().Which.Should().Contain("public string Job");
-        tasks.Single(t => t.File == "Shared/Sysinfor.cs").MayRemove.Should().BeEmpty();
+        tasks.Should().NotContain(t => t.File == "Shared/Sysinfor.cs", "the owner keeps its declaration and has nothing to repair");
     }
 
     [Fact]
@@ -164,5 +164,109 @@ public class CompileGateTests : IDisposable
         CompileRepairPlanner.ExtractDeclaration(source, "Big", maxLines: 4)!.Split('\n')
             .Should().HaveCount(5).And.EndWith("    // … truncated");
         CompileRepairPlanner.ExtractDeclaration(source, "Big")!.Should().Be(source);
+    }
+
+    [Fact]
+    public void ProjectOfARelativeRunFolderIsAnAbsolutePath()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), "gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        try
+        {
+            File.WriteAllText(Path.Combine(folder, "Modernized.csproj"), "<Project />");
+            var relative = Path.GetRelativePath(Directory.GetCurrentDirectory(), folder);
+
+            var project = GeneratedBuildRunner.FindProject(relative);
+
+            project.Should().NotBeNull();
+            Path.IsPathRooted(project!).Should().BeTrue();
+            File.Exists(project).Should().BeTrue();
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void AMissingInterfaceOfAConvertedClassIsDeclaredBesideIt()
+    {
+        var sources = new Dictionary<string, string>
+        {
+            ["Bd/Bdsm043.cs"] = "namespace B.Bd;\npublic sealed class Bdsm043Service : IBdsm043Service\n{\n    public void Run() { }\n}\n",
+            ["Shared/Bdsm043k.cs"] = "namespace B.Shared;\npublic class Caller\n{\n    private readonly IBdsm043Service _s;\n}\n",
+        };
+        var errors = new[]
+        {
+            new CompilerDiagnostic("Bd/Bdsm043.cs", 2, 38, "CS0246",
+                "The type or namespace name 'IBdsm043Service' could not be found (are you missing a using directive or an assembly reference?)"),
+            new CompilerDiagnostic("Shared/Bdsm043k.cs", 4, 22, "CS0246",
+                "The type or namespace name 'IBdsm043Service' could not be found (are you missing a using directive or an assembly reference?)"),
+        };
+
+        var tasks = CompileRepairPlanner.Plan(errors, GeneratedTypeIndex.FromSources(sources), sources, "B.Shared", Limits);
+
+        var owner = tasks.Single(t => t.File == "Bd/Bdsm043.cs");
+        owner.Instructions.Should().Contain(i => i.Contains("implemented by `Bdsm043Service`"));
+        owner.Instructions.Should().NotContain(i => i.Contains(CompileRepairPlanner.ExternalContractMarker));
+        tasks.Single(t => t.File == "Shared/Bdsm043k.cs").Instructions
+            .Should().Contain(i => i.Contains("declared by Bd/Bdsm043.cs"));
+    }
+
+    [Fact]
+    public void ARepairThatMovesATypeToAnotherNamespaceIsRejected()
+    {
+        const string before = "namespace A.Shared\n{\n    public class Keep { }\n}\n";
+        const string after = "namespace A.Bd\n{\n    public class Keep { }\n}\n";
+
+        CompileRepairAgent.Reject(before, after, new HashSet<string>()).Should().Contain("moved type(s)");
+        CompileRepairAgent.Reject(before, before.Replace("{ }", "{ public int X; }"), new HashSet<string>()).Should().BeNull();
+    }
+
+    [Fact]
+    public void ARoundThatAddsErrorsIsReportedAsUndone()
+    {
+        var result = new CompileGateResult(false, true, null,
+            [
+                new CompileRound(0, 22, 8, 1, new Dictionary<string, int>()),
+                new CompileRound(1, 497, 0, 0, new Dictionary<string, int>(), RolledBack: true),
+            ],
+            [], []);
+
+        result.ToMarkdown(10).Should().Contain("| 1 | 497 (worse than before; the round's repairs were undone) |");
+    }
+
+    [Fact]
+    public void ATypeDeclaredInOneOtherNamespaceIsImportedWithoutAModel()
+    {
+        var sources = new Dictionary<string, string>
+        {
+            ["Bd/Rgnb649.cs"] = "using System;\nnamespace M.Bd;\npublic sealed class Sqlca { }\n",
+            ["Bd/Bdsmfjl.cs"] = "using System;\nusing M.Shared;\n\nnamespace M.Shared\n{\n    public interface ISql { void Run(Sqlca s); }\n}\n",
+        };
+        var errors = new[]
+        {
+            new CompilerDiagnostic("Bd/Bdsmfjl.cs", 6, 38, "CS0246", "The type or namespace name 'Sqlca' could not be found (are you missing a using directive or an assembly reference?)"),
+            new CompilerDiagnostic("Bd/Bdsmfjl.cs", 6, 10, "CS0246", "The type or namespace name 'Nowhere' could not be found"),
+        };
+
+        var (imported, remaining) = CompileRepairPlanner.ImportUniqueNamespaces(errors, GeneratedTypeIndex.FromSources(sources), sources);
+
+        imported.Should().ContainKey("Bd/Bdsmfjl.cs").WhoseValue.Should()
+            .StartWith("using System;\nusing M.Shared;\nusing M.Bd;\n\nnamespace M.Shared");
+        remaining.Should().ContainSingle().Which.Message.Should().Contain("Nowhere");
+    }
+
+    [Fact]
+    public void FixingTheLastBlockingErrorIsProgressEvenWhenItRevealsBodyErrors()
+    {
+        static CompilerDiagnostic E(string code) => new("A.cs", 1, 1, code, "x");
+        var blocked = new[] { E("CS0246") };
+        var revealed = Enumerable.Repeat(E("CS1061"), 497).ToArray();
+
+        CSharpCompileGate.IsWorse(revealed, blocked).Should().BeFalse();
+        CSharpCompileGate.IsWorse(blocked, revealed).Should().BeTrue();
+        CSharpCompileGate.IsWorse([E("CS1061"), E("CS1061")], [E("CS1061")]).Should().BeTrue();
+        CSharpCompileGate.IsWorse([E("CS0246"), E("CS0246")], [E("CS0246"), E("CS1061"), E("CS1061")]).Should().BeTrue();
     }
 }

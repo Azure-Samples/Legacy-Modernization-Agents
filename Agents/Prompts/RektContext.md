@@ -165,6 +165,16 @@ REFERENCE these and do NOT declare them — another file owns them:
 {{References}}
 
   • Use exactly the type names given. The files referencing them use the same names.
+  • Each type's members are listed under it, derived from the copybook itself. The file
+    that declares the type and every file that uses it are converted separately and see
+    only this list, so it is the contract between them:
+      – Declare every listed member directly on the type, with exactly that name and type:
+        flat, no nested classes for group items, no shortened or re-prefixed names.
+      – A group item's member holds its fixed-width image (get composes its children,
+        set distributes it). Items under an OCCURS are arrays; 88-levels are booleans.
+      – Code that uses the type uses exactly these names. A `COPY … REPLACING` is another
+        instance of the same type, named after its replacement text; members never
+        carry the replaced placeholder.
   • Reference through the shared namespace (Java: import; C#: using).
   • If you need a field from a referenced type, read it from that type rather than
     re-declaring the layout locally.
