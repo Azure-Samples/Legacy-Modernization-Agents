@@ -173,7 +173,7 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
             for (int cont = 0; cont < maxContinuations; cont++)
             {
                 var hasPkg = javaCode.Contains("package ", StringComparison.Ordinal);
-                var hasCls = javaCode.Contains("class ", StringComparison.Ordinal);
+                var hasCls = ConversionOutputGuard.DeclaresType(javaCode);
                 var opens = javaCode.Count(c => c == '{');
                 var closes = javaCode.Count(c => c == '}');
                 if (hasPkg && hasCls && opens == closes) break; // complete
@@ -206,6 +206,8 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
                     cont + 1, contLines.Count);
             }
 
+            // After continuations, so a fragment never starts the scan inside a comment.
+            javaCode = GeneratedCodeEntities.DecodeInCode(javaCode);
             javaCode = ValidateJavaCode(javaCode);
 
             // Extract AI's semantic class name (based on domain/action/type pattern)
@@ -427,7 +429,7 @@ public class {{className}} {
         // Fail loud on unusable output. A silent 0-byte "success" is worse than a
         // file that explains what went wrong, so write a self-documenting stub.
         var hasPkgFinal = input.Contains("package ", StringComparison.Ordinal);
-        var hasClassFinal = input.Contains("class ", StringComparison.Ordinal);
+        var hasClassFinal = ConversionOutputGuard.DeclaresType(input);
         var opensFinal = input.Count(c => c == '{');
         var closesFinal = input.Count(c => c == '}');
         if (!hasPkgFinal || !hasClassFinal || opensFinal != closesFinal)

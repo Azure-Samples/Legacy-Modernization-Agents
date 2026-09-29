@@ -168,6 +168,15 @@ REFERENCE these and do NOT declare them — another file owns them:
   • Reference through the shared namespace (Java: import; C#: using).
   • If you need a field from a referenced type, read it from that type rather than
     re-declaring the layout locally.
+{{Scope}}
+
+## SECTION: CopybookScope
+
+  • THIS FILE IS A COPYBOOK. Its output is the types listed under DECLARE, plus any
+    interface assigned to it under CALL TARGET CONTRACTS, and its own statements if it has
+    any. Nothing else: no services, interfaces, DbContexts or DI registrations for the
+    programs that include it. Those programs are converted separately and declare their own.
+    A copybook of a few lines produces a file of a few types.
 
 ## SECTION: CallTargetContracts
 

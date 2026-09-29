@@ -167,7 +167,7 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
             for (int cont = 0; cont < maxContinuations; cont++)
             {
                 var hasNs = csharpCode.Contains("namespace ", StringComparison.Ordinal);
-                var hasCls = csharpCode.Contains("class ", StringComparison.Ordinal);
+                var hasCls = ConversionOutputGuard.DeclaresType(csharpCode);
                 var opens = csharpCode.Count(c => c == '{');
                 var closes = csharpCode.Count(c => c == '}');
                 if (hasNs && hasCls && opens == closes) break;
@@ -200,6 +200,8 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
                     cont + 1, contLines.Count);
             }
 
+            // After continuations, so a fragment never starts the scan inside a comment.
+            csharpCode = GeneratedCodeEntities.DecodeInCode(csharpCode);
             csharpCode = ValidateCSharpCode(csharpCode);
 
             // Extract AI's semantic class name (based on domain/action/type pattern)
@@ -372,7 +374,7 @@ public class {{className}}
         // Fail loud on unusable output. A silent 0-byte "success" is worse than a
         // file that explains what went wrong, so write a self-documenting stub.
         var hasNsFinal = input.Contains("namespace ", StringComparison.Ordinal);
-        var hasClassFinal = input.Contains("class ", StringComparison.Ordinal);
+        var hasClassFinal = ConversionOutputGuard.DeclaresType(input);
         var opensFinal = input.Count(c => c == '{');
         var closesFinal = input.Count(c => c == '}');
         if (!hasNsFinal || !hasClassFinal || opensFinal != closesFinal)

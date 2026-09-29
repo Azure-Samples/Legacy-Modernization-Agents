@@ -153,7 +153,7 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
                 };
             }
 
-            javaCode = ExtractJavaCode(javaCode);
+            javaCode = GeneratedCodeEntities.DecodeInCode(ExtractJavaCode(javaCode));
 
             if (!ConversionOutputGuard.IsUsableChunk(
                     javaCode,
@@ -254,7 +254,7 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
                 };
             }
 
-            correctedCode = ExtractJavaCode(correctedCode);
+            correctedCode = GeneratedCodeEntities.DecodeInCode(ExtractJavaCode(correctedCode));
 
             return new ChunkConversionResult
             {

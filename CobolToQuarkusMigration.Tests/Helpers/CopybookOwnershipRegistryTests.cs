@@ -103,6 +103,25 @@ public sealed class CopybookOwnershipRegistryTests : IDisposable
     }
 
     [Fact]
+    public void ACopybookIsToldToDeclareNothingBeyondItsOwnTypes()
+    {
+        // RENI310: six lines of condition names came back as 1300 lines of other programs' services.
+        Copybook("RENI310");
+        Program("BDSDA23", "RENI310");
+
+        Build().ToPromptBlock("RENI310", "C#").Should().Contain("THIS FILE IS A COPYBOOK");
+        Build().ToPromptBlock("BDSDA23", "C#").Should().NotContain("THIS FILE IS A COPYBOOK");
+    }
+
+    [Fact]
+    public void ACopybookNobodyIncludesStillGetsTheScopeRule()
+    {
+        Copybook("ORPHAN");
+
+        Build().ToPromptBlock("ORPHAN", "C#").Should().Contain("THIS FILE IS A COPYBOOK");
+    }
+
+    [Fact]
     public void ACommentedOutCopyDoesNotCreateAUser()
     {
         File.WriteAllText(Path.Join(_root, "QUIET.cbl"),

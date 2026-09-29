@@ -31,6 +31,8 @@ public class MigrationProcess
     private ICobolAnalyzerAgent? _cobolAnalyzerAgent;
     private IJavaConverterAgent? _javaConverterAgent;
     private ICodeConverterAgent? _codeConverterAgent;
+    private CompileGateResult? _compileGate;
+    private CompileRepairAgent? _compileRepairAgent;
     private IDependencyMapperAgent? _dependencyMapperAgent;
 
     /// <summary>
@@ -98,6 +100,11 @@ public class MigrationProcess
                 loggerFactory.CreateLogger<CSharpConverterAgent>(),
                 _settings.AISettings.ResolveJavaConverterModelId(),
                 _enhancedLogger, _chatLogger, settings: _settings);
+            _compileRepairAgent = CompileRepairAgent.Create(
+                _responsesClient, _chatClient,
+                loggerFactory.CreateLogger<CompileRepairAgent>(),
+                _settings.AISettings.ResolveJavaConverterModelId(),
+                _enhancedLogger, _chatLogger, _settings);
         }
         else
         {
@@ -412,6 +419,22 @@ public class MigrationProcess
                 }
             }
 
+            if (targetLang == TargetLanguage.CSharp)
+            {
+                progressCallback?.Invoke("Compiling generated code", 5, totalSteps);
+                _compileGate = await CSharpCompileGate.RunAsync(
+                    javaOutputFolder,
+                    ConversionNamespacePolicy.Root("C#"),
+                    ConversionNamespacePolicy.ForSharedTypes("C#"),
+                    _compileRepairAgent,
+                    CSharpCompileGate.MaxRoundsFromEnvironment(),
+                    _logger,
+                    cobolFiles
+                        .GroupBy(f => Path.GetFileNameWithoutExtension(f.FileName), StringComparer.OrdinalIgnoreCase)
+                        .ToDictionary(g => g.Key, g => g.First().Content, StringComparer.OrdinalIgnoreCase));
+                RefreshFromDisk(javaFiles);
+            }
+
             _enhancedLogger.ShowStep(6, totalSteps, "Report Generation", "Creating migration summary and metrics");
             _enhancedLogger.ShowDashboardSummary(runId, targetName, "RUNNING", "Report Generation", 95);
             _enhancedLogger.LogBehindTheScenes("MIGRATION", "STEP_6_START",
@@ -575,6 +598,7 @@ public class MigrationProcess
             generatedFiles, outputFolder, langLabel, _logger,
             cobolFiles.Select(f => f.FileName));
         if (!string.IsNullOrWhiteSpace(parity)) report.Append(parity);
+        if (_compileGate is not null) report.Append(_compileGate.ToMarkdown());
 
         // File mapping section
         report.AppendLine("## 🗂️ File Mapping");
@@ -643,5 +667,15 @@ public class MigrationProcess
 
         await File.WriteAllTextAsync(reportPath, report.ToString());
         _logger.LogInformation("Migration report generated: {ReportPath}", reportPath);
+    }
+
+    // The compile gate rewrites files on disk; the report and parity pass read the in-memory copies.
+    private static void RefreshFromDisk(IEnumerable<object?> files)
+    {
+        foreach (var file in files)
+        {
+            if (file is CodeFile code && !string.IsNullOrEmpty(code.FilePath) && File.Exists(code.FilePath))
+                code.Content = File.ReadAllText(code.FilePath);
+        }
     }
 }

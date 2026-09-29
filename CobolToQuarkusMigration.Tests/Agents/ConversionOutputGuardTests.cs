@@ -189,4 +189,26 @@ public class ConversionOutputGuardTests
         stub.Should().NotContain("trailing */");
         stub.Should().Contain("trailing * /");
     }
+
+    [Theory]
+    // RENI310.cpy: a complete conversion with no class in it was taken for truncated output.
+    [InlineData("namespace A;\npublic enum FiktivRenteKode { Nej = 1 }\npublic readonly record struct DetFikKd(int Value);")]
+    [InlineData("namespace A;\npublic sealed record Reni307(int Kode);")]
+    [InlineData("namespace A;\ninternal interface IBdsmfjlService { }")]
+    [InlineData("namespace A;\npublic static partial class Helpers { }")]
+    [InlineData("package a;\npublic enum Kode { NEJ }")]
+    [InlineData("package a;\npublic @interface Marker { }")]
+    public void DeclaresType_RecognisesEveryKindOfTypeDeclaration(string code)
+    {
+        ConversionOutputGuard.DeclaresType(code).Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("namespace A;\n// this record layout mirrors the copybook\n")]
+    [InlineData("    finishWork();\n    }\n}")]
+    public void DeclaresType_IgnoresProseAndFragments(string code)
+    {
+        ConversionOutputGuard.DeclaresType(code).Should().BeFalse();
+    }
 }

@@ -30,6 +30,8 @@ public class ChunkedMigrationProcess
 
     private ChunkingOrchestrator? _chunkingOrchestrator;
     private IChunkAwareConverter? _chunkAwareConverter;
+    private CompileRepairAgent? _compileRepairAgent;
+    private CompileGateResult? _compileGate;
     private ICobolAnalyzerAgent? _cobolAnalyzerAgent;
     private IDependencyMapperAgent? _dependencyMapperAgent;
 
@@ -90,6 +92,11 @@ public class ChunkedMigrationProcess
                 _settings.AISettings.ResolveJavaConverterModelId(),
                 _settings.ConversionSettings,
                 _enhancedLogger, _chatLogger, settings: _settings);
+            _compileRepairAgent = CompileRepairAgent.Create(
+                _responsesApiClient, _chatClient,
+                loggerFactory.CreateLogger<CompileRepairAgent>(),
+                _settings.AISettings.ResolveJavaConverterModelId(),
+                _enhancedLogger, _chatLogger, _settings);
         }
         else
         {
@@ -348,6 +355,18 @@ public class ChunkedMigrationProcess
                 {
                     _logger.LogWarning("Could not write build scaffolding: {Message}", ex.Message);
                 }
+
+                progressCallback?.Invoke("Compiling generated code", 6, 6, null);
+                _compileGate = await CSharpCompileGate.RunAsync(
+                    outputFolder,
+                    ConversionNamespacePolicy.Root("C#"),
+                    ConversionNamespacePolicy.ForSharedTypes("C#"),
+                    _compileRepairAgent,
+                    CSharpCompileGate.MaxRoundsFromEnvironment(),
+                    _logger,
+                    cobolFiles
+                        .GroupBy(f => Path.GetFileNameWithoutExtension(f.FileName), StringComparer.OrdinalIgnoreCase)
+                        .ToDictionary(g => g.Key, g => g.First().Content, StringComparer.OrdinalIgnoreCase));
             }
 
             // Generate reports
@@ -1212,6 +1231,7 @@ public class ChunkedMigrationProcess
             generatedFiles, outputFolder, langName, _logger,
             cobolFiles.Select(f => f.FileName));
         if (!string.IsNullOrWhiteSpace(parity)) report.Append(parity);
+        if (_compileGate is not null) report.Append(_compileGate.ToMarkdown());
 
         await File.WriteAllTextAsync(reportPath, report.ToString());
         _logger.LogInformation("Chunked migration report saved to {Path}", reportPath);

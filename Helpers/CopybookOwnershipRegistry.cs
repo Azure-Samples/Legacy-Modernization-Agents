@@ -34,6 +34,8 @@ public sealed class CopybookOwnershipRegistry
     private readonly Dictionary<string, CopybookOwnership> _byCopybook =
         new(StringComparer.OrdinalIgnoreCase);
 
+    private readonly HashSet<string> _copybookStems = new(StringComparer.OrdinalIgnoreCase);
+
     public IReadOnlyCollection<CopybookOwnership> Ownerships => _byCopybook.Values;
 
     public static CopybookOwnershipRegistry Build(string sourceFolder)
@@ -43,6 +45,7 @@ public sealed class CopybookOwnershipRegistry
 
         var copybooks = Read(SourceTypeRegistry.EnumerateCopybookFiles(sourceFolder));
         var programs = Read(SourceTypeRegistry.EnumerateProgramFiles(sourceFolder));
+        registry._copybookStems.UnionWith(copybooks.Keys);
 
         // A copybook is copied by programs and by other copybooks alike, and both produce a file
         // that would otherwise declare the type again.
@@ -92,7 +95,8 @@ public sealed class CopybookOwnershipRegistry
             .OrderBy(o => o.TypeName, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        if (owned.Count == 0 && referenced.Count == 0) return string.Empty;
+        var isCopybook = _copybookStems.Contains(stem);
+        if (owned.Count == 0 && referenced.Count == 0 && !isCopybook) return string.Empty;
 
         var declares = new StringBuilder();
         foreach (var o in owned)
@@ -114,6 +118,9 @@ public sealed class CopybookOwnershipRegistry
                 ["SharedNamespace"] = ConversionNamespacePolicy.ForSharedTypes(targetLanguage),
                 ["Declares"] = declares.Length == 0 ? "  (none)" : declares.ToString().TrimEnd(),
                 ["References"] = references.Length == 0 ? "  (none)" : references.ToString().TrimEnd(),
+                ["Scope"] = isCopybook
+                    ? PromptLoader.LoadSectionValidated("RektContext", "CopybookScope", new Dictionary<string, string>())
+                    : string.Empty,
             });
     }
 
