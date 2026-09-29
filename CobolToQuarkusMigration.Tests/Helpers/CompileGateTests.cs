@@ -1,3 +1,4 @@
+using CobolToQuarkusMigration.Models;
 using CobolToQuarkusMigration.Agents;
 using CobolToQuarkusMigration.Helpers;
 using FluentAssertions;
@@ -7,6 +8,8 @@ namespace CobolToQuarkusMigration.Tests.Helpers;
 
 public class CompileGateTests : IDisposable
 {
+    private static readonly CompileGateSettings Limits = new();
+
     private readonly string _run = Path.Join(Path.GetTempPath(), "compile-gate-" + Guid.NewGuid().ToString("N"));
 
     public CompileGateTests() => Directory.CreateDirectory(Path.Join(_run, "Modernized", "Bd"));
@@ -82,7 +85,7 @@ public class CompileGateTests : IDisposable
             new CompilerDiagnostic("Shared/Sysinfor.cs", 2, 21, "CS0101", "The namespace 'S' already contains a definition for 'Sysinfor'"),
         };
 
-        var tasks = CompileRepairPlanner.Plan(errors, GeneratedTypeIndex.FromSources(TwoSysinfors), TwoSysinfors, "S");
+        var tasks = CompileRepairPlanner.Plan(errors, GeneratedTypeIndex.FromSources(TwoSysinfors), TwoSysinfors, "S", Limits);
 
         var repair = tasks.Should().ContainSingle(t => t.MayRemove.Count > 0).Subject;
         repair.File.Should().Be("Shared/Bdsiini1.cs");
@@ -102,7 +105,7 @@ public class CompileGateTests : IDisposable
         var errors = sources.Keys.Select(f => new CompilerDiagnostic(f, 2, 23, "CS0246",
             "The type or namespace name 'IBdsparmService' could not be found (are you missing a using directive or an assembly reference?)")).ToList();
 
-        var tasks = CompileRepairPlanner.Plan(errors, GeneratedTypeIndex.FromSources(sources), sources, "B.Shared");
+        var tasks = CompileRepairPlanner.Plan(errors, GeneratedTypeIndex.FromSources(sources), sources, "B.Shared", Limits);
 
         var declaring = tasks.Where(t => t.Instructions.Any(i => i.Contains(CompileRepairPlanner.ExternalContractMarker))).ToList();
         declaring.Should().ContainSingle().Which.File.Should().Be("Bd/Bdsda23.cs");
@@ -124,7 +127,7 @@ public class CompileGateTests : IDisposable
                 "The type or namespace name 'Bdsda2fk' could not be found (are you missing a using directive or an assembly reference?)"),
         };
 
-        var task = CompileRepairPlanner.Plan(errors, GeneratedTypeIndex.FromSources(sources), sources, "B.Shared",
+        var task = CompileRepairPlanner.Plan(errors, GeneratedTypeIndex.FromSources(sources), sources, "B.Shared", Limits,
             new Dictionary<string, string> { ["BDSDA2FK"] = "       01 BDSDA2FK-AREA.\n          05 FIK-KD PIC 9." }).Single();
 
         task.Instructions.Should().ContainSingle().Which.Should()
@@ -151,5 +154,15 @@ public class CompileGateTests : IDisposable
             .Should().Be("public sealed class Sysinfor\n{\n    public string Step { get; set; } = \"\";\n}");
         CompileRepairPlanner.ExtractDeclaration("public sealed record Reni307(int Kode);", "Reni307")
             .Should().Be("public sealed record Reni307(int Kode);");
+    }
+
+    [Fact]
+    public void ConfiguredLimitsBoundDeclarationLength()
+    {
+        var source = "public class Big\n{\n" + string.Join("\n", Enumerable.Range(0, 10).Select(i => $"    public int F{i};")) + "\n}";
+
+        CompileRepairPlanner.ExtractDeclaration(source, "Big", maxLines: 4)!.Split('\n')
+            .Should().HaveCount(5).And.EndWith("    // … truncated");
+        CompileRepairPlanner.ExtractDeclaration(source, "Big")!.Should().Be(source);
     }
 }

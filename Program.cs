@@ -1327,6 +1327,11 @@ internal static class Program
             && double.TryParse(aiExMult, NumberStyles.Float, CultureInfo.InvariantCulture, out var cemVal))
             modelProfile.ReasoningExhaustionRetryMultiplier = cemVal;
 
+        var compileGate = settings.CompileGate ??= new CompileGateSettings();
+        if (Environment.GetEnvironmentVariable("COMPILE_REPAIR_MAX_ROUNDS") is { Length: > 0 } repairRounds
+            && int.TryParse(repairRounds, out var rrVal) && rrVal >= 0)
+            compileGate.MaxRepairRounds = rrVal;
+
         // ── Speed-profile overrides for ChunkingSettings ────────────────────
         var chunkingSettings = settings.ChunkingSettings ??= new ChunkingSettings();
 

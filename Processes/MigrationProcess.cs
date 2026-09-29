@@ -419,7 +419,7 @@ public class MigrationProcess
                 }
             }
 
-            if (targetLang == TargetLanguage.CSharp)
+            if (targetLang == TargetLanguage.CSharp && _settings.CompileGate.Enabled)
             {
                 progressCallback?.Invoke("Compiling generated code", 5, totalSteps);
                 _compileGate = await CSharpCompileGate.RunAsync(
@@ -427,7 +427,7 @@ public class MigrationProcess
                     ConversionNamespacePolicy.Root("C#"),
                     ConversionNamespacePolicy.ForSharedTypes("C#"),
                     _compileRepairAgent,
-                    CSharpCompileGate.MaxRoundsFromEnvironment(),
+                    _settings.CompileGate,
                     _logger,
                     cobolFiles
                         .GroupBy(f => Path.GetFileNameWithoutExtension(f.FileName), StringComparer.OrdinalIgnoreCase)
@@ -598,7 +598,7 @@ public class MigrationProcess
             generatedFiles, outputFolder, langLabel, _logger,
             cobolFiles.Select(f => f.FileName));
         if (!string.IsNullOrWhiteSpace(parity)) report.Append(parity);
-        if (_compileGate is not null) report.Append(_compileGate.ToMarkdown());
+        if (_compileGate is not null) report.Append(_compileGate.ToMarkdown(_settings.CompileGate.MaxErrorsInReport));
 
         // File mapping section
         report.AppendLine("## 🗂️ File Mapping");

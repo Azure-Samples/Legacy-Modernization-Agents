@@ -62,6 +62,11 @@ public class AppSettings
     public AssemblySettings AssemblySettings { get; set; } = new AssemblySettings();
 
     /// <summary>
+    /// Gets or sets the compile gate settings: building generated C# and repairing compiler errors.
+    /// </summary>
+    public CompileGateSettings CompileGate { get; set; } = new CompileGateSettings();
+
+    /// <summary>
     /// Gets or sets the model profile for code-conversion agents (all model families).
     /// Loaded from appsettings.json "ModelProfile" section.
     /// </summary>
@@ -399,4 +404,34 @@ public class ModelProfileSettings
     /// Loaded from appsettings.json. Empty list = no content-based scoring (baseline only).
     /// </summary>
     public List<ComplexityIndicator> ComplexityIndicators { get; set; } = new();
+}
+
+/// <summary>
+/// Controls the compile gate that builds generated C# and repairs compiler errors per file.
+/// </summary>
+public class CompileGateSettings
+{
+    /// <summary>Whether generated C# is built and repaired after conversion.</summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>Repair rounds after the first build; 0 only measures. Override: COMPILE_REPAIR_MAX_ROUNDS.</summary>
+    public int MaxRepairRounds { get; set; } = 3;
+
+    /// <summary>Files repaired concurrently within a round.</summary>
+    public int MaxConcurrentRepairs { get; set; } = 4;
+
+    /// <summary>Time allowed for one dotnet build of the generated project.</summary>
+    public int BuildTimeoutSeconds { get; set; } = 300;
+
+    /// <summary>Declarations from other files included in one repair prompt.</summary>
+    public int MaxDeclarationsPerRepair { get; set; } = 6;
+
+    /// <summary>Lines of one included declaration before it is truncated.</summary>
+    public int MaxDeclarationLines { get; set; } = 120;
+
+    /// <summary>Source lines shown as uses of a type that must be declared as an external contract.</summary>
+    public int MaxUsesShown { get; set; } = 20;
+
+    /// <summary>Remaining compiler errors listed in the migration report.</summary>
+    public int MaxErrorsInReport { get; set; } = 50;
 }

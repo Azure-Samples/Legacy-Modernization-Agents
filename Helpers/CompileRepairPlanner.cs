@@ -5,6 +5,7 @@
 
 using System.Text;
 using System.Text.RegularExpressions;
+using CobolToQuarkusMigration.Models;
 
 namespace CobolToQuarkusMigration.Helpers;
 
@@ -27,22 +28,19 @@ public static class CompileRepairPlanner
 
     private static readonly Regex Quoted = new(@"'(?<name>[A-Za-z_][A-Za-z0-9_]*)", RegexOptions.Compiled);
 
-    private const int MaxDeclarationLines = 120;
-    private const int MaxDeclarationsPerTask = 6;
-    private const int MaxUsesShown = 20;
-
     public static IReadOnlyList<CompileRepairTask> Plan(
         IReadOnlyList<CompilerDiagnostic> errors,
         GeneratedTypeIndex index,
         IReadOnlyDictionary<string, string> sources,
         string sharedNamespace,
+        CompileGateSettings limits,
         IReadOnlyDictionary<string, string>? cobolByName = null)
     {
         var cobol = (cobolByName ?? new Dictionary<string, string>())
             .GroupBy(c => Key(c.Key))
             .ToDictionary(g => g.Key, g => g.First().Value, StringComparer.Ordinal);
         var work = new SortedDictionary<string, Builder>(StringComparer.Ordinal);
-        Builder For(string file) => work.TryGetValue(file, out var b) ? b : work[file] = new Builder();
+        Builder For(string file) => work.TryGetValue(file, out var b) ? b : work[file] = new Builder(limits);
 
         foreach (var error in errors) For(error.File).Errors.Add(error);
 
@@ -98,7 +96,7 @@ public static class CompileRepairPlanner
                 continue;
             }
 
-            var uses = UsesOf(name, referencing, sources);
+            var uses = UsesOf(name, referencing, sources, limits.MaxUsesShown);
             string owner;
             if (cobol.TryGetValue(Key(name), out var layout))
             {
@@ -161,7 +159,7 @@ public static class CompileRepairPlanner
     private static string Key(string name) =>
         new string(name.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
 
-    private static string UsesOf(string name, IEnumerable<string> files, IReadOnlyDictionary<string, string> sources)
+    private static string UsesOf(string name, IEnumerable<string> files, IReadOnlyDictionary<string, string> sources, int maxUsesShown)
     {
         var word = new Regex($@"\b{Regex.Escape(name)}\b");
         var sb = new StringBuilder("Uses:");
@@ -170,7 +168,7 @@ public static class CompileRepairPlanner
         {
             if (!sources.TryGetValue(file, out var text)) continue;
             var lines = text.Split('\n');
-            for (var i = 0; i < lines.Length && shown < MaxUsesShown; i++)
+            for (var i = 0; i < lines.Length && shown < maxUsesShown; i++)
             {
                 if (!word.IsMatch(lines[i])) continue;
                 sb.Append(Environment.NewLine).Append($"  {file}:{i + 1}: {lines[i].Trim()}");
@@ -181,8 +179,11 @@ public static class CompileRepairPlanner
         return sb.ToString();
     }
 
-    /// <summary>The text of a type declaration, from its line to its matching closing brace.</summary>
-    public static string? ExtractDeclaration(string source, string typeName)
+    /// <summary>
+    /// The text of a type declaration, from its line to its matching closing brace, truncated to
+    /// <paramref name="maxLines"/> lines when given.
+    /// </summary>
+    public static string? ExtractDeclaration(string source, string typeName, int? maxLines = null)
     {
         var match = Regex.Match(source,
             $@"^[^\r\n]*\b(?:class|record|struct|interface|enum)[ \t]+{Regex.Escape(typeName)}\b",
@@ -201,16 +202,16 @@ public static class CompileRepairPlanner
             {
                 var text = source[match.Index..(i + 1)];
                 var lines = text.Split('\n');
-                return lines.Length <= MaxDeclarationLines
+                return maxLines is not { } max || lines.Length <= max
                     ? text
-                    : string.Join('\n', lines.Take(MaxDeclarationLines)) + "\n    // … truncated";
+                    : string.Join('\n', lines.Take(max)) + "\n    // … truncated";
             }
         }
 
         return null;
     }
 
-    private sealed class Builder
+    private sealed class Builder(CompileGateSettings limits)
     {
         public List<CompilerDiagnostic> Errors { get; } = [];
         public List<string> Instructions { get; } = [];
@@ -220,9 +221,9 @@ public static class CompileRepairPlanner
         public void DeclarationOf(string name, string file, IReadOnlyDictionary<string, string> sources)
         {
             var key = $"{file}#{name}";
-            if (Declarations.ContainsKey(key) || Declarations.Count >= MaxDeclarationsPerTask) return;
+            if (Declarations.ContainsKey(key) || Declarations.Count >= limits.MaxDeclarationsPerRepair) return;
             if (!sources.TryGetValue(file, out var text)) return;
-            var declaration = ExtractDeclaration(text, name);
+            var declaration = ExtractDeclaration(text, name, limits.MaxDeclarationLines);
             if (declaration is not null) Declarations[key] = $"// {file}{Environment.NewLine}{declaration}";
         }
     }

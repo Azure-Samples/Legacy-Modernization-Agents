@@ -5,6 +5,7 @@
 using System.Text;
 using System.Text.Json;
 using CobolToQuarkusMigration.Agents;
+using CobolToQuarkusMigration.Models;
 using Microsoft.Extensions.Logging;
 
 namespace CobolToQuarkusMigration.Helpers;
@@ -19,7 +20,7 @@ public sealed record CompileGateResult(
     IReadOnlyList<CompilerDiagnostic> RemainingErrors,
     IReadOnlyList<string> ExternalContracts)
 {
-    public string ToMarkdown()
+    public string ToMarkdown(int maxErrorsShown)
     {
         var sb = new StringBuilder();
         sb.AppendLine("## 🧱 Compile Status");
@@ -52,8 +53,8 @@ public sealed record CompileGateResult(
         if (RemainingErrors.Count > 0)
         {
             sb.AppendLine("```");
-            foreach (var e in RemainingErrors.Take(50)) sb.AppendLine(e.ToString());
-            if (RemainingErrors.Count > 50) sb.AppendLine($"… and {RemainingErrors.Count - 50} more (see compile-status.json)");
+            foreach (var e in RemainingErrors.Take(maxErrorsShown)) sb.AppendLine(e.ToString());
+            if (RemainingErrors.Count > maxErrorsShown) sb.AppendLine($"… and {RemainingErrors.Count - maxErrorsShown} more (see compile-status.json)");
             sb.AppendLine("```");
             sb.AppendLine();
         }
@@ -66,20 +67,18 @@ public static class CSharpCompileGate
 {
     public const string StatusFile = "compile-status.json";
 
-    public static int MaxRoundsFromEnvironment() =>
-        int.TryParse(Environment.GetEnvironmentVariable("COMPILE_REPAIR_MAX_ROUNDS"), out var n) && n >= 0 ? n : 3;
-
     public static async Task<CompileGateResult> RunAsync(
         string runFolder,
         string rootNamespace,
         string sharedNamespace,
         CompileRepairAgent? repairAgent,
-        int maxRounds,
+        CompileGateSettings settings,
         ILogger logger,
         IReadOnlyDictionary<string, string>? cobolByName = null,
         CancellationToken cancellationToken = default)
     {
-        var timeout = TimeSpan.FromMinutes(5);
+        var timeout = TimeSpan.FromSeconds(Math.Max(1, settings.BuildTimeoutSeconds));
+        var maxRounds = Math.Max(0, settings.MaxRepairRounds);
         var rounds = new List<CompileRound>();
         BuildOutcome outcome;
         var round = 0;
@@ -103,11 +102,11 @@ public static class CSharpCompileGate
             if (outcome.Succeeded || repairAgent is null || round >= maxRounds) break;
 
             var sources = ReadSources(runFolder);
-            var tasks = CompileRepairPlanner.Plan(outcome.Errors, GeneratedTypeIndex.FromSources(sources), sources, sharedNamespace, cobolByName);
+            var tasks = CompileRepairPlanner.Plan(outcome.Errors, GeneratedTypeIndex.FromSources(sources), sources, sharedNamespace, settings, cobolByName);
 
             var repaired = 0;
             var rejected = 0;
-            using var gate = new SemaphoreSlim(4);
+            using var gate = new SemaphoreSlim(Math.Max(1, settings.MaxConcurrentRepairs));
             await Task.WhenAll(tasks.Select(async task =>
             {
                 await gate.WaitAsync(cancellationToken);

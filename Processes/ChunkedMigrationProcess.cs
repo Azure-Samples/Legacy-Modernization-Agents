@@ -356,17 +356,20 @@ public class ChunkedMigrationProcess
                     _logger.LogWarning("Could not write build scaffolding: {Message}", ex.Message);
                 }
 
-                progressCallback?.Invoke("Compiling generated code", 6, 6, null);
-                _compileGate = await CSharpCompileGate.RunAsync(
-                    outputFolder,
-                    ConversionNamespacePolicy.Root("C#"),
-                    ConversionNamespacePolicy.ForSharedTypes("C#"),
-                    _compileRepairAgent,
-                    CSharpCompileGate.MaxRoundsFromEnvironment(),
-                    _logger,
-                    cobolFiles
-                        .GroupBy(f => Path.GetFileNameWithoutExtension(f.FileName), StringComparer.OrdinalIgnoreCase)
-                        .ToDictionary(g => g.Key, g => g.First().Content, StringComparer.OrdinalIgnoreCase));
+                if (_settings.CompileGate.Enabled)
+                {
+                    progressCallback?.Invoke("Compiling generated code", 6, 6, null);
+                    _compileGate = await CSharpCompileGate.RunAsync(
+                        outputFolder,
+                        ConversionNamespacePolicy.Root("C#"),
+                        ConversionNamespacePolicy.ForSharedTypes("C#"),
+                        _compileRepairAgent,
+                        _settings.CompileGate,
+                        _logger,
+                        cobolFiles
+                            .GroupBy(f => Path.GetFileNameWithoutExtension(f.FileName), StringComparer.OrdinalIgnoreCase)
+                            .ToDictionary(g => g.Key, g => g.First().Content, StringComparer.OrdinalIgnoreCase));
+                }
             }
 
             // Generate reports
@@ -1231,7 +1234,7 @@ public class ChunkedMigrationProcess
             generatedFiles, outputFolder, langName, _logger,
             cobolFiles.Select(f => f.FileName));
         if (!string.IsNullOrWhiteSpace(parity)) report.Append(parity);
-        if (_compileGate is not null) report.Append(_compileGate.ToMarkdown());
+        if (_compileGate is not null) report.Append(_compileGate.ToMarkdown(_settings.CompileGate.MaxErrorsInReport));
 
         await File.WriteAllTextAsync(reportPath, report.ToString());
         _logger.LogInformation("Chunked migration report saved to {Path}", reportPath);
