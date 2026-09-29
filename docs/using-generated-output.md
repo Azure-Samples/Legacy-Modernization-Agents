@@ -52,6 +52,7 @@ Most defects are prevented or fixed without a model:
 | Typed call contracts | Callers and callee disagreeing about a called program's parameters. The signature is read from the callee's `PROCEDURE DIVISION USING` and `LINKAGE SECTION`. For a callee outside the source it comes from the callers' `CALL … USING` records, and only when all callers agree |
 | `CallTargetContracts.g.cs` | Models declaring a call-target interface in a shape of their own. Interfaces with a known signature are generated, and any model-written copies are removed |
 | Completion signal | A complete response with one syntax defect being mistaken for truncation. Asked to "continue" a finished file, the model invented code for other programs. Continuation now happens only when the provider did not report a normal end |
+| Same-name copies | A file declaring its own copy of a shared type in another namespace, which fails as "cannot convert from `A.X` to `B.X`". The file is allowed to remove its copy |
 | Accessor terminators, missing `using` | `get => a + b,` rewritten to `;`, and a namespace imported when the missing type is declared in exactly one place |
 
 Measured on the same five programs and 65 copybooks (70 generated files), errors per gate round:
@@ -61,12 +62,17 @@ Measured on the same five programs and 65 copybooks (70 generated files), errors
 | Before the member contract | 22 | 497 | — | — | Rolled back |
 | Member contract | 22 | 1 | 23 | 7 | Did not compile |
 | Typed call contracts, completion signal | 1 | 56 | 5 | 1 | Did not compile |
-| Generated interfaces, callee shown on argument errors | 2 | 0 | | | **Compiles** |
+| Generated interfaces, same-name copies removed (fresh run) | 4 | 2 | 0 | | **Compiles** |
 
-The last row is the previous run's output gated again with the final code. A fresh end-to-end run
-is the confirmation. Four types are **external contracts**: programs that are called but not part
-of the source (`BDSDA21`, `BDSMQFJ`, `CEE3DMP`, `SQLIFMD`). They are declared from their uses and
-marked `// EXTERNAL CONTRACT`. They compile, but they are not converted logic.
+The last row is a fresh end-to-end conversion. It needed no continuation requests and produced no
+placeholder files. An independent `dotnet build` of the output gives 0 errors and 47 warnings.
+Round 2 comes from re-running the gate with the last planner rule: the run itself stopped at 2
+errors, because a correct repair had been rejected.
+
+A program called from the source but not part of it gets a generated interface only when its
+signature can be derived. Otherwise the model declares the interface. If the model leaves it out,
+the gate declares it from its uses and marks it `// EXTERNAL CONTRACT`. Either way it compiles,
+but it is not converted logic.
 
 ## Earlier measurements
 

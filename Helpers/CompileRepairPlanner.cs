@@ -26,6 +26,10 @@ public static class CompileRepairPlanner
     private static readonly Regex NotFound = new(
         @"^The type or namespace name '(?<name>[A-Za-z_][A-Za-z0-9_]*)(?:<[^']*>)?' could not be found", RegexOptions.Compiled);
 
+    private static readonly Regex Conversion = new(
+        @"cannot (?:implicitly )?convert (?:from|type) '(?<from>[A-Za-z_][A-Za-z0-9_.]*)' to '(?<to>[A-Za-z_][A-Za-z0-9_.]*)'",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
     private static readonly Regex Quoted = new(@"'(?<name>[A-Za-z_][A-Za-z0-9_]*)", RegexOptions.Compiled);
 
     private static readonly Regex TopLevelUsing = new(@"^\s*using\s+[A-Za-z_][A-Za-z0-9_.]*\s*;", RegexOptions.Compiled);
@@ -112,6 +116,31 @@ public static class CompileRepairPlanner
                     "not have, change this file's code to use the members it does have; do not add a second type.");
                 task.DeclarationOf(group.Key.Name, owner, sources);
             }
+        }
+
+        // One type declared under the same name in two namespaces: the erroring file converts a copy it
+        // declared itself, so it removes that copy and uses the declaration the other side expects.
+        foreach (var error in errors.Where(e => e.Code is "CS1503" or "CS0029" or "CS0266"))
+        {
+            var match = Conversion.Match(error.Message);
+            if (!match.Success) continue;
+            var (from, to) = (Split(match.Groups["from"].Value), Split(match.Groups["to"].Value));
+            if (from.Name != to.Name || from.Ns == to.Ns) continue;
+
+            var declarations = index.Find(from.Name);
+            var local = declarations.FirstOrDefault(d => d.File == error.File && (d.Namespace == from.Ns || d.Namespace == to.Ns));
+            if (local is null) continue;
+            var otherNs = local.Namespace == from.Ns ? to.Ns : from.Ns;
+            var other = declarations.FirstOrDefault(d => d.File != error.File && d.Namespace == otherNs);
+            if (other is null) continue;
+
+            var task = For(error.File);
+            if (!task.MayRemove.Add(from.Name)) continue;
+            task.Instructions.Add(
+                $"`{local.Namespace}.{from.Name}` in this file is a copy of `{otherNs}.{from.Name}` declared in {other.File}. " +
+                $"Delete this file's declaration of `{from.Name}` and use that one (add `using {otherNs};` if missing). " +
+                "Where this file relies on members it does not have, change this file's code to use the members it does have.");
+            task.DeclarationOf(from.Name, other.File, sources);
         }
 
         // Referenced but not found: either declared somewhere this file cannot see, or nowhere.
@@ -256,6 +285,12 @@ public static class CompileRepairPlanner
     }
 
     // COBOL member names and the C# names derived from them differ only in case and separators.
+    private static (string Ns, string Name) Split(string qualified)
+    {
+        var dot = qualified.LastIndexOf('.');
+        return dot < 0 ? ("", qualified) : (qualified[..dot], qualified[(dot + 1)..]);
+    }
+
     private static string Key(string name) =>
         new string(name.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
 

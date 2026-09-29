@@ -77,6 +77,31 @@ public class CompileGateTests : IDisposable
     };
 
     [Fact]
+    public void ACopyInAnotherNamespaceIsRemovedByTheFileThatCannotConvertIt()
+    {
+        var sources = new Dictionary<string, string>
+        {
+            ["Shared/Sysinfor.cs"] = "namespace M.Shared;\npublic sealed class Sysinfor { public string Job { get; set; } = \"\"; }\n",
+            ["Bd/Rgnb649.cs"] = "namespace M.Bd;\npublic sealed class Sysinfor { }\npublic sealed class Rgnb649 { }\n",
+        };
+        var errors = new[]
+        {
+            new CompilerDiagnostic("Bd/Rgnb649.cs", 3, 44, "CS1503", "Argument 1: cannot convert from 'M.Bd.Sysinfor' to 'M.Shared.Sysinfor'"),
+            new CompilerDiagnostic("Bd/Rgnb649.cs", 9, 58, "CS1503", "Argument 1: cannot convert from 'M.Bd.Sysinfor' to 'M.Shared.Sysinfor'"),
+        };
+
+        var tasks = CompileRepairPlanner.Plan(errors, GeneratedTypeIndex.FromSources(sources), sources, "M.Shared", Limits);
+
+        var repair = tasks.Should().ContainSingle().Subject;
+        repair.File.Should().Be("Bd/Rgnb649.cs");
+        repair.MayRemove.Should().BeEquivalentTo(["Sysinfor"]);
+        repair.Instructions.Should().ContainSingle(i => i.Contains("using M.Shared;"));
+        repair.Declarations.Should().ContainSingle().Which.Should().Contain("public string Job");
+        CompileRepairAgent.Reject(sources["Bd/Rgnb649.cs"], "namespace M.Bd;\npublic sealed class Rgnb649 { }\n", repair.MayRemove)
+            .Should().BeNull();
+    }
+
+    [Fact]
     public void ADuplicateIsRemovedFromEveryFileButTheOwnerWhicheverFileTheCompilerBlamed()
     {
         // The compiler blames the owner here; the repair still goes to the other file.
