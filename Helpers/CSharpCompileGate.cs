@@ -81,7 +81,8 @@ public static class CSharpCompileGate
         CompileGateSettings settings,
         ILogger logger,
         IReadOnlyDictionary<string, string>? cobolByName = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        CallTargetRegistry? callTargets = null)
     {
         var timeout = TimeSpan.FromSeconds(Math.Max(1, settings.BuildTimeoutSeconds));
         var maxRounds = Math.Max(0, settings.MaxRepairRounds);
@@ -90,6 +91,9 @@ public static class CSharpCompileGate
         BuildOutcome? previous = null;
         var undo = new Dictionary<string, string>(StringComparer.Ordinal);
         var round = 0;
+
+        if (callTargets is not null)
+            GeneratedProjectScaffold.Write(runFolder, rootNamespace, callTargets: callTargets, sharedNamespace: sharedNamespace);
 
         while (true)
         {
@@ -105,7 +109,7 @@ public static class CSharpCompileGate
                     round, outcome.Errors.Count, previous.Errors.Count);
                 foreach (var (file, text) in undo)
                     await File.WriteAllTextAsync(Path.Join(runFolder, file), text, cancellationToken);
-                GeneratedProjectScaffold.Write(runFolder, rootNamespace);
+                GeneratedProjectScaffold.Write(runFolder, rootNamespace, callTargets: callTargets, sharedNamespace: sharedNamespace);
                 rounds = [.. rounds, new CompileRound(round, outcome.Errors.Count, 0, 0,
                     outcome.Errors.GroupBy(e => e.Code).ToDictionary(g => g.Key, g => g.Count()), RolledBack: true)];
                 outcome = previous;
@@ -165,7 +169,7 @@ public static class CSharpCompileGate
 
             // A repair can introduce a framework type or a second namespace; scaffold again so the
             // next build judges the code, not stale scaffolding.
-            GeneratedProjectScaffold.Write(runFolder, rootNamespace);
+            GeneratedProjectScaffold.Write(runFolder, rootNamespace, callTargets: callTargets, sharedNamespace: sharedNamespace);
             previous = outcome;
             round++;
         }

@@ -273,4 +273,27 @@ public class CompileGateTests : IDisposable
         var syntax = new[] { E("CS1002"), E("CS1014") };
         CSharpCompileGate.IsWorse(Enumerable.Repeat(E("CS0246"), 22).ToArray(), syntax).Should().BeFalse();
     }
+
+    [Fact]
+    public void AnArgumentErrorShowsTheDeclarationOfTheMethodBeingCalled()
+    {
+        var sources = new Dictionary<string, string>
+        {
+            ["CallTargetContracts.g.cs"] =
+                "namespace S\n{\n    public interface IBdsda2fService\n    {\n        Task ExecuteAsync(Bdsdatoi a, Bdsmfjli b, CancellationToken c = default);\n    }\n}\n",
+            ["Bd/Rgnb649.cs"] =
+                "namespace B;\npublic sealed class Rgnb649(IBdsda2fService bdsda2fService)\n{\n    Task Run() => bdsda2fService.ExecuteAsync(_parm, _ct);\n}\n",
+        };
+        var errors = new[]
+        {
+            new CompilerDiagnostic("Bd/Rgnb649.cs", 4, 20, "CS1503",
+                "Argument 2: cannot convert from 'System.Threading.CancellationToken' to 'S.Bdsmfjli'"),
+        };
+
+        var task = CompileRepairPlanner.Plan(errors, GeneratedTypeIndex.FromSources(sources), sources, "S", Limits)
+            .Should().ContainSingle().Subject;
+
+        task.Declarations.Should().ContainSingle().Which.Should()
+            .Contain("interface IBdsda2fService").And.Contain("ExecuteAsync(Bdsdatoi a, Bdsmfjli b");
+    }
 }

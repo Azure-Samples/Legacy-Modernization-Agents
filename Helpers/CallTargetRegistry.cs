@@ -219,6 +219,37 @@ public sealed class CallTargetRegistry
             : l.Length > 7 ? l[7..Math.Min(l.Length, 72)]
             : ""));
 
+    // With the signature known, the C# interface is written with the build scaffolding rather than by a
+    // model: models told only to reference an interface were observed declaring it with another shape.
+    public static bool IsGenerated(CallTargetContract contract, string targetLanguage) =>
+        contract.Parameters.Count > 0 && ConversionNamespacePolicy.IsCSharp(targetLanguage);
+
+    public IReadOnlyList<CallTargetContract> GeneratedInterfaces(string targetLanguage) => _byTarget.Values
+        .Where(c => IsGenerated(c, targetLanguage))
+        .OrderBy(c => c.InterfaceName, StringComparer.Ordinal)
+        .ToList();
+
+    public string RenderCSharpInterfaces(string sharedNamespace)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("// Generated from the COBOL: one interface per called program whose parameters the source states.");
+        sb.AppendLine("// Regenerated with the build scaffolding; declarations of these names elsewhere are removed.");
+        sb.AppendLine("using System.Threading;");
+        sb.AppendLine("using System.Threading.Tasks;");
+        sb.AppendLine();
+        sb.AppendLine($"namespace {sharedNamespace}");
+        sb.AppendLine("{");
+        foreach (var contract in GeneratedInterfaces("C#"))
+        {
+            sb.AppendLine($"    public interface {contract.InterfaceName}");
+            sb.AppendLine("    {");
+            sb.AppendLine($"        {Signature(contract, "C#")};");
+            sb.AppendLine("    }");
+        }
+        sb.AppendLine("}");
+        return sb.ToString();
+    }
+
     private static string Signature(CallTargetContract contract, string targetLanguage)
     {
         var cs = ConversionNamespacePolicy.IsCSharp(targetLanguage);
@@ -249,7 +280,14 @@ public sealed class CallTargetRegistry
 
         foreach (var contract in relevant)
         {
-            if (contract.IsDeclaredBy(programStem))
+            if (IsGenerated(contract, targetLanguage))
+            {
+                var role = contract.IsDeclaredBy(programStem) ? "implement it" : "inject it";
+                references.AppendLine(
+                    $"  • {contract.InterfaceName}.{contract.MethodName} — already generated in the shared namespace; {role}.");
+                references.AppendLine($"      {Signature(contract, targetLanguage)}");
+            }
+            else if (contract.IsDeclaredBy(programStem))
             {
                 declares.AppendLine(
                     $"  • {contract.InterfaceName} — one method, {contract.MethodName}, "
@@ -323,6 +361,16 @@ public static class CallTargetRegistryHolder
     private static readonly object Lock = new();
     private static readonly Dictionary<string, CallTargetRegistry> Cache =
         new(StringComparer.OrdinalIgnoreCase);
+
+    // The same registry the converter prompts were built from, located the way RektPromptInjector does.
+    public static CallTargetRegistry? ForRunningRepository()
+    {
+        var root = new DirectoryInfo(AppContext.BaseDirectory);
+        while (root != null && !File.Exists(Path.Combine(root.FullName, "doctor.sh"))) root = root.Parent;
+        return root is null
+            ? null
+            : GetOrBuild(root.FullName, Environment.GetEnvironmentVariable("COBOL_SOURCE_FOLDER") ?? "source");
+    }
 
     public static CallTargetRegistry GetOrBuild(string repoRoot, string sourceFolder)
     {

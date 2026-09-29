@@ -34,6 +34,7 @@ public sealed record ScaffoldResult(
 public static class GeneratedProjectScaffold
 {
     public const string GlobalUsingsFile = "GlobalUsings.g.cs";
+    public const string CallTargetContractsFile = "CallTargetContracts.g.cs";
 
     /// <summary>
     /// Only what has actually been observed in generated output. A marker earns its dependency;
@@ -66,10 +67,14 @@ public static class GeneratedProjectScaffold
     /// change, see <see cref="FileScopedNamespaceNormalizer"/>.
     /// </remarks>
     public static ScaffoldResult Write(
-        string runFolder, string assemblyName, string targetFramework = "net10.0")
+        string runFolder, string assemblyName, string targetFramework = "net10.0",
+        CallTargetRegistry? callTargets = null, string? sharedNamespace = null)
     {
         if (!Directory.Exists(runFolder))
             return new ScaffoldResult([], [], null, null);
+
+        if (callTargets is not null && sharedNamespace is not null)
+            WriteCallTargetContracts(runFolder, callTargets, sharedNamespace);
 
         var sources = Directory
             .EnumerateFiles(runFolder, "*.cs", SearchOption.AllDirectories)
@@ -108,6 +113,35 @@ public static class GeneratedProjectScaffold
             usingsPath,
             projectPath,
             normalized);
+    }
+
+    private static void WriteCallTargetContracts(string runFolder, CallTargetRegistry callTargets, string sharedNamespace)
+    {
+        var path = Path.Join(runFolder, CallTargetContractsFile);
+        var names = callTargets.GeneratedInterfaces("C#").Select(c => c.InterfaceName).ToList();
+        if (names.Count == 0)
+        {
+            File.Delete(path);
+            return;
+        }
+
+        foreach (var file in Directory.EnumerateFiles(runFolder, "*.cs", SearchOption.AllDirectories))
+        {
+            var name = Path.GetFileName(file);
+            if (name.Equals(CallTargetContractsFile, StringComparison.OrdinalIgnoreCase)
+                || name.Equals(GlobalUsingsFile, StringComparison.OrdinalIgnoreCase)
+                || IsBuildOutput(runFolder, file)) continue;
+            var text = File.ReadAllText(file);
+            var stripped = GeneratedInterfaceDeclarations.RemoveFrom(text, names);
+            if (!ReferenceEquals(text, stripped) && text != stripped) File.WriteAllText(file, stripped);
+        }
+        File.WriteAllText(path, callTargets.RenderCSharpInterfaces(sharedNamespace));
+    }
+
+    private static bool IsBuildOutput(string runFolder, string file)
+    {
+        var first = Path.GetRelativePath(runFolder, file).Split(Path.DirectorySeparatorChar)[0];
+        return first is "bin" or "obj";
     }
 
     /// <summary>The dependencies the given sources actually reference.</summary>

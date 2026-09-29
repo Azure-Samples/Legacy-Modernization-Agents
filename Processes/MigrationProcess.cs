@@ -402,7 +402,9 @@ public class MigrationProcess
                 try
                 {
                     var scaffold = GeneratedProjectScaffold.Write(
-                        javaOutputFolder, ConversionNamespacePolicy.Root("C#"));
+                        javaOutputFolder, ConversionNamespacePolicy.Root("C#"),
+                        callTargets: CallTargetRegistryHolder.ForRunningRepository(),
+                        sharedNamespace: ConversionNamespacePolicy.ForSharedTypes("C#"));
 
                     if (scaffold.WroteAnything)
                     {
@@ -431,7 +433,8 @@ public class MigrationProcess
                     _logger,
                     cobolFiles
                         .GroupBy(f => Path.GetFileNameWithoutExtension(f.FileName), StringComparer.OrdinalIgnoreCase)
-                        .ToDictionary(g => g.Key, g => g.First().Content, StringComparer.OrdinalIgnoreCase));
+                        .ToDictionary(g => g.Key, g => g.First().Content, StringComparer.OrdinalIgnoreCase),
+                        callTargets: CallTargetRegistryHolder.ForRunningRepository());
                 RefreshFromDisk(javaFiles);
             }
 

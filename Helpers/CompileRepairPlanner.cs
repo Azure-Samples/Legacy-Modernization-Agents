@@ -201,6 +201,15 @@ public static class CompileRepairPlanner
                 var elsewhere = index.Find(name).FirstOrDefault(d => d.File != file);
                 if (elsewhere is not null) task.DeclarationOf(name, elsewhere.File, sources);
             }
+
+            if (!sources.TryGetValue(file, out var text)) continue;
+            foreach (var name in task.Errors.Where(e => ArgumentErrors.Contains(e.Code))
+                         .SelectMany(e => ReceiverTypes(text, e.Line))
+                         .Distinct())
+            {
+                var declared = index.Find(name).FirstOrDefault();
+                if (declared is not null) task.DeclarationOf(name, declared.File, sources);
+            }
         }
 
         return work
@@ -209,6 +218,26 @@ public static class CompileRepairPlanner
                 w.Key, w.Value.Errors, w.Value.Instructions.Distinct().ToList(),
                 w.Value.Declarations.Values.ToList(), w.Value.MayRemove))
             .ToList();
+    }
+
+    // These name the arguments' types, never the method's owner, so the callee is found from the call itself.
+    private static readonly HashSet<string> ArgumentErrors = new(StringComparer.Ordinal)
+    {
+        "CS1501", "CS1503", "CS1739", "CS7036",
+    };
+
+    private static readonly Regex MemberCall = new(@"\b(?<receiver>[A-Za-z_]\w*)\s*\.\s*\w+\s*\(", RegexOptions.Compiled);
+
+    public static IEnumerable<string> ReceiverTypes(string text, int line)
+    {
+        var lines = text.Split('\n');
+        if (line < 1 || line > lines.Length) yield break;
+        foreach (Match call in MemberCall.Matches(lines[line - 1]))
+        {
+            var receiver = Regex.Escape(call.Groups["receiver"].Value);
+            var declaration = Regex.Match(text, @"\b(?<type>[A-Z]\w*)(?:<[^>\n]*>)?\??\s+_?" + receiver + @"\s*[,;=)]");
+            if (declaration.Success) yield return declaration.Groups["type"].Value;
+        }
     }
 
     /// <summary>The first generated class, record or struct that lists <paramref name="name"/> as a base type.</summary>

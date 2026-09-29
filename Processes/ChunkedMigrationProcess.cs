@@ -342,7 +342,9 @@ public class ChunkedMigrationProcess
                 try
                 {
                     var scaffold = GeneratedProjectScaffold.Write(
-                        outputFolder, ConversionNamespacePolicy.Root("C#"));
+                        outputFolder, ConversionNamespacePolicy.Root("C#"),
+                        callTargets: CallTargetRegistryHolder.ForRunningRepository(),
+                        sharedNamespace: ConversionNamespacePolicy.ForSharedTypes("C#"));
 
                     if (scaffold.WroteAnything)
                     {
@@ -368,7 +370,8 @@ public class ChunkedMigrationProcess
                         _logger,
                         cobolFiles
                             .GroupBy(f => Path.GetFileNameWithoutExtension(f.FileName), StringComparer.OrdinalIgnoreCase)
-                            .ToDictionary(g => g.Key, g => g.First().Content, StringComparer.OrdinalIgnoreCase));
+                            .ToDictionary(g => g.Key, g => g.First().Content, StringComparer.OrdinalIgnoreCase),
+                        callTargets: CallTargetRegistryHolder.ForRunningRepository());
                 }
             }
 
