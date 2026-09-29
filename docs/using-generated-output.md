@@ -1,5 +1,7 @@
 # Working with generated output
 
+**Last updated**: 2026-09-29
+
 The conversion agents write their output to a dated run folder under the target language:
 
 ```
@@ -17,20 +19,56 @@ code generated from it.
 
 ## Four different questions
 
-These are routinely conflated, and only the first is currently answered by an automated suite.
+These are routinely conflated. The first two are answered automatically; the last two are not.
 
 | Question | How it is answered today |
 |---|---|
 | **1. Does the conversion tool work?** | `dotnet test` on the toolchain and portal suites |
-| **2. Does the generated code compile?** | Not automated. Measured manually below — it does not |
-| **3. Does the generated application run?** | Blocked by 2 |
+| **2. Does the generated code compile?** | The compile gate builds every C# run and writes `compile-status.json`. The measured run below compiles |
+| **3. Does the generated application run?** | Not measured. Compiling says nothing about behaviour |
 | **4. Is it equivalent to the COBOL?** | **Unverified.** No compatible original runtime and no captured legacy inputs/outputs are available in this repository |
 
 On the fourth: equivalence needs either a runnable original or trustworthy captured inputs, outputs
 and starting state. Expectations inferred by a model from the same source the conversion read are
 not independent evidence, and must not be presented as verification.
 
-## Current state of generated C#
+## Compile gate
+
+When `CompileGate.Enabled` is set (the default), a C# run ends with `dotnet build` on the output.
+Errors are repaired file by file and the build is repeated, for at most `MaxRepairRounds` rounds.
+The result goes to `compile-status.json` and the migration report. All limits live in the
+`CompileGate` section of `Config/appsettings.json`.
+
+The compiler reports errors in phases: syntax errors hide declaration errors, and declaration
+errors hide method bodies. A lower error count is therefore only better within the same phase. A
+round is undone if it leaves more errors in an earlier phase, or more errors overall in the same
+phase.
+
+Most defects are prevented or fixed without a model:
+
+| Mechanism | What it prevents |
+|---|---|
+| Copybook member contract | Code using a copybook type and the file declaring it choosing different member names. Members are the PascalCase COBOL data names, and nested `COPY … REPLACING` is expanded |
+| Typed call contracts | Callers and callee disagreeing about a called program's parameters. The signature is read from the callee's `PROCEDURE DIVISION USING` and `LINKAGE SECTION`. For a callee outside the source it comes from the callers' `CALL … USING` records, and only when all callers agree |
+| `CallTargetContracts.g.cs` | Models declaring a call-target interface in a shape of their own. Interfaces with a known signature are generated, and any model-written copies are removed |
+| Completion signal | A complete response with one syntax defect being mistaken for truncation. Asked to "continue" a finished file, the model invented code for other programs. Continuation now happens only when the provider did not report a normal end |
+| Accessor terminators, missing `using` | `get => a + b,` rewritten to `;`, and a namespace imported when the missing type is declared in exactly one place |
+
+Measured on the same five programs and 65 copybooks (70 generated files), errors per gate round:
+
+| Run | Before repair | Round 1 | Round 2 | Round 3 | Result |
+|---|---|---|---|---|---|
+| Before the member contract | 22 | 497 | — | — | Rolled back |
+| Member contract | 22 | 1 | 23 | 7 | Did not compile |
+| Typed call contracts, completion signal | 1 | 56 | 5 | 1 | Did not compile |
+| Generated interfaces, callee shown on argument errors | 2 | 0 | | | **Compiles** |
+
+The last row is the previous run's output gated again with the final code. A fresh end-to-end run
+is the confirmation. Four types are **external contracts**: programs that are called but not part
+of the source (`BDSDA21`, `BDSMQFJ`, `CEE3DMP`, `SQLIFMD`). They are declared from their uses and
+marked `// EXTERNAL CONTRACT`. They compile, but they are not converted logic.
+
+## Earlier measurements
 
 Measured on a real conversion of five COBOL programs and their 65 copybooks —
 70 generated `.cs` files, run `20260917-102951`.
@@ -161,9 +199,8 @@ In descending order of measured effect:
    count. The remaining 26 still need a fix at generation time.
 4. ~~Stop a second namespace declaration from breaking the build~~: **done** by normalizing to block
    namespaces, 107 → 71.
-5. **Fix the entity-escaping defect** in the generation path. It recurs across runs
-   (`Db2diagi.cs`, `Rgni656.cs`) and hides every type-level error until patched.
-6. **Supply or stub the missing callees and copybooks** behind the 26 undeclared types.
+5. ~~Fix the entity-escaping defect~~: **done**, decoded before the code is saved.
+6. ~~Supply or stub the missing callees and copybooks~~: **done** by the compile gate, as marked
+   external contracts. See [Compile gate](#compile-gate).
 
-Only after 1 and 2 does "does the generated code compile" become a question CI can answer, and
-only then does running it mean anything.
+The generated code compiling makes running it a meaningful question. It does not answer it.
