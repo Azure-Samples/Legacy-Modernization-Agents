@@ -268,5 +268,9 @@ public class CompileGateTests : IDisposable
         CSharpCompileGate.IsWorse(blocked, revealed).Should().BeTrue();
         CSharpCompileGate.IsWorse([E("CS1061"), E("CS1061")], [E("CS1061")]).Should().BeTrue();
         CSharpCompileGate.IsWorse([E("CS0246"), E("CS0246")], [E("CS0246"), E("CS1061"), E("CS1061")]).Should().BeTrue();
+
+        // The run that motivated three phases: two syntax errors hid 22 declaration errors.
+        var syntax = new[] { E("CS1002"), E("CS1014") };
+        CSharpCompileGate.IsWorse(Enumerable.Repeat(E("CS0246"), 22).ToArray(), syntax).Should().BeFalse();
     }
 }

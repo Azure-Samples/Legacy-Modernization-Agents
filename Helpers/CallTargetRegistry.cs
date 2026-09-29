@@ -16,6 +16,12 @@ namespace CobolToQuarkusMigration.Helpers;
 using System.Text;
 using System.Text.RegularExpressions;
 
+/// <summary>
+/// One area the called program receives, in USING order. <see cref="TypeName"/> is the copybook type
+/// its LINKAGE record copies, or <c>null</c> when the record is written out in the program itself.
+/// </summary>
+public sealed record CallParameter(string CobolName, string Name, string? TypeName);
+
 public sealed record CallTargetContract(
     string Target,
     string InterfaceName,
@@ -23,6 +29,9 @@ public sealed record CallTargetContract(
     string DeclaredBy,
     IReadOnlyList<string> Callers)
 {
+    /// <summary>Known only when the called program is in the source; empty otherwise.</summary>
+    public IReadOnlyList<CallParameter> Parameters { get; init; } = [];
+
     /// <summary>True when <paramref name="program"/> is the one that must declare the interface.</summary>
     public bool IsDeclaredBy(string program) =>
         string.Equals(DeclaredBy, program, StringComparison.OrdinalIgnoreCase);
@@ -83,12 +92,70 @@ public sealed class CallTargetRegistry
             InterfaceName: "I" + ToPascalCase(entry.Key) + "Service",
             MethodName: EntryPointMethod,
             DeclaredBy: programs.ContainsKey(entry.Key) ? entry.Key : entry.Value.First(),
-            Callers: entry.Value.ToList()));
+            Callers: entry.Value.ToList())
+        {
+            Parameters = programs.TryGetValue(entry.Key, out var target) ? UsingParameters(target) : [],
+        });
 
         foreach (var contract in contracts)
             registry._byTarget[contract.Target] = contract;
 
         return registry;
+    }
+
+    private static readonly Regex ProcedureUsing = new(
+        @"\bPROCEDURE\s+DIVISION\s+USING\s+(?<args>[^.]*)\.", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex LinkageRecord = new(
+        @"(?:^|\s)01\s+(?<name>[A-Za-z0-9][A-Za-z0-9-]*)\s*\.(?<body>.*?)(?=\s01\s+[A-Za-z0-9]|\z)",
+        RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
+
+    private static readonly Regex OnlyACopy = new(
+        @"^\s*COPY\s+[""']?(?<copybook>[A-Za-z0-9][A-Za-z0-9_-]*)[""']?[^.]*\.\s*$",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>
+    /// The entry point's parameters: the USING list, each typed by the copybook its LINKAGE record
+    /// consists of. Callers and callee both read them from here, so neither invents a signature.
+    /// </summary>
+    public static IReadOnlyList<CallParameter> UsingParameters(string programText)
+    {
+        var code = string.Join(' ', StripComments(programText).Split('\n')
+            .Select(l => l.Length > 6 && l.Take(6).All(c => char.IsDigit(c) || c == ' ') ? l[7..Math.Min(l.Length, 72)] : l));
+        var procedure = ProcedureUsing.Match(code);
+        if (!procedure.Success) return [];
+
+        var linkageStart = code.IndexOf("LINKAGE SECTION", StringComparison.OrdinalIgnoreCase);
+        var linkage = linkageStart < 0 ? "" : code[linkageStart..procedure.Index];
+        var records = LinkageRecord.Matches(linkage)
+            .GroupBy(m => m.Groups["name"].Value, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First().Groups["body"].Value, StringComparer.OrdinalIgnoreCase);
+
+        return procedure.Groups["args"].Value
+            .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
+            .Where(a => !a.Equals("BY", StringComparison.OrdinalIgnoreCase)
+                        && !a.Equals("REFERENCE", StringComparison.OrdinalIgnoreCase)
+                        && !a.Equals("CONTENT", StringComparison.OrdinalIgnoreCase)
+                        && !a.Equals("VALUE", StringComparison.OrdinalIgnoreCase))
+            .TakeWhile(a => !a.Equals("RETURNING", StringComparison.OrdinalIgnoreCase))
+            .Select(a =>
+            {
+                var copy = records.TryGetValue(a, out var body) ? OnlyACopy.Match(body) : Match.Empty;
+                var pascal = ToPascalCase(a);
+                return new CallParameter(a, char.ToLowerInvariant(pascal[0]) + pascal[1..],
+                    copy.Success ? ToPascalCase(copy.Groups["copybook"].Value) : null);
+            })
+            .ToList();
+    }
+
+    private static string Signature(CallTargetContract contract, string targetLanguage)
+    {
+        var cs = ConversionNamespacePolicy.IsCSharp(targetLanguage);
+        var parameters = contract.Parameters
+            .Select(p => (p.TypeName ?? (cs ? "string" : "String")) + " " + p.Name)
+            .ToList();
+        if (cs) parameters.Add("CancellationToken cancellationToken = default");
+        return (cs ? "Task " : "void ") + contract.MethodName + "(" + string.Join(", ", parameters) + ")";
     }
 
     /// <summary>
@@ -117,11 +184,15 @@ public sealed class CallTargetRegistry
                     $"  • {contract.InterfaceName} — one method, {contract.MethodName}, "
                     + $"for the single entry point of {contract.Target}. "
                     + $"Called by {contract.Callers.Count} program(s).");
+                if (contract.Parameters.Count > 0)
+                    declares.AppendLine($"      {Signature(contract, targetLanguage)}");
             }
             else
             {
                 references.AppendLine(
                     $"  • {contract.InterfaceName}.{contract.MethodName} — declared by {contract.DeclaredBy}.");
+                if (contract.Parameters.Count > 0)
+                    references.AppendLine($"      {Signature(contract, targetLanguage)}");
             }
         }
 

@@ -172,6 +172,10 @@ REFERENCE these and do NOT declare them — another file owns them:
         flat, no nested classes for group items, no shortened or re-prefixed names.
       – A group item's member holds its fixed-width image (get composes its children,
         set distributes it). Items under an OCCURS are arrays; 88-levels are booleans.
+      – Every type also has `public string ToImage()` and
+        `public static <Type> FromImage(string image)` (Java: toImage / fromImage): the
+        record's fixed-width image, used wherever code holds the record as a string. No
+        other constructors or conversion methods are part of the contract.
       – Code that uses the type uses exactly these names. A `COPY … REPLACING` is another
         instance of the same type, named after its replacement text; members never
         carry the replaced placeholder.
@@ -208,6 +212,12 @@ REFERENCE these and do NOT declare them (another program declares them):
 
   • Use exactly the interface and method names given. Do not rename them to suit this
     program's vocabulary — the other callers use the same names.
+  • Where a signature is given, it is read from the called program's PROCEDURE DIVISION
+    USING and LINKAGE SECTION. Declare and call it exactly as written. The method returns
+    nothing: COBOL passes the areas by reference, so the called program changes the objects
+    it is given and the caller reads them afterwards. When the caller holds an area as a
+    string image, convert around the call:
+      var area = T.FromImage(image); await x.ExecuteAsync(area, …); image = area.ToImage();
   • Inject the interface (Java: @Inject; C#: constructor injection) and call its method at
     the point where the COBOL CALL appears.
   • Do NOT inline the called program's logic.

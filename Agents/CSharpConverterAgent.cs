@@ -201,7 +201,7 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
             }
 
             // After continuations, so a fragment never starts the scan inside a comment.
-            csharpCode = GeneratedCodeEntities.DecodeInCode(csharpCode);
+            csharpCode = GeneratedCSharpSyntax.FixAccessorTerminators(GeneratedCodeEntities.DecodeInCode(csharpCode));
             csharpCode = ValidateCSharpCode(csharpCode);
 
             // Extract AI's semantic class name (based on domain/action/type pattern)

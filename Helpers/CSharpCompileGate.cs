@@ -178,24 +178,35 @@ public static class CSharpCompileGate
             rounds, outcome.Errors, ExternalContracts(runFolder)), logger);
     }
 
-    // Errors that stop the compiler before it binds method bodies. While any remain, body errors are
-    // not reported at all, so fixing the last of them can reveal hundreds that were always there.
-    private static readonly HashSet<string> EarlyPhase = new(StringComparer.Ordinal)
+    // The compiler works in phases and reports a later phase only once the earlier ones are clean:
+    // a syntax error hides every declaration error, and a declaration error hides method bodies.
+    // Fixing the last error of a phase can therefore reveal many that were always there.
+    private static readonly HashSet<string> SyntaxPhase = new(StringComparer.Ordinal)
     {
-        "CS1001", "CS1002", "CS1003", "CS1022", "CS1026", "CS1031", "CS1513", "CS1514", "CS1519", "CS1525", "CS1529", "CS1733",
+        "CS1001", "CS1002", "CS1003", "CS1014", "CS1022", "CS1026", "CS1031", "CS1513", "CS1514", "CS1519", "CS1525",
+        "CS1529", "CS1733",
+    };
+
+    private static readonly HashSet<string> DeclarationPhase = new(StringComparer.Ordinal)
+    {
         "CS0101", "CS0102", "CS0111", "CS0115", "CS0234", "CS0246", "CS0260", "CS0263", "CS0506", "CS0508", "CS0527",
         "CS0535", "CS0542", "CS0738",
     };
 
     /// <summary>
-    /// Whether a round left the code worse: more errors that block the compiler, or as many and more
-    /// errors overall. Fewer blocking errors is progress even when it reveals the body errors behind them.
+    /// Whether a round left the code worse, comparing the earliest phase first: fewer syntax errors is
+    /// progress whatever it reveals, then fewer declaration errors, then fewer errors overall.
     /// </summary>
     public static bool IsWorse(IReadOnlyList<CompilerDiagnostic> now, IReadOnlyList<CompilerDiagnostic> before)
     {
-        var early = now.Count(e => EarlyPhase.Contains(e.Code));
-        var earlyBefore = before.Count(e => EarlyPhase.Contains(e.Code));
-        return early != earlyBefore ? early > earlyBefore : now.Count > before.Count;
+        static (int Syntax, int Declarations, int All) Rank(IReadOnlyList<CompilerDiagnostic> errors) => (
+            errors.Count(e => SyntaxPhase.Contains(e.Code)),
+            errors.Count(e => DeclarationPhase.Contains(e.Code)),
+            errors.Count);
+
+        var (s, d, a) = Rank(now);
+        var (sb, db, ab) = Rank(before);
+        return s != sb ? s > sb : d != db ? d > db : a > ab;
     }
 
     private static List<CompileRound> Append(List<CompileRound> rounds, int round, BuildOutcome outcome, int repaired, int rejected) =>

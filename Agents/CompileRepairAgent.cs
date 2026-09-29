@@ -58,8 +58,8 @@ public sealed class CompileRepairAgent : AgentBase
             return null;
         }
 
-        var repaired = GeneratedCodeEntities.DecodeInCode(
-            ConversionOutputGuard.ExtractFencedCode(response, "```csharp", "```c#", "```cs"));
+        var repaired = GeneratedCSharpSyntax.FixAccessorTerminators(GeneratedCodeEntities.DecodeInCode(
+            ConversionOutputGuard.ExtractFencedCode(response, "```csharp", "```c#", "```cs")));
 
         var rejection = Reject(source, repaired, task.MayRemove);
         if (rejection is not null)
