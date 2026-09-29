@@ -65,8 +65,9 @@ public sealed class CallTargetRegistry
         // interface for the callee, which is where most of the duplicate service interfaces in
         // the measured output came from.
         var programs = Read(SourceTypeRegistry.EnumerateProgramFiles(sourceFolder), registry);
+        var copybooks = Read(SourceTypeRegistry.EnumerateCopybookFiles(sourceFolder), registry);
         var callingFiles = programs
-            .Concat(Read(SourceTypeRegistry.EnumerateCopybookFiles(sourceFolder), registry))
+            .Concat(copybooks)
             .ToDictionary(e => e.Key, e => e.Value, StringComparer.OrdinalIgnoreCase);
 
         // Every (callee, caller) pair the source states, grouped by callee. A program calling
@@ -87,6 +88,7 @@ public sealed class CallTargetRegistry
         // this source drop there is no such program, and the first caller in a stable order is
         // made responsible — an arbitrary choice, but the same arbitrary choice on every run and
         // for every caller, which is what stops the duplicate.
+        var recordTypes = RecordTypes(copybooks);
         var contracts = callers.Select(entry => new CallTargetContract(
             Target: entry.Key,
             InterfaceName: "I" + ToPascalCase(entry.Key) + "Service",
@@ -94,7 +96,9 @@ public sealed class CallTargetRegistry
             DeclaredBy: programs.ContainsKey(entry.Key) ? entry.Key : entry.Value.First(),
             Callers: entry.Value.ToList())
         {
-            Parameters = programs.TryGetValue(entry.Key, out var target) ? UsingParameters(target) : [],
+            Parameters = programs.TryGetValue(entry.Key, out var target)
+                ? UsingParameters(target)
+                : AgreedCallSiteParameters(entry.Key, entry.Value.Select(c => callingFiles[c]), recordTypes),
         });
 
         foreach (var contract in contracts)
@@ -120,33 +124,100 @@ public sealed class CallTargetRegistry
     /// </summary>
     public static IReadOnlyList<CallParameter> UsingParameters(string programText)
     {
-        var code = string.Join(' ', StripComments(programText).Split('\n')
-            .Select(l => l.Length > 6 && l.Take(6).All(c => char.IsDigit(c) || c == ' ') ? l[7..Math.Min(l.Length, 72)] : l));
+        var code = CodeArea(programText);
         var procedure = ProcedureUsing.Match(code);
         if (!procedure.Success) return [];
 
         var linkageStart = code.IndexOf("LINKAGE SECTION", StringComparison.OrdinalIgnoreCase);
         var linkage = linkageStart < 0 ? "" : code[linkageStart..procedure.Index];
-        var records = LinkageRecord.Matches(linkage)
-            .GroupBy(m => m.Groups["name"].Value, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => g.First().Groups["body"].Value, StringComparer.OrdinalIgnoreCase);
+        var records = RecordsThatAreOnlyACopy(linkage);
 
-        return procedure.Groups["args"].Value
-            .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
-            .Where(a => !a.Equals("BY", StringComparison.OrdinalIgnoreCase)
-                        && !a.Equals("REFERENCE", StringComparison.OrdinalIgnoreCase)
-                        && !a.Equals("CONTENT", StringComparison.OrdinalIgnoreCase)
-                        && !a.Equals("VALUE", StringComparison.OrdinalIgnoreCase))
-            .TakeWhile(a => !a.Equals("RETURNING", StringComparison.OrdinalIgnoreCase))
-            .Select(a =>
-            {
-                var copy = records.TryGetValue(a, out var body) ? OnlyACopy.Match(body) : Match.Empty;
-                var pascal = ToPascalCase(a);
-                return new CallParameter(a, char.ToLowerInvariant(pascal[0]) + pascal[1..],
-                    copy.Success ? ToPascalCase(copy.Groups["copybook"].Value) : null);
-            })
+        return Arguments(procedure.Groups["args"].Value)
+            .Select(a => Parameter(a, records.GetValueOrDefault(a)))
             .ToList();
     }
+
+    private static readonly Regex FirstRecord = new(
+        @"^\s*01\s+(?<name>[A-Za-z0-9][A-Za-z0-9-]*)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly HashSet<string> EndOfCallArguments = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "END-CALL", "ON", "NOT", "RETURNING", "MOVE", "IF", "PERFORM", "EVALUATE", "CALL", "DISPLAY",
+        "COMPUTE", "ADD", "SUBTRACT", "MULTIPLY", "DIVIDE", "SET", "INITIALIZE", "GO", "GOBACK", "EXIT",
+        "CONTINUE", "STRING", "UNSTRING", "READ", "WRITE", "OPEN", "CLOSE", "ELSE", "END-IF", "WHEN",
+        "END-EVALUATE", "EXEC", "INSPECT", "ACCEPT", "STOP",
+    };
+
+    // A copybook whose first entry is an 01 record gives that record its type wherever it is copied.
+    private static Dictionary<string, string> RecordTypes(IReadOnlyDictionary<string, string> copybooks)
+    {
+        var types = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (stem, text) in copybooks)
+        {
+            var first = CodeArea(text).TrimStart();
+            var record = FirstRecord.Match(first);
+            if (record.Success)
+                types.TryAdd(record.Groups["name"].Value, ToPascalCase(stem));
+        }
+        return types;
+    }
+
+    // A callee outside the source drop states no signature, but its callers do. Asserted only when every
+    // argument is a copybook record and all calls agree; a caller's own field could be of any type.
+    private static IReadOnlyList<CallParameter> AgreedCallSiteParameters(
+        string target, IEnumerable<string> callerTexts, IReadOnlyDictionary<string, string> recordTypes)
+    {
+        var callTo = new Regex(@"\bCALL\s+['""]" + Regex.Escape(target) + @"['""]\s+USING\s+(?<args>[^.]*)",
+            RegexOptions.IgnoreCase);
+        List<CallParameter>? agreed = null;
+        foreach (var text in callerTexts)
+        {
+            var code = CodeArea(text);
+            var local = RecordsThatAreOnlyACopy(code);
+            foreach (Match call in callTo.Matches(code))
+            {
+                var site = Arguments(call.Groups["args"].Value)
+                    .Select(a => Parameter(a, local.GetValueOrDefault(a) ?? recordTypes.GetValueOrDefault(a)))
+                    .ToList();
+                if (site.Count == 0 || site.Any(p => p.TypeName is null)) return [];
+                if (agreed is null) agreed = site;
+                else if (!agreed.Select(p => p.TypeName).SequenceEqual(site.Select(p => p.TypeName)))
+                    return [];
+            }
+        }
+        return agreed ?? [];
+    }
+
+    private static Dictionary<string, string> RecordsThatAreOnlyACopy(string code)
+    {
+        var records = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (Match record in LinkageRecord.Matches(code))
+        {
+            var copy = OnlyACopy.Match(record.Groups["body"].Value);
+            if (copy.Success) records.TryAdd(record.Groups["name"].Value, ToPascalCase(copy.Groups["copybook"].Value));
+        }
+        return records;
+    }
+
+    private static IEnumerable<string> Arguments(string clause) => clause
+        .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
+        .TakeWhile(a => !EndOfCallArguments.Contains(a))
+        .Where(a => !a.Equals("BY", StringComparison.OrdinalIgnoreCase)
+                    && !a.Equals("REFERENCE", StringComparison.OrdinalIgnoreCase)
+                    && !a.Equals("CONTENT", StringComparison.OrdinalIgnoreCase)
+                    && !a.Equals("VALUE", StringComparison.OrdinalIgnoreCase));
+
+    private static CallParameter Parameter(string cobolName, string? typeName)
+    {
+        var pascal = ToPascalCase(cobolName);
+        return new CallParameter(cobolName, char.ToLowerInvariant(pascal[0]) + pascal[1..], typeName);
+    }
+
+    private static string CodeArea(string text) => string.Join(' ', StripComments(text).Split('\n')
+        .Select(l => l.TrimEnd('\r'))
+        .Select(l => !l.Take(6).All(c => char.IsDigit(c) || c == ' ') ? l
+            : l.Length > 7 ? l[7..Math.Min(l.Length, 72)]
+            : ""));
 
     private static string Signature(CallTargetContract contract, string targetLanguage)
     {

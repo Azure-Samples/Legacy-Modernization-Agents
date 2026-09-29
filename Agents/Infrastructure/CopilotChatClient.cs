@@ -133,6 +133,7 @@ public sealed class CopilotChatClient : IChatClient, IAsyncDisposable
         var responseBuilder = new StringBuilder();
         var done = new TaskCompletionSource();
         string? errorMessage = null;
+        var aborted = false;
 
         // SDK 1.x replaced the single non-generic On(evt => switch) overload with one typed
         // subscription per event, so each case below becomes its own handler.
@@ -147,8 +148,9 @@ public sealed class CopilotChatClient : IChatClient, IAsyncDisposable
             if (!done.Task.IsCompleted) done.TrySetResult();
         });
 
-        using var subIdle = session.On<SessionIdleEvent>(_ =>
+        using var subIdle = session.On<SessionIdleEvent>(idle =>
         {
+            aborted = idle.Data?.Aborted == true;
             if (!done.Task.IsCompleted) done.TrySetResult();
         });
 
@@ -194,7 +196,8 @@ public sealed class CopilotChatClient : IChatClient, IAsyncDisposable
         _logger?.LogDebug("CopilotChatClient: received {Length} chars from model {Model}", responseText.Length, model);
 
         var responseMessage = new AIChatMessage(ChatRole.Assistant, responseText);
-        return new ChatResponse(responseMessage);
+        // The session going idle without abort is the SDK's only end-of-turn signal; it exposes no stop reason.
+        return new ChatResponse(responseMessage) { FinishReason = aborted ? null : ChatFinishReason.Stop };
     }
 
     /// <inheritdoc />

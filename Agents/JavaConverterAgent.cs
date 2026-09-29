@@ -164,8 +164,9 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
 
             // Continuation retry: when the provider truncates mid-output, ask it to
             // resume from the last lines rather than shipping a partial class.
+            // A model that stopped on its own was not cut off; continuing a complete file makes it invent code.
             var hasAnyCode = javaCode.Contains("{") && (javaCode.Contains("class ") || javaCode.Contains("void ") || javaCode.Contains("public "));
-            var maxContinuations = hasAnyCode ? 3 : 0;
+            var maxContinuations = hasAnyCode && !ProviderReportedNormalEnd(cobolFile.FileName) ? 3 : 0;
             if (!hasAnyCode && !string.IsNullOrWhiteSpace(javaCode))
             {
                 Logger.LogWarning("[JavaConverterAgent] Response contains no valid Java code — skipping continuation");
