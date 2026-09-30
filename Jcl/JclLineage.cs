@@ -20,6 +20,9 @@ public sealed record JclEstateLineage(
         "STEPLIB", "JOBLIB", "STEPCAT", "JOBCAT",
     };
 
+    // Load libraries and catalogs: where programs are found, not data they process.
+    public static bool IsLibraryDd(string ddName) => LibraryDds.Contains(ddName.Split('.')[^1]);
+
     private static readonly JclDatasetAccess[] Writes = [JclDatasetAccess.Create, JclDatasetAccess.Append];
     private static readonly JclDatasetAccess[] Reads = [JclDatasetAccess.Read, JclDatasetAccess.Exclusive];
 
@@ -39,7 +42,7 @@ public sealed record JclEstateLineage(
         foreach (var step in job.Steps)
         {
             var dataDds = step.Dds.SelectMany(d => d.Concatenated.Prepend(d))
-                .Where(dd => dd.Dataset is not null && dd.Access is not null && !LibraryDds.Contains(dd.Name.Split('.')[^1]));
+                .Where(dd => dd.Dataset is not null && dd.Access is not null && !IsLibraryDd(dd.Name));
             foreach (var dd in dataDds)
             {
                 Add(job, step, dd.Dataset!, dd.Access!.Value, dd.Name);

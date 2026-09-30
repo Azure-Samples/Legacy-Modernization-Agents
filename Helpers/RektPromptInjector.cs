@@ -5,6 +5,7 @@ namespace CobolToQuarkusMigration.Helpers;
 using System.Text;
 using Microsoft.Extensions.Logging;
 using CobolToQuarkusMigration.Helpers.PromptProjections;
+using CobolToQuarkusMigration.Jcl.Generation;
 using CobolToQuarkusMigration.Agents.Infrastructure.Facts;
 using CobolToQuarkusMigration.Agents;
 
@@ -250,6 +251,25 @@ public static class RektPromptInjector
                 logger?.LogWarning(
                     "[RektPromptInjector] Call-target contract injection failed for {File}: {Msg}",
                     fileName, ex.Message);
+            }
+
+            if (JclBatchProgramsHolder.Enabled)
+            {
+                try
+                {
+                    var batch = JclBatchProgramsHolder.GetOrBuild(d.FullName, srcFolder);
+                    var stem = Path.GetFileNameWithoutExtension(Path.GetFileName(fileName));
+                    var batchBlock = batch.ToPromptBlock(stem, targetLanguage);
+                    if (!string.IsNullOrEmpty(batchBlock))
+                    {
+                        sb.Append(batchBlock);
+                        logger?.LogInformation("[RektPromptInjector] Injected the batch-program contract for {File}", fileName);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    logger?.LogWarning("[RektPromptInjector] Batch-program contract injection failed for {File}: {Msg}", fileName, ex.Message);
+                }
             }
         }
         catch (Exception ex)

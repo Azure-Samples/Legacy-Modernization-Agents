@@ -95,6 +95,10 @@ public static class ConversionNamespacePolicy
     public static string ForSharedTypes(string targetLanguage) =>
         Render(targetLanguage, SharedSegment, Kind.Shared);
 
+    /// <summary>Where the jobs generated from the estate's JCL, and their runtime, live.</summary>
+    public static string ForJobs(string targetLanguage) =>
+        Root(targetLanguage) + "." + (IsCSharp(targetLanguage) ? "Jobs" : "jobs");
+
     private enum Kind { Program, Shared }
 
     /// <summary>

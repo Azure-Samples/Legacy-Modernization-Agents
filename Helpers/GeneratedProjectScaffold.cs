@@ -14,6 +14,7 @@
 namespace CobolToQuarkusMigration.Helpers;
 
 using System.Text;
+using CobolToQuarkusMigration.Jcl.Generation;
 
 /// <summary>A namespace the generated code needs, and the package that supplies it.</summary>
 public sealed record GeneratedDependency(string Marker, string Namespace, string Package, string Version);
@@ -76,6 +77,13 @@ public static class GeneratedProjectScaffold
         if (callTargets is not null && sharedNamespace is not null)
             WriteCallTargetContracts(runFolder, callTargets, sharedNamespace);
 
+        // Jobs generated from JCL declare the batch-program contract; a program that declared its
+        // own copy would implement a different interface than the one the job runner looks for.
+        var jobsNamespace = File.Exists(Path.Join(runFolder, JclJobWriter.CSharpRuntimeFile))
+            ? ConversionNamespacePolicy.ForJobs("C#") : null;
+        if (jobsNamespace is not null)
+            StripDeclarations(runFolder, [JclJobWriter.CSharpContract]);
+
         var sources = Directory
             .EnumerateFiles(runFolder, "*.cs", SearchOption.AllDirectories)
             .Where(f => !Path.GetFileName(f).Equals(GlobalUsingsFile, StringComparison.OrdinalIgnoreCase))
@@ -91,6 +99,7 @@ public static class GeneratedProjectScaffold
 
         var usings = needed
             .Select(d => d.Namespace)
+            .Concat(jobsNamespace is null ? [] : [jobsNamespace])
             .Distinct(StringComparer.Ordinal)
             .OrderBy(n => n, StringComparer.Ordinal)
             .ToList();
@@ -136,6 +145,17 @@ public static class GeneratedProjectScaffold
             if (!ReferenceEquals(text, stripped) && text != stripped) File.WriteAllText(file, stripped);
         }
         File.WriteAllText(path, callTargets.RenderCSharpInterfaces(sharedNamespace));
+    }
+
+    private static void StripDeclarations(string runFolder, IReadOnlyCollection<string> names)
+    {
+        foreach (var file in Directory.EnumerateFiles(runFolder, "*.cs", SearchOption.AllDirectories))
+        {
+            if (file.EndsWith(".g.cs", StringComparison.OrdinalIgnoreCase) || IsBuildOutput(runFolder, file)) continue;
+            var text = File.ReadAllText(file);
+            var stripped = GeneratedInterfaceDeclarations.RemoveFrom(text, names);
+            if (text != stripped) File.WriteAllText(file, stripped);
+        }
     }
 
     private static bool IsBuildOutput(string runFolder, string file)

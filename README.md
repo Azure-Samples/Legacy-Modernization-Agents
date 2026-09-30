@@ -1109,6 +1109,7 @@ See [Parallel Jobs Formula](#parallel-jobs-formula) for chunking configuration d
 - [Architecture Documentation](docs/REVERSE_ENGINEERING_ARCHITECTURE.md) - System design
 - [Dependency Health & Semantic Flow Explorer](docs/dependency-health-and-flow-explorer.md) - Deterministic parse-fidelity, topology and JCL chain surfaces for deciding conversion order
 - [JCL job facts](docs/jcl-job-facts.md) - Deterministic JCL parser: procedures, symbols, conditions, Db2 runs and dataset lineage across jobs
+- [Jobs generated from JCL](docs/jcl-jobs.md) - Each JCL job as a .NET job (C#) or Spring Batch job (Java) that runs the converted programs under the JCL's conditions
 - [Conversion Parity Validation](docs/conversion-parity-validation.md) - Deterministic check that generated code represents the COBOL it came from, with per-axis coverage and a configurable threshold
 - [Speed Profiles](docs/speed-profiles.md) - TURBO/FAST/BALANCED/THOROUGH env var overrides and complexity scoring
 - [Azure AD / Entra ID Authentication Guide](docs/az-login-auth-guide.md) - Keyless auth setup

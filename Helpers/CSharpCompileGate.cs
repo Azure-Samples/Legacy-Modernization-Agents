@@ -141,7 +141,10 @@ public static class CSharpCompileGate
                 logger.LogInformation("[CompileGate] Round {Round}: imported a missing namespace in {File}", round, file);
             }
 
-            var tasks = CompileRepairPlanner.Plan(toRepair, typeIndex, sources, sharedNamespace, settings, cobolByName);
+            // Generated .g.cs files are rewritten on every scaffold, so a repair to one would not last.
+            var tasks = CompileRepairPlanner.Plan(toRepair, typeIndex, sources, sharedNamespace, settings, cobolByName)
+                .Where(t => !t.File.EndsWith(".g.cs", StringComparison.OrdinalIgnoreCase))
+                .ToList();
 
             var repaired = imported.Count;
             var rejected = 0;

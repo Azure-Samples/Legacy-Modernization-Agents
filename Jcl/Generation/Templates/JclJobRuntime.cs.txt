@@ -1,0 +1,590 @@
+// Generated from the estate's JCL. Rewritten on every run; do not edit.
+#nullable enable
+using System.Text;
+using System.Text.RegularExpressions;
+
+namespace {{Namespace}}
+{
+    // A program a JCL step runs, by EXEC PGM= or by RUN PROGRAM under the TSO monitor.
+    public interface IBatchProgram
+    {
+        // The program name the JCL uses.
+        string ProgramId { get; }
+
+        // Returns the program's RETURN-CODE. Throwing ends the step as an abend; throw
+        // BatchAbendException to give the abend a code.
+        Task<int> RunAsync(BatchStepContext context, CancellationToken cancellationToken = default);
+    }
+
+    public enum JclCompare { Gt, Lt, Eq, Ne, Ge, Le }
+
+    public enum JclStepKind { Program, Tso, Utility, Unresolved }
+
+    public sealed record JclDd(string Name)
+    {
+        public string? Dataset { get; init; }
+        public string? Member { get; init; }
+        public string? Generation { get; init; }
+        public bool Temporary { get; init; }
+        public string? Status { get; init; }
+        public string? NormalDisposition { get; init; }
+        public string? AbnormalDisposition { get; init; }
+        public string? SysOut { get; init; }
+        public bool Dummy { get; init; }
+        public IReadOnlyList<string>? InStream { get; init; }
+        public IReadOnlyList<JclDd> Concatenated { get; init; } = [];
+    }
+
+    public sealed record JclDb2Run(string Program, string? Plan, string? Subsystem, string? Parms);
+
+    // Bypass the step when Code Op (a step's return code) is true.
+    public sealed record JclCondTest(int Code, JclCompare Op, string? Step = null);
+
+    public sealed record JclCond(IReadOnlyList<JclCondTest> Tests, bool Even = false, bool Only = false);
+
+    public sealed record JclStepDefinition(string Name, JclStepKind Kind)
+    {
+        public string? Program { get; init; }
+        public string? Procedure { get; init; }
+        public string? Parm { get; init; }
+        public IReadOnlyList<JclDb2Run> Runs { get; init; } = [];
+        public Func<JclJobState, bool>? Guard { get; init; }
+        public bool GuardTestsAbend { get; init; }
+        public string? GuardError { get; init; }
+        public JclCond? Cond { get; init; }
+        public IReadOnlyList<JclDd> Dds { get; init; } = [];
+        public IReadOnlyList<string> ControlStatements { get; init; } = [];
+    }
+
+    public abstract class JclJob
+    {
+        protected JclJob(string name, JclCond? cond = null)
+        {
+            Name = name;
+            Cond = cond;
+        }
+
+        public string Name { get; }
+        public JclCond? Cond { get; }
+        public abstract IReadOnlyList<JclStepDefinition> Steps { get; }
+    }
+
+    // Ends a step as an abend with a code such as U0100 or S0C7.
+    public sealed class BatchAbendException(string code, string message, Exception? inner = null) : Exception(message, inner)
+    {
+        public string Code { get; } = code;
+    }
+
+    // The job cannot go on as written: a procedure missing from the source, a condition that could
+    // not be read, or a utility with no equivalent. Not an abend; nothing a later step can test.
+    public sealed class JclStepNotRunnableException(string message, Exception? inner = null) : Exception(message, inner);
+
+    public sealed record JclStepOutcome(string Step, bool Ran, int? ReturnCode, string? AbendCode, bool Abended, string? Message);
+
+    public sealed record JclJobResult(string Job, string RunId, IReadOnlyList<JclStepOutcome> Steps, bool Terminated)
+    {
+        public int MaxReturnCode => Steps.Where(s => s.ReturnCode.HasValue).Select(s => s.ReturnCode!.Value).DefaultIfEmpty(0).Max();
+        public bool Abended => Steps.Any(s => s.Abended);
+    }
+
+    // What the steps run so far did, as IF and COND read it. A step that abended or did not run has
+    // no return code, so every comparison with it is false.
+    public sealed class JclJobState
+    {
+        private readonly List<JclStepOutcome> _outcomes = [];
+
+        public IReadOnlyList<JclStepOutcome> Outcomes => _outcomes;
+        public bool AnyAbend => _outcomes.Any(o => o.Abended);
+
+        internal void Add(JclStepOutcome outcome) => _outcomes.Add(outcome);
+
+        // A name that called a procedure stands for all of its steps.
+        public IEnumerable<JclStepOutcome> Matching(string? step) => step is null
+            ? _outcomes
+            : _outcomes.Where(o => o.Step.Equals(step, StringComparison.OrdinalIgnoreCase)
+                                   || o.Step.StartsWith(step + ".", StringComparison.OrdinalIgnoreCase));
+
+        public bool Rc(string? step, JclCompare op, int value)
+        {
+            var codes = Matching(step).Where(o => o.Ran && !o.Abended && o.ReturnCode.HasValue).Select(o => o.ReturnCode!.Value).ToList();
+            return codes.Count > 0 && Compare(codes.Max(), op, value);
+        }
+
+        public bool AbendCc(string? step, JclCompare op, string code)
+        {
+            var wanted = NormalizeAbend(code);
+            var codes = Matching(step).Where(o => o.Abended && o.AbendCode is not null).Select(o => NormalizeAbend(o.AbendCode!)).ToList();
+            if (codes.Count == 0) return false;
+            return op == JclCompare.Ne ? codes.All(c => c != wanted) : codes.Any(c => c == wanted);
+        }
+
+        public bool Abended(string? step) => Matching(step).Any(o => o.Abended);
+
+        public bool Ran(string step) => Matching(step).Any(o => o.Ran);
+
+        public static bool Compare(int left, JclCompare op, int right) => op switch
+        {
+            JclCompare.Gt => left > right,
+            JclCompare.Lt => left < right,
+            JclCompare.Eq => left == right,
+            JclCompare.Ne => left != right,
+            JclCompare.Ge => left >= right,
+            JclCompare.Le => left <= right,
+            _ => false,
+        };
+
+        private static string NormalizeAbend(string code)
+        {
+            var c = code.Trim().ToUpperInvariant();
+            return c.StartsWith('U') && int.TryParse(c[1..], out var user) ? "U" + user.ToString("D4") : c;
+        }
+    }
+
+    public interface IDatasetCatalog
+    {
+        // A run keeps relative generations fixed, as a mainframe job does.
+        string Resolve(string runId, JclDd dd);
+        string SysOutPath(string runId, string job, string step, string dd);
+        void Delete(string runId, JclDd dd);
+        void EndJob(string runId);
+    }
+
+    // Datasets as files under one root: A.B.C is <root>/A.B.C, a member is a file inside it, and a
+    // generation data group is a directory of G0001V00, G0002V00, ...
+    public sealed class DirectoryDatasetCatalog : IDatasetCatalog
+    {
+        private static readonly Regex GenerationFile = new(@"^G(\d{4})V00$", RegexOptions.Compiled);
+        private readonly string _root;
+        private readonly Dictionary<(string Run, string Base), int> _current = new();
+        private readonly object _lock = new();
+
+        public DirectoryDatasetCatalog(string root) => _root = Path.GetFullPath(root);
+
+        public string Resolve(string runId, JclDd dd)
+        {
+            if (dd.Dataset is null) throw new InvalidOperationException($"DD {dd.Name} names no dataset.");
+            if (dd.Temporary) return Under(Path.Join(_root, ".temp", runId, Name(dd.Dataset.TrimStart('&'))));
+            var path = Path.Join(_root, Name(dd.Dataset));
+            if (dd.Generation is { } generation) path = Path.Join(path, Generation(runId, dd.Dataset, path, generation));
+            if (dd.Member is { } member) path = Path.Join(path, Name(member));
+            return Under(path);
+        }
+
+        public string SysOutPath(string runId, string job, string step, string dd) =>
+            Under(Path.Join(_root, ".sysout", Name(job), runId, Name(step) + "." + Name(dd) + ".txt"));
+
+        public void Delete(string runId, JclDd dd)
+        {
+            var path = Resolve(runId, dd);
+            if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
+            else if (File.Exists(path)) File.Delete(path);
+        }
+
+        public void EndJob(string runId)
+        {
+            var temp = Path.Join(_root, ".temp", runId);
+            if (Directory.Exists(temp)) Directory.Delete(temp, recursive: true);
+            lock (_lock)
+                foreach (var key in _current.Keys.Where(k => k.Run == runId).ToList()) _current.Remove(key);
+        }
+
+        private string Generation(string runId, string name, string directory, string relative)
+        {
+            int current;
+            lock (_lock)
+            {
+                if (!_current.TryGetValue((runId, name), out current))
+                {
+                    current = Directory.Exists(directory)
+                        ? Directory.EnumerateFiles(directory).Select(f => GenerationFile.Match(Path.GetFileName(f)))
+                            .Where(m => m.Success).Select(m => int.Parse(m.Groups[1].Value)).DefaultIfEmpty(0).Max()
+                        : 0;
+                    _current[(runId, name)] = current;
+                }
+            }
+            var number = current + int.Parse(relative);
+            if (number < 1) throw new FileNotFoundException($"{name}({relative}) does not exist: the group has {current} generation(s).");
+            return $"G{number:D4}V00";
+        }
+
+        // A name must stay one entry under the root: an empty one, or one of dots alone, would
+        // resolve to the root or its parent, which a DELETE would then remove.
+        private static string Name(string name)
+        {
+            var safe = Regex.Replace(name, @"[^A-Za-z0-9.$#@_-]", "_");
+            if (safe.Trim('.').Length == 0) throw new InvalidOperationException($"'{name}' is not a usable dataset name.");
+            return safe;
+        }
+
+        private string Under(string path)
+        {
+            var full = Path.GetFullPath(path);
+            if (!full.StartsWith(_root + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+                throw new InvalidOperationException($"{path} is outside the dataset root {_root}.");
+            return full;
+        }
+    }
+
+    public sealed class BatchStepContext
+    {
+        private readonly IDatasetCatalog _datasets;
+        private readonly string _runId;
+
+        public BatchStepContext(string job, string step, string runId, string? programId, string? parm,
+            JclDb2Run? db2, IReadOnlyList<JclDd> dds, IReadOnlyList<string> controlStatements, IDatasetCatalog datasets)
+        {
+            Job = job;
+            Step = step;
+            _runId = runId;
+            ProgramId = programId;
+            Parm = parm;
+            Db2Plan = db2?.Plan;
+            Db2Subsystem = db2?.Subsystem;
+            Dds = dds.GroupBy(d => d.Name.Split('.')[^1], StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.Last(), StringComparer.OrdinalIgnoreCase);
+            ControlStatements = controlStatements;
+            _datasets = datasets;
+        }
+
+        public string Job { get; }
+        public string Step { get; }
+        public string? ProgramId { get; }
+        public string? Parm { get; }
+        public string? Db2Plan { get; }
+        public string? Db2Subsystem { get; }
+        public IReadOnlyDictionary<string, JclDd> Dds { get; }
+        public IReadOnlyList<string> ControlStatements { get; }
+
+        public bool Has(string dd) => Dds.ContainsKey(dd);
+
+        public JclDd Dd(string dd) => Dds.TryGetValue(dd, out var found)
+            ? found
+            : throw new InvalidOperationException($"Step {Step} of {Job} has no DD {dd}.");
+
+        // The file behind a DD; null when it is DUMMY or in-stream.
+        public string? PathFor(string dd) => PathFor(Dd(dd));
+
+        public string ResolveDataset(string name) => _datasets.Resolve(_runId, new JclDd("") { Dataset = name });
+
+        public IReadOnlyList<string> InStream(string dd) => Dd(dd).InStream ?? [];
+
+        public Stream OpenRead(string dd)
+        {
+            var first = Dd(dd);
+            var parts = new List<Stream>();
+            try
+            {
+                foreach (var part in first.Concatenated.Prepend(first)) parts.Add(OpenOne(part));
+            }
+            catch
+            {
+                foreach (var opened in parts) opened.Dispose();
+                throw;
+            }
+            return parts.Count == 1 ? parts[0] : new ConcatenatedStream(parts);
+        }
+
+        public Stream OpenWrite(string dd)
+        {
+            var target = Dd(dd);
+            if (target.Dummy) return Stream.Null;
+            var path = PathFor(target) ?? throw new InvalidOperationException($"DD {dd} of step {Step} is in-stream and cannot be written.");
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            return new FileStream(path, target.Status == "MOD" || target.SysOut is not null ? FileMode.Append : FileMode.Create, FileAccess.Write);
+        }
+
+        internal string? PathFor(JclDd dd)
+        {
+            if (dd.Dummy || dd.InStream is not null) return null;
+            if (dd.SysOut is not null) return _datasets.SysOutPath(_runId, Job, Step, dd.Name);
+            return dd.Dataset is null ? null : _datasets.Resolve(_runId, dd);
+        }
+
+        private Stream OpenOne(JclDd dd)
+        {
+            if (dd.Dummy) return Stream.Null;
+            if (dd.InStream is { } lines) return new MemoryStream(Encoding.UTF8.GetBytes(string.Concat(lines.Select(l => l + "\n"))));
+            var path = PathFor(dd) ?? throw new InvalidOperationException($"DD {dd.Name} of step {Step} has nothing to read.");
+            return File.OpenRead(path);
+        }
+
+        private sealed class ConcatenatedStream(IReadOnlyList<Stream> parts) : Stream
+        {
+            private int _index;
+
+            public override bool CanRead => true;
+            public override bool CanSeek => false;
+            public override bool CanWrite => false;
+            public override long Length => throw new NotSupportedException();
+            public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                while (_index < parts.Count)
+                {
+                    var read = parts[_index].Read(buffer, offset, count);
+                    if (read > 0) return read;
+                    _index++;
+                }
+                return 0;
+            }
+
+            public override void Flush() { }
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing) foreach (var part in parts) part.Dispose();
+                base.Dispose(disposing);
+            }
+        }
+    }
+
+    public interface IJobUtilities
+    {
+        Task<int> RunAsync(string program, BatchStepContext context, CancellationToken cancellationToken = default);
+    }
+
+    // IEFBR14 and the IDCAMS commands that act on files: DELETE, REPRO, DEFINE and SET. Anything else
+    // stops the job and names the utility, rather than pretending to have run it.
+    public class DefaultJobUtilities : IJobUtilities
+    {
+        private static readonly Regex Keyword = new(@"\b(?<key>[A-Z]+)\s*\(\s*(?<value>[^()]*)\)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        public virtual Task<int> RunAsync(string program, BatchStepContext context, CancellationToken cancellationToken = default) =>
+            program.ToUpperInvariant() switch
+            {
+                "IEFBR14" => Task.FromResult(0),
+                "IDCAMS" => Task.FromResult(Idcams(context)),
+                _ => throw new JclStepNotRunnableException(
+                    $"Step {context.Step} runs {program}, which has no generated equivalent. Implement IJobUtilities for it; "
+                    + "its control statements are in BatchStepContext.ControlStatements."),
+            };
+
+        private static int Idcams(BatchStepContext context)
+        {
+            int maxcc = 0, lastcc = 0;
+            foreach (var command in Commands(context.ControlStatements))
+            {
+                var verb = command.Split(' ', 2)[0].ToUpperInvariant();
+                var rest = command.Length > verb.Length ? command[verb.Length..].Trim() : "";
+                switch (verb)
+                {
+                    case "DELETE" or "DEL":
+                        // DELETE ( A.B.C ) PURGE: the entry is the first word that is not a parenthesis.
+                        var name = rest.Split([' ', '(', ')'], StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()?.Trim('\'') ?? "";
+                        if (name.Length == 0) throw new JclStepNotRunnableException($"Step {context.Step}: IDCAMS {command} names no entry.");
+                        var path = context.ResolveDataset(name);
+                        if (Directory.Exists(path)) { Directory.Delete(path, true); lastcc = 0; }
+                        else if (File.Exists(path)) { File.Delete(path); lastcc = 0; }
+                        else lastcc = 8;
+                        break;
+                    case "REPRO":
+                        var arguments = Arguments(rest);
+                        using (var input = arguments.TryGetValue("INFILE", out var inDd) ? context.OpenRead(inDd)
+                                   : File.OpenRead(context.ResolveDataset(Required(arguments, "INDATASET", "IDS"))))
+                        using (var output = arguments.TryGetValue("OUTFILE", out var outDd) ? context.OpenWrite(outDd)
+                                   : Create(context.ResolveDataset(Required(arguments, "OUTDATASET", "ODS"))))
+                            input.CopyTo(output);
+                        lastcc = 0;
+                        break;
+                    case "DEFINE" or "DEF":
+                        var defined = Arguments(rest).GetValueOrDefault("NAME")
+                            ?? throw new JclStepNotRunnableException($"Step {context.Step}: DEFINE without NAME: {command}");
+                        var target = context.ResolveDataset(defined);
+                        if (rest.StartsWith("GDG", StringComparison.OrdinalIgnoreCase)) Directory.CreateDirectory(target);
+                        else if (!File.Exists(target)) Create(target).Dispose();
+                        lastcc = 0;
+                        break;
+                    case "SET":
+                        var assignment = Regex.Match(rest, @"^(?<cc>MAXCC|LASTCC)\s*=\s*(?<value>\d+)$", RegexOptions.IgnoreCase);
+                        if (!assignment.Success) throw new JclStepNotRunnableException($"Step {context.Step}: IDCAMS {command} is not supported.");
+                        var value = int.Parse(assignment.Groups["value"].Value);
+                        if (assignment.Groups["cc"].Value.Equals("MAXCC", StringComparison.OrdinalIgnoreCase)) { maxcc = value; continue; }
+                        lastcc = value;
+                        break;
+                    default:
+                        throw new JclStepNotRunnableException($"Step {context.Step}: IDCAMS {verb} has no generated equivalent.");
+                }
+                maxcc = Math.Max(maxcc, lastcc);
+            }
+            return maxcc;
+        }
+
+        private static FileStream Create(string path)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            return File.Create(path);
+        }
+
+        private static string Required(Dictionary<string, string> arguments, params string[] keys) =>
+            keys.Select(arguments.GetValueOrDefault).FirstOrDefault(v => v is not null)
+            ?? throw new JclStepNotRunnableException($"REPRO needs {string.Join(" or ", keys)}.");
+
+        private static Dictionary<string, string> Arguments(string text) =>
+            Keyword.Matches(text).GroupBy(m => m.Groups["key"].Value.ToUpperInvariant())
+                .ToDictionary(g => g.Key, g => g.First().Groups["value"].Value.Trim().Trim('\''));
+
+        // A trailing '-' or '+' continues a command; /* ... */ is a comment.
+        private static IEnumerable<string> Commands(IEnumerable<string> lines)
+        {
+            var current = new StringBuilder();
+            foreach (var line in lines.Select(l => Regex.Replace(l, @"/\*.*?\*/", " ").Trim()).Where(l => l.Length > 0))
+            {
+                var continued = line.EndsWith('-') || line.EndsWith('+');
+                if (current.Length > 0) current.Append(' ');
+                current.Append(continued ? line[..^1].TrimEnd() : line);
+                if (continued) continue;
+                yield return current.ToString();
+                current.Clear();
+            }
+            if (current.Length > 0) yield return current.ToString();
+        }
+    }
+
+    // Runs a job the way z/OS does: IF/THEN/ELSE and COND decide each step, JOB COND ends the job,
+    // and after an abend only steps that ask for it (COND=EVEN/ONLY, or IF testing ABEND) run.
+    public sealed class JclJobRunner
+    {
+        private readonly Dictionary<string, IBatchProgram> _programs;
+        private readonly IDatasetCatalog _datasets;
+        private readonly IJobUtilities _utilities;
+
+        public JclJobRunner(IEnumerable<IBatchProgram> programs, IDatasetCatalog datasets, IJobUtilities? utilities = null)
+        {
+            _programs = new Dictionary<string, IBatchProgram>(StringComparer.OrdinalIgnoreCase);
+            foreach (var program in programs)
+                if (!_programs.TryAdd(program.ProgramId, program))
+                    throw new InvalidOperationException($"Two batch programs have the id {program.ProgramId}.");
+            _datasets = datasets;
+            _utilities = utilities ?? new DefaultJobUtilities();
+        }
+
+        public async Task<JclJobResult> RunAsync(JclJob job, CancellationToken cancellationToken = default)
+        {
+            var runId = DateTime.UtcNow.ToString("yyyyMMddHHmmssfff") + "-" + Guid.NewGuid().ToString("N")[..8];
+            var state = new JclJobState();
+            var terminated = false;
+            try
+            {
+                foreach (var step in job.Steps)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (terminated || !ShouldRun(step, state))
+                    {
+                        state.Add(new JclStepOutcome(step.Name, false, null, null, false, terminated ? "JOB COND ended the job" : "bypassed"));
+                        continue;
+                    }
+
+                    var outcome = await ExecuteAsync(job, step, runId, cancellationToken).ConfigureAwait(false);
+                    state.Add(outcome);
+
+                    if (!outcome.Abended && outcome.ReturnCode is { } rc && job.Cond is { } jobCond
+                        && jobCond.Tests.Any(t => JclJobState.Compare(t.Code, t.Op, rc)))
+                        terminated = true;
+                }
+            }
+            finally
+            {
+                _datasets.EndJob(runId);
+            }
+
+            return new JclJobResult(job.Name, runId, state.Outcomes, terminated);
+        }
+
+        private static bool ShouldRun(JclStepDefinition step, JclJobState state)
+        {
+            if (step.GuardError is not null)
+                throw new JclStepNotRunnableException($"Step {step.Name}: the condition could not be read: {step.GuardError}");
+
+            var abended = state.AnyAbend;
+            if (step.Guard is not null)
+            {
+                if (!step.Guard(state)) return false;
+                if (abended && !step.GuardTestsAbend && step.Cond is not { Even: true } and not { Only: true }) return false;
+            }
+            else if (abended && step.Cond is not { Even: true } and not { Only: true }) return false;
+
+            if (step.Cond is { } cond)
+            {
+                if (cond.Only && !abended) return false;
+                foreach (var test in cond.Tests)
+                {
+                    var codes = state.Matching(test.Step).Where(o => o.Ran && !o.Abended && o.ReturnCode.HasValue).Select(o => o.ReturnCode!.Value);
+                    if (codes.Any(rc => JclJobState.Compare(test.Code, test.Op, rc))) return false;
+                }
+            }
+
+            if (step.Kind == JclStepKind.Unresolved)
+                throw new JclStepNotRunnableException(
+                    $"Step {step.Name} calls procedure {step.Procedure}, which is not in the source. Add it and regenerate the job.");
+            return true;
+        }
+
+        private async Task<JclStepOutcome> ExecuteAsync(JclJob job, JclStepDefinition step, string runId, CancellationToken cancellationToken)
+        {
+            try
+            {
+                int rc;
+                switch (step.Kind)
+                {
+                    case JclStepKind.Program:
+                        rc = await Program(step.Program!).RunAsync(Context(job, step, runId, step.Program, step.Parm, null), cancellationToken).ConfigureAwait(false);
+                        break;
+                    case JclStepKind.Tso:
+                        rc = 0;
+                        foreach (var run in step.Runs)
+                            rc = await Program(run.Program).RunAsync(Context(job, step, runId, run.Program, run.Parms, run), cancellationToken).ConfigureAwait(false);
+                        break;
+                    default:
+                        rc = await _utilities.RunAsync(step.Program ?? "", Context(job, step, runId, step.Program, step.Parm, null), cancellationToken).ConfigureAwait(false);
+                        break;
+                }
+
+                Dispose(step, runId, normal: true);
+                return new JclStepOutcome(step.Name, true, rc, null, false, null);
+            }
+            catch (Exception ex) when (ex is not (OperationCanceledException or JclStepNotRunnableException))
+            {
+                Dispose(step, runId, normal: false);
+                return new JclStepOutcome(step.Name, true, null, (ex as BatchAbendException)?.Code, true, ex.Message);
+            }
+        }
+
+        private IBatchProgram Program(string id) => _programs.TryGetValue(id, out var program)
+            ? program
+            : throw new BatchAbendException("S806", $"Program {id} was not found: no IBatchProgram has that ProgramId.");
+
+        private BatchStepContext Context(JclJob job, JclStepDefinition step, string runId, string? programId, string? parm, JclDb2Run? db2) =>
+            new(job.Name, step.Name, runId, programId, parm, db2, step.Dds, step.ControlStatements, _datasets);
+
+        // A new dataset the step kept exists afterwards even if the step never wrote it, as allocation
+        // does; DELETE removes it. Temporary datasets go when the job ends.
+        private void Dispose(JclStepDefinition step, string runId, bool normal)
+        {
+            foreach (var dd in step.Dds.SelectMany(d => d.Concatenated.Prepend(d)).Where(d => d.Dataset is not null && !d.Temporary))
+            {
+                var disposition = normal ? dd.NormalDisposition : dd.AbnormalDisposition ?? dd.NormalDisposition;
+                try
+                {
+                    if (disposition == "DELETE") { _datasets.Delete(runId, dd); continue; }
+                    if (normal && (dd.Status ?? "NEW") == "NEW" && dd.Member is null)
+                    {
+                        var path = _datasets.Resolve(runId, dd);
+                        if (!File.Exists(path) && !Directory.Exists(path))
+                        {
+                            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                            File.Create(path).Dispose();
+                        }
+                    }
+                }
+                catch (Exception ex) when (!normal && ex is IOException or InvalidOperationException)
+                {
+                    // Cleanup after an abend must not hide the abend.
+                }
+            }
+        }
+    }
+}
