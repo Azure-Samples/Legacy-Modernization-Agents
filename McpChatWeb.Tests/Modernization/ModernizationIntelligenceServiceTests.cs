@@ -223,6 +223,45 @@ public class ModernizationIntelligenceServiceTests
     }
 
     [Fact]
+    public async Task ServiceChain_StepInsideAProcedure_LinksByItsOwnName()
+    {
+        using var fixture = new EstateFixture();
+        fixture.AddProgram("PAYCALC.cbl");
+        fixture.AddJcl("proclib/OUTER.proc", """
+            //OUTER    PROC
+            //PAYCALC  EXEC MISSING
+            """);
+        fixture.AddJcl("jcl/PAYJOB.jcl", """
+            //PAYJOB   JOB (ACCT),'A',CLASS=A
+            //RUN1     EXEC OUTER
+            """);
+
+        var chain = await ServiceFor(fixture).GetServiceChainAsync(null, null, includeUtilities: false);
+
+        Assert.Equal(["PAYCALC"], Assert.Single(chain.Jobs).PrimaryPrograms);
+        Assert.Empty(chain.UnresolvedSteps);
+    }
+
+    [Fact]
+    public async Task ServiceChain_ProcedureSavedAsJcl_IsNotAJob()
+    {
+        using var fixture = new EstateFixture();
+        fixture.AddProgram("PAYCALC.cbl");
+        fixture.AddJcl("jcl/PAYPROC.jcl", """
+            //PAYPROC  PROC
+            //CALC     EXEC PGM=PAYCALC
+            """);
+        fixture.AddJcl("jcl/PAYJOB.jcl", """
+            //PAYJOB   JOB (ACCT),'A',CLASS=A
+            //RUN      EXEC PAYPROC
+            """);
+
+        var chain = await ServiceFor(fixture).GetServiceChainAsync(null, null, includeUtilities: false);
+
+        Assert.Equal("PAYJOB", Assert.Single(chain.Jobs).JobName);
+    }
+
+    [Fact]
     public async Task ServiceChain_CommentedExecCard_IsNotAStep()
     {
         using var fixture = new EstateFixture();

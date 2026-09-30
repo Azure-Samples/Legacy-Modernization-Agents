@@ -805,7 +805,9 @@ public sealed class ModernizationIntelligenceService
 
             if (step.Kind != JclStepKind.UnresolvedProcedure || step.Runs.Count > 0) continue;
             var stepName = step.Name.ToUpperInvariant();
-            if (knownProgramStems.Contains(stepName)) { Accept(stepName); continue; }
+            // A step inside an expanded procedure is qualified (RUN1.PAYCALC); its own name is the last part.
+            var ownName = stepName[(stepName.LastIndexOf('.') + 1)..];
+            if (knownProgramStems.Contains(ownName)) { Accept(ownName); continue; }
 
             unresolved.Add(new UnresolvedStep(
                 JobName: jobName,

@@ -42,6 +42,7 @@ public static class JclEstate
             string text;
             try { text = File.ReadAllText(file); }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { continue; }
+            if (JclParser.IsMember(text)) continue;
             jobs.Add(parser.Parse(text, Path.GetRelativePath(sourceRoot, file).Replace('\\', '/')));
         }
 

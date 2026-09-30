@@ -127,6 +127,32 @@ public class JclParserTests
     }
 
     [Fact]
+    public void ProcedureDefaultsResolveTheSymbolsTheyName()
+    {
+        var job = Parse("""
+            //J        JOB
+            //         SET ENV=PROD
+            //MYPROC   PROC HLQ=&ENV,DS=&HLQ..DATA
+            //S1       EXEC PGM=P
+            //IN       DD DSN=&DS,DISP=SHR
+            //         PEND
+            //RUN1     EXEC MYPROC
+            //RUN2     EXEC MYPROC,HLQ=TEST
+            """);
+
+        job.Steps.Select(s => s.Dds.Single().Dataset!.Name).Should().Equal("PROD.DATA", "TEST.DATA");
+        job.UnresolvedSymbols.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("//PAYPROC  PROC\n//CALC     EXEC PGM=PAYCALC", true)]
+    [InlineData("//SYSOUT   DD SYSOUT=*", true)]
+    [InlineData("//CALC     EXEC PGM=PAYCALC", false)]
+    [InlineData("//J        JOB\n//P        PROC\n//S EXEC PGM=X\n//  PEND", false)]
+    public void AMemberSavedAsJclIsNotAJob(string text, bool member) =>
+        JclParser.IsMember(text).Should().Be(member);
+
+    [Fact]
     public void CataloguedProceduresAndIncludesComeFromTheSourceAndMissingOnesAreReported()
     {
         var members = new Dictionary<string, string>

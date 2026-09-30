@@ -22,6 +22,15 @@ public sealed class JclParser
 
     public JclParser(JclMemberLibrary? library = null) => _library = library ?? JclMemberLibrary.Empty;
 
+    // A file with no JOB statement that is a procedure (starts with PROC) or runs nothing (an
+    // INCLUDE member of DDs) is a library member, not a job, even when it is named .jcl.
+    public static bool IsMember(string text)
+    {
+        var statements = JclLexer.Lex(text);
+        if (statements.Any(s => s.Operation == "JOB")) return false;
+        return statements.FirstOrDefault()?.Operation == "PROC" || !statements.Any(s => s.Operation == "EXEC");
+    }
+
     public JclJob Parse(string text, string file)
     {
         var statements = JclLexer.Lex(text);
@@ -252,17 +261,44 @@ public sealed class JclParser
         }
 
         var symbols = new Dictionary<string, string>(scope.Symbols, StringComparer.OrdinalIgnoreCase);
+        var defaults = new List<string>();
         var header = body.FirstOrDefault(s => s.Operation == "PROC");
         if (header is not null)
             foreach (var (key, value) in JclOperands.Parse(header.Operands).Keywords)
+            {
                 symbols[key] = JclOperands.Unquote(value);
+                defaults.Add(key);
+            }
 
         var overrides = new List<KeyValuePair<string, string>>();
         foreach (var kv in operands.Keywords)
         {
             var baseKey = kv.Key.Split('.')[0];
             if (ExecParameters.Contains(baseKey)) { if (baseKey is not ("PGM" or "PROC")) overrides.Add(kv); }
-            else symbols[kv.Key] = JclOperands.Unquote(kv.Value);
+            else
+            {
+                symbols[kv.Key] = JclOperands.Unquote(kv.Value);
+                defaults.Remove(kv.Key);
+            }
+        }
+
+        // A default may name other symbols (HLQ=&ENV); resolve it in the scope the procedure runs in.
+        // Overrides were already resolved in the caller's scope. The pass limit stops a cycle.
+        for (var pass = 0; pass < defaults.Count; pass++)
+        {
+            var changed = false;
+            foreach (var key in defaults)
+            {
+                var value = symbols[key];
+                if (!value.Contains('&')) continue;
+                var others = symbols.Where(s => !s.Key.Equals(key, StringComparison.OrdinalIgnoreCase))
+                    .ToDictionary(s => s.Key, s => s.Value, StringComparer.OrdinalIgnoreCase);
+                var resolved = Substitute(value, others, new HashSet<string>());
+                if (resolved == value) continue;
+                symbols[key] = resolved;
+                changed = true;
+            }
+            if (!changed) break;
         }
 
         var inner = new Scope(symbols, conditions, procedure, stepName, overrides,
