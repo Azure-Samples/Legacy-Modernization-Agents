@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace CobolToQuarkusMigration.Jcl;
@@ -151,18 +152,17 @@ public static class JclControlCards
     // TSO and IDCAMS continue a command with a trailing '-' or '+'; /* ... */ is a comment.
     private static IEnumerable<string> Commands(IEnumerable<string> lines)
     {
-        var current = "";
-        foreach (var raw in lines)
+        var current = new StringBuilder();
+        foreach (var line in lines.Select(raw => Regex.Replace(raw, @"/\*.*?\*/", " ").Trim()).Where(l => l.Length > 0))
         {
-            var line = Regex.Replace(raw, @"/\*.*?\*/", " ").Trim();
-            if (line.Length == 0) continue;
             var continued = line.EndsWith('-') || line.EndsWith('+');
-            current += (current.Length > 0 ? " " : "") + (continued ? line[..^1].TrimEnd() : line);
+            if (current.Length > 0) current.Append(' ');
+            current.Append(continued ? line[..^1].TrimEnd() : line);
             if (continued) continue;
-            yield return current;
-            current = "";
+            yield return current.ToString();
+            current.Clear();
         }
 
-        if (current.Length > 0) yield return current;
+        if (current.Length > 0) yield return current.ToString();
     }
 }

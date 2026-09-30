@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace CobolToQuarkusMigration.Jcl;
 
 // One JCL statement with its continuations joined, and the in-stream data it opened, if any.
@@ -55,6 +57,7 @@ public static class JclLexer
             }
             else
             {
+                var joined = new StringBuilder(operands);
                 while (open != Continuation.None && i < lines.Length && IsContinuation(lines[i]))
                 {
                     var next = StatementText(lines[i]);
@@ -69,9 +72,11 @@ public static class JclLexer
                         (more, open) = OperandField(next[2..].TrimStart(), quoteOpen: false);
                     }
 
-                    operands += more;
+                    joined.Append(more);
                     i++;
                 }
+
+                operands = joined.ToString();
             }
 
             IReadOnlyList<string>? inStream = null;

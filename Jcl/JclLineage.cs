@@ -38,12 +38,12 @@ public sealed record JclEstateLineage(
         foreach (var job in jobs)
         foreach (var step in job.Steps)
         {
-            foreach (var dd in step.Dds.SelectMany(d => d.Concatenated.Prepend(d)))
+            var dataDds = step.Dds.SelectMany(d => d.Concatenated.Prepend(d))
+                .Where(dd => dd.Dataset is not null && dd.Access is not null && !LibraryDds.Contains(dd.Name.Split('.')[^1]));
+            foreach (var dd in dataDds)
             {
-                if (dd.Dataset is not { } dataset || dd.Access is not { } access) continue;
-                if (LibraryDds.Contains(dd.Name.Split('.')[^1])) continue;
-                Add(job, step, dataset, access, dd.Name);
-                if (dd.NormalDisposition == "DELETE") Add(job, step, dataset, JclDatasetAccess.Delete, dd.Name);
+                Add(job, step, dd.Dataset!, dd.Access!.Value, dd.Name);
+                if (dd.NormalDisposition == "DELETE") Add(job, step, dd.Dataset!, JclDatasetAccess.Delete, dd.Name);
             }
 
             foreach (var effect in step.Effects) Add(job, step, effect.Dataset, effect.Access, step.Program ?? "");

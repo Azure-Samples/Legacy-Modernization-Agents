@@ -26,7 +26,7 @@ public static class JclFactsCommand
                 return;
             }
 
-            var output = outputDir ?? Path.Combine(Directory.GetCurrentDirectory(), "output", "rekt");
+            var output = outputDir ?? Path.Join(Directory.GetCurrentDirectory(), "output", "rekt");
             var written = JclEstate.Write(sourceDir, output);
             Console.Error.WriteLine($"jcl-facts: wrote {written} job fact file(s) and {JclEstate.LineageFileName} to {output}");
         }, sourceArg, outputOption);

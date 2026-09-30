@@ -671,7 +671,7 @@ public sealed class ModernizationIntelligenceService
                 JobName: jobName,
                 JclFileName: Path.GetFileName(parsed.File),
                 RelativePath: SourcePathHelper.NormalizeRelativePath(
-                    Path.GetRelativePath(estate.RepoRoot, Path.Combine(estate.SourceRoot, parsed.File))),
+                    Path.GetRelativePath(estate.RepoRoot, Path.Join(estate.SourceRoot, parsed.File))),
                 PrimaryPrograms: steps));
         }
 
