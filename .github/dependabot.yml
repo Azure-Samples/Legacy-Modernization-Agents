@@ -5,6 +5,11 @@ updates:
     groups:
       github-actions:
         patterns: ["*"]
+    # The gh-aw setup actions are pinned inside compiled .lock.yml files and must move with
+    # the compiler that generated them; update them with `gh aw compile`, not a SHA bump.
+    ignore:
+      - dependency-name: "github/gh-aw-actions/*"
+      - dependency-name: "github/gh-aw/*"
     schedule:
       interval: "weekly"
     cooldown:

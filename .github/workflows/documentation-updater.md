@@ -23,10 +23,9 @@ tools:
   github:
     toolsets: [repos, issues]
   bash:
-    - "find docs -name '*.md' -o -name '*.mdx'"
+    - "find docs -name"
     - "find docs -maxdepth 1 -ls"
-    - "find docs -name '*.md' -exec cat {} +"
-    - "grep -r '*' docs"
+    - "grep -r"
     - "git"
 
 safe-outputs:
