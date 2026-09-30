@@ -2,6 +2,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using CobolToQuarkusMigration.Helpers;
 using CobolToQuarkusMigration.Models;
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -26,6 +27,13 @@ public abstract class AgentBase
     protected readonly bool UseResponsesApi;
 
     protected abstract string AgentName { get; }
+
+    // Keyed by context identifier because one agent instance converts several files concurrently.
+    private readonly ConcurrentDictionary<string, bool> _endedNormally = new(StringComparer.Ordinal);
+
+    // True only when the provider said the model stopped on its own; unknown counts as false.
+    protected bool ProviderReportedNormalEnd(string contextIdentifier) =>
+        _endedNormally.TryGetValue(contextIdentifier, out var ended) && ended;
 
     protected string ProviderName =>
         ChatClient is CopilotChatClient ? "GitHub Copilot" : "Azure OpenAI";
@@ -125,6 +133,7 @@ public abstract class AgentBase
             {
                 // Use Responses API for codex models with auto-optimized token settings
                 responseText = await ResponsesClient.GetResponseAutoAsync(systemPrompt, userPrompt);
+                _endedNormally.TryRemove(contextIdentifier, out _);
             }
             else if (ChatClient != null)
             {
@@ -151,6 +160,7 @@ public abstract class AgentBase
 
                 // ── Truncation detection ──
                 DetectTruncation(response, responseText, maxTokens, reasoningEffort, contextIdentifier);
+                _endedNormally[contextIdentifier] = response.FinishReason == ChatFinishReason.Stop;
             }
             else
             {
@@ -357,6 +367,7 @@ public abstract class AgentBase
 
                         // Re-check for truncation on the retry
                         DetectTruncation(retryResponse, retryText, currentMaxTokens, currentEffort, contextIdentifier);
+                        _endedNormally[contextIdentifier] = retryResponse.FinishReason == ChatFinishReason.Stop;
 
                         EnhancedLogger?.LogBehindTheScenes("OUTPUT_TRUNCATION_RECOVERED", "SUCCESS",
                             $"Recovered on retry {truncRetry + 1} with tokens={currentMaxTokens}, effort='{currentEffort}'",

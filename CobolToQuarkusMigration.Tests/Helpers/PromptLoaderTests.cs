@@ -33,8 +33,8 @@ public sealed class PromptLoaderTests
     }
 
     [Theory]
-    [InlineData("JavaConverter", "Java with Quarkus", "package com.example.something;")]
-    [InlineData("CSharpConverter", "C# with .NET", "namespace CobolMigration.Something;")]
+    [InlineData("JavaConverter", "Java with Quarkus", "package assigned in the TARGET NAMESPACE section")]
+    [InlineData("CSharpConverter", "C# with .NET", "namespace assigned in the TARGET NAMESPACE section")]
     public void WholeFileUserPrompt_PreservesDynamicContextOrder(
         string promptName,
         string conversionText,

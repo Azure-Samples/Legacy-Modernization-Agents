@@ -149,7 +149,7 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
                 };
             }
 
-            csharpCode = ExtractCSharpCode(csharpCode);
+            csharpCode = GeneratedCSharpSyntax.FixAccessorTerminators(GeneratedCodeEntities.DecodeInCode(ExtractCSharpCode(csharpCode)));
 
             if (!ConversionOutputGuard.IsUsableChunk(
                     csharpCode,
@@ -252,7 +252,7 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
                 };
             }
 
-            correctedCode = ExtractCSharpCode(correctedCode);
+            correctedCode = GeneratedCSharpSyntax.FixAccessorTerminators(GeneratedCodeEntities.DecodeInCode(ExtractCSharpCode(correctedCode)));
 
             return new ChunkConversionResult
             {

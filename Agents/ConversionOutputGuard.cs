@@ -1,9 +1,20 @@
 namespace CobolToQuarkusMigration.Agents;
 
 using System.Text;
+using System.Text.RegularExpressions;
 
 internal static class ConversionOutputGuard
 {
+    // A type declaration at the start of a line. Checking for the text "class " alone treats a
+    // complete copybook conversion that is only an enum and a record as truncated.
+    private static readonly Regex TypeDeclaration = new(
+        @"^[ \t]*(?:(?:public|internal|private|protected|file|static|sealed|abstract|partial|readonly|ref|unsafe|new|final|strictfp|non-sealed)[ \t]+)*" +
+        @"(?:record[ \t]+(?:class|struct)|class|record|struct|interface|enum|@interface)[ \t]+[A-Za-z_][A-Za-z0-9_]*",
+        RegexOptions.Multiline | RegexOptions.Compiled);
+
+    internal static bool DeclaresType(string? code) =>
+        !string.IsNullOrEmpty(code) && TypeDeclaration.IsMatch(code);
+
     internal static string ExtractFencedCode(string input, params string[] languageMarkers)
     {
         foreach (var marker in languageMarkers)

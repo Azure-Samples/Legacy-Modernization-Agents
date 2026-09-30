@@ -263,10 +263,30 @@ internal static class Program
         configOption.AddAlias("-c");
         reverseEngineerCommand.AddOption(configOption);
 
-        reverseEngineerCommand.SetHandler(async (string cobolSource, string output, string configPath) =>
+        // doctor.sh has always passed --programs to this command, and this command has never
+        // accepted it, so "reverse-eng --program X" failed outright instead of analysing X.
+        // Reverse engineering is subject to the same reason conversion is: a full estate run
+        // costs hours, and a change is judged on one program long before it is trusted on sixty.
+        var programsOption = new Option<string>(
+            "--programs",
+            () => "",
+            "Comma-separated programs to analyse, by name or source-relative path. "
+            + "Empty analyses the whole estate. Copybooks the selection reaches travel with it.");
+        programsOption.AddAlias("-programs");
+        reverseEngineerCommand.AddOption(programsOption);
+
+        reverseEngineerCommand.SetHandler(async (string cobolSource, string output, string configPath, string programs) =>
         {
+            var selection = SplitPrograms(programs);
+            if (selection.Count > 0)
+            {
+                fileHelper.ProgramSelection = selection;
+                Console.WriteLine(
+                    $"🎯 Analysing {selection.Count} selected program(s): {string.Join(", ", selection)}");
+            }
+
             await RunReverseEngineeringAsync(loggerFactory, fileHelper, settingsHelper, cobolSource, output, configPath);
-        }, cobolSourceOption, outputOption, configOption);
+        }, cobolSourceOption, outputOption, configOption, programsOption);
 
         return reverseEngineerCommand;
     }
@@ -1306,6 +1326,11 @@ internal static class Program
         if (Environment.GetEnvironmentVariable("AI_EXHAUSTION_RETRY_MULTIPLIER") is { Length: > 0 } aiExMult
             && double.TryParse(aiExMult, NumberStyles.Float, CultureInfo.InvariantCulture, out var cemVal))
             modelProfile.ReasoningExhaustionRetryMultiplier = cemVal;
+
+        var compileGate = settings.CompileGate ??= new CompileGateSettings();
+        if (Environment.GetEnvironmentVariable("COMPILE_REPAIR_MAX_ROUNDS") is { Length: > 0 } repairRounds
+            && int.TryParse(repairRounds, out var rrVal) && rrVal >= 0)
+            compileGate.MaxRepairRounds = rrVal;
 
         // ── Speed-profile overrides for ChunkingSettings ────────────────────
         var chunkingSettings = settings.ChunkingSettings ??= new ChunkingSettings();

@@ -44,6 +44,18 @@ public static class RektPromptInjector
             logger?.LogInformation("[RektPromptInjector] Repo root: {Root}, source: {Src}, file: {File}",
                 d.FullName, srcFolder, fileName);
 
+            // Assigned before any structural context, and independently of it: a program still
+            // needs a namespace when REKT is switched off, and leaving the choice to the model
+            // scattered one estate across five unrelated roots.
+            var relativePath = ResolveSourceRelativePath(d.FullName, srcFolder, fileName);
+            sb.AppendLine();
+            sb.AppendLine(PromptLoader.LoadSectionValidated(
+                "RektContext", "NamespacePolicy", new Dictionary<string, string>
+                {
+                    ["ProgramNamespace"] = ConversionNamespacePolicy.ForProgram(targetLanguage, relativePath),
+                    ["SharedNamespace"] = ConversionNamespacePolicy.ForSharedTypes(targetLanguage),
+                }));
+
             if (enabled)
             {
                 var fallback = string.Equals(
@@ -201,22 +213,51 @@ public static class RektPromptInjector
 
             try
             {
-                var registry = SharedTypeRegistryHolder.GetOrBuild(d.FullName, srcFolder);
-                var sharedBlock = registry.ToPromptBlock(targetLanguage);
-                if (!string.IsNullOrEmpty(sharedBlock))
+                // Replaces the shared-types block, which told every file not to declare these
+                // types and told none of them to declare it. Each file needs the type to compile,
+                // so each declared it — seven copies of one record. Ownership is now assigned.
+                var ownership = CopybookOwnershipRegistryHolder.GetOrBuild(d.FullName, srcFolder);
+                var stem = Path.GetFileNameWithoutExtension(Path.GetFileName(fileName));
+                var ownershipBlock = ownership.ToPromptBlock(stem, targetLanguage);
+                if (!string.IsNullOrEmpty(ownershipBlock))
                 {
-                    sb.Append(sharedBlock);
-                    logger?.LogInformation("[RektPromptInjector] Injected shared-types registry for {File} ({Count} shared names)",
-                        fileName, registry.SharedTypeNames.Count);
+                    sb.Append(ownershipBlock);
+                    logger?.LogInformation(
+                        "[RektPromptInjector] Injected copybook ownership for {File} ({Count} owned copybooks estate-wide)",
+                        fileName, ownership.Ownerships.Count);
                 }
             }
             catch (Exception ex)
             {
-                logger?.LogWarning("[RektPromptInjector] Shared-types injection failed for {File}: {Msg}", fileName, ex.Message);
+                logger?.LogWarning("[RektPromptInjector] Copybook-ownership injection failed for {File}: {Msg}", fileName, ex.Message);
+            }
+
+            try
+            {
+                var callTargets = CallTargetRegistryHolder.GetOrBuild(d.FullName, srcFolder);
+                var stem = Path.GetFileNameWithoutExtension(Path.GetFileName(fileName));
+                var contractBlock = callTargets.ToPromptBlock(stem, targetLanguage);
+                if (!string.IsNullOrEmpty(contractBlock))
+                {
+                    sb.Append(contractBlock);
+                    logger?.LogInformation(
+                        "[RektPromptInjector] Injected call-target contracts for {File} ({Count} known targets)",
+                        fileName, callTargets.Contracts.Count);
+                }
+            }
+            catch (Exception ex)
+            {
+                logger?.LogWarning(
+                    "[RektPromptInjector] Call-target contract injection failed for {File}: {Msg}",
+                    fileName, ex.Message);
             }
         }
         catch (Exception ex)
         {
+            // Deliberately broad, and the outermost of three. Everything this method does is
+            // additive context for a prompt: a conversion without it is weaker, a conversion that
+            // throws here produces nothing at all. No failure in assembling context is worth
+            // ending a run that would otherwise succeed, so the type is not narrowed.
             logger?.LogDebug("[RektPromptInjector] Could not locate repo root for {File}: {Msg}", fileName, ex.Message);
         }
     }
@@ -228,6 +269,46 @@ public static class RektPromptInjector
     internal static bool IsEnabled(string? configured) =>
         string.IsNullOrWhiteSpace(configured)
         || !string.Equals(configured.Trim(), "false", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The program's path relative to the source folder, which is what names its service.
+    /// </summary>
+    /// <remarks>
+    /// Callers pass a bare file name, so the path is recovered from the source tree. A basename
+    /// shared by two programs cannot be resolved this way; the first match is used, and both
+    /// land in the same namespace only if they really do sit in the same folder.
+    /// </remarks>
+    private static string? ResolveSourceRelativePath(string repoRoot, string sourceFolder, string fileName)
+    {
+        // An absolute COBOL_SOURCE_FOLDER is meant to win outright rather than be appended to the
+        // repository root. Stating that with a test rather than relying on Path.Combine's
+        // argument-dropping makes the intent readable and the behaviour identical.
+        var root = Path.IsPathRooted(sourceFolder) ? sourceFolder : Path.Join(repoRoot, sourceFolder);
+        if (!Directory.Exists(root)) return null;
+
+        var bare = Path.GetFileName(fileName);
+        if (string.IsNullOrEmpty(bare)) return null;
+
+        try
+        {
+            var match = Directory
+                .EnumerateFiles(root, bare, SearchOption.AllDirectories)
+                .FirstOrDefault(p => !p.Contains(".rekt-staging", StringComparison.OrdinalIgnoreCase)
+                                  && !p.Contains(".preprocessed", StringComparison.OrdinalIgnoreCase));
+
+            return match is null
+                ? null
+                : Path.GetRelativePath(root, match).Replace(Path.DirectorySeparatorChar, '/');
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
 
     /// <summary>
     /// Names the copybooks this program uses whose layouts were synthesised rather than parsed.

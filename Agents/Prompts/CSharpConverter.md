@@ -70,7 +70,7 @@ Here is the analysis of the COBOL program:
 
 IMPORTANT REQUIREMENTS:
 1. Return ONLY the C# code - NO explanations, NO markdown blocks
-2. Start with: namespace CobolMigration.Something; (single line)
+2. Start with the namespace assigned in the TARGET NAMESPACE section above, written as a single file-scoped declaration
 3. Your response must be valid, compilable C# code
 
 ## SECTION: BusinessLogic

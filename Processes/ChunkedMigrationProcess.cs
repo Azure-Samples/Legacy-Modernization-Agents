@@ -30,6 +30,8 @@ public class ChunkedMigrationProcess
 
     private ChunkingOrchestrator? _chunkingOrchestrator;
     private IChunkAwareConverter? _chunkAwareConverter;
+    private CompileRepairAgent? _compileRepairAgent;
+    private CompileGateResult? _compileGate;
     private ICobolAnalyzerAgent? _cobolAnalyzerAgent;
     private IDependencyMapperAgent? _dependencyMapperAgent;
 
@@ -90,6 +92,11 @@ public class ChunkedMigrationProcess
                 _settings.AISettings.ResolveJavaConverterModelId(),
                 _settings.ConversionSettings,
                 _enhancedLogger, _chatLogger, settings: _settings);
+            _compileRepairAgent = CompileRepairAgent.Create(
+                _responsesApiClient, _chatClient,
+                loggerFactory.CreateLogger<CompileRepairAgent>(),
+                _settings.AISettings.ResolveJavaConverterModelId(),
+                _enhancedLogger, _chatLogger, _settings);
         }
         else
         {
@@ -326,6 +333,47 @@ public class ChunkedMigrationProcess
 
             var allFiles = smallFileResults.Concat(assembledFiles).ToList();
             await SaveOutputFilesAsync(allFiles, outputFolder);
+
+            // Same scaffolding as the unchunked path, so a run with a large program in it can be
+            // compiled too. Chunk assembly concatenates per-chunk output, which is exactly where a
+            // second file-scoped namespace appears, and the scaffold rewrites those.
+            if (_settings.ApplicationSettings.TargetLanguage == TargetLanguage.CSharp)
+            {
+                try
+                {
+                    var scaffold = GeneratedProjectScaffold.Write(
+                        outputFolder, ConversionNamespacePolicy.Root("C#"),
+                        callTargets: CallTargetRegistryHolder.ForRunningRepository(),
+                        sharedNamespace: ConversionNamespacePolicy.ForSharedTypes("C#"));
+
+                    if (scaffold.WroteAnything)
+                    {
+                        _logger.LogInformation(
+                            "Wrote build scaffolding for the generated output: {Usings} global using(s), {Packages} package reference(s), {Normalized} file(s) rewritten to block-scoped namespaces",
+                            scaffold.Usings.Count, scaffold.Packages.Count, scaffold.Normalized.Count);
+                    }
+                }
+                catch (IOException ex)
+                {
+                    _logger.LogWarning("Could not write build scaffolding: {Message}", ex.Message);
+                }
+
+                if (_settings.CompileGate.Enabled)
+                {
+                    progressCallback?.Invoke("Compiling generated code", 6, 6, null);
+                    _compileGate = await CSharpCompileGate.RunAsync(
+                        outputFolder,
+                        ConversionNamespacePolicy.Root("C#"),
+                        ConversionNamespacePolicy.ForSharedTypes("C#"),
+                        _compileRepairAgent,
+                        _settings.CompileGate,
+                        _logger,
+                        cobolFiles
+                            .GroupBy(f => Path.GetFileNameWithoutExtension(f.FileName), StringComparer.OrdinalIgnoreCase)
+                            .ToDictionary(g => g.Key, g => g.First().Content, StringComparer.OrdinalIgnoreCase),
+                        callTargets: CallTargetRegistryHolder.ForRunningRepository());
+                }
+            }
 
             // Generate reports
             await GenerateChunkedMigrationReportAsync(
@@ -1189,6 +1237,7 @@ public class ChunkedMigrationProcess
             generatedFiles, outputFolder, langName, _logger,
             cobolFiles.Select(f => f.FileName));
         if (!string.IsNullOrWhiteSpace(parity)) report.Append(parity);
+        if (_compileGate is not null) report.Append(_compileGate.ToMarkdown(_settings.CompileGate.MaxErrorsInReport));
 
         await File.WriteAllTextAsync(reportPath, report.ToString());
         _logger.LogInformation("Chunked migration report saved to {Path}", reportPath);

@@ -133,15 +133,108 @@ EXTERNAL EFFECTS (use to choose .NET libraries / DI registrations):
 ---
 SHARED COPYBOOK TYPES:
 
-These copybooks are referenced by more than one program in this batch.
-Do not emit a top-level type for them because another converted program may
-emit the same name. If this program needs the copybook's value-object, define
-it as a nested type inside this program's generated class. This keeps the
-type local and prevents duplicate top-level declarations.
+These copybooks are referenced by more than one program in this estate, so the types
+built from them belong to no single program. They live in the shared namespace below
+and are the same type for every program that uses them.
+
+  shared namespace: {{SharedNamespace}}
 
 {{SharedTypes}}
 
-Use the expected type name below for the nested type.
+  • Do NOT define these types in this program's namespace, and do NOT nest them inside
+    this program's class. Another converted program declares the same layout, and a
+    record that exists once per caller is a record that can drift apart.
+  • Reference them from the shared namespace instead (Java: import; C#: using).
+  • Use exactly the expected type name given above so the reference resolves.
+
+## SECTION: CopybookOwnership
+
+---
+COPYBOOK TYPE OWNERSHIP (assigned — exactly one file declares each type):
+
+A copybook is converted in its own right, so the type built from it has one owner and
+every other file references that owner. Declaring it again is what makes a service fail
+to compile: seven files declaring the same record is seven records that can drift apart.
+
+  shared namespace: {{SharedNamespace}}
+
+DECLARE these types — you own them, and no other file will declare them:
+{{Declares}}
+
+REFERENCE these and do NOT declare them — another file owns them:
+{{References}}
+
+  • Use exactly the type names given. The files referencing them use the same names.
+  • Each type's members are listed under it, derived from the copybook itself. The file
+    that declares the type and every file that uses it are converted separately and see
+    only this list, so it is the contract between them:
+      – Declare every listed member directly on the type, with exactly that name and type:
+        flat, no nested classes for group items, no shortened or re-prefixed names.
+      – A group item's member holds its fixed-width image (get composes its children,
+        set distributes it). Items under an OCCURS are arrays; 88-levels are booleans.
+      – Every type also has `public string ToImage()` and
+        `public static <Type> FromImage(string image)` (Java: toImage / fromImage): the
+        record's fixed-width image, used wherever code holds the record as a string. No
+        other constructors or conversion methods are part of the contract.
+      – Code that uses the type uses exactly these names. A `COPY … REPLACING` is another
+        instance of the same type, named after its replacement text; members never
+        carry the replaced placeholder.
+  • Reference through the shared namespace (Java: import; C#: using).
+  • If you need a field from a referenced type, read it from that type rather than
+    re-declaring the layout locally.
+{{Scope}}
+
+## SECTION: CopybookScope
+
+  • THIS FILE IS A COPYBOOK. Its output is the types listed under DECLARE, plus any
+    interface assigned to it under CALL TARGET CONTRACTS, and its own statements if it has
+    any. Nothing else: no services, interfaces, DbContexts or DI registrations for the
+    programs that include it. Those programs are converted separately and declare their own.
+    A copybook of a few lines produces a file of a few types.
+
+## SECTION: CallTargetContracts
+
+---
+CALL TARGET CONTRACTS (assigned — do not invent interface names or methods):
+
+A called COBOL program has exactly one entry point, so its interface has exactly one method.
+Where several programs call the same module, they must all use the same interface, declared
+once. The assignment below is fixed; deviating from it produces a second declaration of the
+same type and the service will not compile.
+
+  shared namespace: {{SharedNamespace}}
+
+DECLARE these interfaces in the shared namespace (you are responsible for them):
+{{Declares}}
+
+REFERENCE these and do NOT declare them (another program declares them):
+{{References}}
+
+  • Use exactly the interface and method names given. Do not rename them to suit this
+    program's vocabulary — the other callers use the same names.
+  • Where a signature is given, it is read from the called program's PROCEDURE DIVISION
+    USING and LINKAGE SECTION. Declare and call it exactly as written. The method returns
+    nothing: COBOL passes the areas by reference, so the called program changes the objects
+    it is given and the caller reads them afterwards. When the caller holds an area as a
+    string image, convert around the call:
+      var area = T.FromImage(image); await x.ExecuteAsync(area, …); image = area.ToImage();
+  • Inject the interface (Java: @Inject; C#: constructor injection) and call its method at
+    the point where the COBOL CALL appears.
+  • Do NOT inline the called program's logic.
+
+## SECTION: NamespacePolicy
+
+---
+TARGET NAMESPACE (assigned — do not invent one):
+
+  this program: {{ProgramNamespace}}
+  shared types: {{SharedNamespace}}
+
+  • Declare this program's types in the program namespace above, exactly as written.
+  • Do NOT substitute a placeholder such as com.example, com.bank or CobolMigration.
+  • Programs in the same service share a namespace deliberately: they are one deployable
+    unit, and cross-service references go through the shared namespace only.
+
 
 ## SECTION: DataStructureGuidance
 

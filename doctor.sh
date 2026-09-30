@@ -2035,11 +2035,7 @@ run_migration() {
     # Export TARGET_LANGUAGE and output folder so it's available to the dotnet process
     export TARGET_LANGUAGE
     export MIGRATION_DB_PATH="$REPO_ROOT/Data/migration.db"
-    if [[ "$TARGET_LANGUAGE" == "Java" ]]; then
-        export JAVA_OUTPUT_FOLDER="output/java"
-    else
-        export CSHARP_OUTPUT_FOLDER="output/csharp"
-    fi
+    export_run_output_folder
     
     echo -e "${CYAN}🎯 Target: ${TARGET_LANGUAGE}${NC}"
     echo -e "${CYAN}💾 Database: $MIGRATION_DB_PATH${NC}"
@@ -2444,12 +2440,8 @@ run_conversion_only() {
         fi
         echo ""
     fi
-     # Export output folder variables based on language selection
-    if [[ "$TARGET_LANGUAGE" == "Java" ]]; then
-        export JAVA_OUTPUT_FOLDER="output/java"
-    else
-        export CSHARP_OUTPUT_FOLDER="output/csharp"
-    fi
+    # Export output folder variables based on language selection
+    export_run_output_folder
 
     # Run the application with skip-reverse-engineering flag
     export MIGRATION_DB_PATH="$REPO_ROOT/Data/migration.db"
@@ -3624,6 +3616,23 @@ run_rekt_status() {
 
 # Emits the --programs argument when a selection is active, and nothing otherwise,
 # so an unscoped run is byte-identical to what it was before selection existed.
+# Each conversion writes to a folder named for when it ran. Writing every run to
+# output/<lang> meant a second run silently overwrote the first: two runs could not be
+# compared, a demo could not be kept, and a partial re-run left the previous run's files
+# beside the new ones with nothing to say which was which. Readers treat output/<lang> as
+# the stable root and resolve the newest run beneath it, so nothing needs the stamp.
+export_run_output_folder() {
+    local stamp
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    if [[ "$TARGET_LANGUAGE" == "Java" ]]; then
+        export JAVA_OUTPUT_FOLDER="output/java/$stamp"
+        echo -e "  ${CYAN}Run output: $JAVA_OUTPUT_FOLDER${NC}"
+    else
+        export CSHARP_OUTPUT_FOLDER="output/csharp/$stamp"
+        echo -e "  ${CYAN}Run output: $CSHARP_OUTPUT_FOLDER${NC}"
+    fi
+}
+
 program_args() {
     if [[ -n "${PROGRAM_SELECTION:-}" ]]; then
         printf '%s' "--programs $PROGRAM_SELECTION"

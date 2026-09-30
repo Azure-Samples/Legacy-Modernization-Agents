@@ -162,12 +162,15 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
 
             // Continuation retry: when the provider truncates mid-output, ask it to
             // resume from the last lines rather than shipping a partial class.
+            // A model that stopped on its own was not cut off: asking it to continue a complete
+            // file makes it invent more code, and an unbalanced brace is a syntax defect instead.
+            var endedNormally = ProviderReportedNormalEnd(cobolFile.FileName);
             var hasAnyCode = csharpCode.Contains("{") && (csharpCode.Contains("class ") || csharpCode.Contains("namespace "));
-            var maxContinuations = hasAnyCode ? 3 : 0;
+            var maxContinuations = hasAnyCode && !endedNormally ? 3 : 0;
             for (int cont = 0; cont < maxContinuations; cont++)
             {
                 var hasNs = csharpCode.Contains("namespace ", StringComparison.Ordinal);
-                var hasCls = csharpCode.Contains("class ", StringComparison.Ordinal);
+                var hasCls = ConversionOutputGuard.DeclaresType(csharpCode);
                 var opens = csharpCode.Count(c => c == '{');
                 var closes = csharpCode.Count(c => c == '}');
                 if (hasNs && hasCls && opens == closes) break;
@@ -200,7 +203,9 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
                     cont + 1, contLines.Count);
             }
 
-            csharpCode = ValidateCSharpCode(csharpCode);
+            // After continuations, so a fragment never starts the scan inside a comment.
+            csharpCode = GeneratedCSharpSyntax.FixAccessorTerminators(GeneratedCodeEntities.DecodeInCode(csharpCode));
+            csharpCode = ValidateCSharpCode(csharpCode, endedNormally);
 
             // Extract AI's semantic class name (based on domain/action/type pattern)
             string aiClassName = ExtractClassNameFromCode(csharpCode);
@@ -367,12 +372,12 @@ public class {{className}}
         return ConversionOutputGuard.ExtractFencedCode(input, "```csharp", "```c#");
     }
 
-    private string ValidateCSharpCode(string input)
+    private string ValidateCSharpCode(string input, bool endedNormally)
     {
         // Fail loud on unusable output. A silent 0-byte "success" is worse than a
         // file that explains what went wrong, so write a self-documenting stub.
         var hasNsFinal = input.Contains("namespace ", StringComparison.Ordinal);
-        var hasClassFinal = input.Contains("class ", StringComparison.Ordinal);
+        var hasClassFinal = ConversionOutputGuard.DeclaresType(input);
         var opensFinal = input.Count(c => c == '{');
         var closesFinal = input.Count(c => c == '}');
         if (!hasNsFinal || !hasClassFinal || opensFinal != closesFinal)
@@ -384,7 +389,16 @@ public class {{className}}
             EnhancedLogger?.LogBehindTheScenes("TRUNCATION_DETECTED", "WARNING",
                 $"namespace={hasNsFinal}, class={hasClassFinal}, braces={opensFinal}/{closesFinal}");
 
-            if (ConversionOutputGuard.ShouldCreateWholeFileStub(
+            // A complete response with a brace defect is kept: the compile gate reports and repairs
+            // it, whereas a stub deletes every type the file declares.
+            var syntaxDefectOnly = endedNormally && hasNsFinal && hasClassFinal;
+            if (syntaxDefectOnly)
+            {
+                Logger.LogWarning(
+                    "[CSharpConverterAgent] Model ended normally with braces {Opens}/{Closes}; keeping the code for the compile gate.",
+                    opensFinal, closesFinal);
+            }
+            else if (ConversionOutputGuard.ShouldCreateWholeFileStub(
                     input,
                     hasClassFinal,
                     opensFinal,

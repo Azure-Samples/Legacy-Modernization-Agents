@@ -164,8 +164,9 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
 
             // Continuation retry: when the provider truncates mid-output, ask it to
             // resume from the last lines rather than shipping a partial class.
+            // A model that stopped on its own was not cut off; continuing a complete file makes it invent code.
             var hasAnyCode = javaCode.Contains("{") && (javaCode.Contains("class ") || javaCode.Contains("void ") || javaCode.Contains("public "));
-            var maxContinuations = hasAnyCode ? 3 : 0;
+            var maxContinuations = hasAnyCode && !ProviderReportedNormalEnd(cobolFile.FileName) ? 3 : 0;
             if (!hasAnyCode && !string.IsNullOrWhiteSpace(javaCode))
             {
                 Logger.LogWarning("[JavaConverterAgent] Response contains no valid Java code — skipping continuation");
@@ -173,7 +174,7 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
             for (int cont = 0; cont < maxContinuations; cont++)
             {
                 var hasPkg = javaCode.Contains("package ", StringComparison.Ordinal);
-                var hasCls = javaCode.Contains("class ", StringComparison.Ordinal);
+                var hasCls = ConversionOutputGuard.DeclaresType(javaCode);
                 var opens = javaCode.Count(c => c == '{');
                 var closes = javaCode.Count(c => c == '}');
                 if (hasPkg && hasCls && opens == closes) break; // complete
@@ -206,6 +207,8 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
                     cont + 1, contLines.Count);
             }
 
+            // After continuations, so a fragment never starts the scan inside a comment.
+            javaCode = GeneratedCodeEntities.DecodeInCode(javaCode);
             javaCode = ValidateJavaCode(javaCode);
 
             // Extract AI's semantic class name (based on domain/action/type pattern)
@@ -427,7 +430,7 @@ public class {{className}} {
         // Fail loud on unusable output. A silent 0-byte "success" is worse than a
         // file that explains what went wrong, so write a self-documenting stub.
         var hasPkgFinal = input.Contains("package ", StringComparison.Ordinal);
-        var hasClassFinal = input.Contains("class ", StringComparison.Ordinal);
+        var hasClassFinal = ConversionOutputGuard.DeclaresType(input);
         var opensFinal = input.Count(c => c == '{');
         var closesFinal = input.Count(c => c == '}');
         if (!hasPkgFinal || !hasClassFinal || opensFinal != closesFinal)
