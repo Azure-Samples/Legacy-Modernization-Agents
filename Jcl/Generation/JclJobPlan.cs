@@ -49,7 +49,12 @@ public sealed record JclJobPlan
 
         var jobCond = JclConditions.ParseCond(job.Cond, out var jobCondError);
         if (jobCondError is not null)
-            diagnostics.Add(new(0, "COND_UNREADABLE", $"JOB COND: {jobCondError} It is ignored."));
+        {
+            // The job may have ended early on the mainframe; stop before the first step rather than run it all.
+            diagnostics.Add(new(0, "COND_UNREADABLE", $"JOB COND: {jobCondError} The job stops before its first step."));
+            if (steps.Count > 0 && steps[0].GuardError is null)
+                steps[0] = steps[0] with { GuardError = $"JOB COND={job.Cond}: {jobCondError}" };
+        }
 
         return new JclJobPlan
         {

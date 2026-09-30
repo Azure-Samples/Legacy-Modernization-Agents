@@ -138,6 +138,31 @@ public class JclJobGenerationTests
     }
 
     [Fact]
+    public void AnUnreadableJobCondStopsTheJobBeforeItsFirstStep()
+    {
+        var plan = JclJobPlan.From(Parse("""
+            //J        JOB COND=(4,XX)
+            //S1       EXEC PGM=P1
+            //S2       EXEC PGM=P2
+            """));
+
+        plan.JobCond.Should().BeNull();
+        plan.Steps[0].GuardError.Should().Contain("JOB COND");
+        plan.Diagnostics.Should().Contain(d => d.Code == "COND_UNREADABLE");
+    }
+
+    [Fact]
+    public void AJobNameTwoMembersShareRunsUnderItsOwnIdentity()
+    {
+        var plans = JclJobWriter.Plan([new JclParser().Parse("//NIGHT JOB\n//S EXEC PGM=P\n", "a.jcl"),
+            new JclParser().Parse("//NIGHT JOB\n//S EXEC PGM=P\n", "b.jcl")]);
+
+        plans.Select(p => p.JobName).Should().Equal("NIGHT", "NIGHT_2");
+        plans.Select(p => p.TypeName).Should().OnlyHaveUniqueItems();
+        plans[1].Diagnostics.Should().Contain(d => d.Code == "DUPLICATE_JOB_NAME" && d.Message.Contains("b.jcl"));
+    }
+
+    [Fact]
     public void TypeNamesAreUniqueAndValid()
     {
         var plans = JclJobWriter.Plan([Parse("//JOB-A    JOB\n//S EXEC PGM=P\n"), Parse("//JOB_A    JOB\n//S EXEC PGM=P\n"), Parse("//1ST      JOB\n//S EXEC PGM=P\n")]);
@@ -290,8 +315,10 @@ public class JclJobGenerationTests
                 //STEP4    EXEC PGM=PROGC
                 //         ENDIF
                 //STEP5    EXEC PGM=PROGD
+                //TMP      DD DSN=&&SCRATCH,DISP=(NEW,PASS,DELETE)
                 //STEP6    EXEC PGM=PROGC
-                //STEP7    EXEC PGM=PROGC,COND=EVEN
+                //STEP7    EXEC PGM=PROGE,COND=EVEN
+                //TMP      DD DSN=&&SCRATCH,DISP=OLD
                 //         IF ABEND THEN
                 //STEP8    EXEC PGM=PROGC
                 //         ENDIF
@@ -312,7 +339,7 @@ public class JclJobGenerationTests
                 using {{ns}};
 
                 var data = Path.Join(Path.GetTempPath(), "jj-data-" + Guid.NewGuid().ToString("N"));
-                var runner = new JclJobRunner([new ProgA(), new ProgB(), new Rc("PROGC", 0), new ProgD()], new DirectoryDatasetCatalog(data));
+                var runner = new JclJobRunner([new ProgA(), new ProgB(), new Rc("PROGC", 0), new ProgD(), new ProgE()], new DirectoryDatasetCatalog(data));
                 var result = await runner.RunAsync(JclJobs.Find("T")!);
                 foreach (var s in result.Steps) Console.WriteLine($"{s.Step} {s.Ran} {s.ReturnCode} {s.AbendCode}");
                 Console.WriteLine("OUT " + File.ReadAllText(Directory.GetFiles(data, "*", SearchOption.AllDirectories).Single()).ReplaceLineEndings("|"));
@@ -347,7 +374,21 @@ public class JclJobGenerationTests
                 class ProgD : IBatchProgram
                 {
                     public string ProgramId => "PROGD";
-                    public Task<int> RunAsync(BatchStepContext c, CancellationToken ct = default) => throw new BatchAbendException("U0100", "boom");
+                    public Task<int> RunAsync(BatchStepContext c, CancellationToken ct = default)
+                    {
+                        using (var w = new StreamWriter(c.OpenWrite("TMP"))) w.WriteLine("partial");
+                        throw new BatchAbendException("U0100", "boom");
+                    }
+                }
+                // The abended step's temporary dataset was deleted by its abnormal disposition.
+                class ProgE : IBatchProgram
+                {
+                    public string ProgramId => "PROGE";
+                    public Task<int> RunAsync(BatchStepContext c, CancellationToken ct = default)
+                    {
+                        try { c.OpenRead("TMP").Dispose(); return Task.FromResult(12); }
+                        catch (IOException) { return Task.FromResult(0); }
+                    }
                 }
                 """);
 

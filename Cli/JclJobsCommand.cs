@@ -31,6 +31,12 @@ public static class JclJobsCommand
             }
 
             var csharp = CobolToQuarkusMigration.Helpers.ConversionNamespacePolicy.IsCSharp(language);
+            if (!csharp && !language.Equals("Java", StringComparison.OrdinalIgnoreCase))
+            {
+                Console.Error.WriteLine($"Unknown language '{language}'. Use CSharp or Java.");
+                Environment.ExitCode = 2;
+                return;
+            }
             var output = outputDir ?? Path.Join(Directory.GetCurrentDirectory(), "output", csharp ? "csharp" : "java");
             var written = JclJobWriter.WriteTo(sourceDir, output, language);
             Console.Error.WriteLine($"jcl-jobs: wrote {written} job(s) and {JclJobWriter.ManifestFile} to {output}");

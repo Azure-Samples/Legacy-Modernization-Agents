@@ -719,11 +719,12 @@ public final class JclJobRunner {
     }
 
     // A new dataset the step kept exists afterwards even if the step never wrote it, as allocation
-    // does; DELETE removes it. Temporary datasets go when the job ends.
+    // does; DELETE removes it. Temporary datasets follow their disposition too, and whatever
+    // is left of them goes when the job ends.
     private void dispose(JclStepDefinition step, String runId, boolean normal) throws IOException {
         for (var first : step.dds()) {
             for (var dd : java.util.stream.Stream.concat(java.util.stream.Stream.of(first), first.concatenated().stream()).toList()) {
-                if (dd.dataset() == null || dd.isTemporary()) continue;
+                if (dd.dataset() == null) continue;
                 var disposition = normal || dd.abnormalDisposition() == null ? dd.normalDisposition() : dd.abnormalDisposition();
                 if ("DELETE".equals(disposition)) { datasets.delete(runId, dd); continue; }
                 var status = dd.status() == null ? "NEW" : dd.status();

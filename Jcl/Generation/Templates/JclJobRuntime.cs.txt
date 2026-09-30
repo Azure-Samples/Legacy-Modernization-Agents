@@ -219,7 +219,9 @@ namespace {{Namespace}}
         private string Under(string path)
         {
             var full = Path.GetFullPath(path);
-            if (!full.StartsWith(_root + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+            var relative = Path.GetRelativePath(_root, full);
+            if (relative == "." || relative == ".." || relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+                || Path.IsPathRooted(relative))
                 throw new InvalidOperationException($"{path} is outside the dataset root {_root}.");
             return full;
         }
@@ -561,10 +563,11 @@ namespace {{Namespace}}
             new(job.Name, step.Name, runId, programId, parm, db2, step.Dds, step.ControlStatements, _datasets);
 
         // A new dataset the step kept exists afterwards even if the step never wrote it, as allocation
-        // does; DELETE removes it. Temporary datasets go when the job ends.
+        // does; DELETE removes it. Temporary datasets follow their disposition too, and whatever
+        // is left of them goes when the job ends.
         private void Dispose(JclStepDefinition step, string runId, bool normal)
         {
-            foreach (var dd in step.Dds.SelectMany(d => d.Concatenated.Prepend(d)).Where(d => d.Dataset is not null && !d.Temporary))
+            foreach (var dd in step.Dds.SelectMany(d => d.Concatenated.Prepend(d)).Where(d => d.Dataset is not null))
             {
                 var disposition = normal ? dd.NormalDisposition : dd.AbnormalDisposition ?? dd.NormalDisposition;
                 try
@@ -580,7 +583,7 @@ namespace {{Namespace}}
                         }
                     }
                 }
-                catch (Exception ex) when (!normal && ex is IOException or InvalidOperationException)
+                catch (Exception) when (!normal)
                 {
                     // Cleanup after an abend must not hide the abend.
                 }

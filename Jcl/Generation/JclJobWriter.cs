@@ -36,7 +36,24 @@ public static class JclJobWriter
     public static IReadOnlyList<JclJobPlan> Plan(IEnumerable<JclJob> jobs)
     {
         var plans = jobs.Select(JclJobPlan.From).ToList();
-        // Two members can hold the same job name, or names that collapse to one type name.
+        // Two members can hold the same job name. Each needs its own identity to be found and launched,
+        // so a repeat runs as NAME_2 and says so.
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < plans.Count; i++)
+        {
+            var name = plans[i].JobName;
+            for (var n = 2; !names.Add(name); n++) name = plans[i].JobName + "_" + n.ToString(CultureInfo.InvariantCulture);
+            if (name == plans[i].JobName) continue;
+            plans[i] = plans[i] with
+            {
+                JobName = name,
+                TypeName = JclJobPlan.ToTypeName(name),
+                Diagnostics = [.. plans[i].Diagnostics, new(0, "DUPLICATE_JOB_NAME",
+                    $"{plans[i].File} names job {plans[i].JobName}, as another member does; it runs as {name}.")],
+            };
+        }
+
+        // Distinct names can still collapse to one type name.
         var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         for (var i = 0; i < plans.Count; i++)
         {
