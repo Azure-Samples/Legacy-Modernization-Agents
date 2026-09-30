@@ -16,6 +16,13 @@ public static class SourceTypeRegistry
     private static readonly HashSet<string> CopybookExtensions =
         new(StringComparer.OrdinalIgnoreCase) { ".cpy" };
 
+    private static readonly HashSet<string> JobExtensions =
+        new(StringComparer.OrdinalIgnoreCase) { ".jcl" };
+
+    // Catalogued procedures and INCLUDE members are exported under these, or as plain JCL.
+    private static readonly HashSet<string> JclMemberExtensions =
+        new(StringComparer.OrdinalIgnoreCase) { ".jcl", ".proc", ".prc", ".inc" };
+
     public static IReadOnlyCollection<string> KnownProgramExtensions => ProgramExtensions;
 
     public static IReadOnlyCollection<string> KnownCopybookExtensions => CopybookExtensions;
@@ -28,6 +35,12 @@ public static class SourceTypeRegistry
 
     public static bool IsCopybook(string path) =>
         CopybookExtensions.Contains(Path.GetExtension(path));
+
+    public static bool IsJcl(string path) =>
+        JobExtensions.Contains(Path.GetExtension(path));
+
+    public static bool IsJclMember(string path) =>
+        JclMemberExtensions.Contains(Path.GetExtension(path));
 
     public static bool IsKnown(string path) =>
         IsCobolProgram(path) || IsCopybook(path);
@@ -50,6 +63,12 @@ public static class SourceTypeRegistry
 
     public static IEnumerable<string> EnumerateCopybookFiles(string root) =>
         EnumerateByPredicate(root, IsCopybook);
+
+    public static IEnumerable<string> EnumerateJclFiles(string root) =>
+        EnumerateByPredicate(root, IsJcl);
+
+    public static IEnumerable<string> EnumerateJclMemberFiles(string root) =>
+        EnumerateByPredicate(root, IsJclMember);
 
     // Staging, preprocessing and conversion folders hold derived copies of the same
     // programs, so counting them would double the estate. Matches whole segments and

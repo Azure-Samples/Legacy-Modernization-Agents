@@ -201,6 +201,28 @@ public class ModernizationIntelligenceServiceTests
     }
 
     [Fact]
+    public async Task ServiceChain_ProcInSource_IsExpandedAndItsProgramLinked()
+    {
+        using var fixture = new EstateFixture();
+        fixture.AddProgram("PAYCALC.cbl");
+        fixture.AddJcl("proclib/PAYPROC.proc", """
+            //PAYPROC  PROC
+            //CALC     EXEC PGM=PAYCALC
+            //SORT     EXEC PGM=SORT
+            """);
+        fixture.AddJcl("jcl/PAYJOB.jcl", """
+            //PAYJOB   JOB (ACCT),'A',CLASS=A
+            //RUN      EXEC PAYPROC
+            """);
+
+        var chain = await ServiceFor(fixture).GetServiceChainAsync(null, null, includeUtilities: false);
+
+        Assert.Equal(["PAYCALC"], Assert.Single(chain.Jobs).PrimaryPrograms);
+        Assert.Equal(["PAYJOB"], Assert.Single(chain.Programs).CalledByJobs);
+        Assert.Empty(chain.UnresolvedSteps);
+    }
+
+    [Fact]
     public async Task ServiceChain_CommentedExecCard_IsNotAStep()
     {
         using var fixture = new EstateFixture();
