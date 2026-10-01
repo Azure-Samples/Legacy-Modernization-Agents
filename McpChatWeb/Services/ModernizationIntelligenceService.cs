@@ -1,48 +1,15 @@
 using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using CobolToQuarkusMigration.Helpers;
+using ParsedJclJob = CobolToQuarkusMigration.Jcl.JclJob;
+using JclEstate = CobolToQuarkusMigration.Jcl.JclEstate;
+using JclStepKind = CobolToQuarkusMigration.Jcl.JclStepKind;
+using JclControlCards = CobolToQuarkusMigration.Jcl.JclControlCards;
 
 namespace McpChatWeb.Services;
 
 public sealed class ModernizationIntelligenceService
 {
-    // A step card opens a block that runs until the next one, so in-stream data stays with
-    // the step that submitted it. '//' in columns 1-2 with a name that cannot start with '*'
-    // keeps commented-out cards from becoming steps.
-    private static readonly Regex ExecStepRegex = new(
-        @"^//(?<step>[A-Z0-9$@#-]*)\s+EXEC\s+(?<operand>[^\r\n]*)",
-        RegexOptions.IgnoreCase | RegexOptions.Multiline | RegexOptions.Compiled);
-
-    // '-' is accepted beyond the JCL-legal set: real MVS member names cannot contain one,
-    // but COBOL estates do, and truncating at the hyphen drops every job-to-program edge.
-    private static readonly Regex PgmOperandRegex = new(
-        @"^PGM\s*=\s*(?<pgm>[A-Z0-9$@#-]+)",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
-    private static readonly Regex ProcOperandRegex = new(
-        @"^(?:PROC\s*=\s*)?(?<proc>[A-Z0-9$@#-]+)",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
-    // DB2 batch names the program in in-stream SYSTSIN; the EXEC card only ever names the
-    // TSO monitor or the PROC wrapping it, so the edge is invisible without reading this.
-    private static readonly Regex RunProgramRegex = new(
-        @"\bRUN\s+PROGRAM\s*\(\s*(?<pgm>[A-Z0-9$@#]+)\s*\)",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
-    private static readonly Regex JobCardRegex = new(
-        @"^//(?<name>[A-Z0-9$@#-]+)\s+JOB",
-        RegexOptions.IgnoreCase | RegexOptions.Multiline | RegexOptions.Compiled);
-
-    // MVS system utilities appear in nearly every JCL chain and would swamp the graph;
-    // none of them is a program to be converted.
-    private static readonly HashSet<string> SystemUtilities = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "IDCAMS", "IKJEFT01", "IEFBR14", "SORT", "ICETOOL", "DFSORT", "ADUUMAIN",
-        "SYSUTCOM", "DSNUTILB", "DSNTIAUL", "IEBGENER", "IEBCOPY", "IEHPROGM",
-        "IRXJCL", "EZACFSM1",
-    };
-
     private readonly RektEstateReader _estate;
 
     public ModernizationIntelligenceService(RektEstateReader estate) => _estate = estate;
@@ -673,8 +640,8 @@ public sealed class ModernizationIntelligenceService
         var estate = await _estate.ReadAsync(cancellationToken).ConfigureAwait(false);
         var snapshot = new ServiceChainSnapshot { Note = estate.Note };
 
-        var jclFiles = EnumerateJclFiles(estate.SourceRoot);
-        if (jclFiles.Count == 0)
+        var parsedJobs = JclEstate.Parse(estate.SourceRoot);
+        if (parsedJobs.Count == 0)
         {
             snapshot.Note ??= $"No JCL files found under {estate.SourceRoot}.";
             ApplyMermaid(snapshot);
@@ -692,26 +659,19 @@ public sealed class ModernizationIntelligenceService
 
         var unresolvedSteps = new List<UnresolvedStep>();
 
-        foreach (var jclFile in jclFiles)
+        foreach (var parsed in parsedJobs)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            string content;
-            try { content = File.ReadAllText(jclFile); }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException) { continue; }
-
-            var jobName = JobCardRegex.Match(content) is { Success: true } m
-                ? m.Groups["name"].Value.ToUpperInvariant()
-                : Path.GetFileNameWithoutExtension(jclFile).ToUpperInvariant();
-
+            var jobName = parsed.Name.ToUpperInvariant();
             var steps = ExtractStepPrograms(
-                content, jobName, knownProgramStems, includeUtilities, unresolvedSteps);
+                parsed, jobName, knownProgramStems, includeUtilities, unresolvedSteps);
 
             allJobs.Add(new JclJob(
                 JobName: jobName,
-                JclFileName: Path.GetFileName(jclFile),
+                JclFileName: Path.GetFileName(parsed.File),
                 RelativePath: SourcePathHelper.NormalizeRelativePath(
-                    Path.GetRelativePath(estate.RepoRoot, jclFile)),
+                    Path.GetRelativePath(estate.RepoRoot, Path.Join(estate.SourceRoot, parsed.File))),
                 PrimaryPrograms: steps));
         }
 
@@ -813,10 +773,10 @@ public sealed class ModernizationIntelligenceService
         return snapshot;
     }
 
-    // Three sources of evidence, strongest first: the EXEC card, in-stream SYSTSIN, then the
-    // step name. Anything still unattributed is recorded rather than dropped.
+    // Three sources of evidence, strongest first: the EXEC card (with procedures expanded),
+    // in-stream SYSTSIN, then the step name. Anything still unattributed is recorded rather than dropped.
     private static List<string> ExtractStepPrograms(
-        string content,
+        ParsedJclJob job,
         string jobName,
         IReadOnlySet<string> knownProgramStems,
         bool includeUtilities,
@@ -827,69 +787,35 @@ public sealed class ModernizationIntelligenceService
         void Accept(string name)
         {
             if (name.Length == 0) return;
-            if (!includeUtilities && SystemUtilities.Contains(name)) return;
-            if (!programs.Contains(name, StringComparer.OrdinalIgnoreCase)) programs.Add(name);
+            if (!programs.Contains(name, StringComparer.OrdinalIgnoreCase)) programs.Add(name.ToUpperInvariant());
         }
 
-        foreach (var (step, operand, body) in EnumerateSteps(content))
+        foreach (var step in job.Steps)
         {
-            // Read before the card is classified: IKJEFT01 and the PROCs wrapping it are the
-            // TSO monitor, so filtering the step as a utility discards the real workload.
-            var inStream = RunProgramRegex.Matches(body)
-                .Select(match => match.Groups["pgm"].Value.ToUpperInvariant())
-                .ToList();
-            foreach (var program in inStream) Accept(program);
+            // RUN PROGRAM is read before the EXEC is classified: IKJEFT01 and the PROCs wrapping
+            // it are the TSO monitor, so filtering the step as a utility discards the real workload.
+            foreach (var run in step.Runs) Accept(run.Program);
 
-            var pgmOperand = PgmOperandRegex.Match(operand);
-            if (pgmOperand.Success)
+            if (step.Program is { } program)
             {
-                Accept(pgmOperand.Groups["pgm"].Value.ToUpperInvariant());
+                if (step.Kind == JclStepKind.Program || includeUtilities || !JclControlCards.IsUtility(program))
+                    Accept(program);
                 continue;
             }
 
-            if (inStream.Count > 0) continue;
-            if (knownProgramStems.Contains(step)) { Accept(step); continue; }
+            if (step.Kind != JclStepKind.UnresolvedProcedure || step.Runs.Count > 0) continue;
+            var stepName = step.Name.ToUpperInvariant();
+            // A step inside an expanded procedure is qualified (RUN1.PAYCALC); its own name is the last part.
+            var ownName = stepName[(stepName.LastIndexOf('.') + 1)..];
+            if (knownProgramStems.Contains(ownName)) { Accept(ownName); continue; }
 
-            var proc = ProcOperandRegex.Match(operand);
             unresolved.Add(new UnresolvedStep(
                 JobName: jobName,
-                StepName: step,
-                ProcName: proc.Success ? proc.Groups["proc"].Value.ToUpperInvariant() : operand));
+                StepName: stepName,
+                ProcName: (step.Procedure ?? "").ToUpperInvariant()));
         }
 
         return programs;
-    }
-
-    private static IEnumerable<(string Step, string Operand, string Body)> EnumerateSteps(string content)
-    {
-        var matches = ExecStepRegex.Matches(content);
-        for (var i = 0; i < matches.Count; i++)
-        {
-            var match = matches[i];
-            var bodyStart = match.Index + match.Length;
-            var bodyEnd = i + 1 < matches.Count ? matches[i + 1].Index : content.Length;
-            yield return (
-                match.Groups["step"].Value.ToUpperInvariant(),
-                match.Groups["operand"].Value.Trim(),
-                content[bodyStart..bodyEnd]);
-        }
-    }
-
-    private static List<string> EnumerateJclFiles(string sourceRoot)
-    {
-        if (!Directory.Exists(sourceRoot)) return new List<string>();
-        try
-        {
-            return Directory.EnumerateFiles(sourceRoot, "*", SearchOption.AllDirectories)
-                .Where(path => Path.GetExtension(path).Equals(".jcl", StringComparison.OrdinalIgnoreCase))
-                .Where(path => !SourceTypeRegistry.IsScratchPath(Path.GetRelativePath(sourceRoot, path)))
-                // Case-insensitive filesystems return the same file for the
-                // *.JCL and *.jcl patterns REKT tooling uses.
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
-                .ToList();
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException) { return new List<string>(); }
     }
 
     // Capped at MaxMermaidEdges because the client-side renderer becomes unusable well

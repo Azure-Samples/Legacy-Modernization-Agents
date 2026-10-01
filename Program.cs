@@ -162,6 +162,9 @@ internal static class Program
         // Curated program-facts.json extraction from REKT artifacts.
         rootCommand.AddCommand(CobolToQuarkusMigration.Cli.ProgramFactsCommand.Build(loggerFactory));
 
+        // Deterministic JCL job facts and dataset lineage.
+        rootCommand.AddCommand(CobolToQuarkusMigration.Cli.JclFactsCommand.Build());
+
         rootCommand.SetHandler(async (context) =>
         {
             var cobolSource = context.ParseResult.GetValueForOption(cobolSourceOption)!;

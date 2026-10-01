@@ -3451,6 +3451,13 @@ PYEOF
     # Clean up staging dir — it lives inside source/ which is gitignored
     rm -rf "$staging_dir"
 
+    # JCL is parsed deterministically from source/, without REKT; failures are non-fatal.
+    if command -v dotnet >/dev/null 2>&1 && [[ -f "$REPO_ROOT/CobolToQuarkusMigration.csproj" ]]; then
+        (cd "$REPO_ROOT" && dotnet run --project CobolToQuarkusMigration.csproj --no-build -- \
+                jcl-facts "$REPO_ROOT/source" --output-dir "$REPO_ROOT/output/rekt") || \
+            echo -e "  ${YELLOW}⚠️  jcl-facts failed — JCL job facts not refreshed.${NC}"
+    fi
+
     echo -e "\n${GREEN}  Parsed: $succeeded succeeded ($skipped from cache), $failed failed${NC}"
     if [[ "$rekt_filter_active" == "true" && "$filtered_out" -gt 0 ]]; then
         echo -e "  ${BLUE}Filter active: $filtered_out program(s) outside _REKT_PROGRAM_FILTER were skipped.${NC}"
