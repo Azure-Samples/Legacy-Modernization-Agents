@@ -1,4 +1,6 @@
 using System.CommandLine;
+using System.Globalization;
+using CobolToQuarkusMigration.Helpers;
 using CobolToQuarkusMigration.Jcl.Generation;
 
 namespace CobolToQuarkusMigration.Cli;
@@ -17,7 +19,7 @@ public static class JclJobsCommand
         cmd.AddOption(languageOption);
 
         var outputOption = new Option<string?>("--output-dir",
-            "The converted output to add the jobs to. Defaults to <repo-root>/output/<language>.")
+            "The run folder to add the jobs to, such as an earlier conversion's. Defaults to a new run folder, output/<language>/<timestamp>.")
         { Arity = ArgumentArity.ZeroOrOne };
         cmd.AddOption(outputOption);
 
@@ -30,16 +32,27 @@ public static class JclJobsCommand
                 return;
             }
 
-            var csharp = CobolToQuarkusMigration.Helpers.ConversionNamespacePolicy.IsCSharp(language);
+            var csharp = ConversionNamespacePolicy.IsCSharp(language);
             if (!csharp && !language.Equals("Java", StringComparison.OrdinalIgnoreCase))
             {
                 Console.Error.WriteLine($"Unknown language '{language}'. Use CSharp or Java.");
                 Environment.ExitCode = 2;
                 return;
             }
-            var output = outputDir ?? Path.Join(Directory.GetCurrentDirectory(), "output", csharp ? "csharp" : "java");
+            // A run folder of its own, as a conversion gets: output/<language> holds every run, and
+            // the C# project written below would otherwise compile all of them together.
+            var output = outputDir ?? Path.Join(Directory.GetCurrentDirectory(), "output", csharp ? "csharp" : "java",
+                DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture));
             var written = JclJobWriter.WriteTo(sourceDir, output, language);
             Console.Error.WriteLine($"jcl-jobs: wrote {written} job(s) and {JclJobWriter.ManifestFile} to {output}");
+
+            // The same project file a conversion writes, so jobs generated on their own can be built.
+            if (csharp && written > 0)
+            {
+                var scaffold = GeneratedProjectScaffold.Write(output, ConversionNamespacePolicy.Root("C#"));
+                if (scaffold.ProjectPath is not null)
+                    Console.Error.WriteLine($"jcl-jobs: wrote {Path.GetFileName(scaffold.ProjectPath)}");
+            }
         }, sourceArg, languageOption, outputOption);
 
         return cmd;

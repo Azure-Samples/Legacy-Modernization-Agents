@@ -1,4 +1,4 @@
-**Last updated**: 2026-09-30
+**Last updated**: 2026-10-01
 
 # Jobs generated from JCL
 
@@ -8,8 +8,8 @@ After a conversion, every JCL job in the source becomes a job in the target lang
 
 | Target | Where | Files |
 |---|---|---|
-| C# | `output/csharp/Jobs/` | `JclJobRuntime.g.cs` (the runner and its contracts), `<Job>Job.g.cs` per job, `JclJobs.g.cs` (every job, by name) |
-| Java | `output/java/<root>/jobs/` | the runtime classes, `<Job>Job.java` and `<Job>JobConfiguration.java` per job, `JclJobsConfiguration.java` |
+| C# | `<run folder>/Jobs/` | `JclJobRuntime.g.cs` (the runner and its contracts), `<Job>Job.g.cs` per job, `JclJobs.g.cs` (every job, by name) |
+| Java | `<run folder>/<root>/jobs/` | the runtime classes, `<Job>Job.java` and `<Job>JobConfiguration.java` per job, `JclJobsConfiguration.java` |
 
 The namespace is `{root}.Jobs` (C#) or `{root}.jobs` (Java), under the same root as the converted programs (`TARGET_ROOT_NAMESPACE`). The files are rewritten on every run. Files an earlier run generated for a job the source no longer has are removed; other files in the folder are left alone.
 
@@ -123,9 +123,21 @@ Any other utility, such as a sort, a Db2 unload or a copy program, stops the job
 | `JclJobs.Enabled` | `JCL_JOBS_ENABLED` | `true` | Generate jobs, and tell the programs they run about the contract |
 | `JclJobs.SourceFolder` | `JCL_SOURCE_FOLDER` | the COBOL source folder | Where the JCL, procedures and `INCLUDE` members are |
 
-To generate jobs without converting, for example over an existing output folder:
+## From doctor.sh
+
+| Command | What it does |
+|---|---|
+| `./doctor.sh jcl` | Generates the jobs alone into a new run folder, without a model, compiles them for C#, and lists per job the programs not yet converted and the steps that cannot run |
+| `./doctor.sh run --job NAME` | Converts the programs the job runs, and what they CALL when the portal is up, with the contract above, then generates the jobs. A program that is not in the source is listed, not converted |
+
+A job runs end to end only when its programs are converted, so `run --job` (or `run` for all) is the way to convert a batch application. `--job` takes the job name or the member name, can be repeated or comma-separated, and works with `convert-only` and `--dry-run`. After the run, the jobs are summarised from `jobs-manifest.json`.
+
+## From the command line
 
 ```bash
-dotnet run -- jcl-jobs source --language CSharp --output-dir output/csharp
-dotnet run -- jcl-jobs source --language Java --output-dir output/java
+dotnet run -- jcl-jobs source --language CSharp      # a new run folder, output/csharp/<timestamp>
+dotnet run -- jcl-jobs source --language Java --output-dir output/java/<run>   # into an earlier conversion
+dotnet run -- jcl-programs source --jobs PAYJOB      # PAYJOB, its member, and the programs it runs
 ```
+
+For C#, `jcl-jobs` also writes the project file a conversion writes, so the folder builds on its own.

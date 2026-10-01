@@ -165,6 +165,7 @@ internal static class Program
         // Deterministic JCL job facts and dataset lineage.
         rootCommand.AddCommand(CobolToQuarkusMigration.Cli.JclFactsCommand.Build());
         rootCommand.AddCommand(CobolToQuarkusMigration.Cli.JclJobsCommand.Build());
+        rootCommand.AddCommand(CobolToQuarkusMigration.Cli.JclProgramsCommand.Build());
 
         rootCommand.SetHandler(async (context) =>
         {
