@@ -21,6 +21,15 @@ The migration uses Microsoft Agent Framework with a multi-provider architecture 
 > | 3 | `./doctor.sh rekt-full` | **Deterministic static analysis (optional, recommended)**: parses the COBOL with REKT and loads it into the REKT Neo4j graph, and parses the JCL with the built-in JCL parser into `output/rekt/` |
 > | 4 | `./doctor.sh run` | **Full migration**: analyzes the COBOL, converts it to Java or C#, generates a job per JCL job, writes reports and opens the portal |
 >
+> **JCL jobs:** put the `.jcl` files (and their `.proc`, `.prc`, `.inc` members) in `source/`, then:
+>
+> | Command | What it does |
+> |---|---|
+> | `./doctor.sh jcl --language CSharp` (or `Java`) | **JCL only, no model, seconds**: generates one job per JCL job into `output/<language>/<run>/`, compiles C#, and lists per job which programs and procedures are still missing |
+> | `./doctor.sh run --job NAME --language CSharp` | **Job plus its programs**: converts the COBOL programs the job runs (add `--dry-run` to preview them), then generates the job so it can run end to end |
+>
+> See [JCL](#jcl) for details.
+>
 > Other entry points: `./doctor.sh reverse-eng` extracts business logic only, and `./doctor.sh portal` opens earlier results at http://localhost:5028.
 >
 > The doctor script checks dependencies and starts the services it needs.
