@@ -1,4 +1,4 @@
-**Last updated**: 2026-09-30
+**Last updated**: 2026-10-01
 
 # JCL job facts
 
@@ -80,6 +80,29 @@ A normal disposition of `DELETE` also records a Delete.
 A job depends on another when it reads (Read or Exclusive) a dataset the other creates or appends to. Temporary datasets are local to their job. `STEPLIB`, `JOBLIB`, `STEPCAT` and `JOBCAT` are program and catalog libraries rather than data, so they are left out of lineage.
 
 The inferred order comes from data only. A scheduler may enforce more, and it can contain cycles, because a generation data group is written by one run and read by the next.
+
+## In the graph and the AST Explorer
+
+`./doctor.sh rekt-ingest` loads each job into the REKT Neo4j as `JclNode` nodes. COBOL `ASTNode` data is untouched, so the COBOL views and counts are unaffected. The AST Explorer lists each job as `JCL · <job>` beside the programs and shows it as a graph. Clicking a node shows its JCL.
+
+| Node type | What it is |
+|---|---|
+| `JCL_JOB` | The job |
+| `JCL_STEP`, `JCL_UTILITY_STEP`, `JCL_TSO_STEP` | A step that runs a program, a utility, or programs under the TSO monitor |
+| `JCL_UNRESOLVED_STEP` | A step calling a procedure that is not in the source |
+| `JCL_PROGRAM`, `JCL_UTILITY` | What a step runs |
+| `JCL_DATASET`, `JCL_TEMP_DATASET` | A dataset, or a temporary (`&&`) dataset local to the job |
+| `JCL_JOB_REF` | Another job this one feeds or is fed by |
+
+| Edge | From → to |
+|---|---|
+| `CONTAINS` | Job → step |
+| `FOLLOWED_BY` | Step → next step |
+| `RUNS` | Step → program or utility |
+| `READS`, `CREATES`, `APPENDS`, `OPENS_EXCLUSIVE`, `DELETES` | Step → dataset, from the lineage above |
+| `FEEDS` | Job → job, labelled with the datasets that connect them |
+
+A fact file written by a newer schema than the populator knows is skipped with a warning rather than loaded wrongly.
 
 ## Diagnostics
 

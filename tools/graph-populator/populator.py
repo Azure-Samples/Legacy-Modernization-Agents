@@ -28,6 +28,7 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn
 
 from configuration import required_environment_variable
+from jcl_graph import FACTS_SUFFIX, LINEAGE_FILE, SUPPORTED_SCHEMA, build_jcl_graph, is_jcl_artifact
 from source_paths import artifact_source_path, scoped_graph_id, source_relative_path
 
 console = Console()
@@ -590,6 +591,8 @@ def ingest_rekt_outputs(driver, rekt_output_dir: str, source_dir: str, run_id: i
     source_files = [node["fileName"] for node in file_nodes]
 
     for json_file in sorted(output_path.rglob("*.json")):
+        if is_jcl_artifact(json_file.name):
+            continue
         rel_path = json_file.relative_to(output_path)
         program_name = artifact_source_path(
             str(json_file),
@@ -628,7 +631,51 @@ def ingest_rekt_outputs(driver, rekt_output_dir: str, source_dir: str, run_id: i
     counts["ASTNode"] = ast_total
     counts["CFGEdge"] = cfg_total
     counts["DataStructure"] = ds_total
+    counts["JclNode"] = ingest_jcl_outputs(driver, output_path, source_path, run_id)
     return counts
+
+
+def ingest_jcl_outputs(driver, output_path: Path, source_path: Path, run_id: int) -> int:
+    """Ingest the job facts jcl-facts wrote as JclNode graphs, one per job, with the JCL as SourceBlocks."""
+    lineage_file = output_path / LINEAGE_FILE
+    lineage = None
+    if lineage_file.exists():
+        try:
+            lineage = json.loads(lineage_file.read_text())
+        except json.JSONDecodeError:
+            console.print(f"[yellow]Skipping invalid JSON: {LINEAGE_FILE}[/yellow]")
+
+    total = 0
+    for facts_file in sorted(output_path.rglob(f"*{FACTS_SUFFIX}")):
+        rel_path = facts_file.relative_to(output_path)
+        try:
+            facts = json.loads(facts_file.read_text())
+        except json.JSONDecodeError:
+            console.print(f"[yellow]Skipping invalid JSON: {rel_path}[/yellow]")
+            continue
+        if not isinstance(facts, dict) or not isinstance(facts.get("job"), dict):
+            console.print(f"[yellow]Skipping job facts without a job: {rel_path}[/yellow]")
+            continue
+        # A newer schema may change meaning, not just add fields; loading it wrongly is worse than not at all.
+        if facts.get("schemaVersion", SUPPORTED_SCHEMA) > SUPPORTED_SCHEMA:
+            console.print(f"[yellow]Skipping job facts from a newer jcl-facts: {rel_path}[/yellow]")
+            continue
+
+        nodes, edges = build_jcl_graph(facts, lineage, run_id)
+        total += batch_merge_nodes(driver, "JclNode", nodes, merge_key="uid")
+        for kind in sorted({e["type"] for e in edges}):
+            batch_merge_relationships(
+                driver, "JclNode", "uid", kind, "JclNode", "uid",
+                [e for e in edges if e["type"] == kind], rel_props=["label"],
+            )
+
+        # The AST Explorer falls back to SourceBlocks when the source file is not on the portal's disk.
+        program = facts["job"].get("file")
+        source_file = source_path / program if program else None
+        if source_file is None or not source_file.is_file():
+            continue
+        create_source_blocks(driver, program, source_file.read_text(errors="replace"), run_id)
+    return total
 
 
 # CLI Entry Point

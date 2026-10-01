@@ -21,6 +21,7 @@ CREATE CONSTRAINT sourceblock_uid IF NOT EXISTS FOR (n:SourceBlock)   REQUIRE n.
 CREATE CONSTRAINT flowchart_uid   IF NOT EXISTS FOR (n:Flowchart)     REQUIRE n.uid IS UNIQUE;
 CREATE CONSTRAINT comment_uid     IF NOT EXISTS FOR (n:Comment)       REQUIRE n.uid IS UNIQUE;
 CREATE CONSTRAINT metrics_uid     IF NOT EXISTS FOR (n:Metrics)       REQUIRE n.uid IS UNIQUE;
+CREATE CONSTRAINT jclnode_uid     IF NOT EXISTS FOR (n:JclNode)       REQUIRE n.uid IS UNIQUE;
 
 // Composite indexes
 CREATE INDEX astnode_program_type IF NOT EXISTS FOR (n:ASTNode)       ON (n.program, n.nodeType);
@@ -33,6 +34,7 @@ CREATE INDEX signature_run_file   IF NOT EXISTS FOR (n:Signature)     ON (n.runI
 CREATE INDEX typemapping_run      IF NOT EXISTS FOR (n:TypeMapping)   ON (n.runId, n.sourceFile);
 CREATE INDEX businesslogic_run    IF NOT EXISTS FOR (n:BusinessLogic) ON (n.runId);
 CREATE INDEX sourceblock_file     IF NOT EXISTS FOR (n:SourceBlock)   ON (n.program, n.blockIndex);
+CREATE INDEX jclnode_program_run  IF NOT EXISTS FOR (n:JclNode)       ON (n.program, n.runId);
 
 // Full-text indexes
 CREATE FULLTEXT INDEX cobol_search IF NOT EXISTS

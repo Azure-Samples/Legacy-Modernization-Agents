@@ -199,7 +199,26 @@ public static class RektGraphEndpoints
                 {
                     name = r["name"].As<string>(),
                     hasAst = true,
-                    hasCfg = r["hasCfg"].As<bool>()
+                    hasCfg = r["hasCfg"].As<bool>(),
+                    kind = "cobol",
+                    job = (string?)null,
+                }));
+
+                // JCL jobs are a graph of their own (JclNode), so they are listed beside the programs
+                // rather than mixed into the AST queries every COBOL view relies on.
+                var jobs = await session.RunAsync($@"
+                    {JclRunScope}
+                    MATCH (j:JclNode {{nodeType: 'JCL_JOB'}}) WHERE j.runId = _r
+                    RETURN j.program AS name, j.name AS job
+                    ORDER BY j.program",
+                    new { runId = scanRunId.GetValueOrDefault(0) });
+                await jobs.ForEachAsync(r => files.Add(new
+                {
+                    name = r["name"].As<string>(),
+                    hasAst = true,
+                    hasCfg = false,
+                    kind = "jcl",
+                    job = r["job"].As<string?>(),
                 }));
 
                 return Results.Ok(files);
@@ -426,6 +445,9 @@ public static class RektGraphEndpoints
                     }));
                 }
 
+                if (nodes.Count == 0 && await JclGraph(session, file, astRunId, nodes, edges))
+                    return Results.Ok(new { nodes, edges, kind = "jcl" });
+
                 if (nodes.Count == 0)
                     return Results.NotFound(new { error = $"No AST data for {file}. Run: ./doctor.sh rekt" });
 
@@ -446,6 +468,50 @@ public static class RektGraphEndpoints
             }
         });
 
+    }
+
+    // The run a JCL query reads: the one asked for, or else the latest that ingested JCL. JCL has
+    // its own latest run because a scan can carry COBOL without JCL, and the reverse.
+    private const string JclRunScope = @"
+        OPTIONAL MATCH (l:JclNode {nodeType: 'JCL_JOB'})
+        WITH CASE WHEN $runId > 0 THEN $runId ELSE max(l.runId) END AS _r";
+
+    private static async Task<bool> JclGraph(IAsyncSession session, string file, long runId, List<object> nodes, List<object> edges)
+    {
+        var nodeResult = await session.RunAsync($@"
+            {JclRunScope}
+            MATCH (n:JclNode {{program: $file}}) WHERE n.runId = _r
+            RETURN n.id AS id, n.nodeType AS nodeType, n.label AS label, n.originalText AS originalText,
+                   n.startLine AS startLine, n.endLine AS endLine, n.name AS name",
+            new { file, runId });
+        await nodeResult.ForEachAsync(r => nodes.Add(new
+        {
+            id = r["id"].As<string>(),
+            nodeType = r["nodeType"].As<string?>() ?? "",
+            label = r["label"].As<string?>() ?? "",
+            originalText = r["originalText"].As<string?>() ?? "",
+            startLine = r["startLine"].As<int?>() ?? 0,
+            endLine = r["endLine"].As<int?>() ?? 0,
+            name = r["name"].As<string?>() ?? "",
+            section = "",
+            paragraph = "",
+        }));
+        if (nodes.Count == 0) return false;
+
+        var edgeResult = await session.RunAsync($@"
+            {JclRunScope}
+            MATCH (a:JclNode {{program: $file}})-[r]->(b:JclNode {{program: $file}})
+            WHERE a.runId = _r AND b.runId = _r
+            RETURN a.id AS source, b.id AS target, type(r) AS type, r.label AS label",
+            new { file, runId });
+        await edgeResult.ForEachAsync(r => edges.Add(new
+        {
+            source = r["source"].As<string>(),
+            target = r["target"].As<string>(),
+            type = r["type"].As<string>(),
+            label = r["label"].As<string?>() ?? "",
+        }));
+        return true;
     }
 
     private const string Unavailable =
