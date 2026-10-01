@@ -43,11 +43,14 @@ class ASTExplorer {
       if (rektResp.ok) files = await rektResp.json();
 
       const current = select.value;
+      this.fileKinds = new Map(files.map(f => [f.name, f.kind || 'cobol']));
       select.querySelectorAll('option:not(:first-child)').forEach(o => o.remove());
       for (const f of files) {
         const opt = document.createElement('option');
         opt.value = f.name;
-        opt.textContent = f.name.replace('flow-ast-', '');
+        opt.textContent = f.kind === 'jcl'
+          ? `JCL · ${f.job || f.name.replace(/.*\//, '')}`
+          : f.name.replace('flow-ast-', '');
         select.appendChild(opt);
       }
       if (current) select.value = current;
@@ -55,7 +58,10 @@ class ASTExplorer {
   }
 
   async loadView(fileName) {
-    if (this.viewMode === 'structure') {
+    // A JCL job has no COBOL structure or CFG; its only view is the job graph.
+    if (this.fileKinds?.get(fileName) === 'jcl') {
+      await this.loadRawGraph(fileName, 'ast');
+    } else if (this.viewMode === 'structure') {
       await this.loadStructure(fileName);
     } else {
       await this.loadRawGraph(fileName);
@@ -422,7 +428,7 @@ class ASTExplorer {
   // RAW AST/CFG VIEW — vis-network graph (power users)
   // ═══════════════════════════════════════════════════════════════════
 
-  async loadRawGraph(fileName) {
+  async loadRawGraph(fileName, forcedMode) {
     const container = document.getElementById('ast-graph');
     if (!container) return;
     container.innerHTML = '<div class="ast-loading">Loading AST...</div>';
@@ -432,7 +438,7 @@ class ASTExplorer {
     // Whitelist of valid endpoint names — guards against unknown viewModes that
     // would otherwise hit the SPA fallback (HTML 200) and break JSON.parse.
     const validModes = new Set(['ast', 'cfg', 'structure']);
-    const mode = validModes.has(this.viewMode) ? this.viewMode : 'ast';
+    const mode = forcedMode || (validModes.has(this.viewMode) ? this.viewMode : 'ast');
 
     try {
       const scanParam = typeof _currentScanRunId !== 'undefined' && _currentScanRunId &&
@@ -462,11 +468,24 @@ class ASTExplorer {
       MOVE: '#84cc16', PERFORM: '#06b6d4', IF_BRANCH: '#ec4899', EVALUATE: '#f59e0b',
       EXIT: '#475569', COMPUTE: '#f97316', DISPLAY: '#14b8a6', CALL: '#ef4444',
       PROCEDURE_DIVISION_BODY: '#3b82f6', PARAGRAPHS: '#334155',
+      JCL_JOB: '#3b82f6', JCL_STEP: '#10b981', JCL_UTILITY_STEP: '#f59e0b', JCL_TSO_STEP: '#06b6d4',
+      JCL_UNRESOLVED_STEP: '#ef4444', JCL_PROGRAM: '#8b5cf6', JCL_UTILITY: '#f97316',
+      JCL_DATASET: '#14b8a6', JCL_TEMP_DATASET: '#64748b', JCL_JOB_REF: '#ec4899',
     };
+    const jclShapes = {
+      JCL_JOB: 'box', JCL_STEP: 'box', JCL_UTILITY_STEP: 'box', JCL_TSO_STEP: 'box', JCL_UNRESOLVED_STEP: 'box',
+      JCL_PROGRAM: 'ellipse', JCL_UTILITY: 'ellipse', JCL_DATASET: 'database', JCL_TEMP_DATASET: 'database',
+      JCL_JOB_REF: 'diamond',
+    };
+    const edgeColors = {
+      CONTAINS: '#334155', FOLLOWED_BY: '#3b82f6', RUNS: '#8b5cf6', READS: '#14b8a6', CREATES: '#10b981',
+      APPENDS: '#84cc16', OPENS_EXCLUSIVE: '#f59e0b', DELETES: '#ef4444', FEEDS: '#ec4899',
+    };
+    const isJcl = graphData.kind === 'jcl';
 
     const nodes = new vis.DataSet(graphData.nodes.map(n => {
       // Human-readable label: show name (cleaned) instead of UUID
-      const cleanName = (n.name || '').replace(/.*\//, '').replace(/Context\/.*/, '');
+      const cleanName = isJcl ? (n.label || n.name || '') : (n.name || '').replace(/.*\//, '').replace(/Context\/.*/, '');
       const typeLabel = this._humanType(n.nodeType);
       const displayLabel = cleanName ? `${typeLabel}\n${cleanName}` : typeLabel;
 
@@ -476,22 +495,24 @@ class ASTExplorer {
         title: `Type: ${n.nodeType}\nName: ${n.name || '—'}\nLines: ${n.startLine}–${n.endLine}\nID: ${n.id}`,
         color: { background: typeColors[n.nodeType] || '#64748b', border: '#1e293b', highlight: { background: '#fbbf24', border: '#f59e0b' } },
         font: { color: '#e2e8f0', size: 10, multi: true },
-        shape: ['SECTION', 'PARAGRAPH'].includes(n.nodeType) ? 'box' : 'dot',
-        size: ['SECTION', 'PARAGRAPH'].includes(n.nodeType) ? 14 : 6,
+        shape: jclShapes[n.nodeType] || (['SECTION', 'PARAGRAPH'].includes(n.nodeType) ? 'box' : 'dot'),
+        size: (jclShapes[n.nodeType] || ['SECTION', 'PARAGRAPH'].includes(n.nodeType)) ? 14 : 6,
         _data: n,
       };
     }));
 
     const edges = new vis.DataSet((graphData.edges || []).map((e, i) => ({
       id: i, from: e.from || e.source, to: e.to || e.target, arrows: 'to',
-      color: { color: e.type === 'CONTAINS' ? '#334155' : e.type === 'FOLLOWED_BY' ? '#3b82f6' : '#ef4444', opacity: 0.6 },
-      width: e.type === 'CONTAINS' ? 1 : 2, dashes: e.type === 'JUMPS_TO' ? [5, 5] : false,
+      color: { color: edgeColors[e.type] || '#ef4444', opacity: 0.6 },
+      width: e.type === 'CONTAINS' ? 1 : 2, dashes: e.type === 'JUMPS_TO' || e.type === 'FEEDS' ? [5, 5] : false,
+      label: isJcl && e.type !== 'CONTAINS' ? (e.label ? `${e.type} ${e.label}` : e.type) : undefined,
+      font: { color: '#94a3b8', size: 8, strokeWidth: 0 },
     })));
 
     this.network = new vis.Network(container, { nodes, edges }, {
       nodes: { borderWidth: 1, shadow: false },
       edges: { smooth: { type: 'cubicBezier', roundness: 0.4 } },
-      layout: { hierarchical: { enabled: true, direction: 'UD', sortMethod: 'directed', nodeSpacing: 80, levelSeparation: 60 } },
+      layout: { hierarchical: { enabled: true, direction: isJcl ? 'LR' : 'UD', sortMethod: 'directed', nodeSpacing: isJcl ? 70 : 80, levelSeparation: isJcl ? 220 : 60 } },
       physics: { enabled: false },
       interaction: { hover: true, tooltipDelay: 100, navigationButtons: true, keyboard: true },
     });
@@ -566,7 +587,10 @@ class ASTExplorer {
       IF_BRANCH: 'IF', IF_YES: 'THEN', IF_NO: 'ELSE', EVALUATE: 'EVALUATE', COMPUTE: 'COMPUTE', ADD: 'ADD',
       DISPLAY: 'DISPLAY', EXIT: 'EXIT', GENERIC_STATEMENT: 'STMT', SECTION: 'SECTION', PARAGRAPH: 'PARA',
       SECTION_HEADER: 'SECTION', PARAGRAPH_NAME: 'PARA', PARAGRAPHS: 'PARAGRAPHS',
-      PROCEDURE_DIVISION_BODY: 'PROCEDURE DIV', SENTENCE: 'SENTENCE', SYMBOL: 'SYMBOL' };
+      PROCEDURE_DIVISION_BODY: 'PROCEDURE DIV', SENTENCE: 'SENTENCE', SYMBOL: 'SYMBOL',
+      JCL_JOB: 'JOB', JCL_STEP: 'STEP', JCL_UTILITY_STEP: 'UTILITY STEP', JCL_TSO_STEP: 'TSO STEP',
+      JCL_UNRESOLVED_STEP: 'PROC (unresolved)', JCL_PROGRAM: 'PROGRAM', JCL_UTILITY: 'UTILITY',
+      JCL_DATASET: 'DATASET', JCL_TEMP_DATASET: 'TEMP DATASET', JCL_JOB_REF: 'JOB' };
     return map[nodeType] || nodeType;
   }
 
