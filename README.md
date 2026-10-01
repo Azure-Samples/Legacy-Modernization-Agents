@@ -12,23 +12,25 @@ The migration uses Microsoft Agent Framework with a multi-provider architecture 
 ---
 
 > [!TIP]
-> **Ways to use this framework:**
+> **Start here.** Run these in order from the repository root:
 >
-> | Command | What it does |
-> |---|---|
-> | `./doctor.sh setup` | **Configure the framework** — set up the AI provider, credentials, models, and local services |
-> | `./doctor.sh rekt-full` | **Run deterministic static analysis (optional but recommended)** — parse COBOL sources deterministically and ingest the resulting artifacts into the REKT Neo4j graph |
-> | `./doctor.sh reverse-eng` | **Extract business logic only** — runs RE analysis, persists results to DB, launches the portal |
-> | `./doctor.sh run` | **Run a full migration** — analyze COBOL, convert to Java/C#, generate reports, and launch the portal |
-> | `./doctor.sh portal` | **Open the portal only** — browse previous migration results, dependency graphs, and chat with your codebase at http://localhost:5028 |
+> | Step | Command | What it does |
+> |---|---|---|
+> | 1 | `./doctor.sh setup` | **Configure the framework**: AI provider, credentials, models and local services |
+> | 2 | *(copy files)* | **Put your sources in `source/`**: COBOL programs (`.cbl`), copybooks (`.cpy`), and JCL jobs (`.jcl`) with their procedures and INCLUDE members (`.proc`, `.prc`, `.inc`) |
+> | 3 | `./doctor.sh rekt-full` | **Deterministic static analysis (optional, recommended)**: parses the COBOL with REKT and loads it into the REKT Neo4j graph, and parses the JCL with the built-in JCL parser into `output/rekt/` |
+> | 4 | `./doctor.sh run` | **Full migration**: analyzes the COBOL, converts it to Java or C#, generates a job per JCL job, writes reports and opens the portal |
 >
-> The doctor script handles dependency checks and required service startup automatically.
+> Other entry points: `./doctor.sh reverse-eng` extracts business logic only, and `./doctor.sh portal` opens earlier results at http://localhost:5028.
+>
+> The doctor script checks dependencies and starts the services it needs.
 
 ---
 
 ## 📋 Table of Contents
 - [Quick Start](#-quick-start)
 - [Usage: doctor.sh](#-usage-doctorsh)
+  - [JCL](#jcl)
 - [Reverse Engineering Reports](#-reverse-engineering-reports)
 - [Folder Structure](#-folder-structure)
 - [Customizing Agent Behavior](#-customizing-agent-behavior)
@@ -163,11 +165,20 @@ This project uses **Microsoft Agent Framework** (`Microsoft.Agents.AI.*`), **not
 ### Setup (2 minutes)
 
 ```bash
-# 1. Clone and enter
 git clone https://github.com/Azure-Samples/Legacy-Modernization-Agents.git
 cd Legacy-Modernization-Agents
 
-# 2. Configure Azure OpenAI
+./doctor.sh setup        # 1. configure the AI provider and credentials
+cp -r /path/to/your/cobol/* source/   # 2. COBOL, copybooks and JCL
+./doctor.sh rekt-full    # 3. optional: deterministic COBOL + JCL analysis
+./doctor.sh run          # 4. migrate, then open the portal
+```
+
+<details>
+<summary>Manual setup without the setup wizard</summary>
+
+```bash
+# 1. Configure Azure OpenAI
 cp Config/ai-config.env.example Config/ai-config.local.env
 # Edit: _MAIN_ENDPOINT (required), _CODE_MODEL / _CHAT_MODEL (optional)
 # Auth: use 'az login' (recommended) OR set _MAIN_API_KEY
@@ -180,9 +191,11 @@ docker-compose up -d neo4j
 # 4. Build
 dotnet build
 
-# 5. Run migration but we recommend using the next section with doctor.sh run or portal for just loading the portal
+# 5. Run the migration
 ./doctor.sh run
 ```
+
+</details>
 
 ---
 
@@ -212,6 +225,24 @@ After every `reverse-eng` or full `run`, extracted business logic is persisted t
 The `--reuse-re` flag can also be passed directly: `dotnet run -- --source ./source --skip-reverse-engineering --reuse-re`.
 
 Persisted RE results are visible in the portal — each run card has a **🔬 RE Results** button that shows per-file story/feature/rule counts and lets you delete results you are unsatisfied with.
+
+### JCL
+
+There is no separate JCL command, and JCL does not go through REKT (REKT parses COBOL only). JCL is read by a built-in deterministic parser that runs as part of the commands you already use:
+
+| Command | What happens to the JCL in `source/` |
+|---|---|
+| `./doctor.sh rekt` / `rekt-full` | Writes a facts file per job and the dataset lineage between jobs to `output/rekt/` (`*.job.json`, `jcl-lineage.json`). The portal's Service Chain uses them. |
+| `./doctor.sh run` / `convert-only` | Converts each program a JCL step runs with the batch-program contract, then generates one job per JCL job: a .NET job under `output/csharp/Jobs/` or a Spring Batch job under `output/java/<root>/jobs/`, plus `jobs-manifest.json`. |
+
+Job generation reads the JCL itself, so it works without `rekt-full`; `rekt-full` adds the facts and lineage for the portal. Turn job generation off with `JCL_JOBS_ENABLED=false`. If the JCL lives outside `source/`, point to it with `JCL_SOURCE_FOLDER`. To run the parser or the generator on its own:
+
+```bash
+dotnet run -- jcl-facts source --output-dir output/rekt
+dotnet run -- jcl-jobs source --language CSharp   # or Java
+```
+
+See [JCL job facts](docs/jcl-job-facts.md) and [Jobs generated from JCL](docs/jcl-jobs.md).
 
 ### doctor.sh run - Interactive Options
 
@@ -358,16 +389,20 @@ The extractor uses these translations to produce more readable reports.
 
 ```
 Legacy-Modernization-Agents/
-├── source/                    # ⬅️ DROP YOUR COBOL FILES HERE
+├── source/                    # ⬅️ DROP YOUR COBOL AND JCL FILES HERE
 │   ├── CUSTOMER.cbl
 │   ├── PAYMENT.cbl
-│   └── COMMON.cpy
+│   ├── COMMON.cpy
+│   ├── NIGHTLY.jcl            # JCL jobs
+│   └── PAYPROC.proc           # catalogued procedures / INCLUDE members
 │
 ├── output/                    # ⬅️ GENERATED CODE APPEARS HERE
-│   ├── java/                  # Java Quarkus output
+│   ├── java/                  # Java Quarkus output (+ <root>/jobs/ from JCL)
 │   │   └── com/example/generated/
-│   └── csharp/                # C# .NET output
-│       └── Generated/
+│   ├── csharp/                # C# .NET output
+│   │   ├── Generated/
+│   │   └── Jobs/              # jobs generated from JCL
+│   └── rekt/                  # REKT and JCL analysis facts
 │
 ├── Agents/                    # AI agent implementations
 ├── Config/                    # Configuration files
@@ -376,10 +411,11 @@ Legacy-Modernization-Agents/
 ```
 
 **Workflow:**
-1. Drop COBOL files (`.cbl`, `.cpy`) into `source/`
-2. Run `./doctor.sh run`
-3. Choose target language (Java or C#)
-4. Collect generated code from `output/java/` or `output/csharp/`
+1. Drop COBOL files (`.cbl`, `.cpy`) and any JCL (`.jcl`, `.proc`, `.prc`, `.inc`) into `source/`
+2. Optionally run `./doctor.sh rekt-full` for deterministic COBOL and JCL analysis
+3. Run `./doctor.sh run`
+4. Choose target language (Java or C#)
+5. Collect generated code from `output/java/` or `output/csharp/`; `jobs-manifest.json` there lists the jobs generated from JCL and the programs they still need
 
 ---
 
