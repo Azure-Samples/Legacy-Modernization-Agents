@@ -67,6 +67,11 @@ public class AppSettings
     public CompileGateSettings CompileGate { get; set; } = new CompileGateSettings();
 
     /// <summary>
+    /// Gets or sets how jobs are generated from the JCL in the source: .NET jobs for C#, Spring Batch for Java.
+    /// </summary>
+    public JclJobsSettings JclJobs { get; set; } = new JclJobsSettings();
+
+    /// <summary>
     /// Gets or sets the model profile for code-conversion agents (all model families).
     /// Loaded from appsettings.json "ModelProfile" section.
     /// </summary>
@@ -434,4 +439,16 @@ public class CompileGateSettings
 
     /// <summary>Remaining compiler errors listed in the migration report.</summary>
     public int MaxErrorsInReport { get; set; } = 50;
+}
+
+/// <summary>
+/// Controls the jobs generated from the estate's JCL after conversion.
+/// </summary>
+public class JclJobsSettings
+{
+    /// <summary>Whether a job is generated per JCL job found in the source.</summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>Where the JCL, procedures and INCLUDE members are. Empty means the COBOL source folder.</summary>
+    public string? SourceFolder { get; set; }
 }

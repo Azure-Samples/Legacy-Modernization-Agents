@@ -87,8 +87,8 @@ Jobs are read by the [JCL parser](jcl-job-facts.md), so procedures that are in t
 | Evidence | Example | Why |
 |---|---|---|
 | `EXEC PGM=` on the step card, or on a step of an expanded procedure | `//STEP010 EXEC PGM=CUSTRPT` | Names the program directly |
-| `RUN PROGRAM(...)` in in-stream SYSTSIN | `RUN PROGRAM(KYGHB013) PLAN(...)` | DB2 batch runs under the TSO monitor, so the card names `IKJEFT01` rather than the workload |
-| The step name, when a source file of that name exists | `//KYGHB016 EXEC PROC=EXPRP02P` | A PROC step is conventionally named after the program it runs; accepted only when corroborated by a real file |
+| `RUN PROGRAM(...)` in in-stream SYSTSIN | `RUN PROGRAM(PAYRB013) PLAN(...)` | DB2 batch runs under the TSO monitor, so the card names `IKJEFT01` rather than the workload |
+| The step name, when a source file of that name exists | `//PAYRB016 EXEC PROC=PAYRP02P` | A PROC step is conventionally named after the program it runs; accepted only when corroborated by a real file |
 
 In-stream data is read *before* the system-utility filter is applied, because `IKJEFT01` and the PROCs wrapping it are the monitor rather than the program to convert; discarding the step would discard the only record of what it ran.
 

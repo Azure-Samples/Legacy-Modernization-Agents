@@ -4,6 +4,7 @@ using CobolToQuarkusMigration.Agents;
 using CobolToQuarkusMigration.Agents.Infrastructure;
 using CobolToQuarkusMigration.Agents.Interfaces;
 using CobolToQuarkusMigration.Helpers;
+using CobolToQuarkusMigration.Jcl.Generation;
 using CobolToQuarkusMigration.Models;
 using CobolToQuarkusMigration.Persistence;
 using System.Text;
@@ -397,6 +398,8 @@ public class MigrationProcess
             // on to use, which on a measured run accounted for 1028 of 1140 compiler errors. The
             // usings and package references are read out of the generated code and written beside
             // it, so the folder can be built without one being written by hand.
+            JclJobGeneration.Run(_settings.JclJobs, cobolSourceFolder, javaOutputFolder, targetLang, _logger);
+
             if (targetLang == TargetLanguage.CSharp)
             {
                 try

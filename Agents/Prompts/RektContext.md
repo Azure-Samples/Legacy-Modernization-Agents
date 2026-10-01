@@ -249,3 +249,58 @@ DATA STRUCTURE ({{Count}} groups — generate a DTO/record class for each):
 ## SECTION: TruncatedDataStructure
 
     … {{Count}} fields total — generate ALL in the DTO using the COBOL source for complete field list
+
+## SECTION: CSharpBatchProgram
+
+---
+BATCH PROGRAM CONTRACT (this program is run by JCL — the generated job calls it through this):
+
+{{Invocations}}
+
+The job runner finds the program by its ProgramId and calls it through this interface, which is
+already generated in {{JobsNamespace}}. Do NOT declare it, or BatchStepContext, yourself:
+
+    public interface IBatchProgram
+    {
+        string ProgramId { get; }
+        Task<int> RunAsync(BatchStepContext context, CancellationToken cancellationToken = default);
+    }
+
+  • The program's main class implements IBatchProgram, with ProgramId => "{{ProgramId}}".
+  • RunAsync runs the whole PROCEDURE DIVISION once and returns RETURN-CODE (0 when the COBOL
+    never sets it). STOP RUN / GOBACK end RunAsync.
+  • Files are opened by DD name, never by path: context.OpenRead("DDNAME") for input and
+    context.OpenWrite("DDNAME") for output, both returning a Stream. The DD name is the
+    ASSIGN TO name in FILE-CONTROL.
+  • The EXEC PARM text is context.Parm (null when the JCL passes none). It is the text only;
+    build the COBOL length-prefixed PARM area from it if the LINKAGE SECTION expects one.
+  • An abend the COBOL raises (a call to an abend routine, a forced abend code) becomes
+    throw new BatchAbendException("U0nnn", message). Any other exception also ends the step
+    as an abend.
+
+## SECTION: JavaBatchProgram
+
+---
+BATCH PROGRAM CONTRACT (this program is run by JCL — the generated job calls it through this):
+
+{{Invocations}}
+
+The job runner finds the program by its programId and calls it through this interface, which is
+already generated in {{JobsNamespace}}. Do NOT declare it, or BatchStepContext, yourself:
+
+    public interface BatchProgram {
+        String programId();
+        int run(BatchStepContext context) throws Exception;
+    }
+
+  • The program's main class implements BatchProgram, with programId() returning "{{ProgramId}}".
+  • run runs the whole PROCEDURE DIVISION once and returns RETURN-CODE (0 when the COBOL
+    never sets it). STOP RUN / GOBACK end run.
+  • Files are opened by DD name, never by path: context.openRead("DDNAME") for input and
+    context.openWrite("DDNAME") for output, returning an InputStream and an OutputStream. The
+    DD name is the ASSIGN TO name in FILE-CONTROL.
+  • The EXEC PARM text is context.parm() (null when the JCL passes none). It is the text only;
+    build the COBOL length-prefixed PARM area from it if the LINKAGE SECTION expects one.
+  • An abend the COBOL raises (a call to an abend routine, a forced abend code) becomes
+    throw new BatchAbendException("U0nnn", message). Any other exception also ends the step
+    as an abend.

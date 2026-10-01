@@ -75,15 +75,15 @@ public class ConversionNamespacePolicyTests : IDisposable
         ConversionNamespacePolicy.ForProgram("C#", null).Should().Be("Modernized.Core");
     }
 
-    // FUENTES/SRC/X.cbl is the SRC area of FUENTES. Naming the service "src" says nothing about
+    // LEGACY/SRC/X.cbl is the SRC area of LEGACY. Naming the service "src" says nothing about
     // it, and every estate laid out that way would collapse into one service.
     [Fact]
     public void AGenericContainerDirectoryYieldsToItsParent()
     {
-        ConversionNamespacePolicy.ForProgram("Java", "FUENTES/SRC/KYGHG011.cbl")
-            .Should().Be("com.modernized.fuentes");
-        ConversionNamespacePolicy.ForProgram("C#", "FUENTES/src/KYGHG011.cbl")
-            .Should().Be("Modernized.Fuentes");
+        ConversionNamespacePolicy.ForProgram("Java", "LEGACY/SRC/PAYRG011.cbl")
+            .Should().Be("com.modernized.legacy");
+        ConversionNamespacePolicy.ForProgram("C#", "LEGACY/src/PAYRG011.cbl")
+            .Should().Be("Modernized.Legacy");
     }
 
     [Fact]
@@ -107,7 +107,7 @@ public class ConversionNamespacePolicyTests : IDisposable
     public void ProgramsInDifferentFoldersDoNot()
     {
         ConversionNamespacePolicy.ForProgram("C#", "bd/BDSDA23.cbl")
-            .Should().NotBe(ConversionNamespacePolicy.ForProgram("C#", "FUENTES/KYGFR002.cbl"));
+            .Should().NotBe(ConversionNamespacePolicy.ForProgram("C#", "LEGACY/PAYFR002.cbl"));
     }
 
     [Theory]

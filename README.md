@@ -12,23 +12,34 @@ The migration uses Microsoft Agent Framework with a multi-provider architecture 
 ---
 
 > [!TIP]
-> **Ways to use this framework:**
+> **Start here.** Run these in order from the repository root:
+>
+> | Step | Command | What it does |
+> |---|---|---|
+> | 1 | `./doctor.sh setup` | **Configure the framework**: AI provider, credentials, models and local services |
+> | 2 | *(copy files)* | **Put your sources in `source/`**: COBOL programs (`.cbl`), copybooks (`.cpy`), and JCL jobs (`.jcl`) with their procedures and INCLUDE members (`.proc`, `.prc`, `.inc`) |
+> | 3 | `./doctor.sh rekt-full` | **Deterministic static analysis (optional, recommended)**: parses the COBOL with REKT and loads it into the REKT Neo4j graph, and parses the JCL with the built-in JCL parser into `output/rekt/` |
+> | 4 | `./doctor.sh run` | **Full migration**: analyzes the COBOL, converts it to Java or C#, generates a job per JCL job, writes reports and opens the portal |
+>
+> **JCL jobs:** put the `.jcl` files (and their `.proc`, `.prc`, `.inc` members) in `source/`, then:
 >
 > | Command | What it does |
 > |---|---|
-> | `./doctor.sh setup` | **Configure the framework** — set up the AI provider, credentials, models, and local services |
-> | `./doctor.sh rekt-full` | **Run deterministic static analysis (optional but recommended)** — parse COBOL sources deterministically and ingest the resulting artifacts into the REKT Neo4j graph |
-> | `./doctor.sh reverse-eng` | **Extract business logic only** — runs RE analysis, persists results to DB, launches the portal |
-> | `./doctor.sh run` | **Run a full migration** — analyze COBOL, convert to Java/C#, generate reports, and launch the portal |
-> | `./doctor.sh portal` | **Open the portal only** — browse previous migration results, dependency graphs, and chat with your codebase at http://localhost:5028 |
+> | `./doctor.sh jcl --language CSharp` (or `Java`) | **JCL only, no model, seconds**: generates one job per JCL job into `output/<language>/<run>/`, compiles it (`dotnet build`, or `mvn compile` for Java), and lists per job which programs and procedures are still missing |
+> | `./doctor.sh run --job NAME --language CSharp` | **Job plus its programs**: converts the COBOL programs the job runs (add `--dry-run` to preview them), then generates the job so it can run end to end |
 >
-> The doctor script handles dependency checks and required service startup automatically.
+> See [JCL](#jcl) for details.
+>
+> Other entry points: `./doctor.sh reverse-eng` extracts business logic only, and `./doctor.sh portal` opens earlier results at http://localhost:5028.
+>
+> The doctor script checks dependencies and starts the services it needs.
 
 ---
 
 ## 📋 Table of Contents
 - [Quick Start](#-quick-start)
 - [Usage: doctor.sh](#-usage-doctorsh)
+  - [JCL](#jcl)
 - [Reverse Engineering Reports](#-reverse-engineering-reports)
 - [Folder Structure](#-folder-structure)
 - [Customizing Agent Behavior](#-customizing-agent-behavior)
@@ -163,11 +174,20 @@ This project uses **Microsoft Agent Framework** (`Microsoft.Agents.AI.*`), **not
 ### Setup (2 minutes)
 
 ```bash
-# 1. Clone and enter
 git clone https://github.com/Azure-Samples/Legacy-Modernization-Agents.git
 cd Legacy-Modernization-Agents
 
-# 2. Configure Azure OpenAI
+./doctor.sh setup        # 1. configure the AI provider and credentials
+cp -r /path/to/your/cobol/* source/   # 2. COBOL, copybooks and JCL
+./doctor.sh rekt-full    # 3. optional: deterministic COBOL + JCL analysis
+./doctor.sh run          # 4. migrate, then open the portal
+```
+
+<details>
+<summary>Manual setup without the setup wizard</summary>
+
+```bash
+# 1. Configure Azure OpenAI
 cp Config/ai-config.env.example Config/ai-config.local.env
 # Edit: _MAIN_ENDPOINT (required), _CODE_MODEL / _CHAT_MODEL (optional)
 # Auth: use 'az login' (recommended) OR set _MAIN_API_KEY
@@ -180,9 +200,11 @@ docker-compose up -d neo4j
 # 4. Build
 dotnet build
 
-# 5. Run migration but we recommend using the next section with doctor.sh run or portal for just loading the portal
+# 5. Run the migration
 ./doctor.sh run
 ```
+
+</details>
 
 ---
 
@@ -197,6 +219,7 @@ dotnet build
 ./doctor.sh portal        # Launch web portal only (http://localhost:5028)
 ./doctor.sh reverse-eng   # Extract business logic, persist to DB, launch portal
 ./doctor.sh convert-only  # Conversion only; prompts to reuse persisted RE context
+./doctor.sh jcl           # Jobs from the JCL alone, no model: what each job still needs
 ```
 
 #### Business Logic Persistence and --reuse-re
@@ -212,6 +235,35 @@ After every `reverse-eng` or full `run`, extracted business logic is persisted t
 The `--reuse-re` flag can also be passed directly: `dotnet run -- --source ./source --skip-reverse-engineering --reuse-re`.
 
 Persisted RE results are visible in the portal — each run card has a **🔬 RE Results** button that shows per-file story/feature/rule counts and lets you delete results you are unsatisfied with.
+
+### JCL
+
+JCL does not go through REKT (REKT parses COBOL only). It is read by a built-in deterministic parser, and the jobs are generated from it without a model. Put the JCL, with its catalogued procedures and `INCLUDE` members, in `source/` beside the COBOL.
+
+| Command | What happens to the JCL |
+|---|---|
+| `./doctor.sh jcl` | Parses the JCL and generates one job per JCL job into a new run folder, without converting anything, and compiles them (C# with dotnet, Java with Maven when installed). Lists, per job, the programs not yet converted and the steps that cannot run, usually because a procedure is missing from the source. Takes seconds and calls no model. |
+| `./doctor.sh run --job NAME` | Converts the programs that job runs, and what they CALL when the portal is up, then generates the jobs. Each of those programs is converted with the batch-program contract, so the job runner can call it. A program the job runs that is not in the source is listed, not converted. |
+| `./doctor.sh run` / `convert-only` | The same, for every program. Jobs are generated for every JCL job. |
+| `./doctor.sh rekt` / `rekt-full` | Also writes a facts file per job and the dataset lineage between jobs to `output/rekt/` (`*.job.json`, `jcl-lineage.json`). The portal's Service Chain uses them. |
+
+To convert a batch application so that it runs, convert the programs together with their jobs (`run --job`, or `run` for all of them). Converting the JCL alone gives jobs whose program steps abend with `S806` until the programs exist. `--job` takes a job name or a member name and can be repeated or comma-separated; it also works with `convert-only` and `--dry-run`:
+
+```bash
+./doctor.sh jcl --language CSharp                          # what the jobs need
+./doctor.sh run --job NITEJ001 --language CSharp --dry-run  # which programs that converts
+./doctor.sh run --job NITEJ001 --language CSharp            # convert them, with the job
+```
+
+Turn job generation off with `JCL_JOBS_ENABLED=false`. If the JCL lives outside `source/`, point to it with `JCL_SOURCE_FOLDER`. To run the parser or the generator without `doctor.sh`:
+
+```bash
+dotnet run -- jcl-facts source --output-dir output/rekt
+dotnet run -- jcl-jobs source --language CSharp   # or Java; a new run folder under output/<language>/
+dotnet run -- jcl-programs source --jobs NITEJ001 # the programs a job runs
+```
+
+See [JCL job facts](docs/jcl-job-facts.md) and [Jobs generated from JCL](docs/jcl-jobs.md).
 
 ### doctor.sh run - Interactive Options
 
@@ -358,16 +410,20 @@ The extractor uses these translations to produce more readable reports.
 
 ```
 Legacy-Modernization-Agents/
-├── source/                    # ⬅️ DROP YOUR COBOL FILES HERE
+├── source/                    # ⬅️ DROP YOUR COBOL AND JCL FILES HERE
 │   ├── CUSTOMER.cbl
 │   ├── PAYMENT.cbl
-│   └── COMMON.cpy
+│   ├── COMMON.cpy
+│   ├── NIGHTLY.jcl            # JCL jobs
+│   └── PAYPROC.proc           # catalogued procedures / INCLUDE members
 │
 ├── output/                    # ⬅️ GENERATED CODE APPEARS HERE
-│   ├── java/                  # Java Quarkus output
+│   ├── java/                  # Java Quarkus output (+ <root>/jobs/ from JCL)
 │   │   └── com/example/generated/
-│   └── csharp/                # C# .NET output
-│       └── Generated/
+│   ├── csharp/                # C# .NET output
+│   │   ├── Generated/
+│   │   └── Jobs/              # jobs generated from JCL
+│   └── rekt/                  # REKT and JCL analysis facts
 │
 ├── Agents/                    # AI agent implementations
 ├── Config/                    # Configuration files
@@ -376,10 +432,11 @@ Legacy-Modernization-Agents/
 ```
 
 **Workflow:**
-1. Drop COBOL files (`.cbl`, `.cpy`) into `source/`
-2. Run `./doctor.sh run`
-3. Choose target language (Java or C#)
-4. Collect generated code from `output/java/` or `output/csharp/`
+1. Drop COBOL files (`.cbl`, `.cpy`) and any JCL (`.jcl`, `.proc`, `.prc`, `.inc`) into `source/`
+2. Optionally run `./doctor.sh rekt-full` for deterministic COBOL and JCL analysis
+3. Run `./doctor.sh run`
+4. Choose target language (Java or C#)
+5. Collect generated code from `output/java/` or `output/csharp/`; `jobs-manifest.json` there lists the jobs generated from JCL and the programs they still need
 
 ---
 
@@ -1109,6 +1166,7 @@ See [Parallel Jobs Formula](#parallel-jobs-formula) for chunking configuration d
 - [Architecture Documentation](docs/REVERSE_ENGINEERING_ARCHITECTURE.md) - System design
 - [Dependency Health & Semantic Flow Explorer](docs/dependency-health-and-flow-explorer.md) - Deterministic parse-fidelity, topology and JCL chain surfaces for deciding conversion order
 - [JCL job facts](docs/jcl-job-facts.md) - Deterministic JCL parser: procedures, symbols, conditions, Db2 runs and dataset lineage across jobs
+- [Jobs generated from JCL](docs/jcl-jobs.md) - Each JCL job as a .NET job (C#) or Spring Batch job (Java) that runs the converted programs under the JCL's conditions
 - [Conversion Parity Validation](docs/conversion-parity-validation.md) - Deterministic check that generated code represents the COBOL it came from, with per-axis coverage and a configurable threshold
 - [Speed Profiles](docs/speed-profiles.md) - TURBO/FAST/BALANCED/THOROUGH env var overrides and complexity scoring
 - [Azure AD / Entra ID Authentication Guide](docs/az-login-auth-guide.md) - Keyless auth setup

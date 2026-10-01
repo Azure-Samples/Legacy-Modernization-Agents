@@ -1,0 +1,928 @@
+//// FILE: BatchProgram.java
+// Generated from the estate's JCL. Rewritten on every run; do not edit.
+package {{Package}};
+
+// A program a JCL step runs, by EXEC PGM= or by RUN PROGRAM under the TSO monitor.
+public interface BatchProgram {
+    // The program name the JCL uses.
+    String programId();
+
+    // Returns the program's RETURN-CODE. Throwing ends the step as an abend; throw
+    // BatchAbendException to give the abend a code.
+    int run(BatchStepContext context) throws Exception;
+}
+//// FILE: JclCompare.java
+// Generated from the estate's JCL. Rewritten on every run; do not edit.
+package {{Package}};
+
+public enum JclCompare {
+    GT, LT, EQ, NE, GE, LE;
+
+    public boolean test(int left, int right) {
+        switch (this) {
+            case GT: return left > right;
+            case LT: return left < right;
+            case EQ: return left == right;
+            case NE: return left != right;
+            case GE: return left >= right;
+            default: return left <= right;
+        }
+    }
+}
+//// FILE: JclStepKind.java
+// Generated from the estate's JCL. Rewritten on every run; do not edit.
+package {{Package}};
+
+public enum JclStepKind { PROGRAM, TSO, UTILITY, UNRESOLVED }
+//// FILE: JclDd.java
+// Generated from the estate's JCL. Rewritten on every run; do not edit.
+package {{Package}};
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+
+public final class JclDd {
+    private final String name;
+    private String dataset;
+    private String member;
+    private String generation;
+    private boolean temporary;
+    private String status;
+    private String normalDisposition;
+    private String abnormalDisposition;
+    private String sysOut;
+    private boolean dummy;
+    private List<String> inStream;
+    private final List<JclDd> concatenated = new ArrayList<>();
+
+    private JclDd(String name) { this.name = name; }
+
+    public static JclDd of(String name) { return new JclDd(name); }
+
+    public JclDd dataset(String value) { dataset = value; return this; }
+    public JclDd member(String value) { member = value; return this; }
+    public JclDd generation(String value) { generation = value; return this; }
+    public JclDd temporary() { temporary = true; return this; }
+    public JclDd status(String value) { status = value; return this; }
+    public JclDd normalDisposition(String value) { normalDisposition = value; return this; }
+    public JclDd abnormalDisposition(String value) { abnormalDisposition = value; return this; }
+    public JclDd sysOut(String value) { sysOut = value; return this; }
+    public JclDd dummy() { dummy = true; return this; }
+    public JclDd inStream(String... lines) { inStream = Arrays.asList(lines); return this; }
+    public JclDd concatenate(JclDd... dds) { concatenated.addAll(Arrays.asList(dds)); return this; }
+
+    public String name() { return name; }
+    public String dataset() { return dataset; }
+    public String member() { return member; }
+    public String generation() { return generation; }
+    public boolean isTemporary() { return temporary; }
+    public String status() { return status; }
+    public String normalDisposition() { return normalDisposition; }
+    public String abnormalDisposition() { return abnormalDisposition; }
+    public String sysOut() { return sysOut; }
+    public boolean isDummy() { return dummy; }
+    public List<String> inStream() { return inStream; }
+    public List<JclDd> concatenated() { return concatenated; }
+}
+//// FILE: JclDb2Run.java
+// Generated from the estate's JCL. Rewritten on every run; do not edit.
+package {{Package}};
+
+public record JclDb2Run(String program, String plan, String subsystem, String parms) { }
+//// FILE: JclCondCheck.java
+// Generated from the estate's JCL. Rewritten on every run; do not edit.
+package {{Package}};
+
+// Bypass the step when code op (a step's return code) is true.
+public record JclCondCheck(int code, JclCompare op, String step) { }
+//// FILE: JclCond.java
+// Generated from the estate's JCL. Rewritten on every run; do not edit.
+package {{Package}};
+
+import java.util.List;
+
+public record JclCond(List<JclCondCheck> tests, boolean even, boolean only) { }
+//// FILE: JclStepDefinition.java
+// Generated from the estate's JCL. Rewritten on every run; do not edit.
+package {{Package}};
+
+import java.util.Arrays;
+import java.util.List;
+import java.util.function.Predicate;
+
+public final class JclStepDefinition {
+    private final String name;
+    private final JclStepKind kind;
+    private String program;
+    private String procedure;
+    private String parm;
+    private List<JclDb2Run> runs = List.of();
+    private Predicate<JclJobState> guard;
+    private boolean guardTestsAbend;
+    private String guardError;
+    private JclCond cond;
+    private List<JclDd> dds = List.of();
+    private List<String> controlStatements = List.of();
+
+    private JclStepDefinition(String name, JclStepKind kind) { this.name = name; this.kind = kind; }
+
+    public static JclStepDefinition of(String name, JclStepKind kind) { return new JclStepDefinition(name, kind); }
+
+    public JclStepDefinition program(String value) { program = value; return this; }
+    public JclStepDefinition procedure(String value) { procedure = value; return this; }
+    public JclStepDefinition parm(String value) { parm = value; return this; }
+    public JclStepDefinition runs(JclDb2Run... value) { runs = Arrays.asList(value); return this; }
+    public JclStepDefinition guard(Predicate<JclJobState> value, boolean testsAbend) { guard = value; guardTestsAbend = testsAbend; return this; }
+    public JclStepDefinition guardError(String value) { guardError = value; return this; }
+    public JclStepDefinition cond(JclCond value) { cond = value; return this; }
+    public JclStepDefinition dds(JclDd... value) { dds = Arrays.asList(value); return this; }
+    public JclStepDefinition controlStatements(String... value) { controlStatements = Arrays.asList(value); return this; }
+
+    public String name() { return name; }
+    public JclStepKind kind() { return kind; }
+    public String program() { return program; }
+    public String procedure() { return procedure; }
+    public String parm() { return parm; }
+    public List<JclDb2Run> runs() { return runs; }
+    public Predicate<JclJobState> guard() { return guard; }
+    public boolean guardTestsAbend() { return guardTestsAbend; }
+    public String guardError() { return guardError; }
+    public JclCond cond() { return cond; }
+    public List<JclDd> dds() { return dds; }
+    public List<String> controlStatements() { return controlStatements; }
+}
+//// FILE: JclJob.java
+// Generated from the estate's JCL. Rewritten on every run; do not edit.
+package {{Package}};
+
+import java.util.List;
+
+public abstract class JclJob {
+    private final String name;
+    private final JclCond cond;
+
+    protected JclJob(String name, JclCond cond) { this.name = name; this.cond = cond; }
+
+    public String name() { return name; }
+    public JclCond cond() { return cond; }
+    public abstract List<JclStepDefinition> steps();
+}
+//// FILE: BatchAbendException.java
+// Generated from the estate's JCL. Rewritten on every run; do not edit.
+package {{Package}};
+
+// Ends a step as an abend with a code such as U0100 or S0C7.
+public class BatchAbendException extends RuntimeException {
+    private final String code;
+
+    public BatchAbendException(String code, String message) { super(message); this.code = code; }
+    public BatchAbendException(String code, String message, Throwable cause) { super(message, cause); this.code = code; }
+
+    public String code() { return code; }
+}
+//// FILE: JclStepNotRunnableException.java
+// Generated from the estate's JCL. Rewritten on every run; do not edit.
+package {{Package}};
+
+// The job cannot go on as written: a procedure missing from the source, a condition that could
+// not be read, or a utility with no equivalent. Not an abend; nothing a later step can test.
+public class JclStepNotRunnableException extends RuntimeException {
+    public JclStepNotRunnableException(String message) { super(message); }
+}
+//// FILE: JclStepOutcome.java
+// Generated from the estate's JCL. Rewritten on every run; do not edit.
+package {{Package}};
+
+import java.io.Serializable;
+
+public record JclStepOutcome(String step, boolean ran, Integer returnCode, String abendCode, boolean abended, String message)
+        implements Serializable { }
+//// FILE: JclJobState.java
+// Generated from the estate's JCL. Rewritten on every run; do not edit.
+package {{Package}};
+
+import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.stream.Stream;
+
+// What the steps run so far did, as IF and COND read it. A step that abended or did not run has
+// no return code, so every comparison with it is false.
+public final class JclJobState implements Serializable {
+    private static final long serialVersionUID = 1L;
+
+    private final String runId;
+    private final List<JclStepOutcome> outcomes = new ArrayList<>();
+    private boolean terminated;
+
+    public JclJobState(String runId) { this.runId = runId; }
+
+    public String runId() { return runId; }
+    public List<JclStepOutcome> outcomes() { return outcomes; }
+    public boolean terminated() { return terminated; }
+    void terminate() { terminated = true; }
+    void add(JclStepOutcome outcome) { outcomes.add(outcome); }
+
+    public boolean anyAbend() { return outcomes.stream().anyMatch(JclStepOutcome::abended); }
+
+    // A name that called a procedure stands for all of its steps.
+    public Stream<JclStepOutcome> matching(String step) {
+        if (step == null) return outcomes.stream();
+        return outcomes.stream().filter(o -> o.step().equalsIgnoreCase(step)
+                || o.step().toUpperCase().startsWith(step.toUpperCase() + "."));
+    }
+
+    public boolean rc(String step, JclCompare op, int value) {
+        return matching(step).filter(o -> o.ran() && !o.abended() && o.returnCode() != null)
+                .mapToInt(JclStepOutcome::returnCode).max().stream().anyMatch(rc -> op.test(rc, value));
+    }
+
+    public boolean abendCc(String step, JclCompare op, String code) {
+        var wanted = normalize(code);
+        var codes = matching(step).filter(o -> o.abended() && o.abendCode() != null).map(o -> normalize(o.abendCode())).toList();
+        if (codes.isEmpty()) return false;
+        return op == JclCompare.NE ? codes.stream().noneMatch(wanted::equals) : codes.contains(wanted);
+    }
+
+    public boolean abended(String step) { return matching(step).anyMatch(JclStepOutcome::abended); }
+
+    public boolean ran(String step) { return matching(step).anyMatch(JclStepOutcome::ran); }
+
+    private static String normalize(String code) {
+        var c = code.trim().toUpperCase();
+        if (c.startsWith("U")) {
+            try { return String.format("U%04d", Integer.parseInt(c.substring(1))); } catch (NumberFormatException ignored) { }
+        }
+        return c;
+    }
+}
+//// FILE: DatasetCatalog.java
+// Generated from the estate's JCL. Rewritten on every run; do not edit.
+package {{Package}};
+
+import java.io.IOException;
+import java.nio.file.Path;
+
+public interface DatasetCatalog {
+    // A run keeps relative generations fixed, as a mainframe job does.
+    Path resolve(String runId, JclDd dd);
+    Path sysOutPath(String runId, String job, String step, String dd);
+    void delete(String runId, JclDd dd) throws IOException;
+    void endJob(String runId) throws IOException;
+}
+//// FILE: DirectoryDatasetCatalog.java
+// Generated from the estate's JCL. Rewritten on every run; do not edit.
+package {{Package}};
+
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
+import java.nio.file.Path;
+import java.util.Comparator;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
+
+// Datasets as files under one root: A.B.C is <root>/A.B.C, a member is a file inside it, and a
+// generation data group is a directory of G0001V00, G0002V00, ...
+public final class DirectoryDatasetCatalog implements DatasetCatalog {
+    private static final Pattern GENERATION_FILE = Pattern.compile("^G(\\d{4})V00$");
+    private final Path root;
+    private final Map<String, Integer> current = new ConcurrentHashMap<>();
+
+    public DirectoryDatasetCatalog(Path root) { this.root = root.toAbsolutePath().normalize(); }
+
+    @Override
+    public Path resolve(String runId, JclDd dd) {
+        if (dd.dataset() == null) throw new IllegalStateException("DD " + dd.name() + " names no dataset.");
+        if (dd.isTemporary()) return under(root.resolve(".temp").resolve(runId).resolve(name(dd.dataset().replaceFirst("^&+", ""))));
+        var path = root.resolve(name(dd.dataset()));
+        if (dd.generation() != null) path = path.resolve(generation(runId, dd.dataset(), path, dd.generation()));
+        if (dd.member() != null) path = path.resolve(name(dd.member()));
+        return under(path);
+    }
+
+    @Override
+    public Path sysOutPath(String runId, String job, String step, String dd) {
+        return under(root.resolve(".sysout").resolve(name(job)).resolve(runId).resolve(name(step) + "." + name(dd) + ".txt"));
+    }
+
+    @Override
+    public void delete(String runId, JclDd dd) throws IOException { deleteTree(resolve(runId, dd)); }
+
+    @Override
+    public void endJob(String runId) throws IOException {
+        deleteTree(root.resolve(".temp").resolve(runId));
+        current.keySet().removeIf(k -> k.startsWith(runId + "|"));
+    }
+
+    static void deleteTree(Path path) throws IOException {
+        if (!Files.exists(path)) return;
+        try (Stream<Path> walk = Files.walk(path)) {
+            for (var p : walk.sorted(Comparator.reverseOrder()).toList()) Files.delete(p);
+        }
+    }
+
+    private String generation(String runId, String name, Path directory, String relative) {
+        int now = current.computeIfAbsent(runId + "|" + name, k -> highest(directory));
+        int number = now + Integer.parseInt(relative.replace("+", ""));
+        if (number < 1) throw new UncheckedIOException(new NoSuchFileException(
+                name + "(" + relative + ") does not exist: the group has " + now + " generation(s)."));
+        return String.format("G%04dV00", number);
+    }
+
+    private static int highest(Path directory) {
+        if (!Files.isDirectory(directory)) return 0;
+        try (Stream<Path> files = Files.list(directory)) {
+            return files.map(f -> GENERATION_FILE.matcher(f.getFileName().toString()))
+                    .filter(java.util.regex.Matcher::matches).mapToInt(m -> Integer.parseInt(m.group(1))).max().orElse(0);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    // A name must stay one entry under the root: an empty one, or one of dots alone, would
+    // resolve to the root or its parent, which a DELETE would then remove.
+    private static String name(String name) {
+        var safe = name.replaceAll("[^A-Za-z0-9.$#@_-]", "_");
+        if (safe.replace(".", "").isEmpty()) throw new IllegalArgumentException("'" + name + "' is not a usable dataset name.");
+        return safe;
+    }
+
+    private Path under(Path path) {
+        var full = path.toAbsolutePath().normalize();
+        if (!full.startsWith(root) || full.equals(root)) throw new IllegalArgumentException(path + " is outside the dataset root " + root + ".");
+        return full;
+    }
+}
+//// FILE: BatchStepContext.java
+// Generated from the estate's JCL. Rewritten on every run; do not edit.
+package {{Package}};
+
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.SequenceInputStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
+
+public final class BatchStepContext {
+    private final String job;
+    private final String step;
+    private final String runId;
+    private final String programId;
+    private final String parm;
+    private final JclDb2Run db2;
+    private final Map<String, JclDd> dds = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+    private final List<String> controlStatements;
+    private final DatasetCatalog datasets;
+
+    public BatchStepContext(String job, String step, String runId, String programId, String parm, JclDb2Run db2,
+                            List<JclDd> dds, List<String> controlStatements, DatasetCatalog datasets) {
+        this.job = job;
+        this.step = step;
+        this.runId = runId;
+        this.programId = programId;
+        this.parm = parm;
+        this.db2 = db2;
+        for (var dd : dds) {
+            var name = dd.name();
+            this.dds.put(name.substring(name.lastIndexOf('.') + 1), dd);
+        }
+        this.controlStatements = controlStatements;
+        this.datasets = datasets;
+    }
+
+    public String job() { return job; }
+    public String step() { return step; }
+    public String programId() { return programId; }
+    public String parm() { return parm; }
+    public String db2Plan() { return db2 == null ? null : db2.plan(); }
+    public String db2Subsystem() { return db2 == null ? null : db2.subsystem(); }
+    public Map<String, JclDd> dds() { return Collections.unmodifiableMap(dds); }
+    public List<String> controlStatements() { return controlStatements; }
+
+    public boolean has(String dd) { return dds.containsKey(dd); }
+
+    public JclDd dd(String dd) {
+        var found = dds.get(dd);
+        if (found == null) throw new IllegalStateException("Step " + step + " of " + job + " has no DD " + dd + ".");
+        return found;
+    }
+
+    // The file behind a DD; null when it is DUMMY or in-stream.
+    public Path pathFor(String dd) { return pathFor(dd(dd)); }
+
+    public Path resolveDataset(String name) { return datasets.resolve(runId, JclDd.of("").dataset(name)); }
+
+    public List<String> inStream(String dd) {
+        var lines = dd(dd).inStream();
+        return lines == null ? List.of() : lines;
+    }
+
+    public InputStream openRead(String dd) throws IOException {
+        var first = dd(dd);
+        var parts = new ArrayList<InputStream>();
+        try {
+            parts.add(openOne(first));
+            for (var next : first.concatenated()) parts.add(openOne(next));
+        } catch (IOException | RuntimeException e) {
+            for (var opened : parts) {
+                try { opened.close(); } catch (IOException suppressed) { e.addSuppressed(suppressed); }
+            }
+            throw e;
+        }
+        return parts.size() == 1 ? parts.get(0) : new SequenceInputStream(Collections.enumeration(parts));
+    }
+
+    public OutputStream openWrite(String dd) throws IOException {
+        var target = dd(dd);
+        if (target.isDummy()) return OutputStream.nullOutputStream();
+        var path = pathFor(target);
+        if (path == null) throw new IllegalStateException("DD " + dd + " of step " + step + " is in-stream and cannot be written.");
+        Files.createDirectories(path.getParent());
+        return "MOD".equals(target.status()) || target.sysOut() != null
+                ? Files.newOutputStream(path, StandardOpenOption.CREATE, StandardOpenOption.APPEND)
+                : Files.newOutputStream(path);
+    }
+
+    Path pathFor(JclDd dd) {
+        if (dd.isDummy() || dd.inStream() != null) return null;
+        if (dd.sysOut() != null) return datasets.sysOutPath(runId, job, step, dd.name());
+        return dd.dataset() == null ? null : datasets.resolve(runId, dd);
+    }
+
+    private InputStream openOne(JclDd dd) throws IOException {
+        if (dd.isDummy()) return InputStream.nullInputStream();
+        if (dd.inStream() != null) {
+            var text = new StringBuilder();
+            for (var line : dd.inStream()) text.append(line).append('\n');
+            return new ByteArrayInputStream(text.toString().getBytes(StandardCharsets.UTF_8));
+        }
+        var path = pathFor(dd);
+        if (path == null) throw new IllegalStateException("DD " + dd.name() + " of step " + step + " has nothing to read.");
+        return Files.newInputStream(path);
+    }
+}
+//// FILE: JobUtilities.java
+// Generated from the estate's JCL. Rewritten on every run; do not edit.
+package {{Package}};
+
+public interface JobUtilities {
+    int run(String program, BatchStepContext context) throws Exception;
+}
+//// FILE: DefaultJobUtilities.java
+// Generated from the estate's JCL. Rewritten on every run; do not edit.
+package {{Package}};
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.regex.Pattern;
+
+// IEFBR14 and the IDCAMS commands that act on files: DELETE, REPRO, DEFINE and SET. Anything else
+// stops the job and names the utility, rather than pretending to have run it.
+public class DefaultJobUtilities implements JobUtilities {
+    private static final Pattern KEYWORD = Pattern.compile("\\b([A-Z]+)\\s*\\(\\s*([^()]*)\\)", Pattern.CASE_INSENSITIVE);
+    private static final Pattern SET = Pattern.compile("^(MAXCC|LASTCC)\\s*=\\s*(\\d+)$", Pattern.CASE_INSENSITIVE);
+
+    @Override
+    public int run(String program, BatchStepContext context) throws Exception {
+        switch (program.toUpperCase()) {
+            case "IEFBR14": return 0;
+            case "IDCAMS": return idcams(context);
+            default:
+                throw new JclStepNotRunnableException("Step " + context.step() + " runs " + program
+                        + ", which has no generated equivalent. Implement JobUtilities for it; "
+                        + "its control statements are in BatchStepContext.controlStatements().");
+        }
+    }
+
+    private static int idcams(BatchStepContext context) throws IOException {
+        int maxcc = 0, lastcc = 0;
+        for (var command : commands(context.controlStatements())) {
+            var verb = command.split(" ", 2)[0].toUpperCase();
+            var rest = command.length() > verb.length() ? command.substring(verb.length()).trim() : "";
+            switch (verb) {
+                case "DELETE", "DEL" -> {
+                    // DELETE ( A.B.C ) PURGE: the entry is the first word that is not a parenthesis.
+                    var name = java.util.Arrays.stream(rest.split("[\\s()]+")).filter(t -> !t.isEmpty()).findFirst().orElse("").replaceAll("^'+|'+$", "");
+                    if (name.isEmpty()) throw new JclStepNotRunnableException("Step " + context.step() + ": IDCAMS " + command + " names no entry.");
+                    var path = context.resolveDataset(name);
+                    if (Files.exists(path)) { DirectoryDatasetCatalog.deleteTree(path); lastcc = 0; } else lastcc = 8;
+                }
+                case "REPRO" -> {
+                    var arguments = arguments(rest);
+                    try (InputStream in = arguments.containsKey("INFILE") ? context.openRead(arguments.get("INFILE"))
+                                : Files.newInputStream(context.resolveDataset(required(arguments, "INDATASET", "IDS")));
+                         OutputStream out = arguments.containsKey("OUTFILE") ? context.openWrite(arguments.get("OUTFILE"))
+                                : create(context.resolveDataset(required(arguments, "OUTDATASET", "ODS")))) {
+                        in.transferTo(out);
+                    }
+                    lastcc = 0;
+                }
+                case "DEFINE", "DEF" -> {
+                    var defined = arguments(rest).get("NAME");
+                    if (defined == null) throw new JclStepNotRunnableException("Step " + context.step() + ": DEFINE without NAME: " + command);
+                    var target = context.resolveDataset(defined);
+                    if (rest.toUpperCase().startsWith("GDG")) Files.createDirectories(target);
+                    else if (!Files.exists(target)) create(target).close();
+                    lastcc = 0;
+                }
+                case "SET" -> {
+                    var assignment = SET.matcher(rest);
+                    if (!assignment.matches()) throw new JclStepNotRunnableException("Step " + context.step() + ": IDCAMS " + command + " is not supported.");
+                    var value = Integer.parseInt(assignment.group(2));
+                    if (assignment.group(1).equalsIgnoreCase("MAXCC")) { maxcc = value; continue; }
+                    lastcc = value;
+                }
+                default -> throw new JclStepNotRunnableException("Step " + context.step() + ": IDCAMS " + verb + " has no generated equivalent.");
+            }
+            maxcc = Math.max(maxcc, lastcc);
+        }
+        return maxcc;
+    }
+
+    private static OutputStream create(Path path) throws IOException {
+        Files.createDirectories(path.getParent());
+        return Files.newOutputStream(path);
+    }
+
+    private static String required(Map<String, String> arguments, String... keys) {
+        for (var key : keys) if (arguments.containsKey(key)) return arguments.get(key);
+        throw new JclStepNotRunnableException("REPRO needs " + String.join(" or ", keys) + ".");
+    }
+
+    private static Map<String, String> arguments(String text) {
+        var result = new HashMap<String, String>();
+        var matcher = KEYWORD.matcher(text);
+        while (matcher.find()) result.putIfAbsent(matcher.group(1).toUpperCase(), matcher.group(2).trim().replace("'", ""));
+        return result;
+    }
+
+    // A trailing '-' or '+' continues a command; /* ... */ is a comment.
+    private static List<String> commands(List<String> lines) {
+        var result = new ArrayList<String>();
+        var current = new StringBuilder();
+        for (var raw : lines) {
+            var line = raw.replaceAll("/\\*.*?\\*/", " ").trim();
+            if (line.isEmpty()) continue;
+            var continued = line.endsWith("-") || line.endsWith("+");
+            if (current.length() > 0) current.append(' ');
+            current.append(continued ? line.substring(0, line.length() - 1).trim() : line);
+            if (continued) continue;
+            result.add(current.toString());
+            current.setLength(0);
+        }
+        if (current.length() > 0) result.add(current.toString());
+        return result;
+    }
+}
+//// FILE: JclJobRunner.java
+// Generated from the estate's JCL. Rewritten on every run; do not edit.
+package {{Package}};
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
+// Runs a job the way z/OS does: IF/THEN/ELSE and COND decide each step, JOB COND ends the job,
+// and after an abend only steps that ask for it (COND=EVEN/ONLY, or IF testing ABEND) run.
+public final class JclJobRunner {
+    private final Map<String, BatchProgram> programs = new HashMap<>();
+    private final DatasetCatalog datasets;
+    private final JobUtilities utilities;
+
+    public JclJobRunner(List<BatchProgram> programs, DatasetCatalog datasets, JobUtilities utilities) {
+        for (var program : programs) {
+            if (this.programs.putIfAbsent(program.programId().toUpperCase(), program) != null)
+                throw new IllegalStateException("Two batch programs have the id " + program.programId() + ".");
+        }
+        this.datasets = datasets;
+        this.utilities = utilities == null ? new DefaultJobUtilities() : utilities;
+    }
+
+    public DatasetCatalog datasets() { return datasets; }
+
+    public static String newRunId() {
+        return LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS")) + "-" + UUID.randomUUID().toString().substring(0, 8);
+    }
+
+    public List<JclStepOutcome> run(JclJob job) throws IOException {
+        var state = new JclJobState(newRunId());
+        try {
+            for (var step : job.steps()) runStep(job, step, state);
+        } finally {
+            datasets.endJob(state.runId());
+        }
+        return state.outcomes();
+    }
+
+    // One step: decides whether it runs, runs it, and records the outcome in the state.
+    public JclStepOutcome runStep(JclJob job, JclStepDefinition step, JclJobState state) {
+        if (state.terminated() || !shouldRun(step, state)) {
+            var bypassed = new JclStepOutcome(step.name(), false, null, null, false, state.terminated() ? "JOB COND ended the job" : "bypassed");
+            state.add(bypassed);
+            return bypassed;
+        }
+        var outcome = execute(job, step, state.runId());
+        state.add(outcome);
+        if (!outcome.abended() && outcome.returnCode() != null && job.cond() != null
+                && job.cond().tests().stream().anyMatch(t -> t.op().test(t.code(), outcome.returnCode())))
+            state.terminate();
+        return outcome;
+    }
+
+    private static boolean shouldRun(JclStepDefinition step, JclJobState state) {
+        if (step.guardError() != null)
+            throw new JclStepNotRunnableException("Step " + step.name() + ": the condition could not be read: " + step.guardError());
+
+        var abended = state.anyAbend();
+        var cond = step.cond();
+        var asksForAbend = cond != null && (cond.even() || cond.only());
+        if (step.guard() != null) {
+            if (!step.guard().test(state)) return false;
+            if (abended && !step.guardTestsAbend() && !asksForAbend) return false;
+        } else if (abended && !asksForAbend) {
+            return false;
+        }
+
+        if (cond != null) {
+            if (cond.only() && !abended) return false;
+            for (var test : cond.tests()) {
+                var bypass = state.matching(test.step()).filter(o -> o.ran() && !o.abended() && o.returnCode() != null)
+                        .anyMatch(o -> test.op().test(test.code(), o.returnCode()));
+                if (bypass) return false;
+            }
+        }
+
+        if (step.kind() == JclStepKind.UNRESOLVED)
+            throw new JclStepNotRunnableException("Step " + step.name() + " calls procedure " + step.procedure()
+                    + ", which is not in the source. Add it and regenerate the job.");
+        return true;
+    }
+
+    private JclStepOutcome execute(JclJob job, JclStepDefinition step, String runId) {
+        try {
+            int rc;
+            switch (step.kind()) {
+                case PROGRAM -> rc = program(step.program()).run(context(job, step, runId, step.program(), step.parm(), null));
+                case TSO -> {
+                    rc = 0;
+                    for (var run : step.runs()) rc = program(run.program()).run(context(job, step, runId, run.program(), run.parms(), run));
+                }
+                default -> rc = utilities.run(step.program() == null ? "" : step.program(), context(job, step, runId, step.program(), step.parm(), null));
+            }
+            dispose(step, runId, true);
+            return new JclStepOutcome(step.name(), true, rc, null, false, null);
+        } catch (JclStepNotRunnableException e) {
+            throw e;
+        } catch (Exception e) {
+            try { dispose(step, runId, false); } catch (IOException | RuntimeException ignored) {
+                // Cleanup after an abend must not hide the abend.
+            }
+            return new JclStepOutcome(step.name(), true, null, e instanceof BatchAbendException b ? b.code() : null, true, e.getMessage());
+        }
+    }
+
+    private BatchProgram program(String id) {
+        var program = programs.get(id.toUpperCase());
+        if (program == null) throw new BatchAbendException("S806", "Program " + id + " was not found: no BatchProgram has that programId.");
+        return program;
+    }
+
+    private BatchStepContext context(JclJob job, JclStepDefinition step, String runId, String programId, String parm, JclDb2Run db2) {
+        return new BatchStepContext(job.name(), step.name(), runId, programId, parm, db2, step.dds(), step.controlStatements(), datasets);
+    }
+
+    // A new dataset the step kept exists afterwards even if the step never wrote it, as allocation
+    // does; DELETE removes it. Temporary datasets follow their disposition too, and whatever
+    // is left of them goes when the job ends.
+    private void dispose(JclStepDefinition step, String runId, boolean normal) throws IOException {
+        for (var first : step.dds()) {
+            for (var dd : java.util.stream.Stream.concat(java.util.stream.Stream.of(first), first.concatenated().stream()).toList()) {
+                if (dd.dataset() == null) continue;
+                var disposition = normal || dd.abnormalDisposition() == null ? dd.normalDisposition() : dd.abnormalDisposition();
+                if ("DELETE".equals(disposition)) { datasets.delete(runId, dd); continue; }
+                var status = dd.status() == null ? "NEW" : dd.status();
+                if (normal && status.equals("NEW") && dd.member() == null) {
+                    var path = datasets.resolve(runId, dd);
+                    if (!Files.exists(path)) {
+                        Files.createDirectories(path.getParent());
+                        Files.createFile(path);
+                    }
+                }
+            }
+        }
+    }
+}
+//// FILE: JclSpringBatch.java
+// Generated from the estate's JCL. Rewritten on every run; do not edit.
+package {{Package}};
+
+import org.springframework.batch.core.ExitStatus;
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobExecutionListener;
+import org.springframework.batch.core.Step;
+import org.springframework.batch.core.job.builder.JobBuilder;
+import org.springframework.batch.core.job.builder.SimpleJobBuilder;
+import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.step.builder.StepBuilder;
+import org.springframework.batch.repeat.RepeatStatus;
+import org.springframework.transaction.PlatformTransactionManager;
+
+import java.io.IOException;
+import java.io.UncheckedIOException;
+
+// One Spring Batch step per JCL step, in JCL order. Whether a step runs is decided by the JCL
+// rules in JclJobRunner, so a bypassed step completes with exit status BYPASSED rather than
+// being left out of the flow. The IF/COND state lives in the job's execution context.
+public final class JclSpringBatch {
+    public static final String STATE_KEY = "jcl.state";
+
+    private JclSpringBatch() { }
+
+    public static Job build(JclJob definition, JobRepository repository, PlatformTransactionManager transactions, JclJobRunner runner) {
+        SimpleJobBuilder flow = null;
+        for (var step : definition.steps()) {
+            var built = step(definition, step, repository, transactions, runner);
+            flow = flow == null ? new JobBuilder(definition.name(), repository).start(built) : flow.next(built);
+        }
+        if (flow == null) throw new IllegalStateException("Job " + definition.name() + " has no steps.");
+        return flow.listener(new JobExecutionListener() {
+            @Override
+            public void beforeJob(JobExecution execution) {
+                if (!execution.getExecutionContext().containsKey(STATE_KEY))
+                    execution.getExecutionContext().put(STATE_KEY, new JclJobState(JclJobRunner.newRunId()));
+            }
+
+            @Override
+            public void afterJob(JobExecution execution) {
+                var state = (JclJobState) execution.getExecutionContext().get(STATE_KEY);
+                if (state == null) return;
+                // Every step completes as far as Spring Batch knows, so the job's own outcome is
+                // carried in its exit status, as the scheduler would have read it off the job.
+                if (state.anyAbend()) execution.setExitStatus(new ExitStatus("ABENDED", "A step abended."));
+                else if (execution.getExitStatus().getExitCode().equals(ExitStatus.COMPLETED.getExitCode()))
+                    execution.setExitStatus(new ExitStatus(ExitStatus.COMPLETED.getExitCode(), "MAXCC=" + state.outcomes().stream()
+                            .filter(o -> o.returnCode() != null).mapToInt(JclStepOutcome::returnCode).max().orElse(0)));
+                try { runner.datasets().endJob(state.runId()); } catch (IOException e) { throw new UncheckedIOException(e); }
+            }
+        }).build();
+    }
+
+    private static Step step(JclJob definition, JclStepDefinition step, JobRepository repository,
+                             PlatformTransactionManager transactions, JclJobRunner runner) {
+        return new StepBuilder(definition.name() + "." + step.name(), repository)
+                .tasklet((contribution, chunk) -> {
+                    var context = chunk.getStepContext().getStepExecution().getJobExecution().getExecutionContext();
+                    var state = (JclJobState) context.get(STATE_KEY);
+                    var outcome = runner.runStep(definition, step, state);
+                    context.put(STATE_KEY, state);
+                    contribution.setExitStatus(!outcome.ran() ? new ExitStatus("BYPASSED")
+                            : outcome.abended() ? new ExitStatus("ABENDED", outcome.message())
+                            : new ExitStatus("COMPLETED", "RC=" + outcome.returnCode()));
+                    return RepeatStatus.FINISHED;
+                }, transactions)
+                .build();
+    }
+}
+//// FILE: JclJobsConfiguration.java
+// Generated from the estate's JCL. Rewritten on every run; do not edit.
+package {{Package}};
+
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.beans.factory.BeanFactory;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
+import org.springframework.beans.factory.support.BeanDefinitionRegistry;
+import org.springframework.beans.factory.support.BeanDefinitionRegistryPostProcessor;
+import org.springframework.beans.factory.support.RootBeanDefinition;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.ComponentScan;
+import org.springframework.context.annotation.Condition;
+import org.springframework.context.annotation.ConditionContext;
+import org.springframework.context.annotation.Conditional;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.FilterType;
+import org.springframework.core.type.AnnotatedTypeMetadata;
+import org.springframework.core.type.classreading.MetadataReader;
+import org.springframework.core.type.classreading.MetadataReaderFactory;
+import org.springframework.core.type.filter.TypeFilter;
+import org.springframework.transaction.PlatformTransactionManager;
+
+import java.nio.file.Path;
+import java.util.List;
+import java.util.Set;
+
+// Datasets resolve under jcl.datasets.root unless a DatasetCatalog bean says otherwise; utilities
+// default to DefaultJobUtilities unless a JobUtilities bean is supplied.
+@Configuration
+public class JclJobsConfiguration {
+    @Bean
+    public JclJobRunner jclJobRunner(List<BatchProgram> programs,
+                                     ObjectProvider<DatasetCatalog> catalog,
+                                     ObjectProvider<JobUtilities> utilities,
+                                     @Value("${jcl.datasets.root:}") String root) {
+        var datasets = catalog.getIfAvailable(() -> {
+            if (root.isBlank()) throw new IllegalStateException("Set jcl.datasets.root, or supply a DatasetCatalog bean.");
+            return new DirectoryDatasetCatalog(Path.of(root));
+        });
+        return new JclJobRunner(programs, datasets, utilities.getIfAvailable(DefaultJobUtilities::new));
+    }
+
+    // A Spring Batch Job bean per job in JclJobs, named after its class (nightly1Job for Nightly1Job), so a
+    // JobLauncher or spring.batch.job.name can start any of them by the JCL job name.
+    @Bean
+    public static BeanDefinitionRegistryPostProcessor jclJobBeans() {
+        return new BeanDefinitionRegistryPostProcessor() {
+            @Override
+            public void postProcessBeanDefinitionRegistry(BeanDefinitionRegistry registry) {
+                var beans = (BeanFactory) registry;
+                for (var job : JclJobs.all()) {
+                    var type = job.getClass().getSimpleName();
+                    registry.registerBeanDefinition(Character.toLowerCase(type.charAt(0)) + type.substring(1),
+                            new RootBeanDefinition(Job.class, () -> JclSpringBatch.build(job,
+                                    beans.getBean(JobRepository.class),
+                                    beans.getBean(PlatformTransactionManager.class),
+                                    beans.getBean(JclJobRunner.class))));
+                }
+            }
+
+            @Override
+            public void postProcessBeanFactory(ConfigurableListableBeanFactory factory) { }
+        };
+    }
+
+    // The converted programs are CDI beans. Spring registers the CDI-scoped classes under
+    // jcl.programs.package too, so the runner finds the batch programs and what they inject.
+    // Set jcl.programs.scan=false when the programs are already Spring beans.
+    @Configuration
+    @Conditional(ScanPrograms.class)
+    @ComponentScan(basePackages = "${jcl.programs.package:{{ProgramsPackage}}}",
+            includeFilters = @ComponentScan.Filter(type = FilterType.CUSTOM, classes = CdiBeans.class))
+    static class ProgramScan { }
+
+    static final class ScanPrograms implements Condition {
+        @Override
+        public boolean matches(ConditionContext context, AnnotatedTypeMetadata metadata) {
+            return !"false".equalsIgnoreCase(context.getEnvironment().getProperty("jcl.programs.scan", "true").trim());
+        }
+    }
+
+    static final class CdiBeans implements TypeFilter {
+        private static final Set<String> SCOPES = Set.of(
+                "jakarta.enterprise.context.ApplicationScoped",
+                "jakarta.enterprise.context.Dependent",
+                "jakarta.enterprise.context.RequestScoped",
+                "jakarta.inject.Singleton");
+
+        @Override
+        public boolean match(MetadataReader reader, MetadataReaderFactory factory) {
+            var metadata = reader.getAnnotationMetadata();
+            return metadata.isConcrete() && SCOPES.stream().anyMatch(metadata::hasAnnotation);
+        }
+    }
+}
+//// FILE: JclBatchApplication.java
+// Generated from the estate's JCL. Rewritten on every run; do not edit.
+package {{Package}};
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+// Runs one job: mvn spring-boot:run -Dspring-boot.run.arguments=--spring.batch.job.name=<JOB>
+// To run the jobs inside an application of your own, import JclJobsConfiguration there and
+// leave this class out.
+@SpringBootApplication
+public class JclBatchApplication {
+    public static void main(String[] args) {
+        System.exit(SpringApplication.exit(SpringApplication.run(JclBatchApplication.class, args)));
+    }
+}

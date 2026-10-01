@@ -7,6 +7,7 @@ using CobolToQuarkusMigration.Chunking;
 using CobolToQuarkusMigration.Chunking.Interfaces;
 using CobolToQuarkusMigration.Chunking.Models;
 using CobolToQuarkusMigration.Helpers;
+using CobolToQuarkusMigration.Jcl.Generation;
 using CobolToQuarkusMigration.Models;
 using CobolToQuarkusMigration.Persistence;
 using System.Text;
@@ -333,6 +334,7 @@ public class ChunkedMigrationProcess
 
             var allFiles = smallFileResults.Concat(assembledFiles).ToList();
             await SaveOutputFilesAsync(allFiles, outputFolder);
+            JclJobGeneration.Run(_settings.JclJobs, cobolSourceFolder, outputFolder, _settings.ApplicationSettings.TargetLanguage, _logger);
 
             // Same scaffolding as the unchunked path, so a run with a large program in it can be
             // compiled too. Chunk assembly concatenates per-chunk output, which is exactly where a

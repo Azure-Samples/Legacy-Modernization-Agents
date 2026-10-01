@@ -164,6 +164,8 @@ internal static class Program
 
         // Deterministic JCL job facts and dataset lineage.
         rootCommand.AddCommand(CobolToQuarkusMigration.Cli.JclFactsCommand.Build());
+        rootCommand.AddCommand(CobolToQuarkusMigration.Cli.JclJobsCommand.Build());
+        rootCommand.AddCommand(CobolToQuarkusMigration.Cli.JclProgramsCommand.Build());
 
         rootCommand.SetHandler(async (context) =>
         {
@@ -1329,6 +1331,17 @@ internal static class Program
         if (Environment.GetEnvironmentVariable("AI_EXHAUSTION_RETRY_MULTIPLIER") is { Length: > 0 } aiExMult
             && double.TryParse(aiExMult, NumberStyles.Float, CultureInfo.InvariantCulture, out var cemVal))
             modelProfile.ReasoningExhaustionRetryMultiplier = cemVal;
+
+        // The prompt injector is static and reads the environment, so the effective JCL job
+        // settings are published there once the overrides are applied.
+        var jclJobs = settings.JclJobs ??= new JclJobsSettings();
+        if (Environment.GetEnvironmentVariable(CobolToQuarkusMigration.Jcl.Generation.JclBatchPrograms.EnabledVariable) is { Length: > 0 } jclEnabled)
+            jclJobs.Enabled = !string.Equals(jclEnabled.Trim(), "false", StringComparison.OrdinalIgnoreCase);
+        if (Environment.GetEnvironmentVariable(CobolToQuarkusMigration.Jcl.Generation.JclBatchPrograms.SourceVariable) is { Length: > 0 } jclSource)
+            jclJobs.SourceFolder = jclSource;
+        Environment.SetEnvironmentVariable(CobolToQuarkusMigration.Jcl.Generation.JclBatchPrograms.EnabledVariable, jclJobs.Enabled ? "true" : "false");
+        if (!string.IsNullOrWhiteSpace(jclJobs.SourceFolder))
+            Environment.SetEnvironmentVariable(CobolToQuarkusMigration.Jcl.Generation.JclBatchPrograms.SourceVariable, jclJobs.SourceFolder);
 
         var compileGate = settings.CompileGate ??= new CompileGateSettings();
         if (Environment.GetEnvironmentVariable("COMPILE_REPAIR_MAX_ROUNDS") is { Length: > 0 } repairRounds

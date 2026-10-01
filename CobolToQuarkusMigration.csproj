@@ -23,6 +23,7 @@
     <Compile Remove="McpChatWeb\**\*.cs" />
     <Compile Remove="McpChatWeb.Tests\**\*.cs" />
     <Compile Remove="CobolToQuarkusMigration.Tests\**\*.cs" />
+    <EmbeddedResource Include="Jcl\Generation\Templates\*.txt" LogicalName="Jcl.Templates.%(Filename)%(Extension)" WithCulture="false" />
     <EmbeddedResource Remove="McpChatWeb\**\*" />
     <EmbeddedResource Remove="McpChatWeb.Tests\**\*" />
     <EmbeddedResource Remove="CobolToQuarkusMigration.Tests\**\*" />

@@ -132,7 +132,10 @@ public static class CSharpCompileGate
             var typeIndex = GeneratedTypeIndex.FromSources(sources);
             undo = new Dictionary<string, string>(StringComparer.Ordinal);
 
-            var (imported, toRepair) = CompileRepairPlanner.ImportUniqueNamespaces(outcome.Errors, typeIndex, sources);
+            // Generated .g.cs files are rewritten on every scaffold, so a repair to one would not last
+            // and would hide a generator defect: their errors are reported, never repaired.
+            var repairable = outcome.Errors.Where(e => !e.File.EndsWith(".g.cs", StringComparison.OrdinalIgnoreCase)).ToList();
+            var (imported, toRepair) = CompileRepairPlanner.ImportUniqueNamespaces(repairable, typeIndex, sources);
             foreach (var (file, text) in imported)
             {
                 undo[file] = sources[file];
@@ -141,7 +144,9 @@ public static class CSharpCompileGate
                 logger.LogInformation("[CompileGate] Round {Round}: imported a missing namespace in {File}", round, file);
             }
 
-            var tasks = CompileRepairPlanner.Plan(toRepair, typeIndex, sources, sharedNamespace, settings, cobolByName);
+            var tasks = CompileRepairPlanner.Plan(toRepair, typeIndex, sources, sharedNamespace, settings, cobolByName)
+                .Where(t => !t.File.EndsWith(".g.cs", StringComparison.OrdinalIgnoreCase))
+                .ToList();
 
             var repaired = imported.Count;
             var rejected = 0;

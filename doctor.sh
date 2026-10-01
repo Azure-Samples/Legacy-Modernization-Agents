@@ -114,9 +114,11 @@ show_usage() {
     echo -e "  ${GREEN}validate${NC}        Validate system requirements"
     echo -e "  ${GREEN}conversation${NC}    Generate conversation log from migration data"
     echo -e "  ${GREEN}programs${NC}        List convertible programs with size, parse fidelity and call counts"
+    echo -e "  ${GREEN}jcl${NC}             Generate jobs from the JCL alone, without a model, and show what each still needs"
     echo ""
     echo -e "${BOLD}Converting a subset:${NC}"
     echo -e "  ${GREEN}--program NAME${NC}       Convert only this program (repeatable, or comma-separated)"
+    echo -e "  ${GREEN}--job NAME${NC}           Convert the programs this JCL job runs (repeatable, or comma-separated)"
     echo -e "  ${GREEN}--include-callees${NC}    Also convert everything the selection CALLs"
     echo -e "  ${GREEN}--language L${NC}         Java or CSharp (skips the interactive prompt)"
     echo -e "  ${GREEN}--dry-run${NC}            Show what would convert, call no model"
@@ -127,9 +129,17 @@ show_usage() {
     echo -e "  quietly converting less than you asked for."
     echo ""
     echo -e "  ${CYAN}./doctor.sh programs${NC}"
-    echo -e "  ${CYAN}./doctor.sh run --program KYGHB005.cbl --language Java --dry-run${NC}"
-    echo -e "  ${CYAN}./doctor.sh convert-only --program KYGHB005.cbl --program KYGHB006.cbl${NC}"
-    echo -e "  ${CYAN}./doctor.sh run --program KYGHB005.cbl --include-callees --clean-output${NC}"
+    echo -e "  ${CYAN}./doctor.sh run --program PAYRB005.cbl --language Java --dry-run${NC}"
+    echo -e "  ${CYAN}./doctor.sh convert-only --program PAYRB005.cbl --program PAYRB006.cbl${NC}"
+    echo -e "  ${CYAN}./doctor.sh run --program PAYRB005.cbl --include-callees --clean-output${NC}"
+    echo ""
+    echo -e "${BOLD}JCL:${NC}"
+    echo -e "  Jobs are generated from the JCL in every conversion. ${GREEN}--job${NC} converts the programs a job"
+    echo -e "  runs, and what they CALL when the portal is up, so the job can run end to end."
+    echo ""
+    echo -e "  ${CYAN}./doctor.sh jcl --language CSharp${NC}                    jobs only: no model, seconds"
+    echo -e "  ${CYAN}./doctor.sh run --job NITEJ001 --language Java --dry-run${NC}"
+    echo -e "  ${CYAN}./doctor.sh convert-only --job NITEJ001,NITEJ002${NC}"
     echo
     echo -e "${BOLD}Cobol-REKT (deterministic static analysis):${NC}"
     echo -e "  ${GREEN}rekt-parse${NC}      Parse COBOL into ASTs/flowcharts under output/rekt/"
@@ -2049,6 +2059,8 @@ run_migration() {
         echo -e "${BLUE}ℹ️  Portal is still running at http://localhost:$DEFAULT_MCP_PORT for debugging${NC}"
         return $migration_exit
     fi
+
+    print_jcl_job_summary "$(current_run_output_dir)"
     
     # Ask if user wants to generate a migration report
     echo ""
@@ -2460,6 +2472,8 @@ run_conversion_only() {
         echo -e "${RED}❌ Conversion process failed (exit code $migration_exit). Skipping MCP web UI launch.${NC}"
         return $migration_exit
     fi
+
+    print_jcl_job_summary "$(current_run_output_dir)"
 
     local db_path
     if ! db_path="$(get_migration_db_path)" || [[ -z "$db_path" ]]; then
@@ -3681,6 +3695,7 @@ conversion_preflight() {
 # as in a full one.
 
 SELECTED_PROGRAMS=()
+SELECTED_JOBS=()
 INCLUDE_CALLEES=false
 DRY_RUN=false
 CLEAN_OUTPUT=false
@@ -3762,9 +3777,9 @@ validate_selection() {
     local unmatched=()
     local identity
     for identity in "${SELECTED_PROGRAMS[@]}"; do
-        if [[ -z "$(find "$REPO_ROOT/${COBOL_SOURCE_FOLDER:-source}" -path "*${identity}" -print -quit 2>/dev/null)" ]] \
-           && [[ -z "$(find "$REPO_ROOT/${COBOL_SOURCE_FOLDER:-source}" -name "${identity}" -print -quit 2>/dev/null)" ]] \
-           && [[ -z "$(find "$REPO_ROOT/${COBOL_SOURCE_FOLDER:-source}" -name "${identity}.*" -print -quit 2>/dev/null)" ]]; then
+        if [[ -z "$(find -L "$REPO_ROOT/${COBOL_SOURCE_FOLDER:-source}" -path "*${identity}" -print -quit 2>/dev/null)" ]] \
+           && [[ -z "$(find -L "$REPO_ROOT/${COBOL_SOURCE_FOLDER:-source}" -name "${identity}" -print -quit 2>/dev/null)" ]] \
+           && [[ -z "$(find -L "$REPO_ROOT/${COBOL_SOURCE_FOLDER:-source}" -name "${identity}.*" -print -quit 2>/dev/null)" ]]; then
             unmatched+=("$identity")
         fi
     done
@@ -3776,6 +3791,213 @@ validate_selection() {
         return 1
     fi
     return 0
+}
+
+# ── JCL ─────────────────────────────────────────────────────────────────────
+
+# Where the JCL is: JCL_SOURCE_FOLDER when set, else the COBOL source folder, as the conversion reads it.
+jcl_source_dir() {
+    local dir="${JCL_SOURCE_FOLDER:-${COBOL_SOURCE_FOLDER:-source}}"
+    [[ "$dir" == /* ]] || dir="$REPO_ROOT/$dir"
+    printf '%s' "$dir"
+}
+
+current_run_output_dir() {
+    local dir
+    if [[ "$TARGET_LANGUAGE" == "Java" ]]; then dir="${JAVA_OUTPUT_FOLDER:-}"; else dir="${CSHARP_OUTPUT_FOLDER:-}"; fi
+    [[ -z "$dir" ]] && return 0
+    [[ "$dir" == /* ]] || dir="$REPO_ROOT/$dir"
+    printf '%s' "$dir"
+}
+
+# The COBOL source of a program id, source-relative, or nothing when the estate does not have it.
+program_source_for() {
+    local root="$REPO_ROOT/${COBOL_SOURCE_FOLDER:-source}"
+    local found
+    found=$(find -L "$root" \( -name .rekt-staging -o -name .preprocessed \) -prune -o \
+        -type f \( -iname "$1.cbl" -o -iname "$1.cob" \) -print -quit 2>/dev/null)
+    [[ -n "$found" ]] && printf '%s' "${found#"$root"/}"
+}
+
+# Turns --job into the programs those jobs run, read by the same parser that generates the jobs.
+# A program with no source is reported rather than selected: selecting it would stop the run,
+# and the job's step for it abends S806 until its source is added.
+resolve_job_selection() {
+    local jobs_arg errors listing
+    jobs_arg="$(IFS=','; echo "${SELECTED_JOBS[*]}")"
+    errors="$(mktemp)"
+    # The CLI writes start-up lines to stdout; the result is the tab-separated lines.
+    if ! listing=$(cd "$REPO_ROOT" && "$DOTNET_CMD" run --project CobolToQuarkusMigration.csproj -- \
+            jcl-programs "$(jcl_source_dir)" --jobs "$jobs_arg" 2>"$errors"); then
+        echo -e "${RED}❌ Could not resolve --job:${NC}"
+        grep -v '^\s*$' "$errors" | tail -5 | sed 's/^/   /'
+        echo -e "   Run ${GREEN}./doctor.sh jcl${NC} to list the jobs in the source."
+        rm -f "$errors"
+        return 1
+    fi
+    rm -f "$errors"
+
+    local job file programs program rel missing=0 added=0 existing known
+    echo -e "${CYAN}🧾 Jobs: ${#SELECTED_JOBS[@]} selected${NC}"
+    while IFS=$'\t' read -r job file programs; do
+        echo -e "  ${BOLD}$job${NC}  $file"
+        if [[ -z "$programs" ]]; then
+            echo -e "    runs utilities only, no estate programs"
+            continue
+        fi
+        IFS=',' read -ra _progs <<< "$programs"
+        for program in "${_progs[@]}"; do
+            rel="$(program_source_for "$program")"
+            if [[ -z "$rel" ]]; then
+                echo -e "    ${YELLOW}✗ $program${NC}  not in the source: its step abends S806 until it is added"
+                missing=$((missing + 1))
+                continue
+            fi
+            echo -e "    ${GREEN}✓ $program${NC}  $rel"
+            known=false
+            for existing in "${SELECTED_PROGRAMS[@]}"; do
+                [[ "$existing" == "$rel" ]] && known=true && break
+            done
+            if [[ "$known" == "false" ]]; then
+                SELECTED_PROGRAMS+=("$rel")
+                added=$((added + 1))
+            fi
+        done
+    done < <(printf '%s\n' "$listing" | grep $'\t')
+
+    if [[ ${#SELECTED_PROGRAMS[@]} -eq 0 ]]; then
+        echo -e "${RED}❌ None of the programs these jobs run is in the source, so there is nothing to convert.${NC}"
+        echo -e "   Add their COBOL to source/, or generate the jobs alone with ${GREEN}./doctor.sh jcl${NC}."
+        return 1
+    fi
+    [[ $missing -gt 0 ]] && echo -e "  ${YELLOW}$missing program(s) are not in the source and will not be converted.${NC}"
+    return 0
+}
+
+# Per job, what it still needs before it runs end to end, read from the jobs-manifest.json in a
+# run folder. Limited to --job when given.
+print_jcl_job_summary() {
+    local manifest="${1:-}/jobs-manifest.json"
+    [[ -n "${1:-}" && -f "$manifest" ]] || return 0
+    "$PYTHON_CMD" - "$manifest" "$(IFS=','; echo "${SELECTED_JOBS[*]}")" <<'PYEOF'
+import json, os, re, sys
+
+entries = json.load(open(sys.argv[1]))
+typed = {n.strip().lower(): n.strip() for n in sys.argv[2].split(",") if n.strip()}
+wanted = set(typed)
+
+def names(e):
+    # A repeated job name runs as NAME_2; the member name is what the source folder shows.
+    job = e["job"].lower()
+    return {job, re.sub(r"_\d+$", "", job), os.path.splitext(os.path.basename(e["file"]))[0].lower()}
+
+if wanted:
+    for name in sorted(wanted - set().union(*(names(e) for e in entries))):
+        print(f"⚠️  No JCL job is named {typed[name]}.")
+    entries = [e for e in entries if names(e) & wanted]
+
+ready = 0
+print()
+print(f"🧾 JCL jobs ({len(entries)}): see {sys.argv[1]}")
+for e in entries:
+    missing, blocked = e.get("programsMissing") or [], e.get("stepsNotRunnable") or []
+    if not missing and not blocked:
+        ready += 1
+        count = len(e.get("programs") or [])
+        print(f"  ✅ {e['job']:<10} " + (f"all {count} program(s) converted" if count else "runs utilities only, every step runnable"))
+        continue
+    programs = e.get("programs") or []
+    print(f"  ⚠️  {e['job']:<10} " + "; ".join(filter(None, [
+        (f"{len(e.get('programsImplemented') or [])}/{len(programs)} program(s) converted"
+         + (f", not yet: {', '.join(missing)}" if missing else "")) if programs else "runs utilities only",
+        f"{len(blocked)} step(s) cannot run (procedure missing or condition unreadable)" if blocked else "",
+    ])))
+print(f"  {ready} of {len(entries)} job(s) have every program and step they need.")
+if ready < len(entries):
+    print("  A missing procedure or INCLUDE member is named in the manifest's diagnostics: add it to the source.")
+print("  Utilities other than IEFBR14 and IDCAMS (a sort, a Db2 unload) stop the job until implemented: docs/jcl-jobs.md")
+PYEOF
+}
+
+# Jobs from the JCL alone: parse, generate, and for C# build, without a model. The jobs run the
+# converted programs, so this shows what a conversion would give the jobs and what they still lack.
+run_jcl_jobs() {
+    echo -e "${BLUE}🧾 JCL jobs (no model)${NC}"
+    echo "=============================================="
+
+    local jcl_dir
+    jcl_dir="$(jcl_source_dir)"
+    if [[ -z "$(find -L "$jcl_dir" -type f -iname '*.jcl' -print -quit 2>/dev/null)" ]]; then
+        echo -e "${YELLOW}⚠️  No .jcl files under $jcl_dir.${NC}"
+        echo -e "   Put the JCL, with its procedures and INCLUDE members, under source/ (or set JCL_SOURCE_FOLDER)."
+        return 1
+    fi
+
+    if [[ -z "${TARGET_LANGUAGE:-}" ]]; then
+        echo "🎯 Select Target Language"
+        echo "  1) Java (Spring Batch)"
+        echo "  2) C# (.NET)"
+        read -p "Enter choice (1 or 2) [default: 1]: " lang_choice
+        if [[ "$(echo "$lang_choice" | tr -d '[:space:]')" == "2" ]]; then
+            export TARGET_LANGUAGE="CSharp"
+        else
+            export TARGET_LANGUAGE="Java"
+        fi
+    fi
+    export_run_output_folder
+    local run_dir
+    run_dir="$(current_run_output_dir)"
+
+    echo -e "${BLUE}Parsing JCL → output/rekt/${NC}"
+    if ! (set -o pipefail; cd "$REPO_ROOT" && "$DOTNET_CMD" run --project CobolToQuarkusMigration.csproj -- \
+            jcl-facts "$jcl_dir" --output-dir "$REPO_ROOT/output/rekt" 2>&1 | grep -E '^jcl-facts:|rror'); then
+        echo -e "${RED}❌ jcl-facts failed.${NC}"
+        return 1
+    fi
+
+    echo -e "${BLUE}Generating jobs → ${run_dir#"$REPO_ROOT"/}${NC}"
+    if ! (set -o pipefail; cd "$REPO_ROOT" && "$DOTNET_CMD" run --project CobolToQuarkusMigration.csproj --no-build -- \
+            jcl-jobs "$jcl_dir" --language "$TARGET_LANGUAGE" --output-dir "$run_dir" 2>&1 | grep -E '^jcl-jobs:|rror'); then
+        echo -e "${RED}❌ jcl-jobs failed.${NC}"
+        return 1
+    fi
+
+    if [[ "$TARGET_LANGUAGE" == "CSharp" ]]; then
+        echo -e "${BLUE}Building the generated jobs${NC}"
+        local build_log
+        build_log="$(mktemp)"
+        if (cd "$run_dir" && "$DOTNET_CMD" build -v q -nologo > "$build_log" 2>&1); then
+            echo -e "  ${GREEN}✅ Compiles${NC}"
+        else
+            echo -e "  ${RED}❌ Does not compile:${NC}"
+            grep -E ' error ' "$build_log" | head -10 | sed 's/^/   /'
+            rm -f "$build_log"
+            return 1
+        fi
+        rm -f "$build_log"
+    elif command -v mvn >/dev/null 2>&1; then
+        echo -e "${BLUE}Building the generated jobs (mvn compile)${NC}"
+        local build_log
+        build_log="$(mktemp)"
+        if (cd "$run_dir" && mvn -q -B compile > "$build_log" 2>&1); then
+            echo -e "  ${GREEN}✅ Compiles${NC}"
+            echo -e "  Run a job: ${CYAN}(cd $run_dir && mvn spring-boot:run -Dspring-boot.run.arguments=--spring.batch.job.name=<JOB>)${NC}"
+        else
+            echo -e "  ${RED}❌ Does not compile:${NC}"
+            grep -E 'ERROR' "$build_log" | head -10 | sed 's/^/   /'
+            rm -f "$build_log"
+            return 1
+        fi
+        rm -f "$build_log"
+    else
+        echo -e "  ${BLUE}Maven not found, so the jobs were not compiled. Build them with: (cd $run_dir && mvn compile)${NC}"
+    fi
+
+    print_jcl_job_summary "$run_dir"
+    echo ""
+    echo -e "${BOLD}Next:${NC} convert the programs the jobs run, so each step has its program and the converter"
+    echo -e "is told the batch-program contract the job runner calls:"
+    echo -e "  ${CYAN}./doctor.sh run --job <JOB> --language $TARGET_LANGUAGE${NC}   (or every job: ./doctor.sh run)"
 }
 
 # Two runs writing to one output directory interleave their files, and the result
@@ -3855,6 +4077,17 @@ main() {
                     [[ -n "$_n" ]] && SELECTED_PROGRAMS+=("$_n")
                 done
                 shift 2 ;;
+            --job|--jobs)
+                if [[ -z "${2:-}" ]]; then
+                    echo -e "${RED}❌ $1 requires a JCL job or member name${NC}"; exit 1
+                fi
+                IFS=',' read -ra _names <<< "$2"
+                local _j
+                for _j in "${_names[@]}"; do
+                    _j="$(echo "$_j" | xargs)"
+                    [[ -n "$_j" ]] && SELECTED_JOBS+=("$_j")
+                done
+                shift 2 ;;
             --include-callees)
                 INCLUDE_CALLEES=true; shift ;;
             --dry-run)
@@ -3877,9 +4110,26 @@ main() {
     done
     set -- "${positional[@]}"
 
+    local job_callees=false
+    if [[ ${#SELECTED_JOBS[@]} -gt 0 && "${1:-}" != "jcl" ]]; then
+        resolve_job_selection || exit 1
+        # A job runs end to end only if the programs its programs CALL are converted too, so
+        # --job takes the call closure whenever the portal can supply it.
+        if [[ "$INCLUDE_CALLEES" != "true" ]]; then
+            if portal_is_up; then
+                job_callees=true
+            else
+                echo -e "  ${YELLOW}⚠️  Programs these call are not added: the portal is not running.${NC}"
+                echo -e "     Start it with ${GREEN}./doctor.sh portal${NC} to include them, or ignore this if they call nothing."
+            fi
+        fi
+    fi
+
     if [[ ${#SELECTED_PROGRAMS[@]} -gt 0 ]]; then
         if [[ "$INCLUDE_CALLEES" == "true" ]]; then
             require_portal_for_selection || exit 1
+            expand_callees
+        elif [[ "$job_callees" == "true" ]]; then
             expand_callees
         fi
         validate_selection || exit 1
@@ -3902,6 +4152,9 @@ main() {
         "convert-only"|"conversion-only"|"convert")
             conversion_preflight
             run_conversion_only
+            ;;
+        "jcl"|"jcl-jobs")
+            run_jcl_jobs
             ;;
         "programs"|"list-programs")
             run_program_list

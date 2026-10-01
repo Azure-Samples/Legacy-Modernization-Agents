@@ -4,7 +4,7 @@
 
 The JCL parser reads every job in `source/` and records what it runs, which datasets it reads and writes, and the conditions each step runs under. It is deterministic: no model is involved, and anything it cannot resolve from the source is reported rather than guessed.
 
-The portal's Service Chain view reads jobs through it, and later conversion stages use the facts it writes.
+The portal's Service Chain view reads jobs through it, and conversion turns each job into runnable code over the converted programs: see [Jobs generated from JCL](jcl-jobs.md).
 
 ## Running it
 
