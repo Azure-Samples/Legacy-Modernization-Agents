@@ -266,7 +266,9 @@ public static class RektPromptInjector
                         logger?.LogInformation("[RektPromptInjector] Injected the batch-program contract for {File}", fileName);
                     }
                 }
-                catch (Exception ex)
+                // Reading and parsing the estate's JCL; anything else reaches the outer catch.
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+                                               or InvalidOperationException or FormatException or ArgumentException)
                 {
                     logger?.LogWarning("[RektPromptInjector] Batch-program contract injection failed for {File}: {Msg}", fileName, ex.Message);
                 }

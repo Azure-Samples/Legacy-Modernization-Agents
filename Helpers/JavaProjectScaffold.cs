@@ -63,15 +63,14 @@ public static class JavaProjectScaffold
     public static IReadOnlyList<JavaDependency> Detect(string runFolder)
     {
         var found = new List<JavaDependency>();
-        foreach (var file in Directory.EnumerateFiles(runFolder, "*.java", SearchOption.AllDirectories))
+        foreach (var file in Directory.EnumerateFiles(runFolder, "*.java", SearchOption.AllDirectories)
+                     .Where(f => Path.GetRelativePath(runFolder, f).Split(Path.DirectorySeparatorChar)[0] != "target"))
         {
-            if (Path.GetRelativePath(runFolder, file).Split(Path.DirectorySeparatorChar)[0] == "target") continue;
             string text;
             try { text = File.ReadAllText(file); }
             catch (IOException) { continue; }
-            foreach (var dependency in Known)
-                if (!found.Contains(dependency) && text.Contains("import " + dependency.ImportPrefix + ".", StringComparison.Ordinal))
-                    found.Add(dependency);
+            found.AddRange(Known.Where(d => !found.Contains(d)
+                && text.Contains("import " + d.ImportPrefix + ".", StringComparison.Ordinal)));
         }
         return found;
     }

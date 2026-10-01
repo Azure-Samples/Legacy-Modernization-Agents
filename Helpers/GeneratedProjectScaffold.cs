@@ -149,9 +149,9 @@ public static class GeneratedProjectScaffold
 
     private static void StripDeclarations(string runFolder, IReadOnlyCollection<string> names)
     {
-        foreach (var file in Directory.EnumerateFiles(runFolder, "*.cs", SearchOption.AllDirectories))
+        foreach (var file in Directory.EnumerateFiles(runFolder, "*.cs", SearchOption.AllDirectories)
+                     .Where(f => !f.EndsWith(".g.cs", StringComparison.OrdinalIgnoreCase) && !IsBuildOutput(runFolder, f)))
         {
-            if (file.EndsWith(".g.cs", StringComparison.OrdinalIgnoreCase) || IsBuildOutput(runFolder, file)) continue;
             var text = File.ReadAllText(file);
             var stripped = GeneratedInterfaceDeclarations.RemoveFrom(text, names);
             if (text != stripped) File.WriteAllText(file, stripped);
