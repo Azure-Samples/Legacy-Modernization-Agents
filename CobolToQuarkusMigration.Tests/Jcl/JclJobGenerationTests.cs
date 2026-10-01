@@ -206,7 +206,10 @@ public class JclJobGenerationTests
 
         var java = JclJobWriter.Write(plans, "Java", "x.jobs").Single(f => f.RelativePath == "x/jobs/JJob.java").Content;
         java.Should().Contain(".guard(s -> (s.rc(\"S1\", JclCompare.GT, 4) || s.abendCc(\"S1\", JclCompare.EQ, \"U0100\")), true)");
-        JclJobWriter.Write(plans, "Java", "x.jobs").Should().Contain(f => f.RelativePath == "x/jobs/JJobConfiguration.java");
+        var javaFiles = JclJobWriter.Write(plans, "Java", "x.jobs");
+        javaFiles.Should().NotContain(f => f.RelativePath.EndsWith("JobConfiguration.java"));
+        javaFiles.Single(f => f.RelativePath == "x/jobs/JclJobs.java").Content.Should().Contain("new JJob()");
+        javaFiles.Should().NotContain(f => f.RelativePath.EndsWith("Test.java"));
     }
 
     [Fact]

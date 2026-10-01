@@ -129,17 +129,17 @@ show_usage() {
     echo -e "  quietly converting less than you asked for."
     echo ""
     echo -e "  ${CYAN}./doctor.sh programs${NC}"
-    echo -e "  ${CYAN}./doctor.sh run --program KYGHB005.cbl --language Java --dry-run${NC}"
-    echo -e "  ${CYAN}./doctor.sh convert-only --program KYGHB005.cbl --program KYGHB006.cbl${NC}"
-    echo -e "  ${CYAN}./doctor.sh run --program KYGHB005.cbl --include-callees --clean-output${NC}"
+    echo -e "  ${CYAN}./doctor.sh run --program PAYRB005.cbl --language Java --dry-run${NC}"
+    echo -e "  ${CYAN}./doctor.sh convert-only --program PAYRB005.cbl --program PAYRB006.cbl${NC}"
+    echo -e "  ${CYAN}./doctor.sh run --program PAYRB005.cbl --include-callees --clean-output${NC}"
     echo ""
     echo -e "${BOLD}JCL:${NC}"
     echo -e "  Jobs are generated from the JCL in every conversion. ${GREEN}--job${NC} converts the programs a job"
     echo -e "  runs, and what they CALL when the portal is up, so the job can run end to end."
     echo ""
     echo -e "  ${CYAN}./doctor.sh jcl --language CSharp${NC}                    jobs only: no model, seconds"
-    echo -e "  ${CYAN}./doctor.sh run --job EYGHJ001 --language Java --dry-run${NC}"
-    echo -e "  ${CYAN}./doctor.sh convert-only --job EYGHJ001,EYGHJ002${NC}"
+    echo -e "  ${CYAN}./doctor.sh run --job NITEJ001 --language Java --dry-run${NC}"
+    echo -e "  ${CYAN}./doctor.sh convert-only --job NITEJ001,NITEJ002${NC}"
     echo
     echo -e "${BOLD}Cobol-REKT (deterministic static analysis):${NC}"
     echo -e "  ${GREEN}rekt-parse${NC}      Parse COBOL into ASTs/flowcharts under output/rekt/"
@@ -3975,8 +3975,22 @@ run_jcl_jobs() {
             return 1
         fi
         rm -f "$build_log"
+    elif command -v mvn >/dev/null 2>&1; then
+        echo -e "${BLUE}Building the generated jobs (mvn compile)${NC}"
+        local build_log
+        build_log="$(mktemp)"
+        if (cd "$run_dir" && mvn -q -B compile > "$build_log" 2>&1); then
+            echo -e "  ${GREEN}✅ Compiles${NC}"
+            echo -e "  Run a job: ${CYAN}(cd $run_dir && mvn spring-boot:run -Dspring-boot.run.arguments=--spring.batch.job.name=<JOB>)${NC}"
+        else
+            echo -e "  ${RED}❌ Does not compile:${NC}"
+            grep -E 'ERROR' "$build_log" | head -10 | sed 's/^/   /'
+            rm -f "$build_log"
+            return 1
+        fi
+        rm -f "$build_log"
     else
-        echo -e "  ${BLUE}Java has no build file of its own here; add the jobs package to a Spring Batch application (docs/jcl-jobs.md).${NC}"
+        echo -e "  ${BLUE}Maven not found, so the jobs were not compiled. Build them with: (cd $run_dir && mvn compile)${NC}"
     fi
 
     print_jcl_job_summary "$run_dir"

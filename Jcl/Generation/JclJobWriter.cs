@@ -92,6 +92,8 @@ public static class JclJobWriter
             File.WriteAllText(path, file.Content);
         }
         File.WriteAllText(manifest, Manifest(plans, ImplementedPrograms(outputRoot, targetLanguage)));
+        // C# gets its project file from the conversion's scaffold; the Spring Boot build is the jobs'.
+        if (!csharp) JavaProjectScaffold.Write(outputRoot, ConversionNamespacePolicy.Root("Java"), ns + ".JclBatchApplication");
         return plans.Count;
     }
 
@@ -262,10 +264,21 @@ public static class JclJobWriter
         foreach (var (name, content) in SplitJavaTemplate(Template("JclJobRuntime.java.txt").Replace("{{Package}}", package).Replace("{{ProgramsPackage}}", ConversionNamespacePolicy.Root("Java"))))
             files.Add(new(dir + name, content));
         foreach (var plan in plans)
-        {
             files.Add(new(dir + plan.TypeName + "Job.java", JavaJob(plan, package)));
-            files.Add(new(dir + plan.TypeName + "JobConfiguration.java", JavaConfiguration(plan, package)));
-        }
+
+        var sb = new StringBuilder();
+        sb.Append(Header("//"));
+        sb.Append("package ").Append(package).Append(";\n\n");
+        sb.Append("import java.util.List;\n\n");
+        sb.Append("public final class JclJobs {\n");
+        sb.Append("    private static final List<JclJob> ALL = List.of(");
+        sb.Append(string.Join(",", plans.Select(p => "\n            new " + p.TypeName + "Job()")));
+        sb.Append(");\n\n    private JclJobs() { }\n\n");
+        sb.Append("    public static List<JclJob> all() { return ALL; }\n\n");
+        sb.Append("    public static JclJob find(String name) {\n");
+        sb.Append("        return ALL.stream().filter(j -> j.name().equalsIgnoreCase(name)).findFirst().orElse(null);\n");
+        sb.Append("    }\n}\n");
+        files.Add(new(dir + "JclJobs.java", sb.ToString()));
         return files;
     }
 
@@ -351,27 +364,8 @@ public static class JclJobWriter
 
     private static string JavaCond(JclCondParameter? cond) => cond is null ? "null" :
         "new JclCond(List.of(" + string.Join(", ", cond.Tests.Select(t =>
-            $"new JclCondTest({t.Code.ToString(CultureInfo.InvariantCulture)}, JclCompare.{t.Op.ToString().ToUpperInvariant()}, {Str(t.Step)})"))
+            $"new JclCondCheck({t.Code.ToString(CultureInfo.InvariantCulture)}, JclCompare.{t.Op.ToString().ToUpperInvariant()}, {Str(t.Step)})"))
         + "), " + (cond.Even ? "true" : "false") + ", " + (cond.Only ? "true" : "false") + ")";
-
-    private static string JavaConfiguration(JclJobPlan plan, string package)
-    {
-        var bean = char.ToLowerInvariant(plan.TypeName[0]) + plan.TypeName[1..] + "Job";
-        var sb = new StringBuilder();
-        sb.Append(Header("//"));
-        sb.Append("package ").Append(package).Append(";\n\n");
-        sb.Append("import org.springframework.batch.core.Job;\n");
-        sb.Append("import org.springframework.batch.core.repository.JobRepository;\n");
-        sb.Append("import org.springframework.context.annotation.Bean;\n");
-        sb.Append("import org.springframework.context.annotation.Configuration;\n");
-        sb.Append("import org.springframework.transaction.PlatformTransactionManager;\n\n");
-        sb.Append("@Configuration\npublic class ").Append(plan.TypeName).Append("JobConfiguration {\n");
-        sb.Append("    @Bean\n    public Job ").Append(bean)
-            .Append("(JobRepository repository, PlatformTransactionManager transactions, JclJobRunner runner) {\n");
-        sb.Append("        return JclSpringBatch.build(new ").Append(plan.TypeName).Append("Job(), repository, transactions, runner);\n");
-        sb.Append("    }\n}\n");
-        return sb.ToString();
-    }
 
     // Both languages share the operators and the call shape; only case differs.
     private static string Guard(JclExpr expression, bool csharp) => expression switch

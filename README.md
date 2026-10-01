@@ -25,7 +25,7 @@ The migration uses Microsoft Agent Framework with a multi-provider architecture 
 >
 > | Command | What it does |
 > |---|---|
-> | `./doctor.sh jcl --language CSharp` (or `Java`) | **JCL only, no model, seconds**: generates one job per JCL job into `output/<language>/<run>/`, compiles C#, and lists per job which programs and procedures are still missing |
+> | `./doctor.sh jcl --language CSharp` (or `Java`) | **JCL only, no model, seconds**: generates one job per JCL job into `output/<language>/<run>/`, compiles it (`dotnet build`, or `mvn compile` for Java), and lists per job which programs and procedures are still missing |
 > | `./doctor.sh run --job NAME --language CSharp` | **Job plus its programs**: converts the COBOL programs the job runs (add `--dry-run` to preview them), then generates the job so it can run end to end |
 >
 > See [JCL](#jcl) for details.
@@ -242,7 +242,7 @@ JCL does not go through REKT (REKT parses COBOL only). It is read by a built-in 
 
 | Command | What happens to the JCL |
 |---|---|
-| `./doctor.sh jcl` | Parses the JCL and generates one job per JCL job into a new run folder, without converting anything. C# is compiled to check it. Lists, per job, the programs not yet converted and the steps that cannot run, usually because a procedure is missing from the source. Takes seconds and calls no model. |
+| `./doctor.sh jcl` | Parses the JCL and generates one job per JCL job into a new run folder, without converting anything, and compiles them (C# with dotnet, Java with Maven when installed). Lists, per job, the programs not yet converted and the steps that cannot run, usually because a procedure is missing from the source. Takes seconds and calls no model. |
 | `./doctor.sh run --job NAME` | Converts the programs that job runs, and what they CALL when the portal is up, then generates the jobs. Each of those programs is converted with the batch-program contract, so the job runner can call it. A program the job runs that is not in the source is listed, not converted. |
 | `./doctor.sh run` / `convert-only` | The same, for every program. Jobs are generated for every JCL job. |
 | `./doctor.sh rekt` / `rekt-full` | Also writes a facts file per job and the dataset lineage between jobs to `output/rekt/` (`*.job.json`, `jcl-lineage.json`). The portal's Service Chain uses them. |
@@ -251,8 +251,8 @@ To convert a batch application so that it runs, convert the programs together wi
 
 ```bash
 ./doctor.sh jcl --language CSharp                          # what the jobs need
-./doctor.sh run --job EYGHJ001 --language CSharp --dry-run  # which programs that converts
-./doctor.sh run --job EYGHJ001 --language CSharp            # convert them, with the job
+./doctor.sh run --job NITEJ001 --language CSharp --dry-run  # which programs that converts
+./doctor.sh run --job NITEJ001 --language CSharp            # convert them, with the job
 ```
 
 Turn job generation off with `JCL_JOBS_ENABLED=false`. If the JCL lives outside `source/`, point to it with `JCL_SOURCE_FOLDER`. To run the parser or the generator without `doctor.sh`:
@@ -260,7 +260,7 @@ Turn job generation off with `JCL_JOBS_ENABLED=false`. If the JCL lives outside 
 ```bash
 dotnet run -- jcl-facts source --output-dir output/rekt
 dotnet run -- jcl-jobs source --language CSharp   # or Java; a new run folder under output/<language>/
-dotnet run -- jcl-programs source --jobs EYGHJ001 # the programs a job runs
+dotnet run -- jcl-programs source --jobs NITEJ001 # the programs a job runs
 ```
 
 See [JCL job facts](docs/jcl-job-facts.md) and [Jobs generated from JCL](docs/jcl-jobs.md).

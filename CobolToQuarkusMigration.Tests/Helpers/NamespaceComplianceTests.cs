@@ -60,10 +60,10 @@ public sealed class NamespaceComplianceTests : IDisposable
     public void JavaPackagesAreCheckedToo()
     {
         Write("A.java", "package com.modernized.bd;\npublic class Alpha { }\n");
-        Write("B.java", "package com.example.cobol.kyghr002;\npublic class Beta { }\n");
+        Write("B.java", "package com.example.cobol.payrr002;\npublic class Beta { }\n");
 
         NamespaceCompliance.Check(_root, "com.modernized")
-            .Should().ContainSingle().Which.Declared.Should().Be("com.example.cobol.kyghr002");
+            .Should().ContainSingle().Which.Declared.Should().Be("com.example.cobol.payrr002");
     }
 
     // A prefix test that ignores segment boundaries would let a neighbouring root pass.

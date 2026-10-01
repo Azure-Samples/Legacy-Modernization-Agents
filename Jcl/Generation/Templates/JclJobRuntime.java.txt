@@ -90,19 +90,19 @@ public final class JclDd {
 package {{Package}};
 
 public record JclDb2Run(String program, String plan, String subsystem, String parms) { }
-//// FILE: JclCondTest.java
+//// FILE: JclCondCheck.java
 // Generated from the estate's JCL. Rewritten on every run; do not edit.
 package {{Package}};
 
 // Bypass the step when code op (a step's return code) is true.
-public record JclCondTest(int code, JclCompare op, String step) { }
+public record JclCondCheck(int code, JclCompare op, String step) { }
 //// FILE: JclCond.java
 // Generated from the estate's JCL. Rewritten on every run; do not edit.
 package {{Package}};
 
 import java.util.List;
 
-public record JclCond(List<JclCondTest> tests, boolean even, boolean only) { }
+public record JclCond(List<JclCondCheck> tests, boolean even, boolean only) { }
 //// FILE: JclStepDefinition.java
 // Generated from the estate's JCL. Rewritten on every run; do not edit.
 package {{Package}};
@@ -815,8 +815,15 @@ public final class JclSpringBatch {
 // Generated from the estate's JCL. Rewritten on every run; do not edit.
 package {{Package}};
 
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.beans.factory.BeanFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
+import org.springframework.beans.factory.support.BeanDefinitionRegistry;
+import org.springframework.beans.factory.support.BeanDefinitionRegistryPostProcessor;
+import org.springframework.beans.factory.support.RootBeanDefinition;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.Condition;
@@ -828,6 +835,7 @@ import org.springframework.core.type.AnnotatedTypeMetadata;
 import org.springframework.core.type.classreading.MetadataReader;
 import org.springframework.core.type.classreading.MetadataReaderFactory;
 import org.springframework.core.type.filter.TypeFilter;
+import org.springframework.transaction.PlatformTransactionManager;
 
 import java.nio.file.Path;
 import java.util.List;
@@ -847,6 +855,29 @@ public class JclJobsConfiguration {
             return new DirectoryDatasetCatalog(Path.of(root));
         });
         return new JclJobRunner(programs, datasets, utilities.getIfAvailable(DefaultJobUtilities::new));
+    }
+
+    // A Spring Batch Job bean per job in JclJobs, named after its class (nightly1Job for Nightly1Job), so a
+    // JobLauncher or spring.batch.job.name can start any of them by the JCL job name.
+    @Bean
+    public static BeanDefinitionRegistryPostProcessor jclJobBeans() {
+        return new BeanDefinitionRegistryPostProcessor() {
+            @Override
+            public void postProcessBeanDefinitionRegistry(BeanDefinitionRegistry registry) {
+                var beans = (BeanFactory) registry;
+                for (var job : JclJobs.all()) {
+                    var type = job.getClass().getSimpleName();
+                    registry.registerBeanDefinition(Character.toLowerCase(type.charAt(0)) + type.substring(1),
+                            new RootBeanDefinition(Job.class, () -> JclSpringBatch.build(job,
+                                    beans.getBean(JobRepository.class),
+                                    beans.getBean(PlatformTransactionManager.class),
+                                    beans.getBean(JclJobRunner.class))));
+                }
+            }
+
+            @Override
+            public void postProcessBeanFactory(ConfigurableListableBeanFactory factory) { }
+        };
     }
 
     // The converted programs are CDI beans. Spring registers the CDI-scoped classes under
@@ -877,5 +908,21 @@ public class JclJobsConfiguration {
             var metadata = reader.getAnnotationMetadata();
             return metadata.isConcrete() && SCOPES.stream().anyMatch(metadata::hasAnnotation);
         }
+    }
+}
+//// FILE: JclBatchApplication.java
+// Generated from the estate's JCL. Rewritten on every run; do not edit.
+package {{Package}};
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+// Runs one job: mvn spring-boot:run -Dspring-boot.run.arguments=--spring.batch.job.name=<JOB>
+// To run the jobs inside an application of your own, import JclJobsConfiguration there and
+// leave this class out.
+@SpringBootApplication
+public class JclBatchApplication {
+    public static void main(String[] args) {
+        System.exit(SpringApplication.exit(SpringApplication.run(JclBatchApplication.class, args)));
     }
 }

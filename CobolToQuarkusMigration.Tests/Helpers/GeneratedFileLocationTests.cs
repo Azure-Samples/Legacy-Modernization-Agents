@@ -22,14 +22,14 @@ public sealed class GeneratedFileLocationTests : IDisposable
         // something else, so none of the output compiled as a project.
         var file = new JavaFile
         {
-            FileName = "Kyghr002.java",
+            FileName = "Payrr002.java",
             NamespaceName = "com.example.generated",
-            Content = "package com.example.cobol.kyghr002;\n\npublic class Kyghr002 { }\n",
+            Content = "package com.example.cobol.payrr002;\n\npublic class Payrr002 { }\n",
         };
 
         var saved = await Helper().SaveJavaFileAsync(file, _root);
 
-        saved.Replace('\\', '/').Should().Contain("com/example/cobol/kyghr002/");
+        saved.Replace('\\', '/').Should().Contain("com/example/cobol/payrr002/");
     }
 
     [Fact]
@@ -40,14 +40,14 @@ public sealed class GeneratedFileLocationTests : IDisposable
         // C# forms at all — it previously only recognised Java's `package`.
         var file = new CodeFile
         {
-            FileName = "Kyghr002.cs",
+            FileName = "Payrr002.cs",
             NamespaceName = "",
-            Content = "namespace Contoso.Billing.Kyghr002;\n\npublic class Kyghr002 { }\n",
+            Content = "namespace Contoso.Billing.Payrr002;\n\npublic class Payrr002 { }\n",
         };
 
         var saved = await Helper().SaveCodeFileAsync(file, _root, ".cs");
 
-        saved.Replace('\\', '/').Should().Contain("Contoso/Billing/Kyghr002/");
+        saved.Replace('\\', '/').Should().Contain("Contoso/Billing/Payrr002/");
     }
 
     [Fact]

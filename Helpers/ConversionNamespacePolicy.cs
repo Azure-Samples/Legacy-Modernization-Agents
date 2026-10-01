@@ -66,7 +66,7 @@ public static class ConversionNamespacePolicy
         var lastSlash = normalized.LastIndexOf('/');
         if (lastSlash <= 0) return DefaultService;
 
-        // The deepest directory names the service: FUENTES/SRC/X.cbl is the SRC area of FUENTES,
+        // The deepest directory names the service: LEGACY/SRC/X.cbl is the SRC area of LEGACY,
         // and naming it "src" says nothing, so a generic container yields to its parent.
         var directories = normalized[..lastSlash]
             .Split('/', StringSplitOptions.RemoveEmptyEntries)

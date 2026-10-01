@@ -222,10 +222,10 @@ public sealed class RektContextLoaderTests : IDisposable
         // subdirectories the two never met, so every such program was reported as having no
         // structural context and parity could not score it.
         var rektDir = Path.Join(_root, "rekt");
-        var reportDir = Path.Join(rektDir, "FUENTES", "KYGGR005.cbl.report", "flow_ast");
+        var reportDir = Path.Join(rektDir, "LEGACY", "PAYGR005.cbl.report", "flow_ast");
         Directory.CreateDirectory(reportDir);
         File.WriteAllText(
-            Path.Join(reportDir, "flow-ast-KYGGR005.cbl.json"),
+            Path.Join(reportDir, "flow-ast-PAYGR005.cbl.json"),
             """
             {
               "type": "PROCEDURE_DIVISION_BODY", "name": "body", "children": [
@@ -234,7 +234,7 @@ public sealed class RektContextLoaderTests : IDisposable
             }
             """);
 
-        var ctx = new RektContextLoader(_root, rektDir).Load("KYGGR005.cbl", "source");
+        var ctx = new RektContextLoader(_root, rektDir).Load("PAYGR005.cbl", "source");
 
         ctx.Sections.SelectMany(s => s.Paragraphs).Select(p => p.Name)
             .Should().Contain("MAIN-LOGIC");

@@ -68,7 +68,7 @@ public sealed record JclJobPlan
         };
     }
 
-    // EYGHJ014 becomes Eyghj014; characters a type name cannot hold become '_'.
+    // NITEJ014 becomes Nitej014; characters a type name cannot hold become '_'.
     public static string ToTypeName(string jobName)
     {
         var sb = new StringBuilder();

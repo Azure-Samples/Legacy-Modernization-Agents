@@ -146,37 +146,37 @@ public class ModernizationIntelligenceServiceTests
     public async Task ServiceChain_Db2BatchStep_LinksProgramNamedInInStreamSystsin()
     {
         using var fixture = new EstateFixture();
-        fixture.AddProgram("KYGHB013.cbl");
+        fixture.AddProgram("PAYRB013.cbl");
         // The EXEC card names the TSO monitor; only SYSTSIN names the workload, so reading
         // the card alone reports a scheduled program as standalone.
-        fixture.AddJcl("jcl/EYGHJ014.jcl", """
-            //EYGHJ014 JOB (OPC0,001),'KYGH',CLASS=3
-            //KYGHB013 EXEC PGM=IKJEFT01
+        fixture.AddJcl("jcl/NITEJ014.jcl", """
+            //NITEJ014 JOB (OPC0,001),'PAYR',CLASS=3
+            //PAYRB013 EXEC PGM=IKJEFT01
             //SYSTSIN  DD *
-              RUN PROGRAM(KYGHB013) PLAN(KYGHB013)
+              RUN PROGRAM(PAYRB013) PLAN(PAYRB013)
             """);
 
         var chain = await ServiceFor(fixture).GetServiceChainAsync(null, null, includeUtilities: false);
 
-        Assert.Equal(new[] { "KYGHB013" }, Assert.Single(chain.Jobs).PrimaryPrograms);
-        Assert.Contains("EYGHJ014", Assert.Single(chain.Programs).CalledByJobs);
+        Assert.Equal(new[] { "PAYRB013" }, Assert.Single(chain.Jobs).PrimaryPrograms);
+        Assert.Contains("NITEJ014", Assert.Single(chain.Programs).CalledByJobs);
     }
 
     [Fact]
     public async Task ServiceChain_ProcStepNamedAfterProgram_LinksWhenSourceExists()
     {
         using var fixture = new EstateFixture();
-        fixture.AddProgram("KYGHB016.cbl");
-        fixture.AddJcl("jcl/EYGHJ015.jcl", """
-            //EYGHJ015 JOB (OPC0,001),'KYGH',CLASS=3
-            //KYGHB016 EXEC PROC=EXPRP02P,
+        fixture.AddProgram("PAYRB016.cbl");
+        fixture.AddJcl("jcl/NITEJ015.jcl", """
+            //NITEJ015 JOB (OPC0,001),'PAYR',CLASS=3
+            //PAYRB016 EXEC PROC=PAYRP02P,
             //         SSID='DS0E'
             //SORT001  EXEC PROC=EXPRP23P
             """);
 
         var chain = await ServiceFor(fixture).GetServiceChainAsync(null, null, includeUtilities: false);
 
-        Assert.Equal(new[] { "KYGHB016" }, Assert.Single(chain.Jobs).PrimaryPrograms);
+        Assert.Equal(new[] { "PAYRB016" }, Assert.Single(chain.Jobs).PrimaryPrograms);
         // SORT001 matches no source file, so the step is reported rather than inferred away.
         var unresolved = Assert.Single(chain.UnresolvedSteps);
         Assert.Equal("SORT001", unresolved.StepName);
@@ -188,8 +188,8 @@ public class ModernizationIntelligenceServiceTests
     {
         using var fixture = new EstateFixture();
         fixture.AddProgram("ORPHAN.cbl");
-        fixture.AddJcl("jcl/EYGHJ001.jcl", """
-            //EYGHJ001 JOB (OPC0,001),'KYGH',CLASS=3
+        fixture.AddJcl("jcl/NITEJ001.jcl", """
+            //NITEJ001 JOB (OPC0,001),'PAYR',CLASS=3
             //SORT001  EXEC PROC=EXPRP23P
             """);
 
@@ -497,9 +497,9 @@ public class ModernizationIntelligenceServiceTests
     public async Task ProgramList_CountsMissingCopybooksRecordedAgainstASourceRelativePath()
     {
         using var fixture = new EstateFixture();
-        fixture.AddProgram("FUENTES/SRC/CUSTOMER.cbl").AddProgram("FUENTES/SRC/ACCOUNT.cbl");
+        fixture.AddProgram("LEGACY/SRC/CUSTOMER.cbl").AddProgram("LEGACY/SRC/ACCOUNT.cbl");
         fixture.AddMissingCopybooks(
-            "CUSTREC\treferenced by: FUENTES/SRC/CUSTOMER.cbl\n");
+            "CUSTREC\treferenced by: LEGACY/SRC/CUSTOMER.cbl\n");
 
         var list = await ServiceFor(fixture).GetProgramListAsync();
 
