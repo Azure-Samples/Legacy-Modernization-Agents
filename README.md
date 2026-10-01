@@ -46,7 +46,7 @@ The migration uses Microsoft Agent Framework with a multi-provider architecture 
 | Requirement | Version | Notes |
 |-------------|---------|-------|
 | **.NET SDK** | 10.0+ | [Download](https://dotnet.microsoft.com/download) |
-| **Docker Desktop** | Latest | Must be running for Neo4j |
+| **Podman or Docker** | Latest | Podman machine or Docker Desktop must be running for Neo4j |
 | **AI Endpoint** | — | Azure endpoint + `az login`, or GitHub `gh auth login`, or API Key |
 
 ### Supported AI Providers
@@ -175,7 +175,10 @@ cp Config/ai-config.env.example Config/ai-config.local.env
 
 # 3. Start Neo4j (the password is configured in ai-config.local.env)
 export NEO4J_PASSWORD="$(sed -n 's/^NEO4J_PASSWORD=//p' Config/ai-config.local.env | tr -d '"')"
-docker-compose up -d neo4j
+podman compose up -d neo4j
+
+# Docker is also supported:
+# docker compose up -d neo4j
 
 # 4. Build
 dotnet build
@@ -1095,7 +1098,7 @@ See [Parallel Jobs Formula](#parallel-jobs-formula) for chunking configuration d
 
 | Issue | Solution |
 |-------|----------|
-| Neo4j connection refused | Load `NEO4J_PASSWORD` from `Config/ai-config.local.env`, then run `docker-compose up -d neo4j` |
+| Neo4j connection refused | Load `NEO4J_PASSWORD` from `Config/ai-config.local.env`, then run `podman compose up -d neo4j` (or `docker compose up -d neo4j`) |
 | Azure API error | Check `Config/ai-config.local.env` credentials or run `az login` |
 | No output generated | Ensure COBOL files are in `source/` |
 | Portal won't start | `lsof -ti :5028 \| xargs kill -9` then retry |
