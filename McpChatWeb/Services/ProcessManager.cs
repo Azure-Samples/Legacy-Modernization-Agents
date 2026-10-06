@@ -22,6 +22,8 @@ public class ManagedRun
     public DateTime? CompletedAt { get; set; }
     public int? ExitCode { get; set; }
     public int? ProcessId { get; set; }
+    // The --programs selection the run converts; empty means the whole estate.
+    public IReadOnlyList<string> Programs { get; init; } = [];
 
     // Circular buffer for last N lines of output
     private readonly List<string> _logLines = new();
@@ -63,6 +65,9 @@ public class ProcessManager : IDisposable
 
     private static readonly string[] AllowedCommands = { "migrate", "run", "full", "reverse-engineer", "reverse", "re", "convert-only", "convert", "resume" };
     private static readonly Regex SafePathPattern = new(@"^[a-zA-Z0-9_\-./]+$", RegexOptions.Compiled);
+    // A program selector is a file name or source-relative path; COBOL names may carry # @ $.
+    private static readonly Regex ProgramSelectorPattern = new(@"^[A-Za-z0-9#@$_\-./]+$", RegexOptions.Compiled);
+    private static readonly string[] CommandsTakingPrograms = { "migrate", "run", "full", "convert-only", "convert" };
 
     public ProcessManager(string repoRoot)
     {
@@ -81,11 +86,14 @@ public class ProcessManager : IDisposable
         string? sourceFolder = null,
         string provider = "AzureOpenAI",
         string? modelId = null,
-        Dictionary<string, string>? extraEnv = null)
+        Dictionary<string, string>? extraEnv = null,
+        IReadOnlyList<string>? programs = null)
     {
         // Validate command against allowlist
         if (!AllowedCommands.Contains(command.ToLowerInvariant()))
             throw new ArgumentException($"Invalid command: '{command}'. Allowed: {string.Join(", ", AllowedCommands)}");
+
+        var selection = ValidatePrograms(command, programs);
 
         // Validate sourceFolder to prevent path traversal and argument injection
         if (sourceFolder != null)
@@ -108,13 +116,14 @@ public class ProcessManager : IDisposable
             Name = string.IsNullOrWhiteSpace(name) ? $"{command}-{DateTime.Now:HHmmss}" : name,
             TargetLanguage = targetLanguage,
             SpeedProfile = speedProfile,
+            Programs = selection,
             Status = "running",
             StartedAt = DateTime.UtcNow
         };
 
         // Build the dotnet command directly instead of going through doctor.sh
         // (doctor.sh is interactive — we bypass it for non-interactive portal use)
-        var (executable, arguments) = BuildCommand(command, targetLanguage, speedProfile, sourceFolder);
+        var (executable, arguments) = BuildCommand(command, targetLanguage, speedProfile, sourceFolder, selection);
 
         var psi = new ProcessStartInfo
         {
@@ -377,8 +386,38 @@ public class ProcessManager : IDisposable
         return _runs.TryGetValue(runId, out var run) ? run : null;
     }
 
+    // Selectors reach the CLI as one --programs argument, so each must be a plain name or path:
+    // no separators the CLI would split on, no option-looking values, nothing outside the source.
+    public static IReadOnlyList<string> ValidatePrograms(string command, IReadOnlyList<string>? programs)
+    {
+        if (programs is null || programs.Count == 0) return [];
+        if (!CommandsTakingPrograms.Contains(command.ToLowerInvariant()))
+            throw new ArgumentException($"Command '{command}' does not take a program selection.");
+
+        var selection = new List<string>();
+        foreach (var raw in programs)
+        {
+            var p = raw?.Trim() ?? "";
+            if (p.Length == 0) continue;
+            if (p.Length > 256 || !ProgramSelectorPattern.IsMatch(p) || p.StartsWith('-') || p.StartsWith('/')
+                || p.Split('/').Any(seg => seg is ".." or "."))
+                throw new ArgumentException($"Invalid program selector: '{p}'. Use a file name or a source-relative path.");
+            if (!selection.Contains(p, StringComparer.OrdinalIgnoreCase)) selection.Add(p);
+        }
+        return selection;
+    }
+
     private (string executable, string[] arguments) BuildCommand(
-        string command, string targetLang, string speedProfile, string? sourceFolder)
+        string command, string targetLang, string speedProfile, string? sourceFolder,
+        IReadOnlyList<string>? programs = null)
+    {
+        var (executable, arguments) = BaseCommand(command, sourceFolder);
+        return programs is { Count: > 0 }
+            ? (executable, [.. arguments, "--programs", string.Join(',', programs)])
+            : (executable, arguments);
+    }
+
+    private (string executable, string[] arguments) BaseCommand(string command, string? sourceFolder)
     {
         var dotnet = "dotnet";
         var source = $"./{sourceFolder ?? "source"}";

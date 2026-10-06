@@ -220,6 +220,7 @@ dotnet build
 ./doctor.sh reverse-eng   # Extract business logic, persist to DB, launch portal
 ./doctor.sh convert-only  # Conversion only; prompts to reuse persisted RE context
 ./doctor.sh jcl           # Jobs from the JCL alone, no model: what each job still needs
+./doctor.sh estate        # Slices and migration waves from the source alone, no model
 ```
 
 #### Business Logic Persistence and --reuse-re
@@ -707,6 +708,8 @@ sequenceDiagram
 - ✅ **AI Provider Setup Modal** — connect to Azure OpenAI or GitHub Copilot SDK from the browser, discover all available models/deployments, and save config
 - ✅ **Mission Control** — start/stop/pause migrations, select provider and model, upload source files
 - ✅ **Prompt Studio** — generate, AI-enhance, and score agent prompts (works with both Azure and Copilot SDK)
+- ✅ **Estate Mission Control** — clusters, carve scores and waves with source evidence; convert one slice at a time ([details](docs/estate-mission-control.md))
+- ✅ **AI Loop** — per-run model calls, retries, fallbacks, stages and quality gates ([details](docs/estate-mission-control.md#ai-loop))
 
 ### Smart Chunking & Token Strategy
 
@@ -1168,6 +1171,7 @@ See [Parallel Jobs Formula](#parallel-jobs-formula) for chunking configuration d
 - [Smart Chunking & Token Architecture](docs/smart-chunking-architecture.md) - Full diagrams, constants reference, and complexity scoring details
 - [Smart Chunking Guide](docs/smart-chunking-deep-dive.md) - Deep technical details
 - [Architecture Documentation](docs/REVERSE_ENGINEERING_ARCHITECTURE.md) - System design
+- [Estate Mission Control and the AI Loop](docs/estate-mission-control.md) - Deterministic clusters, carve scores and waves for converting the estate slice by slice, and a per-run view of model calls, retries, fallbacks and quality gates
 - [Dependency Health & Semantic Flow Explorer](docs/dependency-health-and-flow-explorer.md) - Deterministic parse-fidelity, topology and JCL chain surfaces for deciding conversion order
 - [JCL job facts](docs/jcl-job-facts.md) - Deterministic JCL parser: procedures, symbols, conditions, Db2 runs and dataset lineage across jobs
 - [Jobs generated from JCL](docs/jcl-jobs.md) - Each JCL job as a .NET job (C#) or Spring Batch job (Java) that runs the converted programs under the JCL's conditions

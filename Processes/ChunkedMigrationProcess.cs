@@ -170,6 +170,8 @@ public class ChunkedMigrationProcess
 
         var startTime = DateTime.UtcNow;
         var runId = existingRunId ?? await _migrationRepository.StartRunAsync(cobolSourceFolder, outputFolder);
+        MetricsSink.CurrentRunId = runId;
+        AiLoopEvents.Started(runId, existingRunId.HasValue ? "resume" : "chunked", targetName, outputFolder);
 
         // Pass run ID to converter for spec lookup
         _chunkAwareConverter.SetRunId(runId);
@@ -191,6 +193,7 @@ public class ChunkedMigrationProcess
             {
                 _enhancedLogger.ShowWarning("No COBOL files found");
                 await _migrationRepository.CompleteRunAsync(runId, "NoFiles");
+                AiLoopEvents.Finished(runId, "no_files", startTime);
                 return;
             }
 
@@ -388,6 +391,7 @@ public class ChunkedMigrationProcess
 
             _enhancedLogger.ShowDashboardSummary(runId, targetName, "Completed", "Done", 100);
             await _migrationRepository.CompleteRunAsync(runId, "Completed", runType);
+            AiLoopEvents.Finished(runId, "completed", startTime);
 
             _enhancedLogger.ShowSuccess(
                 $"Chunked migration completed: {allFiles.Count} files generated");
@@ -396,6 +400,7 @@ public class ChunkedMigrationProcess
         }
         catch (Exception ex)
         {
+            AiLoopEvents.Finished(runId, "failed", startTime, ex.Message);
             _enhancedLogger.ShowError($"Migration failed: {ex.Message}", ex);
             await _migrationRepository.CompleteRunAsync(runId, "Failed", ex.Message);
             throw;

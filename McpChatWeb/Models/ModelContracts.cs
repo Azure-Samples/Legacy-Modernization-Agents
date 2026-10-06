@@ -65,7 +65,8 @@ public sealed record StartRunRequest(
     string SpeedProfile = "balanced",
     string? SourceFolder = null,
     string Provider = "AzureOpenAI",  // "AzureOpenAI", "GitHubModels", "CopilotSDK"
-    string? ModelId = null             // e.g. "openai/gpt-4o", "claude-opus-4", "gpt-5.3-codex"
+    string? ModelId = null,            // e.g. "openai/gpt-4o", "claude-opus-4", "gpt-5.3-codex"
+    IReadOnlyList<string>? Programs = null  // file names or source-relative paths; null converts everything
 );
 
 public sealed record StopRunRequest(string RunId);

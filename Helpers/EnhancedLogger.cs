@@ -182,6 +182,7 @@ public class EnhancedLogger
     /// <param name="description">Optional step description.</param>
     public void ShowStep(int stepNumber, int totalSteps, string stepName, string? description = null)
     {
+        AiLoopEvents.StageStarted(stepNumber, totalSteps, stepName);
         lock (_consoleLock)
         {
             Console.Write($"{Colors.BrightGreen}Step {stepNumber}/{totalSteps}:{Colors.Reset} ");

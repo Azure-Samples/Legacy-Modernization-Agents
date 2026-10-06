@@ -224,6 +224,7 @@ show_usage() {
     echo -e "  ${GREEN}conversation${NC}    Generate conversation log from migration data"
     echo -e "  ${GREEN}programs${NC}        List convertible programs with size, parse fidelity and call counts"
     echo -e "  ${GREEN}jcl${NC}             Generate jobs from the JCL alone, without a model, and show what each still needs"
+    echo -e "  ${GREEN}estate [C01]${NC}    Cluster the estate into migration waves without a model; with an id, show that slice"
     echo ""
     echo -e "${BOLD}Converting a subset:${NC}"
     echo -e "  ${GREEN}--program NAME${NC}       Convert only this program (repeatable, or comma-separated)"
@@ -3979,6 +3980,51 @@ validate_selection() {
     return 0
 }
 
+# ── Estate graph ────────────────────────────────────────────────────────────
+
+# Clusters and waves from the source alone; with a cluster id, that cluster's slice and the command
+# that converts it.
+run_estate_graph() {
+    local cluster="${1:-}"
+    local src="$REPO_ROOT/${COBOL_SOURCE_FOLDER:-source}"
+    local jcl_dir
+    jcl_dir="$(jcl_source_dir)"
+    if [[ ! -d "$src" ]]; then
+        echo -e "${YELLOW}⚠️  No source folder at $src.${NC}"
+        return 1
+    fi
+
+    # Build once, quietly: dotnet run would print restore warnings onto the JSON on stdout.
+    if ! (cd "$REPO_ROOT" && "$DOTNET_CMD" build CobolToQuarkusMigration.csproj -v q -nologo >/dev/null 2>&1); then
+        echo -e "${RED}❌ Build failed. Run: dotnet build CobolToQuarkusMigration.csproj${NC}"
+        return 1
+    fi
+
+    local args=(estate-graph "$src" --output "$REPO_ROOT/output/estate/estate-graph.json")
+    [[ -d "$jcl_dir" && "$jcl_dir" != "$src" ]] && args+=(--jcl-source "$jcl_dir")
+
+    if [[ -z "$cluster" ]]; then
+        echo -e "${BLUE}🗺️  Estate graph (no model)${NC}"
+        echo "=============================================="
+        (cd "$REPO_ROOT" && "$DOTNET_CMD" run --project CobolToQuarkusMigration.csproj --no-build -- "${args[@]}") || return 1
+        echo ""
+        echo -e "  Slice of one cluster:  ${CYAN}./doctor.sh estate C01${NC}"
+        echo -e "  Explore it in the portal:  ${CYAN}./doctor.sh portal${NC}  → Estate Mission Control"
+        return 0
+    fi
+
+    local slice
+    slice="$(cd "$REPO_ROOT" && "$DOTNET_CMD" run --project CobolToQuarkusMigration.csproj --no-build -- "${args[@]}" --slice "$cluster" 2>/dev/null)" || {
+        echo -e "${RED}❌ No cluster '$cluster'. Run ./doctor.sh estate to list them.${NC}"
+        return 1
+    }
+    echo "$slice"
+    local selectors
+    selectors="$(printf '%s' "$slice" | python3 -c 'import json,sys; s=json.load(sys.stdin); print(",".join(s["programSelectors"]+s["needSelectors"]))')"
+    echo ""
+    echo -e "  Convert this slice:  ${CYAN}./doctor.sh convert-only --program ${selectors}${NC}"
+}
+
 # ── JCL ─────────────────────────────────────────────────────────────────────
 
 # Where the JCL is: JCL_SOURCE_FOLDER when set, else the COBOL source folder, as the conversion reads it.
@@ -4345,6 +4391,9 @@ main() {
             ;;
         "programs"|"list-programs")
             run_program_list
+            ;;
+        "estate"|"estate-graph")
+            run_estate_graph "${2:-}"
             ;;
         "portal"|"web"|"ui")
             run_portal

@@ -75,6 +75,8 @@ function switchDashboard(tabName) {
     dependency: ['dependency-graph', 'graph-toolbar'],
     services: ['services-container'],
     modernization: ['modernization-intelligence-container'],
+    estate: ['estate-mission-control-container'],
+    ailoop: ['ai-loop-container'],
     ast: ['ast-explorer-container'],
     programs: ['program-picker-container'],
     missing: ['missing-copybooks-container'],
@@ -134,6 +136,18 @@ function switchDashboard(tabName) {
       window.programExplorerView = new ProgramExplorerView('program-explorer-root');
     }
     window.programExplorerView.loadAndRender();
+  }
+
+  if (tabName === 'estate') {
+    if (!window.estateMissionControlView) {
+      window.estateMissionControlView = new EstateMissionControlView('estate-mission-control-root');
+    }
+    window.estateMissionControlView.loadAndRender();
+  }
+
+  if (tabName === 'ailoop') {
+    if (!window.aiLoopView) window.aiLoopView = new AiLoopView('ai-loop-root');
+    window.aiLoopView.loadAndRender();
   }
 
   if (tabName === 'modernization') {

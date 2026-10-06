@@ -195,6 +195,7 @@ public class MigrationProcess
         // Ambient run id so every agent's LLM call is attributed to this run,
         // not just the converters that are handed the id explicitly.
         MetricsSink.CurrentRunId = runId;
+        AiLoopEvents.Started(runId, existingRunId.HasValue ? "resume" : "standard", targetName, javaOutputFolder);
 
         // Show initial dashboard
         _enhancedLogger.ShowDashboardSummary(
@@ -233,6 +234,7 @@ public class MigrationProcess
                     $"No COBOL files discovered in {cobolSourceFolder}");
                 _enhancedLogger.ShowWarning($"No COBOL files found in folder: {cobolSourceFolder}");
                 await _migrationRepository.CompleteRunAsync(runId, "NoFiles", "No COBOL programs discovered");
+                AiLoopEvents.Finished(runId, "no_files", startTime);
                 return;
             }
 
@@ -491,11 +493,13 @@ public class MigrationProcess
                 $"Total migration completed in {totalTime.TotalSeconds:F1} seconds");
             _logger.LogInformation("Total migration time: {TotalTime}", totalTime);
             await _migrationRepository.CompleteRunAsync(runId, "Completed", runType);
+            AiLoopEvents.Finished(runId, "completed", startTime);
 
             progressCallback?.Invoke("Migration completed successfully", totalSteps, totalSteps);
         }
         catch (Exception ex)
         {
+            AiLoopEvents.Finished(runId, "failed", startTime, ex.Message);
             _enhancedLogger.ShowError($"Error in migration process: {ex.Message}", ex);
             progressCallback?.Invoke($"Error: {ex.Message}", 0, 0);
             if (_activeRunId.HasValue)
