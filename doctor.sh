@@ -2639,6 +2639,15 @@ fi
 # Compose commands take service names, which stay fixed while container names vary.
 REKT_NEO4J_SERVICE="cobol-rekt-neo4j"
 REKT_SERVICE="cobol-rekt"
+
+# Current Docker ships Compose as a plugin; older installs only have the standalone binary.
+run_compose() {
+    if docker compose version >/dev/null 2>&1; then
+        docker compose -f "$REPO_ROOT/docker-compose.yml" "$@"
+    else
+        docker-compose -f "$REPO_ROOT/docker-compose.yml" "$@"
+    fi
+}
 # Written by tools/preprocess-for-rekt.sh into synthesised copybooks and read by
 # StubCopybookCatalog.Marker. It is the only reliable way to tell an invented layout from
 # real content, because both live in source/.preprocessed/.
@@ -2758,13 +2767,13 @@ ensure_rekt_containers() {
 
     # Start only the rekt services (leave existing neo4j untouched).
     local compose_output
-    if ! compose_output=$(docker-compose up -d "$REKT_NEO4J_SERVICE" "$REKT_SERVICE" 2>&1); then
+    if ! compose_output=$(run_compose up -d "$REKT_NEO4J_SERVICE" "$REKT_SERVICE" 2>&1); then
         echo -e "${RED}❌ Failed to start Cobol-REKT containers:${NC}"
         printf '%s\n' "$compose_output" | sed 's/^/  /'
         echo ""
         echo -e "${YELLOW}Debug with:${NC}"
-        echo "  docker-compose ps"
-        echo "  docker-compose logs --tail=100 $REKT_NEO4J_SERVICE $REKT_SERVICE"
+        echo "  docker compose ps"
+        echo "  docker compose logs --tail=100 $REKT_NEO4J_SERVICE $REKT_SERVICE"
         return 1
     fi
 
@@ -2788,8 +2797,8 @@ ensure_rekt_containers() {
             docker logs --tail 50 "$REKT_NEO4J_CONTAINER" 2>&1 | sed 's/^/  /'
             echo ""
             echo -e "${YELLOW}Debug with:${NC}"
-            echo "  docker-compose ps"
-            echo "  docker-compose logs --tail=100 $REKT_NEO4J_SERVICE"
+            echo "  docker compose ps"
+            echo "  docker compose logs --tail=100 $REKT_NEO4J_SERVICE"
             return 1
         fi
     done
@@ -2809,7 +2818,7 @@ ensure_rekt_containers() {
         echo "  REKT_NEO4J_PASSWORD=<existing-password>"
         echo ""
         echo "or discard the graph and let it re-initialise (parsed artifacts are kept):"
-        echo "  docker-compose rm -sf $REKT_NEO4J_SERVICE"
+        echo "  docker compose rm -sf $REKT_NEO4J_SERVICE"
         echo "  docker volume rm $(basename "$REPO_ROOT" | tr '[:upper:]' '[:lower:]')_rekt_neo4j_data"
         return 1
     fi
@@ -3072,7 +3081,7 @@ run_rekt_parse() {
         container_visible=$(docker exec "$REKT_CONTAINER" sh -c "ls /source/.rekt-staging 2>/dev/null | wc -l" 2>/dev/null | tr -d ' ')
         if [[ -z "$container_visible" || "$container_visible" -eq 0 ]]; then
             echo -e "  ${YELLOW}⚠️  Container can't see /source/.rekt-staging — bind mount is stale. Restarting $REKT_CONTAINER…${NC}"
-            docker compose -f "$REPO_ROOT/docker-compose.yml" restart "$REKT_SERVICE" >/dev/null 2>&1 || true
+            run_compose restart "$REKT_SERVICE" >/dev/null 2>&1 || true
             sleep 3
             container_visible=$(docker exec "$REKT_CONTAINER" sh -c "ls /source/.rekt-staging 2>/dev/null | wc -l" 2>/dev/null | tr -d ' ')
             if [[ -z "$container_visible" || "$container_visible" -eq 0 ]]; then
@@ -3542,8 +3551,9 @@ PYEOF
         rm -f "$rekt_manifest"
     fi
 
-    # Extract optional facts while staged source bytes remain available; failures are non-fatal.
-    if [[ "${_PROGRAM_FACTS:-false}" == "true" && "$succeeded" -gt 0 ]]; then
+    # Extract facts while staged source bytes remain available; dependency discovery reads them,
+    # so this is on unless _PROGRAM_FACTS=false. Failures are non-fatal.
+    if [[ "${_PROGRAM_FACTS:-true}" == "true" && "$succeeded" -gt 0 ]]; then
         if command -v dotnet >/dev/null 2>&1 && [[ -f "$REPO_ROOT/CobolToQuarkusMigration.csproj" ]]; then
             local pf_db="${_REKT_SCAN_DB:-$REPO_ROOT/Data/rekt-scan.db}"
             echo -e "  ${BLUE}Extracting program-facts.json …${NC}"
@@ -3574,7 +3584,7 @@ PYEOF
                         --staging-dir "$staging_dir" 2>/dev/null) || true
             fi
         else
-            echo -e "  ${YELLOW}⚠️  _PROGRAM_FACTS=true but dotnet/project not available — facts not extracted.${NC}"
+            echo -e "  ${YELLOW}⚠️  dotnet/project not available — program facts not extracted.${NC}"
         fi
     fi
 
@@ -4445,7 +4455,7 @@ check_chunking_health() {
             echo -e "   ${GREEN}✅ Container '$PORTAL_CONTAINER' is running${NC}"
         else
             echo -e "   ${YELLOW}⚠️  Container '$PORTAL_CONTAINER' is NOT running${NC}"
-            echo -e "      (Run 'docker-compose up -d' to start the containerized portal)"
+            echo -e "      (Run 'docker compose up -d' to start the containerized portal)"
         fi
     else
         echo -e "   ${YELLOW}⚠️  Docker not available - skipping container checks${NC}"
