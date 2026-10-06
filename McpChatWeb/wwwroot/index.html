@@ -576,7 +576,7 @@
 
       <!-- Estate Mission Control — clusters, waves and convertible slices -->
       <div id="estate-mission-control-container" class="dashboard-panel" style="display: none;">
-        <div id="estate-mission-control-root" style="height:100%;overflow:auto;background:#0a0e1a;"></div>
+        <div id="estate-mission-control-root" style="height:100%;overflow:hidden;background:#0a0e1a;"></div>
       </div>
       <!-- AI Loop — per-agent model calls and quality gates for a run -->
       <div id="ai-loop-container" class="dashboard-panel" style="display: none;">
@@ -1328,6 +1328,11 @@ curl http://localhost:5028/api/data-retrieval-guide</code></pre>
   <script src="ast-explorer.js"></script>
   <script src="services-view.js"></script>
   <script src="modernization-intelligence.js"></script>
+  <!-- Cytoscape + fCoSE (MIT, see lib/cytoscape/LICENSE.*) for the estate graph -->
+  <script src="lib/cytoscape/cytoscape.min.js"></script>
+  <script src="lib/cytoscape/layout-base.js"></script>
+  <script src="lib/cytoscape/cose-base.js"></script>
+  <script src="lib/cytoscape/cytoscape-fcose.js"></script>
   <script src="estate-mission-control.js"></script>
   <script src="ai-loop.js"></script>
   <script src="program-picker.js"></script>

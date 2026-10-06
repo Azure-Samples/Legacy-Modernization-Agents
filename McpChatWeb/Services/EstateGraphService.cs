@@ -47,7 +47,7 @@ public sealed class EstateGraphService
     private readonly ConversionParityReader _parity;
     private readonly ILogger<EstateGraphService> _logger;
     private readonly SemaphoreSlim _lock = new(1, 1);
-    private (string Stamp, EstateGraph Graph, string? Warning)? _cache;
+    private (string Stamp, EstateGraph Graph, string? Warning, EstateGraphOptions Options)? _cache;
 
     public EstateGraphService(RektEstateReader rekt, ConversionParityReader parity, ILogger<EstateGraphService> logger)
     {
@@ -89,13 +89,43 @@ public sealed class EstateGraphService
             var options = EstateGraphOptions.Load(Path.Join(_rekt.RepoRoot, "Config", "appsettings.json"), out var warning);
             if (warning is not null) _logger.LogWarning("{Warning}", warning);
             var graph = await Task.Run(() => EstateGraphBuilder.Build(SourceRoot, JclRoot, options), ct);
-            _cache = (stamp, graph, warning);
+            _cache = (stamp, graph, warning, options);
             return (graph, warning);
         }
         finally
         {
             _lock.Release();
         }
+    }
+
+    // Drops the cached graph so the next read rescans the source, and returns the fresh graph.
+    public async Task<(EstateGraph Graph, string? Warning)> RebuildAsync(CancellationToken ct = default)
+    {
+        await _lock.WaitAsync(ct);
+        try { _cache = null; }
+        finally { _lock.Release(); }
+        return await GetGraphAsync(ct);
+    }
+
+    // Mission Control's view: the graph with kinds, technology, business function, status and
+    // carve-out clusters, in one payload.
+    public async Task<EstateMissionDocument> GetMissionAsync(CancellationToken ct = default)
+    {
+        var (graph, warning) = await GetGraphAsync(ct);
+        var options = _cache?.Options ?? new EstateGraphOptions();
+        var status = (await ProgramStatusAsync(graph, ct)).ToDictionary(
+            kv => kv.Key,
+            kv => new EstateMissionStatus(
+                kv.Value.ParseFidelity is ParseFidelity.Full or ParseFidelity.Partial,
+                kv.Value.ParseFidelity,
+                kv.Value.Parity
+                    .Where(p => p.Outcome == nameof(ParityOutcome.Evaluated))
+                    .GroupBy(p => p.TargetLanguage, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(g => g.Key, g => new EstateMissionConversion(g.First().Outcome, g.First().Score, g.First().Threshold),
+                        StringComparer.OrdinalIgnoreCase)
+                    as IReadOnlyDictionary<string, EstateMissionConversion>),
+            StringComparer.Ordinal);
+        return EstateMissionView.Build(graph, status, options, warning);
     }
 
     // Count, total size and newest write time of every file: cheap, and any edit, add or delete changes it.

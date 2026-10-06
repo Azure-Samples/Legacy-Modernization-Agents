@@ -138,7 +138,18 @@ function switchDashboard(tabName) {
     window.programExplorerView.loadAndRender();
   }
 
+  // The estate graph needs the room of the expanded panel; the tab expands it and gives it back on leave.
+  const graphPanel = document.querySelector('.graph-panel');
+  if (graphPanel && tabName !== 'estate' && graphPanel.dataset.estateExpanded) {
+    graphPanel.classList.remove('expanded');
+    delete graphPanel.dataset.estateExpanded;
+  }
+
   if (tabName === 'estate') {
+    if (graphPanel && !graphPanel.classList.contains('expanded')) {
+      graphPanel.classList.add('expanded');
+      graphPanel.dataset.estateExpanded = '1';
+    }
     if (!window.estateMissionControlView) {
       window.estateMissionControlView = new EstateMissionControlView('estate-mission-control-root');
     }

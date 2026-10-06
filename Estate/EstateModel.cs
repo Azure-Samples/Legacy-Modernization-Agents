@@ -13,6 +13,7 @@ public static class EstateNodeKind
     public const string Table = "table";
     public const string Map = "map";
     public const string File = "file";
+    public const string Api = "api";
 }
 
 public static class EstateEdgeKind
@@ -29,6 +30,7 @@ public static class EstateEdgeKind
     public const string Runs = "runs";
     public const string Feeds = "feeds";
     public const string BackedBy = "backed-by";
+    public const string Invokes = "invokes";
 }
 
 // Where a relationship was read from: the file, the 1-based line, and the source text on that line.
@@ -153,6 +155,21 @@ public sealed record EstateGraphOptions
     public List<string> MapExtensions { get; init; } = [".bms"];
     public List<string> CicsDefinitionExtensions { get; init; } = [".csd"];
     public List<string> GeneratedCopybookDirectories { get; init; } = ["copy-generated"];
+    // CICS resource definitions written as YAML lists ('- transaction:', '- file:'), read like a CSD.
+    public List<string> CicsYamlExtensions { get; init; } = [".yaml", ".yml"];
+    public List<string> DdlExtensions { get; init; } = [".ddl"];
+    // z/OS Connect style API definitions: an operation file names an asset, an asset file names a program.
+    public List<string> ApiOperationFileNames { get; init; } = ["operation.yaml"];
+    public List<string> ApiAssetFileNames { get; init; } = ["zosAsset.yaml"];
+    // Call targets that are runtime or middleware interfaces rather than application programs.
+    public List<string> SystemProgramPrefixes { get; init; } = ["CEE", "DSN", "ILBO", "IGZ", "MQ", "CBLTDLI", "AIBTDLI", "DFH"];
+    // Business-function rules for Mission Control. First match wins; 'name' is matched against the
+    // program name, 'text' against its header description plus the screens, tables and files it touches.
+    public List<EstateDomainRule> DomainRules { get; init; } = EstateDomainRule.Defaults();
+    public string DomainFallback { get; init; } = "Other";
+    // A carve-out cluster scoring at or above these (0-100) is low-risk, else moderate, else core.
+    public double LowRiskCarveScore { get; init; } = 75;
+    public double ModerateCarveScore { get; init; } = 50;
     public int MaxEvidencePerEdge { get; init; } = 20;
 
     public double Coupling(string name) => CouplingWeights.TryGetValue(name, out var w) ? w : 0;
@@ -190,4 +207,28 @@ public sealed record EstateGraphOptions
             return new();
         }
     }
+}
+
+public sealed record EstateDomainRule
+{
+    public required string Domain { get; init; }
+    public string? Name { get; init; }
+    public string? Text { get; init; }
+
+    // Generic banking and batch vocabulary; tune per estate under EstateGraph:DomainRules.
+    public static List<EstateDomainRule> Defaults() =>
+    [
+        new() { Domain = "Error handling", Name = "ABND|ABEND|ERRH" },
+        new() { Domain = "Security & users", Name = "SGN|SIGN|USR|USER|SEC0|LOGON", Text = @"SIGN ?ON|PASSWORD|USER SECURITY" },
+        new() { Domain = "Authorization", Name = "AUTH|PAU", Text = "AUTHORI[SZ]ATION" },
+        new() { Domain = "Credit checks", Name = "CRDT|CREDIT", Text = "CREDIT AGENCY|CREDIT SCORE|CREDIT CHECK" },
+        new() { Domain = "Navigation & menu", Name = "MENU|MEN0|ADM0|MAIN", Text = @"\bMENU\b" },
+        new() { Domain = "Transfers & payments", Name = "XFR|TFN|BIL|PAY|DBCR", Text = "TRANSFER|PAYMENT|BILL PAY|DEBIT" },
+        new() { Domain = "Statements & reports", Name = "STM|RPT|REPT|PRT", Text = "STATEMENT|REPORT" },
+        new() { Domain = "Transactions", Name = "TRN|TRAN|TRT", Text = "TRANSACTION" },
+        new() { Domain = "Cards", Name = "CRD|CARD|XREF", Text = @"\bCARD" },
+        new() { Domain = "Accounts", Name = "ACC|ACT|ACCT", Text = "ACCOUNT" },
+        new() { Domain = "Customers", Name = "CUS|CUST", Text = "CUSTOMER" },
+        new() { Domain = "Data load & utilities", Name = "DATA|EXPORT|IMPORT|LOAD|DATE|UTIL", Text = "UTILITY|CONVERT|EXPORT|IMPORT|LOAD" },
+    ];
 }

@@ -20,6 +20,9 @@ public static class EstateGraphBuilder
         AddCopybooks(g, sourceRoot, options);
         AddMaps(g, sourceRoot, options);
         AddCicsDefinitions(g, sourceRoot, options);
+        AddCicsYamlDefinitions(g, sourceRoot, options);
+        AddDdlTables(g, sourceRoot, options);
+        AddApis(g, sourceRoot, options);
         foreach (var scan in scans) AddReferences(g, scan);
         AddJobs(g, jclRoot ?? sourceRoot, scans);
 
@@ -127,6 +130,9 @@ public static class EstateGraphBuilder
                 node.Attributes["programId"] = pid;
             if (scan.AssignedDds.Count > 0) node.Attributes["dds"] = string.Join(",", scan.AssignedDds);
             if (stems[stem] > 1) node.Attributes["ambiguousBasename"] = "true";
+            foreach (var (k, v) in EstateProgramMetrics.Measure(text))
+                node.Attributes[k] = v.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (EstateProgramMetrics.Description(text) is { } description) node.Attributes["description"] = description;
 
             foreach (var name in new[] { stem, scan.ProgramId }.OfType<string>().Distinct(StringComparer.OrdinalIgnoreCase))
             {
@@ -224,6 +230,107 @@ public static class EstateGraphBuilder
                             EstateEdgeKind.BackedBy, "CSD", [evidence]);
                 }
             }
+        }
+    }
+
+    private static readonly Regex YamlEntry = new(@"^(\s*)-\s+(transaction|file|program):\s*$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex YamlAttribute = new(@"^\s+([A-Za-z_]+):\s*(.*?)\s*$", RegexOptions.CultureInvariant);
+
+    // CICS resource definitions as a YAML list: '- transaction:' with name and program, '- file:' with
+    // name and dsname. Read like the CSD; other YAML is left alone.
+    private static void AddCicsYamlDefinitions(Accumulator g, string sourceRoot, EstateGraphOptions options)
+    {
+        var apiFiles = options.ApiOperationFileNames.Concat(options.ApiAssetFileNames).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var file in FilesWith(sourceRoot, options.CicsYamlExtensions).Where(f => !apiFiles.Contains(Path.GetFileName(f))))
+        {
+            var rel = Path.GetRelativePath(sourceRoot, file).Replace('\\', '/');
+            var lines = File.ReadAllLines(file);
+            for (var i = 0; i < lines.Length; i++)
+            {
+                if (YamlEntry.Match(lines[i]) is not { Success: true } m) continue;
+                var indent = m.Groups[1].Value.Length;
+                var attrs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                var j = i + 1;
+                for (; j < lines.Length; j++)
+                {
+                    var line = lines[j];
+                    if (line.Trim().Length == 0 || line.TrimStart().StartsWith('#')) continue;
+                    if (line.Length - line.TrimStart().Length <= indent) break;
+                    if (YamlAttribute.Match(line) is { Success: true } a) attrs.TryAdd(a.Groups[1].Value, a.Groups[2].Value.Trim('"', '\''));
+                }
+                var evidence = new EstateEvidence(rel, i + 1, lines[i].Trim());
+                var name = attrs.GetValueOrDefault("name")?.ToUpperInvariant();
+                if (string.IsNullOrEmpty(name)) continue;
+                switch (m.Groups[2].Value.ToLowerInvariant())
+                {
+                    case "transaction":
+                        var tx = g.Node(EstateNodeKind.Transaction, name, rel);
+                        if (attrs.GetValueOrDefault("description") is { Length: > 0 } d) tx.Attributes.TryAdd("description", d);
+                        if (attrs.GetValueOrDefault("program") is { Length: > 0 } p)
+                            foreach (var target in g.ResolveProgram(p.ToUpperInvariant(), rel))
+                                g.Edge(tx.Id, target, EstateEdgeKind.Runs, "CICS definition", [evidence]);
+                        break;
+                    case "file":
+                        var f = g.Node(EstateNodeKind.File, name, rel);
+                        if (attrs.GetValueOrDefault("description") is { Length: > 0 } fd) f.Attributes.TryAdd("description", fd);
+                        if (attrs.GetValueOrDefault("dsname") is { Length: > 0 } dsn)
+                            g.Edge(f.Id, g.Node(EstateNodeKind.Dataset, dsn.ToUpperInvariant()).Id, EstateEdgeKind.BackedBy, "CICS definition", [evidence]);
+                        break;
+                }
+                i = j - 1;
+            }
+        }
+    }
+
+    private static readonly Regex CreateTable = new(@"\bCREATE\s+TABLE\s+([A-Z0-9_#@$]+(?:\.[A-Z0-9_#@$]+)?)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    // A table the DDL creates is in the source, so it is not mistaken for one only the code names.
+    private static void AddDdlTables(Accumulator g, string sourceRoot, EstateGraphOptions options)
+    {
+        foreach (var file in FilesWith(sourceRoot, options.DdlExtensions))
+        {
+            var rel = Path.GetRelativePath(sourceRoot, file).Replace('\\', '/');
+            foreach (Match m in CreateTable.Matches(File.ReadAllText(file)))
+                g.Node(EstateNodeKind.Table, m.Groups[1].Value.ToUpperInvariant(), rel);
+        }
+    }
+
+    private static readonly Regex ZAsset = new(@"\bzasset:\s*[""']?([A-Za-z0-9_#@$-]+)", RegexOptions.CultureInvariant);
+    private static readonly Regex AssetProgram = new(@"^\s*program:\s*[""']?([A-Za-z0-9#@$-]+)", RegexOptions.Multiline | RegexOptions.CultureInvariant);
+
+    // operations/<url-encoded path>/<method>/operation.yaml names an asset; zosAssets/<asset>/zosAsset.yaml
+    // names the program behind it. Each operation becomes an API entry point that invokes that program.
+    private static void AddApis(Accumulator g, string sourceRoot, EstateGraphOptions options)
+    {
+        if (!Directory.Exists(sourceRoot)) return;
+        var opNames = options.ApiOperationFileNames.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var assetNames = options.ApiAssetFileNames.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var files = Directory.EnumerateFiles(sourceRoot, "*", SearchOption.AllDirectories)
+            .Where(f => !SourceTypeRegistry.IsScratchPath(Path.GetRelativePath(sourceRoot, f)))
+            .Order(StringComparer.Ordinal).ToList();
+
+        var assets = new Dictionary<string, (string Program, string File)>(StringComparer.OrdinalIgnoreCase);
+        foreach (var file in files.Where(f => assetNames.Contains(Path.GetFileName(f))))
+            if (AssetProgram.Match(File.ReadAllText(file)) is { Success: true } p)
+                assets.TryAdd(Path.GetFileName(Path.GetDirectoryName(file)!),
+                    (p.Groups[1].Value.ToUpperInvariant(), Path.GetRelativePath(sourceRoot, file).Replace('\\', '/')));
+
+        foreach (var file in files.Where(f => opNames.Contains(Path.GetFileName(f))))
+        {
+            var rel = Path.GetRelativePath(sourceRoot, file).Replace('\\', '/');
+            var lines = File.ReadAllLines(file);
+            var line = Array.FindIndex(lines, l => ZAsset.IsMatch(l));
+            if (line < 0) continue;
+            var asset = ZAsset.Match(lines[line]).Groups[1].Value;
+            var methodDir = Path.GetDirectoryName(file)!;
+            var method = Path.GetFileName(methodDir).ToUpperInvariant();
+            var path = Uri.UnescapeDataString(Path.GetFileName(Path.GetDirectoryName(methodDir)!));
+            var api = g.Node(EstateNodeKind.Api, $"{method} {path}", rel);
+            api.Attributes["asset"] = asset.ToUpperInvariant();
+            var program = assets.TryGetValue(asset, out var a) ? a.Program : asset.ToUpperInvariant();
+            foreach (var target in g.ResolveProgram(program, rel))
+                g.Edge(api.Id, target, EstateEdgeKind.Invokes, asset.ToUpperInvariant(), [new EstateEvidence(rel, line + 1, lines[line].Trim())]);
         }
     }
 

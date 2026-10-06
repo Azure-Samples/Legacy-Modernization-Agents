@@ -79,6 +79,38 @@ public sealed class EstateGraphServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task RebuildDropsTheCachedGraph()
+    {
+        Estate();
+        var service = Service();
+
+        var (first, _) = await service.GetGraphAsync();
+        var (rebuilt, _) = await service.RebuildAsync();
+
+        Assert.NotSame(first, rebuilt);
+        Assert.Equal(first.Counts, rebuilt.Counts);
+    }
+
+    [Fact]
+    public async Task TheMissionViewCarriesProgramsStatusAndCarveOutClusters()
+    {
+        Estate();
+        _fixture.AddFacts("ORDA.cbl", confidence: 87);
+
+        var mission = await Service().GetMissionAsync();
+
+        Assert.Equal(3, mission.Kpis["programs"]);
+        var orda = Assert.Single(mission.Nodes, n => n.Id == "program:ORDA");
+        Assert.Equal("batch", orda.Kind);
+        Assert.NotNull(orda.Status);
+        Assert.Contains(mission.Nodes, n => n.Id == "job:ORDJOB" && n.Type == "job");
+        var cluster = Assert.Single(mission.Clusters, c => c.Members.Contains("program:ORDA"));
+        Assert.Contains("job:ORDJOB", cluster.EntryPoints);
+        Assert.Contains("GHOST", cluster.Missing);
+        Assert.Equal(cluster.Id, cluster.SliceId);
+    }
+
+    [Fact]
     public async Task ANodeComesWithTheSourceLinesBehindEachEdge()
     {
         Estate();
@@ -189,6 +221,27 @@ public class EstateEndpointsTests : IClassFixture<Integration.WebAppFactory>
 
         Assert.Equal(JsonValueKind.Array, payload.GetProperty("clusters").ValueKind);
         Assert.Equal(JsonValueKind.Array, payload.GetProperty("waves").ValueKind);
+        Assert.Equal(JsonValueKind.Object, payload.GetProperty("counts").ValueKind);
+    }
+
+    [Fact]
+    public async Task TheMissionIsJson()
+    {
+        var payload = await _factory.CreateClient().GetFromJsonAsync<JsonElement>("/api/estate/mission");
+
+        Assert.Equal(JsonValueKind.Array, payload.GetProperty("nodes").ValueKind);
+        Assert.Equal(JsonValueKind.Array, payload.GetProperty("edges").ValueKind);
+        Assert.Equal(JsonValueKind.Array, payload.GetProperty("clusters").ValueKind);
+        Assert.Equal(JsonValueKind.Object, payload.GetProperty("kpis").ValueKind);
+    }
+
+    [Fact]
+    public async Task RebuildReturnsTheFreshCounts()
+    {
+        var response = await _factory.CreateClient().PostAsync("/api/estate/rebuild", null);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var payload = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal(JsonValueKind.Object, payload.GetProperty("counts").ValueKind);
     }
 

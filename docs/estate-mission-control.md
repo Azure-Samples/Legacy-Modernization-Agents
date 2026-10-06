@@ -18,7 +18,12 @@ The estate graph is built from the files in `source/`, plus the JCL folder when 
 | Job | JCL `EXEC PGM=` steps, including those inside procedures |
 | Dataset | DD statements, linked to the steps that write or read them |
 | Table | Embedded SQL, split into reads and writes; the `SYSIBM.` catalogue is skipped |
-| Transaction / map | CICS `LINK`, `XCTL`, `LOAD` and `START`/`RETURN TRANSID`, BMS maps (`MapExtensions`) and CSD definitions (`CicsDefinitionExtensions`) |
+| Transaction / map | CICS `LINK`, `XCTL`, `LOAD` and `START`/`RETURN TRANSID`, BMS maps (`MapExtensions`), CSD definitions (`CicsDefinitionExtensions`) and CICS resource definitions in YAML (`- transaction:` with `program:`, `CicsYamlExtensions`) |
+| CICS file | `- file:` entries in the CICS YAML, linked to their dataset (`dsname`) by a `backed-by` edge |
+| Table (DDL) | `CREATE TABLE` in `.ddl` files (`DdlExtensions`): the table is then in the source rather than only named by the code |
+| API | z/OS Connect style operations: `operations/<path>/<method>/operation.yaml` names an asset (`zasset:`), and `zosAssets/<asset>/zosAsset.yaml` names the program it invokes (`ApiOperationFileNames`, `ApiAssetFileNames`) |
+
+Each program also carries counts taken from its text (lines, paragraphs and sections, `IF`/`WHEN`/`UNTIL` complexity, `PERFORM`, `GO TO`, `EXEC CICS`/`SQL`/`DLI`) and a one-line description from its header comments: a `FUNCTION:` line when there is one, otherwise the first prose that is not a licence or banner.
 
 ### Hubs, clusters and waves
 
@@ -53,14 +58,18 @@ Both commands write `output/estate/estate-graph.json`. The file is git-ignored w
 
 ### In the portal
 
-Open the **Estate Mission Control** tab.
+Open the **Estate Mission Control** tab. The graph panel expands while the tab is open.
 
-- **Waves and clusters.** The top of the tab shows KPIs and the waves, with cluster cards ordered by carve score.
-- **Cluster detail.** Select a card to see its score breakdown and graph. Select a node to see its evidence: the file, line and source text behind each relationship.
-- **Slice.** The slice lists the programs to convert. The program name is used, or the source-relative path when two programs share a name. **Include what it calls** adds the programs the slice calls but does not contain. The slice also shows the equivalent `./doctor.sh convert-only --program …` command.
-- **Convert.** This starts a convert-only run of the slice. It uses the provider, model and speed currently selected in Mission Control.
+- **KPIs.** Programs and lines, entry points (transactions, APIs, jobs), online and batch programs, data stores, how much REKT parsed, how many programs have an evaluated conversion, clusters and hubs, and what needs attention.
+- **Explore.** The whole estate as one graph (Cytoscape with the fCoSE layout), grouped by business function, carve-out cluster or estate. Filter by node type, program kind (online, API, batch, subroutine), technology (CICS, DB2, VSAM, IMS, MQ, files), status or unreferenced and unreachable programs, and search by name. A program's ring shows its status: converted with parity of 90% or more, converted, parsed, not parsed yet, or referenced but not in the source. Select a node to see its metrics, description, conversion parity and every relationship with the file and line behind it.
+- **Carve-out plan.** The wave plan. Wave 0 holds the hub programs as shared services. The other waves follow call order, so a cluster comes after every cluster it calls into, and within a wave the highest carve score goes first. Each card shows a tier: **low-risk** at or above `LowRiskCarveScore`, **moderate** at or above `ModerateCarveScore`, otherwise **core**.
+- **Cluster card.** Select a card or a cluster title in the graph. It shows the rationale and score breakdown, the members, the entry points (transactions, APIs, jobs) that become the cluster's front door, the **owned data** that moves with it, the **shared data** another cluster also reads or writes (it needs a data-access API or sync; red ring in the graph), the inbound calls that become service APIs, the outbound dependencies and the references missing from the source. System routines (`SystemProgramPrefixes`) are shown as utilities and not counted as missing.
+- **Stage slice.** Lists the programs to convert, what they call outside the cluster, what is missing, the jobs that run end to end, and the equivalent `./doctor.sh convert-only --program …` command. **Include what it calls** adds the programs the slice calls but does not contain. The program name is used, or the source-relative path when two programs share a name.
+- **Send to AI loop.** Starts a convert-only run of the slice in the language you choose, with the provider, model and speed selected in Mission Control.
 
-The portal rebuilds the graph only when the source tree changes.
+The portal rebuilds the graph when the source tree changes, or when you select **Rebuild graph**.
+
+Each program gets a business function from `DomainRules`: the first rule whose `Name` regex matches the program name, else the first whose `Text` regex matches its description and the resources it touches, else `DomainFallback`. Transactions and APIs take the function of the programs they start; screens take that of the programs that send them. The defaults are generic; tune them per estate.
 
 | Endpoint | Returns |
 |----------|---------|
@@ -69,6 +78,8 @@ The portal rebuilds the graph only when the source tree changes.
 | `GET /api/estate/node/{id}` | One node with its edges and evidence |
 | `GET /api/estate/cluster/{id}/slice?includeNeeds=true` | The program selectors and the command |
 | `POST /api/estate/slice/convert` | Starts a convert-only run of a slice |
+| `GET /api/estate/mission` | Everything the tab draws: nodes with kind, technology, business function, metrics and status; edges with evidence; clusters with owned and shared data; KPIs |
+| `POST /api/estate/rebuild` | Rescans the source and rebuilds the graph now |
 
 ## AI Loop
 
@@ -118,6 +129,11 @@ Both features read their settings from `Config/appsettings.json`.
 | | `IgnoredTablePrefixes`, `SystemCopybooks` | `SYSIBM.`; `SQLCA`, `SQLDA` | Tables and copybooks that create no coupling |
 | | `MapExtensions`, `CicsDefinitionExtensions` | `.bms`; `.csd` | Where maps and transactions are read from |
 | | `GeneratedCopybookDirectories` | `copy-generated` | Folders of generated stand-in copybooks. When a name also exists elsewhere, the other copybook is used. The REKT parse reads the same list from `REKT_GENERATED_COPYBOOK_DIRS` |
+| | `CicsYamlExtensions`, `DdlExtensions` | `.yaml`, `.yml`; `.ddl` | Where CICS YAML definitions and DDL are read from |
+| | `ApiOperationFileNames`, `ApiAssetFileNames` | `operation.yaml`; `zosAsset.yaml` | The API operation and asset files |
+| | `SystemProgramPrefixes` | `CEE`, `DSN`, `ILBO`, `IGZ`, `MQ`, `CBLTDLI`, `AIBTDLI`, `DFH` | Missing programs with these prefixes are system routines: shown as utilities, not as gaps |
+| | `DomainRules`, `DomainFallback` | generic rules; `Other` | Business function per program (see above) |
+| | `LowRiskCarveScore`, `ModerateCarveScore` | 75, 50 | The carve-score tiers |
 | | `MaxEvidencePerEdge` | 20 | How many source lines are kept for each edge |
 | `AiLoop` | `MaxRuns`, `MaxTimelineEvents` | 50, 200 | How much is listed |
 | | `StaleRunMinutes` | 30 | When an unfinished run with no recent events is shown as interrupted |

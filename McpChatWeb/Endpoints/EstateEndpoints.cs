@@ -29,6 +29,19 @@ public static class EstateEndpoints
             .WithName("GetEstateGraph")
             .WithSummary("Nodes and edges of the estate, or of one cluster and its neighbours.");
 
+        group.MapGet("/mission", async (EstateGraphService service, CancellationToken ct) =>
+                Results.Ok(await service.GetMissionAsync(ct)))
+            .WithName("GetEstateMission")
+            .WithSummary("Mission Control: nodes with kind, technology, business function and status; carve-out clusters with owned and shared data; KPIs.");
+
+        group.MapPost("/rebuild", async (EstateGraphService service, CancellationToken ct) =>
+            {
+                var (graph, warning) = await service.RebuildAsync(ct);
+                return Results.Ok(new { graph.GeneratedAtUtc, graph.Counts, warning });
+            })
+            .WithName("RebuildEstateGraph")
+            .WithSummary("Rescan the source and rebuild the estate graph now.");
+
         // Node ids carry a kind prefix and may carry a source-relative path.
         group.MapGet("/node/{**id}", async (string id, EstateGraphService service, CancellationToken ct) =>
                 await service.GetNodeAsync(id, ct) is { } node
