@@ -199,6 +199,32 @@ class IngestRektOutputsTests(unittest.TestCase):
         self.assertEqual(0, counts["ASTNode"])
 
 
+    @patch("populator.console")
+    @patch("populator.create_source_blocks")
+    @patch("populator.batch_merge_nodes")
+    def test_program_facts_are_not_treated_as_parse_artifacts(
+        self,
+        merge_nodes,
+        create_blocks,
+        console,
+    ):
+        merge_nodes.return_value = 1
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_dir = root / "source"
+            source_dir.mkdir()
+            (source_dir / "ACCOUNTS.cbl").write_text("IDENTIFICATION DIVISION.\n")
+
+            rekt_dir = root / "rekt"
+            rekt_dir.mkdir()
+            (rekt_dir / "ACCOUNTS.cbl.facts.json").write_text("{}")
+
+            ingest_rekt_outputs(object(), str(rekt_dir), str(source_dir), 1)
+
+        printed = " ".join(str(call) for call in console.print.call_args_list)
+        self.assertNotIn("ambiguous source", printed)
+
+
 class SchemaTests(unittest.TestCase):
     def test_datastructure_schema_migrates_to_uid_constraint(self):
         schema_text = (

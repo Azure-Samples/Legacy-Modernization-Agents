@@ -591,7 +591,8 @@ def ingest_rekt_outputs(driver, rekt_output_dir: str, source_dir: str, run_id: i
     source_files = [node["fileName"] for node in file_nodes]
 
     for json_file in sorted(output_path.rglob("*.json")):
-        if is_jcl_artifact(json_file.name):
+        # Program facts are read by the migration, not ingested into the graph.
+        if is_jcl_artifact(json_file.name) or json_file.name.lower().endswith(".facts.json"):
             continue
         rel_path = json_file.relative_to(output_path)
         program_name = artifact_source_path(
