@@ -19,6 +19,47 @@ def artifact_source_path(
     source_files: list[str],
 ) -> str | None:
     """Resolve a REKT artifact to one unambiguous source-relative path."""
+    candidates = _artifact_candidates(artifact_path, output_dir)
+    normalized_sources = [Path(source).as_posix() for source in source_files]
+    for candidate in candidates:
+        if candidate in normalized_sources:
+            return candidate
+
+    for candidate in candidates:
+        matches = _basename_matches(candidate, normalized_sources)
+        if len(matches) == 1:
+            return matches[0]
+
+    return None
+
+
+def unresolved_artifact_reason(
+    artifact_path: str,
+    output_dir: str,
+    source_files: list[str],
+) -> str:
+    """Explain why artifact_source_path returned None for this artifact."""
+    candidates = _artifact_candidates(artifact_path, output_dir)
+    normalized_sources = [Path(source).as_posix() for source in source_files]
+    for candidate in candidates:
+        matches = _basename_matches(candidate, normalized_sources)
+        if len(matches) > 1:
+            return (
+                f"ambiguous source: {Path(candidate).name} exists in more than one folder "
+                f"({', '.join(sorted(matches))})"
+            )
+    return (
+        "no matching source: expected a program in source/ named "
+        + " or ".join(sorted(set(candidates)))
+        + " (was it removed, or is this not a parse artifact?)"
+    )
+
+
+def _basename_matches(candidate: str, normalized_sources: list[str]) -> list[str]:
+    return [source for source in normalized_sources if Path(source).name == Path(candidate).name]
+
+
+def _artifact_candidates(artifact_path: str, output_dir: str) -> list[str]:
     relative_artifact = Path(artifact_path).relative_to(Path(output_dir))
     candidates: list[str] = []
 
@@ -51,18 +92,4 @@ def artifact_source_path(
         )
         candidates.append(stripped)
 
-    normalized_sources = [Path(source).as_posix() for source in source_files]
-    for candidate in candidates:
-        if candidate in normalized_sources:
-            return candidate
-
-    for candidate in candidates:
-        matches = [
-            source
-            for source in normalized_sources
-            if Path(source).name == Path(candidate).name
-        ]
-        if len(matches) == 1:
-            return matches[0]
-
-    return None
+    return candidates

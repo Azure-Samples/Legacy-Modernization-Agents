@@ -29,7 +29,12 @@ from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn
 
 from configuration import required_environment_variable
 from jcl_graph import FACTS_SUFFIX, LINEAGE_FILE, SUPPORTED_SCHEMA, build_jcl_graph, is_jcl_artifact
-from source_paths import artifact_source_path, scoped_graph_id, source_relative_path
+from source_paths import (
+    artifact_source_path,
+    scoped_graph_id,
+    source_relative_path,
+    unresolved_artifact_reason,
+)
 
 console = Console()
 
@@ -601,9 +606,8 @@ def ingest_rekt_outputs(driver, rekt_output_dir: str, source_dir: str, run_id: i
             source_files,
         )
         if program_name is None:
-            console.print(
-                f"[yellow]Skipping artifact with ambiguous source: {rel_path}[/yellow]"
-            )
+            reason = unresolved_artifact_reason(str(json_file), str(output_path), source_files)
+            console.print(f"[yellow]Skipping {rel_path}: {reason}[/yellow]")
             continue
 
         try:
