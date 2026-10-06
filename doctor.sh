@@ -3095,8 +3095,12 @@ run_rekt_parse() {
 
     # Clear previous run outputs first so the missing-copybook report below survives.
     # Use find-delete rather than rm -rf dir to preserve the Docker bind mount (./output/rekt:/output).
+    # A filtered run clears only its own programs once the filter resolves; the graph ingest
+    # reads everything here, so a full wipe would drop every other program from the estate.
     mkdir -p "$REPO_ROOT/output/rekt"
-    find "$REPO_ROOT/output/rekt" -mindepth 1 -delete 2>/dev/null || true
+    if [[ -z "${_REKT_PROGRAM_FILTER:-}" ]]; then
+        find "$REPO_ROOT/output/rekt" -mindepth 1 -delete 2>/dev/null || true
+    fi
 
     # Report missing copybooks before parsing so reduced coverage is explicit.
     local missing_report="$REPO_ROOT/output/rekt/missing-copybooks.txt"
@@ -3297,6 +3301,14 @@ PYEOF
         fi
         rekt_filter_file="$staging_dir/.rekt-program-filter"
         printf '%s\n' "$filter_resolution_output" > "$rekt_filter_file"
+        local filtered_rel
+        while IFS= read -r filtered_rel; do
+            [[ -z "$filtered_rel" ]] && continue
+            rm -rf "$REPO_ROOT/output/rekt/${filtered_rel}.report"
+            rm -f "$REPO_ROOT/output/rekt/${filtered_rel}.parse.log" \
+                "$REPO_ROOT/output/rekt/${filtered_rel}-deps.json" \
+                "$REPO_ROOT/output/rekt/${filtered_rel}.facts.json"
+        done < "$rekt_filter_file"
         echo -e "  ${BLUE}REKT program filter: ${_REKT_PROGRAM_FILTER}${NC}"
     fi
 
@@ -3390,6 +3402,13 @@ PYEOF
         mv "$flat_path" "$nested_path"
     }
 
+    # smojol can exit 0 without writing the AST or control flow, so its exit code alone
+    # would report a program as fully parsed when consumers will find no structure for it.
+    rekt_structure_written() {
+        local report="$REPO_ROOT/output/rekt/${1}.report"
+        compgen -G "$report/flow_ast/*.json" >/dev/null && compgen -G "$report/cfg/*.json" >/dev/null
+    }
+
     # Use process substitution so succeeded/failed counters persist outside the loop
     while IFS= read -r cbl_file; do
         [[ -e "$cbl_file" ]] || continue
@@ -3455,7 +3474,7 @@ PYEOF
             --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
             --dialectJarPath=/app/dialect-idms.jar \
             --reportDir=/output \
-            --generation=PROGRAM >/dev/null 2>"$err_log"; then
+            --generation=PROGRAM >/dev/null 2>"$err_log" && rekt_structure_written "$fname"; then
             echo -e " ${GREEN}✅${NC}"
             rm -f "$err_log"
             succeeded=$((succeeded + 1))
@@ -3466,7 +3485,7 @@ PYEOF
                 --commands="BUILD_BASE_ANALYSIS WRITE_FLOW_AST WRITE_CFG WRITE_DATA_STRUCTURES" \
                 --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
                 --reportDir=/output \
-                --generation=PROGRAM >/dev/null 2>>"$err_log"; then
+                --generation=PROGRAM >/dev/null 2>>"$err_log" && rekt_structure_written "$fname"; then
                 echo -e " ${GREEN}✅${NC} (no-dialect mode)"
                 rm -f "$err_log"
                 succeeded=$((succeeded + 1))

@@ -47,6 +47,11 @@ def strip_trailing_seq(text):
         if len(raw) > 6 and raw[6] == '*':
             out.append(line)
             continue
+        # Columns 73-80 are the identification area, which the compiler ignores. Unless a token
+        # straddles column 72, drop it here, before later steps shift text left into code.
+        if len(raw) > 72 and (raw[71] == ' ' or raw[72] == ' '):
+            out.append(raw[:72].rstrip())
+            continue
         # Pattern 1: trailing seq separated by whitespace on long fixed-format lines
         m = re.match(r'^(.+?)\s+(\d{8})$', raw) if len(raw) > 72 else None
         if m:
@@ -277,6 +282,11 @@ def strip_trailing_seq(text):
         # Skip comment lines
         if len(raw) > 6 and raw[6] == '*':
             out.append(line)
+            continue
+        # Columns 73-80 are the identification area, which the compiler ignores. Unless a token
+        # straddles column 72, drop it here, before later steps shift text left into code.
+        if len(raw) > 72 and (raw[71] == ' ' or raw[72] == ' '):
+            out.append(raw[:72].rstrip())
             continue
         m = re.match(r'^(.+?)\s+(\d{8})$', raw) if len(raw) > 72 else None
         if m:
@@ -646,7 +656,7 @@ def fix_length_of(text):
     for ln in text.split('\n'):
         is_comment = len(ln) >= 7 and ln[6] == '*'
         if not is_comment:
-            ln = re.sub(r'\bLENGTH\s+OF\s+\w+(?:-\w+)*\b', '0', ln, flags=re.IGNORECASE)
+            ln = re.sub(r'\bLENGTH\s+OF\s+\w+(?:-\w+)*(?:\s+(?:OF|IN)\s+\w+(?:-\w+)*)*\b', '0', ln, flags=re.IGNORECASE)
         result.append(ln)
     return '\n'.join(result)
 

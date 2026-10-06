@@ -222,6 +222,59 @@ class PreprocessForRektTests(unittest.TestCase):
         )
         self.assertEqual(1, output.count("CONTINUE"))
 
+    def test_drops_identification_area_text_instead_of_pulling_it_into_code(self):
+        # Columns 73-80 are ignored by the compiler. Shifting their text left turns a note
+        # or a short sequence number into a token, and the parser then writes no AST.
+        def fixed(code, ident):
+            return code.ljust(73) + ident
+
+        program = "\n".join(
+            [
+                fixed("       IDENTIFICATION DIVISION.", "0002000"),
+                fixed("       PROGRAM-ID. TESTPGM.", "0003000"),
+                "       DATA DIVISION.",
+                "       WORKING-STORAGE SECTION.",
+                "       01  WS-TS          PIC X(10).",
+                fixed("       01  FILLER REDEFINES WS-TS.", ""),
+                fixed("           06 WS-YYYY      PIC X(004).", "E"),
+                fixed("           06 WS-SEP       PIC X.", "-"),
+                "       PROCEDURE DIVISION.",
+                fixed("           GOBACK.", "AB12CD34"),
+                "",
+            ]
+        )
+        (self.source_dir / "idarea.cbl").write_text(program, encoding="latin-1")
+        (self.source_dir / "idarea.cpy").write_text(
+            fixed("       01  CPY-FLD        PIC X(004).", "E") + "\n", encoding="latin-1"
+        )
+
+        self.run_preprocessor()
+
+        for name in ("idarea.cbl", "idarea.cpy"):
+            for line in self.preprocessed_text(name).split("\n"):
+                self.assertLessEqual(len(line.rstrip()), 72, f"{name}: {line!r}")
+                for ident in ("0002000", "0003000", "AB12CD34"):
+                    self.assertNotIn(ident, line, f"{name}: {line!r}")
+                self.assertFalse(line.rstrip().endswith((" E", " -")), f"{name}: {line!r}")
+        self.assertIn("PIC X(004).", self.preprocessed_text("idarea.cbl"))
+
+    def test_replaces_qualified_length_of_including_its_qualifiers(self):
+        self.write_program(
+            "length-of.cbl",
+            [
+                "           PERFORM VARYING WS-IDX",
+                "                   FROM LENGTH OF OPTIONI OF MAPAI BY -1 UNTIL",
+                "                   WS-IDX = 1",
+                "           END-PERFORM",
+            ],
+        )
+
+        self.run_preprocessor()
+        output = self.preprocessed_text("length-of.cbl")
+
+        self.assertIn("FROM 0 BY -1 UNTIL", output)
+        self.assertNotIn("OF MAPAI", output)
+
     def test_applies_local_rules_file_by_stage(self):
         self.write_program(
             "local-rules.cbl",
