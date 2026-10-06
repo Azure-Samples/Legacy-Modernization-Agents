@@ -24,8 +24,11 @@ builder.WebHost.ConfigureKestrel(serverOptions =>
 		listenOptions.UseConnectionLogging();
 	});
 
-	// Enable SO_REUSEADDR at the socket level
-	serverOptions.ListenAnyIP(5028, listenOptions =>
+	// doctor.sh passes the port it resolved from MCP_WEB_PORT; a lone portal keeps 5028.
+	var portalPort = int.TryParse(Environment.GetEnvironmentVariable("MCP_WEB_PORT"), out var webPort) ? webPort
+		: int.TryParse(Environment.GetEnvironmentVariable("ASPNETCORE_HTTP_PORTS"), out var httpPorts) ? httpPorts
+		: 5028;
+	serverOptions.ListenAnyIP(portalPort, listenOptions =>
 	{
 		listenOptions.Protocols = HttpProtocols.Http1AndHttp2;
 	});
@@ -3424,7 +3427,9 @@ app.MapGet("/api/health/databases", async () =>
 	{
 		using var httpClient = new HttpClient();
 		httpClient.Timeout = TimeSpan.FromSeconds(2);
-		var neo4jHttpResponse = await httpClient.GetAsync("http://localhost:7474");
+		// The browser port is not part of the bolt URI; doctor.sh exports it when moved.
+		var neo4jHttpPort = Environment.GetEnvironmentVariable("NEO4J_HTTP_PORT") is { Length: > 0 } httpPort ? httpPort : "7474";
+		var neo4jHttpResponse = await httpClient.GetAsync($"http://{new Uri(neo4jUri).Host}:{neo4jHttpPort}");
 		
 		if (neo4jHttpResponse.IsSuccessStatusCode)
 		{
@@ -3729,7 +3734,8 @@ app.MapGet("/api/activity/live", async () =>
 		{
 			// Quick Neo4j check - just check if port is open
 			using var tcpClient = new System.Net.Sockets.TcpClient();
-			var connectTask = tcpClient.ConnectAsync("localhost", 7687);
+			var boltUri = new Uri(app.Configuration.GetValue<string>("ApplicationSettings:Neo4j:Uri") ?? "bolt://localhost:7687");
+			var connectTask = tcpClient.ConnectAsync(boltUri.Host, boltUri.Port > 0 ? boltUri.Port : 7687);
 			neo4jConnected = connectTask.Wait(500);
 		}
 		catch { }

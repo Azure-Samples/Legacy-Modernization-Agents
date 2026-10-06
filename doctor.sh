@@ -198,7 +198,9 @@ ensure_copilot_cli_for_build() {
     echo -e "${YELLOW}   See docs/building-behind-an-npm-registry-block.md${NC}"
 }
 DEFAULT_MCP_HOST="localhost"
-DEFAULT_MCP_PORT=5028
+# MCP_WEB_PORT in Config/ai-config.local.env moves the portal; a shell value still wins at launch.
+DEFAULT_MCP_PORT="$(read_local_config_value MCP_WEB_PORT)"
+DEFAULT_MCP_PORT="${DEFAULT_MCP_PORT:-5028}"
 
 # Function to show usage
 show_usage() {
@@ -1584,7 +1586,7 @@ AISETTINGS__CHATENDPOINT="https://copilot-sdk-placeholder"
 # Username: neo4j
 # NOT FOR PRODUCTION, ENSURE TO CHANGE PASSWORD
 #
-# Two instances run side by side: the migration graph on 7687 and the REKT graph on 7688.
+# Two instances run side by side: the migration graph (default bolt 7687) and the REKT graph (default 7688).
 # Each fixes its password in its own data volume the first time it starts, so these must
 # match the volumes that already exist. Re-running setup keeps whatever is set here.
 NEO4J_PASSWORD="$neo4j_password"
@@ -2608,11 +2610,35 @@ run_conversion_only() {
 
 # Cobol-REKT Integration
 
-REKT_NEO4J_CONTAINER="cobol-rekt-neo4j"
-REKT_NEO4J_HTTP_PORT=7475
-REKT_NEO4J_BOLT_PORT=7688
-REKT_CONTAINER="cobol-rekt"
-REKT_POPULATOR_CONTAINER="cobol-graph-populator"
+# Container names and host ports come from the environment, then Config/ai-config.local.env,
+# then these defaults, so two checkouts on one machine can run side by side. They are
+# exported because docker-compose.yml reads the same variables.
+resolve_runtime_setting() {
+    local key="$1" default="$2" value="${!1:-}"
+    [[ -n "$value" ]] || value="$(read_local_config_value "$key")"
+    printf '%s' "${value:-$default}"
+}
+NEO4J_CONTAINER="$(resolve_runtime_setting NEO4J_CONTAINER cobol-migration-neo4j)"
+NEO4J_HTTP_PORT="$(resolve_runtime_setting NEO4J_HTTP_PORT 7474)"
+NEO4J_BOLT_PORT="$(resolve_runtime_setting NEO4J_BOLT_PORT 7687)"
+REKT_NEO4J_CONTAINER="$(resolve_runtime_setting REKT_NEO4J_CONTAINER cobol-rekt-neo4j)"
+REKT_NEO4J_HTTP_PORT="$(resolve_runtime_setting REKT_NEO4J_HTTP_PORT 7475)"
+REKT_NEO4J_BOLT_PORT="$(resolve_runtime_setting REKT_NEO4J_BOLT_PORT 7688)"
+REKT_CONTAINER="$(resolve_runtime_setting REKT_CONTAINER cobol-rekt)"
+REKT_POPULATOR_CONTAINER="$(resolve_runtime_setting REKT_POPULATOR_CONTAINER cobol-graph-populator)"
+PORTAL_CONTAINER="$(resolve_runtime_setting PORTAL_CONTAINER cobol-migration-portal)"
+export NEO4J_CONTAINER NEO4J_HTTP_PORT NEO4J_BOLT_PORT REKT_NEO4J_CONTAINER REKT_NEO4J_HTTP_PORT \
+    REKT_NEO4J_BOLT_PORT REKT_CONTAINER REKT_POPULATOR_CONTAINER PORTAL_CONTAINER
+# A moved port is passed on to the CLI and portal; otherwise their own settings apply unchanged.
+if [[ "$REKT_NEO4J_BOLT_PORT" != "7688" && -z "${REKT_NEO4J_URI:-}" ]]; then
+    export REKT_NEO4J_URI="bolt://localhost:$REKT_NEO4J_BOLT_PORT"
+fi
+if [[ "$NEO4J_BOLT_PORT" != "7687" && -z "${ApplicationSettings__Neo4j__Uri:-}" ]]; then
+    export ApplicationSettings__Neo4j__Uri="bolt://localhost:$NEO4J_BOLT_PORT"
+fi
+# Compose commands take service names, which stay fixed while container names vary.
+REKT_NEO4J_SERVICE="cobol-rekt-neo4j"
+REKT_SERVICE="cobol-rekt"
 # Written by tools/preprocess-for-rekt.sh into synthesised copybooks and read by
 # StubCopybookCatalog.Marker. It is the only reliable way to tell an invented layout from
 # real content, because both live in source/.preprocessed/.
@@ -2732,13 +2758,13 @@ ensure_rekt_containers() {
 
     # Start only the rekt services (leave existing neo4j untouched).
     local compose_output
-    if ! compose_output=$(docker-compose up -d "$REKT_NEO4J_CONTAINER" "$REKT_CONTAINER" 2>&1); then
+    if ! compose_output=$(docker-compose up -d "$REKT_NEO4J_SERVICE" "$REKT_SERVICE" 2>&1); then
         echo -e "${RED}❌ Failed to start Cobol-REKT containers:${NC}"
         printf '%s\n' "$compose_output" | sed 's/^/  /'
         echo ""
         echo -e "${YELLOW}Debug with:${NC}"
         echo "  docker-compose ps"
-        echo "  docker-compose logs --tail=100 $REKT_NEO4J_CONTAINER $REKT_CONTAINER"
+        echo "  docker-compose logs --tail=100 $REKT_NEO4J_SERVICE $REKT_SERVICE"
         return 1
     fi
 
@@ -2763,7 +2789,7 @@ ensure_rekt_containers() {
             echo ""
             echo -e "${YELLOW}Debug with:${NC}"
             echo "  docker-compose ps"
-            echo "  docker-compose logs --tail=100 $REKT_NEO4J_CONTAINER"
+            echo "  docker-compose logs --tail=100 $REKT_NEO4J_SERVICE"
             return 1
         fi
     done
@@ -2783,7 +2809,7 @@ ensure_rekt_containers() {
         echo "  REKT_NEO4J_PASSWORD=<existing-password>"
         echo ""
         echo "or discard the graph and let it re-initialise (parsed artifacts are kept):"
-        echo "  docker-compose rm -sf $REKT_NEO4J_CONTAINER"
+        echo "  docker-compose rm -sf $REKT_NEO4J_SERVICE"
         echo "  docker volume rm $(basename "$REPO_ROOT" | tr '[:upper:]' '[:lower:]')_rekt_neo4j_data"
         return 1
     fi
@@ -3045,8 +3071,8 @@ run_rekt_parse() {
         local container_visible
         container_visible=$(docker exec "$REKT_CONTAINER" sh -c "ls /source/.rekt-staging 2>/dev/null | wc -l" 2>/dev/null | tr -d ' ')
         if [[ -z "$container_visible" || "$container_visible" -eq 0 ]]; then
-            echo -e "  ${YELLOW}⚠️  Container can't see /source/.rekt-staging — bind mount is stale. Restarting cobol-rekt…${NC}"
-            docker compose -f "$REPO_ROOT/docker-compose.yml" restart "$REKT_CONTAINER" >/dev/null 2>&1 || true
+            echo -e "  ${YELLOW}⚠️  Container can't see /source/.rekt-staging — bind mount is stale. Restarting $REKT_CONTAINER…${NC}"
+            docker compose -f "$REPO_ROOT/docker-compose.yml" restart "$REKT_SERVICE" >/dev/null 2>&1 || true
             sleep 3
             container_visible=$(docker exec "$REKT_CONTAINER" sh -c "ls /source/.rekt-staging 2>/dev/null | wc -l" 2>/dev/null | tr -d ' ')
             if [[ -z "$container_visible" || "$container_visible" -eq 0 ]]; then
@@ -3697,8 +3723,8 @@ run_rekt_status() {
 
     # Check existing MMA Neo4j
     local mma_state
-    mma_state=$(docker inspect --format='{{.State.Status}}' "cobol-migration-neo4j" 2>/dev/null || echo "not found")
-    echo -e "  ${BLUE}ℹ️  cobol-migration-neo4j (existing): $mma_state${NC}"
+    mma_state=$(docker inspect --format='{{.State.Status}}' "$NEO4J_CONTAINER" 2>/dev/null || echo "not found")
+    echo -e "  ${BLUE}ℹ️  $NEO4J_CONTAINER (existing): $mma_state${NC}"
 
     # Neo4j node count
     if docker exec "$REKT_NEO4J_CONTAINER" sh -c \
@@ -3721,7 +3747,7 @@ run_rekt_status() {
     echo -e "  ${BLUE}Rekt JSON exports: ${json_count} files in output/rekt/${NC}"
 
     echo -e "\n  ${BLUE}Ports:${NC}"
-    echo -e "    Existing Neo4j: http://localhost:7474 (bolt://localhost:7687)"
+    echo -e "    Existing Neo4j: http://localhost:$NEO4J_HTTP_PORT (bolt://localhost:$NEO4J_BOLT_PORT)"
     echo -e "    Rekt Neo4j:     http://localhost:$REKT_NEO4J_HTTP_PORT (bolt://localhost:$REKT_NEO4J_BOLT_PORT)"
 }
 
@@ -4415,10 +4441,10 @@ check_chunking_health() {
     
     # Check if container is running
     if command -v docker >/dev/null 2>&1; then
-        if docker ps --format '{{.Names}}' | grep -q "cobol-migration-portal"; then
-            echo -e "   ${GREEN}✅ Container 'cobol-migration-portal' is running${NC}"
+        if docker ps --format '{{.Names}}' | grep -qx "$PORTAL_CONTAINER"; then
+            echo -e "   ${GREEN}✅ Container '$PORTAL_CONTAINER' is running${NC}"
         else
-            echo -e "   ${YELLOW}⚠️  Container 'cobol-migration-portal' is NOT running${NC}"
+            echo -e "   ${YELLOW}⚠️  Container '$PORTAL_CONTAINER' is NOT running${NC}"
             echo -e "      (Run 'docker-compose up -d' to start the containerized portal)"
         fi
     else

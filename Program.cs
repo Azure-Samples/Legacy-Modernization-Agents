@@ -1172,6 +1172,17 @@ internal static class Program
             aiSettings.ChatApiKey = chatApiKey;
         }
 
+        // The chat client prefers a non-empty chat endpoint over the main one, so the template
+        // value left in appsettings.json would win over a real endpoint set only for code models.
+        if (!string.IsNullOrEmpty(aiSettings.ChatEndpoint) && IsTemplatePlaceholder(aiSettings.ChatEndpoint))
+        {
+            aiSettings.ChatEndpoint = string.Empty;
+        }
+        if (!string.IsNullOrEmpty(aiSettings.ChatApiKey) && IsTemplatePlaceholder(aiSettings.ChatApiKey))
+        {
+            aiSettings.ChatApiKey = string.Empty;
+        }
+
         var chatDeploymentName = Environment.GetEnvironmentVariable("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME");
         if (!string.IsNullOrEmpty(chatDeploymentName))
         {
@@ -1224,6 +1235,20 @@ internal static class Program
         if (Environment.GetEnvironmentVariable("JAVA_OUTPUT_FOLDER") is { Length: > 0 } javaOutput)
         {
             applicationSettings.JavaOutputFolder = javaOutput;
+        }
+
+        // doctor.sh exports these from Config/ai-config.local.env; the portal binds the same names
+        // through ASP.NET configuration, so both processes reach the same graph.
+        if (applicationSettings.Neo4j is { } neo4j)
+        {
+            if (Environment.GetEnvironmentVariable("ApplicationSettings__Neo4j__Uri") is { Length: > 0 } neo4jUri)
+            {
+                neo4j.Uri = neo4jUri;
+            }
+            if (Environment.GetEnvironmentVariable("ApplicationSettings__Neo4j__Password") is { Length: > 0 } neo4jPassword)
+            {
+                neo4j.Password = neo4jPassword;
+            }
         }
 
         if (Environment.GetEnvironmentVariable("TEST_OUTPUT_FOLDER") is { Length: > 0 } testOutput)
