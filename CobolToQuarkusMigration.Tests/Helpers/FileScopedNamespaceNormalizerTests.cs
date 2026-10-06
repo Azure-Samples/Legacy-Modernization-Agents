@@ -16,13 +16,13 @@ public sealed class FileScopedNamespaceNormalizerTests : IDisposable
         "\n" +
         "using System;\n" +
         "\n" +
-        "public sealed class Bdcommik { }\n" +
+        "public sealed class Batommik { }\n" +
         "\n" +
         "namespace Modernized.Banking.Bd;\n" +
         "\n" +
         "using Modernized.Banking.Shared;\n" +
         "\n" +
-        "public sealed class BdcommikService { public Bdcommik Area { get; } = new(); }\n";
+        "public sealed class BatommikService { public Batommik Area { get; } = new(); }\n";
 
     private readonly string _run = Path.Join(
         Path.GetTempPath(), "nsnorm-" + Guid.NewGuid().ToString("N"));
@@ -61,7 +61,7 @@ public sealed class FileScopedNamespaceNormalizerTests : IDisposable
             "\n" +
             "using System;\n" +
             "\n" +
-            "public sealed class Bdcommik { }\n" +
+            "public sealed class Batommik { }\n" +
             "}\n" +
             "\n" +
             "namespace Modernized.Banking.Bd\n" +
@@ -69,22 +69,22 @@ public sealed class FileScopedNamespaceNormalizerTests : IDisposable
             "\n" +
             "using Modernized.Banking.Shared;\n" +
             "\n" +
-            "public sealed class BdcommikService { public Bdcommik Area { get; } = new(); }\n" +
+            "public sealed class BatommikService { public Batommik Area { get; } = new(); }\n" +
             "}\n");
     }
 
     [Fact]
     public void AFileScopedNamespaceFollowedByABlockOneIsClosedBeforeIt()
     {
-        // Bdsda23k.cs's shape: the compiler nests the block, and the phantom
+        // Ordda23k.cs's shape: the compiler nests the block, and the phantom
         // Modernized.Banking.Bd.Modernized.Banking.Shared then captures every
         // `using Modernized.Banking.Shared;` in Modernized.Banking.Bd.
         const string mixed =
             "namespace Modernized.Banking.Bd;\n" +
-            "public class Bdsda23k { }\n" +
+            "public class Ordda23k { }\n" +
             "namespace Modernized.Banking.Shared\n" +
             "{\n" +
-            "    public class Bdsda23kRecord { }\n" +
+            "    public class Ordda23kRecord { }\n" +
             "}\n";
 
         var result = FileScopedNamespaceNormalizer.Normalize(mixed);
@@ -92,12 +92,12 @@ public sealed class FileScopedNamespaceNormalizerTests : IDisposable
         result.Should().Be(
             "namespace Modernized.Banking.Bd\n" +
             "{\n" +
-            "public class Bdsda23k { }\n" +
+            "public class Ordda23k { }\n" +
             "}\n" +
             "\n" +
             "namespace Modernized.Banking.Shared\n" +
             "{\n" +
-            "    public class Bdsda23kRecord { }\n" +
+            "    public class Ordda23kRecord { }\n" +
             "}\n");
     }
 
@@ -146,12 +146,12 @@ public sealed class FileScopedNamespaceNormalizerTests : IDisposable
     [Fact]
     public void TheFolderPassRewritesOnlyTheFilesThatNeedIt()
     {
-        var mixed = Path.Join(_run, "Shared", "Bdcommik.cs");
-        var single = Path.Join(_run, "Bd", "Bdsda01.cs");
+        var mixed = Path.Join(_run, "Shared", "Batommik.cs");
+        var single = Path.Join(_run, "Bd", "Ordda01.cs");
         Directory.CreateDirectory(Path.GetDirectoryName(mixed)!);
         Directory.CreateDirectory(Path.GetDirectoryName(single)!);
         File.WriteAllText(mixed, TwoNamespaces);
-        const string singleText = "namespace Modernized.Banking.Bd;\npublic class Bdsda01 { }\n";
+        const string singleText = "namespace Modernized.Banking.Bd;\npublic class Ordda01 { }\n";
         File.WriteAllText(single, singleText);
 
         var rewritten = FileScopedNamespaceNormalizer.NormalizeFolder(_run);
@@ -164,7 +164,7 @@ public sealed class FileScopedNamespaceNormalizerTests : IDisposable
     [Fact]
     public void TheScaffoldReportsWhichFilesItRewrote()
     {
-        var mixed = Path.Join(_run, "Bdcommik.cs");
+        var mixed = Path.Join(_run, "Batommik.cs");
         File.WriteAllText(mixed, TwoNamespaces);
         File.WriteAllText(Path.Join(_run, "Plain.cs"), "namespace A;\npublic class Plain { }\n");
 

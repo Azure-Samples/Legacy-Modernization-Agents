@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import json
 import os
 import shutil
 import subprocess
@@ -30,9 +31,11 @@ class PreprocessForRektTests(unittest.TestCase):
         if WORK_ROOT.exists() and not any(WORK_ROOT.iterdir()):
             WORK_ROOT.rmdir()
 
-    def run_preprocessor(self, stubs=False):
+    def run_preprocessor(self, stubs=False, rules=None):
         env = os.environ.copy()
         env["REKT_NO_STUB_COPYBOOKS"] = "false" if stubs else "true"
+        # Never pick up a developer's local estate rules from Config/.
+        env["REKT_PREPROCESS_RULES"] = str(rules) if rules else str(self.work_dir / "no-rules.json")
         return subprocess.run(
             [str(SCRIPT_PATH), str(self.source_dir)],
             cwd=REPO_ROOT,
@@ -170,6 +173,99 @@ class PreprocessForRektTests(unittest.TestCase):
         self.assertNotIn(MARKER, self.preprocessed_text("SQLCA.cpy"))
         self.assertIn("SQLCODE", self.preprocessed_text("SQLCA.cpy"))
         self.assertIn(MARKER, self.preprocessed_text("ABSENTCB.cpy"))
+
+    def write_program(self, name, procedure_lines):
+        (self.source_dir / name).write_text(
+            "\n".join(
+                [
+                    "       IDENTIFICATION DIVISION.",
+                    "       PROGRAM-ID. TESTPGM.",
+                    "       PROCEDURE DIVISION.",
+                    *procedure_lines,
+                    "           GOBACK.",
+                    "",
+                ]
+            ),
+            encoding="latin-1",
+        )
+
+    def test_inserts_continue_when_then_branch_holds_only_comments(self):
+        self.write_program(
+            "empty-then.cbl",
+            [
+                "           IF WS-FILE-OK",
+                "      *        nothing to do yet",
+                "           ELSE",
+                "               DISPLAY 'FAILED'",
+                "           END-IF",
+                "           IF WS-OTHER-OK",
+                "               DISPLAY 'OK'",
+                "           ELSE",
+                "               DISPLAY 'NOT OK'",
+                "           END-IF",
+            ],
+        )
+
+        self.run_preprocessor()
+        output = self.preprocessed_text("empty-then.cbl")
+
+        self.assertIn(
+            "\n".join(
+                [
+                    "           IF WS-FILE-OK",
+                    "           CONTINUE",
+                    "      *        nothing to do yet",
+                    "           ELSE",
+                ]
+            ),
+            output,
+        )
+        self.assertEqual(1, output.count("CONTINUE"))
+
+    def test_applies_local_rules_file_by_stage(self):
+        self.write_program(
+            "local-rules.cbl",
+            ["           PERFORM 100-STEP UNTIL WS-A-DONE AND WS-B-DONE"],
+        )
+        rules = self.work_dir / "rules.json"
+        rules.write_text(
+            json.dumps(
+                {
+                    "programRewrites": [
+                        {
+                            "stage": "early",
+                            "literal": True,
+                            "find": "UNTIL WS-A-DONE AND WS-B-DONE",
+                            "replace": "UNTIL WS-A = 'Y' AND WS-B = 'Y'",
+                        },
+                        {
+                            "stage": "late",
+                            "find": r"PERFORM (\d+)-STEP",
+                            "replace": r"PERFORM \1-NEXT",
+                        },
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = self.run_preprocessor(rules=rules)
+
+        self.assertIn("Using local preprocess rules", result.stdout)
+        self.assertIn(
+            "PERFORM 100-NEXT UNTIL WS-A = 'Y' AND WS-B = 'Y'",
+            self.preprocessed_text("local-rules.cbl"),
+        )
+
+    def test_reports_and_ignores_a_malformed_rules_file(self):
+        self.write_program("plain.cbl", ["           MOVE 0(1) TO WS-FLAG"])
+        rules = self.work_dir / "broken.json"
+        rules.write_text("{not json", encoding="utf-8")
+
+        result = self.run_preprocessor(rules=rules)
+
+        self.assertIn("Ignoring", result.stdout)
+        self.assertIn("Preprocessed 1 program(s)", result.stdout)
 
 
 if __name__ == "__main__":

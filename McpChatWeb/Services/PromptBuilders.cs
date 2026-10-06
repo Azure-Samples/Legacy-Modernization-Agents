@@ -105,7 +105,7 @@ public static class PromptBuilders
 		sb.AppendLine("## Output Requirements");
 		sb.AppendLine("- Return COMPLETE, compilable Java code. No TODOs, no placeholders, no 'implement here' comments.");
 		sb.AppendLine("- Include all imports. Use Quarkus CDI annotations (@ApplicationScoped, @Inject, @Transactional).");
-		sb.AppendLine("- Class name = COBOL program name in PascalCase + 'Service' (e.g., BDSDA2F → Bdsda2fService).");
+		sb.AppendLine("- Class name = COBOL program name in PascalCase + 'Service' (e.g., ORDDA2F → Ordda2fService).");
 
 		return sb.ToString();
 	}
@@ -206,7 +206,7 @@ public static class PromptBuilders
 		sb.AppendLine("## Output Requirements");
 		sb.AppendLine("- Return COMPLETE, compilable C# code. No TODOs, no placeholders.");
 		sb.AppendLine("- Use .NET dependency injection, async/await, file-scoped namespaces.");
-		sb.AppendLine("- Class name = COBOL program name in PascalCase + 'Service' (e.g., BDSDA2F → Bdsda2fService).");
+		sb.AppendLine("- Class name = COBOL program name in PascalCase + 'Service' (e.g., ORDDA2F → Ordda2fService).");
 
 		return sb.ToString();
 	}

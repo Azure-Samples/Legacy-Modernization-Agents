@@ -39,8 +39,8 @@ public static class NamingHelper
     /// Derives a unique, valid class name from a COBOL filename.
     /// This ensures each COBOL file produces a uniquely named output file.
     /// </summary>
-    /// <param name="cobolFileName">The COBOL filename (e.g., "RGNB649.cbl" or "synthetic_50k_loc_cobol.cbl")</param>
-    /// <returns>A valid C#/Java class name (e.g., "Rgnb649" or "Synthetic50kLocCobol")</returns>
+    /// <param name="cobolFileName">The COBOL filename (e.g., "PAYB649.cbl" or "synthetic_50k_loc_cobol.cbl")</param>
+    /// <returns>A valid C#/Java class name (e.g., "Payb649" or "Synthetic50kLocCobol")</returns>
     public static string DeriveClassNameFromCobolFile(string cobolFileName)
     {
         // Get just the filename without path and extension
@@ -50,7 +50,7 @@ public static class NamingHelper
             return "ConvertedCobolProgram";
         
         // Convert to PascalCase and remove invalid characters
-        // COBOL names like "RGNB649" become "Rgnb649"
+        // COBOL names like "PAYB649" become "Payb649"
         // Names like "synthetic_50k_loc_cobol" become "Synthetic50kLocCobol"
         var sb = new StringBuilder();
         bool capitalizeNext = true;
@@ -164,7 +164,7 @@ public static class NamingHelper
         if (capitalCount >= 2 && className.Length >= 10)
         {
             // Additional check: not just a filename converted to PascalCase
-            // Filenames often have numbers or are short like "Rgnb649"
+            // Filenames often have numbers or are short like "Payb649"
             bool hasNumber = className.Any(char.IsDigit);
             if (!hasNumber)
                 return true;

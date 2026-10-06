@@ -191,10 +191,10 @@ public class ConversionOutputGuardTests
     }
 
     [Theory]
-    // RENI310.cpy: a complete conversion with no class in it was taken for truncated output.
+    // RPTI310.cpy: a complete conversion with no class in it was taken for truncated output.
     [InlineData("namespace A;\npublic enum FiktivRenteKode { Nej = 1 }\npublic readonly record struct DetFikKd(int Value);")]
-    [InlineData("namespace A;\npublic sealed record Reni307(int Kode);")]
-    [InlineData("namespace A;\ninternal interface IBdsmfjlService { }")]
+    [InlineData("namespace A;\npublic sealed record Rpti307(int Kode);")]
+    [InlineData("namespace A;\ninternal interface IOrdmainService { }")]
     [InlineData("namespace A;\npublic static partial class Helpers { }")]
     [InlineData("package a;\npublic enum Kode { NEJ }")]
     [InlineData("package a;\npublic @interface Marker { }")]

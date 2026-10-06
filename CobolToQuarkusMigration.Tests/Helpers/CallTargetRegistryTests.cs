@@ -6,7 +6,7 @@ namespace CobolToQuarkusMigration.Tests.Helpers;
 
 // The prompt asked every caller to "generate a service interface" for each CALL and named neither
 // the interface nor its method. Seven programs calling one module produced seven declarations of
-// IBdsmfjlService, and three of them declared three different methods on it. While each program
+// IOrdmainService, and three of them declared three different methods on it. While each program
 // had its own package that merely duplicated; once a service shares one namespace it stops
 // compiling. A COBOL program has one entry point, so the contract is knowable — and one program
 // has to be responsible for declaring it.
@@ -154,7 +154,7 @@ public sealed class CallTargetRegistryTests : IDisposable
 
     [Theory]
     [InlineData("PRICING", "IPricingService")]
-    [InlineData("BDSMFJL", "IBdsmfjlService")]
+    [InlineData("ORDMAIN", "IOrdmainService")]
     [InlineData("PAY-RUN", "IPayRunService")]
     public void TheInterfaceNameIsDerivedFromTheTargetNotInvented(string target, string expected)
     {

@@ -144,7 +144,7 @@ def unique_redefines(m):
     prefix = m.group(1)  # leading whitespace + seq number
     level = m.group(2)   # level number (05)
     mid = m.group(3)     # whitespace before REDEFINES keyword
-    rest = m.group(4)    # 'REDEFINES PARM-DATO' etc.
+    rest = m.group(4)    # 'REDEFINES PARM-DATE' etc.
     unique_name = f'FIL-R{counter[0]:03d}'
     # Shrink mid whitespace to compensate for longer name
     filler_len = len('FILLER')
@@ -215,6 +215,22 @@ done < <(find "$SOURCE_DIR" \
     ! -path "*/.convert-*/*" \
     -print0)
 
+# Optional estate-specific rewrites (git-ignored). Validated once so a malformed file
+# is reported instead of silently skipping every program below.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REKT_PREPROCESS_RULES="${REKT_PREPROCESS_RULES:-$SCRIPT_DIR/../Config/rekt-preprocess.local.json}"
+if [[ -f "$REKT_PREPROCESS_RULES" ]]; then
+    if "$PYTHON" -c 'import json, sys; json.load(open(sys.argv[1], encoding="utf-8"))["programRewrites"]' "$REKT_PREPROCESS_RULES" 2>/dev/null; then
+        echo "  Using local preprocess rules: $REKT_PREPROCESS_RULES"
+        export REKT_PREPROCESS_RULES
+    else
+        echo "  ⚠️  Ignoring $REKT_PREPROCESS_RULES: not valid JSON with a programRewrites list"
+        unset REKT_PREPROCESS_RULES
+    fi
+else
+    unset REKT_PREPROCESS_RULES
+fi
+
 # Preprocess COBOL programs.
 cbl_count=0
 while IFS= read -r -d '' cbl; do
@@ -230,6 +246,28 @@ with open(source_path, 'r', encoding='latin-1') as f:
     content = f.read()
 
 original = content
+
+# Estate-specific rewrites live in a git-ignored rules file so that names from a
+# customer's source never land in this script. See docs/keeping-estate-data-private.md.
+import json
+_local_rules = []
+_rules_path = os.environ.get('REKT_PREPROCESS_RULES', '')
+if _rules_path and os.path.isfile(_rules_path):
+    with open(_rules_path, 'r', encoding='utf-8') as fh:
+        _local_rules = json.load(fh).get('programRewrites', [])
+
+def apply_local_rules(text, stage):
+    for rule in _local_rules:
+        if rule.get('stage', 'early') != stage:
+            continue
+        if rule.get('literal'):
+            text = text.replace(rule['find'], rule['replace'])
+        else:
+            flags = 0
+            for name in rule.get('flags', []):
+                flags |= getattr(re, name)
+            text = re.sub(rule['find'], rule['replace'], text, flags=flags)
+    return text
 
 # 0. Strip trailing sequence numbers embedded in content area
 def strip_trailing_seq(text):
@@ -406,25 +444,7 @@ def enforce_col72(text):
             out_lines.append(line)
     return '\n'.join(out_lines)
 
-# Rewrite REPORT001's unsupported 88-level PERFORM condition before column enforcement.
-_until_orig = 'UNTIL BDC-FI01-EOF AND BDC-FI02-EOF'
-_until_single = \"UNTIL BDC-FI01-RETURN-CODE = 'EOF' AND BDC-FI02-RETURN-CODE = 'EOF'\"
-_until_two = \"UNTIL BDC-FI01-RETURN-CODE = 'EOF'\n      -       AND BDC-FI02-RETURN-CODE = 'EOF'\"
-content = content.replace(_until_orig, _until_two)
-# Idempotent: fix the already-transformed single-line form (possibly with compressed indent)
-content = re.sub(
-    r'^\s*PERFORM 300-BEHANDL-DATA ' + \"UNTIL BDC-FI01-RETURN-CODE = 'EOF' AND BDC-FI02-RETURN-CODE = 'EOF'\" + r'$',
-    '           PERFORM 300-BEHANDL-DATA ' + _until_two,
-    content,
-    flags=re.MULTILINE
-)
-# Idempotent: fix the already-split two-line form that has wrong indentation on the first line
-content = re.sub(
-    r\"^\\s*PERFORM 300-BEHANDL-DATA UNTIL BDC-FI01-RETURN-CODE = 'EOF'$\",
-    \"           PERFORM 300-BEHANDL-DATA UNTIL BDC-FI01-RETURN-CODE = 'EOF'\",
-    content,
-    flags=re.MULTILINE
-)
+content = apply_local_rules(content, 'early')
 
 content = enforce_col72(content)
 
@@ -521,20 +541,15 @@ content = content.replace('INTRTI-PIC X(4) USAGE', 'INTRTI-PICX4')
 content = content.replace('INTRTI-PIC X(4)', 'INTRTI-PICX4')
 content = content.replace('INTRTI-PICX4 USAGE', 'INTRTI-PICX4')
 
-# Merge SAMPLE006's standalone colon literal to avoid DB2 host-variable tokenization.
-content = re.sub(
-    r\"'(PRG-POS-\d+ )':'\",
-    lambda m: \"'\" + m.group(1) + \":'\",
-    content
-)
+content = apply_local_rules(content, 'late')
 
-# 18. Fix REPORT001: insert CONTINUE after IF BDC-FI01-OK when THEN body
-#     is empty (only comments before ELSE) to avoid extraneous ELSE error
+# 18. An IF whose THEN branch holds only comments before ELSE is rejected by the parser
+#     (extraneous ELSE). CONTINUE is a no-op, so inserting it keeps the semantics.
 content = re.sub(
-    r'(IF\s+BDC-FI01-OK)((\s*\n(?:\s{0,6}\*[^\n]*)*)(\s*\n\s+ELSE))',
-    r'\1\n           CONTINUE\2',
+    r'(^(?:\d{6})?[ \t]*IF\s[^\n]*[^.\s][ \t]*)((?:\n[ \t]{0,6}\*[^\n]*|\n[ \t]*(?=\n))*)(\n[ \t]+ELSE\b)',
+    r'\1\n           CONTINUE\2\3',
     content,
-    flags=re.IGNORECASE
+    flags=re.MULTILINE | re.IGNORECASE
 )
 
 # Treat fixed-format debug lines as comments for static analysis.

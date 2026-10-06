@@ -84,13 +84,13 @@ function renderResources(resources, errorMessage) {
           <li class="clickable-query" data-query="What's the recommended migration order for these programs?">"What's the recommended migration order for these programs?"</li>
           <li class="clickable-query" data-query="Identify the main entry point programs">"Identify the main entry point programs"</li>
           <li class="clickable-query" data-query="Which copybooks are shared across the most programs?">"Which copybooks are shared across the most programs?"</li>
-          <li class="clickable-query" data-query="Show complexity metrics for BDSMFJL.cbl">"Show complexity metrics for BDSMFJL.cbl"</li>
+          <li class="clickable-query" data-query="Show complexity metrics for ORDMAIN.cbl">"Show complexity metrics for ORDMAIN.cbl"</li>
         </ul>
       </div>
       <div class="query-card">
         <strong>Java Conversion</strong>
         <ul>
-          <li class="clickable-query" data-query="How would BDSDA23.cbl be structured in Java?">"How would BDSDA23.cbl be structured in Java?"</li>
+          <li class="clickable-query" data-query="How would ORDDA23.cbl be structured in Java?">"How would ORDDA23.cbl be structured in Java?"</li>
           <li class="clickable-query" data-query="What Java patterns should replace COBOL copybooks?">"What Java patterns should replace COBOL copybooks?"</li>
           <li class="clickable-query" data-query="Suggest a Quarkus architecture for this codebase">"Suggest a Quarkus architecture for this codebase"</li>
           <li class="clickable-query" data-query="Compare COBOL file I/O with modern Java alternatives">"Compare COBOL file I/O with modern Java alternatives"</li>

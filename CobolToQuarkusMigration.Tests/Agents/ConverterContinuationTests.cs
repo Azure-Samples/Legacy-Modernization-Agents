@@ -7,7 +7,7 @@ using Xunit;
 
 namespace CobolToQuarkusMigration.Tests.Agents;
 
-// Observed on BDSDATOI: one duplicated fragment left a complete file a brace short, three
+// Observed on ORDDATAI: one duplicated fragment left a complete file a brace short, three
 // continuations appended invented services, and the brace check then stubbed the whole type.
 public sealed class ConverterContinuationTests
 {
@@ -15,7 +15,7 @@ public sealed class ConverterContinuationTests
         ```csharp
         namespace Modernized.Shared;
 
-        public sealed class Bdsdatoi
+        public sealed class Orddatai
         {
             public int A { get => 1 { get => 1; }
             public int B { get; set; }
@@ -51,8 +51,8 @@ public sealed class ConverterContinuationTests
     private static Task<CodeFile> Convert(IChatClient client) =>
         new CSharpConverterAgent(client, NullLogger<CSharpConverterAgent>.Instance, "model")
             .ConvertAsync(
-                new CobolFile { FileName = "BDSDATOI.cpy", Content = "       01  BDSDATOI-REC.\n           05 A PIC 9.\n" },
-                new CobolAnalysis { FileName = "BDSDATOI.cpy", RawAnalysisData = "record" });
+                new CobolFile { FileName = "ORDDATAI.cpy", Content = "       01  ORDDATAI-REC.\n           05 A PIC 9.\n" },
+                new CobolAnalysis { FileName = "ORDDATAI.cpy", RawAnalysisData = "record" });
 
     [Fact]
     public async Task AResponseTheModelEndedIsKeptWithoutContinuation()
@@ -62,7 +62,7 @@ public sealed class ConverterContinuationTests
         var file = await Convert(client);
 
         client.Prompts.Should().ContainSingle();
-        file.Content.Should().Contain("public sealed class Bdsdatoi").And.NotContain("CONVERSION DID NOT PRODUCE");
+        file.Content.Should().Contain("public sealed class Orddatai").And.NotContain("CONVERSION DID NOT PRODUCE");
     }
 
     [Fact]

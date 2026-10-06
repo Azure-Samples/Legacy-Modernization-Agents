@@ -58,7 +58,7 @@ You are a COBOL-to-Java/Quarkus conversion specialist.
 ## Output Requirements
 - Return COMPLETE, compilable Java code. No TODOs, no placeholders, no 'implement here' comments.
 - Include all imports. Use Quarkus CDI annotations (@ApplicationScoped, @Inject, @Transactional).
-- Class name = COBOL program name in PascalCase + 'Service' (e.g., BDSDA2F → Bdsda2fService).
+- Class name = COBOL program name in PascalCase + 'Service' (e.g., ORDDA2F → Ordda2fService).
 
 ## SECTION: User
 

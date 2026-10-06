@@ -9,7 +9,7 @@ public class GeneratedCodeEntitiesTests
     [Fact]
     public void EntitiesInCodeAreDecoded()
     {
-        // Rgni656.cs:78 as generated.
+        // Payi656.cs:78 as generated.
         const string code = "public bool NettingSortUgyldig => !NettingSortJa &amp;&amp; !NettingSortNej;";
 
         GeneratedCodeEntities.DecodeInCode(code)
