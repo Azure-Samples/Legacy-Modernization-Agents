@@ -166,4 +166,18 @@ public sealed class EstateGraphBuilderTests : IDisposable
         warning.Should().Contain("EstateGraph");
         options.TargetSliceSize.Should().Be(15);
     }
+
+    [Fact]
+    public void RealCopybookWinsOverGeneratedStandInOfTheSameName()
+    {
+        // "app" sorts before "lib", so ordinal order alone would pick the generated copy.
+        Write("app/copy-generated/SHARED.cpy", Cobol("01 STUB-REC PIC X."));
+        Write("lib/SHARED.cpy", Cobol("01 REAL-REC PIC X(80)."));
+        Write("app/USER.cbl", Cobol("PROGRAM-ID. USER.", "PROCEDURE DIVISION.", "    COPY SHARED."));
+
+        var g = EstateGraphBuilder.Build(_root);
+
+        g.Nodes.Single(n => n.Id == "copybook:SHARED").File.Should().Be("lib/SHARED.cpy");
+        g.Diagnostics.Should().Contain(d => d.Contains("lib/SHARED.cpy is used"));
+    }
 }

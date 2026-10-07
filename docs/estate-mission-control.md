@@ -117,6 +117,7 @@ Both features read their settings from `Config/appsettings.json`.
 | | `CarveWeights` | 0.4 / 0.3 / 0.2 / 0.1 | The weights for cohesion, completeness, independence and size |
 | | `IgnoredTablePrefixes`, `SystemCopybooks` | `SYSIBM.`; `SQLCA`, `SQLDA` | Tables and copybooks that create no coupling |
 | | `MapExtensions`, `CicsDefinitionExtensions` | `.bms`; `.csd` | Where maps and transactions are read from |
+| | `GeneratedCopybookDirectories` | `copy-generated` | Folders of generated stand-in copybooks. When a name also exists elsewhere, the other copybook is used. The REKT parse reads the same list from `REKT_GENERATED_COPYBOOK_DIRS` |
 | | `MaxEvidencePerEdge` | 20 | How many source lines are kept for each edge |
 | `AiLoop` | `MaxRuns`, `MaxTimelineEvents` | 50, 200 | How much is listed |
 | | `StaleRunMinutes` | 30 | When an unfinished run with no recent events is shown as interrupted |

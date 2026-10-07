@@ -17,7 +17,7 @@ public static class EstateGraphBuilder
         g.Diagnostics.AddRange(extraDiagnostics ?? []);
 
         var scans = AddPrograms(g, sourceRoot, options);
-        AddCopybooks(g, sourceRoot);
+        AddCopybooks(g, sourceRoot, options);
         AddMaps(g, sourceRoot, options);
         AddCicsDefinitions(g, sourceRoot, options);
         foreach (var scan in scans) AddReferences(g, scan);
@@ -144,9 +144,18 @@ public static class EstateGraphBuilder
         return scans;
     }
 
-    private static void AddCopybooks(Accumulator g, string sourceRoot)
+    private static void AddCopybooks(Accumulator g, string sourceRoot, EstateGraphOptions options)
     {
-        foreach (var file in SourceTypeRegistry.EnumerateCopybookFiles(sourceRoot).Order(StringComparer.Ordinal))
+        // A real copybook wins over a generated stand-in of the same name, matching the REKT parse.
+        var generatedDirs = options.GeneratedCopybookDirectories.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        bool IsGenerated(string file) =>
+            Path.GetRelativePath(sourceRoot, Path.GetDirectoryName(file)!)
+                .Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                .Any(generatedDirs.Contains);
+
+        foreach (var file in SourceTypeRegistry.EnumerateCopybookFiles(sourceRoot)
+                     .OrderBy(IsGenerated)
+                     .ThenBy(f => f, StringComparer.Ordinal))
         {
             var rel = Path.GetRelativePath(sourceRoot, file).Replace('\\', '/');
             var name = Path.GetFileNameWithoutExtension(rel).ToUpperInvariant();

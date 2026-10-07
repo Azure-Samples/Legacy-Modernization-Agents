@@ -152,6 +152,7 @@ public sealed record EstateGraphOptions
     public List<string> SystemCopybooks { get; init; } = ["SQLCA", "SQLDA"];
     public List<string> MapExtensions { get; init; } = [".bms"];
     public List<string> CicsDefinitionExtensions { get; init; } = [".csd"];
+    public List<string> GeneratedCopybookDirectories { get; init; } = ["copy-generated"];
     public int MaxEvidencePerEdge { get; init; } = 20;
 
     public double Coupling(string name) => CouplingWeights.TryGetValue(name, out var w) ? w : 0;
