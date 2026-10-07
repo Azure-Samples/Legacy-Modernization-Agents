@@ -82,6 +82,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Business logic report — Use Cases output** — The `reverse-engineering-details.md` report now consistently uses `### Use Cases` as the section heading. Each entry now renders `Trigger:`, `Description:`, `Benefit:`, and `Key Steps:` fields, and markdown generation is centralized in `BusinessLogicMarkdownFormatter`.
 
 ### Security
+- **Vulnerable NuGet dependencies** - `Microsoft.Data.Sqlite` 10.0.0 → 10.0.12 brings `SQLitePCLRaw.lib.e_sqlite3` 2.1.12, which bundles SQLite 3.50.2 or later ([CVE-2025-6965](https://github.com/advisories/GHSA-2m69-gcr7-jv3q), memory corruption). `Microsoft.AspNetCore.OpenApi` 10.0.0 → 10.0.12 brings `Microsoft.OpenApi` 2.12.0 ([GHSA-v5pm-xwqc-g5wc](https://github.com/advisories/GHSA-v5pm-xwqc-g5wc), stack overflow on a circular schema reference). `dotnet list package --vulnerable --include-transitive` reports none.
 - **Command injection fix in `ProcessManager`** — `ProcessManager.StartRun()` now uses `ProcessStartInfo.ArgumentList` instead of `ProcessStartInfo.Arguments` to pass arguments to `doctor.sh` subprocesses. This eliminates the command injection risk that existed when user-controlled values were interpolated into the `Arguments` string. Resolves [code-scanning alert #6](https://github.com/Azure-Samples/Legacy-Modernization-Agents/security/code-scanning/6).
 
 ## [3.0.0] - 2026-03-17
