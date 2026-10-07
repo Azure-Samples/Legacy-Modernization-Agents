@@ -275,6 +275,8 @@ Read the summary at the end before converting:
 
 A missing copybook makes the programs that COPY it *Partial*: the parser substitutes a generated stub, so the fields behind it have no known layout and the conversion has to infer them. Add the real copybooks and parse again for the best result. Details of each program are in `output/rekt/**/*.parse.log`.
 
+CICS screen maps are the exception: if `source/` holds the BMS mapsets (`*.bms`), the parse generates each symbolic map copybook (`<map>I` / `<map>O`) from them, as the z/OS BMS assembly step would, so programs that `COPY` a mapset keep full fidelity. The copybook takes the `.bms` file name, and a real copybook of that name always wins. Set `REKT_NO_BMS_MAPS=true` to turn this off.
+
 Then convert, either everything or a selection:
 
 ```bash
