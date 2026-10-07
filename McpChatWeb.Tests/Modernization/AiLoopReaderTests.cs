@@ -96,6 +96,30 @@ public sealed class AiLoopReaderTests : IDisposable
     }
 
     [Fact]
+    public async Task AKilledRunTakesItsEndedStatusFromTheRunDatabase()
+    {
+        // Killed before run_finished, and its successor's start marked it terminated.
+        Metrics("8", Line(0, new { @event = "run_started", mode = "standard", targetLanguage = "Java", outputFolder = RunFolder }));
+        Metrics("9", Line(0, new { @event = "run_started", mode = "standard", targetLanguage = "Java", outputFolder = RunFolder }));
+        Directory.CreateDirectory(Path.Combine(_root, "Data"));
+        var db = Path.Combine(_root, "Data", "migration.db");
+        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={db};Pooling=False"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "CREATE TABLE runs (id INTEGER PRIMARY KEY, started_at TEXT NOT NULL, status TEXT NOT NULL);"
+                                  + "INSERT INTO runs VALUES (8, '2026-01-01', 'Terminated'), (9, '2026-01-01', 'Running');";
+            command.ExecuteNonQuery();
+        }
+
+        var runs = (await Reader().ListRunsAsync()).ToDictionary(r => r.RunId, r => r.Status);
+
+        Assert.Equal("terminated", runs["8"]);
+        Assert.Equal("running", runs["9"]);
+        Assert.Equal("terminated", (await Reader().GetRunAsync("8"))!.Summary.Status);
+    }
+
+    [Fact]
     public async Task AgentsAreSummarisedFromTheirCalls()
     {
         ACompletedRun();

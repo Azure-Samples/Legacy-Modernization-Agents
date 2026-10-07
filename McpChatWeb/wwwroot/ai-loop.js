@@ -115,7 +115,7 @@ class AiLoopView {
     return `
       ${d.warning ? `<div class="emc-warn">${this.esc(d.warning)}</div>` : ''}
       <div class="emc-kpis">
-        ${this.kpi(this.statusLabel(s.status), 'status', s.status === 'failed' || s.status === 'interrupted')}
+        ${this.kpi(this.statusLabel(s.status), 'status', ['failed', 'interrupted', 'terminated'].includes(s.status))}
         ${this.kpi(s.durationMs != null ? this.dur(s.durationMs) : (s.currentStage || '—'), s.durationMs != null ? 'duration' : 'current stage')}
         ${this.kpi(s.calls, 'model calls')}
         ${this.kpi(s.failedCalls, 'failed calls', s.failedCalls > 0)}
@@ -196,7 +196,7 @@ class AiLoopView {
     return `<div class="emc-kpi${warn ? ' emc-kpi-warn' : ''}"><div class="emc-kpi-num">${this.esc(value)}</div><div class="emc-kpi-label">${this.esc(label)}</div></div>`;
   }
 
-  statusLabel(s) { return { completed: 'done', running: 'running', failed: 'failed', interrupted: 'stopped', no_files: 'no files' }[s] || s; }
+  statusLabel(s) { return { completed: 'done', running: 'running', failed: 'failed', interrupted: 'stopped', terminated: 'stopped', no_files: 'no files' }[s] || s; }
   dur(ms) {
     if (ms == null) return '—';
     if (ms < 1000) return `${ms} ms`;

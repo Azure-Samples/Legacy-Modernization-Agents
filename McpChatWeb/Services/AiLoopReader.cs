@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Data.Sqlite;
 using System.Text.RegularExpressions;
 using CobolToQuarkusMigration.Agents;
 using CobolToQuarkusMigration.Helpers;
@@ -119,6 +120,7 @@ public sealed partial class AiLoopReader
         var dir = Path.Join(RepoRoot, MetricsFolder);
         if (!Directory.Exists(dir)) return [];
 
+        var ended = await EndedRunStatusesAsync(ct);
         var result = new List<AiLoopRunSummary>();
         foreach (var file in new DirectoryInfo(dir).EnumerateFiles("*.jsonl")
                      .OrderByDescending(f => f.LastWriteTimeUtc)
@@ -129,7 +131,7 @@ public sealed partial class AiLoopReader
             var events = await ReadEventsAsync(file.FullName, ct);
             // Older runs only have projection and cache metrics; they say nothing about the loop.
             if (!events.Any(e => e.Event is AiLoopEvents.RunStarted or AiLoopEvents.LlmCall)) continue;
-            result.Add(Summarise(runId, events, file.LastWriteTimeUtc, options));
+            result.Add(Summarise(runId, events, file.LastWriteTimeUtc, options, ended.GetValueOrDefault(runId)));
         }
         return result;
     }
@@ -142,7 +144,8 @@ public sealed partial class AiLoopReader
 
         var options = LoadOptions(out var warning);
         var events = await ReadEventsAsync(path, ct);
-        var summary = Summarise(runId, events, File.GetLastWriteTimeUtc(path), options);
+        var ended = await EndedRunStatusesAsync(ct);
+        var summary = Summarise(runId, events, File.GetLastWriteTimeUtc(path), options, ended.GetValueOrDefault(runId));
         var started = events.LastOrDefault(e => e.Event == AiLoopEvents.RunStarted);
         var folder = started?.Str("outputFolder");
 
@@ -205,7 +208,37 @@ public sealed partial class AiLoopReader
         return list;
     }
 
-    private static AiLoopRunSummary Summarise(string runId, List<MetricEvent> events, DateTime lastWriteUtc, AiLoopOptions options)
+    // A killed run never writes run_finished, but the next start marks it ended in the run database.
+    // That record wins over the stale-time guess, so a dead run does not show as running beside its successor.
+    private async Task<Dictionary<string, string>> EndedRunStatusesAsync(CancellationToken ct)
+    {
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        var db = Path.Join(RepoRoot, "Data", "migration.db");
+        if (!File.Exists(db)) return result;
+        try
+        {
+            await using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = db,
+                Mode = SqliteOpenMode.ReadOnly,
+                Pooling = false,
+            }.ToString());
+            await connection.OpenAsync(ct);
+            await using var command = connection.CreateCommand();
+            command.CommandText = "SELECT id, status FROM runs WHERE status IS NOT NULL AND lower(status) <> 'running'";
+            await using var reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+                result[reader.GetInt64(0).ToString(System.Globalization.CultureInfo.InvariantCulture)] = reader.GetString(1).ToLowerInvariant();
+        }
+        catch (SqliteException ex)
+        {
+            _logger.LogDebug("Run database not readable for AI Loop status: {Message}", ex.Message);
+        }
+        return result;
+    }
+
+    private static AiLoopRunSummary Summarise(string runId, List<MetricEvent> events, DateTime lastWriteUtc, AiLoopOptions options,
+        string? endedStatus = null)
     {
         var started = events.LastOrDefault(e => e.Event == AiLoopEvents.RunStarted);
         var finished = events.LastOrDefault(e => e.Event == AiLoopEvents.RunFinished);
@@ -213,6 +246,7 @@ public sealed partial class AiLoopReader
         var stage = events.LastOrDefault(e => e.Event == AiLoopEvents.Stage);
 
         var status = finished?.Str("status")
+                     ?? endedStatus
                      ?? (DateTime.UtcNow - lastWriteUtc > TimeSpan.FromMinutes(Math.Max(1, options.StaleRunMinutes))
                          ? "interrupted"
                          : "running");
