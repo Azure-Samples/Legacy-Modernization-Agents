@@ -38,9 +38,9 @@ class RektSourceIdentityTests(unittest.TestCase):
             "           GOBACK.\n",
         )
 
-    def run_check(self):
+    def run_check(self, *extra):
         result = subprocess.run(
-            [sys.executable, str(SCRIPT_PATH), str(self.source), str(self.source / ".preprocessed")],
+            [sys.executable, str(SCRIPT_PATH), str(self.source), str(self.source / ".preprocessed"), *extra],
             capture_output=True,
             text=True,
         )
@@ -151,6 +151,20 @@ class RektSourceIdentityTests(unittest.TestCase):
 
         code, rows = self.run_check()
 
+        self.assertEqual(0, code)
+        self.assertEqual([], rows)
+
+    def test_shadowed_generated_copybook_is_left_out(self):
+        self.write("copy-generated/CEEIGZCT.cpy", "       01 STUB PIC X.\n")
+        self.write("lib/CEEIGZCT.cpy", "       01 REAL-FIELD PIC 9(4).\n")
+        self.program("lib/PROGA.cbl", "           COPY CEEIGZCT.")
+        shadowed = self.work_dir / "shadowed.txt"
+        shadowed.write_text(f"{self.source / 'copy-generated' / 'CEEIGZCT.cpy'}\n", encoding="utf-8")
+
+        blocked, _ = self.run_check()
+        code, rows = self.run_check(str(shadowed))
+
+        self.assertEqual(1, blocked)
         self.assertEqual(0, code)
         self.assertEqual([], rows)
 

@@ -198,7 +198,9 @@ ensure_copilot_cli_for_build() {
     echo -e "${YELLOW}   See docs/building-behind-an-npm-registry-block.md${NC}"
 }
 DEFAULT_MCP_HOST="localhost"
-DEFAULT_MCP_PORT=5028
+# MCP_WEB_PORT in Config/ai-config.local.env moves the portal; a shell value still wins at launch.
+DEFAULT_MCP_PORT="$(read_local_config_value MCP_WEB_PORT)"
+DEFAULT_MCP_PORT="${DEFAULT_MCP_PORT:-5028}"
 
 # Function to show usage
 show_usage() {
@@ -1584,7 +1586,7 @@ AISETTINGS__CHATENDPOINT="https://copilot-sdk-placeholder"
 # Username: neo4j
 # NOT FOR PRODUCTION, ENSURE TO CHANGE PASSWORD
 #
-# Two instances run side by side: the migration graph on 7687 and the REKT graph on 7688.
+# Two instances run side by side: the migration graph (default bolt 7687) and the REKT graph (default 7688).
 # Each fixes its password in its own data volume the first time it starts, so these must
 # match the volumes that already exist. Re-running setup keeps whatever is set here.
 NEO4J_PASSWORD="$neo4j_password"
@@ -2608,11 +2610,46 @@ run_conversion_only() {
 
 # Cobol-REKT Integration
 
-REKT_NEO4J_CONTAINER="cobol-rekt-neo4j"
-REKT_NEO4J_HTTP_PORT=7475
-REKT_NEO4J_BOLT_PORT=7688
-REKT_CONTAINER="cobol-rekt"
-REKT_POPULATOR_CONTAINER="cobol-graph-populator"
+# Container names and host ports come from the environment, then Config/ai-config.local.env,
+# then these defaults, so two checkouts on one machine can run side by side. They are
+# exported because docker-compose.yml reads the same variables.
+resolve_runtime_setting() {
+    local key="$1" default="$2" value="${!1:-}"
+    [[ -n "$value" ]] || value="$(read_local_config_value "$key")"
+    printf '%s' "${value:-$default}"
+}
+NEO4J_CONTAINER="$(resolve_runtime_setting NEO4J_CONTAINER cobol-migration-neo4j)"
+NEO4J_HTTP_PORT="$(resolve_runtime_setting NEO4J_HTTP_PORT 7474)"
+NEO4J_BOLT_PORT="$(resolve_runtime_setting NEO4J_BOLT_PORT 7687)"
+REKT_NEO4J_CONTAINER="$(resolve_runtime_setting REKT_NEO4J_CONTAINER cobol-rekt-neo4j)"
+REKT_NEO4J_HTTP_PORT="$(resolve_runtime_setting REKT_NEO4J_HTTP_PORT 7475)"
+REKT_NEO4J_BOLT_PORT="$(resolve_runtime_setting REKT_NEO4J_BOLT_PORT 7688)"
+REKT_CONTAINER="$(resolve_runtime_setting REKT_CONTAINER cobol-rekt)"
+REKT_POPULATOR_CONTAINER="$(resolve_runtime_setting REKT_POPULATOR_CONTAINER cobol-graph-populator)"
+PORTAL_CONTAINER="$(resolve_runtime_setting PORTAL_CONTAINER cobol-migration-portal)"
+REKT_GENERATED_COPYBOOK_DIRS="$(resolve_runtime_setting REKT_GENERATED_COPYBOOK_DIRS copy-generated)"
+export NEO4J_CONTAINER NEO4J_HTTP_PORT NEO4J_BOLT_PORT REKT_NEO4J_CONTAINER REKT_NEO4J_HTTP_PORT \
+    REKT_NEO4J_BOLT_PORT REKT_CONTAINER REKT_POPULATOR_CONTAINER PORTAL_CONTAINER \
+    REKT_GENERATED_COPYBOOK_DIRS
+# A moved port is passed on to the CLI and portal; otherwise their own settings apply unchanged.
+if [[ "$REKT_NEO4J_BOLT_PORT" != "7688" && -z "${REKT_NEO4J_URI:-}" ]]; then
+    export REKT_NEO4J_URI="bolt://localhost:$REKT_NEO4J_BOLT_PORT"
+fi
+if [[ "$NEO4J_BOLT_PORT" != "7687" && -z "${ApplicationSettings__Neo4j__Uri:-}" ]]; then
+    export ApplicationSettings__Neo4j__Uri="bolt://localhost:$NEO4J_BOLT_PORT"
+fi
+# Compose commands take service names, which stay fixed while container names vary.
+REKT_NEO4J_SERVICE="cobol-rekt-neo4j"
+REKT_SERVICE="cobol-rekt"
+
+# Current Docker ships Compose as a plugin; older installs only have the standalone binary.
+run_compose() {
+    if docker compose version >/dev/null 2>&1; then
+        docker compose -f "$REPO_ROOT/docker-compose.yml" "$@"
+    else
+        docker-compose -f "$REPO_ROOT/docker-compose.yml" "$@"
+    fi
+}
 # Written by tools/preprocess-for-rekt.sh into synthesised copybooks and read by
 # StubCopybookCatalog.Marker. It is the only reliable way to tell an invented layout from
 # real content, because both live in source/.preprocessed/.
@@ -2732,13 +2769,13 @@ ensure_rekt_containers() {
 
     # Start only the rekt services (leave existing neo4j untouched).
     local compose_output
-    if ! compose_output=$(docker-compose up -d "$REKT_NEO4J_CONTAINER" "$REKT_CONTAINER" 2>&1); then
+    if ! compose_output=$(run_compose up -d "$REKT_NEO4J_SERVICE" "$REKT_SERVICE" 2>&1); then
         echo -e "${RED}❌ Failed to start Cobol-REKT containers:${NC}"
         printf '%s\n' "$compose_output" | sed 's/^/  /'
         echo ""
         echo -e "${YELLOW}Debug with:${NC}"
-        echo "  docker-compose ps"
-        echo "  docker-compose logs --tail=100 $REKT_NEO4J_CONTAINER $REKT_CONTAINER"
+        echo "  docker compose ps"
+        echo "  docker compose logs --tail=100 $REKT_NEO4J_SERVICE $REKT_SERVICE"
         return 1
     fi
 
@@ -2762,8 +2799,8 @@ ensure_rekt_containers() {
             docker logs --tail 50 "$REKT_NEO4J_CONTAINER" 2>&1 | sed 's/^/  /'
             echo ""
             echo -e "${YELLOW}Debug with:${NC}"
-            echo "  docker-compose ps"
-            echo "  docker-compose logs --tail=100 $REKT_NEO4J_CONTAINER"
+            echo "  docker compose ps"
+            echo "  docker compose logs --tail=100 $REKT_NEO4J_SERVICE"
             return 1
         fi
     done
@@ -2783,7 +2820,7 @@ ensure_rekt_containers() {
         echo "  REKT_NEO4J_PASSWORD=<existing-password>"
         echo ""
         echo "or discard the graph and let it re-initialise (parsed artifacts are kept):"
-        echo "  docker-compose rm -sf $REKT_NEO4J_CONTAINER"
+        echo "  docker compose rm -sf $REKT_NEO4J_SERVICE"
         echo "  docker volume rm $(basename "$REPO_ROOT" | tr '[:upper:]' '[:lower:]')_rekt_neo4j_data"
         return 1
     fi
@@ -2855,6 +2892,43 @@ run_rekt_parse() {
         return 1
     fi
 
+    # Copybooks are staged into one flat folder, so two with the same name cannot both be used.
+    # A generated stand-in (a folder named in REKT_GENERATED_COPYBOOK_DIRS) gives way to the one
+    # real copybook of that name; the preprocessor, the collision check and staging all skip it.
+    local shadowed_copybooks_file
+    shadowed_copybooks_file="$(mktemp)"
+    "$PYTHON_CMD" - "$REPO_ROOT/source" "$REKT_GENERATED_COPYBOOK_DIRS" > "$shadowed_copybooks_file" <<'PYEOF'
+import os, sys
+
+source_root = sys.argv[1]
+generated_dirs = {d.strip().lower() for d in sys.argv[2].split(',') if d.strip()}
+skip_dirs = {'.preprocessed', '.rekt-staging'}
+copybooks = {}
+for root, dirs, files in os.walk(source_root):
+    dirs[:] = [d for d in dirs if d not in skip_dirs and not d.startswith('.convert-')]
+    for name in files:
+        if name.lower().endswith('.cpy'):
+            copybooks.setdefault(name.lower(), []).append(os.path.join(root, name))
+
+for paths in copybooks.values():
+    if len(paths) < 2:
+        continue
+    generated = [p for p in paths
+                 if any(part.lower() in generated_dirs
+                        for part in os.path.relpath(os.path.dirname(p), source_root).split(os.sep))]
+    if len(paths) - len(generated) == 1:
+        for p in generated:
+            print(p)
+PYEOF
+    export REKT_SHADOWED_COPYBOOKS_FILE="$shadowed_copybooks_file"
+    if [[ -s "$shadowed_copybooks_file" ]]; then
+        echo -e "  ${BLUE}Generated copybooks replaced by a real copybook of the same name:${NC}"
+        local shadowed
+        while IFS= read -r shadowed; do
+            echo -e "    ${BLUE}↳ ${shadowed#"$REPO_ROOT/source/"}${NC}"
+        done < "$shadowed_copybooks_file"
+    fi
+
     # Preprocess files that need IMS/DLI or dialect compatibility transformations
     echo -e "${BLUE}  Running preprocessor for IMS/DLI and dialect compatibility...${NC}"
     if [[ -x "$REPO_ROOT/tools/preprocess-for-rekt.sh" ]]; then
@@ -2877,7 +2951,7 @@ run_rekt_parse() {
     local preprocessed_dir="$REPO_ROOT/source/.preprocessed"
     local identity_check_output=""
     if ! identity_check_output=$("$PYTHON_CMD" "$REPO_ROOT/tools/rekt_source_identity.py" \
-        "$REPO_ROOT/source" "$preprocessed_dir"); then
+        "$REPO_ROOT/source" "$preprocessed_dir" "$shadowed_copybooks_file"); then
         echo -e "${RED}❌ Source identity collisions prevent safe REKT staging.${NC}"
         local -a _fields
         while IFS=$'\t' read -r -a _fields; do
@@ -2986,6 +3060,7 @@ run_rekt_parse() {
 
     # Collect all copybooks (recursive) into the flat staging root.
     while IFS= read -r cpyfile; do
+        grep -qxF "$cpyfile" "$shadowed_copybooks_file" && continue
         stage_copybook_file "$cpyfile"
     done < <(find "$REPO_ROOT/source" \( -name "*.cpy" -o -name "*.CPY" \) \
         ! -path "*/.rekt-staging/*" \
@@ -3045,8 +3120,8 @@ run_rekt_parse() {
         local container_visible
         container_visible=$(docker exec "$REKT_CONTAINER" sh -c "ls /source/.rekt-staging 2>/dev/null | wc -l" 2>/dev/null | tr -d ' ')
         if [[ -z "$container_visible" || "$container_visible" -eq 0 ]]; then
-            echo -e "  ${YELLOW}⚠️  Container can't see /source/.rekt-staging — bind mount is stale. Restarting cobol-rekt…${NC}"
-            docker compose -f "$REPO_ROOT/docker-compose.yml" restart "$REKT_CONTAINER" >/dev/null 2>&1 || true
+            echo -e "  ${YELLOW}⚠️  Container can't see /source/.rekt-staging — bind mount is stale. Restarting $REKT_CONTAINER…${NC}"
+            run_compose restart "$REKT_SERVICE" >/dev/null 2>&1 || true
             sleep 3
             container_visible=$(docker exec "$REKT_CONTAINER" sh -c "ls /source/.rekt-staging 2>/dev/null | wc -l" 2>/dev/null | tr -d ' ')
             if [[ -z "$container_visible" || "$container_visible" -eq 0 ]]; then
@@ -3060,8 +3135,12 @@ run_rekt_parse() {
 
     # Clear previous run outputs first so the missing-copybook report below survives.
     # Use find-delete rather than rm -rf dir to preserve the Docker bind mount (./output/rekt:/output).
+    # A filtered run clears only its own programs once the filter resolves; the graph ingest
+    # reads everything here, so a full wipe would drop every other program from the estate.
     mkdir -p "$REPO_ROOT/output/rekt"
-    find "$REPO_ROOT/output/rekt" -mindepth 1 -delete 2>/dev/null || true
+    if [[ -z "${_REKT_PROGRAM_FILTER:-}" ]]; then
+        find "$REPO_ROOT/output/rekt" -mindepth 1 -delete 2>/dev/null || true
+    fi
 
     # Report missing copybooks before parsing so reduced coverage is explicit.
     local missing_report="$REPO_ROOT/output/rekt/missing-copybooks.txt"
@@ -3262,6 +3341,14 @@ PYEOF
         fi
         rekt_filter_file="$staging_dir/.rekt-program-filter"
         printf '%s\n' "$filter_resolution_output" > "$rekt_filter_file"
+        local filtered_rel
+        while IFS= read -r filtered_rel; do
+            [[ -z "$filtered_rel" ]] && continue
+            rm -rf "$REPO_ROOT/output/rekt/${filtered_rel}.report"
+            rm -f "$REPO_ROOT/output/rekt/${filtered_rel}.parse.log" \
+                "$REPO_ROOT/output/rekt/${filtered_rel}-deps.json" \
+                "$REPO_ROOT/output/rekt/${filtered_rel}.facts.json"
+        done < "$rekt_filter_file"
         echo -e "  ${BLUE}REKT program filter: ${_REKT_PROGRAM_FILTER}${NC}"
     fi
 
@@ -3355,6 +3442,13 @@ PYEOF
         mv "$flat_path" "$nested_path"
     }
 
+    # smojol can exit 0 without writing the AST or control flow, so its exit code alone
+    # would report a program as fully parsed when consumers will find no structure for it.
+    rekt_structure_written() {
+        local report="$REPO_ROOT/output/rekt/${1}.report"
+        compgen -G "$report/flow_ast/*.json" >/dev/null && compgen -G "$report/cfg/*.json" >/dev/null
+    }
+
     # Use process substitution so succeeded/failed counters persist outside the loop
     while IFS= read -r cbl_file; do
         [[ -e "$cbl_file" ]] || continue
@@ -3420,7 +3514,7 @@ PYEOF
             --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
             --dialectJarPath=/app/dialect-idms.jar \
             --reportDir=/output \
-            --generation=PROGRAM >/dev/null 2>"$err_log"; then
+            --generation=PROGRAM >/dev/null 2>"$err_log" && rekt_structure_written "$fname"; then
             echo -e " ${GREEN}✅${NC}"
             rm -f "$err_log"
             succeeded=$((succeeded + 1))
@@ -3431,7 +3525,7 @@ PYEOF
                 --commands="BUILD_BASE_ANALYSIS WRITE_FLOW_AST WRITE_CFG WRITE_DATA_STRUCTURES" \
                 --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
                 --reportDir=/output \
-                --generation=PROGRAM >/dev/null 2>>"$err_log"; then
+                --generation=PROGRAM >/dev/null 2>>"$err_log" && rekt_structure_written "$fname"; then
                 echo -e " ${GREEN}✅${NC} (no-dialect mode)"
                 rm -f "$err_log"
                 succeeded=$((succeeded + 1))
@@ -3516,8 +3610,9 @@ PYEOF
         rm -f "$rekt_manifest"
     fi
 
-    # Extract optional facts while staged source bytes remain available; failures are non-fatal.
-    if [[ "${_PROGRAM_FACTS:-false}" == "true" && "$succeeded" -gt 0 ]]; then
+    # Extract facts while staged source bytes remain available; dependency discovery reads them,
+    # so this is on unless _PROGRAM_FACTS=false. Failures are non-fatal.
+    if [[ "${_PROGRAM_FACTS:-true}" == "true" && "$succeeded" -gt 0 ]]; then
         if command -v dotnet >/dev/null 2>&1 && [[ -f "$REPO_ROOT/CobolToQuarkusMigration.csproj" ]]; then
             local pf_db="${_REKT_SCAN_DB:-$REPO_ROOT/Data/rekt-scan.db}"
             echo -e "  ${BLUE}Extracting program-facts.json …${NC}"
@@ -3548,12 +3643,13 @@ PYEOF
                         --staging-dir "$staging_dir" 2>/dev/null) || true
             fi
         else
-            echo -e "  ${YELLOW}⚠️  _PROGRAM_FACTS=true but dotnet/project not available — facts not extracted.${NC}"
+            echo -e "  ${YELLOW}⚠️  dotnet/project not available — program facts not extracted.${NC}"
         fi
     fi
 
     # Clean up staging dir — it lives inside source/ which is gitignored
     rm -rf "$staging_dir"
+    rm -f "$shadowed_copybooks_file"
 
     # JCL is parsed deterministically from source/, without REKT; failures are non-fatal.
     if command -v dotnet >/dev/null 2>&1 && [[ -f "$REPO_ROOT/CobolToQuarkusMigration.csproj" ]]; then
@@ -3697,8 +3793,8 @@ run_rekt_status() {
 
     # Check existing MMA Neo4j
     local mma_state
-    mma_state=$(docker inspect --format='{{.State.Status}}' "cobol-migration-neo4j" 2>/dev/null || echo "not found")
-    echo -e "  ${BLUE}ℹ️  cobol-migration-neo4j (existing): $mma_state${NC}"
+    mma_state=$(docker inspect --format='{{.State.Status}}' "$NEO4J_CONTAINER" 2>/dev/null || echo "not found")
+    echo -e "  ${BLUE}ℹ️  $NEO4J_CONTAINER (existing): $mma_state${NC}"
 
     # Neo4j node count
     if docker exec "$REKT_NEO4J_CONTAINER" sh -c \
@@ -3721,7 +3817,7 @@ run_rekt_status() {
     echo -e "  ${BLUE}Rekt JSON exports: ${json_count} files in output/rekt/${NC}"
 
     echo -e "\n  ${BLUE}Ports:${NC}"
-    echo -e "    Existing Neo4j: http://localhost:7474 (bolt://localhost:7687)"
+    echo -e "    Existing Neo4j: http://localhost:$NEO4J_HTTP_PORT (bolt://localhost:$NEO4J_BOLT_PORT)"
     echo -e "    Rekt Neo4j:     http://localhost:$REKT_NEO4J_HTTP_PORT (bolt://localhost:$REKT_NEO4J_BOLT_PORT)"
 }
 
@@ -4415,11 +4511,11 @@ check_chunking_health() {
     
     # Check if container is running
     if command -v docker >/dev/null 2>&1; then
-        if docker ps --format '{{.Names}}' | grep -q "cobol-migration-portal"; then
-            echo -e "   ${GREEN}✅ Container 'cobol-migration-portal' is running${NC}"
+        if docker ps --format '{{.Names}}' | grep -qx "$PORTAL_CONTAINER"; then
+            echo -e "   ${GREEN}✅ Container '$PORTAL_CONTAINER' is running${NC}"
         else
-            echo -e "   ${YELLOW}⚠️  Container 'cobol-migration-portal' is NOT running${NC}"
-            echo -e "      (Run 'docker-compose up -d' to start the containerized portal)"
+            echo -e "   ${YELLOW}⚠️  Container '$PORTAL_CONTAINER' is NOT running${NC}"
+            echo -e "      (Run 'docker compose up -d' to start the containerized portal)"
         fi
     else
         echo -e "   ${YELLOW}⚠️  Docker not available - skipping container checks${NC}"

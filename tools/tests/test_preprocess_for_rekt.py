@@ -31,8 +31,10 @@ class PreprocessForRektTests(unittest.TestCase):
         if WORK_ROOT.exists() and not any(WORK_ROOT.iterdir()):
             WORK_ROOT.rmdir()
 
-    def run_preprocessor(self, stubs=False, rules=None):
+    def run_preprocessor(self, stubs=False, rules=None, shadowed=None):
         env = os.environ.copy()
+        if shadowed is not None:
+            env["REKT_SHADOWED_COPYBOOKS_FILE"] = str(shadowed)
         env["REKT_NO_STUB_COPYBOOKS"] = "false" if stubs else "true"
         # Never pick up a developer's local estate rules from Config/.
         env["REKT_PREPROCESS_RULES"] = str(rules) if rules else str(self.work_dir / "no-rules.json")
@@ -221,6 +223,81 @@ class PreprocessForRektTests(unittest.TestCase):
             output,
         )
         self.assertEqual(1, output.count("CONTINUE"))
+
+    def test_drops_identification_area_text_instead_of_pulling_it_into_code(self):
+        # Columns 73-80 are ignored by the compiler. Shifting their text left turns a note
+        # or a short sequence number into a token, and the parser then writes no AST.
+        def fixed(code, ident):
+            return code.ljust(73) + ident
+
+        program = "\n".join(
+            [
+                fixed("       IDENTIFICATION DIVISION.", "0002000"),
+                fixed("       PROGRAM-ID. TESTPGM.", "0003000"),
+                "       DATA DIVISION.",
+                "       WORKING-STORAGE SECTION.",
+                "       01  WS-TS          PIC X(10).",
+                fixed("       01  FILLER REDEFINES WS-TS.", ""),
+                fixed("           06 WS-YYYY      PIC X(004).", "E"),
+                fixed("           06 WS-SEP       PIC X.", "-"),
+                "       PROCEDURE DIVISION.",
+                fixed("           GOBACK.", "AB12CD34"),
+                "",
+            ]
+        )
+        (self.source_dir / "idarea.cbl").write_text(program, encoding="latin-1")
+        (self.source_dir / "idarea.cpy").write_text(
+            fixed("       01  CPY-FLD        PIC X(004).", "E") + "\n", encoding="latin-1"
+        )
+
+        self.run_preprocessor()
+
+        for name in ("idarea.cbl", "idarea.cpy"):
+            for line in self.preprocessed_text(name).split("\n"):
+                self.assertLessEqual(len(line.rstrip()), 72, f"{name}: {line!r}")
+                for ident in ("0002000", "0003000", "AB12CD34"):
+                    self.assertNotIn(ident, line, f"{name}: {line!r}")
+                self.assertFalse(line.rstrip().endswith((" E", " -")), f"{name}: {line!r}")
+        self.assertIn("PIC X(004).", self.preprocessed_text("idarea.cbl"))
+
+    def test_replaces_qualified_length_of_including_its_qualifiers(self):
+        self.write_program(
+            "length-of.cbl",
+            [
+                "           PERFORM VARYING WS-IDX",
+                "                   FROM LENGTH OF OPTIONI OF MAPAI BY -1 UNTIL",
+                "                   WS-IDX = 1",
+                "           END-PERFORM",
+            ],
+        )
+
+        self.run_preprocessor()
+        output = self.preprocessed_text("length-of.cbl")
+
+        self.assertIn("FROM 0 BY -1 UNTIL", output)
+        self.assertNotIn("OF MAPAI", output)
+
+    def test_skips_generated_copybook_that_a_real_copybook_replaces(self):
+        real_dir = self.source_dir / "real"
+        generated_dir = self.source_dir / "app" / "copy-generated"
+        real_dir.mkdir()
+        generated_dir.mkdir(parents=True)
+        # Both need rewriting (column 73+ text), so each would be written to .preprocessed/.
+        (real_dir / "SHARED.cpy").write_text(
+            "       01  REAL-FIELD     PIC X(004).".ljust(73) + "E\n", encoding="latin-1"
+        )
+        generated = generated_dir / "SHARED.cpy"
+        generated.write_text(
+            "       01  STUB-FIELD     PIC X(004).".ljust(73) + "E\n", encoding="latin-1"
+        )
+        shadowed = self.work_dir / "shadowed.txt"
+        shadowed.write_text(str(generated) + "\n")
+
+        self.run_preprocessor(shadowed=shadowed)
+
+        output = self.preprocessed_text("SHARED.cpy")
+        self.assertIn("REAL-FIELD", output)
+        self.assertNotIn("STUB-FIELD", output)
 
     def test_applies_local_rules_file_by_stage(self):
         self.write_program(
