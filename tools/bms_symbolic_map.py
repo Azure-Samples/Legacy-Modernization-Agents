@@ -17,11 +17,11 @@ replaced.
 from __future__ import annotations
 
 import os
-import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+USAGE = "Usage: bms_symbolic_map.py <source-dir> <output-dir>"
 GENERATED_MARKER = "SYMBOLIC MAP GENERATED FROM BMS"
 STUB_MARKER = "AUTO-GENERATED STUB COPYBOOK"
 COPYBOOK_EXTENSIONS = (".cpy", ".cpb", ".copy")
@@ -360,7 +360,7 @@ def generate(source_dir: Path, output_dir: Path) -> tuple[list[str], list[str]]:
 
 def main(argv: list[str]) -> int:
     if len(argv) != 3:
-        print(__doc__.strip().splitlines()[2], file=sys.stderr)
+        print(USAGE, file=sys.stderr)
         return 2
     generated, warnings = generate(Path(argv[1]), Path(argv[2]))
     for warning in warnings:

@@ -131,6 +131,11 @@ class GenerateTests(unittest.TestCase):
         self.run_cli()
         self.assertIn("HAND-WRITTEN", (self.out / "ORDSET.cpy").read_text())
 
+    def test_wrong_arguments_print_usage(self):
+        result = subprocess.run([sys.executable, str(SCRIPT_PATH)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("Usage: bms_symbolic_map.py <source-dir> <output-dir>", result.stderr)
+
     def test_non_cobol_mapsets_are_skipped(self):
         (self.source / "bms" / "ordset.bms").write_text(MAPSET.replace("LANG=COBOL", "LANG=ASM  "))
         self.run_cli()
