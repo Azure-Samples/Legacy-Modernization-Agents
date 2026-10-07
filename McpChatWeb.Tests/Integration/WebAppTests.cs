@@ -144,7 +144,7 @@ public class McpServerUnavailableTests
         try
         {
             // Stand-in for the MCP server: say why, then exit, as Program.cs does on an empty database.
-            var script = Path.Combine(dir.FullName, "fake-mcp.sh");
+            var script = Path.Join(dir.FullName, "fake-mcp.sh");
             await File.WriteAllTextAsync(script,
                 "echo 'No migration runs available in the database. Run the migration process first.' >&2\nexit 0\n");
 
@@ -152,7 +152,7 @@ public class McpServerUnavailableTests
             {
                 DotnetExecutable = "/bin/sh",
                 AssemblyPath = script,
-                ConfigPath = Path.Combine(dir.FullName, "unused.json"),
+                ConfigPath = Path.Join(dir.FullName, "unused.json"),
                 WorkingDirectory = dir.FullName
             });
 

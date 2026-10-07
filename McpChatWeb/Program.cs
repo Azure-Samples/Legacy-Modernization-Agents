@@ -188,7 +188,9 @@ app.Use(async (context, next) =>
 	}
 	catch (McpServerUnavailableException ex) when (!context.Response.HasStarted)
 	{
-		app.Logger.LogWarning("MCP server unavailable for {Path}: {Reason}", context.Request.Path, ex.Reason ?? ex.Message);
+		// Strip line breaks so a crafted path cannot forge extra log entries.
+		var path = (context.Request.Path.Value ?? string.Empty).Replace("\r", string.Empty).Replace("\n", string.Empty);
+		app.Logger.LogWarning("MCP server unavailable for {Path}: {Reason}", path, ex.Reason ?? ex.Message);
 		context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
 		await context.Response.WriteAsJsonAsync(new
 		{

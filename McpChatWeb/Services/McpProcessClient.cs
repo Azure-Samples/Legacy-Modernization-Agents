@@ -536,11 +536,29 @@ public sealed class McpProcessClient : IMcpClient, IDisposable
         // The server's reason is usually its last stderr line; let the drainer catch up before reading it.
         if (_stderrDrainer is { } drainer)
         {
-            try { await drainer.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); } catch { }
+            try
+            {
+                await drainer.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                // Still draining after 2s: report with the lines read so far.
+            }
+            catch (OperationCanceledException)
+            {
+                // The drainer was cancelled with its request; the lines read so far still apply.
+            }
         }
 
         int? exitCode = null;
-        try { exitCode = _process?.ExitCode; } catch { }
+        try
+        {
+            exitCode = _process?.ExitCode;
+        }
+        catch (InvalidOperationException)
+        {
+            // No exit code recorded for this process; the message then omits it.
+        }
 
         string[] lines;
         lock (_stderrLock)
