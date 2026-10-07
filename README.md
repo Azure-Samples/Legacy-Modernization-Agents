@@ -58,6 +58,99 @@ The migration uses Microsoft Agent Framework with a multi-provider architecture 
 >
 > The doctor script checks dependencies and starts the services it needs.
 
+## 🗺 How it fits together
+
+### The quick run, step by step
+
+```mermaid
+flowchart LR
+    A["📁 Copy COBOL, copybooks,<br/>BMS, JCL into source/"] --> B["⚙️ ./doctor.sh setup<br/>provider, models, passwords"]
+    B --> C["🔍 ./doctor.sh rekt-full<br/>parse + load graph<br/><i>no model</i>"]
+    C --> D["🌐 ./doctor.sh portal<br/>localhost:5028"]
+    D --> E["🛰 Estate Mission Control<br/>Carve-out plan → cluster<br/>→ 📦 Stage slice"]
+    E -->|copy the command| F["▶️ ./doctor.sh convert-only<br/>--program A.cbl,B.cbl"]
+    E -->|or click| G["🔁 Send to AI loop"]
+    F --> H["📦 output/csharp or output/java<br/>+ reports"]
+    G --> H
+    H -->|review in portal:<br/>AI Loop, chat, reports| D
+```
+
+| Step | Calls a model? | Needs Docker? | Writes to |
+|---|---|---|---|
+| `setup` | No (only lists models) | Pulls the Neo4j image | `Config/ai-config.local.env` |
+| `rekt-full` | No | Yes (REKT parser + REKT Neo4j) | `source/.preprocessed/`, `output/rekt/`, REKT Neo4j |
+| `portal` | Only for chat | No for Estate Mission Control; Neo4j for the graph tabs | Nothing (reads) |
+| `estate` / Estate Mission Control | No | No (built from `source/` alone) | `output/estate/` |
+| `convert-only` / `run` | Yes | Migration Neo4j (started for you) for the dependency graph | `output/<language>/<run>/`, `Data/migration.db`, migration Neo4j |
+| `reverse-eng` | Yes | Migration Neo4j | `output/reverse-engineering-details.md`, `Data/migration.db` |
+| `jcl` | No | No | `output/<language>/<run>/` |
+
+### What runs where
+
+```mermaid
+flowchart LR
+    subgraph HOST["💻 Your machine"]
+        direction TB
+        DOCTOR["doctor.sh"]
+        CLI["Migration CLI (.NET)<br/>agents · estate-graph<br/>jcl-facts · jcl-jobs<br/>compile gate: dotnet build"]
+        WEB["Portal · McpChatWeb<br/>localhost:5028<br/>+ MCP server child process"]
+        PRE["Preprocess + graph populator<br/>(bash, Python)"]
+        FILES[("source/ · output/<br/>Data/migration.db")]
+        DOCTOR --> PRE
+        DOCTOR --> CLI
+        DOCTOR --> WEB
+    end
+
+    subgraph DOCKER["🐳 Docker"]
+        direction TB
+        REKT["cobol-rekt<br/>REKT parser (Java)"]
+        RNEO[("cobol-rekt-neo4j<br/>REKT graph · :7688")]
+        MNEO[("cobol-migration-neo4j<br/>dependency graph · :7687")]
+    end
+
+    subgraph CLOUD["☁️ Model provider"]
+        direction TB
+        AOAI["Azure OpenAI /<br/>AI Foundry"]
+        GHCP["GitHub Copilot SDK"]
+    end
+
+    PRE -->|docker exec| REKT
+    PRE -->|load parse| RNEO
+    CLI <--> FILES
+    CLI -->|REKT facts| RNEO
+    CLI -->|dependencies| MNEO
+    WEB <--> FILES
+    WEB --> RNEO
+    WEB --> MNEO
+    CLI ==>|prompts| CLOUD
+    WEB ==>|chat| CLOUD
+```
+
+- **Everything but the model runs locally.** Source code leaves the machine only inside the prompts sent to the provider you configured.
+- **Two Neo4j instances.** The REKT graph (parse trees and control flow, `:7688`) and the migration graph (dependencies found during a run, `:7687`). Ports and container names can be changed in `Config/ai-config.local.env`.
+- **The portal runs on the host** (`dotnet run --project McpChatWeb`). `docker-compose.yml` also has a `portal` service if you want it in a container.
+- **Estate Mission Control and `jcl`** need neither a model nor Docker.
+
+### Inside a conversion
+
+```mermaid
+flowchart TB
+    S["Selected programs<br/>(--program, --job, or a staged slice)"] --> FACTS["Program facts from the REKT parse,<br/>copybooks and call contracts<br/>(deterministic, no model)"]
+    FACTS --> ANALYZE["CobolAnalyzerAgent<br/>structure and logic"]
+    ANALYZE --> DEPS["DependencyMapper<br/>CALL / COPY / file / SQL edges → migration Neo4j"]
+    DEPS --> CONV["Java or C# converter agent<br/>(chunked for large programs)"]
+    CONV --> GUARD["Output guard<br/>each answer must be complete code,<br/>not truncated or empty"]
+    GUARD --> GATE{"C#: compile gate<br/>dotnet build"}
+    GATE -->|errors| REPAIR["CompileRepairAgent<br/>fixes file by file,<br/>up to CompileGate.MaxRepairRounds,<br/>undoes rounds that make it worse"]
+    REPAIR --> GATE
+    GATE -->|builds, or rounds used up| PARITY["Conversion parity check<br/>procedures · fields · calls · SQL<br/>vs the COBOL (deterministic)"]
+    PARITY --> JOBS["Jobs from JCL, if any<br/>.NET jobs or Spring Batch"]
+    JOBS --> OUT["output/{language}/{run}/<br/>compile-status.json · conversion-parity.json<br/>jobs-manifest.json · migration report"]
+    OUT --> LOOP["Portal: 🔁 AI Loop tab<br/>model calls, retries, gates"]
+```
+
+Java output has no compile gate yet: build it with `mvn compile` in the output folder. The parity check reports and can stop the run (`ON_LOW_SCORE=stop`), but does not repair. See [Conversion parity](docs/conversion-parity-validation.md) and [Using the generated output](docs/using-generated-output.md).
+
 ### 🛰 Estate Mission Control at a glance
 
 Shown here with the public IBM Bank-of-Z sample in `source/`.
@@ -77,6 +170,9 @@ Shown here with the public IBM Bank-of-Z sample in `source/`.
 ---
 
 ## 📋 Table of Contents
+- [How it fits together](#-how-it-fits-together)
+  - [What runs where](#what-runs-where)
+  - [Inside a conversion](#inside-a-conversion)
 - [Quick Start](#-quick-start)
 - [Usage: doctor.sh](#-usage-doctorsh)
   - [Parse first: rekt-full](#parse-first-rekt-full)
@@ -722,6 +818,8 @@ Naming strategies are configured in `ConversionSettings`:
 ---
 
 ## 🏗️ Architecture
+
+> For the current overview of what runs where and the conversion loop, see [How it fits together](#-how-it-fits-together). The diagrams below go deeper into storage, agents and chunking.
 
 ### Hybrid Database Architecture
 
