@@ -125,6 +125,8 @@ public abstract class AgentBase
         EnhancedLogger?.LogBehindTheScenes("API_CALL", UseResponsesApi ? "ResponsesAPI" : "ChatCompletion", 
             $"Calling {ProviderName} for {contextIdentifier}", AgentName);
 
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        long? inputTokens = null, outputTokens = null;
         try
         {
             string responseText;
@@ -157,6 +159,8 @@ public abstract class AgentBase
 
                 var response = await ChatClient.GetResponseAsync(messages, options);
                 responseText = ExtractResponseText(response);
+                inputTokens = response.Usage?.InputTokenCount;
+                outputTokens = response.Usage?.OutputTokenCount;
 
                 // ── Truncation detection ──
                 DetectTruncation(response, responseText, maxTokens, reasoningEffort, contextIdentifier);
@@ -175,11 +179,16 @@ public abstract class AgentBase
             // Release rate limiter slot after completion
             RateLimiter?.ReleaseSlot();
 
+            AiLoopEvents.Call(AgentName, ProviderName, ModelId, contextIdentifier, stopwatch.ElapsedMilliseconds,
+                true, systemPrompt.Length + userPrompt.Length, responseText.Length, inputTokens, outputTokens, null);
             return responseText;
         }
         catch (Exception ex)
         {
             RateLimiter?.ReleaseSlot();
+            AiLoopEvents.Call(AgentName, ProviderName, ModelId, contextIdentifier, stopwatch.ElapsedMilliseconds,
+                false, systemPrompt.Length + userPrompt.Length, 0, inputTokens, outputTokens,
+                $"{ex.GetType().Name}: {ex.Message}");
             Logger.LogError(ex, "[{Agent}] Error executing {ApiType} for {Context}", 
                 AgentName, UseResponsesApi ? "Responses API" : "Chat Completions", contextIdentifier);
             throw;
@@ -253,6 +262,7 @@ public abstract class AgentBase
                         break;
                     }
 
+                    AiLoopEvents.Retry(AgentName, contextIdentifier, "reasoning_exhaustion", exhaustionRetry + 1);
                     Logger.LogInformation(
                         "[{Agent}] Reasoning exhaustion retry {Retry}/{MaxRetries} for {Context}: " +
                         "max_output_tokens={Tokens}, effort='{Effort}'",
@@ -301,6 +311,7 @@ public abstract class AgentBase
                     "[{Agent}] Adaptive re-chunking failed for {Context}. No further recovery possible.",
                     AgentName, contextIdentifier);
 
+                AiLoopEvents.Fallback(AgentName, contextIdentifier, "reasoning_exhaustion", null);
                 return (string.Empty, true,
                     $"Reasoning exhaustion: all {maxExhaustionRetries} escalation retries AND adaptive re-chunking failed");
             }
@@ -342,6 +353,7 @@ public abstract class AgentBase
                         break;
                     }
 
+                    AiLoopEvents.Retry(AgentName, contextIdentifier, "output_truncation", truncRetry + 1);
                     Logger.LogInformation(
                         "[{Agent}] Truncation retry {Retry}/{MaxRetries} for {Context}: " +
                         "max_output_tokens={Tokens}, effort='{Effort}'",
@@ -404,6 +416,7 @@ public abstract class AgentBase
                     "[{Agent}] Adaptive re-chunking failed for {Context}. No further recovery possible.",
                     AgentName, contextIdentifier);
 
+                AiLoopEvents.Fallback(AgentName, contextIdentifier, "output_truncation", null);
                 return (string.Empty, true,
                     $"Output truncation: all {maxTruncRetries} escalation retries AND adaptive re-chunking failed");
             }
@@ -412,6 +425,7 @@ public abstract class AgentBase
             {
                 lastException = ex;
                 var delay = TimeSpan.FromSeconds(Math.Pow(2, attempt)); // Exponential backoff
+                AiLoopEvents.Retry(AgentName, contextIdentifier, "transient_error", attempt);
 
                 Logger.LogWarning(
                     "[{Agent}] Transient error on attempt {Attempt}/{MaxRetries} for {Context}. Retrying in {Delay}s. Error: {Error}",
@@ -431,12 +445,14 @@ public abstract class AgentBase
                 EnhancedLogger?.LogBehindTheScenes("CONTENT_FILTER", "BLOCKED",
                     $"Content filter blocked request for {contextIdentifier}: {ex.Message}");
 
+                AiLoopEvents.Fallback(AgentName, contextIdentifier, "content_filter", ex.Message);
                 return (string.Empty, true, $"Content filter: {ex.Message}");
             }
             catch (Exception ex) when (IsRateLimitError(ex) && attempt < maxRetries)
             {
                 lastException = ex;
                 var delay = TimeSpan.FromSeconds(Math.Pow(2, attempt + 2)); // Longer delay for rate limits
+                AiLoopEvents.Retry(AgentName, contextIdentifier, "rate_limit", attempt);
 
                 Logger.LogWarning(
                     "[{Agent}] Rate limited on attempt {Attempt}/{MaxRetries} for {Context}. Retrying in {Delay}s",
@@ -454,6 +470,7 @@ public abstract class AgentBase
                     "[{Agent}] Non-retryable error for {Context}: {Error}",
                     AgentName, contextIdentifier, ex.Message);
 
+                AiLoopEvents.Fallback(AgentName, contextIdentifier, "non_retryable_error", ex.Message);
                 return (string.Empty, true, ex.Message);
             }
         }
@@ -461,6 +478,7 @@ public abstract class AgentBase
         // All retries exhausted
         var finalReason = $"Max retries ({maxRetries}) exhausted. Last error: {lastException?.Message}";
         Logger.LogError("[{Agent}] {Reason}", AgentName, finalReason);
+        AiLoopEvents.Fallback(AgentName, contextIdentifier, "retries_exhausted", lastException?.Message);
 
         return (string.Empty, true, finalReason);
     }

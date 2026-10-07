@@ -30,7 +30,7 @@ internal static class Program
         Directory.CreateDirectory(logsDirectory);
 
         // Only enable live logging for migration runs (not MCP server or conversation modes)
-        var isMigrationRun = !args.Contains("mcp") && !args.Contains("conversation");
+        var isMigrationRun = !args.Contains("mcp") && !args.Contains("conversation") && !args.Contains("estate-graph");
         LiveLogWriter? liveLogWriter = null;
 
         if (isMigrationRun)
@@ -166,6 +166,9 @@ internal static class Program
         rootCommand.AddCommand(CobolToQuarkusMigration.Cli.JclFactsCommand.Build());
         rootCommand.AddCommand(CobolToQuarkusMigration.Cli.JclJobsCommand.Build());
         rootCommand.AddCommand(CobolToQuarkusMigration.Cli.JclProgramsCommand.Build());
+
+        // Deterministic estate graph: clusters, carve scores and migration waves.
+        rootCommand.AddCommand(CobolToQuarkusMigration.Cli.EstateGraphCommand.Build());
 
         rootCommand.SetHandler(async (context) =>
         {
@@ -1424,7 +1427,7 @@ internal static class Program
         // doctor.sh calls list-models during setup to populate the model picker, before any
         // config file has been written; its handler talks to the Copilot SDK, not Azure.
         return command is not
-            ("program-facts" or "rekt-scan-cache" or "conversation" or "list-models");
+            ("program-facts" or "rekt-scan-cache" or "conversation" or "list-models" or "estate-graph");
     }
 
     // Matched against the literals shipped in ai-config.env.example. An unedited placeholder that

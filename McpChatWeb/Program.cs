@@ -103,6 +103,8 @@ builder.Services.AddSingleton<PortalState>();
 builder.Services.AddSingleton<McpChatWeb.Services.RektEstateReader>();
 builder.Services.AddSingleton<McpChatWeb.Services.ConversionParityReader>();
 builder.Services.AddSingleton<McpChatWeb.Services.ModernizationIntelligenceService>();
+builder.Services.AddSingleton<McpChatWeb.Services.EstateGraphService>();
+builder.Services.AddSingleton<McpChatWeb.Services.AiLoopReader>();
 
 builder.Services.AddOpenApi();
 
@@ -6265,7 +6267,8 @@ app.MapPost("/api/runs/start", (McpChatWeb.Models.StartRunRequest request, McpCh
 			request.SpeedProfile,
 			request.SourceFolder,
 			request.Provider,
-			request.ModelId);
+			request.ModelId,
+			programs: request.Programs);
 	}
 	catch (ArgumentException ex)
 	{
@@ -6598,6 +6601,8 @@ app.MapGet("/api/reports/available", () =>
 });
 
 app.MapModernizationEndpoints();
+app.MapEstateEndpoints();
+app.MapAiLoopEndpoints();
 app.MapRektGraphEndpoints();
 
 app.Lifetime.ApplicationStopping.Register(() =>

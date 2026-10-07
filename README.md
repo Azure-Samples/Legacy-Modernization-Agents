@@ -11,6 +11,16 @@ The migration uses Microsoft Agent Framework with a multi-provider architecture 
 
 ---
 
+> [!IMPORTANT]
+> **Sign in before you run anything that calls a model.** The framework takes its token from your local sign-in; it does not prompt for one.
+>
+> | Provider | Sign in with | Then |
+> |---|---|---|
+> | Azure OpenAI / Azure AI Foundry (Entra ID) | `az login` (add `--tenant <id>` if the resource is in another tenant) | Your account needs the **Cognitive Services OpenAI User** role on the resource. See [az login authentication](docs/az-login-auth-guide.md) |
+> | GitHub Copilot SDK | `gh auth login` | Check with `gh auth status`. The account needs a Copilot licence |
+>
+> Without a valid sign-in (or an API key in `Config/ai-config.local.env`), conversion and reverse engineering fail on the first model call. `./doctor.sh rekt-full`, `./doctor.sh estate` and `./doctor.sh jcl` call no model and need no sign-in.
+
 > [!TIP]
 > **Start here.** Run these in order from the repository root:
 >
@@ -18,8 +28,8 @@ The migration uses Microsoft Agent Framework with a multi-provider architecture 
 > |---|---|---|
 > | 1 | `./doctor.sh setup` | **Configure the framework**: AI provider, credentials, models and local services |
 > | 2 | *(copy files)* | **Put your sources in `source/`**: COBOL programs (`.cbl`), copybooks (`.cpy`), and JCL jobs (`.jcl`) with their procedures and INCLUDE members (`.proc`, `.prc`, `.inc`) |
-> | 3 | `./doctor.sh rekt-full` | **Deterministic static analysis (optional, recommended)**: parses the COBOL with REKT and loads it into the REKT Neo4j graph, and parses the JCL with the built-in JCL parser into `output/rekt/` |
-> | 4 | `./doctor.sh run` | **Full migration**: analyzes the COBOL, converts it to Java or C#, generates a job per JCL job, writes reports and opens the portal |
+> | 3 | `./doctor.sh rekt-full` | **Parse the estate (run before any conversion)**: parses the COBOL with REKT and loads it into the REKT Neo4j graph, and parses the JCL with the built-in JCL parser into `output/rekt/`. No model is called. See [Parse first: rekt-full](#parse-first-rekt-full) |
+> | 4 | `./doctor.sh run` | **Full migration**: analyzes the COBOL, converts it to Java or C#, generates a job per JCL job, writes reports and opens the portal. For a partial conversion use `./doctor.sh convert-only --program NAME` |
 >
 > **JCL jobs:** put the `.jcl` files (and their `.proc`, `.prc`, `.inc` members) in `source/`, then:
 >
@@ -39,7 +49,12 @@ The migration uses Microsoft Agent Framework with a multi-provider architecture 
 ## 📋 Table of Contents
 - [Quick Start](#-quick-start)
 - [Usage: doctor.sh](#-usage-doctorsh)
+  - [Parse first: rekt-full](#parse-first-rekt-full)
   - [JCL](#jcl)
+- [Portal](#-portal)
+  - [Estate Mission Control](#estate-mission-control)
+  - [AST Explorer](#ast-explorer)
+  - [Convert Programs](#convert-programs)
 - [Reverse Engineering Reports](#-reverse-engineering-reports)
 - [Folder Structure](#-folder-structure)
 - [Customizing Agent Behavior](#-customizing-agent-behavior)
@@ -179,7 +194,8 @@ cd Legacy-Modernization-Agents
 
 ./doctor.sh setup        # 1. configure the AI provider and credentials
 cp -r /path/to/your/cobol/* source/   # 2. COBOL, copybooks and JCL
-./doctor.sh rekt-full    # 3. optional: deterministic COBOL + JCL analysis
+az login                 #    or: gh auth login (GitHub Copilot SDK)
+./doctor.sh rekt-full    # 3. parse COBOL + JCL (no model) - run before converting
 ./doctor.sh run          # 4. migrate, then open the portal
 ```
 
@@ -220,6 +236,7 @@ dotnet build
 ./doctor.sh reverse-eng   # Extract business logic, persist to DB, launch portal
 ./doctor.sh convert-only  # Conversion only; prompts to reuse persisted RE context
 ./doctor.sh jcl           # Jobs from the JCL alone, no model: what each job still needs
+./doctor.sh estate        # Slices and migration waves from the source alone, no model
 ```
 
 #### Business Logic Persistence and --reuse-re
@@ -235,6 +252,44 @@ After every `reverse-eng` or full `run`, extracted business logic is persisted t
 The `--reuse-re` flag can also be passed directly: `dotnet run -- --source ./source --skip-reverse-engineering --reuse-re`.
 
 Persisted RE results are visible in the portal — each run card has a **🔬 RE Results** button that shows per-file story/feature/rule counts and lets you delete results you are unsatisfied with.
+
+### Parse first: rekt-full
+
+Run `./doctor.sh rekt-full` once after you put the sources in `source/`, and again whenever they change, **before** a full or partial conversion. It calls no model and needs no sign-in.
+
+It parses every program with REKT, records how much of each program the parser recovered (its *parse fidelity*), lists the copybooks that are referenced but not in the source (`output/rekt/missing-copybooks.txt`), parses the JCL, and loads the result into the REKT Neo4j graph. The conversion, the Estate Mission Control, the AST Explorer and Convert Programs all read from it. Without it, every program shows as *not parsed*, the AST Explorer is empty, and the conversion works from the raw source alone.
+
+```bash
+./doctor.sh rekt-full                 # parse + load into Neo4j (rekt-parse and rekt-ingest run the two halves)
+./doctor.sh rekt-status               # containers, graph counts and exports
+cat output/rekt/missing-copybooks.txt # add these to source/ and run rekt-full again
+```
+
+Read the summary at the end before converting:
+
+```
+  Parsed: 117 succeeded (0 from cache), 0 failed
+  ⚠️  5 program(s) parsed with reduced fidelity (deps-only / raw-AST fallback).
+  ⚠️  38 missing copybook(s) — see output/rekt/missing-copybooks.txt
+```
+
+A missing copybook makes the programs that COPY it *Partial*: the parser substitutes a generated stub, so the fields behind it have no known layout and the conversion has to infer them. Add the real copybooks and parse again for the best result. Details of each program are in `output/rekt/**/*.parse.log`.
+
+Then convert, either everything or a selection:
+
+```bash
+# Full conversion
+./doctor.sh run                                            # reverse engineering + conversion + portal
+./doctor.sh convert-only --language Java                   # conversion only
+
+# Partial conversion
+./doctor.sh convert-only --language Java --program ORDMAIN.cbl --dry-run   # preview, no model call
+./doctor.sh convert-only --language Java --program ORDMAIN.cbl --program ORDDATE.cbl
+./doctor.sh convert-only --language CSharp --program orders/cbl/ORDMAIN.cbl --include-callees
+./doctor.sh run --job NITEJ001 --language CSharp           # a JCL job and the programs it runs
+```
+
+`--program` takes the program name, or its path relative to `source/` when two programs share a name. It can be repeated or comma-separated. `--include-callees` also converts every program the selection CALLs. Copybooks are always carried in by the programs that COPY them. The [Convert Programs](#convert-programs) tab and the [Estate Mission Control](#estate-mission-control) build these commands for you.
 
 ### JCL
 
@@ -319,6 +374,78 @@ The speed profile works by setting environment variables that override the three
 ./doctor.sh setup         # Interactive setup wizard
 ./doctor.sh chunking-health  # Check smart chunking configuration
 ```
+
+---
+
+## 🖥 Portal
+
+`./doctor.sh portal` (or the end of `./doctor.sh run`) opens the portal at http://localhost:5028. The tabs across the top of the graph panel are:
+
+| Tab | What it shows |
+|---|---|
+| 🕸 Dependency Graph | Programs and copybooks with their CALL, COPY and file dependencies |
+| 🏗️ Architecture | The REKT graph as layers, components, a technology map, dependencies, modules and reachability |
+| 🛰 Estate Mission Control | The whole estate as one graph, and the carve-out plan |
+| 🔁 AI Loop | Model calls, retries, fallbacks and quality gates per run |
+| 🧭 Modernization Intelligence | Measured facts per program from the parse, each with its source |
+| 🌳 AST Explorer | What the parser recovered for one program, next to its source |
+| 🎯 Convert Programs | Choose programs and get the conversion command |
+| 🔎 Program Explorer | One program: what it is, what it touches, what the parser knows about it, and whether that is enough to convert it |
+| 🧩 Missing Copybooks | Copybooks referenced but not in the source, ordered by how many programs each affects |
+
+The tabs that read parse results need `./doctor.sh rekt-full` first.
+
+### Estate Mission Control
+
+Open **🛰 Estate Mission Control**. The panel expands to full width. Everything on it is built from the source without a model, and every node and edge records the file and line it came from.
+
+- **KPIs** across the top: programs and lines, entry points (transactions, APIs, batch jobs), online and batch programs, data stores, how many programs REKT parsed, how many have a converted output, carve-out clusters and shared hubs, and programs that need attention (unreferenced, unreachable, or referenced but not in the source).
+- **Explore** mode draws the estate as one graph. Use **Group** to group by business function, carve-out cluster or estate, the **Nodes**, **Kind**, **Tech** and **Status** chips to filter, and the search box to find a program, transaction or table. The ring around a program shows its status: converted with parity of 90% or more, converted, parsed, not parsed yet, or referenced but not in the source. Select a node for its metrics, description, conversion parity and every relationship with its evidence. The right panel shows the inputs scanned, the programs per business function and the list that needs attention.
+- **Carve-out plan** mode shows the migration waves. Wave 0 holds the hub programs as shared services; each later wave can be converted once the waves it calls into are done. Each cluster is tiered **low-risk**, **moderate** or **core** by its carve score.
+- **Cluster card**: select a cluster card, or a cluster title in the graph, to see why the cluster was formed, its members and entry points, the data it **owns** (moves with it) and the data it **shares** with other clusters (needs a data-access API or sync), the inbound calls that become service APIs, its outbound dependencies and what is missing from the source.
+- **Stage slice** lists the programs to convert, what they call outside the cluster, what is missing and the equivalent `./doctor.sh convert-only --program …` command. **Send to AI loop** starts that conversion in Java or C#, using the provider and model selected in Mission Control. Follow it on the **🔁 AI Loop** tab.
+- **Rebuild graph** rescans the source. Use it after adding files to `source/`.
+
+The same plan is available from the command line:
+
+```bash
+./doctor.sh estate        # waves, clusters and hubs
+./doctor.sh estate C01    # the slice of cluster C01, with its convert-only command
+```
+
+See [Estate Mission Control and the AI Loop](docs/estate-mission-control.md) for how clusters, carve scores and waves are computed, the endpoints and the configuration.
+
+### AST Explorer
+
+Open **🌳 AST Explorer** and choose a program from the list at the top. JCL jobs appear in the same list as `JCL · <job>`. The list is filled from the REKT graph, so it is empty until `./doctor.sh rekt-full` has run.
+
+- The bar under the list counts the program's sections, paragraphs, statements and PERFORM calls.
+- The left side draws the parse tree: sections, paragraphs, sentences and statements (SQL, CICS, MOVE, PERFORM, IF), with PERFORM targets linked. Hover a node for its type, name and line range. **Raw AST** shows the tree as the parser produced it.
+- Select a section or paragraph to show its source on the right, with the line highlighted. **Full File** shows the whole program.
+
+Use it to check what the conversion will work from: a program whose parse fidelity is *Deps only* has no paragraphs or statements here.
+
+### Convert Programs
+
+Open **🎯 Convert Programs** to choose what to convert.
+
+1. **The list** has one row per COBOL program: a compilable unit with a `PROGRAM-ID` and a `PROCEDURE DIVISION`. Copybooks are not listed; they are record layouts, and each is carried in by the programs that COPY it. Filter by name or path in the top right.
+2. **Parse fidelity** on each row comes from `rekt-full`. Hover a label for its meaning:
+   - **Full**: every copybook was found and the program parsed completely; the conversion works from the real record layouts.
+   - **Partial**: at least one copybook is missing (shown as *N missing copybooks*), so its fields have no known layout and the conversion infers them.
+   - **Deps only**: only the dependency list was recovered, so there is much less to convert from.
+3. **Details** shows what converting that program would pull in: its call closure (the programs reachable by CALL), its copybooks and its missing copybooks.
+4. Tick the programs you want, choose **Java** or **C#**, and tick **Add call closure** to add every program the selection CALLs (the same as `--include-callees`), so a converted program never calls one that was not converted.
+5. **Convert selection** shows the command for the selection. The button does not start a run; copy the command into a terminal:
+
+```bash
+./doctor.sh convert-only \
+  --language Java \
+  --program orders/cbl/ORDMAIN.cbl \
+  --program orders/cbl/ORDDATE.cbl
+```
+
+Add `--dry-run` to see what would be converted without calling a model. Running it through `doctor.sh` rather than `dotnet run` adds the concurrent-run guard and the retry and failure handling. To start a conversion from the portal instead, use **Send to AI loop** on a cluster in Estate Mission Control.
 
 ---
 
@@ -433,7 +560,7 @@ Legacy-Modernization-Agents/
 
 **Workflow:**
 1. Drop COBOL files (`.cbl`, `.cpy`) and any JCL (`.jcl`, `.proc`, `.prc`, `.inc`) into `source/`
-2. Optionally run `./doctor.sh rekt-full` for deterministic COBOL and JCL analysis
+2. Run `./doctor.sh rekt-full` to parse the COBOL and JCL before converting
 3. Run `./doctor.sh run`
 4. Choose target language (Java or C#)
 5. Collect generated code from `output/java/` or `output/csharp/`; `jobs-manifest.json` there lists the jobs generated from JCL and the programs they still need
@@ -707,6 +834,10 @@ sequenceDiagram
 - ✅ **AI Provider Setup Modal** — connect to Azure OpenAI or GitHub Copilot SDK from the browser, discover all available models/deployments, and save config
 - ✅ **Mission Control** — start/stop/pause migrations, select provider and model, upload source files
 - ✅ **Prompt Studio** — generate, AI-enhance, and score agent prompts (works with both Azure and Copilot SDK)
+- ✅ **Estate Mission Control** — the whole estate as one graph, and a carve-out plan of clusters, owned and shared data, and waves, with source evidence; convert one slice at a time ([details](#estate-mission-control))
+- ✅ **AST Explorer** — the parse tree of one program beside its source ([details](#ast-explorer))
+- ✅ **Convert Programs** — choose programs by parse fidelity and call closure, and get the `convert-only` command ([details](#convert-programs))
+- ✅ **AI Loop** — per-run model calls, retries, fallbacks, stages and quality gates ([details](docs/estate-mission-control.md#ai-loop))
 
 ### Smart Chunking & Token Strategy
 
@@ -1168,6 +1299,7 @@ See [Parallel Jobs Formula](#parallel-jobs-formula) for chunking configuration d
 - [Smart Chunking & Token Architecture](docs/smart-chunking-architecture.md) - Full diagrams, constants reference, and complexity scoring details
 - [Smart Chunking Guide](docs/smart-chunking-deep-dive.md) - Deep technical details
 - [Architecture Documentation](docs/REVERSE_ENGINEERING_ARCHITECTURE.md) - System design
+- [Estate Mission Control and the AI Loop](docs/estate-mission-control.md) - Deterministic clusters, carve scores and waves for converting the estate slice by slice, and a per-run view of model calls, retries, fallbacks and quality gates
 - [Dependency Health & Semantic Flow Explorer](docs/dependency-health-and-flow-explorer.md) - Deterministic parse-fidelity, topology and JCL chain surfaces for deciding conversion order
 - [JCL job facts](docs/jcl-job-facts.md) - Deterministic JCL parser: procedures, symbols, conditions, Db2 runs and dataset lineage across jobs
 - [Jobs generated from JCL](docs/jcl-jobs.md) - Each JCL job as a .NET job (C#) or Spring Batch job (Java) that runs the converted programs under the JCL's conditions

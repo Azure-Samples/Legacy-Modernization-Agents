@@ -75,6 +75,8 @@ function switchDashboard(tabName) {
     dependency: ['dependency-graph', 'graph-toolbar'],
     services: ['services-container'],
     modernization: ['modernization-intelligence-container'],
+    estate: ['estate-mission-control-container'],
+    ailoop: ['ai-loop-container'],
     ast: ['ast-explorer-container'],
     programs: ['program-picker-container'],
     missing: ['missing-copybooks-container'],
@@ -134,6 +136,29 @@ function switchDashboard(tabName) {
       window.programExplorerView = new ProgramExplorerView('program-explorer-root');
     }
     window.programExplorerView.loadAndRender();
+  }
+
+  // The estate graph needs the room of the expanded panel; the tab expands it and gives it back on leave.
+  const graphPanel = document.querySelector('.graph-panel');
+  if (graphPanel && tabName !== 'estate' && graphPanel.dataset.estateExpanded) {
+    graphPanel.classList.remove('expanded');
+    delete graphPanel.dataset.estateExpanded;
+  }
+
+  if (tabName === 'estate') {
+    if (graphPanel && !graphPanel.classList.contains('expanded')) {
+      graphPanel.classList.add('expanded');
+      graphPanel.dataset.estateExpanded = '1';
+    }
+    if (!window.estateMissionControlView) {
+      window.estateMissionControlView = new EstateMissionControlView('estate-mission-control-root');
+    }
+    window.estateMissionControlView.loadAndRender();
+  }
+
+  if (tabName === 'ailoop') {
+    if (!window.aiLoopView) window.aiLoopView = new AiLoopView('ai-loop-root');
+    window.aiLoopView.loadAndRender();
   }
 
   if (tabName === 'modernization') {

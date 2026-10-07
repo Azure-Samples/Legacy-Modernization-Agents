@@ -325,6 +325,8 @@
       <div class="dashboard-tabs">
         <button class="dashboard-tab active" data-tab="dependency" onclick="switchDashboard('dependency')">🕸 Dependency Graph</button>
         <button class="dashboard-tab" data-tab="services" onclick="switchDashboard('services')">🏗️ Architecture</button>
+        <button class="dashboard-tab" data-tab="estate" onclick="switchDashboard('estate')">🛰 Estate Mission Control</button>
+        <button class="dashboard-tab" data-tab="ailoop" onclick="switchDashboard('ailoop')">🔁 AI Loop</button>
         <button class="dashboard-tab" data-tab="modernization" onclick="switchDashboard('modernization')">🧭 Modernization Intelligence</button>
         <button class="dashboard-tab" data-tab="ast" onclick="switchDashboard('ast')">🌳 AST Explorer</button>
         <button class="dashboard-tab" data-tab="programs" onclick="switchDashboard('programs')">🎯 Convert Programs</button>
@@ -572,6 +574,14 @@
         </div>
       </div>
 
+      <!-- Estate Mission Control — clusters, waves and convertible slices -->
+      <div id="estate-mission-control-container" class="dashboard-panel" style="display: none;">
+        <div id="estate-mission-control-root" style="height:100%;overflow:hidden;background:#0a0e1a;"></div>
+      </div>
+      <!-- AI Loop — per-agent model calls and quality gates for a run -->
+      <div id="ai-loop-container" class="dashboard-panel" style="display: none;">
+        <div id="ai-loop-root" style="height:100%;overflow:auto;background:#0a0e1a;"></div>
+      </div>
       <!-- Modernization Intelligence — deterministic decision surface -->
       <div id="modernization-intelligence-container" class="dashboard-panel" style="display: none;">
         <div id="modernization-intelligence-root" style="height:100%;overflow:auto;background:#0a0e1a;"></div>
@@ -1318,6 +1328,13 @@ curl http://localhost:5028/api/data-retrieval-guide</code></pre>
   <script src="ast-explorer.js"></script>
   <script src="services-view.js"></script>
   <script src="modernization-intelligence.js"></script>
+  <!-- Cytoscape + fCoSE (MIT, see lib/cytoscape/LICENSE.*) for the estate graph -->
+  <script src="lib/cytoscape/cytoscape.min.js"></script>
+  <script src="lib/cytoscape/layout-base.js"></script>
+  <script src="lib/cytoscape/cose-base.js"></script>
+  <script src="lib/cytoscape/cytoscape-fcose.js"></script>
+  <script src="estate-mission-control.js"></script>
+  <script src="ai-loop.js"></script>
   <script src="program-picker.js"></script>
   <script src="missing-copybooks.js"></script>
   <script src="program-explorer.js"></script>
