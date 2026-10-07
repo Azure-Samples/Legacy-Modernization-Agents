@@ -178,6 +178,34 @@ if (app.Environment.IsDevelopment())
 	app.MapOpenApi();
 }
 
+// The MCP server exits on purpose when it has nothing to serve (no migration runs yet). Report
+// that as a clear 503 rather than an unhandled exception and stack trace.
+app.Use(async (context, next) =>
+{
+	try
+	{
+		await next(context);
+	}
+	catch (McpServerUnavailableException ex) when (!context.Response.HasStarted)
+	{
+		// Strip line breaks so a crafted path cannot forge extra log entries.
+		var path = (context.Request.Path.Value ?? string.Empty).Replace("\r", string.Empty).Replace("\n", string.Empty);
+		app.Logger.LogWarning("MCP server unavailable for {Path}: {Reason}", path, ex.Reason ?? ex.Message);
+		context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+		await context.Response.WriteAsJsonAsync(new
+		{
+			error = ex.NoMigrationRuns
+				? "No migration runs yet."
+				: "The MCP server stopped before answering.",
+			reason = ex.Reason,
+			noMigrationRuns = ex.NoMigrationRuns,
+			hint = ex.NoMigrationRuns
+				? "rekt-full only fills the REKT graph. Create a run with ./doctor.sh reverse-eng (analysis only) or ./doctor.sh run (full migration), then reload."
+				: "Check the [MCP] lines in the portal console for the cause, then reload."
+		});
+	}
+});
+
 app.UseDefaultFiles();
 app.UseStaticFiles();
 

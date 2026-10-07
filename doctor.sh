@@ -3772,6 +3772,8 @@ run_rekt_full() {
     echo -e "\n${GREEN}✅ rekt pipeline complete.${NC}"
     echo -e "${BLUE}  Neo4j Browser: http://localhost:$REKT_NEO4J_HTTP_PORT${NC}"
     echo -e "${BLUE}  Connection URL: neo4j://localhost:$REKT_NEO4J_BOLT_PORT${NC}"
+    echo -e "${YELLOW}  Next: the portal needs a migration run. Create one with${NC}"
+    echo -e "${YELLOW}    ./doctor.sh reverse-eng   (business logic only)  or  ./doctor.sh run   (full migration)${NC}"
 
 }
 

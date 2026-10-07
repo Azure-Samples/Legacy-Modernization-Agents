@@ -1,16 +1,19 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 using McpChatWeb;
+using McpChatWeb.Configuration;
 using McpChatWeb.Models;
 using McpChatWeb.Services;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Options;
 using Xunit;
 
 namespace McpChatWeb.Tests.Integration;
@@ -124,5 +127,64 @@ public sealed class WebAppFactory : WebApplicationFactory<Program>
             => Task.CompletedTask;
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+}
+
+public class McpServerUnavailableTests
+{
+    [Fact]
+    public async Task ResourcesEndpoint_WhenServerHasNoRuns_Returns503WithReason()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var dir = Directory.CreateTempSubdirectory("mcp-noruns-");
+        try
+        {
+            // Stand-in for the MCP server: say why, then exit, as Program.cs does on an empty database.
+            var script = Path.Join(dir.FullName, "fake-mcp.sh");
+            await File.WriteAllTextAsync(script,
+                "echo 'No migration runs available in the database. Run the migration process first.' >&2\nexit 0\n");
+
+            var options = Options.Create(new McpOptions
+            {
+                DotnetExecutable = "/bin/sh",
+                AssemblyPath = script,
+                ConfigPath = Path.Join(dir.FullName, "unused.json"),
+                WorkingDirectory = dir.FullName
+            });
+
+            using var factory = new WebAppFactory().WithWebHostBuilder(builder =>
+                builder.ConfigureServices(services =>
+                {
+                    services.RemoveAll<IMcpClient>();
+                    services.AddSingleton<IMcpClient>(_ => new McpProcessClient(options));
+                }));
+
+            var response = await factory.CreateClient().GetAsync("/api/resources");
+
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+            var body = await response.Content.ReadFromJsonAsync<JsonObject>();
+            Assert.NotNull(body);
+            Assert.True(body!["noMigrationRuns"]!.GetValue<bool>());
+            Assert.Contains("No migration runs", body["reason"]!.GetValue<string>());
+            Assert.Contains("reverse-eng", body["hint"]!.GetValue<string>());
+        }
+        finally
+        {
+            dir.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Exception_WithoutStderr_StillExplainsExit()
+    {
+        var ex = new McpServerUnavailableException(3, Array.Empty<string>());
+
+        Assert.False(ex.NoMigrationRuns);
+        Assert.Null(ex.Reason);
+        Assert.Contains("exit code 3", ex.Message);
     }
 }
