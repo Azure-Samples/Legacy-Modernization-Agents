@@ -925,6 +925,15 @@ if [[ "$sys_count" -gt 0 ]]; then
     echo "  Shipped $sys_count bundled system copybook(s) (e.g. SQLCA) → $PREPROC_DIR/"
 fi
 
+# Generate COBOL symbolic maps from BMS mapsets (z/OS builds produce these; repos ship only
+# the .bms). Runs before stubbing so a COPY of a mapset gets its real fields, not an empty stub.
+# Set REKT_NO_BMS_MAPS=true to disable.
+if [[ "${REKT_NO_BMS_MAPS:-false}" != "true" ]]; then
+    if ! $PYTHON "$SCRIPT_DIR/bms_symbolic_map.py" "$SOURCE_DIR" "$PREPROC_DIR"; then
+        echo "  ⚠️  BMS symbolic map generation failed; affected COPY targets will be stubbed"
+    fi
+fi
+
 # Generate minimal stubs for unresolved COPY targets; set REKT_NO_STUB_COPYBOOKS=true to disable.
 if [[ "${REKT_NO_STUB_COPYBOOKS:-false}" != "true" ]]; then
     # Never stub system copybooks because doing so would hide their required field layouts.
