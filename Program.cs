@@ -439,7 +439,7 @@ internal static class Program
                 var latest = await repository.GetLatestRunAsync();
                 if (latest is null)
                 {
-                    Console.Error.WriteLine("No migration runs available in the database. Run the migration process first.");
+                    Console.Error.WriteLine("No migration runs available in the database. Run the migration process first: ./doctor.sh reverse-eng or ./doctor.sh run (rekt-full fills the REKT graph only).");
                     return;
                 }
 

@@ -31,6 +31,11 @@ async function fetchResources() {
   try {
     const res = await fetch('/api/resources', { headers: { 'Accept': 'application/json' } });
     if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      if (body && body.error) {
+        renderResources([], [body.error, body.hint].filter(Boolean).join(' '));
+        return;
+      }
       throw new Error(`HTTP ${res.status}`);
     }
     const resources = await res.json();

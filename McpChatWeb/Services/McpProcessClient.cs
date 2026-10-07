@@ -18,6 +18,9 @@ public sealed class McpProcessClient : IMcpClient, IDisposable
     private StreamWriter? _stdin;
     private StreamReader? _stdout;
     private Task? _stderrDrainer;
+    private readonly object _stderrLock = new();
+    private readonly Queue<string> _recentStderr = new();
+    private const int RecentStderrLines = 20;
     private long _nextId = 1;
     private bool _initialized;
     private bool _disposed;
@@ -330,6 +333,11 @@ public sealed class McpProcessClient : IMcpClient, IDisposable
 
     private Task StartProcessAsync(CancellationToken cancellationToken)
     {
+        lock (_stderrLock)
+        {
+            _recentStderr.Clear();
+        }
+
         var arguments = new StringBuilder();
 
         var baseDirectory = _options.WorkingDirectory;
@@ -401,6 +409,7 @@ public sealed class McpProcessClient : IMcpClient, IDisposable
                 while ((line = await _process.StandardError.ReadLineAsync().ConfigureAwait(false)) is not null)
                 {
                     Console.Error.WriteLine($"[MCP] {line}");
+                    RememberStderr(line);
                 }
             }
             catch
@@ -446,9 +455,17 @@ public sealed class McpProcessClient : IMcpClient, IDisposable
         await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await _stdin.WriteAsync($"Content-Length: {bytes.Length}\r\n\r\n").ConfigureAwait(false);
-            await _stdin.WriteAsync(json).ConfigureAwait(false);
-            await _stdin.FlushAsync().ConfigureAwait(false);
+            try
+            {
+                await _stdin.WriteAsync($"Content-Length: {bytes.Length}\r\n\r\n").ConfigureAwait(false);
+                await _stdin.WriteAsync(json).ConfigureAwait(false);
+                await _stdin.FlushAsync().ConfigureAwait(false);
+            }
+            catch (IOException) when (_process is not null && _process.WaitForExit(2000))
+            {
+                // Broken pipe: the server already exited, so report why rather than the pipe error.
+                throw await CreateExitedExceptionAsync().ConfigureAwait(false);
+            }
 
             while (true)
             {
@@ -459,7 +476,7 @@ public sealed class McpProcessClient : IMcpClient, IDisposable
                     // If the MCP process died, stop spinning and surface an error so the caller can restart it.
                     if (_process?.HasExited == true)
                     {
-                        throw new InvalidOperationException("MCP process exited while waiting for a response.");
+                        throw await CreateExitedExceptionAsync().ConfigureAwait(false);
                     }
 
                     // Avoid a hot loop on malformed/empty frames.
@@ -495,6 +512,44 @@ public sealed class McpProcessClient : IMcpClient, IDisposable
         {
             _sendLock.Release();
         }
+    }
+
+    private void RememberStderr(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line))
+        {
+            return;
+        }
+
+        lock (_stderrLock)
+        {
+            _recentStderr.Enqueue(line.Trim());
+            while (_recentStderr.Count > RecentStderrLines)
+            {
+                _recentStderr.Dequeue();
+            }
+        }
+    }
+
+    private async Task<McpServerUnavailableException> CreateExitedExceptionAsync()
+    {
+        // The server's reason is usually its last stderr line; let the drainer catch up before reading it.
+        if (_stderrDrainer is { } drainer)
+        {
+            try { await drainer.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); } catch { }
+        }
+
+        int? exitCode = null;
+        try { exitCode = _process?.ExitCode; } catch { }
+
+        string[] lines;
+        lock (_stderrLock)
+        {
+            lines = _recentStderr.ToArray();
+            _recentStderr.Clear();
+        }
+
+        return new McpServerUnavailableException(exitCode, lines);
     }
 
     private async Task<JsonObject?> ReadResponseAsync(CancellationToken cancellationToken)
