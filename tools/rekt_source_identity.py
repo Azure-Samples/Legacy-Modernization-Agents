@@ -7,7 +7,10 @@ nothing names them in a COPY or INCLUDE: the parse never reads them. It is unsaf
 when they differ and something uses the name, because the parse would then read whichever
 copy was staged last.
 
-Usage: rekt_source_identity.py <source-root> <preprocessed-dir>
+Usage: rekt_source_identity.py <source-root> <preprocessed-dir> [<shadowed-copybooks-file>]
+
+The optional file lists absolute paths of generated stand-in copybooks that a real copybook
+of the same name replaces; they are left out of the check because they are never staged.
 
 Prints one tab-separated line per finding: kind, lower-cased basename, then paths relative
 to the source root. Exits 1 when any finding blocks staging.
@@ -83,7 +86,7 @@ def is_used(copybook_stem, references):
     return False
 
 
-def scan(source_root):
+def scan(source_root, shadowed=frozenset()):
     programs, copybooks, references = {}, {}, {}
     for root, dirs, files in os.walk(source_root):
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".convert-")]
@@ -94,6 +97,8 @@ def scan(source_root):
             if ext in PROGRAM_EXTS:
                 programs.setdefault(name.lower(), []).append(rel)
             elif ext in COPYBOOK_EXTS:
+                if path in shadowed:
+                    continue
                 copybooks.setdefault(name.lower(), []).append(rel)
             else:
                 continue
@@ -109,8 +114,8 @@ def users_of(copybook_stem, references):
     return users
 
 
-def check(source_root, preproc_dir):
-    programs, copybooks, references = scan(source_root)
+def check(source_root, preproc_dir, shadowed=frozenset()):
+    programs, copybooks, references = scan(source_root, shadowed)
 
     preprocessed = set()
     if os.path.isdir(preproc_dir):
@@ -144,12 +149,19 @@ def check(source_root, preproc_dir):
     return findings, errors
 
 
+def read_shadowed(path):
+    if not path or not os.path.isfile(path):
+        return frozenset()
+    with open(path, encoding="utf-8") as handle:
+        return frozenset(line.rstrip("\n") for line in handle if line.strip())
+
+
 def main(argv):
-    if len(argv) != 3:
+    if len(argv) not in (3, 4):
         print(__doc__.strip().splitlines()[0], file=sys.stderr)
-        print("usage: rekt_source_identity.py <source-root> <preprocessed-dir>", file=sys.stderr)
+        print("usage: rekt_source_identity.py <source-root> <preprocessed-dir> [<shadowed-copybooks-file>]", file=sys.stderr)
         return 2
-    findings, errors = check(argv[1], argv[2])
+    findings, errors = check(argv[1], argv[2], read_shadowed(argv[3] if len(argv) == 4 else None))
     for kind, basename, paths in findings + errors:
         print("\t".join([kind, basename] + list(paths)))
     return 1 if errors else 0

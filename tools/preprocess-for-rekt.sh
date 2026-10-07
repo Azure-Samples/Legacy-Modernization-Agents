@@ -26,6 +26,11 @@ cpy_count=0
 # Recursive find so nested layouts (source/lib/cpy/, etc.) are picked up.
 # -print0 / read -d '' avoids issues with paths containing whitespace.
 while IFS= read -r -d '' cpy; do
+    # doctor.sh lists generated copybooks that a real one of the same name replaces.
+    if [[ -n "${REKT_SHADOWED_COPYBOOKS_FILE:-}" && -f "$REKT_SHADOWED_COPYBOOKS_FILE" ]] \
+        && grep -qxF "$cpy" "$REKT_SHADOWED_COPYBOOKS_FILE"; then
+        continue
+    fi
     "$PYTHON" -c "
 import os, re, sys
 

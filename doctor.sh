@@ -2627,8 +2627,10 @@ REKT_NEO4J_BOLT_PORT="$(resolve_runtime_setting REKT_NEO4J_BOLT_PORT 7688)"
 REKT_CONTAINER="$(resolve_runtime_setting REKT_CONTAINER cobol-rekt)"
 REKT_POPULATOR_CONTAINER="$(resolve_runtime_setting REKT_POPULATOR_CONTAINER cobol-graph-populator)"
 PORTAL_CONTAINER="$(resolve_runtime_setting PORTAL_CONTAINER cobol-migration-portal)"
+REKT_GENERATED_COPYBOOK_DIRS="$(resolve_runtime_setting REKT_GENERATED_COPYBOOK_DIRS copy-generated)"
 export NEO4J_CONTAINER NEO4J_HTTP_PORT NEO4J_BOLT_PORT REKT_NEO4J_CONTAINER REKT_NEO4J_HTTP_PORT \
-    REKT_NEO4J_BOLT_PORT REKT_CONTAINER REKT_POPULATOR_CONTAINER PORTAL_CONTAINER
+    REKT_NEO4J_BOLT_PORT REKT_CONTAINER REKT_POPULATOR_CONTAINER PORTAL_CONTAINER \
+    REKT_GENERATED_COPYBOOK_DIRS
 # A moved port is passed on to the CLI and portal; otherwise their own settings apply unchanged.
 if [[ "$REKT_NEO4J_BOLT_PORT" != "7688" && -z "${REKT_NEO4J_URI:-}" ]]; then
     export REKT_NEO4J_URI="bolt://localhost:$REKT_NEO4J_BOLT_PORT"
@@ -2890,6 +2892,43 @@ run_rekt_parse() {
         return 1
     fi
 
+    # Copybooks are staged into one flat folder, so two with the same name cannot both be used.
+    # A generated stand-in (a folder named in REKT_GENERATED_COPYBOOK_DIRS) gives way to the one
+    # real copybook of that name; the preprocessor, the collision check and staging all skip it.
+    local shadowed_copybooks_file
+    shadowed_copybooks_file="$(mktemp)"
+    "$PYTHON_CMD" - "$REPO_ROOT/source" "$REKT_GENERATED_COPYBOOK_DIRS" > "$shadowed_copybooks_file" <<'PYEOF'
+import os, sys
+
+source_root = sys.argv[1]
+generated_dirs = {d.strip().lower() for d in sys.argv[2].split(',') if d.strip()}
+skip_dirs = {'.preprocessed', '.rekt-staging'}
+copybooks = {}
+for root, dirs, files in os.walk(source_root):
+    dirs[:] = [d for d in dirs if d not in skip_dirs and not d.startswith('.convert-')]
+    for name in files:
+        if name.lower().endswith('.cpy'):
+            copybooks.setdefault(name.lower(), []).append(os.path.join(root, name))
+
+for paths in copybooks.values():
+    if len(paths) < 2:
+        continue
+    generated = [p for p in paths
+                 if any(part.lower() in generated_dirs
+                        for part in os.path.relpath(os.path.dirname(p), source_root).split(os.sep))]
+    if len(paths) - len(generated) == 1:
+        for p in generated:
+            print(p)
+PYEOF
+    export REKT_SHADOWED_COPYBOOKS_FILE="$shadowed_copybooks_file"
+    if [[ -s "$shadowed_copybooks_file" ]]; then
+        echo -e "  ${BLUE}Generated copybooks replaced by a real copybook of the same name:${NC}"
+        local shadowed
+        while IFS= read -r shadowed; do
+            echo -e "    ${BLUE}↳ ${shadowed#"$REPO_ROOT/source/"}${NC}"
+        done < "$shadowed_copybooks_file"
+    fi
+
     # Preprocess files that need IMS/DLI or dialect compatibility transformations
     echo -e "${BLUE}  Running preprocessor for IMS/DLI and dialect compatibility...${NC}"
     if [[ -x "$REPO_ROOT/tools/preprocess-for-rekt.sh" ]]; then
@@ -2912,7 +2951,7 @@ run_rekt_parse() {
     local preprocessed_dir="$REPO_ROOT/source/.preprocessed"
     local identity_check_output=""
     if ! identity_check_output=$("$PYTHON_CMD" "$REPO_ROOT/tools/rekt_source_identity.py" \
-        "$REPO_ROOT/source" "$preprocessed_dir"); then
+        "$REPO_ROOT/source" "$preprocessed_dir" "$shadowed_copybooks_file"); then
         echo -e "${RED}❌ Source identity collisions prevent safe REKT staging.${NC}"
         local -a _fields
         while IFS=$'\t' read -r -a _fields; do
@@ -3021,6 +3060,7 @@ run_rekt_parse() {
 
     # Collect all copybooks (recursive) into the flat staging root.
     while IFS= read -r cpyfile; do
+        grep -qxF "$cpyfile" "$shadowed_copybooks_file" && continue
         stage_copybook_file "$cpyfile"
     done < <(find "$REPO_ROOT/source" \( -name "*.cpy" -o -name "*.CPY" \) \
         ! -path "*/.rekt-staging/*" \
@@ -3609,6 +3649,7 @@ PYEOF
 
     # Clean up staging dir — it lives inside source/ which is gitignored
     rm -rf "$staging_dir"
+    rm -f "$shadowed_copybooks_file"
 
     # JCL is parsed deterministically from source/, without REKT; failures are non-fatal.
     if command -v dotnet >/dev/null 2>&1 && [[ -f "$REPO_ROOT/CobolToQuarkusMigration.csproj" ]]; then

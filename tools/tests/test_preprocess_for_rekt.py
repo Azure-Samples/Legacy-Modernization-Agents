@@ -31,8 +31,10 @@ class PreprocessForRektTests(unittest.TestCase):
         if WORK_ROOT.exists() and not any(WORK_ROOT.iterdir()):
             WORK_ROOT.rmdir()
 
-    def run_preprocessor(self, stubs=False, rules=None):
+    def run_preprocessor(self, stubs=False, rules=None, shadowed=None):
         env = os.environ.copy()
+        if shadowed is not None:
+            env["REKT_SHADOWED_COPYBOOKS_FILE"] = str(shadowed)
         env["REKT_NO_STUB_COPYBOOKS"] = "false" if stubs else "true"
         # Never pick up a developer's local estate rules from Config/.
         env["REKT_PREPROCESS_RULES"] = str(rules) if rules else str(self.work_dir / "no-rules.json")
@@ -274,6 +276,28 @@ class PreprocessForRektTests(unittest.TestCase):
 
         self.assertIn("FROM 0 BY -1 UNTIL", output)
         self.assertNotIn("OF MAPAI", output)
+
+    def test_skips_generated_copybook_that_a_real_copybook_replaces(self):
+        real_dir = self.source_dir / "real"
+        generated_dir = self.source_dir / "app" / "copy-generated"
+        real_dir.mkdir()
+        generated_dir.mkdir(parents=True)
+        # Both need rewriting (column 73+ text), so each would be written to .preprocessed/.
+        (real_dir / "SHARED.cpy").write_text(
+            "       01  REAL-FIELD     PIC X(004).".ljust(73) + "E\n", encoding="latin-1"
+        )
+        generated = generated_dir / "SHARED.cpy"
+        generated.write_text(
+            "       01  STUB-FIELD     PIC X(004).".ljust(73) + "E\n", encoding="latin-1"
+        )
+        shadowed = self.work_dir / "shadowed.txt"
+        shadowed.write_text(str(generated) + "\n")
+
+        self.run_preprocessor(shadowed=shadowed)
+
+        output = self.preprocessed_text("SHARED.cpy")
+        self.assertIn("REAL-FIELD", output)
+        self.assertNotIn("STUB-FIELD", output)
 
     def test_applies_local_rules_file_by_stage(self):
         self.write_program(
