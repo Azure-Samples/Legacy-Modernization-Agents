@@ -11,20 +11,20 @@ public class CallParameterTests
     {
         const string program =
             "000100 LINKAGE SECTION.\n" +
-            "000200 01  BDSMFJL-PARM.\n" +
-            "000300     COPY BDSMFJLI.\n" +
-            "000400 01  BDSDATO-PARM.\n" +
-            "000500     COPY BDSDATOI.\n" +
+            "000200 01  ORDMAIN-PARM.\n" +
+            "000300     COPY ORDMAINI.\n" +
+            "000400 01  ORDDATA-PARM.\n" +
+            "000500     COPY ORDDATAI.\n" +
             "000550*01  OLD-PARM.\n" +
             "000600 01  RAW-AREA.\n" +
             "000700     05 RAW-X PIC X(10).\n" +
-            "000800 PROCEDURE DIVISION USING BDSDATO-PARM\n" +
-            "000900                          BY REFERENCE BDSMFJL-PARM RAW-AREA.\n" +
+            "000800 PROCEDURE DIVISION USING ORDDATA-PARM\n" +
+            "000900                          BY REFERENCE ORDMAIN-PARM RAW-AREA.\n" +
             "001000 000-START SECTION.\n";
 
         CallTargetRegistry.UsingParameters(program).Should().Equal(
-            new CallParameter("BDSDATO-PARM", "bdsdatoParm", "Bdsdatoi"),
-            new CallParameter("BDSMFJL-PARM", "bdsmfjlParm", "Bdsmfjli"),
+            new CallParameter("ORDDATA-PARM", "orddataParm", "Orddatai"),
+            new CallParameter("ORDMAIN-PARM", "ordmainParm", "Ordmaini"),
             new CallParameter("RAW-AREA", "rawArea", null));
     }
 

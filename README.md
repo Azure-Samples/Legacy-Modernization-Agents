@@ -1036,6 +1036,8 @@ This project uses a **layered configuration system** where `.env` files can over
 | `Config/ai-config.env.example` | Copy source for your local config | ✅ Yes |
 | `Config/ai-config.local.env` | **Your secrets** - API keys, endpoints | ❌ No (gitignored) |
 
+> **Estate data stays local.** Source, output, logs and estate-specific rules are git-ignored, and a pre-commit guard blocks estate names. Run `tools/check-no-estate-data.sh --install-hook` once per clone. See [Keeping estate data private](docs/keeping-estate-data-private.md).
+
 #### What Goes Where?
 
 ```

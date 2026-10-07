@@ -87,13 +87,42 @@ source/*
 !source/CUSTOMER-DISPLAY.cbl
 !source/CUSTOMER-INQUIRY.cbl
 
-# Ignore COBOL files everywhere (except sample customer files above)
+# Ignore mainframe sources everywhere (except the sample files above). A copy of an
+# estate outside source/ (a slice, a scratch folder, a test drop) must not be committable.
+# Upper-case variants matter on case-sensitive file systems such as Linux CI.
 *.cbl
+*.CBL
 *.cpy
+*.CPY
 *.cob
+*.COB
+*.cobol
+*.jcl
+*.JCL
+*.prc
+*.PRC
+*.bms
+*.BMS
+*.csd
+*.CSD
+*.ims
+*.IMS
+*.dbd
+*.DBD
+*.psb
+*.PSB
+*.mfs
+*.MFS
 !source/CUSTOMER-DATA.cpy
 !source/CUSTOMER-DISPLAY.cbl
 !source/CUSTOMER-INQUIRY.cbl
+!tools/system-copybooks/*.cpy
+
+# Other places estate code is commonly staged
+cobol-source/
+slices/
+**/.preprocessed/
+**/.rekt-staging/
 
 # Generated Output (Contains converted business logic and reverse engineering results)
 output/*

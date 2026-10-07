@@ -64,8 +64,8 @@ public class ConversionNamespacePolicyTests : IDisposable
     [Fact]
     public void TheFolderInTheSourceDropNamesTheService()
     {
-        ConversionNamespacePolicy.ForProgram("Java", "bd/BDSDA23.cbl").Should().Be("com.modernized.bd");
-        ConversionNamespacePolicy.ForProgram("C#", "bd/BDSDA23.cbl").Should().Be("Modernized.Bd");
+        ConversionNamespacePolicy.ForProgram("Java", "bd/ORDDA23.cbl").Should().Be("com.modernized.bd");
+        ConversionNamespacePolicy.ForProgram("C#", "bd/ORDDA23.cbl").Should().Be("Modernized.Bd");
     }
 
     [Fact]
@@ -93,20 +93,20 @@ public class ConversionNamespacePolicyTests : IDisposable
         ConversionNamespacePolicy.ForSharedTypes("C#").Should().Be("Modernized.Shared");
 
         ConversionNamespacePolicy.ForSharedTypes("Java")
-            .Should().NotBe(ConversionNamespacePolicy.ForProgram("Java", "bd/BDSDA23.cbl"));
+            .Should().NotBe(ConversionNamespacePolicy.ForProgram("Java", "bd/ORDDA23.cbl"));
     }
 
     [Fact]
     public void ProgramsInTheSameFolderShareANamespace()
     {
-        ConversionNamespacePolicy.ForProgram("C#", "bd/BDSDA23.cbl")
-            .Should().Be(ConversionNamespacePolicy.ForProgram("C#", "bd/RGNB649.cbl"));
+        ConversionNamespacePolicy.ForProgram("C#", "bd/ORDDA23.cbl")
+            .Should().Be(ConversionNamespacePolicy.ForProgram("C#", "bd/PAYB649.cbl"));
     }
 
     [Fact]
     public void ProgramsInDifferentFoldersDoNot()
     {
-        ConversionNamespacePolicy.ForProgram("C#", "bd/BDSDA23.cbl")
+        ConversionNamespacePolicy.ForProgram("C#", "bd/ORDDA23.cbl")
             .Should().NotBe(ConversionNamespacePolicy.ForProgram("C#", "LEGACY/PAYFR002.cbl"));
     }
 
@@ -134,7 +134,7 @@ public class ConversionNamespacePolicyTests : IDisposable
     [Fact]
     public void AWindowsPathNamesTheSameServiceAsAPosixOne()
     {
-        ConversionNamespacePolicy.ForProgram("C#", @"bd\BDSDA23.cbl").Should().Be("Modernized.Bd");
+        ConversionNamespacePolicy.ForProgram("C#", @"bd\ORDDA23.cbl").Should().Be("Modernized.Bd");
     }
 
     [Fact]
@@ -154,7 +154,7 @@ public class ConversionNamespacePolicyTests : IDisposable
     {
         SetArchitecture(null);
 
-        ConversionNamespacePolicy.ForProgram("C#", "bd/BDSDA23.cbl").Should().Be("Modernized.Bd");
+        ConversionNamespacePolicy.ForProgram("C#", "bd/ORDDA23.cbl").Should().Be("Modernized.Bd");
         ConversionNamespacePolicy.ForSharedTypes("C#").Should().Be("Modernized.Shared");
     }
 
@@ -166,7 +166,7 @@ public class ConversionNamespacePolicyTests : IDisposable
     {
         SetArchitecture(architecture);
 
-        ConversionNamespacePolicy.ForProgram("C#", "bd/BDSDA23.cbl")
+        ConversionNamespacePolicy.ForProgram("C#", "bd/ORDDA23.cbl")
             .Should().Be("Modernized.Bd.Application");
         ConversionNamespacePolicy.ForSharedTypes("C#").Should().Be("Modernized.Domain");
     }
@@ -176,7 +176,7 @@ public class ConversionNamespacePolicyTests : IDisposable
     {
         SetArchitecture("ddd");
 
-        ConversionNamespacePolicy.ForProgram("Java", "bd/BDSDA23.cbl")
+        ConversionNamespacePolicy.ForProgram("Java", "bd/ORDDA23.cbl")
             .Should().Be("com.modernized.bd.application");
         ConversionNamespacePolicy.ForSharedTypes("Java").Should().Be("com.modernized.domain");
     }
@@ -186,7 +186,7 @@ public class ConversionNamespacePolicyTests : IDisposable
     {
         SetArchitecture("flat");
 
-        ConversionNamespacePolicy.ForProgram("C#", "bd/BDSDA23.cbl").Should().Be("Modernized");
+        ConversionNamespacePolicy.ForProgram("C#", "bd/ORDDA23.cbl").Should().Be("Modernized");
         ConversionNamespacePolicy.ForSharedTypes("C#").Should().Be("Modernized");
     }
 
@@ -196,7 +196,7 @@ public class ConversionNamespacePolicyTests : IDisposable
         SetArchitecture("custom");
         SetTemplate("{root}.services.{service}.impl");
 
-        ConversionNamespacePolicy.ForProgram("Java", "bd/BDSDA23.cbl")
+        ConversionNamespacePolicy.ForProgram("Java", "bd/ORDDA23.cbl")
             .Should().Be("com.modernized.services.bd.impl");
     }
 
@@ -206,7 +206,7 @@ public class ConversionNamespacePolicyTests : IDisposable
         SetArchitecture("custom");
         SetTemplate(null);
 
-        ConversionNamespacePolicy.ForProgram("C#", "bd/BDSDA23.cbl").Should().Be("Modernized.Bd");
+        ConversionNamespacePolicy.ForProgram("C#", "bd/ORDDA23.cbl").Should().Be("Modernized.Bd");
     }
 
     // A typo in the architecture name should not fail a conversion that is otherwise fine.
@@ -215,7 +215,7 @@ public class ConversionNamespacePolicyTests : IDisposable
     {
         SetArchitecture("hexagonal-ish");
 
-        ConversionNamespacePolicy.ForProgram("C#", "bd/BDSDA23.cbl").Should().Be("Modernized.Bd");
+        ConversionNamespacePolicy.ForProgram("C#", "bd/ORDDA23.cbl").Should().Be("Modernized.Bd");
     }
 
     [Fact]

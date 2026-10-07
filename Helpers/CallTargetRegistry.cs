@@ -2,7 +2,7 @@
 //
 // The converter prompt asked each program to "generate a service interface (e.g. IDateService)"
 // for every CALL it makes, and specified neither the name nor the shape. Seven programs calling
-// the same module produced seven declarations of IBdsmfjlService — and the three examined declared
+// the same module produced seven declarations of IOrdmainService — and the three examined declared
 // three different methods on it: ExecuteAsync, ReportAsync and ErrorCodemeldAsync. While every
 // program had its own package that merely duplicated; once a service shares one namespace it does
 // not compile.

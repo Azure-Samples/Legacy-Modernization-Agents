@@ -22,17 +22,17 @@ public class CompileGateTests : IDisposable
     [Fact]
     public void CompilerErrorsAreReadRelativeToTheRunEvenThroughASymlinkedPath()
     {
-        File.WriteAllText(Path.Join(_run, "Modernized", "Bd", "Rgni656.cs"), "");
+        File.WriteAllText(Path.Join(_run, "Modernized", "Bd", "Payi656.cs"), "");
         // macOS reports /tmp/... as /private/tmp/...; only the suffix is reliable.
         var output =
-            $"/private{_run}/Modernized/Bd/Rgni656.cs(78,59): error CS1519: Invalid token '&' in a member declaration [/x/Run.csproj]\n" +
-            $"/private{_run}/Modernized/Bd/Rgni656.cs(78,59): error CS1519: Invalid token '&' in a member declaration [/x/Run.csproj]\n" +
+            $"/private{_run}/Modernized/Bd/Payi656.cs(78,59): error CS1519: Invalid token '&' in a member declaration [/x/Run.csproj]\n" +
+            $"/private{_run}/Modernized/Bd/Payi656.cs(78,59): error CS1519: Invalid token '&' in a member declaration [/x/Run.csproj]\n" +
             "/x/Run.csproj : warning NU1603: approximate match\n";
 
         var (errors, other) = GeneratedBuildRunner.Parse(output, _run);
 
         errors.Should().ContainSingle().Which.Should().Be(
-            new CompilerDiagnostic("Modernized/Bd/Rgni656.cs", 78, 59, "CS1519", "Invalid token '&' in a member declaration"));
+            new CompilerDiagnostic("Modernized/Bd/Payi656.cs", 78, 59, "CS1519", "Invalid token '&' in a member declaration"));
         other.Should().BeEmpty();
     }
 
@@ -51,29 +51,29 @@ public class CompileGateTests : IDisposable
     {
         var index = GeneratedTypeIndex.FromSources(new Dictionary<string, string>
         {
-            ["A.cs"] = "namespace X.Shared\n{\npublic sealed class Bdcommik { }\n}\nnamespace X.Bd\n{\n[Obsolete] public interface IBdcommikHost { }\n}",
+            ["A.cs"] = "namespace X.Shared\n{\npublic sealed class Batommik { }\n}\nnamespace X.Bd\n{\n[Obsolete] public interface IBatommikHost { }\n}",
         });
 
         index.Declarations.Should().BeEquivalentTo(new[]
         {
-            new TypeDeclaration("Bdcommik", "X.Shared", "A.cs"),
-            new TypeDeclaration("IBdcommikHost", "X.Bd", "A.cs"),
+            new TypeDeclaration("Batommik", "X.Shared", "A.cs"),
+            new TypeDeclaration("IBatommikHost", "X.Bd", "A.cs"),
         });
     }
 
     [Fact]
     public void TheFileNamedAfterATypeKeepsIt()
     {
-        GeneratedTypeIndex.ChooseOwner("Sysinfor", ["Bd/Rgnb649.cs", "Shared/Sysinfor.cs", "Shared/Bdsiini1.cs"])
-            .Should().Be("Shared/Sysinfor.cs");
-        GeneratedTypeIndex.ChooseOwner("Sqlca", ["Bd/Rgnb649.cs", "Bd/Bdsmfjl.cs"])
-            .Should().Be("Bd/Bdsmfjl.cs");
+        GeneratedTypeIndex.ChooseOwner("Jobinfo", ["Bd/Payb649.cs", "Shared/Jobinfo.cs", "Shared/Ordiini1.cs"])
+            .Should().Be("Shared/Jobinfo.cs");
+        GeneratedTypeIndex.ChooseOwner("Sqlca", ["Bd/Payb649.cs", "Bd/Ordmain.cs"])
+            .Should().Be("Bd/Ordmain.cs");
     }
 
-    private static readonly Dictionary<string, string> TwoSysinfors = new()
+    private static readonly Dictionary<string, string> TwoJobinfos = new()
     {
-        ["Shared/Sysinfor.cs"] = "namespace S;\npublic sealed class Sysinfor\n{\n    public string Job { get; set; } = \"\";\n}\n",
-        ["Shared/Bdsiini1.cs"] = "namespace S;\npublic sealed class Sysinfor\n{\n    public string Step { get; set; } = \"\";\n}\npublic sealed class Bdsiini1 { }\n",
+        ["Shared/Jobinfo.cs"] = "namespace S;\npublic sealed class Jobinfo\n{\n    public string Job { get; set; } = \"\";\n}\n",
+        ["Shared/Ordiini1.cs"] = "namespace S;\npublic sealed class Jobinfo\n{\n    public string Step { get; set; } = \"\";\n}\npublic sealed class Ordiini1 { }\n",
     };
 
     [Fact]
@@ -81,23 +81,23 @@ public class CompileGateTests : IDisposable
     {
         var sources = new Dictionary<string, string>
         {
-            ["Shared/Sysinfor.cs"] = "namespace M.Shared;\npublic sealed class Sysinfor { public string Job { get; set; } = \"\"; }\n",
-            ["Bd/Rgnb649.cs"] = "namespace M.Bd;\npublic sealed class Sysinfor { }\npublic sealed class Rgnb649 { }\n",
+            ["Shared/Jobinfo.cs"] = "namespace M.Shared;\npublic sealed class Jobinfo { public string Job { get; set; } = \"\"; }\n",
+            ["Bd/Payb649.cs"] = "namespace M.Bd;\npublic sealed class Jobinfo { }\npublic sealed class Payb649 { }\n",
         };
         var errors = new[]
         {
-            new CompilerDiagnostic("Bd/Rgnb649.cs", 3, 44, "CS1503", "Argument 1: cannot convert from 'M.Bd.Sysinfor' to 'M.Shared.Sysinfor'"),
-            new CompilerDiagnostic("Bd/Rgnb649.cs", 9, 58, "CS1503", "Argument 1: cannot convert from 'M.Bd.Sysinfor' to 'M.Shared.Sysinfor'"),
+            new CompilerDiagnostic("Bd/Payb649.cs", 3, 44, "CS1503", "Argument 1: cannot convert from 'M.Bd.Jobinfo' to 'M.Shared.Jobinfo'"),
+            new CompilerDiagnostic("Bd/Payb649.cs", 9, 58, "CS1503", "Argument 1: cannot convert from 'M.Bd.Jobinfo' to 'M.Shared.Jobinfo'"),
         };
 
         var tasks = CompileRepairPlanner.Plan(errors, GeneratedTypeIndex.FromSources(sources), sources, "M.Shared", Limits);
 
         var repair = tasks.Should().ContainSingle().Subject;
-        repair.File.Should().Be("Bd/Rgnb649.cs");
-        repair.MayRemove.Should().BeEquivalentTo(["Sysinfor"]);
+        repair.File.Should().Be("Bd/Payb649.cs");
+        repair.MayRemove.Should().BeEquivalentTo(["Jobinfo"]);
         repair.Instructions.Should().ContainSingle(i => i.Contains("using M.Shared;"));
         repair.Declarations.Should().ContainSingle().Which.Should().Contain("public string Job");
-        CompileRepairAgent.Reject(sources["Bd/Rgnb649.cs"], "namespace M.Bd;\npublic sealed class Rgnb649 { }\n", repair.MayRemove)
+        CompileRepairAgent.Reject(sources["Bd/Payb649.cs"], "namespace M.Bd;\npublic sealed class Payb649 { }\n", repair.MayRemove)
             .Should().BeNull();
     }
 
@@ -107,16 +107,16 @@ public class CompileGateTests : IDisposable
         // The compiler blames the owner here; the repair still goes to the other file.
         var errors = new[]
         {
-            new CompilerDiagnostic("Shared/Sysinfor.cs", 2, 21, "CS0101", "The namespace 'S' already contains a definition for 'Sysinfor'"),
+            new CompilerDiagnostic("Shared/Jobinfo.cs", 2, 21, "CS0101", "The namespace 'S' already contains a definition for 'Jobinfo'"),
         };
 
-        var tasks = CompileRepairPlanner.Plan(errors, GeneratedTypeIndex.FromSources(TwoSysinfors), TwoSysinfors, "S", Limits);
+        var tasks = CompileRepairPlanner.Plan(errors, GeneratedTypeIndex.FromSources(TwoJobinfos), TwoJobinfos, "S", Limits);
 
         var repair = tasks.Should().ContainSingle(t => t.MayRemove.Count > 0).Subject;
-        repair.File.Should().Be("Shared/Bdsiini1.cs");
-        repair.MayRemove.Should().BeEquivalentTo(["Sysinfor"]);
+        repair.File.Should().Be("Shared/Ordiini1.cs");
+        repair.MayRemove.Should().BeEquivalentTo(["Jobinfo"]);
         repair.Declarations.Should().ContainSingle().Which.Should().Contain("public string Job");
-        tasks.Should().NotContain(t => t.File == "Shared/Sysinfor.cs", "the owner keeps its declaration and has nothing to repair");
+        tasks.Should().NotContain(t => t.File == "Shared/Jobinfo.cs", "the owner keeps its declaration and has nothing to repair");
     }
 
     [Fact]
@@ -124,19 +124,19 @@ public class CompileGateTests : IDisposable
     {
         var sources = new Dictionary<string, string>
         {
-            ["Bd/Bdsda23.cs"] = "namespace B;\npublic class Bdsda23 { IBdsparmService _p; }\n",
-            ["Bd/Bdsparmx.cs"] = "namespace B;\npublic class Bdsparmx { IBdsparmService _p; }\n",
+            ["Bd/Ordda23.cs"] = "namespace B;\npublic class Ordda23 { IOrdparmService _p; }\n",
+            ["Bd/Ordparmx.cs"] = "namespace B;\npublic class Ordparmx { IOrdparmService _p; }\n",
         };
         var errors = sources.Keys.Select(f => new CompilerDiagnostic(f, 2, 23, "CS0246",
-            "The type or namespace name 'IBdsparmService' could not be found (are you missing a using directive or an assembly reference?)")).ToList();
+            "The type or namespace name 'IOrdparmService' could not be found (are you missing a using directive or an assembly reference?)")).ToList();
 
         var tasks = CompileRepairPlanner.Plan(errors, GeneratedTypeIndex.FromSources(sources), sources, "B.Shared", Limits);
 
         var declaring = tasks.Where(t => t.Instructions.Any(i => i.Contains(CompileRepairPlanner.ExternalContractMarker))).ToList();
-        declaring.Should().ContainSingle().Which.File.Should().Be("Bd/Bdsda23.cs");
-        declaring[0].Instructions.Should().Contain(i => i.Contains("Bd/Bdsparmx.cs:2"));
-        tasks.Single(t => t.File == "Bd/Bdsparmx.cs").Instructions
-            .Should().ContainSingle(i => i.Contains("declared by Bd/Bdsda23.cs"));
+        declaring.Should().ContainSingle().Which.File.Should().Be("Bd/Ordda23.cs");
+        declaring[0].Instructions.Should().Contain(i => i.Contains("Bd/Ordparmx.cs:2"));
+        tasks.Single(t => t.File == "Bd/Ordparmx.cs").Instructions
+            .Should().ContainSingle(i => i.Contains("declared by Bd/Ordda23.cs"));
     }
 
     [Fact]
@@ -144,16 +144,16 @@ public class CompileGateTests : IDisposable
     {
         var sources = new Dictionary<string, string>
         {
-            ["Bd/Bdsda2fk.cs"] = "namespace B;\npublic class Bdsda2fkService { Bdsda2fk _a; }\n",
+            ["Bd/Ordda2fk.cs"] = "namespace B;\npublic class Ordda2fkService { Ordda2fk _a; }\n",
         };
         var errors = new[]
         {
-            new CompilerDiagnostic("Bd/Bdsda2fk.cs", 2, 36, "CS0246",
-                "The type or namespace name 'Bdsda2fk' could not be found (are you missing a using directive or an assembly reference?)"),
+            new CompilerDiagnostic("Bd/Ordda2fk.cs", 2, 36, "CS0246",
+                "The type or namespace name 'Ordda2fk' could not be found (are you missing a using directive or an assembly reference?)"),
         };
 
         var task = CompileRepairPlanner.Plan(errors, GeneratedTypeIndex.FromSources(sources), sources, "B.Shared", Limits,
-            new Dictionary<string, string> { ["BDSDA2FK"] = "       01 BDSDA2FK-AREA.\n          05 FIK-KD PIC 9." }).Single();
+            new Dictionary<string, string> { ["ORDDA2FK"] = "       01 ORDDA2FK-AREA.\n          05 FIK-KD PIC 9." }).Single();
 
         task.Instructions.Should().ContainSingle().Which.Should()
             .Contain("05 FIK-KD PIC 9.").And.NotContain(CompileRepairPlanner.ExternalContractMarker);
@@ -175,10 +175,10 @@ public class CompileGateTests : IDisposable
     [Fact]
     public void ATypeDeclarationIsExtractedToItsClosingBrace()
     {
-        CompileRepairPlanner.ExtractDeclaration(TwoSysinfors["Shared/Bdsiini1.cs"], "Sysinfor")
-            .Should().Be("public sealed class Sysinfor\n{\n    public string Step { get; set; } = \"\";\n}");
-        CompileRepairPlanner.ExtractDeclaration("public sealed record Reni307(int Kode);", "Reni307")
-            .Should().Be("public sealed record Reni307(int Kode);");
+        CompileRepairPlanner.ExtractDeclaration(TwoJobinfos["Shared/Ordiini1.cs"], "Jobinfo")
+            .Should().Be("public sealed class Jobinfo\n{\n    public string Step { get; set; } = \"\";\n}");
+        CompileRepairPlanner.ExtractDeclaration("public sealed record Rpti307(int Kode);", "Rpti307")
+            .Should().Be("public sealed record Rpti307(int Kode);");
     }
 
     [Fact]
@@ -218,24 +218,24 @@ public class CompileGateTests : IDisposable
     {
         var sources = new Dictionary<string, string>
         {
-            ["Bd/Bdsm043.cs"] = "namespace B.Bd;\npublic sealed class Bdsm043Service : IBdsm043Service\n{\n    public void Run() { }\n}\n",
-            ["Shared/Bdsm043k.cs"] = "namespace B.Shared;\npublic class Caller\n{\n    private readonly IBdsm043Service _s;\n}\n",
+            ["Bd/Ordm043.cs"] = "namespace B.Bd;\npublic sealed class Ordm043Service : IOrdm043Service\n{\n    public void Run() { }\n}\n",
+            ["Shared/Ordm043k.cs"] = "namespace B.Shared;\npublic class Caller\n{\n    private readonly IOrdm043Service _s;\n}\n",
         };
         var errors = new[]
         {
-            new CompilerDiagnostic("Bd/Bdsm043.cs", 2, 38, "CS0246",
-                "The type or namespace name 'IBdsm043Service' could not be found (are you missing a using directive or an assembly reference?)"),
-            new CompilerDiagnostic("Shared/Bdsm043k.cs", 4, 22, "CS0246",
-                "The type or namespace name 'IBdsm043Service' could not be found (are you missing a using directive or an assembly reference?)"),
+            new CompilerDiagnostic("Bd/Ordm043.cs", 2, 38, "CS0246",
+                "The type or namespace name 'IOrdm043Service' could not be found (are you missing a using directive or an assembly reference?)"),
+            new CompilerDiagnostic("Shared/Ordm043k.cs", 4, 22, "CS0246",
+                "The type or namespace name 'IOrdm043Service' could not be found (are you missing a using directive or an assembly reference?)"),
         };
 
         var tasks = CompileRepairPlanner.Plan(errors, GeneratedTypeIndex.FromSources(sources), sources, "B.Shared", Limits);
 
-        var owner = tasks.Single(t => t.File == "Bd/Bdsm043.cs");
-        owner.Instructions.Should().Contain(i => i.Contains("implemented by `Bdsm043Service`"));
+        var owner = tasks.Single(t => t.File == "Bd/Ordm043.cs");
+        owner.Instructions.Should().Contain(i => i.Contains("implemented by `Ordm043Service`"));
         owner.Instructions.Should().NotContain(i => i.Contains(CompileRepairPlanner.ExternalContractMarker));
-        tasks.Single(t => t.File == "Shared/Bdsm043k.cs").Instructions
-            .Should().Contain(i => i.Contains("declared by Bd/Bdsm043.cs"));
+        tasks.Single(t => t.File == "Shared/Ordm043k.cs").Instructions
+            .Should().Contain(i => i.Contains("declared by Bd/Ordm043.cs"));
     }
 
     [Fact]
@@ -266,18 +266,18 @@ public class CompileGateTests : IDisposable
     {
         var sources = new Dictionary<string, string>
         {
-            ["Bd/Rgnb649.cs"] = "using System;\nnamespace M.Bd;\npublic sealed class Sqlca { }\n",
-            ["Bd/Bdsmfjl.cs"] = "using System;\nusing M.Shared;\n\nnamespace M.Shared\n{\n    public interface ISql { void Run(Sqlca s); }\n}\n",
+            ["Bd/Payb649.cs"] = "using System;\nnamespace M.Bd;\npublic sealed class Sqlca { }\n",
+            ["Bd/Ordmain.cs"] = "using System;\nusing M.Shared;\n\nnamespace M.Shared\n{\n    public interface ISql { void Run(Sqlca s); }\n}\n",
         };
         var errors = new[]
         {
-            new CompilerDiagnostic("Bd/Bdsmfjl.cs", 6, 38, "CS0246", "The type or namespace name 'Sqlca' could not be found (are you missing a using directive or an assembly reference?)"),
-            new CompilerDiagnostic("Bd/Bdsmfjl.cs", 6, 10, "CS0246", "The type or namespace name 'Nowhere' could not be found"),
+            new CompilerDiagnostic("Bd/Ordmain.cs", 6, 38, "CS0246", "The type or namespace name 'Sqlca' could not be found (are you missing a using directive or an assembly reference?)"),
+            new CompilerDiagnostic("Bd/Ordmain.cs", 6, 10, "CS0246", "The type or namespace name 'Nowhere' could not be found"),
         };
 
         var (imported, remaining) = CompileRepairPlanner.ImportUniqueNamespaces(errors, GeneratedTypeIndex.FromSources(sources), sources);
 
-        imported.Should().ContainKey("Bd/Bdsmfjl.cs").WhoseValue.Should()
+        imported.Should().ContainKey("Bd/Ordmain.cs").WhoseValue.Should()
             .StartWith("using System;\nusing M.Shared;\nusing M.Bd;\n\nnamespace M.Shared");
         remaining.Should().ContainSingle().Which.Message.Should().Contain("Nowhere");
     }
@@ -305,20 +305,20 @@ public class CompileGateTests : IDisposable
         var sources = new Dictionary<string, string>
         {
             ["CallTargetContracts.g.cs"] =
-                "namespace S\n{\n    public interface IBdsda2fService\n    {\n        Task ExecuteAsync(Bdsdatoi a, Bdsmfjli b, CancellationToken c = default);\n    }\n}\n",
-            ["Bd/Rgnb649.cs"] =
-                "namespace B;\npublic sealed class Rgnb649(IBdsda2fService bdsda2fService)\n{\n    Task Run() => bdsda2fService.ExecuteAsync(_parm, _ct);\n}\n",
+                "namespace S\n{\n    public interface IOrdda2fService\n    {\n        Task ExecuteAsync(Orddatai a, Ordmaini b, CancellationToken c = default);\n    }\n}\n",
+            ["Bd/Payb649.cs"] =
+                "namespace B;\npublic sealed class Payb649(IOrdda2fService ordda2fService)\n{\n    Task Run() => ordda2fService.ExecuteAsync(_parm, _ct);\n}\n",
         };
         var errors = new[]
         {
-            new CompilerDiagnostic("Bd/Rgnb649.cs", 4, 20, "CS1503",
-                "Argument 2: cannot convert from 'System.Threading.CancellationToken' to 'S.Bdsmfjli'"),
+            new CompilerDiagnostic("Bd/Payb649.cs", 4, 20, "CS1503",
+                "Argument 2: cannot convert from 'System.Threading.CancellationToken' to 'S.Ordmaini'"),
         };
 
         var task = CompileRepairPlanner.Plan(errors, GeneratedTypeIndex.FromSources(sources), sources, "S", Limits)
             .Should().ContainSingle().Subject;
 
         task.Declarations.Should().ContainSingle().Which.Should()
-            .Contain("interface IBdsda2fService").And.Contain("ExecuteAsync(Bdsdatoi a, Bdsmfjli b");
+            .Contain("interface IOrdda2fService").And.Contain("ExecuteAsync(Orddatai a, Ordmaini b");
     }
 }

@@ -533,7 +533,6 @@ public class {{className}} {
             {"INC-FEJLMELD", "INC-ERROR-MSG"},
             {"FEJL VED KALD", "ERROR IN CALL"},
             {"FEJL VED KALD AF", "ERROR CALLING"},
-            {"FEJL VED KALD BDSDATO", "ERROR CALLING BDSDATO"},
             {"KALD", "CALL_OP"},
             {"MEDD-TEKST", "MSG_TEXT"},
         };

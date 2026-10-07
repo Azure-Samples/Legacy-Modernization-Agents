@@ -13,27 +13,27 @@ public class GeneratedInterfaceDeclarationsTests
             namespace Modernized.Bd
             {
                 /// <summary>Guessed shape.</summary>
-                public interface IBdsda2fService
+                public interface IOrdda2fService
                 {
                     // one } in a comment
-                    Task ExecuteAsync(Bdsdatoi area, CancellationToken cancellationToken = default);
+                    Task ExecuteAsync(Orddatai area, CancellationToken cancellationToken = default);
                 }
 
-                public interface IBdsda2fServiceFactory { string Name => "}"; }
+                public interface IOrdda2fServiceFactory { string Name => "}"; }
 
-                public sealed class Caller(IBdsda2fService service) { }
+                public sealed class Caller(IOrdda2fService service) { }
             }
             """;
 
-        var result = GeneratedInterfaceDeclarations.RemoveFrom(code, ["IBdsda2fService"]);
+        var result = GeneratedInterfaceDeclarations.RemoveFrom(code, ["IOrdda2fService"]);
 
         result.Should().Be("""
             namespace Modernized.Bd
             {
 
-                public interface IBdsda2fServiceFactory { string Name => "}"; }
+                public interface IOrdda2fServiceFactory { string Name => "}"; }
 
-                public sealed class Caller(IBdsda2fService service) { }
+                public sealed class Caller(IOrdda2fService service) { }
             }
             """);
     }

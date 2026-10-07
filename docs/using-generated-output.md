@@ -163,7 +163,7 @@ writes that as two file-scoped namespaces (`CS8954`) or a file-scoped one follow
 namespaces. It changes syntax only: the same types land in the same namespaces, and files with a
 single namespace are never touched. The chunked migration path previously wrote no scaffolding at
 all; it now does. Every remaining `CS0246` in the normalized run names a type that is declared
-nowhere in the output, such as `IBdsparmService`, `Bdsparmx` and `BdsDa01Entity`: missing
+nowhere in the output, such as `IOrdparmService`, `Ordparmx` and `OrdDa01Entity`: missing
 copybooks or callees that were not part of the conversion.
 
 The 71 break down as 26 not found, 26 duplicate declarations, 8 unimplemented interface members
@@ -174,10 +174,10 @@ One generated file also escapes the configured root:
 ### Two generation defects worth naming
 
 ```csharp
-// Db2diagi.cs:210 — HTML entities leaked into emitted source
+// Sqldiagi.cs:210 — HTML entities leaked into emitted source
 set { if (value &amp;&amp; !DerVarNogetAndet) WsVarDerAndet = 1; }
 
-// Reni303.cs:72 — comma where the accessor needs a semicolon
+// Rpti303.cs:72 — comma where the accessor needs a semicolon
 get => FromCode(_prisMinSatsKd),
 ```
 

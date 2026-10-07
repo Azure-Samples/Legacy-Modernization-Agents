@@ -22,19 +22,19 @@ public class SyntheticLayoutNoticeTests
     {
         var block = SyntheticLayoutNotice.Build(new[]
         {
-            "generated-copybook-stub:QPIPCCAB",
+            "generated-copybook-stub:LPIPCCAB",
             "rekt-output-empty: no AST/CFG/DataStructure JSONs found",
             "generated-copybook-stub:ERRCODES",
         });
 
-        block.Should().Contain("QPIPCCAB").And.Contain("ERRCODES");
+        block.Should().Contain("LPIPCCAB").And.Contain("ERRCODES");
         block.Should().NotContain("rekt-output-empty");
     }
 
     [Fact]
     public void ForbidsInventingFieldsAndRequiresAnExplicitUnknownMarker()
     {
-        var block = SyntheticLayoutNotice.Build(new[] { "generated-copybook-stub:QPIPCCAB" });
+        var block = SyntheticLayoutNotice.Build(new[] { "generated-copybook-stub:LPIPCCAB" });
 
         block.Should().Contain("Do NOT invent fields");
         block.Should().Contain("TODO: layout unknown");
@@ -45,7 +45,7 @@ public class SyntheticLayoutNoticeTests
     [Fact]
     public void KeepsTheCompletenessRuleForEveryOtherGroup()
     {
-        var block = SyntheticLayoutNotice.Build(new[] { "generated-copybook-stub:QPIPCCAB" });
+        var block = SyntheticLayoutNotice.Build(new[] { "generated-copybook-stub:LPIPCCAB" });
 
         block.Should().Contain("Every other data group");
     }
@@ -55,10 +55,10 @@ public class SyntheticLayoutNoticeTests
     {
         var block = SyntheticLayoutNotice.Build(new[]
         {
-            "generated-copybook-stub:QPIPCCAB",
-            "GENERATED-COPYBOOK-STUB:qpipccab",
+            "generated-copybook-stub:LPIPCCAB",
+            "GENERATED-COPYBOOK-STUB:lpipccab",
         });
 
-        block.Split("QPIPCCAB", StringSplitOptions.None).Length.Should().Be(2);
+        block.Split("LPIPCCAB", StringSplitOptions.None).Length.Should().Be(2);
     }
 }

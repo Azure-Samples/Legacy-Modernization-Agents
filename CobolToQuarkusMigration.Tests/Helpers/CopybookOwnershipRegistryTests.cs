@@ -6,7 +6,7 @@ namespace CobolToQuarkusMigration.Tests.Helpers;
 
 // The shared-copybook rule told every file "do NOT define these types, reference them from the
 // shared namespace" and told no file to define them. Each still needed the type to compile, so
-// each defined it: seven files declared Bdsdatoi. The instruction was not disobeyed, it was
+// each defined it: seven files declared Orddatai. The instruction was not disobeyed, it was
 // unsatisfiable. A copybook is converted in its own right, so an owner already exists and only
 // has to be named.
 public sealed class CopybookOwnershipRegistryTests : IDisposable
@@ -47,25 +47,25 @@ public sealed class CopybookOwnershipRegistryTests : IDisposable
         ownership.UsedBy.Should().BeEquivalentTo("ORDER");
     }
 
-    // The exact failure measured on the estate: BDSDATOI was declared by its own converted file
+    // The exact failure measured on the estate: ORDDATAI was declared by its own converted file
     // and by eight others that copy it.
     [Fact]
     public void EveryUserIsToldToReferenceAndOnlyTheOwnerToDeclare()
     {
-        string[] users = ["BDSDA11", "BDSDA12", "BDSDA23"];
+        string[] users = ["ORDDA11", "ORDDA12", "ORDDA23"];
 
-        Copybook("BDSDATOI");
-        foreach (var user in users) Program(user, "BDSDATOI");
+        Copybook("ORDDATAI");
+        foreach (var user in users) Program(user, "ORDDATAI");
 
         var registry = Build();
 
-        registry.ToPromptBlock("BDSDATOI", "C#")
+        registry.ToPromptBlock("ORDDATAI", "C#")
             .Should().Contain("You are the only file that declares it");
 
         users.Select(user => registry.ToPromptBlock(user, "C#")).Should().AllSatisfy(block =>
         {
             block.Should().Contain("do NOT declare them");
-            block.Should().Contain("declared by the conversion of BDSDATOI");
+            block.Should().Contain("declared by the conversion of ORDDATAI");
             block.Should().NotContain("You are the only file that declares it");
         });
     }
@@ -105,12 +105,12 @@ public sealed class CopybookOwnershipRegistryTests : IDisposable
     [Fact]
     public void ACopybookIsToldToDeclareNothingBeyondItsOwnTypes()
     {
-        // RENI310: six lines of condition names came back as 1300 lines of other programs' services.
-        Copybook("RENI310");
-        Program("BDSDA23", "RENI310");
+        // RPTI310: six lines of condition names came back as 1300 lines of other programs' services.
+        Copybook("RPTI310");
+        Program("ORDDA23", "RPTI310");
 
-        Build().ToPromptBlock("RENI310", "C#").Should().Contain("THIS FILE IS A COPYBOOK");
-        Build().ToPromptBlock("BDSDA23", "C#").Should().NotContain("THIS FILE IS A COPYBOOK");
+        Build().ToPromptBlock("RPTI310", "C#").Should().Contain("THIS FILE IS A COPYBOOK");
+        Build().ToPromptBlock("ORDDA23", "C#").Should().NotContain("THIS FILE IS A COPYBOOK");
     }
 
     [Fact]
@@ -164,7 +164,7 @@ public sealed class CopybookOwnershipRegistryTests : IDisposable
     }
 
     [Theory]
-    [InlineData("BDSDATOI", "Bdsdatoi")]
+    [InlineData("ORDDATAI", "Orddatai")]
     [InlineData("CUSTOMER-DATA", "CustomerData")]
     [InlineData("ERR_CODES", "ErrCodes")]
     public void TheTypeNameIsDerivedNotInvented(string copybook, string expected)

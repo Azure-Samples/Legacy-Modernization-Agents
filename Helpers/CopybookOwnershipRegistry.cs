@@ -2,10 +2,10 @@
 //
 // The shared-copybook rule told every program "do NOT define these types, reference them from the
 // shared namespace" and told no one to define them. Each program still needs the type to exist in
-// order to compile, so each defined it. Seven files declared Bdsdatoi; the instruction was not
+// order to compile, so each defined it. Seven files declared Orddatai; the instruction was not
 // disobeyed, it was unsatisfiable.
 //
-// A copybook in the source drop is converted in its own right — BDSDATOI.cpy becomes Bdsdatoi.cs —
+// A copybook in the source drop is converted in its own right — ORDDATAI.cpy becomes Orddatai.cs —
 // so an owner already exists and only has to be named. Everything that copies it references it.
 // This is the same correction the call-target contracts needed: an instruction to reference is
 // only coherent alongside an instruction to declare.
