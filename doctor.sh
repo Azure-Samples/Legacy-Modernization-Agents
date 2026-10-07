@@ -2876,72 +2876,48 @@ run_rekt_parse() {
 
     local preprocessed_dir="$REPO_ROOT/source/.preprocessed"
     local identity_check_output=""
-    if ! identity_check_output=$("$PYTHON_CMD" - "$REPO_ROOT/source" "$preprocessed_dir" <<'PYEOF'
-import os, sys
-
-source_root = sys.argv[1]
-preproc_dir = sys.argv[2]
-program_exts = {'.cbl', '.cob'}
-copybook_exts = {'.cpy'}
-skip_dirs = {'.preprocessed', '.rekt-staging'}
-
-programs = {}
-copybooks = {}
-for root, dirs, files in os.walk(source_root):
-    dirs[:] = [d for d in dirs if d not in skip_dirs and not d.startswith('.convert-')]
-    for name in files:
-        rel = os.path.relpath(os.path.join(root, name), source_root).replace(os.sep, '/')
-        ext = os.path.splitext(name)[1].lower()
-        if ext in program_exts:
-            programs.setdefault(name.lower(), []).append(rel)
-        elif ext in copybook_exts:
-            copybooks.setdefault(name.lower(), []).append(rel)
-
-preprocessed = set()
-if os.path.isdir(preproc_dir):
-    for name in os.listdir(preproc_dir):
-        path = os.path.join(preproc_dir, name)
-        if os.path.isfile(path):
-            preprocessed.add(name.lower())
-
-errors = []
-notes = []
-for basename, paths in sorted(copybooks.items()):
-    if len(paths) > 1:
-        errors.append(("copybook-collision", basename, sorted(paths)))
-
-for basename, paths in sorted(programs.items()):
-    if len(paths) > 1:
-        sorted_paths = sorted(paths)
-        notes.append(("program-duplicate", basename, sorted_paths))
-        if basename in preprocessed:
-            errors.append(("preprocessed-program-collision", basename, sorted_paths))
-
-for kind, basename, paths in notes + errors:
-    print("\t".join([kind, basename] + paths))
-
-sys.exit(1 if errors else 0)
-PYEOF
-); then
+    if ! identity_check_output=$("$PYTHON_CMD" "$REPO_ROOT/tools/rekt_source_identity.py" \
+        "$REPO_ROOT/source" "$preprocessed_dir"); then
         echo -e "${RED}❌ Source identity collisions prevent safe REKT staging.${NC}"
-        while IFS=$'\t' read -r issue basename path1 rest; do
-            [[ -z "$issue" ]] && continue
-            case "$issue" in
+        local -a _fields
+        while IFS=$'\t' read -r -a _fields; do
+            [[ ${#_fields[@]} -lt 2 ]] && continue
+            case "${_fields[0]}" in
                 copybook-collision)
-                    echo -e "  ${RED}copybook basename collision:${NC} ${basename}"
+                    echo -e "  ${RED}copybook basename collision:${NC} ${_fields[1]}"
+                    echo -e "    ${YELLOW}REKT resolves COPY by name from one folder, and these copies differ.${NC}"
+                    ;;
+                copybook-collision-users)
+                    if [[ ${#_fields[@]} -gt 2 ]]; then
+                        echo -e "    ${YELLOW}named by:${NC} ${_fields[*]:2}"
+                    fi
+                    continue
                     ;;
                 preprocessed-program-collision)
-                    echo -e "  ${RED}preprocessed program basename collision:${NC} ${basename}"
+                    echo -e "  ${RED}preprocessed program basename collision:${NC} ${_fields[1]}"
                     echo -e "    ${YELLOW}preprocess-for-rekt.sh stages flat outputs for this basename, so the transformed source is ambiguous.${NC}"
                     ;;
+                *) continue ;;
             esac
             local _path
-            for _path in "$path1" $rest; do
-                [[ -z "$_path" ]] && continue
+            for _path in "${_fields[@]:2}"; do
                 echo -e "    ${YELLOW}↳ ${_path}${NC}"
             done
         done <<< "$identity_check_output"
+        echo ""
+        echo "Rename one copy, or move the estate that is not being parsed out of source/."
         return 1
+    fi
+
+    local _identical_dupes _unused_dupes
+    _identical_dupes=$(grep -c '^copybook-duplicate-identical' <<< "$identity_check_output" || true)
+    _unused_dupes=$(grep '^copybook-duplicate-unused' <<< "$identity_check_output" | cut -f2 | tr '\n' ' ' || true)
+    if [[ "$_identical_dupes" -gt 0 ]]; then
+        echo -e "  ${BLUE}ℹ️  ${_identical_dupes} copybook name(s) appear in several folders with the same text; one copy is staged.${NC}"
+    fi
+    if [[ -n "${_unused_dupes// /}" ]]; then
+        echo -e "  ${BLUE}ℹ️  Copybooks that differ but share a name, and that no COPY or INCLUDE uses, so the parse never reads them:${NC}"
+        echo -e "     ${_unused_dupes% }"
     fi
 
     local duplicate_program_basenames=""
