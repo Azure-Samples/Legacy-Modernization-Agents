@@ -22,14 +22,30 @@ The migration uses Microsoft Agent Framework with a multi-provider architecture 
 > Without a valid sign-in (or an API key in `Config/ai-config.local.env`), conversion and reverse engineering fail on the first model call. `./doctor.sh rekt-full`, `./doctor.sh estate` and `./doctor.sh jcl` call no model and need no sign-in.
 
 > [!TIP]
-> **Start here.** Run these in order from the repository root:
+> **Start here: quick run.** Run these in order from the repository root:
 >
 > | Step | Command | What it does |
 > |---|---|---|
-> | 1 | `./doctor.sh setup` | **Configure the framework**: AI provider, credentials, models and local services |
-> | 2 | *(copy files)* | **Put your sources in `source/`**: COBOL programs (`.cbl`), copybooks (`.cpy`), and JCL jobs (`.jcl`) with their procedures and INCLUDE members (`.proc`, `.prc`, `.inc`) |
-> | 3 | `./doctor.sh rekt-full` | **Parse the estate (run before any conversion)**: parses the COBOL with REKT and loads it into the REKT Neo4j graph, and parses the JCL with the built-in JCL parser into `output/rekt/`. No model is called. See [Parse first: rekt-full](#parse-first-rekt-full) |
-> | 4 | `./doctor.sh run` | **Full migration**: analyzes the COBOL, converts it to Java or C#, generates a job per JCL job, writes reports and opens the portal. For a partial conversion use `./doctor.sh convert-only --program NAME` |
+> | 1 | *(copy files)* | **Put your sources in `source/`**: COBOL programs (`.cbl`), copybooks (`.cpy`), BMS maps (`.bms`), CICS definitions, and JCL jobs (`.jcl`) with their procedures and INCLUDE members (`.proc`, `.prc`, `.inc`). Subfolders are fine |
+> | 2 | `./doctor.sh setup` | **Configure the framework**: AI provider, credentials, models and local services |
+> | 3 | `./doctor.sh rekt-full` | **Parse the estate (before any conversion)**: parses the COBOL with REKT into the REKT Neo4j graph and the JCL into `output/rekt/`. No model is called. See [Parse first: rekt-full](#parse-first-rekt-full) |
+> | 4 | `./doctor.sh portal` | **Open the portal** at http://localhost:5028 |
+> | 5 | *(portal)* | **Pick what to migrate in 🛰 Estate Mission Control**: switch to **✂️ Carve-out plan**, click a cluster, and press **📦 Stage slice**. The panel lists the programs, what they call, and what is missing from `source/`, and gives the exact command to run. **🔁 Send to AI loop** starts the conversion from the portal instead. See [Estate Mission Control](#estate-mission-control) |
+> | 6 | *(the suggested command)* | **Convert the slice**, for example `./doctor.sh convert-only --program BNK1CCA.cbl,BNK1CCS.cbl` |
+>
+> Example commands:
+>
+> | Command | What it does |
+> |---|---|
+> | `./doctor.sh estate` | Prints the carve-out wave plan in the terminal (same data as Estate Mission Control) |
+> | `./doctor.sh estate C01` | Prints one cluster and the `convert-only` command for its slice |
+> | `./doctor.sh run --program X.cbl --language Java --dry-run` | Previews which programs a conversion would include, without calling a model |
+> | `./doctor.sh convert-only --program A.cbl --program B.cbl` | Converts only these programs (repeat `--program` or separate with commas) |
+> | `./doctor.sh run --program X.cbl --include-callees --clean-output` | Converts a program plus everything it calls, into a clean output folder |
+> | `./doctor.sh reverse-eng` | Extracts business logic only (no conversion) |
+> | `./doctor.sh run` | Full migration of everything in `source/` |
+>
+> Estate Mission Control builds from `source/` alone. The portal's chat and report pages need at least one run (`./doctor.sh reverse-eng`, `convert-only` or `run`).
 >
 > **JCL jobs:** put the `.jcl` files (and their `.proc`, `.prc`, `.inc` members) in `source/`, then:
 >
@@ -40,9 +56,23 @@ The migration uses Microsoft Agent Framework with a multi-provider architecture 
 >
 > See [JCL](#jcl) for details.
 >
-> Other entry points: `./doctor.sh reverse-eng` extracts business logic only, and `./doctor.sh portal` opens earlier results at http://localhost:5028.
->
 > The doctor script checks dependencies and starts the services it needs.
+
+### 🛰 Estate Mission Control at a glance
+
+Shown here with the public IBM Bank-of-Z sample in `source/`.
+
+**Estate overview:** every program, transaction, screen, table and copybook, grouped by business function.
+
+![Estate Mission Control overview](docs/images/estate-mission-control-overview.png)
+
+**Carve-out plan:** clusters ordered into waves, each with a risk tier, cohesion and carve score.
+
+![Estate Mission Control carve-out wave plan](docs/images/estate-mission-control-carve.png)
+
+**Stage slice:** the programs to convert, what they also need, what is missing from `source/`, and the command to run.
+
+![Estate Mission Control staged slice with convert-only command](docs/images/estate-mission-control-slice.png)
 
 ---
 
@@ -399,7 +429,7 @@ The tabs that read parse results need `./doctor.sh rekt-full` first.
 
 ### Estate Mission Control
 
-Open **🛰 Estate Mission Control**. The panel expands to full width. Everything on it is built from the source without a model, and every node and edge records the file and line it came from.
+Open **🛰 Estate Mission Control**. The panel expands to full width. Screenshots: [Estate Mission Control at a glance](#-estate-mission-control-at-a-glance). Everything on it is built from the source without a model, and every node and edge records the file and line it came from.
 
 - **KPIs** across the top: programs and lines, entry points (transactions, APIs, batch jobs), online and batch programs, data stores, how many programs REKT parsed, how many have a converted output, carve-out clusters and shared hubs, and programs that need attention (unreferenced, unreachable, or referenced but not in the source).
 - **Explore** mode draws the estate as one graph. Use **Group** to group by business function, carve-out cluster or estate, the **Nodes**, **Kind**, **Tech** and **Status** chips to filter, and the search box to find a program, transaction or table. The ring around a program shows its status: converted with parity of 90% or more, converted, parsed, not parsed yet, or referenced but not in the source. Select a node for its metrics, description, conversion parity and every relationship with its evidence. The right panel shows the inputs scanned, the programs per business function and the list that needs attention.
