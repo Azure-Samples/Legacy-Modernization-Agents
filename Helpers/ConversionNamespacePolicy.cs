@@ -1,7 +1,7 @@
 // Decides the package or namespace a converted program belongs to.
 //
 // Left to the model, each program invents its own root: one estate produced 33 packages under
-// com.example, com.bank, com.legacy, com.bbva and com.modernized, and the copybook types shared
+// com.example, com.bank, com.legacy, com.corp and com.modernized, and the copybook types shared
 // between programs were re-emitted under each of them. A service cannot be assembled from that,
 // and a shared record that exists four times is four records that can drift apart.
 //

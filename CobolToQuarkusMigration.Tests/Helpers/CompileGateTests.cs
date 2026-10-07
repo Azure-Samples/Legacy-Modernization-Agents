@@ -66,8 +66,8 @@ public class CompileGateTests : IDisposable
     {
         GeneratedTypeIndex.ChooseOwner("Jobinfo", ["Bd/Payb649.cs", "Shared/Jobinfo.cs", "Shared/Ordiini1.cs"])
             .Should().Be("Shared/Jobinfo.cs");
-        GeneratedTypeIndex.ChooseOwner("Sqlca", ["Bd/Ordmain.cs", "Bd/Payb649.cs"])
-            .Should().Be("Bd/Payb649.cs");
+        GeneratedTypeIndex.ChooseOwner("Sqlca", ["Bd/Payb649.cs", "Bd/Ordmain.cs"])
+            .Should().Be("Bd/Ordmain.cs");
     }
 
     private static readonly Dictionary<string, string> TwoJobinfos = new()
