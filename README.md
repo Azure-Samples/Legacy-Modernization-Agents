@@ -1156,6 +1156,7 @@ See [Parallel Jobs Formula](#parallel-jobs-formula) for chunking configuration d
 | Azure API error | Check `Config/ai-config.local.env` credentials or run `az login` |
 | No output generated | Ensure COBOL files are in `source/` |
 | Portal won't start | `lsof -ti :5028 \| xargs kill -9` then retry |
+| Build fails with `MSB3923 Failed to download file … registry.npmjs.org`, or setup says *Could not fetch user-specific models* | The network blocks the npm registry the Copilot SDK downloads its CLI from. `doctor.sh` falls back to your npm mirror or your installed Copilot CLI automatically; for plain `dotnet` commands, see [Building behind an NPM registry block](docs/building-behind-an-npm-registry-block.md) |
 
 ---
 
