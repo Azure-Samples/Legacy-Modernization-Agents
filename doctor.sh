@@ -90,6 +90,113 @@ detect_python() {
 }
 
 PYTHON_CMD="$(detect_python)"
+
+# The Copilot SDK package downloads its own Copilot CLI from the npm registry on the first
+# build. Where a proxy, firewall or VPN blocks the registry, every build fails with MSB3923
+# before any command runs. An installed Copilot CLI ships the same native binary, and the SDK
+# accepts it through the CopilotCliBinaryPath build property (MSBuild reads it from the
+# environment), so the download is skipped.
+copilot_cli_platform() {
+    local os arch
+    case "$(uname -s)" in
+        Darwin) os=darwin ;;
+        Linux) os=linux ;;
+        MINGW*|MSYS*|CYGWIN*) os=win32 ;;
+        *) return 1 ;;
+    esac
+    case "$(uname -m)" in
+        arm64|aarch64) arch=arm64 ;;
+        x86_64|amd64) arch=x64 ;;
+        *) return 1 ;;
+    esac
+    echo "$os-$arch"
+}
+
+# Follows symlinks without readlink -f, which older macOS lacks.
+resolve_symlinks() {
+    local path="$1" target
+    while [[ -L "$path" ]]; do
+        target="$(readlink "$path")"
+        [[ "$target" == /* ]] || target="$(dirname "$path")/$target"
+        path="$target"
+    done
+    echo "$(cd "$(dirname "$path")" && pwd -P)/$(basename "$path")"
+}
+
+# The native Copilot CLI binary of an installed CLI. npm and Homebrew installs put a Node
+# loader script on PATH; the SDK copies the binary into the build output, so it needs the
+# native executable the loader starts, not the script.
+find_native_copilot_cli() {
+    local platform binary="copilot" cli real npm_root candidate
+    platform="$(copilot_cli_platform)" || return 1
+    [[ "$platform" == win32-* ]] && binary="copilot.exe"
+
+    if cli="$(command -v copilot 2>/dev/null)"; then
+        real="$(resolve_symlinks "$cli")"
+        if [[ -f "$real" && -x "$real" && "$(head -c 2 "$real" 2>/dev/null)" != "#!" ]]; then
+            echo "$real"; return 0
+        fi
+        candidate="$(dirname "$real")/node_modules/@github/copilot-$platform/$binary"
+        [[ -x "$candidate" ]] && { echo "$candidate"; return 0; }
+    fi
+
+    if command -v npm >/dev/null 2>&1 && npm_root="$(npm root -g 2>/dev/null)"; then
+        for candidate in \
+            "$npm_root/@github/copilot/node_modules/@github/copilot-$platform/$binary" \
+            "$npm_root/@github/copilot-$platform/$binary"; do
+            [[ -x "$candidate" ]] && { echo "$candidate"; return 0; }
+        done
+    fi
+    return 1
+}
+
+ensure_copilot_cli_for_build() {
+    [[ -n "${CopilotCliBinaryPath:-}" || "${CopilotSkipCliDownload:-}" == "true" ]] && return 0
+
+    # Each project that builds against the SDK keeps its own downloaded copy.
+    local project missing=false
+    for project in "$REPO_ROOT" "$REPO_ROOT/McpChatWeb"; do
+        compgen -G "$project/obj/*/net*/copilot-cli/*/*/copilot" >/dev/null \
+            || compgen -G "$project/obj/*/net*/copilot-cli/*/*/copilot.exe" >/dev/null \
+            || missing=true
+    done
+    [[ "$missing" == "true" ]] || return 0
+
+    local registry="${CopilotNpmRegistryUrl:-https://registry.npmjs.org}"
+    command -v curl >/dev/null 2>&1 || return 0
+    curl -fsS -o /dev/null -m 8 "${registry%/}/" 2>/dev/null && return 0
+
+    # The SDK never reads npm's own configuration, but a mirror npm is already set up to use
+    # serves the same package, and keeps the CLI version the SDK was built against.
+    local mirror
+    if [[ -z "${CopilotNpmRegistryUrl:-}" ]] && command -v npm >/dev/null 2>&1; then
+        mirror="$(npm config get registry 2>/dev/null)"
+        mirror="${mirror%/}"
+        if [[ "$mirror" == https://* && "$mirror" != "https://registry.npmjs.org" ]] \
+            && curl -fsS -o /dev/null -m 8 "$mirror/" 2>/dev/null; then
+            export CopilotNpmRegistryUrl="$mirror"
+            echo -e "${YELLOW}ℹ️  $registry is not reachable, so the build downloads the Copilot CLI from your npm registry:${NC}"
+            echo -e "${YELLOW}   $mirror${NC}"
+            return 0
+        fi
+    fi
+
+    local native
+    if native="$(find_native_copilot_cli)"; then
+        export CopilotCliBinaryPath="$native"
+        echo -e "${YELLOW}ℹ️  $registry is not reachable, so the build uses your installed Copilot CLI:${NC}"
+        echo -e "${YELLOW}   $native${NC}"
+        return 0
+    fi
+
+    echo -e "${YELLOW}⚠️  $registry is not reachable, and the first build downloads the Copilot CLI from it.${NC}"
+    echo -e "${YELLOW}   The build will fail with MSB3923 unless one of these is done:${NC}"
+    echo -e "${YELLOW}   • allow access to the registry, or set HTTPS_PROXY${NC}"
+    echo -e "${YELLOW}   • install the Copilot CLI (npm install -g @github/copilot) and re-run${NC}"
+    echo -e "${YELLOW}   • export CopilotCliBinaryPath=<path to a native copilot binary>${NC}"
+    echo -e "${YELLOW}   • export CopilotNpmRegistryUrl=<your npm mirror>${NC}"
+    echo -e "${YELLOW}   See docs/building-behind-an-npm-registry-block.md${NC}"
+}
 DEFAULT_MCP_HOST="localhost"
 DEFAULT_MCP_PORT=5028
 
@@ -1326,13 +1433,20 @@ run_setup() {
         # Get available models from GitHub Copilot (user-specific)
         echo -e "${BLUE}📋 Fetching available models for your account...${NC}"
         echo ""
-        local models_raw
+        local models_raw list_output
         # Run list-models and extract only "  • model-id" lines
-        models_raw=$("$DOTNET_CMD" run --project "$REPO_ROOT/CobolToQuarkusMigration.csproj" -- list-models 2>/dev/null | grep '•' | sed 's/.*•[[:space:]]*//')
-        
+        list_output=$("$DOTNET_CMD" run --project "$REPO_ROOT/CobolToQuarkusMigration.csproj" -- list-models 2>&1)
+        models_raw=$(printf '%s\n' "$list_output" | grep '•' | sed 's/.*•[[:space:]]*//' | awk '!seen[$0]++')
+
         # Fallback to copilot CLI static list if SDK call fails
         if [[ -z "$models_raw" ]]; then
             echo -e "${YELLOW}⚠️  Could not fetch user-specific models, falling back to CLI model list${NC}"
+            local reason
+            reason=$(printf '%s\n' "$list_output" | grep -E 'error|Error|failed|Failed' | grep -v 'warning' | head -3)
+            [[ -n "$reason" ]] && printf '%s\n' "$reason" | cut -c1-240 | sed 's/^/   /'
+            if printf '%s\n' "$list_output" | grep -q 'MSB3923'; then
+                echo -e "${YELLOW}   The build could not download the Copilot CLI. See docs/building-behind-an-npm-registry-block.md.${NC}"
+            fi
             models_raw=$(copilot --model invalid 2>&1 | grep -o 'Allowed choices are .*' | sed 's/Allowed choices are //' | tr ',' '\n' | sed 's/[[:space:]]*//g' | sed 's/\.$//')
         fi
 
@@ -4060,6 +4174,7 @@ show_dry_run() {
 main() {
     # Create required directories if they don't exist
     mkdir -p "$REPO_ROOT/source" "$REPO_ROOT/output" "$REPO_ROOT/Logs"
+    ensure_copilot_cli_for_build
 
     # Selector flags are pre-parsed so they may appear in any position. Repeating
     # --program selects more programs; the flags are removed before command routing.
