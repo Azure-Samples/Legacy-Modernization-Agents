@@ -109,13 +109,6 @@ public class ChunkingSettings
     public int MaxParallelChunks { get; set; } = 3;
 
     /// <summary>
-    /// Token budget per minute for rate limiting parallel requests.
-    /// This should match your Azure OpenAI TPM (Tokens Per Minute) quota.
-    /// Default: 300000 (300K TPM).
-    /// </summary>
-    public int TokenBudgetPerMinute { get; set; } = 300000;
-
-    /// <summary>
     /// Minimum delay in milliseconds between starting parallel chunk processing.
     /// Helps avoid burst requests that could trigger rate limits.
     /// Default: 2000ms (2 seconds stagger between workers).
@@ -131,7 +124,7 @@ public class ChunkingSettings
 
     /// <summary>
     /// Safety factor for rate limiting (0.0-1.0).
-    /// Uses this fraction of TokenBudgetPerMinute to avoid hitting limits.
+    /// Uses this fraction of the model profile's TokensPerMinute and RequestsPerMinute.
     /// Default: 0.7 (use 70% of available capacity for safety margin).
     /// </summary>
     public double RateLimitSafetyFactor { get; set; } = 0.7;

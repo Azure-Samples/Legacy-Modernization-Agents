@@ -61,14 +61,12 @@ flowchart TD
         Y --> Z
     end
 
-    subgraph RATE_LIMIT["⏱️ DUAL RATE LIMITING"]
+    subgraph RATE_LIMIT["⏱️ RATE LIMITING"]
         direction TB
-        Z --> AA["System A: RateLimiter<br>(Token Bucket + Semaphore)"]
-        Z --> AB["System B: RateLimitTracker<br>(Sliding Window TPM/RPM)"]
+        Z --> AA["LlmRateLimiter<br>(one per deployment, shared by all agents)<br>Sliding window TPM/RPM + 429 cooldown"]
         
         AA --> AC{Capacity Check}
-        AB --> AC
-        AC -->|"Budget: 300K TPM × 0.7"| AD[Wait / Proceed]
+        AC -->|"Budget: profile TPM/RPM × RateLimitSafetyFactor"| AD[Wait / Proceed]
         AC -->|"Concurrency: max 3 parallel"| AD
         AC -->|"Stagger: 2,000ms between workers"| AD
     end
@@ -81,7 +79,7 @@ flowchart TD
         AH -->|"Max 2 retries"| AE
         AH -->|"All retries failed"| AI["Adaptive Re-Chunking<br>Split at semantic midpoint<br>50-line overlap"]
         AI --> AE
-        AF -->|"429 Rate Limited"| AJ["Exponential Backoff<br>5s → 60s max<br>up to 5 retries"]
+        AF -->|"429 Rate Limited"| AJ["Shared cooldown for all agents<br>wait Retry-After (≤ RateLimitMaxWaitSeconds)<br>or back off 8s → 16s"]
         AJ --> AE
     end
 
@@ -222,25 +220,17 @@ flowchart TD
                │                                        │
                ▼                                        ▼
 ┌─────────────────────────────────────────────────────────────────────────────────────┐
-│  ⏱️  DUAL RATE LIMITING                                                            │
+│  ⏱️  RATE LIMITING (LlmRateLimiter)                                                 │
 │                                                                                     │
-│  ┌─────────────────────────────────┐  ┌─────────────────────────────────────────┐   │
-│  │ System A: RateLimiter           │  │ System B: RateLimitTracker              │   │
-│  │ (Token Bucket + Semaphore)      │  │ (Sliding Window TPM/RPM)               │   │
-│  │                                 │  │                                         │   │
-│  │ Budget: 300K TPM × 0.7 = 210K  │  │ Budget: 500K TPM × 0.9 = 450K          │   │
-│  │ Concurrency: max 3 parallel    │  │ RPM: 1,000 × 0.9 = 900                 │   │
-│  │ Per-worker delay: ≥ 1,000ms    │  │ Window: 60-second sliding               │   │
-│  │ Minute-boundary reset          │  │ Queue-based entry pruning               │   │
-│  │                                 │  │                                         │   │
-│  │ Flow:                           │  │ Flow:                                   │   │
-│  │  1. Acquire semaphore           │  │  1. Prune entries > 60s old             │   │
-│  │  2. Lock token bucket           │  │  2. Check: current + est > TPM?         │   │
-│  │  3. Check minute counter        │  │  3. Check: requests + 1 > RPM?          │   │
-│  │  4. Check last-request delay    │  │  4. Wait for oldest entry to expire     │   │
-│  │  5. Check budget allows tokens  │  │  5. RecordUsage(actualTokens) after     │   │
-│  │  6. Wait or proceed             │  │                                         │   │
-│  └─────────────────────────────────┘  └─────────────────────────────────────────┘   │
+│  One limiter per deployment, shared by analyzer, converters and Responses client    │
+│  Budget: profile TokensPerMinute/RequestsPerMinute × RateLimitSafetyFactor          │
+│  Window: 60-second sliding; a reservation counts as soon as it is granted           │
+│                                                                                     │
+│  Flow:                                                                              │
+│   1. AcquireAsync(estimatedTokens): wait out any 429 cooldown, then for room        │
+│   2. Call the model                                                                 │
+│   3. Commit(actualTokens), or release the reservation on failure                    │
+│   4. On 429: shared cooldown = Retry-After (default 15s) for every caller           │
 │                                                                                     │
 │  Speed Profiles:                                                                    │
 │  ┌──────────┬───────────┬────────────┬─────────────┬────────────┬───────────┐       │
@@ -364,9 +354,9 @@ flowchart TD
 | Escalation retries (Codex) | 2 | `appsettings.json` |
 | Escalation multiplier (Codex) | 2.0× | `appsettings.json` |
 | Re-chunk overlap | 50 lines | `AgentBase.cs` |
-| Backoff base delay | 5,000ms | `RateLimiter.cs` |
-| Backoff max delay | 60,000ms | `RateLimiter.cs` |
-| Max 429 retries | 5 | `RateLimiter.cs` |
+| 429 wait | `Retry-After`, else 8s then 16s | `LlmErrorClassifier.cs` |
+| Longest 429 wait | 120s | `RateLimitMaxWaitSeconds` in `appsettings.json` |
+| Transient retry delays | 2s, 4s, 8s | `LlmErrorClassifier.cs` |
 
 ---
 

@@ -93,7 +93,7 @@ public class ResponsesApiClient : IDisposable
     private DateTimeOffset _accessTokenExpiresOn;
 
     // Rate limiting
-    private readonly RateLimitTracker _rateLimitTracker;
+    private readonly LlmRateLimiter _rateLimiter;
 
     // Three-tier reasoning profile
     /// <summary>The model profile controlling reasoning effort and token limits.</summary>
@@ -153,8 +153,9 @@ public class ResponsesApiClient : IDisposable
         // Use provided profile or conservative defaults
         Profile = profile ?? new ModelProfileSettings();
 
-        _rateLimitTracker = new RateLimitTracker(
-            Profile.TokensPerMinute, Profile.RequestsPerMinute, logger, rateLimitSafetyFactor);
+        // Shared per deployment so every agent calling it draws on one budget and one cooldown.
+        _rateLimiter = LlmRateLimiter.Shared(
+            $"responses|{_endpoint}|{_deploymentName}", Profile, rateLimitSafetyFactor, logger);
 
         _httpClient = new HttpClient();
         if (!string.IsNullOrEmpty(_apiKey))
@@ -423,7 +424,7 @@ public class ResponsesApiClient : IDisposable
         var estimatedTotalTokens = estimatedInputTokens + maxOutputTokens;
         
         // Wait for rate limit capacity (TPM + RPM)
-        await _rateLimitTracker.WaitForCapacityAsync(estimatedTotalTokens, cancellationToken);
+        using var reservation = await _rateLimiter.AcquireAsync(estimatedTotalTokens, cancellationToken);
         
         _logger?.LogInformation(
             "Responses API: ~{Input} input + {MaxOutput} max output = ~{Total} total tokens, reasoning='{Effort}'",
@@ -519,6 +520,15 @@ public class ResponsesApiClient : IDisposable
                     }
 
                     _enhancedLogger?.LogApiCallError(apiCallId, $"HTTP {response.StatusCode}");
+
+                    if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+                    {
+                        var retryAfter = LlmErrorClassifier.FromHeaders(name =>
+                            response.Headers.TryGetValues(name, out var values) ? values.FirstOrDefault() : null);
+                        _rateLimiter.NoteRateLimitResponse(retryAfter ?? LlmErrorClassifier.DefaultRateLimitCooldown);
+                        throw new RateLimitedException("azure-openai-responses", _deploymentName, retryAfter,
+                            $"Responses API rate-limited (429){(retryAfter is { } ra ? $", retry after {ra.TotalSeconds:F0}s" : "")}: {responseText}");
+                    }
                     
                     // Check for Tenant Mismatch error
                     if (response.StatusCode == System.Net.HttpStatusCode.BadRequest && 
@@ -548,7 +558,7 @@ public class ResponsesApiClient : IDisposable
                 var actualTotalTokens = actualInputTokens + actualOutputTokens;
                 
                 // Record actual usage for rate limiting
-                _rateLimitTracker.RecordUsage(actualTotalTokens);
+                reservation.Commit(actualTotalTokens);
                 
                 var elapsed = DateTime.UtcNow - startTime;
                 
@@ -698,127 +708,6 @@ public class ResponsesApiClient : IDisposable
     {
         _httpClient.Dispose();
         _authLock.Dispose();
-    }
-}
-
-/// <summary>
-/// Tracks token and request usage for rate limiting.
-/// Optimized for 1M TPM / 1K RPM limits.
-/// </summary>
-internal class RateLimitTracker
-{
-    private readonly int _tokensPerMinute;
-    private readonly int _requestsPerMinute;
-    private readonly ILogger? _logger;
-    private readonly object _lock = new();
-    
-    private readonly Queue<(DateTime time, int tokens)> _tokenHistory = new();
-    private readonly Queue<DateTime> _requestHistory = new();
-    
-    // Safety margin: configurable fraction of limits to stay under
-    private readonly double _safetyMargin;
-
-    public RateLimitTracker(int tokensPerMinute, int requestsPerMinute, ILogger? logger, double safetyMargin = 0.90)
-    {
-        _safetyMargin = Math.Clamp(safetyMargin, 0.5, 0.99);
-        _tokensPerMinute = (int)(tokensPerMinute * _safetyMargin);
-        _requestsPerMinute = (int)(requestsPerMinute * _safetyMargin);
-        _logger = logger;
-    }
-
-    /// <summary>
-    /// Waits until there's capacity for the estimated token usage.
-    /// </summary>
-    public async Task WaitForCapacityAsync(int estimatedTokens, CancellationToken cancellationToken)
-    {
-        while (true)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            
-            var (canProceed, waitTime, reason) = CheckCapacity(estimatedTokens);
-            
-            if (canProceed)
-                return;
-            
-            _logger?.LogInformation(
-                "Rate limit: waiting {Wait:F1}s ({Reason}). Current: {Tokens:N0}/{TPM:N0} TPM, {Requests}/{RPM} RPM",
-                waitTime.TotalSeconds, reason, GetCurrentTokensPerMinute(), _tokensPerMinute, 
-                GetCurrentRequestsPerMinute(), _requestsPerMinute);
-            
-            await Task.Delay(waitTime, cancellationToken);
-        }
-    }
-
-    private (bool canProceed, TimeSpan waitTime, string reason) CheckCapacity(int estimatedTokens)
-    {
-        lock (_lock)
-        {
-            PruneOldEntries();
-            
-            var currentTokens = GetCurrentTokensPerMinute();
-            var currentRequests = GetCurrentRequestsPerMinute();
-            
-            // Check TPM
-            if (currentTokens + estimatedTokens > _tokensPerMinute)
-            {
-                var oldestToken = _tokenHistory.Count > 0 ? _tokenHistory.Peek().time : DateTime.UtcNow;
-                var waitUntil = oldestToken.AddMinutes(1);
-                var waitTime = waitUntil - DateTime.UtcNow;
-                if (waitTime < TimeSpan.Zero) waitTime = TimeSpan.FromSeconds(1);
-                return (false, waitTime, $"TPM: {currentTokens:N0}+{estimatedTokens:N0} > {_tokensPerMinute:N0}");
-            }
-            
-            // Check RPM
-            if (currentRequests + 1 > _requestsPerMinute)
-            {
-                var oldestRequest = _requestHistory.Count > 0 ? _requestHistory.Peek() : DateTime.UtcNow;
-                var waitUntil = oldestRequest.AddMinutes(1);
-                var waitTime = waitUntil - DateTime.UtcNow;
-                if (waitTime < TimeSpan.Zero) waitTime = TimeSpan.FromSeconds(1);
-                return (false, waitTime, $"RPM: {currentRequests}+1 > {_requestsPerMinute}");
-            }
-            
-            return (true, TimeSpan.Zero, "OK");
-        }
-    }
-
-    /// <summary>
-    /// Records actual token usage after a request completes.
-    /// </summary>
-    public void RecordUsage(int actualTokens)
-    {
-        lock (_lock)
-        {
-            var now = DateTime.UtcNow;
-            _tokenHistory.Enqueue((now, actualTokens));
-            _requestHistory.Enqueue(now);
-            
-            _logger?.LogDebug(
-                "Recorded: {Tokens:N0} tokens. Window: {TotalTokens:N0}/{TPM:N0} TPM, {Requests}/{RPM} RPM",
-                actualTokens, GetCurrentTokensPerMinute(), _tokensPerMinute,
-                GetCurrentRequestsPerMinute(), _requestsPerMinute);
-        }
-    }
-
-    private void PruneOldEntries()
-    {
-        var oneMinuteAgo = DateTime.UtcNow.AddMinutes(-1);
-        
-        while (_tokenHistory.Count > 0 && _tokenHistory.Peek().time < oneMinuteAgo)
-            _tokenHistory.Dequeue();
-        
-        while (_requestHistory.Count > 0 && _requestHistory.Peek() < oneMinuteAgo)
-            _requestHistory.Dequeue();
-    }
-
-    private int GetCurrentTokensPerMinute()
-    {
-        return _tokenHistory.Sum(x => x.tokens);
-    }
-
-    private int GetCurrentRequestsPerMinute()
-    {
-        return _requestHistory.Count;
     }
 }
 

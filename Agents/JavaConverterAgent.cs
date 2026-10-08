@@ -31,7 +31,7 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
         string modelId,
         EnhancedLogger? enhancedLogger = null,
         ChatLogger? chatLogger = null,
-        RateLimiter? rateLimiter = null,
+        IRateLimiter? rateLimiter = null,
         AppSettings? settings = null,
         int? runId = null)
     {
@@ -66,7 +66,7 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
         string modelId,
         EnhancedLogger? enhancedLogger = null,
         ChatLogger? chatLogger = null,
-        RateLimiter? rateLimiter = null,
+        IRateLimiter? rateLimiter = null,
         AppSettings? settings = null,
         int? runId = null)
         : base(responsesClient, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings)
@@ -83,7 +83,7 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
         string modelId,
         EnhancedLogger? enhancedLogger = null,
         ChatLogger? chatLogger = null,
-        RateLimiter? rateLimiter = null,
+        IRateLimiter? rateLimiter = null,
         AppSettings? settings = null,
         int? runId = null)
         : base(chatClient, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings)

@@ -53,7 +53,7 @@ public class DependencyMapperAgent : AgentBase, IDependencyMapperAgent
         string modelId,
         EnhancedLogger? enhancedLogger = null,
         ChatLogger? chatLogger = null,
-        RateLimiter? rateLimiter = null,
+        IRateLimiter? rateLimiter = null,
         AppSettings? settings = null)
     {
         return responsesClient != null
@@ -70,7 +70,7 @@ public class DependencyMapperAgent : AgentBase, IDependencyMapperAgent
         string modelId,
         EnhancedLogger? enhancedLogger = null,
         ChatLogger? chatLogger = null,
-        RateLimiter? rateLimiter = null,
+        IRateLimiter? rateLimiter = null,
         AppSettings? settings = null)
         : base(responsesClient, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings)
     {
@@ -85,7 +85,7 @@ public class DependencyMapperAgent : AgentBase, IDependencyMapperAgent
         string modelId,
         EnhancedLogger? enhancedLogger = null,
         ChatLogger? chatLogger = null,
-        RateLimiter? rateLimiter = null,
+        IRateLimiter? rateLimiter = null,
         AppSettings? settings = null)
         : base(chatClient, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings)
     {

@@ -23,7 +23,7 @@ public class CobolAnalyzerAgent : ICobolAnalyzerAgent
     private readonly string _modelId;
     private readonly EnhancedLogger? _enhancedLogger;
     private readonly ChatLogger? _chatLogger;
-    private readonly RateLimiter? _rateLimiter;
+    private readonly IRateLimiter? _rateLimiter;
     private readonly AppSettings? _settings;
     private readonly bool _useResponsesApi;
 
@@ -51,7 +51,7 @@ public class CobolAnalyzerAgent : ICobolAnalyzerAgent
         string modelId,
         EnhancedLogger? enhancedLogger = null,
         ChatLogger? chatLogger = null,
-        RateLimiter? rateLimiter = null,
+        IRateLimiter? rateLimiter = null,
         AppSettings? settings = null)
     {
         return responsesClient != null
@@ -68,7 +68,7 @@ public class CobolAnalyzerAgent : ICobolAnalyzerAgent
         string modelId,
         EnhancedLogger? enhancedLogger = null,
         ChatLogger? chatLogger = null,
-        RateLimiter? rateLimiter = null,
+        IRateLimiter? rateLimiter = null,
         AppSettings? settings = null)
     {
         _responsesClient = responsesClient ?? throw new ArgumentNullException(nameof(responsesClient));
@@ -90,7 +90,7 @@ public class CobolAnalyzerAgent : ICobolAnalyzerAgent
         string modelId,
         EnhancedLogger? enhancedLogger = null,
         ChatLogger? chatLogger = null,
-        RateLimiter? rateLimiter = null,
+        IRateLimiter? rateLimiter = null,
         AppSettings? settings = null)
     {
         _chatClient = chatClient ?? throw new ArgumentNullException(nameof(chatClient));
@@ -98,12 +98,15 @@ public class CobolAnalyzerAgent : ICobolAnalyzerAgent
         _modelId = modelId ?? throw new ArgumentNullException(nameof(modelId));
         _enhancedLogger = enhancedLogger;
         _chatLogger = chatLogger;
-        _rateLimiter = rateLimiter;
         _settings = settings;
         _useResponsesApi = false;
         Capabilities = ModelCapabilities.Detect(modelId);
         Profile = settings?.ModelProfile ?? new ModelProfileSettings();
         ContentAwareReasoning.ClampProfileToModel(Profile, Capabilities);
+        // Same key as AgentBase, so the analyzer and the converters share one budget and cooldown.
+        _rateLimiter = rateLimiter ?? LlmRateLimiter.Shared(
+            $"chat|{ProviderName}|{modelId}", Profile,
+            settings?.ChunkingSettings?.RateLimitSafetyFactor ?? 0.90, logger);
         _compiledIndicators = ContentAwareReasoning.CompileIndicators(Profile);
 
         logger.LogInformation(
@@ -299,16 +302,15 @@ public class CobolAnalyzerAgent : ICobolAnalyzerAgent
         while (attempt < maxRetries)
         {
             attempt++;
+            IRateLimitReservation? reservation = null;
 
             try
             {
                 string response;
-                
-                // Apply rate limiting if configured
+
+                var estimatedInputTokens = TokenHelper.EstimateTokens(systemPrompt + userPrompt);
                 if (_rateLimiter != null)
-                {
-                    await _rateLimiter.WaitForRateLimitAsync(TokenHelper.EstimateTokens(systemPrompt + userPrompt));
-                }
+                    reservation = await _rateLimiter.AcquireAsync(estimatedInputTokens);
 
                 // Log the request
                 _chatLogger?.LogUserMessage(AgentName, contextIdentifier, userPrompt, systemPrompt);
@@ -357,7 +359,7 @@ public class CobolAnalyzerAgent : ICobolAnalyzerAgent
                 _enhancedLogger?.LogBehindTheScenes("API_RESPONSE", _useResponsesApi ? "ResponsesAPI" : "ChatCompletion",
                     $"Received {response.Length} chars from {ProviderName}", AgentName);
 
-                _rateLimiter?.ReleaseSlot();
+                reservation?.Commit(estimatedInputTokens + TokenHelper.EstimateTokens(response));
                 return (response, false, null);
             }
             // ── Output truncation catch ──
@@ -419,7 +421,6 @@ public class CobolAnalyzerAgent : ICobolAnalyzerAgent
                             $"Recovered on retry {truncRetry + 1} with tokens={currentMaxTokens}", AgentName);
 
                         _chatLogger?.LogAIResponse(AgentName, contextIdentifier, retryText);
-                        _rateLimiter?.ReleaseSlot();
                         return (retryText, false, null);
                     }
                     catch (OutputTruncationException)
@@ -429,33 +430,44 @@ public class CobolAnalyzerAgent : ICobolAnalyzerAgent
                     }
                 }
 
-                _rateLimiter?.ReleaseSlot();
                 return (string.Empty, true,
                     $"Output truncation: all {maxTruncRetries} escalation retries failed");
             }
             // ── END Output truncation ──
+            catch (Exception ex) when (IsRateLimitError(ex) && attempt < maxRetries)
+            {
+                lastException = ex;
+                var retryAfter = LlmErrorClassifier.GetRetryAfter(ex);
+                _rateLimiter?.NoteRateLimitResponse(retryAfter ?? LlmErrorClassifier.DefaultRateLimitCooldown);
+                var maxWait = TimeSpan.FromSeconds(Profile.RateLimitMaxWaitSeconds);
+                if (LlmErrorClassifier.RateLimitDelay(attempt, retryAfter, maxWait) is not { } delay)
+                {
+                    var reason = $"Rate limited: provider asked to wait {retryAfter!.Value.TotalSeconds:F0}s, over the {maxWait.TotalSeconds:F0}s limit (ModelProfile.RateLimitMaxWaitSeconds)";
+                    _logger.LogWarning("[{Agent}] {Reason} for {Context}", AgentName, reason, contextIdentifier);
+                    return (string.Empty, true, reason);
+                }
+                _logger.LogWarning("[{Agent}] Rate limited on attempt {Attempt}/{MaxRetries} for {Context}. Retrying in {Delay:F0}s ({Source})",
+                    AgentName, attempt, maxRetries, contextIdentifier, delay.TotalSeconds,
+                    retryAfter is null ? "back-off" : "Retry-After");
+                await Task.Delay(delay);
+            }
             catch (Exception ex) when (IsTransientError(ex) && attempt < maxRetries)
             {
                 lastException = ex;
-                var delay = TimeSpan.FromSeconds(Math.Pow(2, attempt));
+                var delay = LlmErrorClassifier.TransientDelay(attempt);
                 _logger.LogWarning("[{Agent}] Transient error on attempt {Attempt}/{MaxRetries} for {Context}. Retrying in {Delay}s. Error: {Error}",
                     AgentName, attempt, maxRetries, contextIdentifier, delay.TotalSeconds, ex.Message);
                 await Task.Delay(delay);
             }
-            catch (Exception ex) when (IsRateLimitError(ex) && attempt < maxRetries)
-            {
-                lastException = ex;
-                var delay = TimeSpan.FromSeconds(Math.Pow(2, attempt + 2));
-                _logger.LogWarning("[{Agent}] Rate limited on attempt {Attempt}/{MaxRetries} for {Context}. Retrying in {Delay}s",
-                    AgentName, attempt, maxRetries, contextIdentifier, delay.TotalSeconds);
-                await Task.Delay(delay);
-            }
             catch (Exception ex)
             {
-                _rateLimiter?.ReleaseSlot();
                 _logger.LogError(ex, "[{Agent}] Non-retryable error for {Context}: {Error}",
                     AgentName, contextIdentifier, ex.Message);
                 return (string.Empty, true, ex.Message);
+            }
+            finally
+            {
+                reservation?.Dispose();
             }
         }
 
@@ -486,21 +498,9 @@ public class CobolAnalyzerAgent : ICobolAnalyzerAgent
         return sb.ToString();
     }
 
-    private bool IsTransientError(Exception ex)
-    {
-        var message = ex.Message.ToLowerInvariant();
-        return message.Contains("timeout") || message.Contains("temporarily unavailable") ||
-               message.Contains("service unavailable") || message.Contains("502") ||
-               message.Contains("503") || message.Contains("504") || message.Contains("connection") ||
-               ex is HttpRequestException || ex is TaskCanceledException;
-    }
+    private static bool IsTransientError(Exception ex) => LlmErrorClassifier.IsTransient(ex);
 
-    private bool IsRateLimitError(Exception ex)
-    {
-        var message = ex.Message.ToLowerInvariant();
-        return message.Contains("rate limit") || message.Contains("429") ||
-               message.Contains("too many requests") || message.Contains("quota exceeded");
-    }
+    private static bool IsRateLimitError(Exception ex) => LlmErrorClassifier.IsRateLimit(ex);
 
     private string BuildDetailedErrorMessage(Exception ex, string context)
     {

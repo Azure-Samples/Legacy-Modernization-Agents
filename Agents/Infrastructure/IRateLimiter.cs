@@ -16,7 +16,7 @@ public interface IRateLimitReservation : IDisposable
 
 /// <summary>
 /// Provider-agnostic rate-limit gate. Implementations enforce TPM/RPM budgets
-/// for a single provider in-process. See docs/throttling-and-cache-design.md §4.
+/// for a single provider in-process.
 /// </summary>
 /// <remarks>
 /// Lifecycle for one call:
