@@ -33,8 +33,18 @@ public sealed record CallTargetContract(
     public IReadOnlyList<CallParameter> Parameters { get; init; } = [];
 
     /// <summary>True when <paramref name="program"/> is the one that must declare the interface.</summary>
-    public bool IsDeclaredBy(string program) =>
-        string.Equals(DeclaredBy, program, StringComparison.OrdinalIgnoreCase);
+    public bool IsDeclaredBy(string program, bool isCopybook = false) =>
+        isCopybook == DeclaredByCopybook
+        && string.Equals(DeclaredBy, program, StringComparison.OrdinalIgnoreCase);
+
+    // A program and a copybook may share a stem (INQACCS.cbl copying INQACCS.cpy), so callers
+    // and the declarer are identified by kind as well as name.
+    internal bool DeclaredByCopybook { get; init; }
+    internal IReadOnlySet<string> CallerPrograms { get; init; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    internal IReadOnlySet<string> CallerCopybooks { get; init; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    internal bool IsCalledBy(string stem, bool isCopybook) =>
+        (isCopybook ? CallerCopybooks : CallerPrograms).Contains(stem);
 }
 
 public sealed class CallTargetRegistry
@@ -52,6 +62,9 @@ public sealed class CallTargetRegistry
 
     public IReadOnlyCollection<CallTargetContract> Contracts => _byTarget.Values;
 
+    private readonly HashSet<string> _programStems = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _copybookStems = new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>Source files that could not be read, so their CALL statements were not seen.</summary>
     public int UnreadableSources { get; private set; }
 
@@ -66,40 +79,55 @@ public sealed class CallTargetRegistry
         // the measured output came from.
         var programs = Read(SourceTypeRegistry.EnumerateProgramFiles(sourceFolder), registry);
         var copybooks = Read(SourceTypeRegistry.EnumerateCopybookFiles(sourceFolder), registry);
-        var callingFiles = programs
-            .Concat(copybooks)
-            .ToDictionary(e => e.Key, e => e.Value, StringComparer.OrdinalIgnoreCase);
+        registry._programStems.UnionWith(programs.Keys);
+        registry._copybookStems.UnionWith(copybooks.Keys);
 
-        // Every (callee, caller) pair the source states, grouped by callee. A program calling
-        // itself is dropped: recursion needs no interface, and handing a program one for itself
-        // would have it declare and inject a service that is already the class being written.
-        var callers = callingFiles
-            .SelectMany(program => CallDirective
-                .Matches(StripComments(program.Value))
-                .Select(match => (Target: match.Groups[1].Value, Caller: program.Key)))
-            .Where(edge => !string.Equals(edge.Target, edge.Caller, StringComparison.OrdinalIgnoreCase))
-            .GroupBy(edge => edge.Target, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(
-                group => group.Key,
-                group => new SortedSet<string>(group.Select(e => e.Caller), StringComparer.OrdinalIgnoreCase),
-                StringComparer.OrdinalIgnoreCase);
+        // Every (callee, caller) pair the source states, grouped by callee. Programs and copybooks
+        // are kept apart because they can share a stem; merging them by name threw, and took the
+        // contracts for every program with it. A file calling itself is dropped: recursion needs
+        // no interface, and handing a program one for itself would have it declare and inject a
+        // service that is already the class being written.
+        var programCallers = CallersByTarget(programs);
+        var copybookCallers = CallersByTarget(copybooks);
+        var empty = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         // The called program knows its own contract, so it declares it. When the target is not in
         // this source drop there is no such program, and the first caller in a stable order is
         // made responsible — an arbitrary choice, but the same arbitrary choice on every run and
-        // for every caller, which is what stops the duplicate.
+        // for every caller, which is what stops the duplicate. Programs come before copybooks.
         var recordTypes = RecordTypes(copybooks);
-        var contracts = callers.Select(entry => new CallTargetContract(
-            Target: entry.Key,
-            InterfaceName: "I" + ToPascalCase(entry.Key) + "Service",
-            MethodName: EntryPointMethod,
-            DeclaredBy: programs.ContainsKey(entry.Key) ? entry.Key : entry.Value.First(),
-            Callers: entry.Value.ToList())
-        {
-            Parameters = programs.TryGetValue(entry.Key, out var target)
-                ? UsingParameters(target)
-                : AgreedCallSiteParameters(entry.Key, entry.Value.Select(c => callingFiles[c]), recordTypes),
-        });
+        var contracts = programCallers.Keys
+            .Union(copybookCallers.Keys, StringComparer.OrdinalIgnoreCase)
+            .Select(target =>
+            {
+                var byPrograms = programCallers.GetValueOrDefault(target) ?? empty;
+                var byCopybooks = copybookCallers.GetValueOrDefault(target) ?? empty;
+                var orderedPrograms = byPrograms.OrderBy(c => c, StringComparer.OrdinalIgnoreCase).ToList();
+                var orderedCopybooks = byCopybooks.OrderBy(c => c, StringComparer.OrdinalIgnoreCase).ToList();
+                var targetInSource = programs.ContainsKey(target);
+                var declaredByCopybook = !targetInSource && orderedPrograms.Count == 0;
+                var declaredBy = targetInSource ? target
+                    : declaredByCopybook ? orderedCopybooks[0] : orderedPrograms[0];
+
+                return new CallTargetContract(
+                    Target: target,
+                    InterfaceName: "I" + ToPascalCase(target) + "Service",
+                    MethodName: EntryPointMethod,
+                    DeclaredBy: declaredBy,
+                    Callers: orderedPrograms.Union(orderedCopybooks, StringComparer.OrdinalIgnoreCase)
+                        .OrderBy(c => c, StringComparer.OrdinalIgnoreCase).ToList())
+                {
+                    DeclaredByCopybook = declaredByCopybook,
+                    CallerPrograms = byPrograms,
+                    CallerCopybooks = byCopybooks,
+                    Parameters = programs.TryGetValue(target, out var source)
+                        ? UsingParameters(source)
+                        : AgreedCallSiteParameters(
+                            target,
+                            orderedPrograms.Select(c => programs[c]).Concat(orderedCopybooks.Select(c => copybooks[c])),
+                            recordTypes),
+                };
+            });
 
         foreach (var contract in contracts)
             registry._byTarget[contract.Target] = contract;
@@ -261,13 +289,20 @@ public sealed class CallTargetRegistry
     }
 
     /// <summary>
-    /// The contract block for one program: what it must declare, and what it must only reference.
+    /// The contract block for one file: what it must declare, and what it must only reference.
+    /// Pass the file name with its extension, since a program and a copybook can share a stem.
+    /// A bare stem is read as a copybook only when no program has that name.
     /// </summary>
-    public string ToPromptBlock(string programStem, string targetLanguage)
+    public string ToPromptBlock(string file, string targetLanguage)
     {
+        var name = Path.GetFileName(file);
+        var programStem = Path.GetFileNameWithoutExtension(name);
+        var isCopybook = SourceTypeRegistry.IsKnown(name)
+            ? SourceTypeRegistry.IsCopybook(name)
+            : _copybookStems.Contains(programStem) && !_programStems.Contains(programStem);
+
         var relevant = _byTarget.Values
-            .Where(c => c.IsDeclaredBy(programStem)
-                     || c.Callers.Contains(programStem, StringComparer.OrdinalIgnoreCase))
+            .Where(c => c.IsDeclaredBy(programStem, isCopybook) || c.IsCalledBy(programStem, isCopybook))
             .OrderBy(c => c.Target, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
@@ -282,12 +317,12 @@ public sealed class CallTargetRegistry
         {
             if (IsGenerated(contract, targetLanguage))
             {
-                var role = contract.IsDeclaredBy(programStem) ? "implement it" : "inject it";
+                var role = contract.IsDeclaredBy(programStem, isCopybook) ? "implement it" : "inject it";
                 references.AppendLine(
                     $"  • {contract.InterfaceName}.{contract.MethodName} — already generated in the shared namespace; {role}.");
                 references.AppendLine($"      {Signature(contract, targetLanguage)}");
             }
-            else if (contract.IsDeclaredBy(programStem))
+            else if (contract.IsDeclaredBy(programStem, isCopybook))
             {
                 declares.AppendLine(
                     $"  • {contract.InterfaceName} — one method, {contract.MethodName}, "
@@ -334,6 +369,18 @@ public sealed class CallTargetRegistry
         }
         return map;
     }
+
+    private static Dictionary<string, HashSet<string>> CallersByTarget(Dictionary<string, string> files) =>
+        files
+            .SelectMany(file => CallDirective
+                .Matches(StripComments(file.Value))
+                .Select(match => (Target: match.Groups[1].Value, Caller: file.Key)))
+            .Where(edge => !string.Equals(edge.Target, edge.Caller, StringComparison.OrdinalIgnoreCase))
+            .GroupBy(edge => edge.Target, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Select(e => e.Caller).ToHashSet(StringComparer.OrdinalIgnoreCase),
+                StringComparer.OrdinalIgnoreCase);
 
     private static string Stem(string path) =>
         Path.GetFileNameWithoutExtension(Path.GetFileName(path));
