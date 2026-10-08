@@ -18,6 +18,7 @@ RUN git clone --recurse-submodules --depth 1 --branch v0.1.0-RC6 \
 COPY patches/ /build/patches/
 RUN set -e; for p in /build/patches/*.patch; do \
         echo ">> Applying $p"; \
+        sed -i 's/\r$//' "$p"; \
         git apply --verbose "$p"; \
     done
 

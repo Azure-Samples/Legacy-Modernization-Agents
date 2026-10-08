@@ -8,13 +8,15 @@ PREPROC_DIR="${SOURCE_DIR}/.preprocessed"
 
 mkdir -p "$PREPROC_DIR"
 
-# Detect python
+# Detect python that actually runs; on Windows python/python3 may be the Microsoft Store stub.
 PYTHON=""
-if command -v python3 >/dev/null 2>&1; then
-    PYTHON="python3"
-elif command -v python >/dev/null 2>&1; then
-    PYTHON="python"
-fi
+for candidate in python3 python; do
+    if command -v "$candidate" >/dev/null 2>&1 \
+        && [[ "$("$candidate" -c 'import sys; sys.stdout.write("ok")' 2>/dev/null)" == "ok" ]]; then
+        PYTHON="$candidate"
+        break
+    fi
+done
 
 if [[ -z "$PYTHON" ]]; then
     echo "  ⚠️  Python not found — preprocessor needs python3"

@@ -1,1 +1,10 @@
 .github/workflows/*.lock.yml linguist-generated=true
+
+# Files executed by bash or inside Linux containers must keep LF endings, even in a Windows
+# checkout with core.autocrlf=true; CRLF makes bash fail with "$'\r': command not found" and
+# breaks `git apply` of the cobol-rekt patches.
+*.sh text eol=lf
+*.patch text eol=lf
+*.py text eol=lf
+Dockerfile text eol=lf
+*.env.example text eol=lf
