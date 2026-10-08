@@ -28,6 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **External Prompt Templates** — All agent system prompts are now loaded from Markdown files in `Agents/Prompts/` (`CobolAnalyzer.md`, `BusinessLogicExtractor.md`, `JavaConverter.md`, `CSharpConverter.md`, `DependencyMapper.md`, `ChunkAwareJavaConverter.md`, `ChunkAwareCSharpConverter.md`). Prompts are no longer embedded as inline strings in `.cs` agent files.
 - **`{{CodebaseProfile}}` auto-injection** — Prompt templates may include the `{{CodebaseProfile}}` placeholder, which is replaced at runtime with a codebase summary (detected features, file stats, SQL usage). See `## SECTION: Name` delimiter syntax in prompt files.
 
+### Changed
+- **Copilot SDK 1.0.17** - `GitHub.Copilot.SDK` moves from 1.0.0 to 1.0.17, which bundles Copilot CLI runtime 1.0.93 (was 1.0.57). The public API this project uses is unchanged; the newer runtime matches current `copilot login` behaviour and fixes .NET packaging of the bundled runtime.
+
 ### Removed
 - **`Config/ai-config.env`** — The tracked placeholder config file is gone. `Config/ai-config.env.example` is now a copy source only and is never loaded at runtime; `Config/ai-config.local.env` is the sole file read. Loading the placeholder file filled unset keys with values like `your-api-key-here`, so a missing credential surfaced later as an authentication failure from the model endpoint instead of immediately as a missing setting. The file was already listed in `.gitignore` and remained tracked only because it predated that rule. `LOG_LEVEL`, `ENABLE_CHAT_LOGGING`, `ENABLE_API_CALL_LOGGING` and `AZURE_OPENAI_TEMPERATURE` are also dropped from the example file — they were documented, and in three cases actively set, but read by nothing.
 
