@@ -3,6 +3,12 @@
 # Status check script for COBOL Migration Portal
 # Shows the current state of all services
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../tools/lib/ports.sh
+source "$SCRIPT_DIR/../tools/lib/ports.sh"
+PORTAL_PORT="${MCP_WEB_PORT:-5028}"
+NEO4J_HTTP_PORT="${NEO4J_HTTP_PORT:-7474}"
+
 echo "╔══════════════════════════════════════════════════════════════╗"
 echo "║   COBOL Migration Portal - Status Check                     ║"
 echo "╚══════════════════════════════════════════════════════════════╝"
@@ -38,9 +44,9 @@ check_service() {
 
 # Check Portal
 PORTAL_RUNNING=false
-if check_service "Portal (Port 5028)" "lsof -ti:5028" "http://localhost:5028/"; then
+if check_service "Portal (Port $PORTAL_PORT)" "port_in_use $PORTAL_PORT" "http://localhost:$PORTAL_PORT/"; then
     PORTAL_RUNNING=true
-    PORTAL_PID=$(lsof -ti:5028)
+    PORTAL_PID=$(port_listen_pids "$PORTAL_PORT" | tr '\n' ' ')
     echo "   Process ID: $PORTAL_PID"
     echo "   Logs: tail -f /tmp/cobol-portal.log"
 fi
@@ -82,8 +88,8 @@ if [ "$PORTAL_RUNNING" = true ] && [ "$NEO4J_RUNNING" = true ]; then
     echo "✅ All services running!"
     echo ""
     echo "🌐 Access Points:"
-    echo "   Portal:  http://localhost:5028"
-    echo "   Neo4j:   http://localhost:7474"
+    echo "   Portal:  http://localhost:${PORTAL_PORT}"
+    echo "   Neo4j:   http://localhost:${NEO4J_HTTP_PORT}"
     echo ""
     echo "💡 To open portal: ./helper-scripts/open-portal.sh"
 elif [ "$PORTAL_RUNNING" = false ] && [ "$NEO4J_RUNNING" = false ]; then
@@ -95,7 +101,7 @@ elif [ "$PORTAL_RUNNING" = false ]; then
     echo "⚠️  Portal not running (but Neo4j is)"
     echo ""
     echo "🚀 To start portal:"
-    echo "   cd McpChatWeb && dotnet run --urls http://localhost:5028"
+    echo "   cd McpChatWeb && dotnet run --urls http://localhost:${PORTAL_PORT}"
 else
     echo "⚠️  Neo4j not running (but portal is)"
     echo ""

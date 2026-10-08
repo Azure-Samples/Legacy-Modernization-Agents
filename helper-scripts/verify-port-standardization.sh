@@ -51,7 +51,7 @@ fi
 echo ""
 
 echo "2. Verifying demo.sh uses port 5028..."
-if grep -q "lsof -ti:5028" demo.sh; then
+if grep -q 'PORTAL_PORT="${MCP_WEB_PORT:-5028}"' demo.sh && grep -q 'port_in_use "$PORTAL_PORT"' demo.sh; then
     echo -e "${GREEN}✅ PASS: demo.sh portal_running() checks port 5028${NC}"
     ((PASS++))
 else
@@ -121,8 +121,8 @@ fi
 echo ""
 
 echo "7. Checking for port enforcement in scripts..."
-if grep -q "lsof -ti:5028" doctor.sh && \
-   grep -q "pkill -f \"dotnet.*McpChatWeb\"" doctor.sh; then
+if grep -q "tools/lib/ports.sh" doctor.sh && \
+   grep -q "kill_port_listeners" doctor.sh; then
     echo -e "${GREEN}✅ PASS: Port conflict resolution implemented${NC}"
     ((PASS++))
 else

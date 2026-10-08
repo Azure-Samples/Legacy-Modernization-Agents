@@ -14,13 +14,13 @@ fail() { echo "FAIL - $1"; failures=$((failures + 1)); }
 eval "$(sed -n \
     -e '/^verify_python_candidate()/,/^}/p' \
     -e '/^detect_python()/,/^}/p' \
-    -e '/^port_listen_pids()/,/^}/p' \
-    -e '/^kill_port_listeners()/,/^}/p' \
     -e '/^graph_populator_python()/,/^}/p' \
     "$REPO_ROOT/doctor.sh")"
+# shellcheck source=../lib/ports.sh
+source "$REPO_ROOT/tools/lib/ports.sh"
 
-for fn in verify_python_candidate detect_python port_listen_pids kill_port_listeners graph_populator_python; do
-    declare -F "$fn" >/dev/null || fail "doctor.sh defines $fn"
+for fn in verify_python_candidate detect_python port_listen_pids kill_port_listeners port_in_use graph_populator_python; do
+    declare -F "$fn" >/dev/null || fail "doctor.sh or tools/lib/ports.sh defines $fn"
 done
 
 # Line endings: a CRLF checkout breaks bash before doctor.sh reaches its first command.
