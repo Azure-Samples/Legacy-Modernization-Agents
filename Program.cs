@@ -1093,7 +1093,7 @@ internal static class Program
         return value;
     }
 
-    private static void OverrideSettingsFromEnvironment(AppSettings settings)
+    internal static void OverrideSettingsFromEnvironment(AppSettings settings)
     {
         var aiSettings = settings.AISettings ??= new AISettings();
         var applicationSettings = settings.ApplicationSettings ??= new ApplicationSettings();
@@ -1105,33 +1105,11 @@ internal static class Program
             aiSettings.ServiceType = serviceType;
         }
 
-        // GitHub token support — maps to ApiKey
-        var githubToken = Environment.GetEnvironmentVariable("GITHUB_TOKEN");
-        if (!string.IsNullOrEmpty(githubToken) && string.IsNullOrEmpty(aiSettings.ApiKey))
-        {
-            aiSettings.ApiKey = githubToken;
-        }
-
-        // Auto-set endpoint for GitHub Copilot
+        // GitHubCopilot and GitHubCopilotSDK both run on the Copilot SDK, which signs in through
+        // CopilotAuth and uses neither endpoint nor API key. GITHUB_TOKEN is deliberately not copied
+        // into ApiKey: doing so turned an Azure Entra ID setup into key auth with a GitHub token.
         if (aiSettings.ServiceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase) ||
-            aiSettings.ServiceType.Equals("GitHub", StringComparison.OrdinalIgnoreCase) ||
-            aiSettings.ServiceType.Equals("GitHubModels", StringComparison.OrdinalIgnoreCase))
-        {
-            if (string.IsNullOrEmpty(aiSettings.Endpoint) || aiSettings.Endpoint.Contains("your-"))
-            {
-                aiSettings.Endpoint = "https://models.github.ai/inference";
-            }
-
-            // For GitHub Copilot, the GitHub token IS the API key for ALL clients
-            if (!string.IsNullOrEmpty(githubToken))
-            {
-                aiSettings.ApiKey = githubToken;
-                aiSettings.ChatApiKey = githubToken;
-            }
-        }
-
-        // GitHub Copilot SDK: authentication handled by CLI, no endpoint/key needed
-        if (aiSettings.ServiceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase))
+            aiSettings.ServiceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase))
         {
             if (string.IsNullOrEmpty(aiSettings.Endpoint))
             {
@@ -1451,31 +1429,32 @@ internal static class Program
                 return true;
             }
 
-            var serviceType = Environment.GetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE") ?? "AzureOpenAI";
+            var serviceType = Environment.GetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE");
+            if (string.IsNullOrWhiteSpace(serviceType)) serviceType = "AzureOpenAI";
+            serviceType = serviceType.Trim();
 
             // ChatClientFactory routes both "GitHubCopilot" and "GitHubCopilotSDK" to the Copilot
             // SDK, which signs in with copilot login or COPILOT_GITHUB_TOKEN (see CopilotAuth), so
-            // neither needs an API key here. "GitHub" and "GitHubModels" fall through to the OpenAI-compatible
-            // client instead and genuinely do require one.
+            // neither needs an API key here.
             var isGitHubCopilotSdk = serviceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase) ||
                                      serviceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase);
-            var isGitHubCopilot = serviceType.Equals("GitHub", StringComparison.OrdinalIgnoreCase) ||
-                                   serviceType.Equals("GitHubModels", StringComparison.OrdinalIgnoreCase);
             var isDirectOpenAI = serviceType.Equals("OpenAI", StringComparison.OrdinalIgnoreCase);
+            var isAzure = serviceType.Equals("AzureOpenAI", StringComparison.OrdinalIgnoreCase);
 
             var requiredSettings = new Dictionary<string, string?>();
+            var invalidSettings = new List<string>();
+
+            if (!isGitHubCopilotSdk && !isDirectOpenAI && !isAzure)
+            {
+                // "GitHub"/"GitHubModels" used to pass here and then fail inside ChatClientFactory;
+                // there is no GitHub Models client.
+                invalidSettings.Add(
+                    $"AZURE_OPENAI_SERVICE_TYPE '{serviceType}' is not supported. Use AzureOpenAI, GitHubCopilot or OpenAI.");
+            }
 
             if (isGitHubCopilotSdk)
             {
                 // GitHub Copilot SDK: only needs model ID, authentication handled by CLI
-                requiredSettings["AZURE_OPENAI_MODEL_ID"] = Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL_ID");
-            }
-            else if (isGitHubCopilot)
-            {
-                // GitHub Copilot: only needs token (GitHub PAT) and model
-                var token = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_KEY") ??
-                            Environment.GetEnvironmentVariable("GITHUB_TOKEN");
-                requiredSettings["GITHUB_TOKEN or AZURE_OPENAI_API_KEY"] = token;
                 requiredSettings["AZURE_OPENAI_MODEL_ID"] = Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL_ID");
             }
             else if (isDirectOpenAI)
@@ -1493,9 +1472,8 @@ internal static class Program
             }
 
             // API Key is optional for Azure if using Entra ID
-            var apiKey = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_KEY") ??
-                         Environment.GetEnvironmentVariable("GITHUB_TOKEN");
-            if (!isGitHubCopilot && !isGitHubCopilotSdk && !isDirectOpenAI)
+            var apiKey = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_KEY");
+            if (isAzure)
             {
                 if (!string.IsNullOrWhiteSpace(apiKey) && !apiKey.Contains("your-api-key") && !apiKey.Contains("placeholder"))
                 {
@@ -1508,7 +1486,6 @@ internal static class Program
             }
 
             var missingSettings = new List<string>();
-            var invalidSettings = new List<string>();
 
             foreach (var setting in requiredSettings)
             {

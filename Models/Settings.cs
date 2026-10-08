@@ -86,14 +86,14 @@ public class AppSettings
 
 /// <summary>
 /// Represents the AI-specific settings.
-/// Supports multiple providers: AzureOpenAI, GitHubCopilot, OpenAI.
+/// Supports multiple providers: AzureOpenAI, GitHubCopilot (Copilot SDK), OpenAI.
 /// </summary>
 public class AISettings
 {
     /// <summary>
     /// Gets or sets the service type. Supported values:
     /// "AzureOpenAI"   — Azure OpenAI Service (existing)
-    /// "GitHubCopilot" — GitHub Models / Copilot endpoint (models.github.ai)
+    /// "GitHubCopilot" — GitHub Copilot SDK via the Copilot CLI (alias: "GitHubCopilotSDK")
     /// "OpenAI"        — Direct OpenAI API
     /// </summary>
     public string ServiceType { get; set; } = "AzureOpenAI";
@@ -101,7 +101,7 @@ public class AISettings
     /// <summary>
     /// Gets or sets the endpoint for the AI service.
     /// For AzureOpenAI: https://your-resource.openai.azure.com/
-    /// For GitHubCopilot: https://models.github.ai/inference (auto-set when ServiceType=GitHubCopilot)
+    /// For GitHubCopilot: not used (the Copilot CLI picks the endpoint)
     /// For OpenAI: https://api.openai.com/v1 (auto-set when ServiceType=OpenAI)
     /// </summary>
     public string Endpoint { get; set; } = string.Empty;
@@ -109,7 +109,7 @@ public class AISettings
     /// <summary>
     /// Gets or sets the API key / token for the AI service.
     /// For AzureOpenAI: Azure API key (leave empty for Entra ID).
-    /// For GitHubCopilot: GitHub Personal Access Token (PAT).
+    /// For GitHubCopilot: not used; sign in with copilot login or COPILOT_GITHUB_TOKEN.
     /// For OpenAI: OpenAI API key.
     /// </summary>
     public string ApiKey { get; set; } = string.Empty;

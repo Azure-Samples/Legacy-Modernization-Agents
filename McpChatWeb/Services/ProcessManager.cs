@@ -84,7 +84,7 @@ public class ProcessManager : IDisposable
         string targetLanguage = "Java",
         string speedProfile = "balanced",
         string? sourceFolder = null,
-        string provider = "AzureOpenAI",
+        string? provider = null,
         string? modelId = null,
         Dictionary<string, string>? extraEnv = null,
         IReadOnlyList<string>? programs = null)
@@ -94,6 +94,7 @@ public class ProcessManager : IDisposable
             throw new ArgumentException($"Invalid command: '{command}'. Allowed: {string.Join(", ", AllowedCommands)}");
 
         var selection = ValidatePrograms(command, programs);
+        var serviceType = NormalizeProvider(provider);
 
         // Validate sourceFolder to prevent path traversal and argument injection
         if (sourceFolder != null)
@@ -178,67 +179,10 @@ public class ProcessManager : IDisposable
         // ── Apply provider/model selection from portal UI ──
         var effectiveModel = modelId ?? Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL_ID") ?? "gpt-5.1-codex-mini";
 
-        switch (provider)
-        {
-            case "GitHubModels":
-            {
-                var ghToken = Environment.GetEnvironmentVariable("GITHUB_TOKEN") ?? "";
-                // Try gh auth token if no env var
-                if (string.IsNullOrEmpty(ghToken))
-                {
-                    try
-                    {
-                        var proc = Process.Start(new ProcessStartInfo("gh", "auth token")
-                        {
-                            RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
-                        });
-                        ghToken = proc?.StandardOutput.ReadToEnd().Trim() ?? "";
-                        proc?.WaitForExit(5000);
-                    }
-                    catch { /* gh not available */ }
-                }
-
-                if (string.IsNullOrEmpty(ghToken))
-                {
-                    run.Status = "failed";
-                    run.AppendLog("ERROR: No GitHub token found. Set GITHUB_TOKEN env var or run 'gh auth login'.");
-                    _runs[run.RunId] = run;
-                    return run;
-                }
-
-                psi.Environment["AZURE_OPENAI_SERVICE_TYPE"] = "GitHubCopilot";
-                psi.Environment["AZURE_OPENAI_ENDPOINT"] = "https://models.github.ai/inference";
-                psi.Environment["AZURE_OPENAI_API_KEY"] = ghToken;
-                psi.Environment["GITHUB_TOKEN"] = ghToken;
-                psi.Environment["AZURE_OPENAI_CHAT_API_KEY"] = ghToken;
-                break;
-            }
-
-            case "CopilotSDK":
-            {
-                psi.Environment["AZURE_OPENAI_SERVICE_TYPE"] = "GitHubCopilotSDK";
-                // Force sequential — Copilot SDK stdio deadlocks with concurrent sessions
-                psi.Environment["AI_MAX_PARALLEL_CONVERSION"] = "1";
-                psi.Environment["AI_MAX_PARALLEL_ANALYSIS"] = "1";
-                psi.Environment["AI_MAX_PARALLEL_CHUNKS"] = "1";
-                break;
-            }
-
-            default: // AzureOpenAI
-            {
-                // Propagate existing Azure env vars
-                foreach (var key in new[] {
-                    "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_KEY",
-                    "AZURE_OPENAI_SERVICE_TYPE",
-                    "AZURE_OPENAI_CHAT_ENDPOINT", "AZURE_OPENAI_CHAT_API_KEY" })
-                {
-                    var val = Environment.GetEnvironmentVariable(key);
-                    if (!string.IsNullOrEmpty(val))
-                        psi.Environment[key] = val;
-                }
-                break;
-            }
-        }
+        // The portal's own environment (set by ./doctor.sh setup or the setup modal) is the
+        // default; an explicit provider from the UI overrides only the service type.
+        if (serviceType is not null)
+            psi.Environment["AZURE_OPENAI_SERVICE_TYPE"] = serviceType;
 
         // Set model for ALL agents
         psi.Environment["AZURE_OPENAI_MODEL_ID"] = effectiveModel;
@@ -512,5 +456,25 @@ public class ProcessManager : IDisposable
                 try { run.Process.Kill(entireProcessTree: true); } catch { }
             }
         }
+    }
+
+    /// <summary>
+    /// Maps a portal provider value to AZURE_OPENAI_SERVICE_TYPE, or null to keep the portal's
+    /// configured provider. There is no GitHub Models client, so "GitHubModels" is rejected
+    /// instead of silently running on the Copilot SDK.
+    /// </summary>
+    public static string? NormalizeProvider(string? provider)
+    {
+        if (string.IsNullOrWhiteSpace(provider))
+            return null;
+
+        return provider.Trim().ToLowerInvariant() switch
+        {
+            "azureopenai" => "AzureOpenAI",
+            "githubcopilot" or "githubcopilotsdk" or "copilotsdk" => "GitHubCopilot",
+            "openai" => "OpenAI",
+            _ => throw new ArgumentException(
+                $"Unsupported provider '{provider}'. Use AzureOpenAI, GitHubCopilot or OpenAI.")
+        };
     }
 }
