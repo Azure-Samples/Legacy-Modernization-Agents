@@ -283,10 +283,11 @@ show_usage() {
     echo
     echo -e "${BOLD}Business Logic Persistence (--reuse-re):${NC}"
   echo -e "  RE results are automatically persisted to the database after each run."
-  echo -e "  ${GREEN}Mode 1${NC} — Full migration (default): RE runs and context is injected into prompts."
+  echo -e "  ${GREEN}Mode 1${NC} — Full migration (default): RE runs and writes its report; prompts get no RE context."
   echo -e "  ${GREEN}Mode 2${NC} — ${GREEN}--skip-reverse-engineering${NC}: Pure conversion, no RE context."
-  echo -e "  ${GREEN}Mode 3${NC} — ${GREEN}--skip-reverse-engineering --reuse-re${NC}: Loads cached RE results from"
-  echo -e "          the database and injects them into conversion prompts."
+  echo -e "  ${GREEN}Mode 3${NC} — ${GREEN}--reuse-re${NC}: Injects RE business logic into conversion prompts: the run's own"
+  echo -e "          in a full run, or the latest saved run over the same source with --skip-reverse-engineering."
+  echo -e "          Off by default: on Bank-of-Z it made converters follow the summary and drop COBOL paths."
   echo -e "  The ${GREEN}convert-only${NC} command prompts interactively for the --reuse-re choice."
   echo -e "  To view or delete persisted RE results, open the Portal → 🔬 RE Results button."
   echo
@@ -2581,9 +2582,10 @@ run_conversion_only() {
     # ------------------------------------------------------------------
     echo -e "${BOLD}♻️  Reuse Business Logic from a Previous RE Run?${NC}"
     echo "============================================================"
-    echo "  If you ran reverse engineering before, results are persisted in"
-    echo "  the database and can be injected into conversion prompts for"
-    echo "  higher-quality output."
+    echo "  If you ran reverse engineering on this source before, its business"
+    echo "  logic can be injected into the conversion prompts. Off by default:"
+    echo "  in testing it made the converters follow the summary and drop"
+    echo "  COBOL paths such as error and abend handling."
     echo ""
     read -p "Reuse business logic from last RE run? (y/N): " -r
     echo ""

@@ -115,11 +115,12 @@ internal static class Program
         skipReverseEngineeringOption.AddAlias("-skip-re");
         rootCommand.AddOption(skipReverseEngineeringOption);
 
-        var reuseReOption = new Option<bool>("--reuse-re", () => false, "When combined with --skip-reverse-engineering, loads business logic persisted from the latest previous RE run and injects it into the conversion prompts")
+        var reuseReOption = new Option<bool>("--reuse-re", () => false, "Inject reverse-engineered business logic into the conversion prompts (off by default). In a full run this uses the run's own reverse engineering; with --skip-reverse-engineering it loads the latest persisted run over the same source folder")
         {
             Arity = ArgumentArity.ZeroOrOne
         };
         reuseReOption.AddAlias("-reuse-re");
+        reuseReOption.AddAlias("--use-re-context");
         rootCommand.AddOption(reuseReOption);
 
         var programsOption = new Option<string>(
@@ -846,8 +847,12 @@ internal static class Program
                     Environment.Exit(1);
                 }
 
-                // Store reverse engineering result so migration can use the extracted business logic
+                // Kept for the dependency map; its business logic reaches the prompts only with --reuse-re.
                 reverseEngResultForMigration = reverseEngResult;
+                if (!reuseRe && !reverseEngineerOnly)
+                {
+                    Console.WriteLine("ℹ️  Business logic from reverse engineering is saved to the report but not injected into conversion prompts. Pass --reuse-re to inject it.");
+                }
 
                 // If reverse-engineer-only mode, exit here
                 if (reverseEngineerOnly)
@@ -1004,7 +1009,9 @@ internal static class Program
                         Console.WriteLine($"{status} - {current}/{total}");
                     },
                     existingRunId: resumeRunId,
-                    businessLogicExtracts: reverseEngResultForMigration?.BusinessLogicExtracts,
+                    // Model-written business logic made converters follow the summary instead of
+                    // translating every paragraph (Bank-of-Z), so it is injected only on request.
+                    businessLogicExtracts: reuseRe ? reverseEngResultForMigration?.BusinessLogicExtracts : null,
                     existingDependencyMap: reverseEngResultForMigration?.DependencyMap,
                     runType: skipReverseEngineering ? "Conversion Only" : "Full Migration");
 

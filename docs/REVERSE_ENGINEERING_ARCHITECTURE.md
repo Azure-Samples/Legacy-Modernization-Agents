@@ -409,6 +409,7 @@ flowchart LR
 ### 8. **Business Logic Persistence**
 - Extracted `BusinessLogic` records are persisted to the `business_logic` SQLite table via `IMigrationRepository.SaveBusinessLogicAsync`
 - Enables reuse in subsequent conversion runs without re-running RE
+- Business logic is not injected into conversion prompts unless `--reuse-re` is passed, in a full run too. On IBM Bank-of-Z, converters given it followed the summary instead of translating every paragraph
 - Pass `--skip-reverse-engineering --reuse-re` (or answer **Y** in `./doctor.sh convert-only`) to inject persisted results into conversion prompts
 - Reuse is limited to the latest run over the same source folder; files changed since that run, by content, get no business logic. Files are matched by path, and by name only when the name is unique
 - The converter prompts rank the report below the COBOL source and the REKT facts

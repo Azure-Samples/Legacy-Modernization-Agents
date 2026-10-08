@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`{{CodebaseProfile}}` auto-injection** — Prompt templates may include the `{{CodebaseProfile}}` placeholder, which is replaced at runtime with a codebase summary (detected features, file stats, SQL usage). See `## SECTION: Name` delimiter syntax in prompt files.
 
 ### Changed
+- **Business logic from reverse engineering is no longer injected into conversion prompts by default** - A full run used to pass its business logic to the converters automatically. On IBM Bank-of-Z, converters given it followed the summary instead of translating the COBOL: `XFRFUN` kept 7 of 30 paragraphs and lost its abend handling, `CREACC` kept 12 of 36, against 30 of 30 and 35 of 36 without it. Reverse engineering still runs and writes its report; `--reuse-re` (alias `--use-re-context`) injects the business logic, in a full run as well as with `--skip-reverse-engineering`.
 - **Copilot SDK 1.0.17** - `GitHub.Copilot.SDK` moves from 1.0.0 to 1.0.17, which bundles Copilot CLI runtime 1.0.93 (was 1.0.57). The public API this project uses is unchanged; the newer runtime matches current `copilot login` behaviour and fixes .NET packaging of the bundled runtime.
 
 ### Removed
