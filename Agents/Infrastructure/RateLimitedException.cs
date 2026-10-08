@@ -8,7 +8,7 @@ namespace CobolToQuarkusMigration.Agents.Infrastructure;
 /// <remarks>
 /// Callers should treat this as a soft failure: defer the unit of work, surface
 /// to the user, or schedule a retry — but do not loop on it within the same
-/// request. See docs/throttling-and-cache-design.md §4 for the policy.
+/// request.
 /// </remarks>
 public sealed class RateLimitedException : Exception
 {

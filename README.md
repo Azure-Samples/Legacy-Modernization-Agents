@@ -314,8 +314,12 @@ The SafetyFactor reserves headroom below your quota limit to handle:
   "ChunkingSettings": {
     "MaxParallelChunks": 6,        // Parallel code conversion jobs
     "MaxParallelAnalysis": 6,      // Parallel analysis jobs
-    "RateLimitSafetyFactor": 0.7,  // 70% of quota
-    "TokenBudgetPerMinute": 300000 // Match your Azure TPM quota
+    "RateLimitSafetyFactor": 0.7   // 70% of quota
+  },
+  "ModelProfile": {                // or ChatProfile for chat models
+    "TokensPerMinute": 300000,     // Match your Azure TPM quota
+    "RequestsPerMinute": 1000,
+    "RateLimitMaxWaitSeconds": 120 // Longest Retry-After a call will wait out after a 429
   }
 }
 ```
@@ -1054,14 +1058,12 @@ flowchart TD
         Y --> Z
     end
 
-    subgraph RATE_LIMIT["⏱️ DUAL RATE LIMITING"]
+    subgraph RATE_LIMIT["⏱️ RATE LIMITING"]
         direction TB
-        Z --> AA["System A: RateLimiter<br>(Token Bucket + Semaphore)"]
-        Z --> AB["System B: RateLimitTracker<br>(Sliding Window TPM/RPM)"]
+        Z --> AA["LlmRateLimiter<br>(one per deployment, shared by all agents)<br>Sliding window TPM/RPM + 429 cooldown"]
         
         AA --> AC{Capacity Check}
-        AB --> AC
-        AC -->|"Budget: 300K TPM × 0.7"| AD[Wait / Proceed]
+        AC -->|"Budget: profile TPM/RPM × RateLimitSafetyFactor"| AD[Wait / Proceed]
         AC -->|"Concurrency: max 3 parallel"| AD
         AC -->|"Stagger: 2,000ms between workers"| AD
     end
@@ -1081,7 +1083,7 @@ flowchart TD
         AH -->|"Max 2 retries"| AE1
         AH -->|"All retries failed"| AI
         AI --> AE
-        AF -->|"429 Rate Limited"| AJ["Exponential Backoff<br>5s → 60s max<br>up to 5 retries"]
+        AF -->|"429 Rate Limited"| AJ["Shared cooldown for all agents<br>wait Retry-After (≤ RateLimitMaxWaitSeconds)<br>or back off 8s → 16s"]
         AJ --> AE1
     end
 

@@ -22,7 +22,7 @@ public abstract class AgentBase
     protected readonly string ModelId;
     protected readonly EnhancedLogger? EnhancedLogger;
     protected readonly ChatLogger? ChatLogger;
-    protected readonly RateLimiter? RateLimiter;
+    protected readonly IRateLimiter? RateLimiter;
     protected readonly AppSettings? Settings;
     protected readonly bool UseResponsesApi;
 
@@ -56,7 +56,7 @@ public abstract class AgentBase
         string modelId,
         EnhancedLogger? enhancedLogger = null,
         ChatLogger? chatLogger = null,
-        RateLimiter? rateLimiter = null,
+        IRateLimiter? rateLimiter = null,
         AppSettings? settings = null)
     {
         ChatClient = chatClient ?? throw new ArgumentNullException(nameof(chatClient));
@@ -64,12 +64,15 @@ public abstract class AgentBase
         ModelId = modelId ?? throw new ArgumentNullException(nameof(modelId));
         EnhancedLogger = enhancedLogger;
         ChatLogger = chatLogger;
-        RateLimiter = rateLimiter;
         Settings = settings;
         UseResponsesApi = false;
         Capabilities = ModelCapabilities.Detect(modelId);
         Profile = settings?.ModelProfile ?? new ModelProfileSettings();
         ContentAwareReasoning.ClampProfileToModel(Profile, Capabilities);
+        // The Responses API client limits itself; the chat path shares one limiter per provider and model.
+        RateLimiter = rateLimiter ?? LlmRateLimiter.Shared(
+            $"chat|{ProviderName}|{modelId}", Profile,
+            settings?.ChunkingSettings?.RateLimitSafetyFactor ?? 0.90, logger);
         _compiledIndicators = ContentAwareReasoning.CompileIndicators(Profile);
 
         logger.LogInformation(
@@ -86,7 +89,7 @@ public abstract class AgentBase
         string modelId,
         EnhancedLogger? enhancedLogger = null,
         ChatLogger? chatLogger = null,
-        RateLimiter? rateLimiter = null,
+        IRateLimiter? rateLimiter = null,
         AppSettings? settings = null)
     {
         ResponsesClient = responsesClient ?? throw new ArgumentNullException(nameof(responsesClient));
@@ -111,11 +114,8 @@ public abstract class AgentBase
         string userPrompt,
         string contextIdentifier)
     {
-        // Apply rate limiting if configured
-        if (RateLimiter != null)
-        {
-            await RateLimiter.WaitForRateLimitAsync(TokenHelper.EstimateTokens(systemPrompt + userPrompt));
-        }
+        var estimatedInputTokens = TokenHelper.EstimateTokens(systemPrompt + userPrompt);
+        using var reservation = RateLimiter is null ? null : await RateLimiter.AcquireAsync(estimatedInputTokens);
 
         Logger.LogDebug("[{Agent}] Executing {ApiType} for {Context}", 
             AgentName, UseResponsesApi ? "Responses API" : "Chat Completions API", contextIdentifier);
@@ -176,8 +176,7 @@ public abstract class AgentBase
             EnhancedLogger?.LogBehindTheScenes("API_RESPONSE", UseResponsesApi ? "ResponsesAPI" : "ChatCompletion", 
                 $"Received {responseText.Length} chars from {ProviderName}", AgentName);
 
-            // Release rate limiter slot after completion
-            RateLimiter?.ReleaseSlot();
+            reservation?.Commit((int)((inputTokens ?? estimatedInputTokens) + (outputTokens ?? TokenHelper.EstimateTokens(responseText))));
 
             AiLoopEvents.Call(AgentName, ProviderName, ModelId, contextIdentifier, stopwatch.ElapsedMilliseconds,
                 true, systemPrompt.Length + userPrompt.Length, responseText.Length, inputTokens, outputTokens, null);
@@ -185,7 +184,8 @@ public abstract class AgentBase
         }
         catch (Exception ex)
         {
-            RateLimiter?.ReleaseSlot();
+            if (LlmErrorClassifier.IsRateLimit(ex))
+                RateLimiter?.NoteRateLimitResponse(LlmErrorClassifier.GetRetryAfter(ex) ?? LlmErrorClassifier.DefaultRateLimitCooldown);
             AiLoopEvents.Call(AgentName, ProviderName, ModelId, contextIdentifier, stopwatch.ElapsedMilliseconds,
                 false, systemPrompt.Length + userPrompt.Length, 0, inputTokens, outputTokens,
                 $"{ex.GetType().Name}: {ex.Message}");
@@ -421,10 +421,34 @@ public abstract class AgentBase
                     $"Output truncation: all {maxTruncRetries} escalation retries AND adaptive re-chunking failed");
             }
             // ── END Output truncation ──
+            catch (Exception ex) when (IsRateLimitError(ex) && attempt < maxRetries)
+            {
+                lastException = ex;
+                var retryAfter = LlmErrorClassifier.GetRetryAfter(ex);
+                var maxWait = TimeSpan.FromSeconds(Profile.RateLimitMaxWaitSeconds);
+                if (LlmErrorClassifier.RateLimitDelay(attempt, retryAfter, maxWait) is not { } delay)
+                {
+                    var reason = $"Rate limited: provider asked to wait {retryAfter!.Value.TotalSeconds:F0}s, over the {maxWait.TotalSeconds:F0}s limit (ModelProfile.RateLimitMaxWaitSeconds)";
+                    Logger.LogWarning("[{Agent}] {Reason} for {Context}", AgentName, reason, contextIdentifier);
+                    AiLoopEvents.Fallback(AgentName, contextIdentifier, "rate_limit", reason);
+                    return (string.Empty, true, reason);
+                }
+                AiLoopEvents.Retry(AgentName, contextIdentifier, "rate_limit", attempt);
+
+                Logger.LogWarning(
+                    "[{Agent}] Rate limited on attempt {Attempt}/{MaxRetries} for {Context}. Retrying in {Delay:F0}s ({Source})",
+                    AgentName, attempt, maxRetries, contextIdentifier, delay.TotalSeconds,
+                    retryAfter is null ? "back-off" : "Retry-After");
+
+                EnhancedLogger?.LogBehindTheScenes("RATE_LIMIT", "THROTTLED",
+                    $"Rate limited, waiting {delay.TotalSeconds:F0}s before retry");
+
+                await Task.Delay(delay);
+            }
             catch (Exception ex) when (IsTransientError(ex) && attempt < maxRetries)
             {
                 lastException = ex;
-                var delay = TimeSpan.FromSeconds(Math.Pow(2, attempt)); // Exponential backoff
+                var delay = LlmErrorClassifier.TransientDelay(attempt);
                 AiLoopEvents.Retry(AgentName, contextIdentifier, "transient_error", attempt);
 
                 Logger.LogWarning(
@@ -447,21 +471,6 @@ public abstract class AgentBase
 
                 AiLoopEvents.Fallback(AgentName, contextIdentifier, "content_filter", ex.Message);
                 return (string.Empty, true, $"Content filter: {ex.Message}");
-            }
-            catch (Exception ex) when (IsRateLimitError(ex) && attempt < maxRetries)
-            {
-                lastException = ex;
-                var delay = TimeSpan.FromSeconds(Math.Pow(2, attempt + 2)); // Longer delay for rate limits
-                AiLoopEvents.Retry(AgentName, contextIdentifier, "rate_limit", attempt);
-
-                Logger.LogWarning(
-                    "[{Agent}] Rate limited on attempt {Attempt}/{MaxRetries} for {Context}. Retrying in {Delay}s",
-                    AgentName, attempt, maxRetries, contextIdentifier, delay.TotalSeconds);
-
-                EnhancedLogger?.LogBehindTheScenes("RATE_LIMIT", "THROTTLED",
-                    $"Rate limited, waiting {delay.TotalSeconds}s before retry");
-
-                await Task.Delay(delay);
             }
             catch (Exception ex)
             {
@@ -523,51 +532,17 @@ public abstract class AgentBase
     /// <summary>
     /// Determines if an exception represents a transient error that can be retried.
     /// </summary>
-    protected virtual bool IsTransientError(Exception ex)
-    {
-        // Type first. A timeout is transient however its message happens to be worded, and the
-        // Copilot client's own timeout says "did not respond within 5 minutes", in which the
-        // substring checks below never find the word "timeout".
-        if (ex is TimeoutException or HttpRequestException or TaskCanceledException)
-            return true;
-
-        var message = ex.Message.ToLowerInvariant();
-        return message.Contains("timeout") ||
-               message.Contains("temporarily unavailable") ||
-               message.Contains("service unavailable") ||
-               message.Contains("502") ||
-               message.Contains("503") ||
-               message.Contains("504") ||
-               message.Contains("connection") ||
-               // The Copilot CLI reports a network that is missing or not yet back as a failure
-               // to reach the model catalogue. A laptop waking from sleep produces exactly this,
-               // and treating it as permanent drops the program from the run for good.
-               message.Contains("failed to list models");
-    }
+    protected virtual bool IsTransientError(Exception ex) => LlmErrorClassifier.IsTransient(ex);
 
     /// <summary>
     /// Determines if an exception represents a content filter error.
     /// </summary>
-    protected virtual bool IsContentFilterError(Exception ex)
-    {
-        var message = ex.Message.ToLowerInvariant();
-        return message.Contains("content_filter") ||
-               message.Contains("content filter") ||
-               message.Contains("filtered") ||
-               message.Contains("content management policy");
-    }
+    protected virtual bool IsContentFilterError(Exception ex) => LlmErrorClassifier.IsContentFilter(ex);
 
     /// <summary>
     /// Determines if an exception represents a rate limit error.
     /// </summary>
-    protected virtual bool IsRateLimitError(Exception ex)
-    {
-        var message = ex.Message.ToLowerInvariant();
-        return message.Contains("rate limit") ||
-               message.Contains("429") ||
-               message.Contains("too many requests") ||
-               message.Contains("quota exceeded");
-    }
+    protected virtual bool IsRateLimitError(Exception ex) => LlmErrorClassifier.IsRateLimit(ex);
 
     /// <summary>
     /// Builds a detailed error message for logging.

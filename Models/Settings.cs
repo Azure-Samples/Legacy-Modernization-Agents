@@ -373,6 +373,12 @@ public class ModelProfileSettings
     /// <summary>Requests-per-minute rate limit.</summary>
     public int RequestsPerMinute { get; set; } = 1_000;
 
+    /// <summary>
+    /// Longest Retry-After, in seconds, an agent will wait out after a 429. When the provider
+    /// asks for longer, the call gives up and the program is reported as a fallback.
+    /// </summary>
+    public int RateLimitMaxWaitSeconds { get; set; } = 120;
+
     // ── Structural baseline floors ───────────────────────────────────────
     /// <summary>
     /// PIC density floor: if (PIC count / meaningful lines) exceeds this,

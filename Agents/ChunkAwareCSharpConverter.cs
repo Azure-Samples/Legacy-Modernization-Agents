@@ -35,7 +35,7 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
         ConversionSettings conversionSettings,
         EnhancedLogger? enhancedLogger = null,
         ChatLogger? chatLogger = null,
-        RateLimiter? rateLimiter = null,
+        IRateLimiter? rateLimiter = null,
         AppSettings? settings = null,
         int? runId = null)
     {
@@ -68,7 +68,7 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
         ConversionSettings conversionSettings,
         EnhancedLogger? enhancedLogger = null,
         ChatLogger? chatLogger = null,
-        RateLimiter? rateLimiter = null,
+        IRateLimiter? rateLimiter = null,
         AppSettings? settings = null,
         int? runId = null)
         : base(responsesClient, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings)
@@ -87,7 +87,7 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
         ConversionSettings conversionSettings,
         EnhancedLogger? enhancedLogger = null,
         ChatLogger? chatLogger = null,
-        RateLimiter? rateLimiter = null,
+        IRateLimiter? rateLimiter = null,
         AppSettings? settings = null,
         int? runId = null)
         : base(chatClient, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings)

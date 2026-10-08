@@ -32,7 +32,7 @@ public class BusinessLogicExtractorAgent : AgentBase
         string modelId,
         EnhancedLogger? enhancedLogger = null,
         ChatLogger? chatLogger = null,
-        RateLimiter? rateLimiter = null,
+        IRateLimiter? rateLimiter = null,
         AppSettings? settings = null,
         ChunkingOrchestrator? chunkingOrchestrator = null)
     {
@@ -47,7 +47,7 @@ public class BusinessLogicExtractorAgent : AgentBase
         string modelId,
         EnhancedLogger? enhancedLogger = null,
         ChatLogger? chatLogger = null,
-        RateLimiter? rateLimiter = null,
+        IRateLimiter? rateLimiter = null,
         AppSettings? settings = null,
         ChunkingOrchestrator? chunkingOrchestrator = null)
         : base(chatClient, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings)
@@ -64,7 +64,7 @@ public class BusinessLogicExtractorAgent : AgentBase
         string modelId,
         EnhancedLogger? enhancedLogger = null,
         ChatLogger? chatLogger = null,
-        RateLimiter? rateLimiter = null,
+        IRateLimiter? rateLimiter = null,
         AppSettings? settings = null,
         ChunkingOrchestrator? chunkingOrchestrator = null)
         : base(responsesClient, logger, modelId, enhancedLogger, chatLogger, rateLimiter, settings)

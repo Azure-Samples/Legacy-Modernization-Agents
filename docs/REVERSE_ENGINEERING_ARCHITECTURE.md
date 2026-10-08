@@ -155,7 +155,6 @@ From `Config/appsettings.json`:
     "EnableChunking": true,
     "EnableParallelProcessing": true,
     "MaxParallelAnalysis": 6,
-    "TokenBudgetPerMinute": 300000,
     "ParallelStaggerDelayMs": 2000
   }
 }
@@ -381,7 +380,7 @@ flowchart LR
 ### 2. **Parallel Processing**
 - Large files: chunks processed in parallel (up to 6 workers)
 - Multiple large files: also processed in parallel
-- Rate limiting prevents API throttling (TokenBudgetPerMinute: 300,000)
+- Rate limiting prevents API throttling (model profile `TokensPerMinute`, shared by every agent)
 
 ### 3. **Semantic Boundary Detection**
 - Chunks split at COBOL paragraph/section boundaries
@@ -447,14 +446,16 @@ pie title Token Distribution per Small File
 ```
 
 ### Rate Limiting Configuration
+Limits come from the model profile (`ModelProfile` or `ChatProfile`). Every agent calling the same deployment shares one `LlmRateLimiter`, so the budget and any 429 cooldown apply to the whole run.
 ```json
 {
-  "RateLimitSettings": {
-    "TokensPerMinute": 300000,
-    "MaxInputTokens": 10000,
-    "MaxOutputTokens": 16384,
-    "MinDelayBetweenRequestsMs": 20000,
-    "EnableAutoThrottle": true
+  "ModelProfile": {
+    "TokensPerMinute": 500000,
+    "RequestsPerMinute": 1000,
+    "RateLimitMaxWaitSeconds": 120
+  },
+  "ChunkingSettings": {
+    "RateLimitSafetyFactor": 0.7
   }
 }
 ```
@@ -557,7 +558,7 @@ dotnet run -- --source ./source --skip-reverse-engineering --reuse-re
 
 ### Chunk Processing Slow
 - Increase MaxParallelAnalysis (default: 6)
-- Check TokenBudgetPerMinute matches your Azure quota
+- Check the model profile's `TokensPerMinute` matches your Azure quota
 - Monitor rate limiting in logs
 
 ### Incomplete Results

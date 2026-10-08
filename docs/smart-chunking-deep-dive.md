@@ -93,7 +93,6 @@ public class ChunkingSettings
     public bool EnableParallelProcessing { get; set; } = true;
 
     // Rate limiting
-    public int TokenBudgetPerMinute { get; set; } = 300_000;     // Azure TPM limit
     public double RateLimitSafetyFactor { get; set; } = 0.7;     // 70% utilization
 
     // Progressive compression
@@ -283,7 +282,7 @@ public class ChunkingSettings
 │   ║ PHASE 3: PARALLEL CONVERSION (Rate-limited via SemaphoreSlim)          ║    │
 │   ║                                                                        ║    │
 │   ║   MaxParallelChunks: 3 workers (conversion is heavier than analysis)  ║    │
-│   ║   TokenBudgetPerMinute: 300,000 (Azure OpenAI TPM)                    ║    │
+│   ║   Profile TokensPerMinute (Azure OpenAI TPM)                          ║    │
 │   ║   RateLimitSafetyFactor: 0.7 (use only 70% of budget)                ║    │
 │   ║   StaggerDelay: 1000ms between chunk starts                           ║    │
 │   ║                                                                        ║    │
@@ -794,14 +793,14 @@ CREATE TABLE forward_references (
     "MaxParallelChunks": 6,
     "MaxParallelAnalysis": 6,
     "EnableParallelProcessing": true,
-    "TokenBudgetPerMinute": 300000,
     "RateLimitSafetyFactor": 0.7,
     "CompressionRatio": 0.3,
     "FullDetailChunkWindow": 3
   },
-  "RateLimitSettings": {
-    "TokensPerMinute": 300000,
-    "MinDelayBetweenRequestsMs": 2000
+  "ModelProfile": {
+    "TokensPerMinute": 500000,
+    "RequestsPerMinute": 1000,
+    "RateLimitMaxWaitSeconds": 120
   }
 }
 ```
@@ -816,7 +815,7 @@ CREATE TABLE forward_references (
 |-------|-------|----------|
 | `❌ FILE TOO LARGE: file.cbl has 409,448 chars (max: 150,000)` | File exceeds single-call limit | System auto-routes to chunked processing |
 | `❌ CHUNK TOO LARGE: Chunk X has Y chars (max: 150,000)` | Individual chunk still too big | Reduce `MaxLinesPerChunk` in appsettings.json |
-| `HTTP 429 (RateLimitReached)` | Too many API calls per minute | Increase `MinDelayBetweenRequestsMs` or reduce `MaxParallelChunks` |
+| `HTTP 429 (RateLimitReached)` | Too many API calls per minute | Set the profile's `TokensPerMinute`/`RequestsPerMinute` to your quota, lower `RateLimitSafetyFactor`, or reduce `MaxParallelChunks` |
 | `❌ Signature mismatch for VALIDATE-CUSTOMER` | AI generated different signature | Check SignatureRegistry, may need manual fix |
 
 ### Troubleshooting Steps
@@ -837,8 +836,8 @@ CREATE TABLE forward_references (
 3. **Rate Limit (429) Error**
    ```bash
    # Edit appsettings.json
-   "MinDelayBetweenRequestsMs": 5000  # Increase delay to 5 seconds
-   "MaxParallelChunks": 2              # Reduce parallel workers
+   "TokensPerMinute": 200000   # In ModelProfile/ChatProfile: match your deployment quota
+   "MaxParallelChunks": 2      # Reduce parallel workers
    ```
 
 4. **Check Chunking Health**
@@ -884,6 +883,6 @@ CREATE TABLE forward_references (
 |---------|---------|---------|
 | `MaxParallelAnalysis` | 6 | Workers for reverse engineering |
 | `MaxParallelChunks` | 3 | Workers for code conversion |
-| `TokenBudgetPerMinute` | 300,000 | Azure OpenAI TPM limit |
+| `TokensPerMinute` (model profile) | 500,000 | Azure OpenAI TPM limit, shared by every agent |
 | `RateLimitSafetyFactor` | 0.7 | Use 70% of budget for safety margin |
 | `StaggerDelay` | 500-1000ms | Delay between parallel chunk starts |
