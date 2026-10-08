@@ -22,6 +22,42 @@ public class CopilotChatClientTests
         return new CopilotChatClient(model, options, logger);
     }
 
+    #region Request timeout
+
+    // The timeout was a fixed five minutes. A high-effort conversion of a 1,300-line program
+    // regularly takes longer, so the program timed out three times and fell back to a stub.
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("abc")]
+    [InlineData("0")]
+    [InlineData("-5")]
+    public void ResolveRequestTimeout_FallsBackToDefault(string? value)
+    {
+        CopilotChatClient.ResolveRequestTimeout(value).Should().Be(CopilotChatClient.DefaultRequestTimeout);
+    }
+
+    [Fact]
+    public void ResolveRequestTimeout_ReadsSeconds()
+    {
+        CopilotChatClient.ResolveRequestTimeout("1800").Should().Be(TimeSpan.FromMinutes(30));
+    }
+
+    [Fact]
+    public void DefaultTimeoutLeavesRoomForLongConversions()
+    {
+        CopilotChatClient.DefaultRequestTimeout.Should().BeGreaterThan(TimeSpan.FromMinutes(5));
+    }
+
+    [Fact]
+    public void ExplicitTimeoutWins()
+    {
+        using var client = new CopilotChatClient(TestModel, requestTimeout: TimeSpan.FromSeconds(42));
+        client.RequestTimeout.Should().Be(TimeSpan.FromSeconds(42));
+    }
+
+    #endregion
+
     #region Constructor
 
     [Fact]
