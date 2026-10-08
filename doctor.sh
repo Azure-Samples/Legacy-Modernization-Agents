@@ -1388,8 +1388,8 @@ run_setup() {
 
         # Authentication method selection
         echo -e "${BLUE}🔐 How do you want to authenticate?${NC}"
-        echo -e "  ${GREEN}1)${NC} GitHub CLI (copilot login) (default)"
-        echo -e "  ${GREEN}2)${NC} Personal Access Token (PAT)"
+        echo -e "  ${GREEN}1)${NC} Copilot CLI sign-in (copilot login) (default)"
+        echo -e "  ${GREEN}2)${NC} Fine-grained personal access token"
         echo ""
         read -p "Choice [1]: " auth_choice
         auth_choice=${auth_choice:-1}
@@ -1399,22 +1399,26 @@ run_setup() {
 
         if [[ "$auth_choice" == "2" ]]; then
             # --- PAT authentication ---
-            echo -e "${BLUE}🔑 Personal Access Token Authentication${NC}"
+            echo -e "${BLUE}🔑 Fine-grained personal access token${NC}"
             echo ""
-            echo -e "${YELLOW}Your PAT needs the following permission:${NC}"
+            echo -e "${YELLOW}Create a fine-grained token on your personal account with this permission:${NC}"
+            echo "    • Account permissions → Copilot Requests (read)"
+            echo -e "${YELLOW}Classic tokens (ghp_) do not work with GitHub Copilot.${NC}"
             echo ""
-            echo -e "  ${BLUE}Classic PAT (fine-grained PATs do not currently support Copilot):${NC}"
-            echo "    • copilot"
-            echo ""
-            echo -e "${YELLOW}Create one at: https://${GITHUB_HOST}/settings/tokens${NC}"
+            echo -e "${YELLOW}Create one at: https://${GITHUB_HOST}/settings/personal-access-tokens/new${NC}"
             echo ""
             # Read from /dev/tty explicitly to ensure correct capture in all terminal environments
-            echo -n "Please provide the PAT and press Enter: "
+            echo -n "Please provide the token and press Enter: "
             read -s ghcp_token < /dev/tty
             echo ""
+            ghcp_token="$(printf '%s' "$ghcp_token" | tr -d '[:space:]')"
 
             if [[ -z "$ghcp_token" ]]; then
-                echo -e "${RED}❌ No PAT provided. Aborting.${NC}"
+                echo -e "${RED}❌ No token provided. Aborting.${NC}"
+                return 1
+            fi
+            if [[ "$ghcp_token" == ghp_* ]]; then
+                echo -e "${RED}❌ That is a classic token (ghp_). Copilot needs a fine-grained token (github_pat_) with the 'Copilot Requests' permission.${NC}"
                 return 1
             fi
 
@@ -1430,15 +1434,26 @@ run_setup() {
             fi
             echo ""
             echo -e "${GREEN}✅ Authentication successful!${NC}"
+            local ambient_vars=""
+            [[ -n "${GH_TOKEN:-}" ]] && ambient_vars+=" GH_TOKEN"
+            [[ -n "${GITHUB_TOKEN:-}" ]] && ambient_vars+=" GITHUB_TOKEN"
+            [[ -n "${COPILOT_GITHUB_TOKEN:-}" ]] && ambient_vars+=" COPILOT_GITHUB_TOKEN"
+            if [[ -n "$ambient_vars" ]]; then
+                echo -e "${YELLOW}ℹ️  Your shell sets${ambient_vars}. The Copilot CLI would normally prefer these over 'copilot login';${NC}"
+                echo -e "${YELLOW}   this project sets COPILOT_AUTH=login, so they are ignored for its Copilot calls.${NC}"
+            fi
         fi
         echo ""
+        local copilot_auth_mode="login"
+        [[ -n "$ghcp_token" ]] && copilot_auth_mode="token"
 
         # Get available models from GitHub Copilot (user-specific)
         echo -e "${BLUE}📋 Fetching available models for your account...${NC}"
         echo ""
         local models_raw list_output
         # Run list-models and extract only "  • model-id" lines
-        list_output=$("$DOTNET_CMD" run --project "$REPO_ROOT/CobolToQuarkusMigration.csproj" -- list-models 2>&1)
+        list_output=$(COPILOT_AUTH="$copilot_auth_mode" COPILOT_GITHUB_TOKEN="$ghcp_token" \
+            "$DOTNET_CMD" run --project "$REPO_ROOT/CobolToQuarkusMigration.csproj" -- list-models 2>&1)
         models_raw=$(printf '%s\n' "$list_output" | grep '•' | sed 's/.*•[[:space:]]*//' | awk '!seen[$0]++')
 
         # Fallback to copilot CLI static list if SDK call fails
@@ -1553,8 +1568,7 @@ run_setup() {
 # GitHub Copilot SDK Configuration
 # =============================================================================
 # This configuration uses the GitHub Copilot SDK instead of Azure OpenAI.
-# Requires: Copilot CLI installed.
-# Auth: either 'copilot login' or a Personal Access Token (PAT).
+# Auth: COPILOT_AUTH (below) - 'copilot login' or a fine-grained token in COPILOT_GITHUB_TOKEN.
 # =============================================================================
 
 # Provider
@@ -1606,13 +1620,16 @@ GITHUB_HOST="$GITHUB_HOST"
 EOF
         fi
 
-        # Append PAT to config if provided
+        cat >> "$LOCAL_CONFIG" <<EOF
+
+# GitHub Copilot authentication: login = 'copilot login' (GH_TOKEN/GITHUB_TOKEN ignored),
+# token = COPILOT_GITHUB_TOKEN below
+COPILOT_AUTH="$copilot_auth_mode"
+EOF
         if [[ -n "$ghcp_token" ]]; then
             cat >> "$LOCAL_CONFIG" <<EOF
-
-# GitHub Copilot PAT Authentication
-# Classic PAT with 'copilot' scope (fine-grained PATs do not currently support Copilot)
-GITHUB_COPILOT_TOKEN="$ghcp_token"
+# Fine-grained token with the 'Copilot Requests' permission
+COPILOT_GITHUB_TOKEN="$ghcp_token"
 EOF
         fi
 

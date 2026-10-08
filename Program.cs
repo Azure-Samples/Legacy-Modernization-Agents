@@ -310,10 +310,12 @@ internal static class Program
             // list-models always uses Copilot SDK — it's only called during
             // './doctor.sh setup' before config is written, so don't check
             // AZURE_OPENAI_SERVICE_TYPE (it will be AzureOpenAI at this point).
-            Console.WriteLine("Querying models via GitHub Copilot SDK (CLI)...");
             try
             {
-                using var client = new CopilotClient(new CopilotClientOptions { Mode = CopilotClientMode.CopilotCli });
+                var auth = CobolToQuarkusMigration.Agents.Infrastructure.CopilotAuth.Resolve();
+                Console.WriteLine($"Querying models via GitHub Copilot SDK (auth: {auth.Description})...");
+                using var client = new CopilotClient(CobolToQuarkusMigration.Agents.Infrastructure.CopilotAuth.Apply(
+                    new CopilotClientOptions { Mode = CopilotClientMode.CopilotCli }, auth));
                 var models = await client.ListModelsAsync();
                 Console.WriteLine($"Available models ({models.Count}):");
                 foreach (var model in models.OrderBy(m => m.Name))
@@ -326,7 +328,7 @@ internal static class Program
             {
                 logger.LogError(ex, "Failed to list models via Copilot SDK");
                 Console.WriteLine($"Error: {ex.Message}");
-                Console.WriteLine("Make sure GitHub Copilot CLI is installed and you are logged in (copilot login).");
+                Console.WriteLine("Sign in with 'copilot login', or set COPILOT_GITHUB_TOKEN to a fine-grained token with the 'Copilot Requests' permission.");
             }
         });
 
@@ -1452,8 +1454,8 @@ internal static class Program
             var serviceType = Environment.GetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE") ?? "AzureOpenAI";
 
             // ChatClientFactory routes both "GitHubCopilot" and "GitHubCopilotSDK" to the Copilot
-            // SDK with githubToken: null — the Copilot CLI holds the credential — so neither needs
-            // a token here. "GitHub" and "GitHubModels" fall through to the OpenAI-compatible
+            // SDK, which signs in with copilot login or COPILOT_GITHUB_TOKEN (see CopilotAuth), so
+            // neither needs an API key here. "GitHub" and "GitHubModels" fall through to the OpenAI-compatible
             // client instead and genuinely do require one.
             var isGitHubCopilotSdk = serviceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase) ||
                                      serviceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase);
@@ -1528,6 +1530,19 @@ internal static class Program
                     {
                         invalidSettings.Add($"{setting.Key} (contains template placeholder)");
                     }
+                }
+            }
+
+            if (isGitHubCopilotSdk)
+            {
+                try
+                {
+                    var auth = CobolToQuarkusMigration.Agents.Infrastructure.CopilotAuth.Resolve();
+                    Console.WriteLine($"🔐 GitHub Copilot auth: {auth.Description}");
+                }
+                catch (InvalidOperationException ex)
+                {
+                    invalidSettings.Add(ex.Message);
                 }
             }
 

@@ -191,8 +191,8 @@ public static class ChatClientFactory
     // ═══════════════════════════════════════════════════════════════════════
 
     /// <summary>
-    /// Creates an IChatClient for GitHub Copilot SDK.
-    /// Requires the Copilot CLI in PATH.
+    /// Creates an IChatClient for GitHub Copilot SDK. Without an explicit token the
+    /// credential comes from <see cref="CopilotAuth"/> (COPILOT_AUTH / COPILOT_GITHUB_TOKEN / copilot login).
     /// </summary>
     public static IChatClient CreateGitHubCopilotChatClient(
         string modelId,
@@ -202,16 +202,19 @@ public static class ChatClientFactory
         if (string.IsNullOrEmpty(modelId))
             throw new ArgumentNullException(nameof(modelId));
 
-        logger?.LogInformation("Creating GitHub Copilot SDK chat client for model: {Model}", modelId);
-
-        var options = new CopilotClientOptions
-        {
-            Mode = CopilotClientMode.CopilotCli
-        };
-
+        CopilotClientOptions options;
         if (!string.IsNullOrEmpty(githubToken))
         {
-            options.GitHubToken = githubToken;
+            if (CopilotAuth.ValidateToken(githubToken) is { } problem)
+                throw new InvalidOperationException(problem);
+            options = new CopilotClientOptions { Mode = CopilotClientMode.CopilotCli, GitHubToken = githubToken };
+            logger?.LogInformation("Creating GitHub Copilot SDK chat client for model: {Model} (explicit token)", modelId);
+        }
+        else
+        {
+            var auth = CopilotAuth.Resolve();
+            options = CopilotAuth.Apply(new CopilotClientOptions { Mode = CopilotClientMode.CopilotCli }, auth);
+            logger?.LogInformation("Creating GitHub Copilot SDK chat client for model: {Model} (auth: {Auth})", modelId, auth.Description);
         }
 
         // Don't pass the app logger to the SDK — it produces very verbose
