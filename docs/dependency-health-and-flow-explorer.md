@@ -114,7 +114,7 @@ flowchart TD
         SRC["source/<br/>inventory"]
         CACHE["Data/rekt-scan.db<br/>parse outcomes"]
         ART["output/rekt/<br/>facts, deps, reports"]
-        NEO["Neo4j<br/>bolt 7688"]
+        NEO["Neo4j<br/>bolt 7687"]
     end
 
     SRC --> R[RektEstateReader]

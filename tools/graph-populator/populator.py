@@ -7,9 +7,9 @@ Usage:
     python -m populator migrate  --sqlite-db /data/migration.db
 
 Environment:
-    REKT_NEO4J_URI / NEO4J_URI            bolt://localhost:7688
-    REKT_NEO4J_USER / NEO4J_USER          neo4j
-    REKT_NEO4J_PASSWORD / NEO4J_PASSWORD  required; REKT_ takes precedence
+    NEO4J_URI                             bolt://localhost:7687
+    NEO4J_USER                            neo4j
+    NEO4J_PASSWORD                        required
 """
 
 from __future__ import annotations
@@ -45,11 +45,11 @@ SOURCE_BLOCK_LINES = 500  # lines per SourceBlock node
 # Neo4j Connection
 
 def get_driver():
-    # Defaults target the REKT graph on 7688, so its credential takes precedence over the
-    # migration one. Same precedence as RektNeo4j in the portal.
-    uri = os.environ.get("REKT_NEO4J_URI") or os.environ.get("NEO4J_URI", "bolt://localhost:7688")
-    user = os.environ.get("REKT_NEO4J_USER") or os.environ.get("NEO4J_USER", "neo4j")
-    password = os.environ.get("REKT_NEO4J_PASSWORD") or required_environment_variable("NEO4J_PASSWORD")
+    # The single Neo4j instance; the same settings as RektNeo4j in the portal.
+    port = os.environ.get("NEO4J_BOLT_PORT") or "7687"
+    uri = os.environ.get("NEO4J_URI") or f"bolt://localhost:{port}"
+    user = os.environ.get("NEO4J_USER") or "neo4j"
+    password = required_environment_variable("NEO4J_PASSWORD")
     return GraphDatabase.driver(uri, auth=(user, password))
 
 

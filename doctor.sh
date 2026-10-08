@@ -638,24 +638,6 @@ load_configuration() {
             fi
         fi
 
-        if [[ -z "${REKT_NEO4J_PASSWORD:-}" && -f "$REPO_ROOT/Config/ai-config.local.env" ]]; then
-            local rekt_line
-            rekt_line=$(grep -E '^REKT_NEO4J_PASSWORD=' "$REPO_ROOT/Config/ai-config.local.env" | tail -1)
-            if [[ -n "$rekt_line" ]]; then
-                REKT_NEO4J_PASSWORD="${rekt_line#REKT_NEO4J_PASSWORD=}"
-                REKT_NEO4J_PASSWORD="${REKT_NEO4J_PASSWORD%\"}"
-                REKT_NEO4J_PASSWORD="${REKT_NEO4J_PASSWORD#\"}"
-                REKT_NEO4J_PASSWORD="${REKT_NEO4J_PASSWORD%\'}"
-                REKT_NEO4J_PASSWORD="${REKT_NEO4J_PASSWORD#\'}"
-                export REKT_NEO4J_PASSWORD
-            fi
-        fi
-
-        # The REKT graph is a second instance; unset means it shares the migration credential.
-        if [[ -z "${REKT_NEO4J_PASSWORD:-}" && -n "${NEO4J_PASSWORD:-}" ]]; then
-            export REKT_NEO4J_PASSWORD="$NEO4J_PASSWORD"
-        fi
-
         if [[ -n "${NEO4J_PASSWORD:-}" ]]; then
             export ApplicationSettings__Neo4j__Password="$NEO4J_PASSWORD"
         fi
@@ -1626,17 +1608,15 @@ run_setup() {
 
         # Preserve anything already configured: these values may be the only ones that open
         # the existing Neo4j volumes, and setup rewrites this file wholesale.
-        local existing_neo4j existing_rekt existing_source
+        local existing_neo4j existing_source
         # Read from the snapshot: the live file is already the template at this point.
         existing_neo4j=$(read_local_config_value NEO4J_PASSWORD "${SETUP_PREVIOUS_CONFIG:-/dev/null}")
-        existing_rekt=$(read_local_config_value REKT_NEO4J_PASSWORD "${SETUP_PREVIOUS_CONFIG:-/dev/null}")
         existing_source=$(read_local_config_value COBOL_SOURCE_FOLDER "${SETUP_PREVIOUS_CONFIG:-/dev/null}")
 
         local neo4j_password="${existing_neo4j:-cobol-rekt-2026}"
-        local rekt_password="${existing_rekt:-$neo4j_password}"
         local source_folder="${existing_source:-source}"
 
-        if [[ -n "$existing_neo4j" || -n "$existing_rekt" || -n "$existing_source" ]]; then
+        if [[ -n "$existing_neo4j" || -n "$existing_source" ]]; then
             echo -e "${BLUE}  Keeping existing Neo4j and source settings from $(basename "$LOCAL_CONFIG")${NC}"
         fi
 
@@ -1679,11 +1659,10 @@ AISETTINGS__CHATENDPOINT="https://copilot-sdk-placeholder"
 # Username: neo4j
 # NOT FOR PRODUCTION, ENSURE TO CHANGE PASSWORD
 #
-# Two instances run side by side: the migration graph (default bolt 7687) and the REKT graph (default 7688).
-# Each fixes its password in its own data volume the first time it starts, so these must
-# match the volumes that already exist. Re-running setup keeps whatever is set here.
+# One instance holds the migration and REKT graphs (default bolt 7687). Neo4j fixes the
+# password in its data volume the first time it starts, so this must match the volume that
+# already exists. Re-running setup keeps whatever is set here.
 NEO4J_PASSWORD="$neo4j_password"
-REKT_NEO4J_PASSWORD="$rekt_password"
 
 # The parser reads this folder and the portal resolves the estate through it; they must agree.
 COBOL_SOURCE_FOLDER="$source_folder"
@@ -2720,20 +2699,13 @@ resolve_runtime_setting() {
 NEO4J_CONTAINER="$(resolve_runtime_setting NEO4J_CONTAINER cobol-migration-neo4j)"
 NEO4J_HTTP_PORT="$(resolve_runtime_setting NEO4J_HTTP_PORT 7474)"
 NEO4J_BOLT_PORT="$(resolve_runtime_setting NEO4J_BOLT_PORT 7687)"
-REKT_NEO4J_CONTAINER="$(resolve_runtime_setting REKT_NEO4J_CONTAINER cobol-rekt-neo4j)"
-REKT_NEO4J_HTTP_PORT="$(resolve_runtime_setting REKT_NEO4J_HTTP_PORT 7475)"
-REKT_NEO4J_BOLT_PORT="$(resolve_runtime_setting REKT_NEO4J_BOLT_PORT 7688)"
 REKT_CONTAINER="$(resolve_runtime_setting REKT_CONTAINER cobol-rekt)"
 REKT_POPULATOR_CONTAINER="$(resolve_runtime_setting REKT_POPULATOR_CONTAINER cobol-graph-populator)"
 PORTAL_CONTAINER="$(resolve_runtime_setting PORTAL_CONTAINER cobol-migration-portal)"
 REKT_GENERATED_COPYBOOK_DIRS="$(resolve_runtime_setting REKT_GENERATED_COPYBOOK_DIRS copy-generated)"
-export NEO4J_CONTAINER NEO4J_HTTP_PORT NEO4J_BOLT_PORT REKT_NEO4J_CONTAINER REKT_NEO4J_HTTP_PORT \
-    REKT_NEO4J_BOLT_PORT REKT_CONTAINER REKT_POPULATOR_CONTAINER PORTAL_CONTAINER \
+export NEO4J_CONTAINER NEO4J_HTTP_PORT NEO4J_BOLT_PORT REKT_CONTAINER REKT_POPULATOR_CONTAINER PORTAL_CONTAINER \
     REKT_GENERATED_COPYBOOK_DIRS
 # A moved port is passed on to the CLI and portal; otherwise their own settings apply unchanged.
-if [[ "$REKT_NEO4J_BOLT_PORT" != "7688" && -z "${REKT_NEO4J_URI:-}" ]]; then
-    export REKT_NEO4J_URI="bolt://localhost:$REKT_NEO4J_BOLT_PORT"
-fi
 if [[ "$NEO4J_BOLT_PORT" != "7687" && -z "${ApplicationSettings__Neo4j__Uri:-}" ]]; then
     export ApplicationSettings__Neo4j__Uri="bolt://localhost:$NEO4J_BOLT_PORT"
 fi
@@ -2753,8 +2725,7 @@ check_neo4j_graphs() {
     echo -e "${BLUE}🔍 Checking Neo4j graphs...${NC}"
     local project entry name key port state owner password holder problems=0
     project="$(compose_project_name)"
-    for entry in "$NEO4J_CONTAINER:NEO4J_PASSWORD:$NEO4J_BOLT_PORT" \
-                 "$REKT_NEO4J_CONTAINER:REKT_NEO4J_PASSWORD:$REKT_NEO4J_BOLT_PORT"; do
+    for entry in "$NEO4J_CONTAINER:NEO4J_PASSWORD:$NEO4J_BOLT_PORT"; do
         IFS=: read -r name key port <<<"$entry"
 
         holder=$(docker ps --filter "publish=$port" --format '{{.Names}}' 2>/dev/null | grep -vx "$name" | head -1)
@@ -2779,7 +2750,6 @@ check_neo4j_graphs() {
         fi
 
         password="$(read_local_config_value "$key")"
-        [[ -n "$password" || "$key" != "REKT_NEO4J_PASSWORD" ]] || password="$(read_local_config_value NEO4J_PASSWORD)"
         if container_exec "$name" cypher-shell -u neo4j -p "$password" "RETURN 1" >/dev/null 2>&1; then
             echo -e "  ${GREEN}✅ $name: $key authenticates${NC}"
         else
@@ -2794,14 +2764,42 @@ check_neo4j_graphs() {
         echo
         echo "  To run beside another checkout, give this one its own names and ports in"
         echo "  Config/ai-config.local.env (see 'Containers and ports' in Config/ai-config.env.example):"
-        echo "    NEO4J_CONTAINER, NEO4J_HTTP_PORT, NEO4J_BOLT_PORT,"
-        echo "    REKT_NEO4J_CONTAINER, REKT_NEO4J_HTTP_PORT, REKT_NEO4J_BOLT_PORT"
-        return 1
+        echo "    NEO4J_CONTAINER, NEO4J_HTTP_PORT, NEO4J_BOLT_PORT"
     fi
+
+    check_single_graph_migration || problems=$((problems + 1))
+    (( problems == 0 ))
+}
+
+# The migration and REKT graphs used to live in two instances. Their settings are ignored now,
+# and their volumes still hold the old data, so both are pointed out once rather than
+# silently kept or deleted.
+check_single_graph_migration() {
+    local obsolete=() key volume project leftover=()
+    for key in REKT_NEO4J_PASSWORD REKT_NEO4J_CONTAINER REKT_NEO4J_HTTP_PORT REKT_NEO4J_BOLT_PORT REKT_NEO4J_URI; do
+        [[ -n "$(read_local_config_value "$key")" || -n "$(printenv "$key")" ]] && obsolete+=("$key")
+    done
+    project="$(compose_project_name)"
+    for volume in neo4j_data neo4j_logs neo4j_import rekt_neo4j_data rekt_neo4j_logs rekt_neo4j_import; do
+        docker volume inspect "${project}_${volume}" >/dev/null 2>&1 && leftover+=("${project}_${volume}")
+    done
+    (( ${#obsolete[@]} + ${#leftover[@]} > 0 )) || return 0
+
+    echo
+    echo -e "  ${YELLOW}ℹ️  The migration and REKT graphs now share one Neo4j ($NEO4J_CONTAINER).${NC}"
+    if (( ${#obsolete[@]} > 0 )); then
+        echo "     No longer used; remove from Config/ai-config.local.env: ${obsolete[*]}"
+    fi
+    if (( ${#leftover[@]} > 0 )); then
+        echo "     Volumes from the two earlier instances can be removed once ./doctor.sh rekt-ingest"
+        echo "     has filled the new graph:"
+        echo "       docker volume rm ${leftover[*]}"
+    fi
+    (( ${#obsolete[@]} == 0 ))
 }
 
 # Compose commands take service names, which stay fixed while container names vary.
-REKT_NEO4J_SERVICE="cobol-rekt-neo4j"
+NEO4J_SERVICE="neo4j"
 REKT_SERVICE="cobol-rekt"
 
 # Current Docker ships Compose as a plugin; older installs only have the standalone binary.
@@ -2954,38 +2952,38 @@ ensure_rekt_containers() {
 
     # Start only the rekt services (leave existing neo4j untouched).
     local compose_output
-    if ! compose_output=$(run_compose up -d "$REKT_NEO4J_SERVICE" "$REKT_SERVICE" 2>&1); then
+    if ! compose_output=$(run_compose up -d "$NEO4J_SERVICE" "$REKT_SERVICE" 2>&1); then
         echo -e "${RED}❌ Failed to start Cobol-REKT containers:${NC}"
         printf '%s\n' "$compose_output" | sed 's/^/  /'
         echo ""
         echo -e "${YELLOW}Debug with:${NC}"
         echo "  docker compose ps"
-        echo "  docker compose logs --tail=100 $REKT_NEO4J_SERVICE $REKT_SERVICE"
+        echo "  docker compose logs --tail=100 $NEO4J_SERVICE $REKT_SERVICE"
         return 1
     fi
 
     # Wait for rekt Neo4j to be healthy
     local max_wait=60
     local waited=0
-    echo -ne "  Waiting for $REKT_NEO4J_CONTAINER"
-    while ! container_exec "$REKT_NEO4J_CONTAINER" sh -c \
+    echo -ne "  Waiting for $NEO4J_CONTAINER"
+    while ! container_exec "$NEO4J_CONTAINER" sh -c \
         'cypher-shell -u neo4j -p "$HEALTHCHECK_PASSWORD" "RETURN 1"' >/dev/null 2>&1; do
         sleep 2
         waited=$((waited + 2))
         echo -ne "."
         if [[ $waited -ge $max_wait ]]; then
-            echo -e "\n${RED}❌ $REKT_NEO4J_CONTAINER did not become healthy in ${max_wait}s${NC}"
+            echo -e "\n${RED}❌ $NEO4J_CONTAINER did not become healthy in ${max_wait}s${NC}"
             echo -e "${YELLOW}Container state:${NC}"
             docker inspect --format \
                 '  Status={{.State.Status}} ExitCode={{.State.ExitCode}} Error={{.State.Error}} Health={{if .State.Health}}{{.State.Health.Status}}{{else}}n/a{{end}}' \
-                "$REKT_NEO4J_CONTAINER" 2>&1 || true
+                "$NEO4J_CONTAINER" 2>&1 || true
             echo ""
-            echo -e "${YELLOW}Recent $REKT_NEO4J_CONTAINER logs:${NC}"
-            docker logs --tail 50 "$REKT_NEO4J_CONTAINER" 2>&1 | sed 's/^/  /'
+            echo -e "${YELLOW}Recent $NEO4J_CONTAINER logs:${NC}"
+            docker logs --tail 50 "$NEO4J_CONTAINER" 2>&1 | sed 's/^/  /'
             echo ""
             echo -e "${YELLOW}Debug with:${NC}"
             echo "  docker compose ps"
-            echo "  docker compose logs --tail=100 $REKT_NEO4J_SERVICE"
+            echo "  docker compose logs --tail=100 $NEO4J_SERVICE"
             return 1
         fi
     done
@@ -2994,19 +2992,20 @@ ensure_rekt_containers() {
     # The loop above authenticates inside the container, which always agrees with itself.
     # The populator connects from the host, so verify that credential separately: Neo4j keeps
     # the password in its data volume, so a reused volume silently outranks NEO4J_AUTH.
-    if ! container_exec "$REKT_NEO4J_CONTAINER" \
-        cypher-shell -u neo4j -p "${REKT_NEO4J_PASSWORD:-$NEO4J_PASSWORD}" "RETURN 1" >/dev/null 2>&1; then
-        echo -e "${RED}❌ REKT_NEO4J_PASSWORD does not authenticate against $REKT_NEO4J_CONTAINER${NC}"
+    if ! container_exec "$NEO4J_CONTAINER" \
+        cypher-shell -u neo4j -p "$NEO4J_PASSWORD" "RETURN 1" >/dev/null 2>&1; then
+        echo -e "${RED}❌ NEO4J_PASSWORD does not authenticate against $NEO4J_CONTAINER${NC}"
         echo ""
         echo "The password was fixed when the data volume was first created, and NEO4J_AUTH"
         echo "is ignored on every start after that."
         echo ""
         echo "Either set the value the volume was created with, in Config/ai-config.local.env:"
-        echo "  REKT_NEO4J_PASSWORD=<existing-password>"
+        echo "  NEO4J_PASSWORD=<existing-password>"
         echo ""
-        echo "or discard the graph and let it re-initialise (parsed artifacts are kept):"
-        echo "  docker compose rm -sf $REKT_NEO4J_SERVICE"
-        echo "  docker volume rm $(basename "$REPO_ROOT" | tr '[:upper:]' '[:lower:]')_rekt_neo4j_data"
+        echo "or discard the graph and let it re-initialise. This also clears the migration"
+        echo "graph; parsed artifacts and the SQLite run history are kept:"
+        echo "  docker compose rm -sf $NEO4J_SERVICE"
+        echo "  docker volume rm $(compose_project_name)_graph_data"
         return 1
     fi
     echo -e "  ${GREEN}✅ REKT graph credentials accepted${NC}"
@@ -3893,7 +3892,7 @@ run_rekt_ingest() {
     run_id=$(date +%Y%m%d%H%M)
     echo -e "${BLUE}  Scan Run ID: ${GREEN}${run_id}${NC}"
 
-    echo -e "${BLUE}  Ingesting into $REKT_NEO4J_CONTAINER (bolt://localhost:$REKT_NEO4J_BOLT_PORT)${NC}"
+    echo -e "${BLUE}  Ingesting into $NEO4J_CONTAINER (bolt://localhost:$NEO4J_BOLT_PORT)${NC}"
 
     # Use the local Python environment so ingestion does not depend on a
     # separately running graph-populator container.
@@ -3911,8 +3910,8 @@ run_rekt_ingest() {
     # A populator that exits clean having written nothing is indistinguishable from success
     # at the console, and the portal then reports an empty estate as a finding.
     local ingested
-    ingested=$(container_exec "$REKT_NEO4J_CONTAINER" cypher-shell -u neo4j \
-        -p "${REKT_NEO4J_PASSWORD:-$NEO4J_PASSWORD}" --format plain \
+    ingested=$(container_exec "$NEO4J_CONTAINER" cypher-shell -u neo4j \
+        -p "$NEO4J_PASSWORD" --format plain \
         "MATCH (n) WHERE n.runId = $run_id RETURN count(n)" 2>/dev/null | tail -1 | tr -d '[:space:]')
 
     if [[ -z "$ingested" || "$ingested" == "0" ]]; then
@@ -3927,8 +3926,8 @@ run_rekt_ingest() {
     report_dirs=$(find "$REPO_ROOT/output/rekt" -name '*.report' -type d 2>/dev/null | wc -l | tr -d ' ')
     if [[ "$report_dirs" -gt 0 ]]; then
         local ast_files
-        ast_files=$(container_exec "$REKT_NEO4J_CONTAINER" cypher-shell -u neo4j \
-            -p "${REKT_NEO4J_PASSWORD:-$NEO4J_PASSWORD}" --format plain \
+        ast_files=$(container_exec "$NEO4J_CONTAINER" cypher-shell -u neo4j \
+            -p "$NEO4J_PASSWORD" --format plain \
             "MATCH (:CobolFile {runId: $run_id})-[:HAS_AST]->() RETURN count(*)" \
             2>/dev/null | tail -1 | tr -d '[:space:]')
         if [[ -z "$ast_files" || "$ast_files" == "0" ]]; then
@@ -3940,8 +3939,8 @@ run_rekt_ingest() {
     fi
     echo -e "  ${GREEN}✅ ${ingested} node(s) ingested for run ${run_id}${NC}"
 
-    echo -e "\n${GREEN}  Neo4j Browser: http://localhost:$REKT_NEO4J_HTTP_PORT${NC}"
-    echo -e "${GREEN}  Connection URL: neo4j://localhost:$REKT_NEO4J_BOLT_PORT${NC}"
+    echo -e "\n${GREEN}  Neo4j Browser: http://localhost:$NEO4J_HTTP_PORT${NC}"
+    echo -e "${GREEN}  Connection URL: neo4j://localhost:$NEO4J_BOLT_PORT${NC}"
     echo -e "${GREEN}  Scan Run ID: ${run_id}${NC}"
 }
 
@@ -3954,8 +3953,8 @@ run_rekt_full() {
     run_rekt_ingest || return 1
 
     echo -e "\n${GREEN}✅ rekt pipeline complete.${NC}"
-    echo -e "${BLUE}  Neo4j Browser: http://localhost:$REKT_NEO4J_HTTP_PORT${NC}"
-    echo -e "${BLUE}  Connection URL: neo4j://localhost:$REKT_NEO4J_BOLT_PORT${NC}"
+    echo -e "${BLUE}  Neo4j Browser: http://localhost:$NEO4J_HTTP_PORT${NC}"
+    echo -e "${BLUE}  Connection URL: neo4j://localhost:$NEO4J_BOLT_PORT${NC}"
     echo -e "${YELLOW}  Next: the portal needs a migration run. Create one with${NC}"
     echo -e "${YELLOW}    ./doctor.sh reverse-eng   (business logic only)  or  ./doctor.sh run   (full migration)${NC}"
 
@@ -3967,7 +3966,7 @@ run_rekt_status() {
     echo -e "${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
 
     # Check containers
-    local containers=("$REKT_NEO4J_CONTAINER" "$REKT_CONTAINER" "$REKT_POPULATOR_CONTAINER")
+    local containers=("$NEO4J_CONTAINER" "$REKT_CONTAINER" "$REKT_POPULATOR_CONTAINER")
     for c in "${containers[@]}"; do
         local state
         state=$(docker inspect --format='{{.State.Status}}' "$c" 2>/dev/null || echo "not found")
@@ -3978,21 +3977,16 @@ run_rekt_status() {
         fi
     done
 
-    # Check existing MMA Neo4j
-    local mma_state
-    mma_state=$(docker inspect --format='{{.State.Status}}' "$NEO4J_CONTAINER" 2>/dev/null || echo "not found")
-    echo -e "  ${BLUE}ℹ️  $NEO4J_CONTAINER (existing): $mma_state${NC}"
-
     # Neo4j node count
-    if container_exec "$REKT_NEO4J_CONTAINER" sh -c \
+    if container_exec "$NEO4J_CONTAINER" sh -c \
         'cypher-shell -u neo4j -p "$HEALTHCHECK_PASSWORD" "MATCH (n) RETURN count(n) AS nodes"' \
         2>/dev/null | grep -q "[0-9]"; then
         local node_count
-        node_count=$(container_exec "$REKT_NEO4J_CONTAINER" sh -c \
+        node_count=$(container_exec "$NEO4J_CONTAINER" sh -c \
             'cypher-shell -u neo4j -p "$HEALTHCHECK_PASSWORD" "MATCH (n) RETURN count(n) AS nodes"' \
             2>/dev/null | tail -1 | tr -d ' "')
         local rel_count
-        rel_count=$(container_exec "$REKT_NEO4J_CONTAINER" sh -c \
+        rel_count=$(container_exec "$NEO4J_CONTAINER" sh -c \
             'cypher-shell -u neo4j -p "$HEALTHCHECK_PASSWORD" "MATCH ()-[r]->() RETURN count(r) AS rels"' \
             2>/dev/null | tail -1 | tr -d ' "')
         echo -e "\n  ${BLUE}Graph: ${node_count} nodes, ${rel_count} relationships${NC}"
@@ -4004,8 +3998,7 @@ run_rekt_status() {
     echo -e "  ${BLUE}Rekt JSON exports: ${json_count} files in output/rekt/${NC}"
 
     echo -e "\n  ${BLUE}Ports:${NC}"
-    echo -e "    Existing Neo4j: http://localhost:$NEO4J_HTTP_PORT (bolt://localhost:$NEO4J_BOLT_PORT)"
-    echo -e "    Rekt Neo4j:     http://localhost:$REKT_NEO4J_HTTP_PORT (bolt://localhost:$REKT_NEO4J_BOLT_PORT)"
+    echo -e "    Neo4j: http://localhost:$NEO4J_HTTP_PORT (bolt://localhost:$NEO4J_BOLT_PORT)"
 }
 
 # Emits the --programs argument when a selection is active, and nothing otherwise,

@@ -150,7 +150,7 @@ def orchestrate(
         )
         if "true" not in (check.stdout or ""):
             console.print("[red]cobol-rekt container is not running. Start it with:[/red]")
-            console.print("[yellow]  docker-compose up -d cobol-rekt cobol-rekt-neo4j[/yellow]")
+            console.print("[yellow]  docker compose up -d cobol-rekt neo4j[/yellow]")
             return
 
         results = []
