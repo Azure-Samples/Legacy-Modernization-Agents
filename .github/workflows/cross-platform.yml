@@ -1,0 +1,58 @@
+name: Cross-platform checks
+
+on:
+  pull_request:
+    paths:
+      - "**/*.sh"
+      - "**/*.cs"
+      - "**/*.csproj"
+      - "tools/**"
+      - ".gitattributes"
+      - ".github/workflows/cross-platform.yml"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shell-and-portal:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        # Git Bash on Windows, the shell doctor.sh supports there.
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Shell scripts parse and use LF line endings
+        run: |
+          status=0
+          while IFS= read -r -d '' script; do
+            bash -n "$script" || status=1
+            if grep -q $'\r' "$script"; then
+              echo "CRLF line endings: $script"
+              status=1
+            fi
+          done < <(git ls-files -z '*.sh')
+          exit $status
+
+      - name: doctor.sh platform helpers
+        run: tools/tests/doctor-helpers-smoke.sh
+
+      - name: Portal process control
+        run: dotnet test McpChatWeb.Tests --filter "FullyQualifiedName~ProcessTreeSuspender" --blame-hang-timeout 120s
