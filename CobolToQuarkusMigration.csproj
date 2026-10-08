@@ -5,6 +5,10 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <!-- Run through dotnet.exe rather than a freshly built, unsigned native launcher, which
+         endpoint security (Defender ASR, AppLocker, WDAC) on managed Windows machines may block
+         with "Access is denied". -->
+    <UseAppHost>false</UseAppHost>
   </PropertyGroup>
 
   <ItemGroup>

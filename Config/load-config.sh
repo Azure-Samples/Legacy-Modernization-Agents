@@ -54,6 +54,8 @@ load_env_file() {
         
         # Load the file, ignoring comments and empty lines
         while IFS= read -r line || [[ -n "$line" ]]; do
+            # A file saved with Windows line endings would leave \r in every value.
+            line="${line%$'\r'}"
             # Skip comments and empty lines
             if [[ "$line" =~ ^[[:space:]]*# ]] || [[ -z "${line// }" ]]; then
                 continue

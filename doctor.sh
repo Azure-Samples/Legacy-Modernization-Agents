@@ -75,13 +75,22 @@ detect_dotnet_cli() {
 }
 
 DOTNET_CMD="$(detect_dotnet_cli)"
+# Accept a Python only if it runs. On Windows, `python`/`python3` on PATH can be the
+# WindowsApps "App execution alias" stub, which prints a Microsoft Store prompt instead of
+# running anything and would silently corrupt every parse that assumes real Python ran.
+verify_python_candidate() {
+    local candidate="$1"
+    command -v "$candidate" >/dev/null 2>&1 || return 1
+    [[ "$("$candidate" -c 'import sys; sys.stdout.write("ok")' 2>/dev/null)" == "ok" ]]
+}
+
 detect_python() {
-    if command -v python3 >/dev/null 2>&1; then
+    if verify_python_candidate python3; then
         echo python3
         return
     fi
 
-    if command -v python >/dev/null 2>&1; then
+    if verify_python_candidate python; then
         echo python
         return
     fi
@@ -406,10 +415,37 @@ open_url_in_browser() {
             if command -v powershell.exe >/dev/null 2>&1; then
                 powershell.exe -NoProfile -Command "Start-Process '$url'" >/dev/null 2>&1 &
             elif command -v cmd.exe >/dev/null 2>&1; then
-                cmd.exe /c start "" "$url"
+                cmd.exe //c start "" "$url"
             fi
             ;;
     esac
+}
+
+# PIDs listening on a TCP port. Git Bash has no lsof, so fall back to Windows netstat
+# ("TCP  0.0.0.0:5028  0.0.0.0:0  LISTENING  1234", PID in the last field).
+port_listen_pids() {
+    local port="$1"
+    if command -v lsof >/dev/null 2>&1; then
+        lsof -Pi ":$port" -sTCP:LISTEN -t 2>/dev/null
+    elif command -v netstat >/dev/null 2>&1; then
+        netstat -ano 2>/dev/null | grep -E "[:.]${port}[[:space:]]+.*LISTENING" \
+            | awk '{print $NF}' | sort -u
+    fi
+}
+
+# Kill the processes listening on a TCP port; returns 1 when nothing was listening.
+kill_port_listeners() {
+    local port="$1" pids pid
+    pids="$(port_listen_pids "$port")"
+    [[ -z "$pids" ]] && return 1
+    if ! command -v lsof >/dev/null 2>&1 && command -v taskkill >/dev/null 2>&1; then
+        # Double slashes stop Git Bash rewriting /F and /PID into file paths.
+        while IFS= read -r pid; do
+            [[ -n "$pid" ]] && taskkill //F //PID "$pid" >/dev/null 2>&1
+        done <<<"$pids"
+    else
+        echo "$pids" | xargs kill -9 2>/dev/null
+    fi
 }
 
 launch_mcp_web_ui() {
@@ -441,14 +477,10 @@ launch_mcp_web_ui() {
     echo -e "${BLUE}➡️  Starting web server at${NC} ${BOLD}$url${NC}"
     
     # Check if port is already in use and clean up (only kill the LISTEN socket owner)
-    if lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; then
+    if [[ -n "$(port_listen_pids "$port")" ]]; then
         echo -e "${YELLOW}⚠️  Port $port is already in use. Cleaning up...${NC}"
-        local listen_pids
-        listen_pids=$(lsof -Pi :$port -sTCP:LISTEN -t 2>/dev/null)
-        if [[ -n "$listen_pids" ]]; then
-            echo "$listen_pids" | xargs kill -9 2>/dev/null && echo -e "${GREEN}✅ Killed existing process on port $port${NC}" || true
-            sleep 1
-        fi
+        kill_port_listeners "$port" && echo -e "${GREEN}✅ Killed existing process on port $port${NC}" || true
+        sleep 1
     fi
     
     echo -e "${BLUE}➡️  Press Ctrl+C to stop the UI and exit.${NC}"
@@ -471,14 +503,10 @@ launch_portal_background() {
     echo "===================================================="
     
     # Check if port is already in use and clean up (only kill the LISTEN socket owner)
-    if lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; then
+    if [[ -n "$(port_listen_pids "$port")" ]]; then
         echo -e "${YELLOW}⚠️  Port $port is already in use. Cleaning up...${NC}"
-        local listen_pids
-        listen_pids=$(lsof -Pi :$port -sTCP:LISTEN -t 2>/dev/null)
-        if [[ -n "$listen_pids" ]]; then
-            echo "$listen_pids" | xargs kill -9 2>/dev/null && echo -e "${GREEN}✅ Killed existing process on port $port${NC}" || true
-            sleep 1
-        fi
+        kill_port_listeners "$port" && echo -e "${GREEN}✅ Killed existing process on port $port${NC}" || true
+        sleep 1
     fi
 
     # Launch portal in background
@@ -490,7 +518,7 @@ launch_portal_background() {
     echo -e "${BLUE}⏳ Waiting for portal to start...${NC}"
     local max_wait=15
     local waited=0
-    while ! lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; do
+    while [[ -z "$(port_listen_pids "$port")" ]]; do
         sleep 1
         waited=$((waited + 1))
         if [[ $waited -ge $max_wait ]]; then
@@ -499,7 +527,7 @@ launch_portal_background() {
         fi
     done
     
-    if lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; then
+    if [[ -n "$(port_listen_pids "$port")" ]]; then
         echo -e "${GREEN}✅ Portal running at ${BOLD}$url${NC} (PID: $PORTAL_PID)"
         open_url_in_browser "$url"
     fi
@@ -2661,6 +2689,13 @@ REKT_NEO4J_SERVICE="cobol-rekt-neo4j"
 REKT_SERVICE="cobol-rekt"
 
 # Current Docker ships Compose as a plugin; older installs only have the standalone binary.
+# docker exec with container-side paths (/app, /source, /output). Git Bash rewrites any
+# argument that looks like a POSIX path into a Windows one (/source -> C:/Program Files/Git/source),
+# so path conversion is switched off for these calls only; host paths elsewhere still need it.
+container_exec() {
+    MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' docker exec "$@"
+}
+
 run_compose() {
     if docker compose version >/dev/null 2>&1; then
         docker compose -f "$REPO_ROOT/docker-compose.yml" "$@"
@@ -2716,10 +2751,26 @@ ensure_neo4j_image() {
     echo -e "${GREEN}✅ Neo4j image downloaded: $NEO4J_IMAGE${NC}"
 }
 
+# Interpreter inside the graph populator venv: bin/python on Linux/macOS, Scripts/python.exe on Windows.
+graph_populator_python() {
+    local venv="$REPO_ROOT/tools/graph-populator/.venv"
+    if [[ -x "$venv/Scripts/python.exe" ]]; then
+        echo "$venv/Scripts/python.exe"
+    elif [[ -x "$venv/bin/python" ]]; then
+        echo "$venv/bin/python"
+    else
+        case "$(uname -s)" in
+            MINGW*|MSYS*|CYGWIN*) echo "$venv/Scripts/python.exe" ;;
+            *) echo "$venv/bin/python" ;;
+        esac
+    fi
+}
+
 ensure_graph_populator_environment() {
     local populator_dir="$REPO_ROOT/tools/graph-populator"
     local requirements_file="$populator_dir/requirements.txt"
-    local venv_python="$populator_dir/.venv/bin/python"
+    local venv_python
+    venv_python="$(graph_populator_python)"
 
     if [[ ! -f "$populator_dir/populator.py" || ! -f "$requirements_file" ]]; then
         echo -e "${RED}❌ Graph populator sources are incomplete: $populator_dir${NC}"
@@ -2801,7 +2852,7 @@ ensure_rekt_containers() {
     local max_wait=60
     local waited=0
     echo -ne "  Waiting for $REKT_NEO4J_CONTAINER"
-    while ! docker exec "$REKT_NEO4J_CONTAINER" sh -c \
+    while ! container_exec "$REKT_NEO4J_CONTAINER" sh -c \
         'cypher-shell -u neo4j -p "$HEALTHCHECK_PASSWORD" "RETURN 1"' >/dev/null 2>&1; do
         sleep 2
         waited=$((waited + 2))
@@ -2827,7 +2878,7 @@ ensure_rekt_containers() {
     # The loop above authenticates inside the container, which always agrees with itself.
     # The populator connects from the host, so verify that credential separately: Neo4j keeps
     # the password in its data volume, so a reused volume silently outranks NEO4J_AUTH.
-    if ! docker exec "$REKT_NEO4J_CONTAINER" \
+    if ! container_exec "$REKT_NEO4J_CONTAINER" \
         cypher-shell -u neo4j -p "${REKT_NEO4J_PASSWORD:-$NEO4J_PASSWORD}" "RETURN 1" >/dev/null 2>&1; then
         echo -e "${RED}❌ REKT_NEO4J_PASSWORD does not authenticate against $REKT_NEO4J_CONTAINER${NC}"
         echo ""
@@ -2845,7 +2896,7 @@ ensure_rekt_containers() {
     echo -e "  ${GREEN}✅ REKT graph credentials accepted${NC}"
 
     # Verify rekt CLI is available
-    if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar --version >/dev/null 2>&1; then
+    if container_exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar --version >/dev/null 2>&1; then
         echo -e "  ${GREEN}✅ Cobol-REKT CLI available${NC}"
     else
         echo -e "  ${YELLOW}⚠️  Cobol-REKT CLI not responding (container may still be building)${NC}"
@@ -2853,12 +2904,12 @@ ensure_rekt_containers() {
 
     # Verify /output bind mount is writable — rm -rf on the host changes the inode and breaks it.
     # Restart the container to re-establish the mount if needed.
-    if ! docker exec "$REKT_CONTAINER" bash -c \
+    if ! container_exec "$REKT_CONTAINER" bash -c \
         "touch /output/.write_probe && rm -f /output/.write_probe" >/dev/null 2>&1; then
         echo -e "  ${YELLOW}⚠️  /output bind mount stale — restarting $REKT_CONTAINER...${NC}"
         docker restart "$REKT_CONTAINER" >/dev/null
         sleep 3
-        if ! docker exec "$REKT_CONTAINER" bash -c \
+        if ! container_exec "$REKT_CONTAINER" bash -c \
             "touch /output/.write_probe && rm -f /output/.write_probe" >/dev/null 2>&1; then
             echo -e "  ${RED}❌ /output still not writable after restart. Check Docker volume mount.${NC}"
             return 1
@@ -3136,12 +3187,12 @@ PYEOF
     # Restart stale Docker Desktop bind mounts before they produce empty parser output.
     if [[ "$staged_cbl" -gt 0 ]]; then
         local container_visible
-        container_visible=$(docker exec "$REKT_CONTAINER" sh -c "ls /source/.rekt-staging 2>/dev/null | wc -l" 2>/dev/null | tr -d ' ')
+        container_visible=$(container_exec "$REKT_CONTAINER" sh -c "ls /source/.rekt-staging 2>/dev/null | wc -l" 2>/dev/null | tr -d ' ')
         if [[ -z "$container_visible" || "$container_visible" -eq 0 ]]; then
             echo -e "  ${YELLOW}⚠️  Container can't see /source/.rekt-staging — bind mount is stale. Restarting $REKT_CONTAINER…${NC}"
             run_compose restart "$REKT_SERVICE" >/dev/null 2>&1 || true
             sleep 3
-            container_visible=$(docker exec "$REKT_CONTAINER" sh -c "ls /source/.rekt-staging 2>/dev/null | wc -l" 2>/dev/null | tr -d ' ')
+            container_visible=$(container_exec "$REKT_CONTAINER" sh -c "ls /source/.rekt-staging 2>/dev/null | wc -l" 2>/dev/null | tr -d ' ')
             if [[ -z "$container_visible" || "$container_visible" -eq 0 ]]; then
                 echo -e "  ${RED}❌ Container still can't see staging files after restart.${NC}"
                 echo -e "     Try: ${BLUE}docker compose down && docker compose up -d${NC} from the repo root."
@@ -3527,7 +3578,7 @@ PYEOF
         fi
 
         # Attempt 1: Standard dialect (handles CICS, SQL, standard COBOL)
-        if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
+        if container_exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
             --commands="BUILD_BASE_ANALYSIS WRITE_FLOW_AST WRITE_CFG WRITE_DATA_STRUCTURES" \
             --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
             --dialectJarPath=/app/dialect-idms.jar \
@@ -3539,7 +3590,7 @@ PYEOF
             parse_outcome="Full"
         else
             # Attempt 2: Retry without dialect JAR (for IMS/DL/I and other dialects)
-            if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
+            if container_exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
                 --commands="BUILD_BASE_ANALYSIS WRITE_FLOW_AST WRITE_CFG WRITE_DATA_STRUCTURES" \
                 --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
                 --reportDir=/output \
@@ -3550,7 +3601,7 @@ PYEOF
                 parse_outcome="NoDialect"
             else
                 # Attempt 3: Raw AST only (tolerates more parse errors)
-                if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
+                if container_exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
                     --commands="WRITE_RAW_AST" \
                     --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
                     --reportDir=/output \
@@ -3562,14 +3613,14 @@ PYEOF
                 else
                     # Dependency extraction can remain useful when AST writing fails.
                     local dep_ok=false
-                    if docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar dependency "$fname" \
+                    if container_exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar dependency "$fname" \
                         --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
                         --dialectJarPath=/app/dialect-idms.jar \
                         --export=/output/"${rel_program}"-deps.json >/dev/null 2>>"$err_log"; then
                         dep_ok=true
                     fi
                     # Also try validate (may report warnings but still useful)
-                    docker exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar validate "$fname" \
+                    container_exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar validate "$fname" \
                         --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
                         --dialectJarPath=/app/dialect-idms.jar >/dev/null 2>>"$err_log" || true
 
@@ -3732,7 +3783,7 @@ run_rekt_ingest() {
     # separately running graph-populator container.
     local populator_dir="$REPO_ROOT/tools/graph-populator"
     ensure_graph_populator_environment || return 1
-    if ! (cd "$populator_dir" && .venv/bin/python populator.py ingest \
+    if ! (cd "$populator_dir" && "$(graph_populator_python)" populator.py ingest \
         --source-dir "$REPO_ROOT/source" \
         --rekt-output "$REPO_ROOT/output/rekt" \
         --run-id "$run_id" \
@@ -3744,7 +3795,7 @@ run_rekt_ingest() {
     # A populator that exits clean having written nothing is indistinguishable from success
     # at the console, and the portal then reports an empty estate as a finding.
     local ingested
-    ingested=$(docker exec "$REKT_NEO4J_CONTAINER" cypher-shell -u neo4j \
+    ingested=$(container_exec "$REKT_NEO4J_CONTAINER" cypher-shell -u neo4j \
         -p "${REKT_NEO4J_PASSWORD:-$NEO4J_PASSWORD}" --format plain \
         "MATCH (n) WHERE n.runId = $run_id RETURN count(n)" 2>/dev/null | tail -1 | tr -d '[:space:]')
 
@@ -3760,7 +3811,7 @@ run_rekt_ingest() {
     report_dirs=$(find "$REPO_ROOT/output/rekt" -name '*.report' -type d 2>/dev/null | wc -l | tr -d ' ')
     if [[ "$report_dirs" -gt 0 ]]; then
         local ast_files
-        ast_files=$(docker exec "$REKT_NEO4J_CONTAINER" cypher-shell -u neo4j \
+        ast_files=$(container_exec "$REKT_NEO4J_CONTAINER" cypher-shell -u neo4j \
             -p "${REKT_NEO4J_PASSWORD:-$NEO4J_PASSWORD}" --format plain \
             "MATCH (:CobolFile {runId: $run_id})-[:HAS_AST]->() RETURN count(*)" \
             2>/dev/null | tail -1 | tr -d '[:space:]')
@@ -3817,15 +3868,15 @@ run_rekt_status() {
     echo -e "  ${BLUE}ℹ️  $NEO4J_CONTAINER (existing): $mma_state${NC}"
 
     # Neo4j node count
-    if docker exec "$REKT_NEO4J_CONTAINER" sh -c \
+    if container_exec "$REKT_NEO4J_CONTAINER" sh -c \
         'cypher-shell -u neo4j -p "$HEALTHCHECK_PASSWORD" "MATCH (n) RETURN count(n) AS nodes"' \
         2>/dev/null | grep -q "[0-9]"; then
         local node_count
-        node_count=$(docker exec "$REKT_NEO4J_CONTAINER" sh -c \
+        node_count=$(container_exec "$REKT_NEO4J_CONTAINER" sh -c \
             'cypher-shell -u neo4j -p "$HEALTHCHECK_PASSWORD" "MATCH (n) RETURN count(n) AS nodes"' \
             2>/dev/null | tail -1 | tr -d ' "')
         local rel_count
-        rel_count=$(docker exec "$REKT_NEO4J_CONTAINER" sh -c \
+        rel_count=$(container_exec "$REKT_NEO4J_CONTAINER" sh -c \
             'cypher-shell -u neo4j -p "$HEALTHCHECK_PASSWORD" "MATCH ()-[r]->() RETURN count(r) AS rels"' \
             2>/dev/null | tail -1 | tr -d ' "')
         echo -e "\n  ${BLUE}Graph: ${node_count} nodes, ${rel_count} relationships${NC}"
@@ -4039,7 +4090,11 @@ run_estate_graph() {
     }
     echo "$slice"
     local selectors
-    selectors="$(printf '%s' "$slice" | python3 -c 'import json,sys; s=json.load(sys.stdin); print(",".join(s["programSelectors"]+s["needSelectors"]))')"
+    if [[ -z "$PYTHON_CMD" ]]; then
+        echo -e "${YELLOW}⚠️  Python is required to list the slice selectors.${NC}"
+        return 0
+    fi
+    selectors="$(printf '%s' "$slice" | "$PYTHON_CMD" -c 'import json,sys; s=json.load(sys.stdin); print(",".join(s["programSelectors"]+s["needSelectors"]))')"
     echo ""
     echo -e "  Convert this slice:  ${CYAN}./doctor.sh convert-only --program ${selectors}${NC}"
 }
