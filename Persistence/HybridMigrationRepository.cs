@@ -109,8 +109,8 @@ public class HybridMigrationRepository : IMigrationRepository
     public Task<IReadOnlyList<BusinessLogic>> GetBusinessLogicAsync(int runId, CancellationToken cancellationToken = default)
         => _sqliteRepo.GetBusinessLogicAsync(runId, cancellationToken);
 
-    public Task<int?> GetLatestRunIdWithBusinessLogicAsync(CancellationToken cancellationToken = default)
-        => _sqliteRepo.GetLatestRunIdWithBusinessLogicAsync(cancellationToken);
+    public Task<int?> GetLatestRunIdWithBusinessLogicAsync(string? cobolSourcePath = null, CancellationToken cancellationToken = default)
+        => _sqliteRepo.GetLatestRunIdWithBusinessLogicAsync(cobolSourcePath, cancellationToken);
 
     public Task DeleteBusinessLogicAsync(int runId, CancellationToken cancellationToken = default)
         => _sqliteRepo.DeleteBusinessLogicAsync(runId, cancellationToken);

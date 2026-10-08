@@ -2,6 +2,7 @@ using System.IO;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
+using CobolToQuarkusMigration.Helpers;
 using CobolToQuarkusMigration.Models;
 
 namespace CobolToQuarkusMigration.Persistence;
@@ -833,15 +834,34 @@ VALUES ($runId, $fileName, $filePath, $isCopybook, $businessPurpose, $userStorie
         _logger.LogInformation("Persisted business logic for {Count} files in run {RunId}", list.Count, runId);
     }
 
-    public async Task<int?> GetLatestRunIdWithBusinessLogicAsync(CancellationToken cancellationToken = default)
+    public async Task<int?> GetLatestRunIdWithBusinessLogicAsync(string? cobolSourcePath = null, CancellationToken cancellationToken = default)
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync(cancellationToken);
         await using var cmd = connection.CreateCommand();
-        cmd.CommandText = "SELECT MAX(run_id) FROM business_logic";
+        cmd.CommandText = @"
+SELECT DISTINCT bl.run_id, r.cobol_source
+FROM business_logic bl
+LEFT JOIN runs r ON r.id = bl.run_id
+ORDER BY bl.run_id DESC";
 
-        var value = await cmd.ExecuteScalarAsync(cancellationToken);
-        return value is null or DBNull ? null : Convert.ToInt32(value);
+        await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var runId = reader.GetInt32(0);
+            if (cobolSourcePath is null)
+            {
+                return runId;
+            }
+
+            var storedSource = reader.IsDBNull(1) ? null : reader.GetString(1);
+            if (BusinessLogicReuse.SamePath(storedSource, cobolSourcePath))
+            {
+                return runId;
+            }
+        }
+
+        return null;
     }
 
     public async Task<IReadOnlyList<BusinessLogic>> GetBusinessLogicAsync(int runId, CancellationToken cancellationToken = default)

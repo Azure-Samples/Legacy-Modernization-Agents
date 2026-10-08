@@ -865,28 +865,42 @@ internal static class Program
                     // output: a run terminated before its business logic was persisted leaves a
                     // newer id with nothing behind it, and selecting that silently converted the
                     // whole estate without any business-logic context.
-                    var sourceRunId = await migrationRepository.GetLatestRunIdWithBusinessLogicAsync();
+                    var sourceRunId = await migrationRepository.GetLatestRunIdWithBusinessLogicAsync(cobolSource);
                     if (sourceRunId is int reuseRunId)
                     {
                         var savedLogic = await migrationRepository.GetBusinessLogicAsync(reuseRunId);
-                        if (savedLogic.Count > 0)
+                        var snapshot = await migrationRepository.SearchCobolFilesAsync(reuseRunId, null);
+                        var freshness = BusinessLogicReuse.FilterStale(savedLogic, snapshot, BusinessLogicReuse.ReadFileOrNull);
+                        var reuseRun = await migrationRepository.GetRunAsync(reuseRunId);
+                        var reuseDate = reuseRun?.StartedAt.ToString("yyyy-MM-dd HH:mm") ?? "unknown date";
+
+                        if (freshness.Changed.Count > 0)
                         {
-                            Console.WriteLine($"♻️  Loaded {savedLogic.Count} business logic entries from Run #{reuseRunId}.");
+                            Console.WriteLine($"⚠️  --reuse-re: {freshness.Changed.Count} file(s) changed since Run #{reuseRunId}; their business logic is ignored: {string.Join(", ", freshness.Changed.Take(10))}{(freshness.Changed.Count > 10 ? ", ..." : "")}");
+                        }
+                        if (freshness.Missing.Count > 0)
+                        {
+                            logger.LogInformation("--reuse-re: {Count} file(s) from Run #{RunId} are no longer present: {Files}", freshness.Missing.Count, reuseRunId, string.Join(", ", freshness.Missing));
+                        }
+
+                        if (freshness.Fresh.Count > 0)
+                        {
+                            Console.WriteLine($"♻️  Loaded {freshness.Fresh.Count} business logic entries from Run #{reuseRunId} ({reuseDate}).");
                             reverseEngResultForMigration = new ReverseEngineeringResult
                             {
                                 Success = true,
                                 RunId = reuseRunId,
-                                BusinessLogicExtracts = savedLogic.ToList()
+                                BusinessLogicExtracts = freshness.Fresh
                             };
                         }
                         else
                         {
-                            Console.WriteLine($"⚠️  --reuse-re: Run #{reuseRunId} holds no business logic. Migration will proceed without business logic context.");
+                            Console.WriteLine($"⚠️  --reuse-re: Run #{reuseRunId} holds no business logic that still matches the source. Migration will proceed without business logic context.");
                         }
                     }
                     else
                     {
-                        Console.WriteLine("⚠️  --reuse-re: no previous run has persisted business logic. Run a reverse-engineering pass first, or drop --skip-reverse-engineering. Migration will proceed without business logic context.");
+                        Console.WriteLine($"⚠️  --reuse-re: no previous run over {cobolSource} has persisted business logic. Run a reverse-engineering pass on this source first, or drop --skip-reverse-engineering. Migration will proceed without business logic context.");
                     }
                 }
                 else

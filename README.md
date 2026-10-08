@@ -404,9 +404,11 @@ After every `reverse-eng` or full `run`, extracted business logic is persisted t
 |------|---------|------------------------|
 | Full migration | `./doctor.sh run` | ✅ Yes — RE runs first, results injected automatically |
 | Pure conversion | `./doctor.sh convert-only` → answer **N** | ❌ No context |
-| Conversion + cached RE | `./doctor.sh convert-only` → answer **Y** | ✅ Yes — loads persisted results from last RE run |
+| Conversion + cached RE | `./doctor.sh convert-only` → answer **Y** | ✅ Yes — loads persisted results from the last RE run over the same source folder |
 
 The `--reuse-re` flag can also be passed directly: `dotnet run -- --source ./source --skip-reverse-engineering --reuse-re`.
+
+Only a run over the same source folder is reused, so one estate's report never reaches another. A file whose content changed since that run gets no business logic, and the run lists it. The converters treat the report as context: when it disagrees with the COBOL source or the REKT facts, the source wins first and the facts second.
 
 Persisted RE results are visible in the portal — each run card has a **🔬 RE Results** button that shows per-file story/feature/rule counts and lets you delete results you are unsatisfied with.
 

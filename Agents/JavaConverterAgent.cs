@@ -123,8 +123,7 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
             string sanitizedContent = SanitizeCobolContent(contentToConvert);
 
             // Inject business logic context from reverse engineering when available
-            var businessLogic = _businessLogicExtracts
-                .FirstOrDefault(bl => string.Equals(bl.FileName, cobolFile.FileName, StringComparison.OrdinalIgnoreCase));
+            var businessLogic = BusinessLogicReuse.Find(_businessLogicExtracts, cobolFile.FileName, cobolFile.FilePath);
             var businessLogicContext = businessLogic is null
                 ? string.Empty
                 : PromptLoader.LoadSectionValidated("JavaConverter", "BusinessLogic", new Dictionary<string, string>
