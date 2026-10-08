@@ -1280,20 +1280,20 @@ curl http://localhost:5028/api/data-retrieval-guide</code></pre>
             <div class="setup-auth-options">
               <label class="setup-auth-option">
                 <input type="radio" name="copilot-auth" value="cli" checked>
-                💻 GitHub CLI (gh auth login)
+                💻 Copilot CLI (copilot login)
               </label>
               <label class="setup-auth-option">
                 <input type="radio" name="copilot-auth" value="pat">
-                🔑 Personal Access Token
+                🔑 Fine-grained personal access token
               </label>
             </div>
-            <div class="setup-help">CLI auth uses your existing <code>gh auth login</code> session on the server.</div>
+            <div class="setup-help">Uses the account you signed in with <code>copilot login</code> on the server. <code>GH_TOKEN</code> and <code>GITHUB_TOKEN</code> are ignored in this mode.</div>
           </div>
 
           <div class="setup-field" id="copilot-pat-group" style="display: none;">
             <label>Personal Access Token</label>
-            <input type="password" id="copilot-pat" placeholder="ghp_...">
-            <div class="setup-help">Classic PAT with <code>copilot</code> scope. Create at github.com/settings/tokens</div>
+            <input type="password" id="copilot-pat" placeholder="github_pat_...">
+            <div class="setup-help">Fine-grained token with the <b>Copilot Requests</b> account permission (classic <code>ghp_</code> tokens do not work). Create at github.com/settings/personal-access-tokens/new. Saved as <code>COPILOT_GITHUB_TOKEN</code>.</div>
           </div>
 
           <button class="setup-connect-btn" id="copilot-connect-btn">🔌 Connect</button>

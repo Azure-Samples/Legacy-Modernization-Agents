@@ -1020,7 +1020,7 @@ You can still access the data directly:
 			             $"Error: {innerEx.Message}\n\n" +
 			             (innerEx.InnerException != null ? $"Inner: {innerEx.InnerException.Message}\n\n" : "") +
 			             "Possible causes:\n" +
-			             "• If using GitHubCopilot: ensure 'gh auth login' has been run and GITHUB_TOKEN is set\n" +
+			             "• If using GitHubCopilot: run 'copilot login', or set COPILOT_GITHUB_TOKEN to a fine-grained token with the 'Copilot Requests' permission\n" +
 			             "• If using AzureOpenAI: check endpoint URL and API key in Config/ai-config.local.env\n" +
 			             "• The model selected in the portal may not match the configured AI backend\n" +
 			             "• Try restarting the portal after changing models";
@@ -4005,13 +4005,21 @@ app.MapGet("/api/models/available", () =>
 	var hasModelId = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL_ID"));
 	var needsSetup = !hasEndpoint && !isCopilotSdk && !hasModelId && portalState.DiscoveredModels.Count == 0;
 
+	string? copilotAuthDescription = null, copilotAuthError = null;
+	if (isCopilotSdk)
+	{
+		try { copilotAuthDescription = CobolToQuarkusMigration.Agents.Infrastructure.CopilotAuth.Resolve().Description; }
+		catch (InvalidOperationException ex) { copilotAuthError = ex.Message; }
+	}
+
 	return Results.Ok(new
 	{
 		serviceType,
 		activeModelId = currentModelId,
 		models = models.OrderBy(m => m.Name).ToList(),
-		copilotConnected = isCopilotSdk,
-		hasGitHubAuth = isCopilotSdk,
+		copilotConnected = isCopilotSdk && copilotAuthError is null,
+		hasGitHubAuth = isCopilotSdk && copilotAuthError is null,
+		copilotAuth = isCopilotSdk ? (copilotAuthError ?? copilotAuthDescription) : null,
 		needsSetup,
 		isConnected = portalState.DiscoveredModels.Count > 0,
 		connectedEndpoint = portalState.ConnectedEndpoint
@@ -4432,10 +4440,24 @@ app.MapPost("/api/models/connect", async (McpChatWeb.Models.ConnectProviderReque
 			// ── GitHub Copilot SDK: list models via CopilotClient ──
 			try
 			{
-				var options = new GitHub.Copilot.CopilotClientOptions { Mode = GitHub.Copilot.CopilotClientMode.CopilotCli };
+				GitHub.Copilot.CopilotClientOptions options;
 				if (!string.IsNullOrWhiteSpace(request.ApiKey))
 				{
-					options.GitHubToken = request.ApiKey;
+					if (CobolToQuarkusMigration.Agents.Infrastructure.CopilotAuth.ValidateToken(request.ApiKey.Trim()) is { } tokenProblem)
+						return Results.Ok(new { error = tokenProblem, authenticated = false });
+					options = new GitHub.Copilot.CopilotClientOptions
+					{
+						Mode = GitHub.Copilot.CopilotClientMode.CopilotCli,
+						GitHubToken = request.ApiKey.Trim()
+					};
+				}
+				else
+				{
+					// "copilot login" was chosen: hide GH_TOKEN/GITHUB_TOKEN so they cannot override it.
+					options = CobolToQuarkusMigration.Agents.Infrastructure.CopilotAuth.CreateClientOptions(name =>
+						name == CobolToQuarkusMigration.Agents.Infrastructure.CopilotAuth.ModeVariable
+							? "login"
+							: Environment.GetEnvironmentVariable(name));
 				}
 
 				using var client = new GitHub.Copilot.CopilotClient(options);
@@ -4484,7 +4506,7 @@ app.MapPost("/api/models/connect", async (McpChatWeb.Models.ConnectProviderReque
 			catch (Exception ex)
 			{
 				var hint = ex.Message.Contains("copilot") || ex.Message.Contains("not found")
-					? " Ensure the Copilot CLI is installed and you are logged in (gh auth login)."
+					? " Sign in with 'copilot login', or use a fine-grained token with the 'Copilot Requests' permission."
 					: "";
 				return Results.Ok(new { 
 					error = $"GitHub Copilot SDK error: {ex.Message}.{hint}",
@@ -4533,7 +4555,22 @@ app.MapPost("/api/models/save-config", async (McpChatWeb.Models.SaveModelConfigR
 			Environment.SetEnvironmentVariable("AISETTINGS__CHATENDPOINT", request.Endpoint);
 		}
 
-		if (!string.IsNullOrWhiteSpace(request.ApiKey))
+		var savingCopilot = request.ServiceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase) ||
+		                    request.ServiceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase);
+		if (savingCopilot)
+		{
+			var copilotToken = request.ApiKey?.Trim();
+			if (!string.IsNullOrEmpty(copilotToken) &&
+			    CobolToQuarkusMigration.Agents.Infrastructure.CopilotAuth.ValidateToken(copilotToken) is { } tokenProblem)
+			{
+				return Results.BadRequest(new { error = tokenProblem });
+			}
+			var hasToken = !string.IsNullOrEmpty(copilotToken);
+			Environment.SetEnvironmentVariable(CobolToQuarkusMigration.Agents.Infrastructure.CopilotAuth.ModeVariable, hasToken ? "token" : "login");
+			Environment.SetEnvironmentVariable(CobolToQuarkusMigration.Agents.Infrastructure.CopilotAuth.TokenVariable, hasToken ? copilotToken : null);
+			Environment.SetEnvironmentVariable(CobolToQuarkusMigration.Agents.Infrastructure.CopilotAuth.LegacyTokenVariable, null);
+		}
+		else if (!string.IsNullOrWhiteSpace(request.ApiKey))
 		{
 			Environment.SetEnvironmentVariable("AZURE_OPENAI_API_KEY", request.ApiKey);
 			Environment.SetEnvironmentVariable("AISETTINGS__APIKEY", request.ApiKey);
@@ -4616,11 +4653,16 @@ app.MapPost("/api/models/save-config", async (McpChatWeb.Models.SaveModelConfigR
 				sb.AppendLine("JAVA_OUTPUT_FOLDER=\"output/java\"");
 				sb.AppendLine("CSHARP_OUTPUT_FOLDER=\"output/csharp\"");
 
+				sb.AppendLine();
+				sb.AppendLine("# GitHub Copilot authentication: login = 'copilot login', token = COPILOT_GITHUB_TOKEN");
 				if (!string.IsNullOrWhiteSpace(request.ApiKey))
 				{
-					sb.AppendLine();
-					sb.AppendLine("# GitHub Copilot PAT Authentication");
-					sb.AppendLine($"GITHUB_COPILOT_TOKEN=\"{request.ApiKey}\"");
+					sb.AppendLine("COPILOT_AUTH=\"token\"");
+					sb.AppendLine($"COPILOT_GITHUB_TOKEN=\"{request.ApiKey.Trim()}\"");
+				}
+				else
+				{
+					sb.AppendLine("COPILOT_AUTH=\"login\"");
 				}
 			}
 			else

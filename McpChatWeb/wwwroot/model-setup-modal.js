@@ -181,7 +181,11 @@ async function connectCopilot() {
   const pat = document.getElementById('copilot-pat').value.trim();
 
   if (authMethod === 'pat' && !pat) {
-    setSetupStatus('Please enter your GitHub Personal Access Token.', true);
+    setSetupStatus('Please enter your GitHub personal access token.', true);
+    return;
+  }
+  if (authMethod === 'pat' && pat.startsWith('ghp_')) {
+    setSetupStatus('Classic tokens (ghp_) do not work with Copilot. Use a fine-grained token (github_pat_) with the "Copilot Requests" permission.', true);
     return;
   }
 
@@ -355,7 +359,7 @@ async function saveSetupConfig() {
         if (typeof updateActiveModelBadge === 'function') updateActiveModelBadge(data.activeModelId);
       }, 1000);
     } else {
-      setSetupStatus('Failed to save configuration.', true);
+      setSetupStatus(data.error || 'Failed to save configuration.', true);
     }
   } catch (err) {
     setSetupStatus(`Save failed: ${err.message}`, true);

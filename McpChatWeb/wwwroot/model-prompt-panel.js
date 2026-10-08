@@ -125,7 +125,7 @@ function renderModelDropdown(data) {
     opt.value = '';
     opt.textContent = data.hasGitHubAuth
       ? 'No models returned from Copilot API'
-      : '⚠️ No GitHub auth — run: gh auth login';
+      : `⚠️ No GitHub auth — ${data.copilotAuth || 'run: copilot login'}`;
     select.appendChild(opt);
     return;
   }
@@ -166,7 +166,7 @@ function renderModelDropdown(data) {
         ? `🟢 Copilot API · ${data.models.length} models`
         : data.hasGitHubAuth
           ? '🟡 GitHub auth OK · using fallback catalog'
-          : '🔴 No GitHub auth · run: gh auth login';
+          : `🔴 No GitHub auth · ${data.copilotAuth || 'run: copilot login'}`;
       publisherEl.textContent = status;
     }
   }

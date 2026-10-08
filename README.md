@@ -17,7 +17,7 @@ The migration uses Microsoft Agent Framework with a multi-provider architecture 
 > | Provider | Sign in with | Then |
 > |---|---|---|
 > | Azure OpenAI / Azure AI Foundry (Entra ID) | `az login` (add `--tenant <id>` if the resource is in another tenant) | Your account needs the **Cognitive Services OpenAI User** role on the resource. See [az login authentication](docs/az-login-auth-guide.md) |
-> | GitHub Copilot SDK | `gh auth login` | Check with `gh auth status`. The account needs a Copilot licence |
+> | GitHub Copilot SDK | `copilot login` (the Copilot CLI, not `gh`), or a fine-grained token with the **Copilot Requests** permission in `COPILOT_GITHUB_TOKEN` | `./doctor.sh setup` asks which and records it as `COPILOT_AUTH`. Classic `ghp_` tokens do not work. The account needs a Copilot licence. See [Copilot sign-in](#copilot-sign-in) |
 >
 > Without a valid sign-in (or an API key in `Config/ai-config.local.env`), conversion and reverse engineering fail on the first model call. `./doctor.sh rekt-full`, `./doctor.sh estate` and `./doctor.sh jcl` call no model and need no sign-in.
 
@@ -199,18 +199,29 @@ Shown here with the public IBM Bank-of-Z sample in `source/`.
 |-------------|---------|-------|
 | **.NET SDK** | 10.0+ | [Download](https://dotnet.microsoft.com/download) |
 | **Docker Desktop** | Latest | Must be running for Neo4j |
-| **AI Endpoint** | — | Azure endpoint + `az login`, or GitHub `gh auth login`, or API Key |
+| **AI Endpoint** | — | Azure endpoint + `az login`, or GitHub Copilot `copilot login`, or API Key |
 
 ### Supported AI Providers
 
-This project supports **four AI providers** with automatic model capability detection:
+This project supports **three AI providers** with automatic model capability detection:
 
 | Provider | ServiceType | Models | Auth | Interface |
 |----------|------------|--------|------|-----------|
 | **Azure OpenAI** | `AzureOpenAI` | `gpt-5.1-codex-mini`, `gpt-5.2-chat` | API Key or `az login` (Entra ID) | `ResponsesApiClient` (Codex) + `IChatClient` |
-| **GitHub Copilot** | `GitHubCopilot` | Claude Opus/Sonnet, Codex, GPT, Grok | GitHub PAT (`GITHUB_TOKEN`) | `IChatClient` via `models.github.ai` |
-| **GitHub Copilot SDK** | `GitHubCopilotSDK` | All Copilot models | `gh auth login` (CLI) | `CopilotChatClient` via stdio |
+| **GitHub Copilot SDK** | `GitHubCopilot` or `GitHubCopilotSDK` | All Copilot models (Claude, GPT, Codex, Grok, ...) | `copilot login` or fine-grained token (`COPILOT_GITHUB_TOKEN`) | `CopilotChatClient` via stdio |
 | **OpenAI** | `OpenAI` | GPT-4o, o3, etc. | OpenAI API key | `IChatClient` |
+
+#### Copilot sign-in
+
+The Copilot SDK runs its own bundled Copilot runtime, which signs in one of two ways. `./doctor.sh setup` (or the portal's setup dialog) asks which and writes it to `Config/ai-config.local.env`:
+
+| `COPILOT_AUTH` | Uses | Notes |
+|---|---|---|
+| `login` | The account from `copilot login` | `GH_TOKEN` and `GITHUB_TOKEN` in your shell are ignored, so an unrelated token cannot take over. |
+| `token` | `COPILOT_GITHUB_TOKEN` | A fine-grained token (`github_pat_`) on your personal account with the **Copilot Requests** account permission. Classic `ghp_` tokens are rejected. Create one at github.com/settings/personal-access-tokens/new. |
+| unset | `COPILOT_GITHUB_TOKEN` if set, otherwise the Copilot CLI's own order (`GH_TOKEN`, `GITHUB_TOKEN`, `copilot login`) | Classic `ghp_` tokens in `GH_TOKEN`/`GITHUB_TOKEN` are skipped. |
+
+Runs print the credential they use (`🔐 GitHub Copilot auth: ...`), and `dotnet run -- list-models` shows it before listing the models your account can use. `GITHUB_COPILOT_TOKEN`, written by older versions of setup, is still read.
 
 **Model-Aware Reasoning** — The framework auto-detects model capabilities from the model ID and adapts its reasoning strategy:
 
@@ -320,7 +331,7 @@ cd Legacy-Modernization-Agents
 
 ./doctor.sh setup        # 1. configure the AI provider and credentials
 cp -r /path/to/your/cobol/* source/   # 2. COBOL, copybooks and JCL
-az login                 #    or: gh auth login (GitHub Copilot SDK)
+az login                 #    or: copilot login (GitHub Copilot SDK)
 ./doctor.sh rekt-full    # 3. parse COBOL + JCL (no model) - run before converting
 ./doctor.sh run          # 4. migrate, then open the portal
 ```

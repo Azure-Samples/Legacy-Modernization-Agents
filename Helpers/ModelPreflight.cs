@@ -39,7 +39,7 @@ public static class ModelPreflight
         IReadOnlyList<string> available;
         try
         {
-            using var client = new CopilotClient(new CopilotClientOptions { Mode = CopilotClientMode.CopilotCli });
+            using var client = new CopilotClient(CobolToQuarkusMigration.Agents.Infrastructure.CopilotAuth.CreateClientOptions());
             var models = await client.ListModelsAsync(cancellationToken);
             available = models
                 .Select(m => m.Id ?? m.Name)
