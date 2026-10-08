@@ -100,6 +100,12 @@ detect_python() {
 
 PYTHON_CMD="$(detect_python)"
 
+# Windows Python defaults to the ANSI code page for files and pipes, which fails on the
+# non-ASCII text in COBOL comments and in our own output.
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) export PYTHONUTF8=1 ;;
+esac
+
 # The Copilot SDK package downloads its own Copilot CLI from the npm registry on the first
 # build. Where a proxy, firewall or VPN blocks the registry, every build fails with MSB3923
 # before any command runs. An installed Copilot CLI ships the same native binary, and the SDK

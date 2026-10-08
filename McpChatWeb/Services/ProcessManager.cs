@@ -135,6 +135,17 @@ public class ProcessManager : IDisposable
             CreateNoWindow = true
         };
 
+        if (!OperatingSystem.IsWindows())
+        {
+            // A sh parent lets pause stop every .NET process in the run without stopping the
+            // portal's own child (see ProcessTreeSuspender). Arguments pass through "$@" untouched.
+            psi.FileName = "/bin/sh";
+            psi.ArgumentList.Add("-c");
+            psi.ArgumentList.Add("\"$@\"; exit $?");
+            psi.ArgumentList.Add("migration-run");
+            psi.ArgumentList.Add(executable);
+        }
+
         foreach (var argument in arguments)
         {
             psi.ArgumentList.Add(argument);
@@ -301,7 +312,7 @@ public class ProcessManager : IDisposable
     }
 
     /// <summary>
-    /// Pause a running process (SIGSTOP on Unix).
+    /// Pause a running process and the processes it started.
     /// </summary>
     public bool PauseRun(string runId)
     {
@@ -311,18 +322,7 @@ public class ProcessManager : IDisposable
 
         try
         {
-            // Send SIGSTOP on Unix via ArgumentList to avoid shell injection
-            var killPsi = new ProcessStartInfo
-            {
-                FileName = "kill",
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-            killPsi.ArgumentList.Add("-STOP");
-            killPsi.ArgumentList.Add(run.Process.Id.ToString());
-
-            var killProc = Process.Start(killPsi);
-            killProc?.WaitForExit(3000);
+            ProcessTreeSuspender.Suspend(run.Process.Id, includeRoot: OperatingSystem.IsWindows());
             run.Status = "paused";
             run.AppendLog("[PORTAL] Process paused by user");
             Console.WriteLine($"⏸️ Run '{run.Name}' paused");
@@ -336,7 +336,7 @@ public class ProcessManager : IDisposable
     }
 
     /// <summary>
-    /// Resume a paused process (SIGCONT on Unix).
+    /// Resume a paused process and the processes it started.
     /// </summary>
     public bool ResumeRun(string runId)
     {
@@ -346,18 +346,7 @@ public class ProcessManager : IDisposable
 
         try
         {
-            // Send SIGCONT on Unix via ArgumentList to avoid shell injection
-            var killPsi = new ProcessStartInfo
-            {
-                FileName = "kill",
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-            killPsi.ArgumentList.Add("-CONT");
-            killPsi.ArgumentList.Add(run.Process.Id.ToString());
-
-            var killProc = Process.Start(killPsi);
-            killProc?.WaitForExit(3000);
+            ProcessTreeSuspender.Resume(run.Process.Id, includeRoot: OperatingSystem.IsWindows());
             run.Status = "running";
             run.AppendLog("[PORTAL] Process resumed by user");
             Console.WriteLine($"▶️ Run '{run.Name}' resumed");
