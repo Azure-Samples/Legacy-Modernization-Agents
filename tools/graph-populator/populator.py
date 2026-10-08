@@ -59,7 +59,7 @@ def apply_schema(driver) -> None:
     """Apply constraints and indexes from schema.cypher."""
     schema_path = Path(__file__).parent / "schema.cypher"
     schema_text = "\n".join(
-        line for line in schema_path.read_text().splitlines()
+        line for line in schema_path.read_text(encoding="utf-8").splitlines()
         if not line.strip().startswith("//")
     )
     statements = [
@@ -571,7 +571,7 @@ def ingest_rekt_outputs(driver, rekt_output_dir: str, source_dir: str, run_id: i
 
     file_nodes = []
     for f in cobol_files + copybooks:
-        content = f.read_text(errors="replace")
+        content = f.read_text(encoding="utf-8", errors="replace")
         source_identity = source_relative_path(str(f), str(source_path))
         file_nodes.append(
             {
@@ -611,7 +611,7 @@ def ingest_rekt_outputs(driver, rekt_output_dir: str, source_dir: str, run_id: i
             continue
 
         try:
-            data = json.loads(json_file.read_text())
+            data = json.loads(json_file.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             console.print(f"[yellow]Skipping invalid JSON: {rel_path}[/yellow]")
             continue
@@ -646,7 +646,7 @@ def ingest_jcl_outputs(driver, output_path: Path, source_path: Path, run_id: int
     lineage = None
     if lineage_file.exists():
         try:
-            lineage = json.loads(lineage_file.read_text())
+            lineage = json.loads(lineage_file.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             console.print(f"[yellow]Skipping invalid JSON: {LINEAGE_FILE}[/yellow]")
 
@@ -654,7 +654,7 @@ def ingest_jcl_outputs(driver, output_path: Path, source_path: Path, run_id: int
     for facts_file in sorted(output_path.rglob(f"*{FACTS_SUFFIX}")):
         rel_path = facts_file.relative_to(output_path)
         try:
-            facts = json.loads(facts_file.read_text())
+            facts = json.loads(facts_file.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             console.print(f"[yellow]Skipping invalid JSON: {rel_path}[/yellow]")
             continue
@@ -679,7 +679,7 @@ def ingest_jcl_outputs(driver, output_path: Path, source_path: Path, run_id: int
         source_file = source_path / program if program else None
         if source_file is None or not source_file.is_file():
             continue
-        create_source_blocks(driver, program, source_file.read_text(errors="replace"), run_id)
+        create_source_blocks(driver, program, source_file.read_text(encoding="utf-8", errors="replace"), run_id)
     return total
 
 

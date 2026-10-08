@@ -604,114 +604,114 @@ app.MapPost("/api/chat", async (ChatRequest request, IMcpClient client, Cancella
 		{
 			try
 			{
-				// Use subprocess to query SQLite since we don't have Microsoft.Data.Sqlite package
-				var queryCmd = $"sqlite3 \"{dbPath}\" \"SELECT cf.file_name, cf.is_copybook, a.program_description, a.paragraphs_json, a.variables_json, a.copybooks_json FROM cobol_files cf LEFT JOIN analyses a ON a.cobol_file_id = cf.id WHERE cf.file_name = '{fileName}' AND cf.run_id = {targetRunId};\"";
-
-				var psi = new System.Diagnostics.ProcessStartInfo
+				string? row = null;
+				bool isCopybook = false;
+				string? programDesc = null, paragraphsJson = null, variablesJson = null, copybooksJson = null;
+				await using (var connection = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly"))
 				{
-					FileName = "/bin/bash",
-					Arguments = $"-c \"{queryCmd}\"",
-					RedirectStandardOutput = true,
-					RedirectStandardError = true,
-					UseShellExecute = false,
-					CreateNoWindow = true
-				};
-
-				using var process = System.Diagnostics.Process.Start(psi);
-				if (process == null) throw new Exception("Failed to start sqlite3 process");
-
-				var output = await process.StandardOutput.ReadToEndAsync(cancellationToken);
-				await process.WaitForExitAsync(cancellationToken);
-
-				if (!string.IsNullOrWhiteSpace(output))
-				{
-					// Parse the SQLite output (pipe-separated values)
-					var parts = output.Split('|');
-					if (parts.Length >= 6)
+					await connection.OpenAsync(cancellationToken);
+					await using var command = connection.CreateCommand();
+					command.CommandText = """
+						SELECT cf.file_name, cf.is_copybook, a.program_description, a.paragraphs_json, a.variables_json, a.copybooks_json
+						FROM cobol_files cf LEFT JOIN analyses a ON a.cobol_file_id = cf.id
+						WHERE cf.file_name = $fileName AND cf.run_id = $runId
+						LIMIT 1
+						""";
+					command.Parameters.AddWithValue("$fileName", fileName);
+					command.Parameters.AddWithValue("$runId", targetRunId);
+					await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+					if (await reader.ReadAsync(cancellationToken))
 					{
-						var isCopybook = parts[1].Trim() == "1";
-						var programDesc = parts.Length > 2 && !string.IsNullOrWhiteSpace(parts[2]) ? parts[2].Trim() : null;
-						var paragraphsJson = parts.Length > 3 && !string.IsNullOrWhiteSpace(parts[3]) ? parts[3].Trim() : null;
-						var variablesJson = parts.Length > 4 && !string.IsNullOrWhiteSpace(parts[4]) ? parts[4].Trim() : null;
-						var copybooksJson = parts.Length > 5 && !string.IsNullOrWhiteSpace(parts[5]) ? parts[5].Trim() : null; var responseText = $"**Analysis of {fileName} (Run {targetRunId})**\n\n";
-						responseText += $"**Type:** {(isCopybook ? "Copybook" : "Program")}\n\n";
-
-						if (!string.IsNullOrEmpty(programDesc))
-						{
-							responseText += $"**Description:**\n{programDesc}\n\n";
-						}
-
-						if (!string.IsNullOrEmpty(paragraphsJson) && paragraphsJson != "[]")
-						{
-							try
-							{
-								var paras = JsonSerializer.Deserialize<JsonArray>(paragraphsJson);
-								if (paras != null && paras.Count > 0)
-								{
-									responseText += $"**Functions/Paragraphs ({paras.Count}):**\n";
-									foreach (var para in paras)
-									{
-										if (para is JsonObject p)
-										{
-											var name = p.TryGetPropertyValue("name", out var n) ? n?.ToString() : "Unknown";
-											var desc = p.TryGetPropertyValue("description", out var d) ? d?.ToString() : "";
-											responseText += $"- `{name}`";
-											if (!string.IsNullOrEmpty(desc)) responseText += $": {desc}";
-											responseText += "\n";
-										}
-									}
-									responseText += "\n";
-								}
-							}
-							catch { }
-						}
-
-						if (!string.IsNullOrEmpty(variablesJson) && variablesJson != "[]")
-						{
-							try
-							{
-								var vars = JsonSerializer.Deserialize<JsonArray>(variablesJson);
-								if (vars != null && vars.Count > 0)
-								{
-									responseText += $"**Variables ({vars.Count}):**\n";
-									var topVars = vars.Take(10);
-									foreach (var v in topVars)
-									{
-										if (v is JsonObject varObj)
-										{
-											var varName = varObj.TryGetPropertyValue("name", out var vn) ? vn?.ToString() : "Unknown";
-											responseText += $"- `{varName}`\n";
-										}
-									}
-									if (vars.Count > 10) responseText += $"... and {vars.Count - 10} more\n";
-									responseText += "\n";
-								}
-							}
-							catch { }
-						}
-
-						if (!string.IsNullOrEmpty(copybooksJson) && copybooksJson != "[]")
-						{
-							try
-							{
-								var cbs = JsonSerializer.Deserialize<JsonArray>(copybooksJson);
-								if (cbs != null && cbs.Count > 0)
-								{
-									responseText += $"**Copybooks Used ({cbs.Count}):**\n";
-									foreach (var cb in cbs)
-									{
-										responseText += $"- {cb?.ToString()}\n";
-									}
-									responseText += "\n";
-								}
-							}
-							catch { }
-						}
-
-						responseText += $"\n**Data Source:** SQLite Database at `{dbPath}`";
-
-						return Results.Ok(new ChatResponse(responseText, targetRunId));
+						string? Text(int i) => reader.IsDBNull(i) || string.IsNullOrWhiteSpace(reader.GetValue(i)?.ToString()) ? null : reader.GetValue(i)!.ToString()!.Trim();
+						row = reader.GetString(0);
+						isCopybook = Text(1) == "1";
+						programDesc = Text(2);
+						paragraphsJson = Text(3);
+						variablesJson = Text(4);
+						copybooksJson = Text(5);
 					}
+				}
+
+				if (row != null)
+				{
+					var responseText = $"**Analysis of {fileName} (Run {targetRunId})**\n\n";
+					responseText += $"**Type:** {(isCopybook ? "Copybook" : "Program")}\n\n";
+
+					if (!string.IsNullOrEmpty(programDesc))
+					{
+						responseText += $"**Description:**\n{programDesc}\n\n";
+					}
+
+					if (!string.IsNullOrEmpty(paragraphsJson) && paragraphsJson != "[]")
+					{
+						try
+						{
+							var paras = JsonSerializer.Deserialize<JsonArray>(paragraphsJson);
+							if (paras != null && paras.Count > 0)
+							{
+								responseText += $"**Functions/Paragraphs ({paras.Count}):**\n";
+								foreach (var para in paras)
+								{
+									if (para is JsonObject p)
+									{
+										var name = p.TryGetPropertyValue("name", out var n) ? n?.ToString() : "Unknown";
+										var desc = p.TryGetPropertyValue("description", out var d) ? d?.ToString() : "";
+										responseText += $"- `{name}`";
+										if (!string.IsNullOrEmpty(desc)) responseText += $": {desc}";
+										responseText += "\n";
+									}
+								}
+								responseText += "\n";
+							}
+						}
+						catch { }
+					}
+
+					if (!string.IsNullOrEmpty(variablesJson) && variablesJson != "[]")
+					{
+						try
+						{
+							var vars = JsonSerializer.Deserialize<JsonArray>(variablesJson);
+							if (vars != null && vars.Count > 0)
+							{
+								responseText += $"**Variables ({vars.Count}):**\n";
+								var topVars = vars.Take(10);
+								foreach (var v in topVars)
+								{
+									if (v is JsonObject varObj)
+									{
+										var varName = varObj.TryGetPropertyValue("name", out var vn) ? vn?.ToString() : "Unknown";
+										responseText += $"- `{varName}`\n";
+									}
+								}
+								if (vars.Count > 10) responseText += $"... and {vars.Count - 10} more\n";
+								responseText += "\n";
+							}
+						}
+						catch { }
+					}
+
+					if (!string.IsNullOrEmpty(copybooksJson) && copybooksJson != "[]")
+					{
+						try
+						{
+							var cbs = JsonSerializer.Deserialize<JsonArray>(copybooksJson);
+							if (cbs != null && cbs.Count > 0)
+							{
+								responseText += $"**Copybooks Used ({cbs.Count}):**\n";
+								foreach (var cb in cbs)
+								{
+									responseText += $"- {cb?.ToString()}\n";
+								}
+								responseText += "\n";
+							}
+						}
+						catch { }
+					}
+
+					responseText += $"\n**Data Source:** SQLite Database at `{dbPath}`";
+
+					return Results.Ok(new ChatResponse(responseText, targetRunId));
 				}
 				else
 				{
