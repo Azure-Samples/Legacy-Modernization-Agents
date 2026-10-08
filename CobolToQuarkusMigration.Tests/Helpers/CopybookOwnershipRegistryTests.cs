@@ -174,4 +174,35 @@ public sealed class CopybookOwnershipRegistryTests : IDisposable
 
         Build().Ownerships.Single().TypeName.Should().Be(expected);
     }
+
+    // The usual CICS layout: INQACCS.cbl copies its own commarea, INQACCS.cpy. Keying files by
+    // stem alone threw on the duplicate, and no file in the estate got ownership facts.
+    [Fact]
+    public void AProgramAndACopybookSharingAStemAreTwoFiles()
+    {
+        Copybook("INQACCS");
+        Program("INQACCS", "INQACCS");
+        Program("BNK1DAC", "INQACCS");
+
+        var registry = Build();
+
+        var ownership = registry.Ownerships.Should().ContainSingle().Subject;
+        ownership.UsedBy.Should().BeEquivalentTo("INQACCS", "BNK1DAC");
+        registry.ToPromptBlock("INQACCS.cpy", "C#")
+            .Should().Contain("You are the only file that declares it")
+            .And.Contain("THIS FILE IS A COPYBOOK");
+    }
+
+    [Fact]
+    public void AProgramNamedAfterItsCopybookReferencesTheTypeRatherThanOwningIt()
+    {
+        Copybook("INQACCS");
+        Program("INQACCS", "INQACCS");
+
+        var block = Build().ToPromptBlock("INQACCS.cbl", "C#");
+
+        block.Should().NotContain("You are the only file that declares it");
+        block.Should().NotContain("THIS FILE IS A COPYBOOK");
+        block.Should().Contain("Inqaccs — declared by the conversion of INQACCS");
+    }
 }

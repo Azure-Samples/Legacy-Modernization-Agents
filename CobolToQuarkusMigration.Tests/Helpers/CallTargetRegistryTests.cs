@@ -191,4 +191,32 @@ public sealed class CallTargetRegistryTests : IDisposable
         block.Should().Contain("IPricingService");
         block.Should().Contain("do NOT declare");
     }
+
+    // INQACCS.cbl and INQACCS.cpy side by side made the registry throw on the duplicate stem,
+    // which dropped the contracts for every program and the generated CallTargetContracts.g.cs.
+    [Fact]
+    public void AProgramAndACopybookSharingAStemDoNotBreakTheRegistry()
+    {
+        Program("INQACCS", "PRICING");
+        Program("PRICING");
+        File.WriteAllText(Path.Join(_root, "INQACCS.cpy"), "       01 INQACCS-COMMAREA.\n");
+
+        var registry = Build();
+
+        registry.Contracts.Should().ContainSingle().Which.Callers.Should().BeEquivalentTo("INQACCS");
+        registry.ToPromptBlock("INQACCS.cbl", "C#").Should().Contain("IPricingService");
+        registry.ToPromptBlock("INQACCS.cpy", "C#").Should().BeEmpty();
+    }
+
+    [Fact]
+    public void ACopybookDoesNotDeclareAnInterfaceForTheProgramItSharesANameWith()
+    {
+        Program("CALLER", "EXT");
+        File.WriteAllText(Path.Join(_root, "CALLER.cpy"), "       01 CALLER-AREA.\n");
+
+        var registry = Build();
+
+        registry.ToPromptBlock("CALLER.cbl", "C#").Should().Contain("IExtService — one method");
+        registry.ToPromptBlock("CALLER.cpy", "C#").Should().BeEmpty();
+    }
 }

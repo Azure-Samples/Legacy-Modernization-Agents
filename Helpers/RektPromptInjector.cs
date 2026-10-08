@@ -218,8 +218,7 @@ public static class RektPromptInjector
                 // types and told none of them to declare it. Each file needs the type to compile,
                 // so each declared it — seven copies of one record. Ownership is now assigned.
                 var ownership = CopybookOwnershipRegistryHolder.GetOrBuild(d.FullName, srcFolder);
-                var stem = Path.GetFileNameWithoutExtension(Path.GetFileName(fileName));
-                var ownershipBlock = ownership.ToPromptBlock(stem, targetLanguage);
+                var ownershipBlock = ownership.ToPromptBlock(Path.GetFileName(fileName), targetLanguage);
                 if (!string.IsNullOrEmpty(ownershipBlock))
                 {
                     sb.Append(ownershipBlock);
@@ -236,8 +235,7 @@ public static class RektPromptInjector
             try
             {
                 var callTargets = CallTargetRegistryHolder.GetOrBuild(d.FullName, srcFolder);
-                var stem = Path.GetFileNameWithoutExtension(Path.GetFileName(fileName));
-                var contractBlock = callTargets.ToPromptBlock(stem, targetLanguage);
+                var contractBlock = callTargets.ToPromptBlock(Path.GetFileName(fileName), targetLanguage);
                 if (!string.IsNullOrEmpty(contractBlock))
                 {
                     sb.Append(contractBlock);
@@ -253,7 +251,9 @@ public static class RektPromptInjector
                     fileName, ex.Message);
             }
 
-            if (JclBatchProgramsHolder.Enabled)
+            // JCL runs programs, so a copybook sharing a program's name must not be handed its
+            // batch contract.
+            if (JclBatchProgramsHolder.Enabled && !SourceTypeRegistry.IsCopybook(Path.GetFileName(fileName)))
             {
                 try
                 {

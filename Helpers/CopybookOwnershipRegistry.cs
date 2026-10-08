@@ -21,8 +21,17 @@ public sealed record CopybookOwnership(
     string OwnedBy,
     IReadOnlyList<string> UsedBy)
 {
-    public bool IsOwnedBy(string stem) =>
-        string.Equals(OwnedBy, stem, StringComparison.OrdinalIgnoreCase);
+    // A program and a copybook may share a stem (INQACCS.cbl copying INQACCS.cpy is the usual
+    // CICS layout), so a user is identified by its kind as well as its name.
+    internal IReadOnlySet<string> UsedByPrograms { get; init; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    internal IReadOnlySet<string> UsedByCopybooks { get; init; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Only the copybook's own conversion declares the type; a program of the same name does not.</summary>
+    public bool IsOwnedBy(string stem, bool isCopybook = true) =>
+        isCopybook && string.Equals(OwnedBy, stem, StringComparison.OrdinalIgnoreCase);
+
+    internal bool IsUsedBy(string stem, bool isCopybook) =>
+        (isCopybook ? UsedByCopybooks : UsedByPrograms).Contains(stem);
 }
 
 public sealed class CopybookOwnershipRegistry
@@ -36,6 +45,8 @@ public sealed class CopybookOwnershipRegistry
 
     private readonly HashSet<string> _copybookStems = new(StringComparer.OrdinalIgnoreCase);
 
+    private readonly HashSet<string> _programStems = new(StringComparer.OrdinalIgnoreCase);
+
     private readonly Dictionary<string, IReadOnlyList<CopybookMember>> _members = new(StringComparer.OrdinalIgnoreCase);
 
     public IReadOnlyCollection<CopybookOwnership> Ownerships => _byCopybook.Values;
@@ -48,25 +59,20 @@ public sealed class CopybookOwnershipRegistry
         var copybooks = Read(SourceTypeRegistry.EnumerateCopybookFiles(sourceFolder));
         var programs = Read(SourceTypeRegistry.EnumerateProgramFiles(sourceFolder));
         registry._copybookStems.UnionWith(copybooks.Keys);
+        registry._programStems.UnionWith(programs.Keys);
 
         // A copybook is copied by programs and by other copybooks alike, and both produce a file
-        // that would otherwise declare the type again.
-        var everything = copybooks.Concat(programs)
-            .ToDictionary(e => e.Key, e => e.Value, StringComparer.OrdinalIgnoreCase);
+        // that would otherwise declare the type again. The two are kept apart because a program
+        // and a copybook can share a stem; merging them by name lost one of the two files.
+        var copybookUsers = UsersByCopybook(copybooks, excludeSelf: true);
+        var programUsers = UsersByCopybook(programs, excludeSelf: false);
+        var users = copybookUsers.Keys.Union(programUsers.Keys, StringComparer.OrdinalIgnoreCase);
 
-        var users = everything
-            .SelectMany(file => CopyDirective
-                .Matches(StripComments(file.Value))
-                .Select(match => (Copybook: match.Groups[1].Value, User: file.Key)))
-            .Where(edge => !string.Equals(edge.Copybook, edge.User, StringComparison.OrdinalIgnoreCase))
-            .GroupBy(edge => edge.Copybook, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(
-                group => group.Key,
-                group => new SortedSet<string>(group.Select(e => e.User), StringComparer.OrdinalIgnoreCase),
-                StringComparer.OrdinalIgnoreCase);
-
-        foreach (var (copybook, usedBy) in users)
+        foreach (var copybook in users)
         {
+            var byCopybooks = copybookUsers.GetValueOrDefault(copybook) ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var byPrograms = programUsers.GetValueOrDefault(copybook) ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
             // Without a file of its own there is no owner to name, and naming an arbitrary user
             // would put a layout nobody can see into a type everybody depends on. Those stay as
             // they are, and the missing-copybook reporting already accounts for them.
@@ -77,7 +83,12 @@ public sealed class CopybookOwnershipRegistry
                 Copybook: copybook,
                 TypeName: typeName,
                 OwnedBy: copybook,
-                UsedBy: usedBy.ToList());
+                UsedBy: byCopybooks.Union(byPrograms, StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(u => u, StringComparer.OrdinalIgnoreCase).ToList())
+            {
+                UsedByPrograms = byPrograms,
+                UsedByCopybooks = byCopybooks,
+            };
             registry._members[copybook] = CopybookMemberContract.Parse(
                 copybooks[copybook], typeName, name => copybooks.GetValueOrDefault(name));
         }
@@ -87,20 +98,28 @@ public sealed class CopybookOwnershipRegistry
 
     /// <summary>
     /// What the file being converted owns, and what it must reference instead of declaring.
+    /// Pass the file name with its extension: a program and a copybook can share a stem, and
+    /// only the extension says which one is being converted. A bare stem is read as a copybook
+    /// only when no program has that name.
     /// </summary>
-    public string ToPromptBlock(string stem, string targetLanguage)
+    public string ToPromptBlock(string file, string targetLanguage)
     {
+        var name = Path.GetFileName(file);
+        var stem = Path.GetFileNameWithoutExtension(name);
+        var isCopybook = SourceTypeRegistry.IsKnown(name)
+            ? SourceTypeRegistry.IsCopybook(name)
+            : _copybookStems.Contains(stem) && !_programStems.Contains(stem);
+
         var owned = _byCopybook.Values
-            .Where(o => o.IsOwnedBy(stem))
+            .Where(o => o.IsOwnedBy(stem, isCopybook))
             .OrderBy(o => o.TypeName, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
         var referenced = _byCopybook.Values
-            .Where(o => !o.IsOwnedBy(stem) && o.UsedBy.Contains(stem, StringComparer.OrdinalIgnoreCase))
+            .Where(o => !o.IsOwnedBy(stem, isCopybook) && o.IsUsedBy(stem, isCopybook))
             .OrderBy(o => o.TypeName, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        var isCopybook = _copybookStems.Contains(stem);
         if (owned.Count == 0 && referenced.Count == 0 && !isCopybook) return string.Empty;
 
         var declares = new StringBuilder();
@@ -142,6 +161,21 @@ public sealed class CopybookOwnershipRegistry
             : "      members:" + Environment.NewLine
               + CopybookMemberContract.Render(members, targetLanguage, "        ") + Environment.NewLine;
     }
+
+    private static Dictionary<string, HashSet<string>> UsersByCopybook(
+        Dictionary<string, string> files, bool excludeSelf) =>
+        files
+            .SelectMany(file => CopyDirective
+                .Matches(StripComments(file.Value))
+                .Select(match => (Copybook: match.Groups[1].Value, User: file.Key)))
+            // A copybook copying itself is meaningless; a program copying the copybook of the
+            // same name is its own commarea and a real use.
+            .Where(edge => !excludeSelf || !string.Equals(edge.Copybook, edge.User, StringComparison.OrdinalIgnoreCase))
+            .GroupBy(edge => edge.Copybook, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Select(e => e.User).ToHashSet(StringComparer.OrdinalIgnoreCase),
+                StringComparer.OrdinalIgnoreCase);
 
     private static Dictionary<string, string> Read(IEnumerable<string> paths)
     {
