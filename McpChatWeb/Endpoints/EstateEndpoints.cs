@@ -7,7 +7,7 @@ public sealed record EstateConvertRequest(
     string TargetLanguage = "Java",
     bool IncludeNeeds = true,
     string SpeedProfile = "balanced",
-    string Provider = "AzureOpenAI",
+    string? Provider = null,
     string? ModelId = null,
     string? Name = null);
 

@@ -22,11 +22,34 @@ public sealed class CopilotChatClient : IChatClient, IAsyncDisposable
     private bool _started;
     private bool _disposed;
 
+    /// <summary>Environment variable that overrides <see cref="DefaultRequestTimeout"/>, in seconds.</summary>
+    public const string RequestTimeoutEnvVar = "COPILOT_REQUEST_TIMEOUT_SECONDS";
+
     /// <summary>
-    /// Per-request timeout. Prevents infinite hangs if the SDK never fires
-    /// SessionIdleEvent (e.g. auth failure, network issues).
+    /// Default per-request timeout. It only guards against the SDK never firing
+    /// SessionIdleEvent (auth failure, network loss), so it has to sit well above the
+    /// time a high-effort conversion of a large program legitimately takes.
     /// </summary>
-    private static readonly TimeSpan RequestTimeout = TimeSpan.FromMinutes(5);
+    public static readonly TimeSpan DefaultRequestTimeout = TimeSpan.FromMinutes(15);
+
+    private readonly TimeSpan _requestTimeout;
+
+    /// <summary>
+    /// Reads <see cref="RequestTimeoutEnvVar"/>; a missing, unparsable or non-positive
+    /// value falls back to <see cref="DefaultRequestTimeout"/>.
+    /// </summary>
+    public static TimeSpan ResolveRequestTimeout(string? seconds) =>
+        int.TryParse(seconds, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var value) && value > 0
+            ? TimeSpan.FromSeconds(value)
+            : DefaultRequestTimeout;
+
+    private static string FormatTimeout(TimeSpan timeout) =>
+        timeout.TotalSeconds % 60 == 0
+            ? $"{(int)timeout.TotalMinutes} minutes"
+            : $"{(int)timeout.TotalSeconds} seconds";
+
+    /// <summary>The per-request timeout this client applies.</summary>
+    public TimeSpan RequestTimeout => _requestTimeout;
 
     /// <summary>
     /// Creates a new CopilotChatClient.
@@ -34,10 +57,14 @@ public sealed class CopilotChatClient : IChatClient, IAsyncDisposable
     /// <param name="model">Model name (e.g. "gpt-5", "claude-sonnet-4.5").</param>
     /// <param name="options">Optional CopilotClientOptions for CLI path, auth, etc.</param>
     /// <param name="logger">Optional logger.</param>
-    public CopilotChatClient(string model, CopilotClientOptions? options = null, ILogger? logger = null)
+    /// <param name="requestTimeout">Per-request timeout; defaults to <see cref="RequestTimeoutEnvVar"/> or <see cref="DefaultRequestTimeout"/>.</param>
+    public CopilotChatClient(string model, CopilotClientOptions? options = null, ILogger? logger = null, TimeSpan? requestTimeout = null)
     {
         _model = model ?? throw new ArgumentNullException(nameof(model));
         _logger = logger;
+        _requestTimeout = requestTimeout is { } t && t > TimeSpan.Zero
+            ? t
+            : ResolveRequestTimeout(Environment.GetEnvironmentVariable(RequestTimeoutEnvVar));
 
         // Merge logger into options if provided
         var clientOptions = options ?? new CopilotClientOptions();
@@ -167,11 +194,12 @@ public sealed class CopilotChatClient : IChatClient, IAsyncDisposable
                     done.TrySetCanceled(cancellationToken);
                 else
                     done.TrySetException(new TimeoutException(
-                        $"Copilot SDK did not respond within {RequestTimeout.TotalMinutes} minutes. " +
+                        $"Copilot SDK did not respond within {FormatTimeout(RequestTimeout)}. " +
                         "The Copilot CLI holds this credential, not the GitHub CLI, so 'gh auth login' " +
                         "does not affect it; sign in from the CLI with /login if the session has expired. " +
                         "A long reasoning request on a large program, or a machine resuming from sleep, " +
-                        "can also exceed the timeout without anything being wrong with the credential."));
+                        "can also exceed the timeout without anything being wrong with the credential; " +
+                        $"raise {RequestTimeoutEnvVar} if large programs need longer."));
             }
         });
 
@@ -181,7 +209,7 @@ public sealed class CopilotChatClient : IChatClient, IAsyncDisposable
         }
         catch (TimeoutException)
         {
-            _logger?.LogError("CopilotChatClient: request timed out after {Minutes}m for model {Model}", RequestTimeout.TotalMinutes, model);
+            _logger?.LogError("CopilotChatClient: request timed out after {Timeout} for model {Model}", FormatTimeout(RequestTimeout), model);
             throw;
         }
 

@@ -102,6 +102,8 @@ References to resolve from previous chunks:
 
 Business logic context from reverse engineering (use to ensure accurate conversion):
 
+Treat it as interpretive context, not as ground truth: it was produced by a model during reverse engineering and can be incomplete or wrong. When it disagrees with the COBOL source or with any structural facts provided elsewhere in this prompt, the COBOL source wins first, the structural facts second, and this summary last. It does not replace the COBOL: translate every paragraph, validation, error path, retry and abend handler in the source, including those the summary does not mention, and do not shorten the program to what the summary describes. Use the summary only to understand intent, to name things well, and to check that no rule it lists is missing; never add behaviour that the COBOL does not contain.
+
 {{BusinessLogic}}
 
 ## SECTION: ChunkFirst

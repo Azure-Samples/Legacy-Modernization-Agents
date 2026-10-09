@@ -16,8 +16,27 @@ public static class ProcessTreeSuspender
     public static void Suspend(int rootPid, bool includeRoot)
     {
         // Parents first, so none can start new children while the rest are being stopped.
-        foreach (var pid in ProcessTree(rootPid).Skip(includeRoot ? 0 : 1))
-            Signal(pid, suspend: true);
+        var suspended = new List<int>();
+        try
+        {
+            foreach (var pid in ProcessTree(rootPid).Skip(includeRoot ? 0 : 1))
+            {
+                Signal(pid, suspend: true);
+                suspended.Add(pid);
+            }
+        }
+        catch (System.ComponentModel.Win32Exception suspendError)
+        {
+            var errors = new List<Exception> { suspendError };
+            foreach (var pid in suspended.AsEnumerable().Reverse())
+            {
+                try { Signal(pid, suspend: false); }
+                catch (System.ComponentModel.Win32Exception resumeError) { errors.Add(resumeError); }
+            }
+            if (errors.Count > 1)
+                throw new AggregateException("Suspension failed and could not fully restore the process tree.", errors);
+            throw;
+        }
     }
 
     public static void Resume(int rootPid, bool includeRoot)
@@ -113,11 +132,15 @@ public static class ProcessTreeSuspender
     private static void WindowsSignal(int pid, bool suspend)
     {
         var handle = OpenProcess(ProcessSuspendResume, false, (uint)pid);
-        if (handle == IntPtr.Zero) return;
+        if (handle == IntPtr.Zero)
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(),
+                $"Could not open process {pid} to {(suspend ? "suspend" : "resume")} it.");
         try
         {
-            if (suspend) NtSuspendProcess(handle);
-            else NtResumeProcess(handle);
+            var status = suspend ? NtSuspendProcess(handle) : NtResumeProcess(handle);
+            if (status < 0)
+                throw new System.ComponentModel.Win32Exception((int)RtlNtStatusToDosError(status),
+                    $"Could not {(suspend ? "suspend" : "resume")} process {pid} (NTSTATUS 0x{status:X8}).");
         }
         finally
         {
@@ -165,4 +188,7 @@ public static class ProcessTreeSuspender
 
     [DllImport("ntdll.dll")]
     private static extern int NtResumeProcess(IntPtr processHandle);
+
+    [DllImport("ntdll.dll")]
+    private static extern uint RtlNtStatusToDosError(int status);
 }

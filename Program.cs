@@ -115,11 +115,12 @@ internal static class Program
         skipReverseEngineeringOption.AddAlias("-skip-re");
         rootCommand.AddOption(skipReverseEngineeringOption);
 
-        var reuseReOption = new Option<bool>("--reuse-re", () => false, "When combined with --skip-reverse-engineering, loads business logic persisted from the latest previous RE run and injects it into the conversion prompts")
+        var reuseReOption = new Option<bool>("--reuse-re", () => false, "Inject reverse-engineered business logic into the conversion prompts (off by default). In a full run this uses the run's own reverse engineering; with --skip-reverse-engineering it loads the latest persisted run over the same source folder")
         {
             Arity = ArgumentArity.ZeroOrOne
         };
         reuseReOption.AddAlias("-reuse-re");
+        reuseReOption.AddAlias("--use-re-context");
         rootCommand.AddOption(reuseReOption);
 
         var programsOption = new Option<string>(
@@ -804,8 +805,12 @@ internal static class Program
                     Environment.Exit(1);
                 }
 
-                // Store reverse engineering result so migration can use the extracted business logic
+                // Kept for the dependency map; its business logic reaches the prompts only with --reuse-re.
                 reverseEngResultForMigration = reverseEngResult;
+                if (!reuseRe && !reverseEngineerOnly)
+                {
+                    Console.WriteLine("ℹ️  Business logic from reverse engineering is saved to the report but not injected into conversion prompts. Pass --reuse-re to inject it.");
+                }
 
                 // If reverse-engineer-only mode, exit here
                 if (reverseEngineerOnly)
@@ -823,28 +828,42 @@ internal static class Program
                     // output: a run terminated before its business logic was persisted leaves a
                     // newer id with nothing behind it, and selecting that silently converted the
                     // whole estate without any business-logic context.
-                    var sourceRunId = await migrationRepository.GetLatestRunIdWithBusinessLogicAsync();
+                    var sourceRunId = await migrationRepository.GetLatestRunIdWithBusinessLogicAsync(cobolSource);
                     if (sourceRunId is int reuseRunId)
                     {
                         var savedLogic = await migrationRepository.GetBusinessLogicAsync(reuseRunId);
-                        if (savedLogic.Count > 0)
+                        var snapshot = await migrationRepository.SearchCobolFilesAsync(reuseRunId, null);
+                        var freshness = BusinessLogicReuse.FilterStale(savedLogic, snapshot, BusinessLogicReuse.ReadFileOrNull);
+                        var reuseRun = await migrationRepository.GetRunAsync(reuseRunId);
+                        var reuseDate = reuseRun?.StartedAt.ToString("yyyy-MM-dd HH:mm") ?? "unknown date";
+
+                        if (freshness.Changed.Count > 0)
                         {
-                            Console.WriteLine($"♻️  Loaded {savedLogic.Count} business logic entries from Run #{reuseRunId}.");
+                            Console.WriteLine($"⚠️  --reuse-re: {freshness.Changed.Count} file(s) changed since Run #{reuseRunId}; their business logic is ignored: {string.Join(", ", freshness.Changed.Take(10))}{(freshness.Changed.Count > 10 ? ", ..." : "")}");
+                        }
+                        if (freshness.Missing.Count > 0)
+                        {
+                            logger.LogInformation("--reuse-re: {Count} file(s) from Run #{RunId} are no longer present: {Files}", freshness.Missing.Count, reuseRunId, string.Join(", ", freshness.Missing));
+                        }
+
+                        if (freshness.Fresh.Count > 0)
+                        {
+                            Console.WriteLine($"♻️  Loaded {freshness.Fresh.Count} business logic entries from Run #{reuseRunId} ({reuseDate}).");
                             reverseEngResultForMigration = new ReverseEngineeringResult
                             {
                                 Success = true,
                                 RunId = reuseRunId,
-                                BusinessLogicExtracts = savedLogic.ToList()
+                                BusinessLogicExtracts = freshness.Fresh
                             };
                         }
                         else
                         {
-                            Console.WriteLine($"⚠️  --reuse-re: Run #{reuseRunId} holds no business logic. Migration will proceed without business logic context.");
+                            Console.WriteLine($"⚠️  --reuse-re: Run #{reuseRunId} holds no business logic that still matches the source. Migration will proceed without business logic context.");
                         }
                     }
                     else
                     {
-                        Console.WriteLine("⚠️  --reuse-re: no previous run has persisted business logic. Run a reverse-engineering pass first, or drop --skip-reverse-engineering. Migration will proceed without business logic context.");
+                        Console.WriteLine($"⚠️  --reuse-re: no previous run over {cobolSource} has persisted business logic. Run a reverse-engineering pass on this source first, or drop --skip-reverse-engineering. Migration will proceed without business logic context.");
                     }
                 }
                 else
@@ -948,7 +967,9 @@ internal static class Program
                         Console.WriteLine($"{status} - {current}/{total}");
                     },
                     existingRunId: resumeRunId,
-                    businessLogicExtracts: reverseEngResultForMigration?.BusinessLogicExtracts,
+                    // Model-written business logic made converters follow the summary instead of
+                    // translating every paragraph (Bank-of-Z), so it is injected only on request.
+                    businessLogicExtracts: reuseRe ? reverseEngResultForMigration?.BusinessLogicExtracts : null,
                     existingDependencyMap: reverseEngResultForMigration?.DependencyMap,
                     runType: skipReverseEngineering ? "Conversion Only" : "Full Migration");
 
@@ -1051,7 +1072,7 @@ internal static class Program
         return value;
     }
 
-    private static void OverrideSettingsFromEnvironment(AppSettings settings)
+    internal static void OverrideSettingsFromEnvironment(AppSettings settings)
     {
         var aiSettings = settings.AISettings ??= new AISettings();
         var applicationSettings = settings.ApplicationSettings ??= new ApplicationSettings();
@@ -1063,33 +1084,11 @@ internal static class Program
             aiSettings.ServiceType = serviceType;
         }
 
-        // GitHub token support — maps to ApiKey
-        var githubToken = Environment.GetEnvironmentVariable("GITHUB_TOKEN");
-        if (!string.IsNullOrEmpty(githubToken) && string.IsNullOrEmpty(aiSettings.ApiKey))
-        {
-            aiSettings.ApiKey = githubToken;
-        }
-
-        // Auto-set endpoint for GitHub Copilot
+        // GitHubCopilot and GitHubCopilotSDK both run on the Copilot SDK, which signs in through
+        // CopilotAuth and uses neither endpoint nor API key. GITHUB_TOKEN is deliberately not copied
+        // into ApiKey: doing so turned an Azure Entra ID setup into key auth with a GitHub token.
         if (aiSettings.ServiceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase) ||
-            aiSettings.ServiceType.Equals("GitHub", StringComparison.OrdinalIgnoreCase) ||
-            aiSettings.ServiceType.Equals("GitHubModels", StringComparison.OrdinalIgnoreCase))
-        {
-            if (string.IsNullOrEmpty(aiSettings.Endpoint) || aiSettings.Endpoint.Contains("your-"))
-            {
-                aiSettings.Endpoint = "https://models.github.ai/inference";
-            }
-
-            // For GitHub Copilot, the GitHub token IS the API key for ALL clients
-            if (!string.IsNullOrEmpty(githubToken))
-            {
-                aiSettings.ApiKey = githubToken;
-                aiSettings.ChatApiKey = githubToken;
-            }
-        }
-
-        // GitHub Copilot SDK: authentication handled by CLI, no endpoint/key needed
-        if (aiSettings.ServiceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase))
+            aiSettings.ServiceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase))
         {
             if (string.IsNullOrEmpty(aiSettings.Endpoint))
             {
@@ -1409,31 +1408,32 @@ internal static class Program
                 return true;
             }
 
-            var serviceType = Environment.GetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE") ?? "AzureOpenAI";
+            var serviceType = Environment.GetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE");
+            if (string.IsNullOrWhiteSpace(serviceType)) serviceType = "AzureOpenAI";
+            serviceType = serviceType.Trim();
 
             // ChatClientFactory routes both "GitHubCopilot" and "GitHubCopilotSDK" to the Copilot
             // SDK, which signs in with copilot login or COPILOT_GITHUB_TOKEN (see CopilotAuth), so
-            // neither needs an API key here. "GitHub" and "GitHubModels" fall through to the OpenAI-compatible
-            // client instead and genuinely do require one.
+            // neither needs an API key here.
             var isGitHubCopilotSdk = serviceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase) ||
                                      serviceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase);
-            var isGitHubCopilot = serviceType.Equals("GitHub", StringComparison.OrdinalIgnoreCase) ||
-                                   serviceType.Equals("GitHubModels", StringComparison.OrdinalIgnoreCase);
             var isDirectOpenAI = serviceType.Equals("OpenAI", StringComparison.OrdinalIgnoreCase);
+            var isAzure = serviceType.Equals("AzureOpenAI", StringComparison.OrdinalIgnoreCase);
 
             var requiredSettings = new Dictionary<string, string?>();
+            var invalidSettings = new List<string>();
+
+            if (!isGitHubCopilotSdk && !isDirectOpenAI && !isAzure)
+            {
+                // "GitHub"/"GitHubModels" used to pass here and then fail inside ChatClientFactory;
+                // there is no GitHub Models client.
+                invalidSettings.Add(
+                    $"AZURE_OPENAI_SERVICE_TYPE '{serviceType}' is not supported. Use AzureOpenAI, GitHubCopilot or OpenAI.");
+            }
 
             if (isGitHubCopilotSdk)
             {
                 // GitHub Copilot SDK: only needs model ID, authentication handled by CLI
-                requiredSettings["AZURE_OPENAI_MODEL_ID"] = Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL_ID");
-            }
-            else if (isGitHubCopilot)
-            {
-                // GitHub Copilot: only needs token (GitHub PAT) and model
-                var token = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_KEY") ??
-                            Environment.GetEnvironmentVariable("GITHUB_TOKEN");
-                requiredSettings["GITHUB_TOKEN or AZURE_OPENAI_API_KEY"] = token;
                 requiredSettings["AZURE_OPENAI_MODEL_ID"] = Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL_ID");
             }
             else if (isDirectOpenAI)
@@ -1451,9 +1451,8 @@ internal static class Program
             }
 
             // API Key is optional for Azure if using Entra ID
-            var apiKey = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_KEY") ??
-                         Environment.GetEnvironmentVariable("GITHUB_TOKEN");
-            if (!isGitHubCopilot && !isGitHubCopilotSdk && !isDirectOpenAI)
+            var apiKey = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_KEY");
+            if (isAzure)
             {
                 if (!string.IsNullOrWhiteSpace(apiKey) && !apiKey.Contains("your-api-key") && !apiKey.Contains("placeholder"))
                 {
@@ -1466,7 +1465,6 @@ internal static class Program
             }
 
             var missingSettings = new List<string>();
-            var invalidSettings = new List<string>();
 
             foreach (var setting in requiredSettings)
             {
