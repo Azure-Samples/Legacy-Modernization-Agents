@@ -293,6 +293,11 @@ public class Neo4jSettings
     /// Gets or sets the database name (default is "neo4j").
     /// </summary>
     public string Database { get; set; } = "neo4j";
+
+    /// <summary>
+    /// Gets or sets how long the startup connection check waits before continuing without the graph.
+    /// </summary>
+    public int ConnectTimeoutSeconds { get; set; } = 10;
 }
 
 // ============================================================================
