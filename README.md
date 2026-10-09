@@ -104,8 +104,7 @@ flowchart LR
     subgraph DOCKER["🐳 Docker"]
         direction TB
         REKT["cobol-rekt<br/>REKT parser (Java)"]
-        RNEO[("cobol-rekt-neo4j<br/>REKT graph · :7688")]
-        MNEO[("cobol-migration-neo4j<br/>dependency graph · :7687")]
+        NEO[("cobol-migration-neo4j<br/>REKT + dependency graph · :7687")]
     end
 
     subgraph CLOUD["☁️ Model provider"]
@@ -115,19 +114,17 @@ flowchart LR
     end
 
     PRE -->|docker exec| REKT
-    PRE -->|load parse| RNEO
+    PRE -->|load parse| NEO
     CLI <--> FILES
-    CLI -->|REKT facts| RNEO
-    CLI -->|dependencies| MNEO
+    CLI -->|REKT facts, dependencies| NEO
     WEB <--> FILES
-    WEB --> RNEO
-    WEB --> MNEO
+    WEB --> NEO
     CLI ==>|prompts| CLOUD
     WEB ==>|chat| CLOUD
 ```
 
 - **Everything but the model runs locally.** Source code leaves the machine only inside the prompts sent to the provider you configured.
-- **Two Neo4j instances.** The REKT graph (parse trees and control flow, `:7688`) and the migration graph (dependencies found during a run, `:7687`). Ports and container names can be changed in `Config/ai-config.local.env`.
+- **One Neo4j instance** (`:7687`) holds both the REKT graph (parse trees and control flow) and the migration graph (dependencies found during a run). Every node is keyed by its run, so runs and scans sit side by side without overwriting each other. The port and container name can be changed in `Config/ai-config.local.env`.
 - **The portal runs on the host** (`dotnet run --project McpChatWeb`). `docker-compose.yml` also has a `portal` service if you want it in a container.
 - **Estate Mission Control and `jcl`** need neither a model nor Docker.
 

@@ -16,7 +16,7 @@ const SV_MODES = {
 const SV_PENDING_MODES = ['deadcode'];
 
 const SV_UNREACHABLE =
-  'REKT graph is unavailable. Start it with ./doctor.sh rekt-full and confirm bolt://localhost:7688 is reachable.';
+  'REKT graph is unavailable. Start it with ./doctor.sh rekt-full and confirm Neo4j is reachable (NEO4J_BOLT_PORT, default 7687).';
 
 function svPlural(n, noun) {
   return `${n} ${noun}${n === 1 ? '' : 's'}`;

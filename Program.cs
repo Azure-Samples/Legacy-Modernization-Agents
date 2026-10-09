@@ -408,29 +408,8 @@ internal static class Program
             var sqliteRepository = new SqliteMigrationRepository(databasePath, repositoryLogger);
             await sqliteRepository.InitializeAsync();
 
-            // Initialize Neo4j if enabled
-            Neo4jMigrationRepository? neo4jRepository = null;
             var mcpLogger = loggerFactory.CreateLogger(nameof(Program));
-            if (settings.ApplicationSettings.Neo4j?.Enabled == true)
-            {
-                try
-                {
-                    var neo4jDriver = Neo4j.Driver.GraphDatabase.Driver(
-                        settings.ApplicationSettings.Neo4j.Uri,
-                        Neo4j.Driver.AuthTokens.Basic(
-                            settings.ApplicationSettings.Neo4j.Username,
-                            settings.ApplicationSettings.Neo4j.Password
-                        )
-                    );
-                    var neo4jLogger = loggerFactory.CreateLogger<Neo4jMigrationRepository>();
-                    neo4jRepository = new Neo4jMigrationRepository(neo4jDriver, neo4jLogger);
-                    mcpLogger.LogInformation("Neo4j graph database enabled at {Uri}", settings.ApplicationSettings.Neo4j.Uri);
-                }
-                catch (Exception ex)
-                {
-                    mcpLogger.LogWarning(ex, "Failed to connect to Neo4j, continuing with SQLite only");
-                }
-            }
+            var neo4jRepository = await Neo4jConnection.TryOpenAsync(settings.ApplicationSettings.Neo4j, loggerFactory, mcpLogger);
 
             var hybridLogger = loggerFactory.CreateLogger<HybridMigrationRepository>();
             var repository = new HybridMigrationRepository(sqliteRepository, neo4jRepository, hybridLogger);
@@ -711,28 +690,7 @@ internal static class Program
             var sqliteMigrationRepository = new SqliteMigrationRepository(databasePath, migrationRepositoryLogger);
             await sqliteMigrationRepository.InitializeAsync();
 
-            // Initialize Neo4j if enabled
-            Neo4jMigrationRepository? neo4jMigrationRepository = null;
-            if (settings.ApplicationSettings.Neo4j?.Enabled == true)
-            {
-                try
-                {
-                    var neo4jDriver = Neo4j.Driver.GraphDatabase.Driver(
-                        settings.ApplicationSettings.Neo4j.Uri,
-                        Neo4j.Driver.AuthTokens.Basic(
-                            settings.ApplicationSettings.Neo4j.Username,
-                            settings.ApplicationSettings.Neo4j.Password
-                        )
-                    );
-                    var neo4jLogger = loggerFactory.CreateLogger<Neo4jMigrationRepository>();
-                    neo4jMigrationRepository = new Neo4jMigrationRepository(neo4jDriver, neo4jLogger);
-                    logger.LogInformation("✅ Neo4j graph database connected at {Uri}", settings.ApplicationSettings.Neo4j.Uri);
-                }
-                catch (Exception ex)
-                {
-                    logger.LogWarning(ex, "⚠️  Neo4j connection failed, using SQLite only");
-                }
-            }
+            var neo4jMigrationRepository = await Neo4jConnection.TryOpenAsync(settings.ApplicationSettings.Neo4j, loggerFactory, logger);
 
             var hybridLogger = loggerFactory.CreateLogger<HybridMigrationRepository>();
             var migrationRepository = new HybridMigrationRepository(sqliteMigrationRepository, neo4jMigrationRepository, hybridLogger);
