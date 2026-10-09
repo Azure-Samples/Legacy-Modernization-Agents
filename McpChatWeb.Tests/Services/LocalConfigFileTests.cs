@@ -10,7 +10,7 @@ public class LocalConfigFileTests
         AZURE_OPENAI_SERVICE_TYPE="AzureOpenAI"
         COPILOT_GITHUB_TOKEN="old-token"
         NEO4J_PASSWORD="volume-password"
-        REKT_NEO4J_PASSWORD="rekt-volume-password"
+        NEO4J_BOLT_PORT="7697"
         NEO4J_CONTAINER="migration-neo4j-second"
         COBOL_SOURCE_FOLDER="estates/one"
         """;
@@ -35,7 +35,7 @@ public class LocalConfigFileTests
         Assert.DoesNotContain("old-model", merged);
 
         Assert.Contains("NEO4J_PASSWORD=\"volume-password\"", merged);
-        Assert.Contains("REKT_NEO4J_PASSWORD=\"rekt-volume-password\"", merged);
+        Assert.Contains("NEO4J_BOLT_PORT=\"7697\"", merged);
         Assert.Contains("NEO4J_CONTAINER=\"migration-neo4j-second\"", merged);
         Assert.Contains("COBOL_SOURCE_FOLDER=\"estates/one\"", merged);
         Assert.DoesNotContain("COBOL_SOURCE_FOLDER=\"source\"", merged);
@@ -63,7 +63,7 @@ public class LocalConfigFileTests
     [InlineData("COPILOT_AUTH", true)]
     [InlineData("GITHUB_HOST", true)]
     [InlineData("NEO4J_PASSWORD", false)]
-    [InlineData("REKT_NEO4J_BOLT_PORT", false)]
+    [InlineData("NEO4J_BOLT_PORT", false)]
     [InlineData("JAVA_OUTPUT_FOLDER", false)]
     public void OwnedKeys_MatchDoctorSetup(string key, bool owned)
     {

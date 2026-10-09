@@ -28,7 +28,9 @@ public static class Neo4jConnection
         {
             await driver.VerifyConnectivityAsync();
             logger.LogInformation("✅ Neo4j graph database connected at {Uri}", settings.Uri);
-            return new Neo4jMigrationRepository(driver, loggerFactory.CreateLogger<Neo4jMigrationRepository>());
+            var repository = new Neo4jMigrationRepository(driver, loggerFactory.CreateLogger<Neo4jMigrationRepository>());
+            await repository.EnsureSchemaAsync();
+            return repository;
         }
         catch (Exception ex)
         {

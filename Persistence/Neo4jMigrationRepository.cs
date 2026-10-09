@@ -30,6 +30,35 @@ public class Neo4jMigrationRepository
             .WithMaxConnectionLifetime(TimeSpan.FromHours(1)));
     }
 
+    // The populator's schema.cypher declares the same constraints under the same names, so
+    // whichever writer reaches an empty graph first creates them and the other is a no-op.
+    // Each one also backs the MERGE on that key with an index.
+    internal static readonly string[] SchemaStatements =
+    {
+        "CREATE CONSTRAINT run_id IF NOT EXISTS FOR (n:Run) REQUIRE n.id IS UNIQUE",
+        "CREATE CONSTRAINT cobolfile_uid IF NOT EXISTS FOR (n:CobolFile) REQUIRE n.uid IS UNIQUE",
+        "CREATE CONSTRAINT chunk_uid IF NOT EXISTS FOR (n:Chunk) REQUIRE n.uid IS UNIQUE",
+        "CREATE CONSTRAINT signature_uid IF NOT EXISTS FOR (n:Signature) REQUIRE n.uid IS UNIQUE",
+    };
+
+    public async Task EnsureSchemaAsync()
+    {
+        await using var session = _driver.AsyncSession();
+        foreach (var statement in SchemaStatements)
+        {
+            try
+            {
+                await session.RunAsync(statement);
+            }
+            catch (Neo4jException ex)
+            {
+                // A same-shaped constraint under another name, or legacy data, is not worth
+                // failing the run over: the writes still work, only without the index.
+                _logger.LogWarning("Neo4j schema statement skipped ({Statement}): {Message}", statement, ex.Message);
+            }
+        }
+    }
+
     public async Task SaveDependencyGraphAsync(int runId, DependencyMap dependencyMap)
     {
         await using var session = _driver.AsyncSession();
@@ -58,16 +87,20 @@ public class Neo4jMigrationRepository
                                    fileName.EndsWith(".CPY", StringComparison.OrdinalIgnoreCase) ||
                                    dependencyMap.ReverseDependencies.ContainsKey(fileName);
 
+                    // Keyed by run: merging on fileName alone made each run take over the
+                    // previous run's nodes. lineCount is kept when the populator set it.
                     await tx.RunAsync(@"
-                        MERGE (f:CobolFile {fileName: $fileName})
-                        SET f.isCopybook = $isCopybook,
+                        MERGE (f:CobolFile {uid: $uid})
+                        SET f.fileName = $fileName,
+                            f.isCopybook = $isCopybook,
                             f.runId = $runId,
-                            f.lineCount = 0
+                            f.lineCount = coalesce(f.lineCount, 0)
                         WITH f
                         MATCH (r:Run {id: $runId})
                         MERGE (r)-[:ANALYZED]->(f)",
                         new
                         {
+                            uid = GraphUid.Make(runId, fileName),
                             fileName,
                             isCopybook,
                             runId
@@ -78,8 +111,8 @@ public class Neo4jMigrationRepository
                 foreach (var dependency in dependencyMap.Dependencies)
                 {
                     await tx.RunAsync(@"
-                        MATCH (source:CobolFile {fileName: $source})
-                        MATCH (target:CobolFile {fileName: $target})
+                        MATCH (source:CobolFile {uid: $source})
+                        MATCH (target:CobolFile {uid: $target})
                         MERGE (source)-[d:DEPENDS_ON]->(target)
                         SET d.type = $type,
                             d.lineNumber = $lineNumber,
@@ -87,8 +120,8 @@ public class Neo4jMigrationRepository
                             d.runId = $runId",
                         new
                         {
-                            source = dependency.SourceFile,
-                            target = dependency.TargetFile,
+                            source = GraphUid.Make(runId, dependency.SourceFile),
+                            target = GraphUid.Make(runId, dependency.TargetFile),
                             type = dependency.DependencyType,
                             lineNumber = dependency.LineNumber,
                             context = dependency.Context ?? "",
@@ -335,8 +368,9 @@ public class Neo4jMigrationRepository
                 var semanticUnitsJson = System.Text.Json.JsonSerializer.Serialize(chunk.SemanticUnits);
 
                 await tx.RunAsync(@"
-                    MERGE (c:Chunk {id: $chunkId})
-                    SET c.runId = $runId,
+                    MERGE (c:Chunk {uid: $uid})
+                    SET c.id = $chunkId,
+                        c.runId = $runId,
                         c.sourceFile = $sourceFile,
                         c.chunkIndex = $chunkIndex,
                         c.startLine = $startLine,
@@ -347,10 +381,12 @@ public class Neo4jMigrationRepository
                         c.semanticUnits = $semanticUnits,
                         c.completedAt = $completedAt
                     WITH c
-                    MATCH (f:CobolFile {fileName: $sourceFile, runId: $runId})
+                    MATCH (f:CobolFile {uid: $fileUid})
                     MERGE (f)-[:HAS_CHUNK]->(c)",
                     new
                     {
+                        uid = GraphUid.Make(runId, chunk.SourceFile, "chunk", chunk.ChunkIndex),
+                        fileUid = GraphUid.Make(runId, chunk.SourceFile),
                         chunkId,
                         runId,
                         sourceFile = chunk.SourceFile,
@@ -388,8 +424,9 @@ public class Neo4jMigrationRepository
                 var signatureId = $"{runId}:{signature.SourceFile}:{signature.LegacyName}";
 
                 await tx.RunAsync(@"
-                    MERGE (s:Signature {id: $signatureId})
-                    SET s.runId = $runId,
+                    MERGE (s:Signature {uid: $uid})
+                    SET s.id = $signatureId,
+                        s.runId = $runId,
                         s.sourceFile = $sourceFile,
                         s.legacyName = $legacyName,
                         s.targetMethodName = $targetMethodName,
@@ -397,10 +434,12 @@ public class Neo4jMigrationRepository
                         s.returnType = $returnType,
                         s.definedInChunk = $definedInChunk
                     WITH s
-                    MATCH (f:CobolFile {fileName: $sourceFile, runId: $runId})
-                    MERGE (f)-[:DEFINES_SIGNATURE]->(s)",
+                    MATCH (f:CobolFile {uid: $fileUid})
+                    MERGE (f)-[:DEFINES]->(s)",
                     new
                     {
+                        uid = GraphUid.Make(runId, signature.SourceFile, signature.LegacyName),
+                        fileUid = GraphUid.Make(runId, signature.SourceFile),
                         signatureId,
                         runId,
                         sourceFile = signature.SourceFile,
@@ -677,11 +716,10 @@ public class Neo4jMigrationRepository
         {
             await session.ExecuteWriteAsync(async tx =>
             {
-                var chunkId = $"{runId}:{sourceFile}:{chunkIndex}";
                 var completedAt = status == "Completed" ? DateTime.UtcNow.ToString("o") : null;
 
                 var query = @"
-                    MATCH (c:Chunk {id: $chunkId})
+                    MATCH (c:Chunk {uid: $uid})
                     SET c.status = $status";
 
                 if (completedAt != null)
@@ -693,7 +731,7 @@ public class Neo4jMigrationRepository
 
                 await tx.RunAsync(query, new
                 {
-                    chunkId,
+                    uid = GraphUid.Make(runId, sourceFile, "chunk", chunkIndex),
                     status,
                     completedAt,
                     tokensUsed = tokensUsed ?? 0,
