@@ -114,7 +114,8 @@ services:
     environment:
       - NEO4J_URI=bolt://cobol-rekt-neo4j:7687
       - NEO4J_USER=neo4j
-      - NEO4J_PASSWORD=${NEO4J_PASSWORD:?Run ./doctor.sh setup and set NEO4J_PASSWORD in Config/ai-config.local.env}
+      # Connects to the REKT graph, so it needs that graph's password, not the migration one.
+      - NEO4J_PASSWORD=${REKT_NEO4J_PASSWORD:-${NEO4J_PASSWORD:?Run ./doctor.sh setup and set NEO4J_PASSWORD in Config/ai-config.local.env}}
       - REKT_CONTAINER=${REKT_CONTAINER:-cobol-rekt}
       - REKT_OUTPUT_DIR=/output
       - SOURCE_DIR=/source
