@@ -236,6 +236,8 @@ The Copilot SDK runs its own bundled Copilot runtime, which signs in one of two 
 
 Runs print the credential they use (`🔐 GitHub Copilot auth: ...`), and `dotnet run -- list-models` shows it before listing the models your account can use. `GITHUB_COPILOT_TOKEN`, written by older versions of setup, is still read.
 
+Each Copilot request times out after 15 minutes, which only guards against a request that never finishes. Set `COPILOT_REQUEST_TIMEOUT_SECONDS` to change it, for example when high-effort conversions of very large programs need longer.
+
 **Model-Aware Reasoning** — The framework auto-detects model capabilities from the model ID and adapts its reasoning strategy:
 
 | Model Family | Detection | Reasoning Strategy | Applied Via |
