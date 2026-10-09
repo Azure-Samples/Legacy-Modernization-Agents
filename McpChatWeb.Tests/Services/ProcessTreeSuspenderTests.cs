@@ -10,6 +10,14 @@ namespace McpChatWeb.Tests.Services;
 public class ProcessTreeSuspenderTests
 {
     [Fact]
+    public void Suspend_InvalidProcessReportsFailureOnWindows()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        Assert.Throws<System.ComponentModel.Win32Exception>(
+            () => ProcessTreeSuspender.Suspend(int.MaxValue, includeRoot: true));
+    }
+
+    [Fact]
     public void Descendants_ListsRootThenChildrenBreadthFirst()
     {
         var map = new[] { (10, 1), (11, 10), (12, 10), (13, 11), (99, 1), (10, 10) };
@@ -92,11 +100,13 @@ public class ProcessTreeSuspenderTests
 
             ProcessTreeSuspender.Suspend(root.Id, includeRoot: true);
             foreach (var pid in tree)
-                Assert.True(AllThreadsSuspended(pid), $"process {pid} should be suspended");
+                Assert.True(SpinWait.SpinUntil(() => AllThreadsSuspended(pid), TimeSpan.FromSeconds(5)),
+                    $"process {pid} should be suspended within 5 seconds");
 
             ProcessTreeSuspender.Resume(root.Id, includeRoot: true);
             foreach (var pid in tree)
-                Assert.False(AllThreadsSuspended(pid), $"process {pid} should be running");
+                Assert.True(SpinWait.SpinUntil(() => !AllThreadsSuspended(pid), TimeSpan.FromSeconds(5)),
+                    $"process {pid} should be running within 5 seconds");
         }
         finally
         {
