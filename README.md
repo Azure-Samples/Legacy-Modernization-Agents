@@ -243,6 +243,8 @@ that host environment for the SDK runtime. `GitHubCopilot` is the provider for
 both choices; removing the unimplemented `GitHubModels` provider does not remove
 custom-host Copilot authentication.
 
+Each Copilot request times out after 15 minutes, which only guards against a request that never finishes. Set `COPILOT_REQUEST_TIMEOUT_SECONDS` to change it, for example when high-effort conversions of very large programs need longer.
+
 **Model-Aware Reasoning** — The framework auto-detects model capabilities from the model ID and adapts its reasoning strategy:
 
 | Model Family | Detection | Reasoning Strategy | Applied Via |
@@ -406,11 +408,13 @@ After every `reverse-eng` or full `run`, extracted business logic is persisted t
 
 | Mode | Command | RE context in prompts? |
 |------|---------|------------------------|
-| Full migration | `./doctor.sh run` | ✅ Yes — RE runs first, results injected automatically |
+| Full migration | `./doctor.sh run` | ❌ No — RE runs first and writes its report; add `--reuse-re` to inject it |
 | Pure conversion | `./doctor.sh convert-only` → answer **N** | ❌ No context |
-| Conversion + cached RE | `./doctor.sh convert-only` → answer **Y** | ✅ Yes — loads persisted results from last RE run |
+| Conversion + cached RE | `./doctor.sh convert-only` → answer **Y** | ✅ Yes — loads persisted results from the last RE run over the same source folder |
 
 The `--reuse-re` flag can also be passed directly: `dotnet run -- --source ./source --skip-reverse-engineering --reuse-re`.
+
+Injection is off by default. On IBM Bank-of-Z, converters given the business logic followed the summary instead of translating every paragraph, and dropped error and abend handling. Only a run over the same source folder is reused, so one estate's report never reaches another. A file whose content changed since that run gets no business logic, and the run lists it. The converters treat the report as context: when it disagrees with the COBOL source or the REKT facts, the source wins first and the facts second.
 
 Persisted RE results are visible in the portal — each run card has a **🔬 RE Results** button that shows per-file story/feature/rule counts and lets you delete results you are unsatisfied with.
 
@@ -1251,7 +1255,7 @@ sequenceDiagram
   - `CobolAnalysis` per file
   - Target language settings (Quarkus vs. .NET)
   - Migration run metadata (for logging & metrics)
-  - `BusinessLogic` records per file (user stories, features, business rules) — injected automatically from RE output in full-pipeline runs, or loaded from DB when `--reuse-re` is used
+  - `BusinessLogic` records per file (user stories, features, business rules) — injected only with `--reuse-re`: from the run's own RE in a full run, or loaded from the DB with `--skip-reverse-engineering`
 - **Outputs:** `CodeFile` records saved under `output/java/` or `output/csharp/`.
 - **Interactions:**
   - Concurrency guards (pipeline slots vs. AI calls) ensure Azure OpenAI limits respected.

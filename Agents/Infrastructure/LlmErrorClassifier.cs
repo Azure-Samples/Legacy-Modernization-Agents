@@ -41,7 +41,7 @@ public static class LlmErrorClassifier
         if (IsRateLimit(ex)) return false;
 
         // Type first. A timeout is transient however its message happens to be worded, and the
-        // Copilot client's own timeout says "did not respond within 5 minutes", in which the
+        // Copilot client's own timeout says "did not respond within N minutes", in which the
         // substring checks below never find the word "timeout".
         if (ex is TimeoutException or HttpRequestException or TaskCanceledException)
             return true;

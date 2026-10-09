@@ -2,6 +2,7 @@ using System.IO;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
+using CobolToQuarkusMigration.Helpers;
 using CobolToQuarkusMigration.Models;
 
 namespace CobolToQuarkusMigration.Persistence;
@@ -294,11 +295,76 @@ CREATE TABLE IF NOT EXISTS business_logic (
     business_rules_json TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(run_id) REFERENCES runs(id) ON DELETE CASCADE,
-    UNIQUE(run_id, file_name)
+    UNIQUE(run_id, file_path)
 );
 CREATE INDEX IF NOT EXISTS idx_business_logic_run ON business_logic(run_id);";
         await command.ExecuteNonQueryAsync(cancellationToken);
+        await UpgradeBusinessLogicKeyAsync(connection, cancellationToken);
         _logger.LogInformation("SQLite database ready at {DatabasePath}", _databasePath);
+    }
+
+    /// <summary>
+    /// Databases created before the key moved to file_path have UNIQUE(run_id, file_name), which
+    /// failed the whole reverse-engineering save when two folders held a copybook of the same name.
+    /// SQLite cannot drop a table constraint, so the table is rebuilt once with its rows kept.
+    /// </summary>
+    private async Task UpgradeBusinessLogicKeyAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    {
+        await using (var check = connection.CreateCommand())
+        {
+            check.CommandText = "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'business_logic'";
+            var sql = await check.ExecuteScalarAsync(cancellationToken) as string;
+            if (sql is null || !sql.Replace(" ", "").Contains("UNIQUE(run_id,file_name)", StringComparison.OrdinalIgnoreCase))
+                return;
+        }
+
+        // SQLite's documented table rebuild: foreign keys off outside the transaction, so rows
+        // whose run was removed earlier are carried over instead of aborting the upgrade.
+        await using (var pragma = connection.CreateCommand())
+        {
+            pragma.CommandText = "PRAGMA foreign_keys = OFF";
+            await pragma.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        try
+        {
+            await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+            await using (var rebuild = connection.CreateCommand())
+            {
+                rebuild.Transaction = transaction;
+                rebuild.CommandText = @"
+    CREATE TABLE business_logic_upgrade (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id INTEGER NOT NULL,
+        file_name TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        is_copybook INTEGER NOT NULL DEFAULT 0,
+        business_purpose TEXT,
+        user_stories_json TEXT,
+        features_json TEXT,
+        business_rules_json TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(run_id) REFERENCES runs(id) ON DELETE CASCADE,
+        UNIQUE(run_id, file_path)
+    );
+    INSERT INTO business_logic_upgrade
+        (id, run_id, file_name, file_path, is_copybook, business_purpose, user_stories_json, features_json, business_rules_json, created_at)
+    SELECT id, run_id, file_name, file_path, is_copybook, business_purpose, user_stories_json, features_json, business_rules_json, created_at
+    FROM business_logic;
+    DROP TABLE business_logic;
+    ALTER TABLE business_logic_upgrade RENAME TO business_logic;
+    CREATE INDEX IF NOT EXISTS idx_business_logic_run ON business_logic(run_id);";
+                await rebuild.ExecuteNonQueryAsync(cancellationToken);
+            }
+            await transaction.CommitAsync(cancellationToken);
+        }
+        finally
+        {
+            await using var pragma = connection.CreateCommand();
+            pragma.CommandText = "PRAGMA foreign_keys = ON";
+            await pragma.ExecuteNonQueryAsync(cancellationToken);
+        }
+        _logger.LogInformation("Upgraded business_logic to one row per file path per run");
     }
 
     public async Task CleanupStaleRunsAsync(CancellationToken cancellationToken = default)
@@ -833,15 +899,34 @@ VALUES ($runId, $fileName, $filePath, $isCopybook, $businessPurpose, $userStorie
         _logger.LogInformation("Persisted business logic for {Count} files in run {RunId}", list.Count, runId);
     }
 
-    public async Task<int?> GetLatestRunIdWithBusinessLogicAsync(CancellationToken cancellationToken = default)
+    public async Task<int?> GetLatestRunIdWithBusinessLogicAsync(string? cobolSourcePath = null, CancellationToken cancellationToken = default)
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync(cancellationToken);
         await using var cmd = connection.CreateCommand();
-        cmd.CommandText = "SELECT MAX(run_id) FROM business_logic";
+        cmd.CommandText = @"
+SELECT DISTINCT bl.run_id, r.cobol_source
+FROM business_logic bl
+LEFT JOIN runs r ON r.id = bl.run_id
+ORDER BY bl.run_id DESC";
 
-        var value = await cmd.ExecuteScalarAsync(cancellationToken);
-        return value is null or DBNull ? null : Convert.ToInt32(value);
+        await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var runId = reader.GetInt32(0);
+            if (cobolSourcePath is null)
+            {
+                return runId;
+            }
+
+            var storedSource = reader.IsDBNull(1) ? null : reader.GetString(1);
+            if (BusinessLogicReuse.SamePath(storedSource, cobolSourcePath))
+            {
+                return runId;
+            }
+        }
+
+        return null;
     }
 
     public async Task<IReadOnlyList<BusinessLogic>> GetBusinessLogicAsync(int runId, CancellationToken cancellationToken = default)
