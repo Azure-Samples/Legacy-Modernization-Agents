@@ -49,6 +49,26 @@ public class ExitCodePropagationTests
         result.ExitCode.Should().Be(1);
     }
 
+    // There is no GitHub Models client: these used to pass validation and then throw inside
+    // ChatClientFactory after the run had started.
+    [Theory]
+    [InlineData("GitHubModels")]
+    [InlineData("GitHub")]
+    public void UnsupportedServiceType_IsRejectedUpFront(string serviceType)
+    {
+        var result = RunCli(
+            new[] { "--source", "source" },
+            withoutAiCredentials: true,
+            env: new Dictionary<string, string>
+            {
+                ["AZURE_OPENAI_SERVICE_TYPE"] = serviceType,
+                ["AZURE_OPENAI_MODEL_ID"] = "gpt-4o",
+            });
+
+        result.Output.Should().Contain($"'{serviceType}' is not supported");
+        result.ExitCode.Should().Be(1);
+    }
+
     // The guard checked for "your-resource" while the template shipped "your-endpoint", so an
     // unedited copy validated successfully and failed later as a DNS error. Pin both literals.
     [Theory]

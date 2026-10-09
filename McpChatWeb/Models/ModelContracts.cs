@@ -64,7 +64,7 @@ public sealed record StartRunRequest(
     string TargetLanguage = "Java",
     string SpeedProfile = "balanced",
     string? SourceFolder = null,
-    string Provider = "AzureOpenAI",  // "AzureOpenAI", "GitHubModels", "CopilotSDK"
+    string? Provider = null,  // "AzureOpenAI" | "GitHubCopilot"; null keeps the portal's configured provider
     string? ModelId = null,            // e.g. "openai/gpt-4o", "claude-opus-4", "gpt-5.3-codex"
     IReadOnlyList<string>? Programs = null  // file names or source-relative paths; null converts everything
 );

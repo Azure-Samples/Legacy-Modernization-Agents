@@ -236,6 +236,13 @@ The Copilot SDK runs its own bundled Copilot runtime, which signs in one of two 
 
 Runs print the credential they use (`🔐 GitHub Copilot auth: ...`), and `dotnet run -- list-models` shows it before listing the models your account can use. `GITHUB_COPILOT_TOKEN`, written by older versions of setup, is still read.
 
+Setup retains both GitHub.com and GitHub Data Residency (custom host) sign-in.
+For a custom host it runs `copilot login --host https://<host>` and saves
+`GITHUB_HOST` in the local configuration. Login-mode token isolation preserves
+that host environment for the SDK runtime. `GitHubCopilot` is the provider for
+both choices; removing the unimplemented `GitHubModels` provider does not remove
+custom-host Copilot authentication.
+
 Each Copilot request times out after 15 minutes, which only guards against a request that never finishes. Set `COPILOT_REQUEST_TIMEOUT_SECONDS` to change it, for example when high-effort conversions of very large programs need longer.
 
 **Model-Aware Reasoning** — The framework auto-detects model capabilities from the model ID and adapts its reasoning strategy:

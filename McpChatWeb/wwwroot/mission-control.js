@@ -136,17 +136,11 @@ async function startRunCommand(command) {
   const speedSelect = document.getElementById('mc-speed-select');
   const nameInput = document.getElementById('mc-run-name');
 
-  const provider = providerSelect?.value || 'AzureOpenAI';
+  const provider = providerSelect?.value || undefined;
   const modelId = modelSelect?.value || '';
   const targetLanguage = langSelect?.value || 'Java';
   const speedProfile = speedSelect?.value || 'balanced';
   const name = nameInput?.value || '';
-
-  // Warn about Copilot SDK sequential processing
-  if (provider === 'CopilotSDK') {
-    const logEl = document.getElementById('mc-run-log');
-    if (logEl) logEl.textContent = '⚠️ Copilot SDK: sequential processing (1 request at a time). This is slower but stable.';
-  }
 
   // Disable all start buttons
   document.querySelectorAll('[data-run-command]').forEach(b => b.disabled = true);

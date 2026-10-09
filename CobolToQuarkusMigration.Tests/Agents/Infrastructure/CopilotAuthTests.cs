@@ -5,6 +5,7 @@ using GitHub.Copilot;
 
 namespace CobolToQuarkusMigration.Tests.Agents.Infrastructure;
 
+[Collection("EnvironmentSensitive")]
 public class CopilotAuthTests
 {
     private const string FineGrained = "github_pat_example";
@@ -165,5 +166,28 @@ public class CopilotAuthTests
     public void ValidateToken_OnlyRejectsClassic(string token, bool valid)
     {
         (CopilotAuth.ValidateToken(token) is null).Should().Be(valid);
+    }
+
+    [Theory]
+    [InlineData("github.com")]
+    [InlineData("customer.ghe.com")]
+    public void Login_PreservesSelectedHostWhenHidingAmbientTokens(string host)
+    {
+        var originalHost = Environment.GetEnvironmentVariable("GITHUB_HOST");
+        var originalToken = Environment.GetEnvironmentVariable("GH_TOKEN");
+        try
+        {
+            Environment.SetEnvironmentVariable("GITHUB_HOST", host);
+            Environment.SetEnvironmentVariable("GH_TOKEN", "gho_unrelated");
+            var options = CopilotAuth.CreateClientOptions(Env(("COPILOT_AUTH", "login"), ("GH_TOKEN", "gho_unrelated")));
+            options.Environment.Should().NotBeNull();
+            options.Environment!["GITHUB_HOST"].Should().Be(host);
+            options.Environment.Keys.Should().NotContain("GH_TOKEN");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GITHUB_HOST", originalHost);
+            Environment.SetEnvironmentVariable("GH_TOKEN", originalToken);
+        }
     }
 }
