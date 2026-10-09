@@ -44,7 +44,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # setting afterwards, so a value that opens an existing volume has to survive re-running setup.
 read_local_config_value() {
     local key="$1"
-    local file="$REPO_ROOT/Config/ai-config.local.env"
+    local file="${2:-$REPO_ROOT/Config/ai-config.local.env}"
     [[ -f "$file" ]] || return 0
 
     local line
@@ -55,6 +55,40 @@ read_local_config_value() {
     value="${value%\"}"; value="${value#\"}"
     value="${value%\'}"; value="${value#\'}"
     printf '%s' "$value"
+}
+
+# Setup owns the AI provider keys and rewrites them; every other key in the previous file
+# (Neo4j passwords, container names and ports, folders, tuning) is put back with its old value.
+# Those values can be the only ones that open existing data volumes, and losing them silently
+# reverted the graph password to the template default.
+SETUP_OWNED_KEYS='^(_[A-Z0-9_]*|AZURE_OPENAI_[A-Z0-9_]*|AISETTINGS__[A-Z0-9_]*|COPILOT_[A-Z0-9_]*|GITHUB_HOST)$'
+
+restore_unowned_config_keys() {
+    local previous="$1" target="$2"
+    [[ -f "$previous" && -f "$target" ]] || return 0
+
+    local merged="$target.merge.$$"
+    awk -v owned="$SETUP_OWNED_KEYS" '
+        function key_of(line) { return match(line, /^[A-Za-z_][A-Za-z0-9_]*=/) ? substr(line, 1, RLENGTH - 1) : "" }
+        FNR == NR {
+            k = key_of($0)
+            if (k != "" && k !~ owned) { if (!(k in keep)) order[++n] = k; keep[k] = $0 }
+            next
+        }
+        {
+            k = key_of($0)
+            if (k in keep) { if (!(k in done)) print keep[k]; done[k] = 1; next }
+            print
+        }
+        END {
+            header = 0
+            for (i = 1; i <= n; i++) {
+                if (order[i] in done) continue
+                if (!header) { print ""; print "# Kept from the previous configuration"; header = 1 }
+                print keep[order[i]]
+            }
+        }
+    ' "$previous" "$target" > "$merged" && mv "$merged" "$target"
 }
 
 # Determine the preferred dotnet CLI (favor .NET 10 installations when available)
@@ -1175,6 +1209,8 @@ run_doctor() {
         fi
     fi
 
+    check_neo4j_graphs || true
+
     echo
     echo -e "${BLUE}🔧 Available Commands${NC}"
     echo "===================="
@@ -1343,6 +1379,13 @@ run_setup() {
     if [ ! -f "$TEMPLATE_CONFIG" ]; then
         echo -e "${RED}❌ Example configuration file not found: $TEMPLATE_CONFIG${NC}"
         return 1
+    fi
+
+    SETUP_PREVIOUS_CONFIG=""
+    if [[ -f "$LOCAL_CONFIG" ]]; then
+        SETUP_PREVIOUS_CONFIG="$(mktemp)"
+        cp "$LOCAL_CONFIG" "$SETUP_PREVIOUS_CONFIG"
+        trap 'rm -f "$SETUP_PREVIOUS_CONFIG"; trap - RETURN' RETURN
     fi
 
     cp "$TEMPLATE_CONFIG" "$LOCAL_CONFIG"
@@ -1584,9 +1627,10 @@ run_setup() {
         # Preserve anything already configured: these values may be the only ones that open
         # the existing Neo4j volumes, and setup rewrites this file wholesale.
         local existing_neo4j existing_rekt existing_source
-        existing_neo4j=$(read_local_config_value NEO4J_PASSWORD)
-        existing_rekt=$(read_local_config_value REKT_NEO4J_PASSWORD)
-        existing_source=$(read_local_config_value COBOL_SOURCE_FOLDER)
+        # Read from the snapshot: the live file is already the template at this point.
+        existing_neo4j=$(read_local_config_value NEO4J_PASSWORD "${SETUP_PREVIOUS_CONFIG:-/dev/null}")
+        existing_rekt=$(read_local_config_value REKT_NEO4J_PASSWORD "${SETUP_PREVIOUS_CONFIG:-/dev/null}")
+        existing_source=$(read_local_config_value COBOL_SOURCE_FOLDER "${SETUP_PREVIOUS_CONFIG:-/dev/null}")
 
         local neo4j_password="${existing_neo4j:-cobol-rekt-2026}"
         local rekt_password="${existing_rekt:-$neo4j_password}"
@@ -1667,6 +1711,8 @@ COPILOT_GITHUB_TOKEN="$ghcp_token"
 EOF
         fi
 
+        restore_unowned_config_keys "$SETUP_PREVIOUS_CONFIG" "$LOCAL_CONFIG"
+
         echo ""
         echo -e "${GREEN}✅ GitHub Copilot SDK configuration written!${NC}"
         echo -e "   Config file: ${BLUE}$LOCAL_CONFIG${NC}"
@@ -1726,7 +1772,7 @@ EOF
     # Prompted like the code model: it was previously left at whatever the file already held,
     # so a stale deployment name survived setup and was used without ever being shown.
     local existing_chat_model
-    existing_chat_model=$(read_local_config_value _CHAT_MODEL)
+    existing_chat_model=$(read_local_config_value _CHAT_MODEL "${SETUP_PREVIOUS_CONFIG:-/dev/null}")
     read -p "Chat Model Deployment Name (default: ${existing_chat_model:-gpt-4o}): " chat_model
     chat_model=${chat_model:-${existing_chat_model:-gpt-4o}}
     sed -i.bak "s|_CHAT_MODEL=\".*\"|_CHAT_MODEL=\"$chat_model\"|" "$LOCAL_CONFIG"
@@ -1738,6 +1784,7 @@ EOF
 
     # Clean up backup file
     rm -f "$LOCAL_CONFIG.bak"
+    restore_unowned_config_keys "$SETUP_PREVIOUS_CONFIG" "$LOCAL_CONFIG"
 
     echo ""
     echo -e "${GREEN}✅ Configuration completed!${NC}"
@@ -2690,6 +2737,69 @@ fi
 if [[ "$NEO4J_BOLT_PORT" != "7687" && -z "${ApplicationSettings__Neo4j__Uri:-}" ]]; then
     export ApplicationSettings__Neo4j__Uri="bolt://localhost:$NEO4J_BOLT_PORT"
 fi
+compose_project_name() {
+    local name="${COMPOSE_PROJECT_NAME:-$(basename "$REPO_ROOT")}"
+    printf '%s' "$name" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-'
+}
+
+# A wrong password is invisible from outside: each container's healthcheck uses the credential
+# baked into it at creation and stays healthy, while the run only warns that the graph is
+# skipped. Another checkout on the same machine can also hold the default names and ports.
+check_neo4j_graphs() {
+    command -v docker >/dev/null 2>&1 || return 0
+    docker info >/dev/null 2>&1 || return 0
+
+    echo
+    echo -e "${BLUE}🔍 Checking Neo4j graphs...${NC}"
+    local project entry name key port state owner password holder problems=0
+    project="$(compose_project_name)"
+    for entry in "$NEO4J_CONTAINER:NEO4J_PASSWORD:$NEO4J_BOLT_PORT" \
+                 "$REKT_NEO4J_CONTAINER:REKT_NEO4J_PASSWORD:$REKT_NEO4J_BOLT_PORT"; do
+        IFS=: read -r name key port <<<"$entry"
+
+        holder=$(docker ps --filter "publish=$port" --format '{{.Names}}' 2>/dev/null | grep -vx "$name" | head -1)
+        if [[ -n "$holder" ]]; then
+            echo -e "  ${RED}❌ Port $port (for $name) is already published by $holder${NC}"
+            problems=$((problems + 1))
+        fi
+
+        if ! state=$(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null); then
+            echo -e "  ${BLUE}ℹ️  $name: not created yet${NC}"
+            continue
+        fi
+        owner=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$name" 2>/dev/null)
+        if [[ -n "$owner" && "$owner" != "$project" ]]; then
+            echo -e "  ${RED}❌ $name belongs to another checkout (compose project '$owner')${NC}"
+            problems=$((problems + 1))
+            continue
+        fi
+        if [[ "$state" != "running" ]]; then
+            echo -e "  ${BLUE}ℹ️  $name: $state${NC}"
+            continue
+        fi
+
+        password="$(read_local_config_value "$key")"
+        [[ -n "$password" || "$key" != "REKT_NEO4J_PASSWORD" ]] || password="$(read_local_config_value NEO4J_PASSWORD)"
+        if container_exec "$name" cypher-shell -u neo4j -p "$password" "RETURN 1" >/dev/null 2>&1; then
+            echo -e "  ${GREEN}✅ $name: $key authenticates${NC}"
+        else
+            echo -e "  ${RED}❌ $name: $key in Config/ai-config.local.env does not authenticate${NC}"
+            echo "     The password was fixed when its data volume was first created. Set that value,"
+            echo "     or remove the container and its volume to re-initialise the graph."
+            problems=$((problems + 1))
+        fi
+    done
+
+    if (( problems > 0 )); then
+        echo
+        echo "  To run beside another checkout, give this one its own names and ports in"
+        echo "  Config/ai-config.local.env (see 'Containers and ports' in Config/ai-config.env.example):"
+        echo "    NEO4J_CONTAINER, NEO4J_HTTP_PORT, NEO4J_BOLT_PORT,"
+        echo "    REKT_NEO4J_CONTAINER, REKT_NEO4J_HTTP_PORT, REKT_NEO4J_BOLT_PORT"
+        return 1
+    fi
+}
+
 # Compose commands take service names, which stay fixed while container names vary.
 REKT_NEO4J_SERVICE="cobol-rekt-neo4j"
 REKT_SERVICE="cobol-rekt"
