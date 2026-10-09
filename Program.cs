@@ -115,11 +115,12 @@ internal static class Program
         skipReverseEngineeringOption.AddAlias("-skip-re");
         rootCommand.AddOption(skipReverseEngineeringOption);
 
-        var reuseReOption = new Option<bool>("--reuse-re", () => false, "When combined with --skip-reverse-engineering, loads business logic persisted from the latest previous RE run and injects it into the conversion prompts")
+        var reuseReOption = new Option<bool>("--reuse-re", () => false, "Inject reverse-engineered business logic into the conversion prompts (off by default). In a full run this uses the run's own reverse engineering; with --skip-reverse-engineering it loads the latest persisted run over the same source folder")
         {
             Arity = ArgumentArity.ZeroOrOne
         };
         reuseReOption.AddAlias("-reuse-re");
+        reuseReOption.AddAlias("--use-re-context");
         rootCommand.AddOption(reuseReOption);
 
         var programsOption = new Option<string>(
@@ -804,8 +805,12 @@ internal static class Program
                     Environment.Exit(1);
                 }
 
-                // Store reverse engineering result so migration can use the extracted business logic
+                // Kept for the dependency map; its business logic reaches the prompts only with --reuse-re.
                 reverseEngResultForMigration = reverseEngResult;
+                if (!reuseRe && !reverseEngineerOnly)
+                {
+                    Console.WriteLine("ℹ️  Business logic from reverse engineering is saved to the report but not injected into conversion prompts. Pass --reuse-re to inject it.");
+                }
 
                 // If reverse-engineer-only mode, exit here
                 if (reverseEngineerOnly)
@@ -823,28 +828,42 @@ internal static class Program
                     // output: a run terminated before its business logic was persisted leaves a
                     // newer id with nothing behind it, and selecting that silently converted the
                     // whole estate without any business-logic context.
-                    var sourceRunId = await migrationRepository.GetLatestRunIdWithBusinessLogicAsync();
+                    var sourceRunId = await migrationRepository.GetLatestRunIdWithBusinessLogicAsync(cobolSource);
                     if (sourceRunId is int reuseRunId)
                     {
                         var savedLogic = await migrationRepository.GetBusinessLogicAsync(reuseRunId);
-                        if (savedLogic.Count > 0)
+                        var snapshot = await migrationRepository.SearchCobolFilesAsync(reuseRunId, null);
+                        var freshness = BusinessLogicReuse.FilterStale(savedLogic, snapshot, BusinessLogicReuse.ReadFileOrNull);
+                        var reuseRun = await migrationRepository.GetRunAsync(reuseRunId);
+                        var reuseDate = reuseRun?.StartedAt.ToString("yyyy-MM-dd HH:mm") ?? "unknown date";
+
+                        if (freshness.Changed.Count > 0)
                         {
-                            Console.WriteLine($"♻️  Loaded {savedLogic.Count} business logic entries from Run #{reuseRunId}.");
+                            Console.WriteLine($"⚠️  --reuse-re: {freshness.Changed.Count} file(s) changed since Run #{reuseRunId}; their business logic is ignored: {string.Join(", ", freshness.Changed.Take(10))}{(freshness.Changed.Count > 10 ? ", ..." : "")}");
+                        }
+                        if (freshness.Missing.Count > 0)
+                        {
+                            logger.LogInformation("--reuse-re: {Count} file(s) from Run #{RunId} are no longer present: {Files}", freshness.Missing.Count, reuseRunId, string.Join(", ", freshness.Missing));
+                        }
+
+                        if (freshness.Fresh.Count > 0)
+                        {
+                            Console.WriteLine($"♻️  Loaded {freshness.Fresh.Count} business logic entries from Run #{reuseRunId} ({reuseDate}).");
                             reverseEngResultForMigration = new ReverseEngineeringResult
                             {
                                 Success = true,
                                 RunId = reuseRunId,
-                                BusinessLogicExtracts = savedLogic.ToList()
+                                BusinessLogicExtracts = freshness.Fresh
                             };
                         }
                         else
                         {
-                            Console.WriteLine($"⚠️  --reuse-re: Run #{reuseRunId} holds no business logic. Migration will proceed without business logic context.");
+                            Console.WriteLine($"⚠️  --reuse-re: Run #{reuseRunId} holds no business logic that still matches the source. Migration will proceed without business logic context.");
                         }
                     }
                     else
                     {
-                        Console.WriteLine("⚠️  --reuse-re: no previous run has persisted business logic. Run a reverse-engineering pass first, or drop --skip-reverse-engineering. Migration will proceed without business logic context.");
+                        Console.WriteLine($"⚠️  --reuse-re: no previous run over {cobolSource} has persisted business logic. Run a reverse-engineering pass on this source first, or drop --skip-reverse-engineering. Migration will proceed without business logic context.");
                     }
                 }
                 else
@@ -948,7 +967,9 @@ internal static class Program
                         Console.WriteLine($"{status} - {current}/{total}");
                     },
                     existingRunId: resumeRunId,
-                    businessLogicExtracts: reverseEngResultForMigration?.BusinessLogicExtracts,
+                    // Model-written business logic made converters follow the summary instead of
+                    // translating every paragraph (Bank-of-Z), so it is injected only on request.
+                    businessLogicExtracts: reuseRe ? reverseEngResultForMigration?.BusinessLogicExtracts : null,
                     existingDependencyMap: reverseEngResultForMigration?.DependencyMap,
                     runType: skipReverseEngineering ? "Conversion Only" : "Full Migration");
 

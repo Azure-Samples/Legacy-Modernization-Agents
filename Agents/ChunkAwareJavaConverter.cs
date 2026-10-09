@@ -450,8 +450,7 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
             : string.Empty;
 
         // Inject business logic context from reverse engineering when available
-        var businessLogic = _businessLogicExtracts
-            .FirstOrDefault(bl => string.Equals(bl.FileName, chunk.SourceFile, StringComparison.OrdinalIgnoreCase));
+        var businessLogic = BusinessLogicReuse.Find(_businessLogicExtracts, chunk.SourceFile);
         var businessLogicContext = businessLogic is null
             ? string.Empty
             : PromptLoader.LoadSectionValidated("ChunkAwareJavaConverter", "BusinessLogic", new Dictionary<string, string>
