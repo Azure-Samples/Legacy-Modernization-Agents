@@ -39,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Helper scripts on Windows Git Bash.** `helper-scripts/demo.sh`, `status.sh` and `open-portal.sh` no longer need `lsof` or `pkill`. They share `tools/lib/ports.sh` with `doctor.sh` and honour `MCP_WEB_PORT`, `NEO4J_HTTP_PORT` and `NEO4J_BOLT_PORT` instead of hardcoded ports.
 - **`GITHUB_TOKEN` no longer overrides Azure Entra ID.** The CLI copied `GITHUB_TOKEN` into the AI API key for every provider, so an Azure setup that relied on Entra ID used the GitHub token as an Azure key whenever it was set in the shell.
 - **Removed the unbacked GitHub Models provider.** `GitHub`/`GitHubModels` passed validation and then failed inside the client factory, and the portal's `GitHubModels` option ran on the Copilot SDK. They are now rejected with a clear message. `GitHubCopilot` means the Copilot SDK everywhere; settings docs no longer describe it as `models.github.ai` with a PAT.
 - **Portal provider selection.** Runs keep the portal's configured provider unless the request names one; an omitted provider no longer defaults to Azure OpenAI. The stale rule that forced Copilot runs to one request at a time was removed (parallel Copilot runs are rate-limited by the shared limiter).

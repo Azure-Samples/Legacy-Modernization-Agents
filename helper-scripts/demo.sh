@@ -8,6 +8,11 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=../tools/lib/ports.sh
+source "$REPO_ROOT/tools/lib/ports.sh"
+PORTAL_PORT="${MCP_WEB_PORT:-5028}"
+NEO4J_HTTP_PORT="${NEO4J_HTTP_PORT:-7474}"
+NEO4J_BOLT_PORT="${NEO4J_BOLT_PORT:-7687}"
 cd "$REPO_ROOT"
 
 LOCAL_CONFIG="$REPO_ROOT/Config/ai-config.local.env"
@@ -48,12 +53,12 @@ neo4j_running() {
 
 # Function to check if Neo4j ports are in use
 neo4j_port_conflict() {
-    lsof -ti:7474 >/dev/null 2>&1 || lsof -ti:7687 >/dev/null 2>&1
+    port_in_use "$NEO4J_HTTP_PORT" || port_in_use "$NEO4J_BOLT_PORT"
 }
 
 # Function to check if portal is running
 portal_running() {
-    lsof -ti:5028 >/dev/null 2>&1
+    port_in_use "$PORTAL_PORT"
 }
 
 # Check for required tools
@@ -77,9 +82,9 @@ echo "📊 Step 1: Starting Neo4j graph database..."
 if neo4j_running; then
     echo "✅ Neo4j is already running"
 elif neo4j_port_conflict; then
-    echo "⚠️  Warning: Neo4j ports (7474/7687) are in use by another process"
+    echo "⚠️  Warning: Neo4j ports (${NEO4J_HTTP_PORT}/${NEO4J_BOLT_PORT}) are in use by another process"
     echo "   Checking if it's accessible..."
-    if curl -s http://localhost:7474 > /dev/null 2>&1; then
+    if curl -s http://localhost:${NEO4J_HTTP_PORT} > /dev/null 2>&1; then
         echo "✅ Neo4j is accessible and ready to use"
     else
         echo "❌ Ports are blocked but Neo4j is not accessible"
@@ -96,7 +101,7 @@ else
     max_attempts=30
     attempt=0
     while [ $attempt -lt $max_attempts ]; do
-        if curl -s http://localhost:7474 > /dev/null 2>&1; then
+        if curl -s http://localhost:${NEO4J_HTTP_PORT} > /dev/null 2>&1; then
             echo "✅ Neo4j is ready"
             break
         fi
@@ -129,20 +134,13 @@ echo ""
 echo "🧹 Step 3: Cleaning up old portal instances..."
 if portal_running; then
     echo "   Stopping existing portal..."
-    pkill -f "dotnet.*McpChatWeb" 2>/dev/null || true
+    kill_port_listeners "$PORTAL_PORT" || true
     sleep 2
-    
-    # Force kill if still running
-    if portal_running; then
-        echo "   Force stopping portal..."
-        pkill -9 -f "dotnet.*McpChatWeb" 2>/dev/null || true
-        sleep 1
-    fi
     
     # Final check
     if portal_running; then
-        echo "❌ Failed to stop existing portal on port 5028"
-        echo "   Run: lsof -ti:5028 | xargs kill -9"
+        echo "❌ Failed to stop existing portal on port ${PORTAL_PORT}"
+        echo "   Stop the process listening on port $PORTAL_PORT and retry"
         exit 1
     fi
 fi
@@ -151,11 +149,11 @@ echo ""
 
 # Step 4: Start the portal
 echo "🚀 Step 4: Starting web portal..."
-echo "   Portal will be available at: http://localhost:5028"
-echo "   Neo4j Browser available at: http://localhost:7474"
+echo "   Portal will be available at: http://localhost:${PORTAL_PORT}"
+echo "   Neo4j Browser available at: http://localhost:${NEO4J_HTTP_PORT}"
 echo ""
 echo "📝 Quick Demo Guide:"
-echo "   1. Open http://localhost:5028 in your browser"
+echo "   1. Open http://localhost:${PORTAL_PORT} in your browser"
 echo "   2. Try the suggestion chips for quick queries"
 echo "   3. View the dependency graph on the right panel"
 echo "   4. Ask questions about COBOL files and dependencies"
@@ -177,13 +175,13 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_ROOT/McpChatWeb"
 
 # Start portal in background
-nohup dotnet run --urls "http://localhost:5028" > /tmp/cobol-portal.log 2>&1 &
+nohup dotnet run --urls "http://localhost:${PORTAL_PORT}" > /tmp/cobol-portal.log 2>&1 &
 PORTAL_PID=$!
 
 # Wait for portal to be ready (max 30 seconds)
 echo -n "⏳ Waiting for portal to start"
 for i in {1..30}; do
-  HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5028/ 2>/dev/null || echo "000")
+  HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:${PORTAL_PORT}/ 2>/dev/null || echo "000")
   if [ "$HTTP_CODE" = "200" ]; then
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -191,18 +189,18 @@ for i in {1..30}; do
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
     echo "🌐 Access your demo:"
-    echo "   Portal:        http://localhost:5028"
-    echo "   Neo4j Browser: http://localhost:7474"
+    echo "   Portal:        http://localhost:${PORTAL_PORT}"
+    echo "   Neo4j Browser: http://localhost:${NEO4J_HTTP_PORT}"
     echo ""
     echo "📊 Viewing Migration Run: $MCP_RUN_ID"
     echo ""
     echo "💡 In VS Code Dev Container:"
     echo "   1. Check the 'PORTS' tab (next to Terminal)"
-    echo "   2. Click the globe icon next to port 5028 to open in browser"
+    echo "   2. Click the globe icon next to port ${PORTAL_PORT} to open in browser"
     echo "   3. Or Ctrl+Click the URL above"
     echo ""
     echo "🛑 To stop the demo:"
-    echo "   Portal: kill $PORTAL_PID  (or: pkill -f 'dotnet.*McpChatWeb')"
+    echo "   Portal: kill $PORTAL_PID"
     echo "   Neo4j:  docker-compose down"
     echo ""
     echo "📝 View portal logs: tail -f /tmp/cobol-portal.log"
@@ -211,8 +209,8 @@ for i in {1..30}; do
     # Try to open in VS Code Simple Browser if available
     if [ -n "$VSCODE_GIT_IPC_HANDLE" ] || [ -n "$VSCODE_IPC_HOOK" ]; then
         echo "🚀 Attempting to open portal in VS Code..."
-        echo "   If it doesn't auto-open, check the PORTS tab and click the globe icon next to port 5028"
-        code --open-url http://localhost:5028 2>/dev/null || true
+        echo "   If it doesn't auto-open, check the PORTS tab and click the globe icon next to port ${PORTAL_PORT}"
+        code --open-url http://localhost:${PORTAL_PORT} 2>/dev/null || true
     fi
     
     echo ""
@@ -220,7 +218,7 @@ for i in {1..30}; do
     echo "✨ Quick Commands:"
     echo "   Status:      ./helper-scripts/status.sh"
     echo "   Open Portal: ./helper-scripts/open-portal.sh"
-    echo "   Stop All:    docker-compose down && pkill -f McpChatWeb"
+    echo "   Stop All:    docker-compose down && kill $PORTAL_PID"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
     
@@ -239,8 +237,8 @@ echo "📝 Check logs:"
 echo "   tail -50 /tmp/cobol-portal.log"
 echo ""
 echo "🔧 Troubleshooting:"
-echo "   1. Check if port 5028 is in use: lsof -i :5028"
-echo "   2. Try manually: cd McpChatWeb && MCP_RUN_ID=$MCP_RUN_ID dotnet run --urls \"http://localhost:5028\""
+echo "   1. Check if port $PORTAL_PORT is in use: helper-scripts/status.sh"
+echo "   2. Try manually: cd McpChatWeb && MCP_RUN_ID=$MCP_RUN_ID dotnet run --urls \"http://localhost:${PORTAL_PORT}\""
 echo "   3. Check .NET version: dotnet --version (should be 9.x)"
 echo ""
 echo "🧹 Cleaning up failed process..."
