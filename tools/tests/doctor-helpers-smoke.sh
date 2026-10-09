@@ -15,11 +15,15 @@ eval "$(sed -n \
     -e '/^verify_python_candidate()/,/^}/p' \
     -e '/^detect_python()/,/^}/p' \
     -e '/^graph_populator_python()/,/^}/p' \
+    -e '/^read_local_config_value()/,/^}/p' \
+    -e '/^SETUP_OWNED_KEYS=/p' \
+    -e '/^restore_unowned_config_keys()/,/^}/p' \
     "$REPO_ROOT/doctor.sh")"
 # shellcheck source=../lib/ports.sh
 source "$REPO_ROOT/tools/lib/ports.sh"
 
-for fn in verify_python_candidate detect_python port_listen_pids kill_port_listeners port_in_use graph_populator_python; do
+for fn in verify_python_candidate detect_python port_listen_pids kill_port_listeners port_in_use graph_populator_python \
+    read_local_config_value restore_unowned_config_keys; do
     declare -F "$fn" >/dev/null || fail "doctor.sh or tools/lib/ports.sh defines $fn"
 done
 
@@ -94,6 +98,43 @@ if kill_port_listeners "$port"; then
 else
     pass "kill_port_listeners reports nothing to kill on a free port"
 fi
+
+# Re-running setup replaces the AI provider keys but keeps everything else: the Neo4j
+# passwords are the only values that open existing graph volumes.
+config_dir="$(mktemp -d)"
+cat >"$config_dir/previous" <<'EOF'
+_CHAT_MODEL="old-model"
+COPILOT_GITHUB_TOKEN="old-token"
+NEO4J_PASSWORD="volume-password"
+NEO4J_CONTAINER="migration-neo4j-second"
+COBOL_SOURCE_FOLDER="estates/one"
+EOF
+cat >"$config_dir/current" <<'EOF'
+_CHAT_MODEL="new-model"
+NEO4J_PASSWORD="template-default"
+COBOL_SOURCE_FOLDER="source"
+EOF
+restore_unowned_config_keys "$config_dir/previous" "$config_dir/current"
+check_value() {
+    local key="$1" expected="$2" actual
+    actual="$(read_local_config_value "$key" "$config_dir/current")"
+    if [[ "$actual" == "$expected" ]]; then
+        pass "setup merge: $key is '${expected:-<unset>}'"
+    else
+        fail "setup merge: $key is '${expected:-<unset>}' (got '$actual')"
+    fi
+}
+check_value _CHAT_MODEL new-model
+check_value COPILOT_GITHUB_TOKEN ""
+check_value NEO4J_PASSWORD volume-password
+check_value NEO4J_CONTAINER migration-neo4j-second
+check_value COBOL_SOURCE_FOLDER estates/one
+if [[ "$(grep -c '^NEO4J_PASSWORD=' "$config_dir/current")" == 1 ]]; then
+    pass "setup merge writes each key once"
+else
+    fail "setup merge writes each key once"
+fi
+rm -rf "$config_dir"
 
 echo ""
 if [[ $failures -gt 0 ]]; then

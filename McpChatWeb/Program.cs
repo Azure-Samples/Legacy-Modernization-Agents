@@ -4726,7 +4726,8 @@ app.MapPost("/api/models/save-config", async (McpChatWeb.Models.SaveModelConfigR
 				sb.AppendLine("TEST_OUTPUT_FOLDER=\"TestOutput\"");
 			}
 
-			await File.WriteAllTextAsync(configPath, sb.ToString());
+			var previousConfig = File.Exists(configPath) ? await File.ReadAllTextAsync(configPath) : null;
+			await File.WriteAllTextAsync(configPath, McpChatWeb.Services.LocalConfigFile.MergeUnownedKeys(sb.ToString(), previousConfig));
 			configSaved = true;
 			Console.WriteLine($"💾 Config saved to {configPath}");
 		}

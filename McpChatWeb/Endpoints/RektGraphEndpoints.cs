@@ -515,7 +515,7 @@ public static class RektGraphEndpoints
     }
 
     private const string Unavailable =
-        "REKT graph is unavailable. Start it with ./doctor.sh rekt-full and confirm bolt://localhost:7688 is reachable.";
+        "REKT graph is unavailable. Start it with ./doctor.sh rekt-full and confirm Neo4j is reachable (NEO4J_BOLT_PORT, default 7687).";
 
     private static IResult EmptyArchitecture(string note) =>
         Results.Ok(new
