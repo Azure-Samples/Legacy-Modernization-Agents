@@ -986,7 +986,7 @@ run_doctor() {
     fi
 
     # Check documentation
-    if [[ -f "$REPO_ROOT/docs/REVERSE_ENGINEERING_ARCHITECTURE.md" ]]; then
+    if [[ -f "$REPO_ROOT/docs/reverse-engineering-architecture.md" ]]; then
         echo -e "${GREEN}✅ Reverse engineering architecture documentation found${NC}"
     else
         echo -e "${YELLOW}⚠️  Missing reverse engineering architecture documentation${NC}"
