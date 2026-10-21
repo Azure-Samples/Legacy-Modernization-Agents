@@ -1465,7 +1465,7 @@ See [Parallel Jobs Formula](#parallel-jobs-formula) for chunking configuration d
 
 - [Smart Chunking & Token Architecture](docs/smart-chunking-architecture.md) - Full diagrams, constants reference, and complexity scoring details
 - [Smart Chunking Guide](docs/smart-chunking-deep-dive.md) - Deep technical details
-- [Architecture Documentation](docs/REVERSE_ENGINEERING_ARCHITECTURE.md) - System design
+- [Architecture Documentation](docs/reverse-engineering-architecture.md) - System design
 - [Estate Mission Control and the AI Loop](docs/estate-mission-control.md) - Deterministic clusters, carve scores and waves for converting the estate slice by slice, and a per-run view of model calls, retries, fallbacks and quality gates
 - [Dependency Health & Semantic Flow Explorer](docs/dependency-health-and-flow-explorer.md) - Deterministic parse-fidelity, topology and JCL chain surfaces for deciding conversion order
 - [JCL job facts](docs/jcl-job-facts.md) - Deterministic JCL parser: procedures, symbols, conditions, Db2 runs and dataset lineage across jobs
@@ -1486,6 +1486,7 @@ See [Parallel Jobs Formula](#parallel-jobs-formula) for chunking configuration d
 |---|---|---|
 | [Documentation Updater](.github/workflows/documentation-updater.lock.yml) | Push / PR to `main` | Checks documentation completeness and reports gaps via issues or PR comments |
 | [Documentation Audit](.github/workflows/documentation-audit.lock.yml) | Weekly schedule | Performs a full audit of project documentation for accuracy and completeness |
+| [Cross-platform checks](.github/workflows/cross-platform.yml) | Pull request (selected paths), push to `main`, or manual | Checks shell scripts, `doctor.sh` helpers, and portal process control on Ubuntu and Windows (Git Bash) |
 | [Test Enhancer](.github/workflows/test-enhancer.lock.yml) | On demand | Agentic workflow that analyzes the codebase and proposes improvements to test coverage |
 | [Branch Reviewer](.github/agents/pr-review.agent.md) | On demand (Copilot CLI) | Reviews branch changes, summarizes commits, and detects breaking changes vs. `main` |
 
