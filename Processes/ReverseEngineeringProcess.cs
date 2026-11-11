@@ -53,9 +53,13 @@ public class ReverseEngineeringProcess
         string cobolSourceFolder,
         string outputFolder,
         Action<string, int, int>? progressCallback = null,
-        int? existingRunId = null)
+        int? existingRunId = null,
+        CancellationToken cancellationToken = default)
     {
         var result = new ReverseEngineeringResult();
+        var startTime = DateTime.UtcNow;
+        var runId = existingRunId ?? 0;
+        IDisposable? attempt = null;
 
         try
         {
@@ -65,12 +69,17 @@ public class ReverseEngineeringProcess
             _logger.LogInformation("Output folder: {OutputFolder}", outputFolder);
 
             // Create run if needed
-            int runId = existingRunId ?? 0;
             if (!existingRunId.HasValue && _migrationRepository != null)
             {
                 runId = await _migrationRepository.StartRunAsync(cobolSourceFolder, outputFolder);
                 _logger.LogInformation("Started new run ID: {RunId}", runId);
             }
+            if (runId > 0)
+            {
+                result.RunId = runId;
+                attempt = AiLoopEvents.BeginRun(runId, "reverse-engineering", "analysis", outputFolder, cancellationToken);
+            }
+            cancellationToken.ThrowIfCancellationRequested();
 
             // Load glossary if available
             await LoadGlossaryAsync();
@@ -82,6 +91,7 @@ public class ReverseEngineeringProcess
             progressCallback?.Invoke("Scanning for COBOL files", 1, totalSteps);
 
             var cobolFiles = await _fileHelper.ScanDirectoryForCobolFilesAsync(cobolSourceFolder);
+            cancellationToken.ThrowIfCancellationRequested();
             PromptLoader.CodebaseProfile = PromptLoader.GenerateCodebaseProfile(cobolFiles);
             _enhancedLogger.ShowSuccess($"Found {cobolFiles.Count} COBOL files");
             _logger.LogInformation("Found {Count} COBOL files", cobolFiles.Count);
@@ -91,6 +101,9 @@ public class ReverseEngineeringProcess
             if (cobolFiles.Count == 0)
             {
                 _enhancedLogger.ShowWarning("No COBOL files found. Nothing to reverse engineer.");
+                if (_migrationRepository != null && runId > 0)
+                    await _migrationRepository.CompleteRunAsync(runId, "NoFiles", "No COBOL programs discovered");
+                if (runId > 0) AiLoopEvents.Finished(runId, "no_files", startTime);
                 return result;
             }
 
@@ -136,6 +149,8 @@ public class ReverseEngineeringProcess
             }
 
             // Step 4: Map dependencies
+            if (_dependencyMapperAgent is Agents.Infrastructure.AgentBase dependencyAgent)
+                dependencyAgent.SourceDirectory = Path.GetFullPath(cobolSourceFolder);
             _enhancedLogger.ShowStep(4, totalSteps, "Dependency Mapping", "Analyzing inter-program dependencies and copybook usage");
             progressCallback?.Invoke("Mapping dependencies", 4, totalSteps);
 
@@ -161,6 +176,7 @@ public class ReverseEngineeringProcess
             {
                 await _migrationRepository.CompleteRunAsync(runId, "Completed", "Reverse Engineering Only");
             }
+            if (runId > 0) AiLoopEvents.Finished(runId, "completed", startTime);
 
             result.Success = true;
             result.OutputFolder = outputFolder;
@@ -169,11 +185,32 @@ public class ReverseEngineeringProcess
         }
         catch (Exception ex)
         {
+            if (runId > 0)
+            {
+                AiLoopEvents.Finished(runId, ex is OperationCanceledException ? "cancelled" : "failed",
+                    startTime, ex.GetType().Name, ex.GetType().Name);
+                if (_migrationRepository != null)
+                {
+                    try
+                    {
+                        await _migrationRepository.CompleteRunAsync(runId,
+                            ex is OperationCanceledException ? "Cancelled" : "Failed", ex.GetType().Name);
+                    }
+                    catch (Exception persistenceError)
+                    {
+                        _logger.LogWarning(persistenceError, "Failed to finalize reverse engineering run {RunId}", runId);
+                    }
+                }
+            }
             _logger.LogError(ex, "Error during reverse engineering process");
             _enhancedLogger.ShowError($"Reverse engineering failed: {ex.Message}");
             result.Success = false;
             result.ErrorMessage = ex.Message;
             throw;
+        }
+        finally
+        {
+            attempt?.Dispose();
         }
     }
 

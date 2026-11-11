@@ -30,7 +30,7 @@ internal static class Program
         Directory.CreateDirectory(logsDirectory);
 
         // Only enable live logging for migration runs (not MCP server or conversation modes)
-        var isMigrationRun = !args.Contains("mcp") && !args.Contains("conversation") && !args.Contains("estate-graph");
+        var isMigrationRun = !args.Contains("mcp") && !args.Contains("conversation") && !args.Contains("estate-graph") && !args.Contains("dependency-plan");
         LiveLogWriter? liveLogWriter = null;
 
         if (isMigrationRun)
@@ -87,7 +87,7 @@ internal static class Program
         cobolSourceOption.AddAlias("-s");
         rootCommand.AddOption(cobolSourceOption);
 
-        var javaOutputOption = new Option<string>("--java-output", () => "output", "Path to the folder for Java output files")
+        var javaOutputOption = new Option<string>("--java-output", "Path to the folder for Java output files")
         {
             Arity = ArgumentArity.ZeroOrOne
         };
@@ -130,6 +130,9 @@ internal static class Program
             + "Empty converts the whole estate. Copybooks always travel with the selection.");
         programsOption.AddAlias("-programs");
         rootCommand.AddOption(programsOption);
+        var dependencyModeOption = new Option<string?>("--dependency-mode",
+            "Dependency policy: strict (default), draft (eligible whole programs), or partial (source-isolated Spring routines; not verified).");
+        rootCommand.AddOption(dependencyModeOption);
 
         var configOption = new Option<string>("--config", () => "Config/appsettings.json", "Path to the configuration file")
         {
@@ -162,6 +165,7 @@ internal static class Program
 
         // Curated program-facts.json extraction from REKT artifacts.
         rootCommand.AddCommand(CobolToQuarkusMigration.Cli.ProgramFactsCommand.Build(loggerFactory));
+        rootCommand.AddCommand(CobolToQuarkusMigration.Cli.DependencyPlanCommand.Build(loggerFactory));
 
         // Deterministic JCL job facts and dataset lineage.
         rootCommand.AddCommand(CobolToQuarkusMigration.Cli.JclFactsCommand.Build());
@@ -185,7 +189,8 @@ internal static class Program
 
             await RunMigrationAsync(loggerFactory, logger, fileHelper, settingsHelper, cobolSource,
                 javaOutput, reverseEngineerOutput, reverseEngineerOnly, skipReverseEngineering,
-                reuseRe, configPath, resume, SplitPrograms(programs));
+                reuseRe, configPath, resume, SplitPrograms(programs),
+                context.ParseResult.GetValueForOption(dependencyModeOption));
         });
 
         return rootCommand;
@@ -563,7 +568,7 @@ internal static class Program
         return false;
     }
 
-    private static async Task RunMigrationAsync(ILoggerFactory loggerFactory, ILogger logger, FileHelper fileHelper, SettingsHelper settingsHelper, string cobolSource, string javaOutput, string reverseEngineerOutput, bool reverseEngineerOnly, bool skipReverseEngineering, bool reuseRe, string configPath, bool resume, IReadOnlyList<string>? programSelection = null)
+    private static async Task RunMigrationAsync(ILoggerFactory loggerFactory, ILogger logger, FileHelper fileHelper, SettingsHelper settingsHelper, string? cobolSource, string? javaOutput, string reverseEngineerOutput, bool reverseEngineerOnly, bool skipReverseEngineering, bool reuseRe, string configPath, bool resume, IReadOnlyList<string>? programSelection = null, string? dependencyMode = null)
     {
         try
         {
@@ -572,7 +577,18 @@ internal static class Program
             var settings = loadedSettings ?? new AppSettings();
 
             LoadEnvironmentVariables();
-            OverrideSettingsFromEnvironment(settings);
+            OverrideSettingsFromEnvironment(settings, cobolSource, javaOutput);
+            if (dependencyMode is not null || Environment.GetEnvironmentVariable(ConversionEligibility.EnvironmentVariable) is { Length: > 0 })
+                settings.ConversionSettings.DependencyMode = ConversionEligibility.ValidateMode(
+                    dependencyMode ?? Environment.GetEnvironmentVariable(ConversionEligibility.EnvironmentVariable)!);
+            if (ConversionEligibility.IsDraft(settings.ConversionSettings) || ConversionEligibility.IsPartial(settings.ConversionSettings))
+            {
+                if (reverseEngineerOnly)
+                    throw new ArgumentException("Draft dependency mode applies to conversion, not reverse-engineering-only runs.");
+                skipReverseEngineering = true;
+                reuseRe = false;
+                logger.LogWarning("PARTIAL DRAFT — NOT VERIFIED: skipping reverse engineering/reused context; only independently justified whole programs may convert.");
+            }
 
             if (programSelection is { Count: > 0 })
             {
@@ -828,7 +844,7 @@ internal static class Program
                     // output: a run terminated before its business logic was persisted leaves a
                     // newer id with nothing behind it, and selecting that silently converted the
                     // whole estate without any business-logic context.
-                    var sourceRunId = await migrationRepository.GetLatestRunIdWithBusinessLogicAsync(cobolSource);
+                    var sourceRunId = await migrationRepository.GetLatestRunIdWithBusinessLogicAsync(settings.ApplicationSettings.CobolSourceFolder);
                     if (sourceRunId is int reuseRunId)
                     {
                         var savedLogic = await migrationRepository.GetBusinessLogicAsync(reuseRunId);
@@ -863,7 +879,7 @@ internal static class Program
                     }
                     else
                     {
-                        Console.WriteLine($"⚠️  --reuse-re: no previous run over {cobolSource} has persisted business logic. Run a reverse-engineering pass on this source first, or drop --skip-reverse-engineering. Migration will proceed without business logic context.");
+                        Console.WriteLine($"⚠️  --reuse-re: no previous run over {settings.ApplicationSettings.CobolSourceFolder} has persisted business logic. Run a reverse-engineering pass on this source first, or drop --skip-reverse-engineering. Migration will proceed without business logic context.");
                     }
                 }
                 else
@@ -887,7 +903,7 @@ internal static class Program
                     outputFolder = targetLang == TargetLanguage.CSharp ? "output/csharp" : "output/java";
                 }
 
-                var langName = targetLang == TargetLanguage.CSharp ? "C# .NET" : "Java Quarkus";
+                var langName = targetLang == TargetLanguage.CSharp ? "C# .NET" : JavaGeneration.TargetName(settings.ConversionSettings);
 
                 // ═══════════════════════════════════════════════════════════════════
                 // QUALITY GATE: Final verification before migration starts
@@ -973,8 +989,14 @@ internal static class Program
                     existingDependencyMap: reverseEngResultForMigration?.DependencyMap,
                     runType: skipReverseEngineering ? "Conversion Only" : "Full Migration");
 
-                Console.WriteLine("Migration process completed successfully.");
-                Console.WriteLine($"  📊 Stats: {migrationStats.TotalFiles} files ({migrationStats.DirectFiles} direct, {migrationStats.ChunkedFiles} chunked)");
+                Console.WriteLine(Environment.ExitCode == 0
+                    ? ConversionEligibility.IsPartial(settings.ConversionSettings)
+                        ? "Source-isolated partial conversion generated — NOT VERIFIED. See partial-tree-plan.json; excluded routines are not implemented."
+                        : ConversionEligibility.IsDraft(settings.ConversionSettings)
+                        ? "Partial draft generated — NOT VERIFIED. See draft-conversion-plan.json for eligible and blocked programs."
+                        : "Migration process completed successfully."
+                    : $"Migration finished with failed validation (exit code {Environment.ExitCode}); inspect the migration report.");
+                Console.WriteLine($"  📊 {(ConversionEligibility.IsDraft(settings.ConversionSettings) ? "Selected-input routing (not converted output)" : "Stats")}: {migrationStats.TotalFiles} files ({migrationStats.DirectFiles} direct, {migrationStats.ChunkedFiles} chunked)");
                 if (migrationStats.TotalChunks > 0)
                 {
                     Console.WriteLine($"  📦 Total chunks processed: {migrationStats.TotalChunks}");
@@ -1072,7 +1094,8 @@ internal static class Program
         return value;
     }
 
-    internal static void OverrideSettingsFromEnvironment(AppSettings settings)
+    internal static void OverrideSettingsFromEnvironment(AppSettings settings,
+        string? sourceOverride = null, string? javaOutputOverride = null)
     {
         var aiSettings = settings.AISettings ??= new AISettings();
         var applicationSettings = settings.ApplicationSettings ??= new ApplicationSettings();
@@ -1189,12 +1212,16 @@ internal static class Program
             aiSettings.ContextWindowSize = size;
         }
 
-        if (Environment.GetEnvironmentVariable("COBOL_SOURCE_FOLDER") is { Length: > 0 } cobolSource)
+        if (Environment.GetEnvironmentVariable("JAVA_FRAMEWORK") is { Length: > 0 } javaFramework)
+            settings.ConversionSettings.JavaFramework = javaFramework;
+        JavaGeneration.ValidateFramework(settings.ConversionSettings.JavaFramework);
+
+        if ((sourceOverride ?? Environment.GetEnvironmentVariable("COBOL_SOURCE_FOLDER")) is { Length: > 0 } cobolSource)
         {
             applicationSettings.CobolSourceFolder = cobolSource;
         }
 
-        if (Environment.GetEnvironmentVariable("JAVA_OUTPUT_FOLDER") is { Length: > 0 } javaOutput)
+        if ((javaOutputOverride ?? Environment.GetEnvironmentVariable("JAVA_OUTPUT_FOLDER")) is { Length: > 0 } javaOutput)
         {
             applicationSettings.JavaOutputFolder = javaOutput;
         }
@@ -1386,7 +1413,7 @@ internal static class Program
         // doctor.sh calls list-models during setup to populate the model picker, before any
         // config file has been written; its handler talks to the Copilot SDK, not Azure.
         return command is not
-            ("program-facts" or "rekt-scan-cache" or "conversation" or "list-models" or "estate-graph"
+            ("program-facts" or "dependency-plan" or "rekt-scan-cache" or "conversation" or "list-models" or "estate-graph"
                 or "jcl-facts" or "jcl-jobs" or "jcl-programs");
     }
 
@@ -1772,7 +1799,7 @@ internal static class Program
             Console.WriteLine("🎯 Next Steps:");
             Console.WriteLine("   1. Review the generated documentation");
             Console.WriteLine("   2. Decide on your modernization strategy");
-            Console.WriteLine("   3. Run full migration if desired: dotnet run --source <path> --java-output <path>");
+            Console.WriteLine("   3. Run full migration if desired: ./doctor.sh run --source <path> --language Java");
             Console.WriteLine();
         }
         catch (Exception ex)

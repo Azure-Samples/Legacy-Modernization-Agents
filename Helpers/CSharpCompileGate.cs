@@ -82,7 +82,10 @@ public static class CSharpCompileGate
         ILogger logger,
         IReadOnlyDictionary<string, string>? cobolByName = null,
         CancellationToken cancellationToken = default,
-        CallTargetRegistry? callTargets = null)
+        CallTargetRegistry? callTargets = null,
+        IReadOnlyList<CodeFile>? generatedFiles = null,
+        IReadOnlyList<CobolFile>? sourceFiles = null,
+        string? sourceDirectory = null)
     {
         var timeout = TimeSpan.FromSeconds(Math.Max(1, settings.BuildTimeoutSeconds));
         var maxRounds = Math.Max(0, settings.MaxRepairRounds);
@@ -144,7 +147,13 @@ public static class CSharpCompileGate
                 logger.LogInformation("[CompileGate] Round {Round}: imported a missing namespace in {File}", round, file);
             }
 
-            var tasks = CompileRepairPlanner.Plan(toRepair, typeIndex, sources, sharedNamespace, settings, cobolByName)
+            if ((generatedFiles is null) != (sourceFiles is null))
+                throw new InvalidOperationException("Compile repair requires both generated files and original sources.");
+            var tasks = (generatedFiles is not null && sourceFiles is not null
+                    ? CompileRepairPlanner.PlanWithSourceIdentity(
+                        toRepair, typeIndex, sources, sharedNamespace, settings,
+                        new CompileRepairSourceIndex(runFolder, generatedFiles, sourceFiles, sourceDirectory))
+                    : CompileRepairPlanner.Plan(toRepair, typeIndex, sources, sharedNamespace, settings, cobolByName))
                 .Where(t => !t.File.EndsWith(".g.cs", StringComparison.OrdinalIgnoreCase))
                 .ToList();
 

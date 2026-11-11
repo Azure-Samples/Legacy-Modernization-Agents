@@ -21,7 +21,7 @@ public class ChatLogger
         _logger = logger;
         _logDirectory = logDirectory;
         _messages = new List<ChatMessage>();
-        _sessionId = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
+        _sessionId = $"{DateTime.Now:yyyy-MM-dd_HH-mm-ss}_{Guid.NewGuid():N}";
         _providerName = providerName;
         
         // Ensure log directory exists
@@ -31,13 +31,17 @@ public class ChatLogger
     /// <summary>
     /// Logs a message sent to AI
     /// </summary>
-    public void LogUserMessage(string agentName, string fileName, string prompt, string systemMessage = "")
+    public void LogUserMessage(string agentName, string fileName, string prompt, string systemMessage = "",
+        string? requestId = null)
     {
         lock (_lockObject)
         {
             var message = new ChatMessage
             {
                 Timestamp = DateTime.UtcNow,
+                RunId = MetricsSink.CurrentRunId,
+                AttemptId = MetricsSink.CurrentAttemptId,
+                RequestId = requestId,
                 AgentName = agentName,
                 FileName = fileName,
                 MessageType = "USER_TO_AI",
@@ -55,13 +59,17 @@ public class ChatLogger
     /// <summary>
     /// Logs a response received from AI
     /// </summary>
-    public void LogAIResponse(string agentName, string fileName, string response, int actualTokens = 0)
+    public void LogAIResponse(string agentName, string fileName, string response, int actualTokens = 0,
+        string? requestId = null)
     {
         lock (_lockObject)
         {
             var message = new ChatMessage
             {
                 Timestamp = DateTime.UtcNow,
+                RunId = MetricsSink.CurrentRunId,
+                AttemptId = MetricsSink.CurrentAttemptId,
+                RequestId = requestId,
                 AgentName = agentName,
                 FileName = fileName,
                 MessageType = "AI_TO_USER",
@@ -103,9 +111,29 @@ public class ChatLogger
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase
         };
         
-        var jsonContent = JsonSerializer.Serialize(_messages, options);
+        ChatMessage[] messages;
+        lock (_lockObject) messages = _messages.ToArray();
+        var jsonContent = JsonSerializer.Serialize(messages, options);
         await File.WriteAllTextAsync(filePath, jsonContent);
-        
+
+        var root = Environment.GetEnvironmentVariable("REPO_ROOT") ?? Directory.GetCurrentDirectory();
+        var relative = Path.GetRelativePath(root, Path.GetFullPath(filePath));
+        if (!Path.IsPathRooted(relative) && relative != ".."
+            && !relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+            && !relative.StartsWith(".." + Path.AltDirectorySeparatorChar, StringComparison.Ordinal))
+        {
+            foreach (var group in messages.Where(message => message.RunId is > 0 && message.AttemptId is not null)
+                         .GroupBy(message => (message.RunId, message.AttemptId)))
+                MetricsSink.Emit(group.Key.RunId!.Value.ToString(), new
+                {
+                    Event = "chat_log_saved",
+                    AttemptId = group.Key.AttemptId,
+                    Path = relative.Replace('\\', '/'),
+                    MessageCount = group.Count(),
+                    Format = "json",
+                });
+        }
+
         _logger.LogInformation("Chat log JSON saved to: {FilePath}", filePath);
     }
 
@@ -251,6 +279,9 @@ public class ChatLogger
 public class ChatMessage
 {
     public DateTime Timestamp { get; set; }
+    public int? RunId { get; set; }
+    public string? AttemptId { get; set; }
+    public string? RequestId { get; set; }
     public string AgentName { get; set; } = string.Empty;
     public string FileName { get; set; } = string.Empty;
     public string MessageType { get; set; } = string.Empty; // "USER_TO_AI" or "AI_TO_USER"

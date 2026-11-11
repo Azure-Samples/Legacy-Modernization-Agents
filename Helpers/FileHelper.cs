@@ -58,7 +58,7 @@ public class FileHelper
         var cblFiles = SourceTypeRegistry.EnumerateProgramFiles(directory).ToArray();
         foreach (var filePath in cblFiles)
         {
-            var content = await File.ReadAllTextAsync(filePath);
+            var content = await CobolSourceReader.ReadAsync(filePath);
             cobolFiles.Add(new CobolFile
             {
                 FileName = Path.GetFileName(filePath),
@@ -83,7 +83,7 @@ public class FileHelper
         }
         foreach (var filePath in cpyFiles)
         {
-            var content = await File.ReadAllTextAsync(filePath);
+            var content = await CobolSourceReader.ReadAsync(filePath);
             cobolFiles.Add(new CobolFile
             {
                 FileName = Path.GetFileName(filePath),
@@ -184,7 +184,9 @@ public class FileHelper
             // two disagree it is the declaration that has to be honoured. Java will not build a
             // file whose package and folder differ, and every generated file was landing in the
             // fallback directory while declaring something else entirely.
-            var declaredNamespace = ExtractPackageNameFromContent(codeFile.Content);
+            var declaredNamespace = defaultExtension.Equals(".java", StringComparison.OrdinalIgnoreCase)
+                ? JavaSourceLexical.PackageName(codeFile.Content) ?? "com.example.generated"
+                : ExtractPackageNameFromContent(codeFile.Content);
             var sanitizedNamespace = SanitizePackageName(codeFile.NamespaceName);
 
             if (string.IsNullOrEmpty(sanitizedNamespace))
@@ -244,7 +246,9 @@ public class FileHelper
             var normalizedContent = NormalizeLineEndings(codeFile.Content);
 
             // Write with retry logic for Windows file locking issues
-            await WriteFileWithRetryAsync(filePath, normalizedContent);
+            await GeneratedOutputOwnership.WriteAsync(
+                outputDirectory, filePath, codeFile, () => WriteFileWithRetryAsync(filePath, normalizedContent));
+            codeFile.FilePath = filePath;
 
             _logger.LogInformation("Saved code file: {FilePath}", filePath);
 
@@ -505,7 +509,10 @@ public class FileHelper
         await SaveDependencyMapAsync(dependencyMap, Path.Join(outputFolder, "dependency-map.json"));
         await File.WriteAllTextAsync(
             Path.Join(outputFolder, "dependency-diagram.md"),
-            $"# COBOL Dependency Diagram\n\n```mermaid\n{dependencyMap.MermaidDiagram}\n```");
+            $"# COBOL Dependency Diagram\n\n" +
+            "> This is a visualization, not independent dependency discovery or proof of complete REKT evidence. " +
+            "See `dependency-map.json` evidence diagnostics and analysis insights for sources and limitations.\n\n" +
+            $"```mermaid\n{dependencyMap.MermaidDiagram}\n```");
     }
 
     /// <summary>

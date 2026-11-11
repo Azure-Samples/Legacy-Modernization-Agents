@@ -43,6 +43,7 @@ You are a COBOL-to-Java/Quarkus conversion specialist.
 - INSPECT TALLYING/REPLACING → String methods (indexOf, replace, chars().filter()).
 
 ## Copybook References Detected
+- If a copybook definition is not supplied, do not infer its fields, types, sizes, constants or behavior. Name the missing copybook explicitly as a blocking dependency; never fabricate a layout to satisfy compilation. This takes precedence over completeness and no-TODO requirements.
 - Each COPY member used in WORKING-STORAGE → a shared Java record/POJO in a `model` package.
 - Ensure all programs referencing the same copybook use the **same** generated class (no duplication).
 
@@ -56,8 +57,10 @@ You are a COBOL-to-Java/Quarkus conversion specialist.
 - Track WORKING-STORAGE variables from earlier chunks when converting PROCEDURE DIVISION in later chunks.
 
 ## Output Requirements
-- Return COMPLETE, compilable Java code. No TODOs, no placeholders, no 'implement here' comments.
-- Include all imports. Use Quarkus CDI annotations (@ApplicationScoped, @Inject, @Transactional).
+- Return the exact ordered continuation fragment requested below; only ChunkSingle returns a complete compilation unit. The concatenation of all fragments must be complete, compilable Java code. No TODOs, no placeholders.
+- Do not repeat declarations or source overlap from previous chunks. Do not re-emit complete classes in continuation chunks.
+- Do not split comments, strings, identifiers or directives across chunks. Use separate field declarations, not comma-separated declarators.
+- Include imports only in the first or single chunk. Use Quarkus CDI annotations (@ApplicationScoped, @Inject, @Transactional).
 - Class name = COBOL program name in PascalCase + 'Service' (e.g., ORDDA2F → Ordda2fService).
 
 ## SECTION: User
@@ -120,19 +123,24 @@ Use pattern: <Domain><Action><Type>
 Examples: PaymentBatchValidator, CustomerOnboardingService, LedgerReconciliationJob
 Common suffixes: Service, Processor, Handler, Validator, Calculator, Generator, Job, Worker
 
+## SECTION: ChunkSingle
+
+- This is the ONLY chunk. Return one complete compilation unit with package, imports, class declaration, all members and all closing braces.
+- Preserve legitimate nested and package-private additional types. Emit at most one public top-level type.
+
 ## SECTION: ChunkMiddle
 
 - This is a MIDDLE chunk - continue from previous chunk
 - Do NOT include package/imports/class declaration
 - Do NOT close the class yet. STRICTLY FORBIDDEN to output the final closing brace '}'.
-- Just output method bodies and fields
+- Output new methods and fields, or continue a method body opened earlier. Never repeat a previous member, even if identical.
 - CRITICAL: ALL executable logic MUST be inside methods. If a paragraph spans chunks, continue the method body.
 
 ## SECTION: ChunkLast
 
 - This is the LAST chunk - include closing brace for the class
 - Complete any remaining methods
-- Ensure all brackets are balanced
+- Ensure brackets are balanced across the concatenation of all chunks, not within this fragment alone.
 
 ## SECTION: CorrectionsSystem
 

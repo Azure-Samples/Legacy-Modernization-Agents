@@ -27,6 +27,7 @@ public class MigrationProcess
     private readonly EnhancedLogger _enhancedLogger;
     private readonly ChatLogger _chatLogger;
     private readonly IMigrationRepository _migrationRepository;
+    private readonly MigrationExecutionOptions _execution;
     private int? _activeRunId;
 
     private ICobolAnalyzerAgent? _cobolAnalyzerAgent;
@@ -34,6 +35,11 @@ public class MigrationProcess
     private ICodeConverterAgent? _codeConverterAgent;
     private CompileGateResult? _compileGate;
     private CompileRepairAgent? _compileRepairAgent;
+    private ParityRepairAgent? _parityRepairAgent;
+    private GeneratedOutputValidationResult? _validation;
+    private string? _sourceRoot;
+    private CallTargetRegistry SourceCallTargets => CallTargetRegistryHolder.GetOrBuild(
+        _execution.RepositoryRoot ?? Directory.GetCurrentDirectory(), _sourceRoot!);
     private IDependencyMapperAgent? _dependencyMapperAgent;
 
     /// <summary>
@@ -51,20 +57,23 @@ public class MigrationProcess
         ILogger<MigrationProcess> logger,
         FileHelper fileHelper,
         AppSettings settings,
-        IMigrationRepository migrationRepository)
+        IMigrationRepository migrationRepository,
+        MigrationExecutionOptions? execution = null)
     {
         _responsesClient = responsesClient;
         _chatClient = chatClient;
         _logger = logger;
         _fileHelper = fileHelper;
         _settings = settings;
+        _execution = execution ?? new();
         _enhancedLogger = new EnhancedLogger(logger);
         var providerName = chatClient is Agents.Infrastructure.CopilotChatClient
             ? "GitHub Copilot"
             : settings.AISettings.ServiceType?.Equals("OpenAI", StringComparison.OrdinalIgnoreCase) == true
                 ? "OpenAI"
                 : "Azure OpenAI";
-        _chatLogger = new ChatLogger(LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger<ChatLogger>(), providerName: providerName);
+        _chatLogger = new ChatLogger(LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger<ChatLogger>(),
+            logDirectory: _execution.LogDirectory, providerName: providerName);
         _migrationRepository = migrationRepository;
     }
 
@@ -91,7 +100,7 @@ public class MigrationProcess
 
         // Initialize converter based on target language - uses Responses API (codex for code generation)
         var targetLang = _settings.ApplicationSettings.TargetLanguage;
-        var targetName = targetLang == TargetLanguage.CSharp ? "C#" : "Java Quarkus";
+        var targetName = targetLang == TargetLanguage.CSharp ? "C#" : JavaGeneration.TargetName(_settings.ConversionSettings);
 
         _enhancedLogger.ShowStep(2, 3, $"{targetName}ConverterAgent", $"Converting COBOL to {targetName}");
         if (targetLang == TargetLanguage.CSharp)
@@ -118,6 +127,9 @@ public class MigrationProcess
             _javaConverterAgent = javaAgent;
             _codeConverterAgent = javaAgent;
         }
+
+        _parityRepairAgent = ParityRepairAgent.Create(_responsesClient, _chatClient,
+            loggerFactory.CreateLogger<ParityRepairAgent>(), _settings.AISettings.ResolveJavaConverterModelId(), _settings);
 
         // DependencyMapperAgent
         _enhancedLogger.ShowStep(3, 3, "DependencyMapperAgent", "Mapping COBOL dependencies and generating diagrams");
@@ -161,20 +173,17 @@ public class MigrationProcess
         string javaOutputFolder,
         Action<string, int, int>? progressCallback = null,
         int? existingRunId = null,
-        string? runType = null)
+        string? runType = null,
+        CancellationToken cancellationToken = default)
     {
         var migrationTargetLang = _settings.ApplicationSettings.TargetLanguage;
-        var targetName = migrationTargetLang == TargetLanguage.CSharp ? "C# .NET" : "JAVA QUARKUS";
+        _validation = null;
+        _compileGate = null;
+        var targetName = migrationTargetLang == TargetLanguage.CSharp ? "C# .NET" : JavaGeneration.TargetName(_settings.ConversionSettings);
         _enhancedLogger.ShowSectionHeader($"COBOL TO {targetName} MIGRATION", "AI-Powered Legacy Code Modernization");
 
         _logger.LogInformation("COBOL source folder: {CobolSourceFolder}", cobolSourceFolder);
         _logger.LogInformation("{TargetLanguage} output folder: {OutputFolder}", targetName, javaOutputFolder);
-
-        if (_cobolAnalyzerAgent == null || _codeConverterAgent == null || _dependencyMapperAgent == null)
-        {
-            _enhancedLogger.ShowError("Agents not initialized. Call InitializeAgents() first.");
-            throw new InvalidOperationException("Agents not initialized. Call InitializeAgents() first.");
-        }
 
         var totalSteps = 6;
         var startTime = DateTime.UtcNow;
@@ -194,29 +203,46 @@ public class MigrationProcess
 
         // Ambient run id so every agent's LLM call is attributed to this run,
         // not just the converters that are handed the id explicitly.
-        MetricsSink.CurrentRunId = runId;
-        AiLoopEvents.Started(runId, existingRunId.HasValue ? "resume" : "standard", targetName, javaOutputFolder);
-
-        // Show initial dashboard
-        _enhancedLogger.ShowDashboardSummary(
-            runId,
-            targetName,
-            "RUNNING",
-            "Initializing",
-            0);
-
-        // Pass run ID to agent for Spec Lookup (works for both C# and Java converters)
-        _codeConverterAgent?.SetRunId(runId);
-
-        // Also call directly on _javaConverterAgent if it's separate (though _codeConverterAgent covers it in current logic)
-        // Kept for safety if instantiation logic changes
-        if (_javaConverterAgent != null && _javaConverterAgent != _codeConverterAgent)
-        {
-            _javaConverterAgent.SetRunId(runId);
-        }
+        using var attempt = AiLoopEvents.BeginRun(runId, existingRunId.HasValue ? "resume" : "standard",
+            targetName, javaOutputFolder, cancellationToken, reuseExistingAttempt: true);
 
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            var sourceRoot = Path.GetFullPath(cobolSourceFolder);
+            _sourceRoot = sourceRoot;
+            if (_cobolAnalyzerAgent == null || _codeConverterAgent == null || _dependencyMapperAgent == null)
+                throw new InvalidOperationException("Agents not initialized. Call InitializeAgents() first.");
+            // Show initial dashboard
+            _enhancedLogger.ShowDashboardSummary(
+                runId,
+                targetName,
+                "RUNNING",
+                "Initializing",
+                0);
+
+            // Pass run ID to agent for Spec Lookup (works for both C# and Java converters)
+            _codeConverterAgent?.SetRunId(runId);
+            var repositoryRoot = _execution.RepositoryRoot
+                ?? Environment.GetEnvironmentVariable("REPO_ROOT") ?? Directory.GetCurrentDirectory();
+            foreach (var agent in new AgentBase?[]
+                     {
+                         _codeConverterAgent as AgentBase, _cobolAnalyzerAgent as AgentBase,
+                         _dependencyMapperAgent as AgentBase, _compileRepairAgent, _parityRepairAgent
+                     })
+            {
+                if (agent is null) continue;
+                agent.SourceDirectory = sourceRoot;
+                agent.RepositoryRoot = repositoryRoot;
+            }
+
+            // Also call directly on _javaConverterAgent if it's separate (though _codeConverterAgent covers it in current logic)
+            // Kept for safety if instantiation logic changes
+            if (_javaConverterAgent != null && _javaConverterAgent != _codeConverterAgent)
+            {
+                _javaConverterAgent.SetRunId(runId);
+            }
+
             // Step 1: Scan the COBOL source folder for COBOL files
             _enhancedLogger.ShowStep(1, totalSteps, "File Discovery", "Scanning for COBOL programs and copybooks");
             _enhancedLogger.ShowDashboardSummary(runId, targetName, "RUNNING", "File Discovery", 5);
@@ -225,6 +251,7 @@ public class MigrationProcess
             progressCallback?.Invoke("Scanning for COBOL files", 1, totalSteps);
 
             var cobolFiles = await _fileHelper.ScanDirectoryForCobolFilesAsync(cobolSourceFolder);
+            cancellationToken.ThrowIfCancellationRequested();
             PromptLoader.CodebaseProfile = PromptLoader.GenerateCodebaseProfile(cobolFiles);
             await _migrationRepository.SaveCobolFilesAsync(runId, cobolFiles);
 
@@ -247,15 +274,27 @@ public class MigrationProcess
             _enhancedLogger.ShowDashboardSummary(runId, targetName, "RUNNING", "Dependency Analysis", 20);
             progressCallback?.Invoke("Analyzing dependencies", 2, totalSteps);
 
+            cobolFiles = ConversionEligibility.Select(cobolFiles, sourceRoot,
+                ConversionEligibility.FactsDirectory(repositoryRoot), javaOutputFolder,
+                _settings.ConversionSettings, _existingDependencyMap);
+            if (ConversionEligibility.IsDraft(_settings.ConversionSettings))
+            {
+                _existingDependencyMap = null;
+                PromptLoader.CodebaseProfile = PromptLoader.GenerateCodebaseProfile(cobolFiles);
+            }
+
             DependencyMap dependencyMap;
             if (_existingDependencyMap != null)
             {
                 dependencyMap = _existingDependencyMap;
+                dependencyMap.MermaidDiagram = await _dependencyMapperAgent.GenerateMermaidDiagramAsync(
+                    dependencyMap, enableAiGeneration: false);
                 _enhancedLogger.ShowSuccess($"Reusing dependency map from reverse engineering ({dependencyMap.Dependencies.Count} relationships)");
             }
             else
             {
-                _enhancedLogger.LogBehindTheScenes("MIGRATION", "STEP_2_START", "Starting AI-powered dependency analysis");
+                _enhancedLogger.LogBehindTheScenes("MIGRATION", "STEP_2_START",
+                    "Mapping dependencies from hash-verified REKT disk exports with separate advisory AI commentary");
                 dependencyMap = await _dependencyMapperAgent.AnalyzeDependenciesAsync(cobolFiles, new List<CobolAnalysis>());
                 _enhancedLogger.ShowSuccess($"Dependency analysis complete - {dependencyMap.Dependencies.Count} relationships found");
             }
@@ -330,7 +369,8 @@ public class MigrationProcess
                             Content = jf.Content,
                             ClassName = jf.ClassName,
                             NamespaceName = jf.PackageName,
-                            OriginalCobolFileName = jf.OriginalCobolFileName
+                            OriginalCobolFileName = jf.OriginalCobolFileName,
+                            OriginalSourcePath = jf.OriginalSourcePath
                         };
                     }
                     return cf; // Already a CodeFile, keep it
@@ -344,7 +384,8 @@ public class MigrationProcess
                     Content = cf.Content,
                     ClassName = cf.ClassName,
                     PackageName = cf.NamespaceName,
-                    OriginalCobolFileName = cf.OriginalCobolFileName
+                    OriginalCobolFileName = cf.OriginalCobolFileName,
+                    OriginalSourcePath = cf.OriginalSourcePath
                 };
             }).ToList();
 
@@ -400,7 +441,8 @@ public class MigrationProcess
             // on to use, which on a measured run accounted for 1028 of 1140 compiler errors. The
             // usings and package references are read out of the generated code and written beside
             // it, so the folder can be built without one being written by hand.
-            JclJobGeneration.Run(_settings.JclJobs, cobolSourceFolder, javaOutputFolder, targetLang, _logger);
+            if (!ConversionEligibility.IsDraft(_settings.ConversionSettings))
+                JclJobGeneration.Run(_settings.JclJobs, cobolSourceFolder, javaOutputFolder, targetLang, _logger);
 
             if (targetLang == TargetLanguage.CSharp)
             {
@@ -408,7 +450,7 @@ public class MigrationProcess
                 {
                     var scaffold = GeneratedProjectScaffold.Write(
                         javaOutputFolder, ConversionNamespacePolicy.Root("C#"),
-                        callTargets: CallTargetRegistryHolder.ForRunningRepository(),
+                        callTargets: SourceCallTargets,
                         sharedNamespace: ConversionNamespacePolicy.ForSharedTypes("C#"));
 
                     if (scaffold.WroteAnything)
@@ -436,10 +478,11 @@ public class MigrationProcess
                     _compileRepairAgent,
                     _settings.CompileGate,
                     _logger,
-                    cobolFiles
-                        .GroupBy(f => Path.GetFileNameWithoutExtension(f.FileName), StringComparer.OrdinalIgnoreCase)
-                        .ToDictionary(g => g.Key, g => g.First().Content, StringComparer.OrdinalIgnoreCase),
-                        callTargets: CallTargetRegistryHolder.ForRunningRepository());
+                    callTargets: SourceCallTargets,
+                    cancellationToken: cancellationToken,
+                    generatedFiles: javaFiles,
+                    sourceFiles: cobolFiles,
+                    sourceDirectory: cobolSourceFolder);
                 RefreshFromDisk(javaFiles);
             }
 
@@ -449,7 +492,7 @@ public class MigrationProcess
                 "Generating comprehensive migration report and documentation");
             progressCallback?.Invoke("Generating reports", 6, totalSteps);
 
-            await GenerateMigrationReportAsync(cobolFiles, javaFiles, dependencyMap, javaOutputFolder, startTime);
+            await GenerateMigrationReportAsync(cobolFiles, javaFiles, dependencyMap, javaOutputFolder, startTime, cancellationToken);
 
             // Export conversation logs
             var logPath = Path.Combine(javaOutputFolder, "migration-conversation-log.md");
@@ -485,34 +528,51 @@ public class MigrationProcess
                 _logger.LogWarning(ex, "Failed to export chat logs, but migration completed successfully");
             }
 
-            _enhancedLogger.ShowSuccess("Migration process completed successfully!");
-            _enhancedLogger.ShowDashboardSummary(runId, targetName, "COMPLETED", "Finished", 100);
+            if (_validation is { Accepted: false })
+            {
+                const string failure = "Generated output failed validation; see the migration report.";
+                _enhancedLogger.ShowWarning(failure);
+                _enhancedLogger.ShowDashboardSummary(runId, targetName, "FAILED", "Validation failed", 100);
+                await _migrationRepository.CompleteRunAsync(runId, "Failed", failure);
+                AiLoopEvents.Finished(runId, "failed", startTime, failure, "ValidationFailed");
+                progressCallback?.Invoke(failure, totalSteps, totalSteps);
+                return;
+            }
+            _enhancedLogger.ShowSuccess(ConversionEligibility.IsDraft(_settings.ConversionSettings)
+                ? "Partial draft generated — NOT VERIFIED; see draft-conversion-plan.json." : "Migration process completed successfully!");
+            _enhancedLogger.ShowDashboardSummary(runId, targetName,
+                ConversionEligibility.IsDraft(_settings.ConversionSettings) ? "PARTIAL — NOT VERIFIED" : "COMPLETED", "Finished", 100);
 
             var totalTime = DateTime.UtcNow - startTime;
             _enhancedLogger.LogBehindTheScenes("MIGRATION", "COMPLETION",
                 $"Total migration completed in {totalTime.TotalSeconds:F1} seconds");
             _logger.LogInformation("Total migration time: {TotalTime}", totalTime);
-            await _migrationRepository.CompleteRunAsync(runId, "Completed", runType);
-            AiLoopEvents.Finished(runId, "completed", startTime);
+            var terminalStatus = ConversionEligibility.IsDraft(_settings.ConversionSettings) ? "Partial" : "Completed";
+            await _migrationRepository.CompleteRunAsync(runId, terminalStatus,
+                terminalStatus == "Partial" ? "Draft subset; not verified. See draft-conversion-plan.json." : runType);
+            AiLoopEvents.Finished(runId, terminalStatus.ToLowerInvariant(), startTime);
 
-            progressCallback?.Invoke("Migration completed successfully", totalSteps, totalSteps);
+            progressCallback?.Invoke(terminalStatus == "Partial" ? "Partial draft — not verified" : "Migration completed successfully", totalSteps, totalSteps);
         }
         catch (Exception ex)
         {
-            AiLoopEvents.Finished(runId, "failed", startTime, ex.Message);
+            if (AiLoopEvents.IsFinished) throw;
+            AiLoopEvents.Finished(runId, ex is OperationCanceledException ? "cancelled" : "failed", startTime,
+                ex.GetType().Name, ex.GetType().Name);
             _enhancedLogger.ShowError($"Error in migration process: {ex.Message}", ex);
-            progressCallback?.Invoke($"Error: {ex.Message}", 0, 0);
             if (_activeRunId.HasValue)
             {
                 try
                 {
-                    await _migrationRepository.CompleteRunAsync(_activeRunId.Value, "Failed", ex.Message);
+                    await _migrationRepository.CompleteRunAsync(_activeRunId.Value,
+                        ex is OperationCanceledException ? "Cancelled" : "Failed", ex.GetType().Name);
                 }
                 catch (Exception repoEx)
                 {
                     _logger.LogWarning(repoEx, "Failed to mark migration run {RunId} as failed", _activeRunId.Value);
                 }
             }
+            progressCallback?.Invoke($"Error: {ex.Message}", 0, 0);
             throw;
         }
     }
@@ -530,15 +590,20 @@ public class MigrationProcess
         List<CodeFile> generatedFiles,
         DependencyMap dependencyMap,
         string outputFolder,
-        DateTime startTime)
+        DateTime startTime,
+        CancellationToken cancellationToken = default)
     {
+        _validation = await GeneratedOutputValidator.RunAsync(generatedFiles, cobolFiles,
+            _sourceRoot!, outputFolder, _settings.ApplicationSettings.TargetLanguage, _settings.CompileGate, _logger,
+            _parityRepairAgent is null ? null : _parityRepairAgent.RepairAsync, _execution, cancellationToken,
+            _settings.ConversionSettings);
         var totalTime = DateTime.UtcNow - startTime;
         var reportPath = Path.Combine(outputFolder, "migration-report.md");
 
         var report = new StringBuilder();
         var targetLang = _settings.ApplicationSettings.TargetLanguage;
         var langName = targetLang == TargetLanguage.CSharp ? "C#" : "Java";
-        var framework = targetLang == TargetLanguage.CSharp ? ".NET" : "Quarkus";
+        var framework = targetLang == TargetLanguage.CSharp ? ".NET" : JavaGeneration.Framework(_settings.ConversionSettings);
 
         report.AppendLine($"# COBOL to {langName} {framework} Migration Report");
         report.AppendLine($"Generated: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC");
@@ -547,6 +612,8 @@ public class MigrationProcess
 
         // Overview section
         report.AppendLine("## 📊 Migration Overview");
+        if (ConversionEligibility.IsDraft(_settings.ConversionSettings))
+            report.AppendLine("\n> PARTIAL DRAFT — NOT VERIFIED. Results cover only eligible whole programs. Blocked areas have no generated implementation. See draft-conversion-plan.json; routine impact is not measured. JCL entry points are not generated.\n");
         report.AppendLine($"- **Source Files**: {cobolFiles.Count} COBOL files");
         report.AppendLine($"- **Generated Files**: {generatedFiles.Count} {langName} files");
         report.AppendLine($"- **Dependencies Found**: {dependencyMap.Dependencies.Count}");
@@ -604,11 +671,12 @@ public class MigrationProcess
         }
 
         var langLabel = targetLang == TargetLanguage.CSharp ? "C#" : "Java";
-        var parity = await ConversionParityPostPass.RunAsync(
-            generatedFiles, outputFolder, langLabel, _logger,
-            cobolFiles.Select(f => f.FileName));
-        if (!string.IsNullOrWhiteSpace(parity)) report.Append(parity);
-        if (_compileGate is not null) report.Append(_compileGate.ToMarkdown(_settings.CompileGate.MaxErrorsInReport));
+        report.Append(_validation.Markdown);
+        if (_compileGate is not null)
+        {
+            report.AppendLine("\n### Initial C# compiler-repair history\n");
+            report.Append(_compileGate.ToMarkdown(_settings.CompileGate.MaxErrorsInReport));
+        }
 
         // File mapping section
         report.AppendLine("## 🗂️ File Mapping");
@@ -617,7 +685,7 @@ public class MigrationProcess
 
         foreach (var cobolFile in cobolFiles.Take(20)) // Limit to first 20 for readability
         {
-            var generatedFile = generatedFiles.FirstOrDefault(j => j.OriginalCobolFileName == cobolFile.FileName);
+            var generatedFile = generatedFiles.FirstOrDefault(j => j.OriginalSourcePath == SourcePathHelper.ForFile(cobolFile));
             var generatedFileName = generatedFile?.ClassName ?? "Not Generated";
             var fileType = cobolFile.FileName.EndsWith(".cpy") ? "Copybook" : "Program";
             report.AppendLine($"| {cobolFile.FileName} | {generatedFileName} | {fileType} |");

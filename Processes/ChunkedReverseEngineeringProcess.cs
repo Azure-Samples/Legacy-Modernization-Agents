@@ -60,9 +60,12 @@ public class ChunkedReverseEngineeringProcess
         string cobolSourceFolder,
         string outputFolder,
         Action<string, int, int>? progressCallback = null,
-        int? runId = null)
+        int? runId = null,
+        CancellationToken cancellationToken = default)
     {
         var result = new ReverseEngineeringResult();
+        var startTime = DateTime.UtcNow;
+        IDisposable? attempt = null;
 
         try
         {
@@ -71,15 +74,20 @@ public class ChunkedReverseEngineeringProcess
             _logger.LogInformation("Source folder: {SourceFolder}", cobolSourceFolder);
             _logger.LogInformation("Output folder: {OutputFolder}", outputFolder);
 
-            // Load glossary if available
-            await LoadGlossaryAsync();
-
             // Start a new DB run when none was provided by the caller
             if (!runId.HasValue && _migrationRepository != null)
             {
                 runId = await _migrationRepository.StartRunAsync(cobolSourceFolder, outputFolder);
                 _logger.LogInformation("Started new run ID: {RunId}", runId);
             }
+            if (runId is > 0)
+            {
+                result.RunId = runId.Value;
+                attempt = AiLoopEvents.BeginRun(runId.Value, "chunked-reverse-engineering", "analysis",
+                    outputFolder, cancellationToken);
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            await LoadGlossaryAsync();
 
             var totalSteps = 5; // Step 4 = dependency mapping, Step 5 = documentation
 
@@ -88,6 +96,7 @@ public class ChunkedReverseEngineeringProcess
             progressCallback?.Invoke("Scanning for COBOL files", 1, totalSteps);
 
             var cobolFiles = await _fileHelper.ScanDirectoryForCobolFilesAsync(cobolSourceFolder);
+            cancellationToken.ThrowIfCancellationRequested();
             PromptLoader.CodebaseProfile = PromptLoader.GenerateCodebaseProfile(cobolFiles);
             _enhancedLogger.ShowSuccess($"Found {cobolFiles.Count} COBOL files");
             _logger.LogInformation("Found {Count} COBOL files", cobolFiles.Count);
@@ -97,6 +106,9 @@ public class ChunkedReverseEngineeringProcess
             if (cobolFiles.Count == 0)
             {
                 _enhancedLogger.ShowWarning("No COBOL files found. Nothing to reverse engineer.");
+                if (_migrationRepository != null && runId is > 0)
+                    await _migrationRepository.CompleteRunAsync(runId.Value, "NoFiles", "No COBOL programs discovered");
+                if (runId is > 0) AiLoopEvents.Finished(runId.Value, "no_files", startTime);
                 return result;
             }
 
@@ -242,6 +254,8 @@ public class ChunkedReverseEngineeringProcess
             _enhancedLogger.ShowStep(4, totalSteps, "Dependency Mapping", "Analyzing inter-program dependencies and copybook usage");
             progressCallback?.Invoke("Mapping dependencies", 4, totalSteps);
 
+            if (_dependencyMapperAgent is Agents.Infrastructure.AgentBase dependencyAgent)
+                dependencyAgent.SourceDirectory = Path.GetFullPath(cobolSourceFolder);
             var dependencyMap = await _dependencyMapperAgent.AnalyzeDependenciesAsync(cobolFiles, result.TechnicalAnalyses);
             _enhancedLogger.ShowSuccess($"Dependency analysis complete - {dependencyMap.Dependencies.Count} relationships found");
             result.DependencyMap = dependencyMap;
@@ -269,16 +283,38 @@ public class ChunkedReverseEngineeringProcess
                 result.RunId = runId.Value;
                 await _migrationRepository.CompleteRunAsync(runId.Value, "Completed", "Reverse Engineering Only");
             }
+            if (runId is > 0) AiLoopEvents.Finished(runId.Value, "completed", startTime);
 
             return result;
         }
         catch (Exception ex)
         {
+            if (runId is > 0)
+            {
+                AiLoopEvents.Finished(runId.Value, ex is OperationCanceledException ? "cancelled" : "failed",
+                    startTime, ex.GetType().Name, ex.GetType().Name);
+                if (_migrationRepository != null)
+                {
+                    try
+                    {
+                        await _migrationRepository.CompleteRunAsync(runId.Value,
+                            ex is OperationCanceledException ? "Cancelled" : "Failed", ex.GetType().Name);
+                    }
+                    catch (Exception persistenceError)
+                    {
+                        _logger.LogWarning(persistenceError, "Failed to finalize reverse engineering run {RunId}", runId);
+                    }
+                }
+            }
             _logger.LogError(ex, "Error during chunked reverse engineering process");
             _enhancedLogger.ShowError($"Chunked reverse engineering failed: {ex.Message}");
             result.Success = false;
             result.ErrorMessage = ex.Message;
             throw;
+        }
+        finally
+        {
+            attempt?.Dispose();
         }
     }
 

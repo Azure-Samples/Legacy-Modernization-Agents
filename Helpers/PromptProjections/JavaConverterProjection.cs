@@ -15,8 +15,9 @@ public static class JavaConverterProjection
     public static ProgramFacts? TryLoad(string factsDir, string programBasename)
         => ProgramFactsArtifactLocator.TryLoad(factsDir, programBasename);
 
-    public static string BuildPromptBlock(ProgramFacts facts)
+    public static string BuildPromptBlock(ProgramFacts facts, string framework = "Quarkus")
     {
+        var spring = JavaGeneration.ValidateFramework(framework) == "Spring";
         var sb = new StringBuilder();
         sb.AppendLine(PromptLoader.LoadSectionValidated(
             "RektContext", "CommonPolicy", new Dictionary<string, string>
@@ -26,7 +27,8 @@ public static class JavaConverterProjection
                     $"identity {facts.IdentitySchemeVersion}, confidence {facts.Confidence}){Environment.NewLine}"
             }));
         sb.AppendLine(PromptLoader.LoadSectionValidated(
-            "RektContext", "JavaTargetPolicy", new Dictionary<string, string>()));
+            spring ? "JavaSpringConverter" : "RektContext",
+            spring ? "StructuralPolicy" : "JavaTargetPolicy", new Dictionary<string, string>()));
 
         if (facts.Warnings.Count > 0)
         {
@@ -106,7 +108,8 @@ public static class JavaConverterProjection
         }
 
         sb.AppendLine(PromptLoader.LoadSectionValidated(
-            "RektContext", "JavaCallTargetsHeader", new Dictionary<string, string>()));
+            spring ? "JavaSpringConverter" : "RektContext",
+            spring ? "CallTargetsHeader" : "JavaCallTargetsHeader", new Dictionary<string, string>()));
         if (facts.Callees.Count == 0)
             sb.AppendLine("  (none)");
         else

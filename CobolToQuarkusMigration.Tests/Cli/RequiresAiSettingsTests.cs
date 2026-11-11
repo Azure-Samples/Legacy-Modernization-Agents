@@ -13,6 +13,7 @@ public class RequiresAiSettingsTests
     [InlineData("rekt-scan-cache")]
     [InlineData("conversation")]
     [InlineData("estate-graph")]
+    [InlineData("dependency-plan")]
     public void FileOnlyCommands_DoNotRequireAiSettings(string command)
     {
         Program.RequiresAiSettings([command]).Should().BeFalse();

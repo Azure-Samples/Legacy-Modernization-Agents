@@ -254,13 +254,10 @@ public static class NamingHelper
         if (genericName == uniqueName)
             return code;
             
-        // Replace class declaration
-        code = code.Replace($"class {genericName}", $"class {uniqueName}");
-        // Replace constructor calls
-        code = code.Replace($"new {genericName}", $"new {uniqueName}");
-        // Replace type references (careful not to replace partial matches)
-        code = code.Replace($"{genericName}(", $"{uniqueName}(");
-        
-        return code;
+        // Rename identifier tokens, not prefixes or mentions in comments and literals.
+        var pattern = """//[^\r\n]*|/\*[\s\S]*?\*/|""" + "\"\"\"[\\s\\S]*?\"\"\"|\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*'|"
+            + $@"(?<identifier>\b{System.Text.RegularExpressions.Regex.Escape(genericName)}\b)";
+        return System.Text.RegularExpressions.Regex.Replace(code, pattern,
+            match => match.Groups["identifier"].Success ? uniqueName : match.Value);
     }
 }

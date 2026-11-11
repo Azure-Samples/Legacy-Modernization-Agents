@@ -107,10 +107,10 @@ internal static class ConversionParityValidator
         var fieldNames = CollectDataFields(structuralContext.Context, stubCopybooks, out var stubbed);
         var expectedByAxis = new Dictionary<string, List<ExpectedSymbol>>
         {
-            [ProceduresAxis] = CollectProcedures(structuralContext.Context, fieldNames),
+            [ProceduresAxis] = structuralContext.Context.IsCopybook ? [] : CollectProcedures(structuralContext.Context, fieldNames),
             [DataFieldsAxis] = fieldNames,
-            [CallTargetsAxis] = CollectCallTargets(structuralContext.Context, facts),
-            [SqlTablesAxis] = CollectSqlTables(structuralContext.Context, facts),
+            [CallTargetsAxis] = structuralContext.Context.IsCopybook ? [] : CollectCallTargets(structuralContext.Context, facts),
+            [SqlTablesAxis] = structuralContext.Context.IsCopybook ? [] : CollectSqlTables(structuralContext.Context, facts),
         };
 
         var weights = new Dictionary<string, double>
@@ -136,7 +136,7 @@ internal static class ConversionParityValidator
                 creditComments, literalAxes.Contains(axisName), gaps));
         }
 
-        var evidenceNotes = stubbed.Count == 0
+        IReadOnlyList<string> evidenceNotes = stubbed.Count == 0
             ? Array.Empty<string>()
             : new[]
             {
@@ -145,6 +145,10 @@ internal static class ConversionParityValidator
                 + ". The real copybooks were not found, so field-level parity is measured against "
                 + "incomplete evidence.",
             };
+
+        if (structuralContext.Provenance == StructuralProvenance.SourceDeclared)
+            evidenceNotes = [.. evidenceNotes, structuralContext.Notes
+                ?? "Only directly declared source members were measured."];
 
         var scored = axes.Where(a => a.Coverage.HasValue).ToList();
         if (scored.Count == 0)

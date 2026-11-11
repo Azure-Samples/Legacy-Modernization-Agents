@@ -13,11 +13,22 @@ public static class MetricsSink
     };
 
     private static readonly AsyncLocal<int?> _currentRunId = new();
+    private static readonly AsyncLocal<string?> _currentAttemptId = new();
+
+    public static string? CurrentAttemptId
+    {
+        get => _currentAttemptId.Value;
+        set => _currentAttemptId.Value = value;
+    }
 
     public static int? CurrentRunId
     {
         get => _currentRunId.Value;
-        set => _currentRunId.Value = value;
+        set
+        {
+            if (_currentRunId.Value != value) CurrentAttemptId = null;
+            _currentRunId.Value = value;
+        }
     }
 
     private static string ResolveDir()
@@ -36,11 +47,10 @@ public static class MetricsSink
             var safeRunId = string.IsNullOrWhiteSpace(runId) ? "unknown" : runId.Replace("/", "_").Replace("\\", "_");
             var path = Path.Combine(dir, $"{safeRunId}.jsonl");
 
-            // Wrap payload with timestamp so post-hoc analysis can order events.
             var wrapped = new Dictionary<string, object?>
             {
-                ["ts"] = DateTime.UtcNow.ToString("o"),
-                ["runId"] = safeRunId
+                ["runId"] = safeRunId,
+                ["attemptId"] = CurrentRunId?.ToString() == runId ? CurrentAttemptId : null
             };
             // Spread payload props alongside ts/runId.
             foreach (var prop in payload.GetType().GetProperties())
@@ -48,9 +58,11 @@ public static class MetricsSink
                 wrapped[CamelCase(prop.Name)] = prop.GetValue(payload);
             }
 
-            var line = JsonSerializer.Serialize(wrapped, _json) + Environment.NewLine;
             lock (_lock)
             {
+                // Stamp at append, not before payload preparation or waiting behind another writer.
+                wrapped["ts"] = DateTime.UtcNow.ToString("o");
+                var line = JsonSerializer.Serialize(wrapped, _json) + Environment.NewLine;
                 File.AppendAllText(path, line);
             }
         }

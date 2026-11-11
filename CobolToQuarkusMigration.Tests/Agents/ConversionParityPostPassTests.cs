@@ -5,17 +5,167 @@ using Xunit;
 
 namespace CobolToQuarkusMigration.Tests.Agents;
 
+[Collection("EnvironmentSensitive")]
 public class ConversionParityPostPassTests : IDisposable
 {
     private readonly string? _originalThreshold = Environment.GetEnvironmentVariable("MIN_PROGRAM_SCORE");
     private readonly string? _originalGate = Environment.GetEnvironmentVariable("ON_LOW_SCORE");
     private readonly int _originalExitCode = Environment.ExitCode;
+    private readonly string? _originalRepairRounds = Environment.GetEnvironmentVariable("PARITY_REPAIR_MAX_ROUNDS");
 
     public void Dispose()
     {
         Environment.SetEnvironmentVariable("MIN_PROGRAM_SCORE", _originalThreshold);
         Environment.SetEnvironmentVariable("ON_LOW_SCORE", _originalGate);
         Environment.ExitCode = _originalExitCode;
+        Environment.SetEnvironmentVariable("PARITY_REPAIR_MAX_ROUNDS", _originalRepairRounds);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Repair_RevalidatesCandidateAndPreservesOriginalWhenItDoesNotImprove(bool improves)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"parity-repair-{Guid.NewGuid():N}.java");
+        Environment.SetEnvironmentVariable("PARITY_REPAIR_MAX_ROUNDS", "2");
+        var before = "package example; class Record { int existingValue; }";
+        var candidate = improves
+            ? "package example; class Record { int existingValue; int requiredValue; }"
+            : "package example; class Record { int existingValue; /* REQUIRED-VALUE */ }";
+        var context = new CobolToQuarkusMigration.Helpers.StructuralContext
+        {
+            Provenance = CobolToQuarkusMigration.Helpers.StructuralProvenance.SourceDeclared,
+            Context = new()
+            {
+                IsCopybook = true,
+                DataStructure = [new() { Level = 5, Name = "REQUIRED-VALUE" }]
+            }
+        };
+        ProgramParityResult Evaluate(IReadOnlyDictionary<string, string> files) =>
+            ConversionParityValidator.Evaluate("RECORD.cpy", path,
+                string.Join("\n", files.Values), context, null);
+        var current = new Dictionary<string, string> { [path] = before };
+        var calls = 0;
+        try
+        {
+            await File.WriteAllTextAsync(path, before);
+            var result = await ConversionParityPostPass.RepairAsync(Evaluate(current), "05 REQUIRED-VALUE PIC 9.",
+                current, "Java", 0.75, request =>
+                {
+                    request.Source.Should().Be("05 REQUIRED-VALUE PIC 9.");
+                    calls++;
+                    return Task.FromResult<IReadOnlyDictionary<string, string>?>(
+                        new Dictionary<string, string> { [path] = candidate });
+                }, Evaluate);
+            (await File.ReadAllTextAsync(path)).Should().Be(improves ? candidate : before);
+            result.AcceptedRepairs.Should().Be(improves ? 1 : 0);
+            calls.Should().Be(improves ? 1 : 2);
+            result.RepairAttempts.Should().Be(calls);
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public async Task RunAsync_StrictGateRejectsPartiallyUnknownEvidenceAndArtifactWriteFailure()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"parity-strict-{Guid.NewGuid():N}");
+        var sourceRoot = Path.Combine(root, "source");
+        Directory.CreateDirectory(sourceRoot);
+        Environment.SetEnvironmentVariable("ON_LOW_SCORE", "stop");
+        Environment.ExitCode = 0;
+        try
+        {
+            var knownSource = Path.Combine(sourceRoot, "KNOWN.cpy");
+            await File.WriteAllTextAsync(knownSource, "       01 RECORD.\n          05 VALUE PIC 9.");
+            var knownOutput = Path.Combine(root, "Known.java");
+            var unknownOutput = Path.Combine(root, "Unknown.java");
+            await File.WriteAllTextAsync(knownOutput, "class Known { int value; }");
+            await File.WriteAllTextAsync(unknownOutput, "class Unknown { void run() {} }");
+            var files = new[]
+            {
+                new CobolToQuarkusMigration.Models.CodeFile { FilePath = knownOutput, OriginalSourcePath = knownSource },
+                new CobolToQuarkusMigration.Models.CodeFile
+                    { FilePath = unknownOutput, OriginalSourcePath = Path.Combine(sourceRoot, "UNKNOWN.cbl") }
+            };
+            await ConversionParityPostPass.RunAsync(files, root, "Java",
+                sourcePrograms: files.Select(file => file.OriginalSourcePath), repositoryRoot: root, sourceDirectory: sourceRoot);
+            var report = await ReadReportAsync(root);
+            report.EvaluatedCount.Should().Be(1);
+            report.NotEvaluatedCount.Should().Be(1);
+            report.BelowThresholdCount.Should().Be(0);
+            Environment.ExitCode.Should().Be(ConversionParityPostPass.LowScoreExitCode);
+            File.Delete(Path.Combine(root, ConversionParityPostPass.ArtifactName));
+            Directory.CreateDirectory(Path.Combine(root, ConversionParityPostPass.ArtifactName));
+            await FluentActions.Awaiting(() => ConversionParityPostPass.RunAsync(files, root, "Java",
+                repositoryRoot: root, sourceDirectory: sourceRoot)).Should().ThrowAsync<Exception>()
+                .Where(exception => exception is IOException || exception is UnauthorizedAccessException);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task RunAsync_PathMetadataSeparatesSameNamedSourcesAndScoresCopybookFields()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"parity-identity-{Guid.NewGuid():N}");
+        try
+        {
+            Environment.SetEnvironmentVariable("ON_LOW_SCORE", "warn");
+            var generated = new List<CobolToQuarkusMigration.Models.CodeFile>();
+            foreach (var (directory, field) in new[] { ("first", "FIRST-VALUE"), ("second", "SECOND-VALUE") })
+            {
+                var source = Path.Combine(root, "source", directory, "SHARED.cpy");
+                Directory.CreateDirectory(Path.GetDirectoryName(source)!);
+                await File.WriteAllTextAsync(source, $"       01 RECORD.\n          05 {field} PIC 9(4).\n");
+                var output = Path.Combine(root, directory + ".java");
+                await File.WriteAllTextAsync(output, $"class Record {{ int {field.Replace("-", "")}; }}");
+                generated.Add(new()
+                {
+                    FilePath = output,
+                    OriginalCobolFileName = "SHARED.cpy",
+                    OriginalSourcePath = source
+                });
+            }
+            await ConversionParityPostPass.RunAsync(generated, root, "Java",
+                sourcePrograms: generated.Select(f => f.OriginalSourcePath), repositoryRoot: root,
+                sourceDirectory: Path.Combine(root, "source"));
+            var report = await ReadReportAsync(root);
+            report.Programs.Select(p => p.Program).Should().BeEquivalentTo("first/SHARED.cpy", "second/SHARED.cpy");
+            report.Programs.Should().OnlyContain(p => p.Outcome == ParityOutcome.Evaluated && p.Score == 1);
+            report.Programs.Should().OnlyContain(p => p.Axes.Single(a => a.Name == "procedures").Expected == 0);
+            using var map = System.Text.Json.JsonDocument.Parse(
+                await File.ReadAllTextAsync(Path.Combine(root, "generated-source-map.json")));
+            map.RootElement.EnumerateArray().Select(row => row.GetProperty("source").GetString())
+                .Should().BeEquivalentTo("first/SHARED.cpy", "second/SHARED.cpy");
+            map.RootElement.EnumerateArray().Select(row => row.GetProperty("kind").GetString())
+                .Should().OnlyContain(kind => kind == "copybook");
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task RunAsync_RefusesToScoreOverwrittenOutputAgainstMultipleSources()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"parity-collision-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        Environment.SetEnvironmentVariable("ON_LOW_SCORE", "warn");
+        try
+        {
+            var output = Path.Combine(root, "Shared.java");
+            await File.WriteAllTextAsync(output, "class Shared { int survivingValue; }");
+            var files = new[]
+            {
+                new CobolToQuarkusMigration.Models.CodeFile { FilePath = output, OriginalSourcePath = Path.Combine(root, "first", "SHARED.cpy") },
+                new CobolToQuarkusMigration.Models.CodeFile { FilePath = output, OriginalSourcePath = Path.Combine(root, "second", "SHARED.cpy") }
+            };
+            await ConversionParityPostPass.RunAsync(files, root, "Java",
+                sourcePrograms: files.Select(file => file.OriginalSourcePath), repositoryRoot: root,
+                sourceDirectory: root);
+            var report = await ReadReportAsync(root);
+            report.Programs.Should().HaveCount(2).And.OnlyContain(program =>
+                program.Outcome == ParityOutcome.NotEvaluated && program.Score == null
+                && program.NotEvaluatedReason!.Contains("multiple source identities"));
+        }
+        finally { Directory.Delete(root, true); }
     }
 
     [Fact]
@@ -39,7 +189,7 @@ public class ConversionParityPostPassTests : IDisposable
             await ConversionParityPostPass.RunAsync(
                 [Generated("BillingCustomer.java", billing, "CUSTOMER.cbl"),
                  Generated("ClaimsCustomer.java", claims, "CUSTOMER.cbl")],
-                dir, "Java", null, ["CUSTOMER.cbl", "CUSTOMER.cbl"]);
+                dir, "Java", null, ["CUSTOMER.cbl", "CUSTOMER.cbl"], repositoryRoot: dir);
 
             var program = (await ReadReportAsync(dir)).Programs.Should().ContainSingle().Subject;
             program.Outcome.Should().Be(ParityOutcome.NotEvaluated);
@@ -71,7 +221,7 @@ public class ConversionParityPostPassTests : IDisposable
             await ConversionParityPostPass.RunAsync(
                 [Generated("BillingCustomer.java", billing, "CUSTOMER.cbl"),
                  Generated("ClaimsCustomer.java", claims, "CUSTOMER.cbl")],
-                dir, "Java", null, ["CUSTOMER.cbl"]);
+                dir, "Java", null, ["CUSTOMER.cbl"], repositoryRoot: dir);
 
             var program = (await ReadReportAsync(dir)).Programs.Should().ContainSingle().Subject;
             program.NotEvaluatedReason.Should().NotContain("share the file name");
@@ -102,7 +252,7 @@ public class ConversionParityPostPassTests : IDisposable
                     FileName = "Thing.java", FilePath = path,
                     OriginalCobolFileName = "THING.cbl", Content = "x"
                 }],
-                dir, "Java");
+                dir, "Java", repositoryRoot: dir);
 
             var json = await File.ReadAllTextAsync(Path.Join(dir, ConversionParityPostPass.ArtifactName));
             json.Should().Contain("\"NotEvaluated\"", "the premise is that nothing was evaluable");
@@ -140,7 +290,7 @@ public class ConversionParityPostPassTests : IDisposable
                     FileName = "Thing.java", FilePath = path,
                     OriginalCobolFileName = "THING.cbl", Content = "x"
                 }],
-                dir, "Java");
+                dir, "Java", repositoryRoot: dir);
 
             Environment.ExitCode.Should().Be(expectedExitCode);
             File.Exists(Path.Join(dir, ConversionParityPostPass.ArtifactName))
@@ -336,7 +486,7 @@ public class ConversionParityPostPassTests : IDisposable
             await ConversionParityPostPass.RunAsync(
                 [Generated("CustomerService.java", service, "CUSTOMER-INQUIRY.cbl"),
                  Generated("CustomerDto.java", dto, "CUSTOMER-INQUIRY.cbl")],
-                dir, "Java");
+                dir, "Java", repositoryRoot: dir);
 
             var report = await ReadReportAsync(dir);
             report.Programs.Should().ContainSingle()
@@ -367,7 +517,7 @@ public class ConversionParityPostPassTests : IDisposable
             await ConversionParityPostPass.RunAsync(
                 [Generated("Converted.java", path, "CONVERTED.cbl")],
                 dir, "Java",
-                sourcePrograms: new[] { "CONVERTED.cbl", "NEVER-CONVERTED.cbl" });
+                sourcePrograms: new[] { "CONVERTED.cbl", "NEVER-CONVERTED.cbl" }, repositoryRoot: dir);
 
             var report = await ReadReportAsync(dir);
             var missing = report.Programs.Single(p => p.Program == "NEVER-CONVERTED.cbl");
