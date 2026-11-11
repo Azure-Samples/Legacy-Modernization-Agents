@@ -1,0 +1,306 @@
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/FileControlDependencyAnalysis.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/FileControlDependencyAnalysis.java
+new file mode 100644
+index 0000000..11fc6d7
+--- /dev/null
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/FileControlDependencyAnalysis.java
+@@ -0,0 +1,234 @@
++package org.smojol.toolkit.analysis.pipeline;
++
++import org.antlr.v4.runtime.ParserRuleContext;
++import org.antlr.v4.runtime.tree.ParseTree;
++import org.antlr.v4.runtime.tree.TerminalNode;
++import org.eclipse.lsp.cobol.core.CobolParser;
++import org.smojol.common.ast.NodeText;
++
++import java.util.ArrayList;
++import java.util.LinkedHashMap;
++import java.util.LinkedHashSet;
++import java.util.List;
++import java.util.Locale;
++import java.util.Map;
++import java.util.Optional;
++import java.util.Set;
++
++/**
++ * Binds native COBOL file statements to the SELECT entry and FD that declare them.
++ * The ASSIGN target is reported as declared; its runtime dataset remains unverified.
++ */
++final class FileControlDependencyAnalysis {
++    static final String RESOURCE_KIND = "COBOL_FILE";
++    /** Grammar contexts that a complete SELECT/FD binding fully accounts for. */
++    static final Set<String> BOUND_CONTEXTS = Set.of(
++            "FileControlParagraphContext", "FileControlEntryContext", "FileControlClausesContext",
++            "FileControlClauseContext", "FileNameContext", "FileStatusClauseContext",
++            "FileSectionContext", "FileDescriptionEntryContext", "FileDescriptionEntryClausesContext",
++            "FileDescriptionEntryClauseContext", "OpenStatementContext", "CloseStatementContext",
++            "ReadStatementContext", "WriteStatementContext", "RewriteStatementContext",
++            "DeleteStatementContext", "StartStatementContext");
++    private static final Set<String> UNSUPPORTED_STATEMENTS = Set.of(
++            "SortStatementContext", "MergeStatementContext", "ReturnStatementContext",
++            "ReleaseStatementContext", "IoControlParagraphContext");
++
++    private final Map<String, CobolParser.FileControlEntryContext> selects = new LinkedHashMap<>();
++    private final Map<String, CobolParser.FileDescriptionEntryClausesContext> descriptions = new LinkedHashMap<>();
++    private final Map<String, String> recordOwners = new LinkedHashMap<>();
++    private final Map<String, List<String>> records = new LinkedHashMap<>();
++    private final Map<String, Map<String, Object>> bindings = new LinkedHashMap<>();
++    private final Set<String> diagnostics = new LinkedHashSet<>();
++    private final List<Map<String, Object>> statements = new ArrayList<>();
++
++    List<Map<String, Object>> statements() {
++        return statements;
++    }
++
++    Set<String> diagnostics() {
++        return diagnostics;
++    }
++
++    boolean hasFiles() {
++        return !selects.isEmpty();
++    }
++
++    boolean complete() {
++        return diagnostics.isEmpty() && statements.stream()
++                .allMatch(statement -> "complete".equals(statement.get("bindingStatus")));
++    }
++
++    void bind(ParseTree tree) {
++        collectDeclarations(tree);
++        for (Map.Entry<String, CobolParser.FileControlEntryContext> select : selects.entrySet()) {
++            String name = select.getKey();
++            CobolParser.FileDescriptionEntryClausesContext description = descriptions.get(name);
++            if (description == null) {
++                diagnostics.add("cobol-file-description-not-found:" + name);
++                continue;
++            }
++            Optional<String> assignment = assignment(select.getValue(), name);
++            if (assignment.isEmpty()) continue;
++            Map<String, Object> binding = new LinkedHashMap<>();
++            binding.put("kind", RESOURCE_KIND);
++            binding.put("name", name);
++            binding.put("assignment", assignment.get());
++            binding.put("organization", clauseWord(select.getValue(), CobolParser.OrganizationClauseContext.class,
++                    Set.of("SEQUENTIAL", "RELATIVE", "INDEXED"), "SEQUENTIAL"));
++            binding.put("accessMode", clauseWord(select.getValue(), CobolParser.AccessModeClauseContext.class,
++                    Set.of("SEQUENTIAL", "RANDOM", "DYNAMIC", "EXCLUSIVE"), "SEQUENTIAL"));
++            binding.put("records", List.copyOf(records.getOrDefault(name, List.of())));
++            binding.put("definitionScope", "expanded-parser-input");
++            binding.put("definitionSyntax", ParsePipeline.dialectSyntax(select.getValue()));
++            binding.put("descriptionSyntax", ParsePipeline.dialectSyntax(description));
++            binding.put("runtimeMapping", "unverified");
++            bindings.put(name, binding);
++        }
++        for (String name : descriptions.keySet())
++            if (!selects.containsKey(name)) diagnostics.add("cobol-file-control-entry-not-found:" + name);
++        collectStatements(tree);
++    }
++
++    private void collectDeclarations(ParseTree node) {
++        if (node instanceof CobolParser.FileControlEntryContext entry) {
++            String name = upper(entry.selectClause().fileName().getText());
++            if (selects.putIfAbsent(name, entry) != null) diagnostics.add("duplicate-file-control-entry:" + name);
++        } else if (node instanceof CobolParser.FileDescriptionEntryContext entry) {
++            CobolParser.FileDescriptionEntryClausesContext clauses = entry.fileDescriptionEntryClauses();
++            if (clauses == null) {
++                diagnostics.add("unsupported-file-description:dialect");
++            } else {
++                String name = upper(clauses.cobolWord().getText());
++                if (!"FD".equalsIgnoreCase(clauses.getStart().getText()))
++                    diagnostics.add("unsupported-sort-file-description:" + name);
++                else if (descriptions.putIfAbsent(name, clauses) != null)
++                    diagnostics.add("duplicate-file-description:" + name);
++                List<String> names = new ArrayList<>();
++                for (CobolParser.DataDescriptionEntryContext data : entry.dataDescriptionEntry()) {
++                    CobolParser.DataDescriptionEntryFormat1Context format = data.dataDescriptionEntryFormat1();
++                    if (format == null || format.entryName() == null || format.entryName().dataName() == null
++                            || !format.levelNumber().getText().matches("0?1")) continue;
++                    String record = upper(format.entryName().dataName().getText());
++                    names.add(record);
++                    if (recordOwners.putIfAbsent(record, name) != null)
++                        diagnostics.add("ambiguous-file-record:" + record);
++                }
++                records.put(name, names);
++            }
++        } else if (node instanceof ParserRuleContext context
++                && UNSUPPORTED_STATEMENTS.contains(context.getClass().getSimpleName())) {
++            diagnostics.add("unsupported-file-io-statement:" + context.getClass().getSimpleName());
++        }
++        for (int index = 0; index < node.getChildCount(); index++)
++            collectDeclarations(node.getChild(index));
++    }
++
++    private Optional<String> assignment(CobolParser.FileControlEntryContext entry, String name) {
++        List<CobolParser.AssignClauseContext> clauses = new ArrayList<>();
++        for (CobolParser.FileControlClauseContext clause : entry.fileControlClauses().fileControlClause())
++            if (clause.assignClause() != null) clauses.add(clause.assignClause());
++        if (clauses.size() != 1) {
++            diagnostics.add("cobol-file-assignment-not-found:" + name);
++            return Optional.empty();
++        }
++        CobolParser.AssignClauseContext clause = clauses.get(0);
++        List<String> targets = new ArrayList<>();
++        for (int index = 0; index < clause.getChildCount(); index++) {
++            ParseTree child = clause.getChild(index);
++            if (child instanceof CobolParser.AssignmentNameContext target) targets.add(upper(target.getText()));
++            else if (child instanceof CobolParser.LiteralContext literal) targets.add(literal.getText());
++            else if (child instanceof TerminalNode token && Set.of("DYNAMIC", "EXTERNAL", "VARYING")
++                    .contains(upper(token.getText()))) {
++                diagnostics.add("dynamic-file-assignment-unresolved:" + name);
++                return Optional.empty();
++            }
++        }
++        if (targets.size() != 1) {
++            diagnostics.add("cobol-file-assignment-unresolved:" + name);
++            return Optional.empty();
++        }
++        return Optional.of(targets.get(0));
++    }
++
++    private static String clauseWord(CobolParser.FileControlEntryContext entry, Class<? extends ParserRuleContext> type,
++                                     Set<String> words, String fallback) {
++        for (CobolParser.FileControlClauseContext clause : entry.fileControlClauses().fileControlClause()) {
++            ParserRuleContext match = clause.getRuleContext(type, 0);
++            if (match == null) continue;
++            for (int index = match.getChildCount() - 1; index >= 0; index--)
++                if (words.contains(upper(match.getChild(index).getText()))) return upper(match.getChild(index).getText());
++        }
++        return fallback;
++    }
++
++    private void collectStatements(ParseTree node) {
++        if (node instanceof CobolParser.OpenStatementContext open) {
++            List<String> files = new ArrayList<>();
++            for (CobolParser.OpenInputStatementContext input : open.openInputStatement())
++                input.openInput().forEach(file -> files.add(file.fileName().getText()));
++            for (CobolParser.OpenOutputStatementContext output : open.openOutputStatement())
++                output.openOutput().forEach(file -> files.add(file.fileName().getText()));
++            open.openIOStatement().forEach(io -> io.fileName().forEach(file -> files.add(file.getText())));
++            open.openExtendStatement().forEach(extend -> extend.fileName().forEach(file -> files.add(file.getText())));
++            record(open, files, List.of());
++        } else if (node instanceof CobolParser.CloseStatementContext close) {
++            record(close, close.closeFile().stream().map(file -> file.fileName().getText()).toList(), List.of());
++        } else if (node instanceof CobolParser.ReadStatementContext read) {
++            record(read, List.of(read.readFilenameClause().fileName().getText()), List.of());
++        } else if (node instanceof CobolParser.StartStatementContext start) {
++            record(start, List.of(start.fileName().getText()), List.of());
++        } else if (node instanceof CobolParser.DeleteStatementContext delete) {
++            record(delete, List.of(delete.deleteFilenameClause().fileName().getText()), List.of());
++        } else if (node instanceof CobolParser.WriteStatementContext write) {
++            record(write, List.of(), List.of(recordName(write.writeStatementClause().recordName())));
++        } else if (node instanceof CobolParser.RewriteStatementContext rewrite) {
++            record(rewrite, List.of(), List.of(recordName(rewrite.recordName())));
++        }
++        for (int index = 0; index < node.getChildCount(); index++)
++            collectStatements(node.getChild(index));
++    }
++
++    private static String recordName(CobolParser.RecordNameContext record) {
++        return record.qualifiedDataName().variableUsageName().getText();
++    }
++
++    private void record(ParserRuleContext context, List<String> files, List<String> recordNames) {
++        Map<String, Object> statement = new LinkedHashMap<>();
++        statement.put("kind", "FILE_IO");
++        statement.put("operation", upper(context.getStart().getText()));
++        statement.put("grammarRule", context.getClass().getSimpleName());
++        statement.put("sourceText", NodeText.originalText(context, NodeText::PASSTHROUGH));
++        statement.put("coordinateSpace", "expanded-parser-input");
++        statement.put("line", context.getStart().getLine());
++        statement.put("column", context.getStart().getCharPositionInLine());
++        statement.put("runtimeMapping", "unverified");
++        statement.put("syntax", ParsePipeline.dialectSyntax(context));
++        List<String> operands = new ArrayList<>();
++        List<Map<String, Object>> resources = new ArrayList<>();
++        List<String> problems = new ArrayList<>();
++        for (String file : files) {
++            String name = upper(file);
++            operands.add(name);
++            Map<String, Object> binding = bindings.get(name);
++            if (binding == null) problems.add("cobol-file-binding-unresolved:" + name);
++            else if (!resources.contains(binding)) resources.add(binding);
++        }
++        for (String recordName : recordNames) {
++            String name = upper(recordName);
++            operands.add(name);
++            String owner = recordOwners.get(name);
++            Map<String, Object> binding = owner == null ? null : bindings.get(owner);
++            if (binding == null) problems.add("cobol-file-record-binding-unresolved:" + name);
++            else if (!resources.contains(binding)) resources.add(binding);
++        }
++        statement.put("fileOperands", operands);
++        statement.put("resourceBindings", resources);
++        statement.put("bindingStatus", problems.isEmpty() && !operands.isEmpty() ? "complete" : "unresolved");
++        if (!problems.isEmpty()) statement.put("bindingDiagnostics", problems);
++        statements.add(statement);
++    }
++
++    private static String upper(String value) {
++        return value.toUpperCase(Locale.ROOT);
++    }
++}
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
+index ff5e969..e06b87b 100644
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
+@@ -96,6 +96,7 @@ public class ParsePipeline {
+             java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+     private final SqlDependencyAnalysis sqlDependencies = new SqlDependencyAnalysis();
+     private final CicsDependencyAnalysis cicsDependencies = new CicsDependencyAnalysis();
++    private final FileControlDependencyAnalysis fileControl = new FileControlDependencyAnalysis();
+     @Getter private final List<CallTarget> parserCicsCallTargets = new ArrayList<>();
+     @Getter private final List<CallTarget> parserCicsRunTargets = new ArrayList<>();
+     @Getter private final List<CallTarget> parserCallTargets = new ArrayList<>();
+@@ -230,6 +231,8 @@ public class ParsePipeline {
+         dataStructures = dataStructureValidation.run(ops.getDataStructureBuilder(navigator));
+         LOGGER.info(gson.toJson(timingResult));
+         sqlDependencies.bind(tree);
++        fileControl.bind(tree);
++        dependencyDialectStatements.addAll(fileControl.statements());
+         cicsDependencies.bind(tree, Path.of(parsedSourcePath).getParent(),
+                 cpyPaths == null ? List.of() : cpyPaths.stream().map(File::toPath).toList(),
+                 parserCicsCallTargets, parserCicsRunTargets);
+@@ -437,7 +440,9 @@ public class ParsePipeline {
+                     : parser != CobolParser.class && !cics && !sql)
+                 dialectDependencyContexts.add(kind);
+             boolean emptyFileSection = context instanceof CobolParser.FileSectionContext section
+-                    && section.fileDescriptionEntry().isEmpty();
++                    && section.fileDescriptionEntry().isEmpty()
++                    || context instanceof CobolParser.FileControlParagraphContext paragraph
++                    && paragraph.fileControlEntry().isEmpty();
+             if ((kind.startsWith("File") && !emptyFileSection) || FILE_IO_CONTEXTS.contains(kind))
+                 fileIoDependencyContexts.add(kind);
+         }
+@@ -484,17 +489,29 @@ public class ParsePipeline {
+                         && statement.get("resourceBindings") instanceof List<?> bindings
+                         && bindings.stream().anyMatch(binding -> binding instanceof Map<?, ?> resource
+                         && "CICS_FILE".equals(resource.get("kind"))));
+-        boolean fileIoComplete = fileIoDependencyContexts.isEmpty() && !opaqueFileIo;
++        Set<String> unboundFileIo = new LinkedHashSet<>(fileIoDependencyContexts);
++        if (fileControl.complete()) unboundFileIo.removeAll(FileControlDependencyAnalysis.BOUND_CONTEXTS);
++        boolean nativeFilesBound = fileControl.hasFiles() && fileControl.complete() && unboundFileIo.isEmpty();
++        if (nativeFilesBound && hasBoundFiles)
++            dependencyDiagnostics.add("mixed-cics-and-native-file-io-unsupported");
++        dependencyDiagnostics.addAll(fileControl.diagnostics());
++        fileControl.statements().stream().filter(statement -> statement.get("bindingDiagnostics") instanceof List<?>)
++                .forEach(statement -> ((List<?>) statement.get("bindingDiagnostics"))
++                        .forEach(issue -> dependencyDiagnostics.add(issue.toString())));
++        boolean fileIoComplete = unboundFileIo.isEmpty() && !opaqueFileIo && !(nativeFilesBound && hasBoundFiles);
+         dependencyAbsenceCoverage.put("FILE_IO", fileIoComplete ? "complete" : "partial");
+-        if (fileIoComplete && hasBoundFiles)
++        if (fileIoComplete && nativeFilesBound)
++            dependencyPresenceEvidence.put("FILE_IO", "antlr-tree:bound-file-control-resources");
++        else if (fileIoComplete && hasBoundFiles)
+             dependencyPresenceEvidence.put("FILE_IO", "antlr-tree:bound-cics-file-resources");
+         else if (fileIoComplete && dependencyDialectStatements.stream()
+                 .anyMatch(statement -> "EXEC_SQL".equals(statement.get("kind"))))
+             dependencyPresenceEvidence.put("FILE_IO", "antlr-tree:bound-sql-resources");
+         else if (fileIoComplete)
+             dependencyAbsenceEvidence.put("FILE_IO", "antlr-tree:no-file-io-contexts");
+-        else dependencyDiagnostics.add("unsupported-file-io-dependency-contexts:"
+-                + (fileIoDependencyContexts.isEmpty() ? "opaque-dialect" : String.join(",", fileIoDependencyContexts)));
++        else if (!unboundFileIo.isEmpty() || opaqueFileIo)
++            dependencyDiagnostics.add("unsupported-file-io-dependency-contexts:"
++                    + (unboundFileIo.isEmpty() ? "opaque-dialect" : String.join(",", unboundFileIo)));
+     }
+ 
+     private static Pipeline setupPipeline(Injector diCtx, CleanerPreprocessor preprocessor) {

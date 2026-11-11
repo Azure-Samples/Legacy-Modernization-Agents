@@ -1,0 +1,23 @@
+--- a/che-che4z-lsp-for-cobol-integration/server/engine/src/main/antlr4/org/eclipse/lsp/cobol/implicitDialects/cics/CICSLexer.g4
++++ b/che-che4z-lsp-for-cobol-integration/server/engine/src/main/antlr4/org/eclipse/lsp/cobol/implicitDialects/cics/CICSLexer.g4
+@@ -864,3 +864,4 @@
+ URI : U R I;
+ URIMAP : U R I M A P;
++UCTRANST : U C T R A N S T;
+ URL : U R L;
+--- a/che-che4z-lsp-for-cobol-integration/server/engine/src/main/antlr4/org/eclipse/lsp/cobol/implicitDialects/cics/CICSParser.g4
++++ b/che-che4z-lsp-for-cobol-integration/server/engine/src/main/antlr4/org/eclipse/lsp/cobol/implicitDialects/cics/CICSParser.g4
+@@ -37,2 +37,2 @@
+-                       cics_wsaepr | cics_xctl | cics_converse | cics_abend | cics_acquire | allExciRules
++                       cics_wsaepr | cics_xctl | cics_converse | cics_abend | cics_acquire | cics_set_terminal | allExciRules
+                       ;
+@@ -502,3 +502,8 @@
+ cics_inquire: INQUIRE (cics_inquire_activityid | cics_inquire_container | cics_inquire_event | cics_inquire_process |
+-              cics_inquire_timer | cics_inquire_urimap);
++              cics_inquire_timer | cics_inquire_urimap | cics_inquire_terminal);
++cics_inquire_terminal: TERMINAL cics_name
++                       (UCTRANST cics_data_area | cics_handle_response)+;
++cics_set_terminal: SET TERMINAL cics_name
++                   (UCTRANST cics_data_value | cics_handle_response)+;
++
+ cics_inquire_activityid: ACTIVITYID cics_data_value (ABCODE cics_data_area | ABPROGRAM cics_data_area |

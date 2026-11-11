@@ -1,0 +1,1835 @@
+diff --git a/smojol-core/src/main/java/org/smojol/common/program/CobolProgram.java b/smojol-core/src/main/java/org/smojol/common/program/CobolProgram.java
+index b516b5b..f062f29 100644
+--- a/smojol-core/src/main/java/org/smojol/common/program/CobolProgram.java
++++ b/smojol-core/src/main/java/org/smojol/common/program/CobolProgram.java
+@@ -22,6 +22,7 @@ public class CobolProgram extends SimpleTreeNode {
+     @Expose @Getter private final List<String> dependencyDiagnostics = new ArrayList<>();
+     @Expose @Getter private final List<Map<String, String>> dependencyControlTransfers = new ArrayList<>();
+     @Expose @Getter private final List<Map<String, Object>> dependencyDialectStatements = new ArrayList<>();
++    @Expose @Getter @lombok.Setter private Map<String, Object> commareaInventory;
+     @Expose @Getter private final List<Map<String, String>> dependencyDerivedInputs = new ArrayList<>();
+     @Expose @Getter private final Map<String, String> dependencyPresenceEvidence = new LinkedHashMap<>();
+     @Expose @Getter private final Map<String, String> dependencyAbsenceEvidence = new LinkedHashMap<>();
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/BmsAttributeContract.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/BmsAttributeContract.java
+index 95dcac1..2b71584 100644
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/BmsAttributeContract.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/BmsAttributeContract.java
+@@ -52,6 +52,7 @@ final class BmsAttributeContract {
+         List<Map<String, Object>> usages = new ArrayList<>();
+         CobolDeclarationIndex index = new CobolDeclarationIndex(tree);
+         Map<String, List<Map<String, Object>>> fields = new LinkedHashMap<>();
++        Map<String, List<Object[]>> screens = new LinkedHashMap<>();
+         try {
+             for (Path directory : directories) {
+                 if (!Files.isDirectory(directory)) continue;
+@@ -67,6 +68,9 @@ final class BmsAttributeContract {
+                             JsonObject screen = screenElement.getAsJsonObject();
+                             if (!Set.of("OUT", "INOUT").contains(screen.get("mode").getAsString())) continue;
+                             if (index.hosts(screen.get("name").getAsString() + "O").size() != 1) continue;
++                            screens.computeIfAbsent(screen.get("name").getAsString(), ignored -> new ArrayList<>())
++                                    .add(new Object[]{screen, layout, output, proof.get("outputSha256").getAsString(),
++                                            ParsePipeline.sha256(Files.readAllBytes(layout))});
+                             for (var fieldElement : screen.getAsJsonArray("fields")) {
+                                 JsonObject field = fieldElement.getAsJsonObject();
+                                 if (field.get("occurs").getAsInt() != 1) continue;
+@@ -117,6 +121,25 @@ final class BmsAttributeContract {
+             boolean symbolic = tokens.stream().anyMatch(symbols()::containsKey);
+             boolean destination = tokens.stream().anyMatch(name -> fields.containsKey(name) && index.hosts(name).size() == 1);
+             if (!symbolic && !destination) continue;
++            if (overlayMove(tokens)) {
++                List<Map<String, Object>> overlays = overlayBindings(tokens, index, screens);
++                if (overlays == null) {
++                    issues.add("platform-contract-unsupported-bms-overlay:" + move.getStart().getLine());
++                    continue;
++                }
++                Map<String, Object> usage = new LinkedHashMap<>();
++                usage.put("grammarRule", "MoveStatementContext");
++                usage.put("sourceText", NodeText.originalText(move, NodeText::PASSTHROUGH));
++                usage.put("syntax", ParsePipeline.dialectSyntax(move));
++                usage.put("line", move.getStart().getLine());
++                usage.put("column", move.getStart().getCharPositionInLine());
++                usage.put("coordinateSpace", "expanded-parser-input");
++                usage.put("overlayBindings", overlays);
++                usage.put("valueKind", symbols().containsKey(tokens.get(1)) ? "named-attribute"
++                        : tokens.get(1).startsWith("'") || tokens.get(1).startsWith("\"") ? "source-character-literal" : "figurative-constant");
++                usages.add(usage);
++                continue;
++            }
+             // MOVE value TO target [OF|IN group] [target [OF|IN group]]...
+             List<String[]> targets = new ArrayList<>();
+             boolean wellFormed = tokens.size() >= 4 && tokens.get(0).equals("MOVE") && tokens.get(2).equals("TO");
+@@ -193,6 +216,110 @@ final class BmsAttributeContract {
+         diagnostics.addAll(issues);
+     }
+ 
++    // MOVE value TO name(subscript) [name(subscript)]... ; subscripts are a data name or an integer literal.
++    private static boolean overlayMove(List<String> tokens) {
++        if (tokens.size() < 7 || !tokens.get(0).equals("MOVE") || !tokens.get(2).equals("TO") || (tokens.size() - 3) % 4 != 0)
++            return false;
++        for (int i = 3; i < tokens.size(); i += 4)
++            if (!tokens.get(i).matches("[A-Z][A-Z0-9-]*") || !tokens.get(i + 1).equals("(") || !tokens.get(i + 3).equals(")")
++                    || !tokens.get(i + 2).matches("[A-Z][A-Z0-9-]*|[1-9][0-9]{0,3}"))
++                return false;
++        return true;
++    }
++
++    private static List<String> entryTokens(ParserRuleContext entry) {
++        return CicsDependencyAnalysis.nodes(entry).stream().filter(node -> node instanceof TerminalNode)
++                .map(node -> node.getText().trim()).filter(text -> !text.isEmpty() && !text.equals("<EOF>")).toList();
++    }
++
++    /** Each occurrence of an overlay table element must land on one attribute byte of a hash-bound map field. */
++    private static List<Map<String, Object>> overlayBindings(List<String> tokens, CobolDeclarationIndex index,
++                                                             Map<String, List<Object[]>> screens) throws RuntimeException {
++        String value = tokens.get(1);
++        List<Map<String, Object>> result = new ArrayList<>();
++        try {
++            for (int i = 3; i < tokens.size(); i += 4) {
++                List<ParserRuleContext> hosts = index.hosts(tokens.get(i));
++                if (hosts.size() != 1) return reject("r1");
++                ParserRuleContext declaration = hosts.getFirst();
++                List<ParserRuleContext> path = index.path(declaration);
++                if (path.size() < 2) return reject("r2");
++                ParserRuleContext record = path.getFirst();
++                List<ParserRuleContext> members = index.members(record);
++                BmsOverlayLayout.Located located = BmsOverlayLayout.locate(entryTokens(record),
++                        members.stream().map(BmsAttributeContract::entryTokens).toList(), members.indexOf(declaration));
++                if (located == null || located.redefined().length() < 2) return reject("r3");
++                String redefined = located.redefined(), side = redefined.substring(redefined.length() - 1);
++                String mapName = redefined.substring(0, redefined.length() - 1);
++                List<Object[]> candidates = screens.getOrDefault(mapName, List.of());
++                if (!Set.of("I", "O").contains(side) || candidates.size() != 1 || index.hosts(redefined).size() != 1) return reject("r4");
++                if (side.equals("I") && !entryTokens(index.hosts(mapName + "O").getFirst()).stream()
++                        .map(token -> token.toUpperCase(Locale.ROOT)).toList().containsAll(List.of("REDEFINES", mapName + "I")))
++                    return reject("r5");
++                JsonObject screen = (JsonObject) candidates.getFirst()[0];
++                List<String> extended = new ArrayList<>();
++                screen.getAsJsonArray("extendedAttributes").forEach(item -> extended.add(item.getAsString()));
++                String suffix = null;
++                List<Map<String, Object>> occurrences = new ArrayList<>();
++                for (int occurrence = 0; occurrence < located.count(); occurrence++) {
++                    int offset = located.base() + occurrence * located.stride();
++                    List<String[]> hits = new ArrayList<>();
++                    for (var element : screen.getAsJsonArray("fields")) {
++                        JsonObject field = element.getAsJsonObject();
++                        if (field.get("occurs").getAsInt() != 1) continue;
++                        String hit = attributeSuffix(offset - field.get("offset").getAsInt(), extended);
++                        if (hit != null) hits.add(new String[]{field.get("name").getAsString(), hit});
++                    }
++                    if (hits.size() != 1 || suffix != null && !suffix.equals(hits.getFirst()[1])) return reject("r6");
++                    suffix = hits.getFirst()[1];
++                    Map<String, Object> item = new LinkedHashMap<>();
++                    item.put("field", hits.getFirst()[0]);
++                    item.put("offset", offset);
++                    occurrences.add(item);
++                }
++                if (!(symbols().containsKey(value) && symbols().get(value).startsWith(suffix + ":")
++                        || Set.of("'A'", "\"A\"").contains(value) && suffix.equals("A")
++                        || Set.of("HIGH-VALUE", "HIGH-VALUES").contains(value) && Set.of("C", "H").contains(suffix)))
++                    return reject("r7");
++                Map<String, Object> binding = new LinkedHashMap<>();
++                binding.put("name", tokens.get(i));
++                binding.put("subscript", tokens.get(i + 2));
++                binding.put("map", mapName);
++                binding.put("mapset", screen.get("mapset").getAsString());
++                binding.put("suffix", suffix);
++                binding.put("layoutPath", candidates.getFirst()[1].toString());
++                binding.put("layoutSha256", candidates.getFirst()[4]);
++                binding.put("outputPath", candidates.getFirst()[2].toString());
++                binding.put("outputSha256", candidates.getFirst()[3]);
++                binding.put("recordSyntax", ParsePipeline.dialectSyntax(record));
++                binding.put("memberSyntaxes", members.stream().map(ParsePipeline::dialectSyntax).toList());
++                binding.put("definitionSyntax", ParsePipeline.dialectSyntax(declaration));
++                binding.put("occurrences", occurrences);
++                result.add(binding);
++            }
++        } catch (RuntimeException error) {
++            return reject("exception:" + error);
++        }
++        return result;
++    }
++
++    private static List<Map<String, Object>> reject(String reason) {
++        java.util.logging.Logger.getLogger(BmsAttributeContract.class.getName()).warning("bms-overlay-rejected:" + reason);
++        return null;
++    }
++
++    // Symbolic map field: length halfword at +0, flag/attribute byte at +2, extended attributes from +3 in DSATTS order.
++    static String attributeSuffix(int delta, List<String> extended) {
++        if (delta == 2) return "A";
++        int position = delta - 3;
++        if (position < 0 || position >= extended.size()) return null;
++        return switch (extended.get(position)) {
++            case "COLOR" -> "C";
++            case "HILIGHT" -> "H";
++            default -> null;
++        };
++    }
++
+     private static boolean inGroup(CobolDeclarationIndex index, ParserRuleContext declaration, String group) {
+         return index.path(declaration).stream().anyMatch(entry ->
+                 CicsDependencyAnalysis.nodes(entry).stream().anyMatch(part ->
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/BmsOverlayLayout.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/BmsOverlayLayout.java
+new file mode 100644
+index 0000000..fcf8394
+--- /dev/null
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/BmsOverlayLayout.java
+@@ -0,0 +1,136 @@
++package org.smojol.toolkit.analysis.pipeline;
++
++import java.util.ArrayList;
++import java.util.List;
++import java.util.Locale;
++import java.util.regex.Pattern;
++
++/**
++ * Byte layout of a program-declared {@code 01 FILLER REDEFINES <map>I|O} overlay. Only DISPLAY X fields,
++ * binary halfwords, plain groups, group REDEFINES of a named earlier sibling and one group OCCURS are
++ * accepted; anything else yields no layout.
++ */
++final class BmsOverlayLayout {
++    private static final Pattern LEVEL = Pattern.compile("0?[1-9]|[1-4][0-9]");
++    private static final Pattern NAME = Pattern.compile("[A-Z][A-Z0-9-]*");
++    private static final Pattern DISPLAY = Pattern.compile("PIC(?:TURE)?(?:IS)?X(?:\\(0*([1-9][0-9]{0,3})\\))?\\.");
++    private static final Pattern HALFWORD = Pattern.compile(
++            "(?:PIC(?:TURE)?(?:IS)?S9\\(0*4\\)(?:COMP|COMPUTATIONAL|BINARY|COMP-4|COMPUTATIONAL-4)"
++                    + "|(?:COMP|COMPUTATIONAL|BINARY|COMP-4|COMPUTATIONAL-4)PIC(?:TURE)?(?:IS)?S9\\(0*4\\))\\.");
++    private static final Pattern OCCURS = Pattern.compile("OCCURS0*([1-9][0-9]{0,3})(?:TIMES)?\\.");
++
++    record Located(String redefined, int base, int stride, int count) { }
++
++    private static final class Entry {
++        int level;
++        String name;
++        String redefines;
++        int occurs = 1;
++        int size = -1;
++        int offset;
++        Entry parent;
++        final List<Entry> children = new ArrayList<>();
++    }
++
++    static Located locate(List<String> record, List<List<String>> members, int target) {
++        List<String> head = upper(record);
++        if (head.size() != 5 || !head.get(0).matches("0?1") || !head.get(1).equals("FILLER")
++                || !head.get(2).equals("REDEFINES") || !NAME.matcher(head.get(3)).matches() || !head.get(4).equals("."))
++            return null;
++        if (target < 0 || target >= members.size()) return null;
++        Entry root = new Entry();
++        root.level = 1;
++        root.name = "FILLER";
++        List<Entry> entries = new ArrayList<>();
++        Entry open = root;
++        for (List<String> member : members) {
++            Entry entry = parse(upper(member));
++            if (entry == null || entry.level <= 1) return null;
++            while (open != root && open.level >= entry.level) open = open.parent;
++            if (open.size >= 0) return null;
++            entry.parent = open;
++            open.children.add(entry);
++            entries.add(entry);
++            if (entry.size < 0) open = entry;
++        }
++        if (size(root) < 0 || !place(root, 0)) return null;
++        Entry field = entries.get(target);
++        if (field.size != 1 || field.name.equals("FILLER")
++                || entries.stream().filter(entry -> entry.name.equals(field.name)).count() != 1) return null;
++        Entry table = null;
++        for (Entry ancestor = field.parent; ancestor != null; ancestor = ancestor.parent)
++            if (ancestor.occurs > 1) {
++                if (table != null) return null;
++                table = ancestor;
++            }
++        if (table == null) return null;
++        return new Located(head.get(3), field.offset, size(table) / table.occurs, table.occurs);
++    }
++
++    private static Entry parse(List<String> tokens) {
++        if (tokens.size() < 3 || !LEVEL.matcher(tokens.get(0)).matches() || !NAME.matcher(tokens.get(1)).matches()
++                || tokens.get(1).equals("REDEFINES") || tokens.get(1).equals("OCCURS")) return null;
++        Entry entry = new Entry();
++        entry.level = Integer.parseInt(tokens.get(0));
++        entry.name = tokens.get(1);
++        List<String> rest = tokens.subList(2, tokens.size());
++        String clause = String.join("", rest);
++        if (rest.size() == 1 && clause.equals(".")) return entry;
++        if (rest.size() == 3 && rest.get(0).equals("REDEFINES") && NAME.matcher(rest.get(1)).matches() && rest.get(2).equals(".")) {
++            entry.redefines = rest.get(1);
++            return entry;
++        }
++        var occurs = OCCURS.matcher(clause);
++        if (rest.getFirst().equals("OCCURS") && occurs.matches()) {
++            entry.occurs = Integer.parseInt(occurs.group(1));
++            return entry;
++        }
++        var display = DISPLAY.matcher(clause);
++        if (display.matches()) {
++            entry.size = display.group(1) == null ? 1 : Integer.parseInt(display.group(1));
++            return entry;
++        }
++        if (HALFWORD.matcher(clause).matches()) {
++            entry.size = 2;
++            return entry;
++        }
++        return null;
++    }
++
++    private static int size(Entry entry) {
++        if (entry.children.isEmpty()) return entry.size;
++        int total = 0;
++        for (Entry child : entry.children) {
++            int width = size(child);
++            if (width <= 0) return -1;
++            if (child.redefines == null) total += width;
++        }
++        return total * entry.occurs;
++    }
++
++    private static boolean place(Entry group, int start) {
++        int cursor = start;
++        for (int index = 0; index < group.children.size(); index++) {
++            Entry child = group.children.get(index);
++            if (child.redefines != null) {
++                if (child.occurs != 1) return false;
++                Entry base = null;
++                for (Entry sibling : group.children.subList(0, index))
++                    if (sibling.redefines == null && sibling.name.equals(child.redefines)) base = sibling;
++                if (base == null || base.occurs != 1 || size(child) > size(base)) return false;
++                child.offset = base.offset;
++            } else {
++                child.offset = cursor;
++                cursor += size(child);
++            }
++            if (!child.children.isEmpty() && !place(child, child.offset)) return false;
++        }
++        return true;
++    }
++
++    // FIL-Rnnn is the preprocessor's layout-neutral rename of FILLER REDEFINES.
++    private static List<String> upper(List<String> tokens) {
++        return tokens.stream().map(token -> token.toUpperCase(Locale.ROOT))
++                .map(token -> token.matches("FIL-R[0-9]+") ? "FILLER" : token).toList();
++    }
++}
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsCommareaInventory.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsCommareaInventory.java
+new file mode 100644
+index 0000000..2a21e24
+--- /dev/null
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsCommareaInventory.java
+@@ -0,0 +1,193 @@
++package org.smojol.toolkit.analysis.pipeline;
++
++import org.antlr.v4.runtime.ParserRuleContext;
++import org.antlr.v4.runtime.tree.ParseTree;
++import org.antlr.v4.runtime.tree.TerminalNode;
++import org.eclipse.lsp.cobol.core.CobolParser;
++import org.eclipse.lsp.cobol.implicitDialects.cics.CICSParser;
++
++import java.util.ArrayList;
++import java.util.LinkedHashMap;
++import java.util.LinkedHashSet;
++import java.util.List;
++import java.util.Locale;
++import java.util.Map;
++import java.util.Set;
++import java.util.regex.Matcher;
++import java.util.regex.Pattern;
++
++import static org.smojol.toolkit.analysis.pipeline.CicsDependencyAnalysis.nodes;
++
++/*
++ * Per-program COMMAREA facts for the estate closure: every 01-level record that is sent as a COMMAREA, loaded
++ * from DFHCOMMAREA or copied into a carrier, with its slot write inventory; every carrier (01-level PIC X item
++ * that is sent and only ever holds one record followed by data written at LENGTH OF record + 1); and every
++ * XCTL/RETURN/LINK COMMAREA send. Sends of anything else are "foreign"; foreign and LINK record sends carry their resolved program targets.
++ */
++final class CicsCommareaInventory {
++    final Map<ParserRuleContext, CicsSlotUniverse> records = new LinkedHashMap<>();
++    final List<Map<String, Object>> carriers = new ArrayList<>();
++    final List<Map<String, Object>> sends = new ArrayList<>();
++    final Map<Map<String, Object>, ParserRuleContext> foreign = new LinkedHashMap<>();
++    private final ParseTree tree;
++    private final CobolDeclarationIndex declarations;
++    private final List<ParseTree> readOnly;
++
++    private CicsCommareaInventory(ParseTree tree, CobolDeclarationIndex declarations, List<ParseTree> readOnly) {
++        this.tree = tree;
++        this.declarations = declarations;
++        this.readOnly = readOnly;
++    }
++
++    static CicsCommareaInventory build(ParseTree tree, CobolDeclarationIndex declarations, List<ParseTree> readOnly,
++                                       List<ParserRuleContext> commands) {
++        CicsCommareaInventory inventory = new CicsCommareaInventory(tree, declarations, readOnly);
++        Map<ParserRuleContext, Map<String, Object>> carrierFacts = new LinkedHashMap<>();
++        for (ParserRuleContext command : commands) {
++            String operation = command instanceof CICSParser.Cics_xctlContext ? "XCTL"
++                    : command instanceof CICSParser.Cics_returnContext ? "RETURN"
++                    : command instanceof CICSParser.Cics_linkContext ? "LINK" : null;
++            if (operation == null) continue;
++            for (ParseTree operand : CicsTerminalBindings.operands(command, "COMMAREA")) {
++                Map<String, Object> send = new LinkedHashMap<>();
++                send.put("command", operation);
++                send.put("operand", operand.getText().replaceAll("^\\(|\\)$", "").toUpperCase(Locale.ROOT));
++                send.put("line", command.getStart().getLine());
++                send.put("column", command.getStart().getCharPositionInLine());
++                ParserRuleContext declaration = inventory.plainDeclaration(operand);
++                ParserRuleContext record = declaration == null ? null
++                        : CicsSlotUniverse.recordOf(declarations, declaration);
++                if (record != null && record == declaration && !declarations.children(record).isEmpty()) {
++                    send.put("kind", "record");
++                    send.put("record", CicsConstantResolution.entryName(record));
++                    inventory.records.putIfAbsent(record, null);
++                    if ("LINK".equals(operation)) inventory.foreign.put(send, command);
++                } else if (record != null && record == declaration && !"LINK".equals(operation)) {
++                    send.put("kind", "carrier");
++                    send.put("carrier", CicsConstantResolution.entryName(record));
++                    carrierFacts.putIfAbsent(record, null);
++                } else {
++                    send.put("kind", "foreign");
++                    inventory.foreign.put(send, command);
++                }
++                inventory.sends.add(send);
++            }
++        }
++        for (ParseTree node : nodes(tree)) {
++            if (!(node instanceof CobolParser.MoveStatementContext move) || move.moveToStatement() == null
++                    || move.moveToStatement().generalIdentifier().size() != 1) continue;
++            if (!move.moveToStatement().moveToSendingArea().getText().toUpperCase(Locale.ROOT)
++                    .startsWith("DFHCOMMAREA(1:")) continue;
++            ParserRuleContext declaration = inventory.plainDeclaration(move.moveToStatement().generalIdentifier(0));
++            ParserRuleContext record = declaration == null ? null : CicsSlotUniverse.recordOf(declarations, declaration);
++            if (record != null && record == declaration && !declarations.children(record).isEmpty())
++                inventory.records.putIfAbsent(record, null);
++        }
++        for (ParserRuleContext carrier : new ArrayList<>(carrierFacts.keySet())) {
++            Map<String, Object> fact = inventory.carrier(carrier);
++            carrierFacts.put(carrier, fact);
++            inventory.carriers.add(fact);
++        }
++        for (ParserRuleContext record : new ArrayList<>(inventory.records.keySet()))
++            inventory.records.put(record, CicsSlotUniverse.analyse(tree, declarations, readOnly, record));
++        return inventory;
++    }
++
++    private ParserRuleContext plainDeclaration(ParseTree operand) {
++        String text = operand.getText().replaceAll("^\\((.*)\\)$", "$1");
++        if (!text.matches("[A-Za-z][A-Za-z0-9-]*")) return null;
++        List<ParserRuleContext> hosts = declarations.hosts(text);
++        return hosts.size() == 1 ? hosts.getFirst() : null;
++    }
++
++    private Map<String, Object> carrier(ParserRuleContext carrier) {
++        String name = CicsConstantResolution.entryName(carrier);
++        List<String> issues = new ArrayList<>();
++        Set<String> sources = new LinkedHashSet<>();
++        Set<String> offsets = new LinkedHashSet<>();
++        if (!carrier.getText().toUpperCase(Locale.ROOT).matches("0?1" + Pattern.quote(name)
++                + "PIC(?:TURE)?(?:IS)?X\\(0*[1-9][0-9]{0,4}\\)\\."))
++            issues.add("carrier-shape");
++        for (ParseTree node : nodes(tree)) {
++            if (node instanceof CobolParser.DataRedefinesClauseContext redefines
++                    && redefines.getText().replaceFirst("(?i)^REDEFINES", "").equalsIgnoreCase(name))
++                issues.add("redefined");
++            if (!(node instanceof TerminalNode) || !node.getText().equalsIgnoreCase(name)
++                    || CicsSlotUniverse.within(node, CobolParser.DataDivisionContext.class)) continue;
++            ParserRuleContext command = CicsSlotUniverse.cicsCommand(node);
++            if (command != null) {
++                if ((command instanceof CICSParser.Cics_xctlContext || command instanceof CICSParser.Cics_returnContext)
++                        && (CicsSlotUniverse.operandContains(command, "COMMAREA", node)
++                        || CicsSlotUniverse.operandContains(command, "LENGTH", node))) continue;
++                issues.add("cics-" + command.getClass().getSimpleName());
++                continue;
++            }
++            if (CicsConstantResolution.readPosition(node) || CicsSlotUniverse.lengthOnly(node)) continue;
++            ParserRuleContext statement = null;
++            for (ParseTree up = node; up != null; up = up.getParent())
++                if (up.getParent() instanceof CobolParser.StatementContext) {
++                    statement = (ParserRuleContext) up;
++                    break;
++                }
++            CobolParser.GeneralIdentifierContext identifier = null;
++            for (ParseTree up = node.getParent(); up != null; up = up.getParent())
++                if (up instanceof CobolParser.GeneralIdentifierContext found) {
++                    identifier = found;
++                    break;
++                }
++            String receiver = identifier == null ? "" : identifier.getText().toUpperCase(Locale.ROOT);
++            if (statement instanceof CobolParser.MoveStatementContext move && move.ALL() == null
++                    && move.moveToStatement() != null
++                    && move.moveToStatement().generalIdentifier().size() == 1
++                    && move.moveToStatement().generalIdentifier(0) == identifier) {
++                String sending = move.moveToStatement().moveToSendingArea().getText().toUpperCase(Locale.ROOT);
++                Matcher offset = Pattern.compile(Pattern.quote(name) + "\\(LENGTHOF([A-Z][A-Z0-9-]*)\\+1:.+\\)")
++                        .matcher(receiver);
++                if (receiver.equals(name) && Set.of("SPACE", "SPACES", "LOW-VALUE", "LOW-VALUES").contains(sending))
++                    continue;
++                if (receiver.equals(name)) {
++                    ParserRuleContext source = plainDeclaration(move.moveToStatement().moveToSendingArea());
++                    if (source != null && CicsSlotUniverse.recordOf(declarations, source) == source
++                            && !declarations.children(source).isEmpty()) {
++                        sources.add(CicsConstantResolution.entryName(source));
++                        records.putIfAbsent(source, null);
++                        continue;
++                    }
++                } else if (offset.matches()) {
++                    offsets.add(offset.group(1));
++                    continue;
++                }
++            }
++            if (statement instanceof CobolParser.InitializeStatementContext initialize
++                    && initialize.initializeReplacingPhrase() == null && initialize.VALUE() == null
++                    && initialize.DEFAULT() == null && initialize.FILLER() == null
++                    && initialize.generalIdentifier().contains(identifier) && receiver.equals(name)) continue;
++            issues.add("carrier-write:" + (statement == null ? "unstructured" : statement.getClass().getSimpleName()));
++        }
++        if (sources.size() != 1) issues.add("carrier-sources:" + sources.size());
++        if (!sources.containsAll(offsets)) issues.add("carrier-offset-not-after-record");
++        Map<String, Object> fact = new LinkedHashMap<>();
++        fact.put("name", name);
++        fact.put("record", sources.size() == 1 ? sources.iterator().next() : null);
++        fact.put("issues", new ArrayList<>(new LinkedHashSet<>(issues)));
++        return fact;
++    }
++
++    /* Slot of one of this program's COMMAREA records named by an XCTL PROGRAM operand, or null. */
++    CicsSlotUniverse recordForSlot(String slot) {
++        List<ParserRuleContext> hosts = declarations.hosts(slot);
++        if (hosts.size() != 1) return null;
++        for (CicsSlotUniverse record : records.values())
++            if (record.slots.containsKey(slot) && record.slots.get(slot).definition == hosts.getFirst()) return record;
++        return null;
++    }
++
++    Map<String, Object> export() {
++        Map<String, Object> result = new LinkedHashMap<>();
++        result.put("schema", 1);
++        result.put("records", records.values().stream().map(CicsSlotUniverse::export).toList());
++        result.put("carriers", carriers);
++        result.put("sends", sends);
++        return result;
++    }
++}
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsDependencyAnalysis.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsDependencyAnalysis.java
+index 2c85152..9908a80 100644
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsDependencyAnalysis.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsDependencyAnalysis.java
+@@ -23,6 +23,8 @@ import java.util.regex.Pattern;
+ final class CicsDependencyAnalysis {
+     private record Statement(ParserRuleContext syntax, Map<String, Object> export) {}
+     private final List<Statement> statements = new ArrayList<>();
++    private CicsCommareaInventory inventory;
++    private String sourceSha256;
+     private static final Set<String> INTRINSICS = Set.of("Cics_assignContext", "Cics_abendContext",
+             "Cics_syncpointContext", "Cics_asktimeContext", "Cics_formattimeContext",
+             "Cics_delayContext", "Cics_getContext", "Cics_putContext", "Cics_fetchContext");
+@@ -43,6 +45,7 @@ final class CicsDependencyAnalysis {
+                 || context instanceof CICSParser.Cics_runContext
+                 || context instanceof CICSParser.Cics_linkContext
+                 || context instanceof CICSParser.Cics_xctlContext
++                || context instanceof CICSParser.Cics_writeqContext writeq && writeq.cics_writeq_td() != null
+                 || FILES.contains(context.getClass().getSimpleName())
+                 && !(context instanceof CICSParser.Cics_writeContext write && write.cics_write_file() == null)
+                 && !(context instanceof CICSParser.Cics_deleteContext delete && delete.cics_delete_file().isEmpty()))
+@@ -52,6 +55,8 @@ final class CicsDependencyAnalysis {
+     void bind(ParseTree tree, Path directory, List<Path> copyDirectories,
+               List<CallTarget> targets, List<CallTarget> runTargets) {
+         CobolDeclarationIndex declarations = new CobolDeclarationIndex(tree);
++        inventory = CicsCommareaInventory.build(tree, declarations, constantOperands(),
++                statements.stream().map(Statement::syntax).toList());
+         for (Statement statement : statements) {
+             List<String> issues = new ArrayList<>();
+             List<Map<String, Object>> bindings = new ArrayList<>();
+@@ -69,9 +74,7 @@ final class CicsDependencyAnalysis {
+                     .count() != 1)
+                 issues.add("cics-lock-resource-required");
+             if (statement.syntax() instanceof CICSParser.Cics_handleContext
+-                    && (nodes(statement.syntax()).stream().noneMatch(node ->
+-                    node.getClass().getSimpleName().equals("Cics_handle_abendContext"))
+-                    || !CicsTerminalBindings.supportedHandle(statement.syntax())))
++                    && !CicsTerminalBindings.supportedHandle(statement.syntax()))
+                 issues.add("cics-handle-operation-unsupported");
+             for (ParseTree node : nodes(statement.syntax())) {
+                 if (node instanceof CICSParser.VariableNameUsageContext variable
+@@ -129,6 +132,14 @@ final class CicsDependencyAnalysis {
+                     issues.add("cics-file-definition-invalid:" + error.getMessage());
+                 }
+             }
++            if (statement.syntax() instanceof CICSParser.Cics_writeqContext) {
++                try {
++                    bindTdQueue(statement.syntax(), tree, declarations, constantOperands(), bindings, issues);
++                } catch (IOException | IllegalArgumentException | ClassCastException
++                         | org.yaml.snakeyaml.error.YAMLException error) {
++                    issues.add("cics-tdqueue-definition-invalid:" + error.getMessage());
++                }
++            }
+             if (statement.syntax() instanceof CICSParser.Cics_xctlContext) {
+                 try {
+                     bindTransfer(statement.syntax(), tree, declarations, constantOperands(), directory, bindings, issues);
+@@ -148,7 +159,18 @@ final class CicsDependencyAnalysis {
+                     if (statement.syntax() instanceof CICSParser.Cics_returnContext)
+                         bindContinuation(statement.syntax(), tree, declarations, readOnly, directory, bindings, issues);
+                     CicsTerminalBindings.bindMap(statement.syntax(), copyDirectories, bindings, issues,
+-                            operand -> CicsConstantResolution.literalOrConstant(tree, operand, declarations, readOnly, 1, 7));
++                            operand -> {
++                                CicsConstantResolution.Resolved constant = CicsConstantResolution.literalOrConstant(
++                                        tree, operand, declarations, readOnly, 1, 7);
++                                if (constant != null) return constant;
++                                // A map name is one screen: accept a reaching proof only when exactly one name reaches.
++                                CicsReachingValues.Reaching reaching = CicsReachingValues.resolve(
++                                        tree, operand, declarations, readOnly, 1, 7);
++                                return reaching != null && reaching.values().size() == 1
++                                        && reaching.values().getFirst() != null
++                                        ? new CicsConstantResolution.Resolved(reaching.values().getFirst(), reaching.proof())
++                                        : null;
++                            });
+                 } catch (IOException | IllegalArgumentException | org.yaml.snakeyaml.error.YAMLException error) {
+                     issues.add("cics-terminal-binding-invalid:" + error.getMessage());
+                 }
+@@ -158,11 +180,28 @@ final class CicsDependencyAnalysis {
+             statement.export().put("bindingBasis", TERMINAL.contains(rule) ? "parsed-cics-terminal-operation"
+                     : "Cics_runContext".equals(rule) ? "parsed-cics-async-transaction"
+                     : FILES.contains(rule) ? "parsed-cics-file-operation"
++                    : "Cics_writeqContext".equals(rule) ? "parsed-cics-queue-operation"
+                     : LOCKS.contains(rule) ? "parsed-cics-lock-operation" : INTRINSICS.contains(rule)
+                     ? "parsed-current-task-operation" : "parsed-cics-control-binding");
+             statement.export().put("bindingStatus", issues.isEmpty() ? "complete" : "unresolved");
+             if (!issues.isEmpty()) statement.export().put("bindingDiagnostics", issues.stream().distinct().toList());
+         }
++        inventory.foreign.forEach((send, command) -> statements.stream()
++                .filter(statement -> statement.syntax() == command).findFirst().ifPresent(statement -> {
++                    send.put("targets", ((List<?>) statement.export().getOrDefault("resourceBindings", List.of()))
++                            .stream().map(binding -> (Map<?, ?>) binding)
++                            .filter(binding -> "CICS_PROGRAM".equals(binding.get("kind")))
++                            .map(binding -> binding.get("name")).toList());
++                    send.put("bindingStatus", statement.export().get("bindingStatus"));
++                }));
++    }
++
++    void sourceSha256(String sha256) {
++        this.sourceSha256 = sha256;
++    }
++
++    Map<String, Object> commareaInventory() {
++        return inventory == null ? null : inventory.export();
+     }
+ 
+     private List<ParseTree> constantOperands() {
+@@ -175,6 +214,8 @@ final class CicsDependencyAnalysis {
+                 operands.addAll(CicsTerminalBindings.operands(statement.syntax(), "MAP"));
+                 operands.addAll(CicsTerminalBindings.operands(statement.syntax(), "MAPSET"));
+             }
++            if ("Cics_writeqContext".equals(rule))
++                operands.addAll(CicsTerminalBindings.operands(statement.syntax(), "QUEUE"));
+             if (FILES.contains(rule)) {
+                 operands.addAll(CicsTerminalBindings.operands(statement.syntax(), "FILE"));
+                 operands.addAll(CicsTerminalBindings.operands(statement.syntax(), "DATASET"));
+@@ -228,6 +269,32 @@ final class CicsDependencyAnalysis {
+         };
+     }
+ 
++    // WRITEQ TD QUEUE(name) FROM(area) [LENGTH(n)] [RESP/NOHANDLE]: one record to a CSD-defined extrapartition queue.
++    private void bindTdQueue(ParserRuleContext syntax, ParseTree tree, CobolDeclarationIndex declarations,
++                             List<ParseTree> readOnly, List<Map<String, Object>> bindings,
++                             List<String> issues) throws IOException {
++        List<ParseTree> queues = CicsTerminalBindings.operands(syntax, "QUEUE");
++        if (queues.size() != 1 || CicsTerminalBindings.operands(syntax, "FROM").size() != 1
++                || CicsTerminalBindings.operands(syntax, "LENGTH").size() > 1
++                || !CicsTerminalBindings.operands(syntax, "SYSID").isEmpty()) {
++            issues.add("cics-tdqueue-variant-unsupported");
++            return;
++        }
++        CicsConstantResolution.Resolved target = CicsConstantResolution.literalOrConstant(
++                tree, queues.getFirst(), declarations, readOnly, 1, 4);
++        if (target == null) {
++            issues.add("dynamic-cics-tdqueue-binding-unresolved:" + queues.getFirst().getText());
++            return;
++        }
++        Map<String, Object> queue = CicsResourceCatalog.tdqueue(target.value()).orElse(null);
++        if (queue == null) {
++            issues.add("cics-tdqueue-definition-not-found:" + target.value());
++            return;
++        }
++        queue.put("targetResolution", target.proof());
++        bindings.add(queue);
++    }
++
+     private void bindFile(ParserRuleContext syntax, ParseTree tree, CobolDeclarationIndex declarations,
+                           List<ParseTree> readOnly, List<Map<String, Object>> bindings,
+                           List<String> issues) throws IOException {
+@@ -310,8 +377,12 @@ final class CicsDependencyAnalysis {
+                 names = reaching.names();
+                 proof = reaching.proof();
+             } else {
+-                issues.add("dynamic-cics-program-binding-unresolved:" + ((CICSParser.Cics_nameContext) operand).name().getText());
+-                return;
++                String field = ((CICSParser.Cics_nameContext) operand).name().getText();
++                Map.Entry<List<String>, Map<String, Object>> universe = slotUniverse(field, tree, declarations,
++                        readOnly, issues);
++                if (universe == null) return;
++                names = universe.getKey();
++                proof = universe.getValue();
+             }
+         }
+         List<Map<String, Object>> programs = new ArrayList<>();
+@@ -325,6 +396,67 @@ final class CicsDependencyAnalysis {
+         bindings.addAll(programs);
+     }
+ 
++    /*
++     * Flow-insensitive fallback for a PIC X(1..8) program operand: the union of every value the item can hold in
++     * this program, or, for a COMMAREA record slot that takes the incoming COMMAREA value, the estate closure
++     * computed from all programs' inventories and supplied through REKT_COMMAREA_CLOSURE.
++     */
++    private Map.Entry<List<String>, Map<String, Object>> slotUniverse(String field, ParseTree tree,
++            CobolDeclarationIndex declarations, List<ParseTree> readOnly, List<String> issues) throws IOException {
++        String name = field.toUpperCase(Locale.ROOT);
++        List<ParserRuleContext> hosts = declarations.hosts(name);
++        ParserRuleContext record = hosts.size() == 1 ? CicsSlotUniverse.recordOf(declarations, hosts.getFirst()) : null;
++        CicsSlotUniverse analysis = record == null ? null : inventory.records.containsKey(record)
++                ? inventory.records.get(record) : CicsSlotUniverse.analyse(tree, declarations, readOnly, record);
++        if (analysis == null || !analysis.slots.containsKey(name)
++                || analysis.slots.get(name).definition != hosts.getFirst()) {
++            issues.add("dynamic-cics-program-binding-unresolved:" + field);
++            return null;
++        }
++        List<String> local = analysis.local(name, new java.util.HashSet<>());
++        List<String> universe = local;
++        String kind = "flow-insensitive-slot-writes";
++        if (local == null) {
++            Set<String> unsupported = analysis.chainUnsupported(name);
++            if (!inventory.records.containsKey(record) || !analysis.issues.isEmpty() || !unsupported.isEmpty()) {
++                issues.add("dynamic-cics-program-binding-unresolved:" + field);
++                analysis.issues.forEach(issue -> issues.add("cics-slot-record-unsupported:" + name + ":" + issue));
++                unsupported.forEach(issue -> issues.add("cics-slot-write-unsupported:" + name + ":" + issue));
++                return null;
++            }
++            String closure = System.getenv("REKT_COMMAREA_CLOSURE");
++            if (closure == null || closure.isBlank()) {
++                issues.add("cics-commarea-closure-pending:" + name);
++                return null;
++            }
++            byte[] bytes = Files.readAllBytes(Path.of(closure));
++            Map<?, ?> document = new com.google.gson.Gson().fromJson(new String(bytes,
++                    java.nio.charset.StandardCharsets.UTF_8), Map.class);
++            Object programs = document == null ? null : document.get("programs");
++            Object program = programs instanceof Map<?, ?> map ? map.get(sourceSha256) : null;
++            Object slots = program instanceof Map<?, ?> map ? map.get("slots") : null;
++            Object values = slots instanceof Map<?, ?> map ? map.get(name) : null;
++            if (!(values instanceof List<?> list) || list.stream().anyMatch(value ->
++                    value != null && !(value instanceof String))) {
++                issues.add("cics-commarea-closure-unresolved:" + name);
++                return null;
++            }
++            universe = list.stream().map(value -> (String) value).toList();
++            kind = "closed-world-commarea-slot";
++        }
++        List<String> names = universe.stream().filter(java.util.Objects::nonNull).distinct().toList();
++        if (names.isEmpty()) {
++            issues.add("dynamic-cics-program-binding-unresolved:" + field);
++            return null;
++        }
++        Map<String, Object> proof = analysis.proof(name, kind, universe);
++        if ("closed-world-commarea-slot".equals(kind)) {
++            proof.put("closureSha256", ParsePipeline.sha256(Files.readAllBytes(Path.of(System.getenv("REKT_COMMAREA_CLOSURE")))));
++            proof.put("programSourceSha256", sourceSha256);
++        }
++        return Map.entry(names, proof);
++    }
++
+     private static List<String> subscriptedNames(ParseTree variable) {
+         List<String> tokens = nodes(variable).stream().filter(node -> node instanceof TerminalNode)
+                 .map(node -> node.getText().toUpperCase(Locale.ROOT)).toList();
+@@ -377,6 +509,9 @@ final class CicsDependencyAnalysis {
+     private static List<String> referenceNames(ParseTree reference) {
+         List<String> tokens = nodes(reference).stream().filter(node -> node instanceof TerminalNode)
+                 .map(node -> node.getText().toUpperCase(Locale.ROOT)).toList();
++        // LENGTH OF is a special register over the named item; LENGTH is reserved, never a data name.
++        if (tokens.size() > 2 && "LENGTH".equals(tokens.get(0)) && "OF".equals(tokens.get(1)))
++            tokens = tokens.subList(2, tokens.size());
+         if (tokens.size() % 2 == 0) return List.of();
+         for (int i = 0; i < tokens.size(); i++)
+             if (i % 2 == 0 ? !tokens.get(i).matches("[A-Z][A-Z0-9_-]*")
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsReachingValues.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsReachingValues.java
+index d2c5ce3..2e3d9c2 100644
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsReachingValues.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsReachingValues.java
+@@ -38,6 +38,7 @@ import static org.smojol.toolkit.analysis.pipeline.CicsDependencyAnalysis.nodes;
+  */
+ final class CicsReachingValues {
+     static final String USAGE_PROOF = "single-native-program:structured-reaching-definitions";
++    static final String STRAIGHT_LINE_PROOF = "single-native-program:paragraph-straight-line-assignment";
+     private static final String LEVEL = "(0?[1-9]|[1-4][0-9]|77)";
+ 
+     record Reaching(List<String> values, Map<String, Object> proof) {
+@@ -64,6 +65,10 @@ final class CicsReachingValues {
+     private final int minimum;
+     private final int maximum;
+     private final String field;
++    private ParserRuleContext sinkCommand;
++    private int width;
++    private final Set<String> handlers = new LinkedHashSet<>();
++    private String sinkOption;
+     private final Set<String> names = new HashSet<>();
+     private final Map<ParserRuleContext, Fact> effects = new HashMap<>();
+     private final Map<ParserRuleContext, Set<Fact>> sinks = new HashMap<>();
+@@ -86,9 +91,18 @@ final class CicsReachingValues {
+     static Reaching resolve(ParseTree tree, ParseTree operand, CobolDeclarationIndex declarations,
+                             List<ParseTree> readOnly, int minimum, int maximum) {
+         Matcher text = Pattern.compile("\\(([A-Za-z][A-Za-z0-9-]*)\\)").matcher(operand.getText());
+-        ParseTree xctl = operand;
+-        while (xctl != null && !(xctl instanceof CICSParser.Cics_xctlContext)) xctl = xctl.getParent();
+-        if (!text.matches() || xctl == null || !declarations.singleProgram()) return null;
++        ParserRuleContext xctl = null;
++        for (ParseTree up = operand; up != null && xctl == null; up = up.getParent())
++            if (up.getParent() instanceof CICSParser.AllCicsRuleContext) xctl = (ParserRuleContext) up;
++        String option = null;
++        if (xctl != null)
++            for (String candidate : List.of("PROGRAM", "MAP", "MAPSET"))
++                if (CicsTerminalBindings.operands(xctl, candidate).stream().anyMatch(root -> root == operand))
++                    option = candidate;
++        if (!text.matches() || xctl == null || option == null || !declarations.singleProgram()
++                || "PROGRAM".equals(option) != xctl instanceof CICSParser.Cics_xctlContext
++                || !"PROGRAM".equals(option) && !(xctl instanceof CICSParser.Cics_sendContext))
++            return null;
+         String name = text.group(1).toUpperCase(Locale.ROOT);
+         List<ParserRuleContext> candidates = declarations.hosts(name);
+         if (candidates.size() != 1) return null;
+@@ -104,18 +118,130 @@ final class CicsReachingValues {
+                 || Integer.parseInt(shape.group(1)) <= levelOf(ancestors.getLast())))
+             return null;
+         CicsReachingValues analysis = new CicsReachingValues(tree, declarations, readOnly, minimum, maximum, name);
++        analysis.sinkCommand = xctl;
++        analysis.sinkOption = option;
++        analysis.width = Integer.parseInt(shape.group(2));
+         for (ParserRuleContext entry : path) analysis.names.add(CicsConstantResolution.entryName(entry));
+-        Fact initial = new Fact(shape.group(4) == null ? null : analysis.programName(shape.group(4)), null, null, false);
++        Reaching structured = analysis.structured(path, definition, ancestors, text.group(1), shape.group(4));
++        return structured != null ? structured
++                : new CicsReachingValues(tree, declarations, readOnly, minimum, maximum, name)
++                .straightLine(xctl, option, analysis.width, path, definition, ancestors, text.group(1));
++    }
++
++    /*
++     * Control enters a paragraph only at its first sentence (GO TO, PERFORM [THRU], HANDLE labels all name
++     * paragraphs or sections), so a MOVE that precedes the command in the same paragraph, separated from it only by
++     * MOVEs that never mention the item or its groups, fixes the value whatever the rest of the program does.
++     */
++    private Reaching straightLine(ParserRuleContext command, String option, int width, List<ParserRuleContext> path,
++                                  ParserRuleContext definition, List<ParserRuleContext> ancestors, String operand) {
++        sinkCommand = command;
++        sinkOption = option;
++        this.width = width;
++        for (ParserRuleContext entry : path) names.add(CicsConstantResolution.entryName(entry));
++        ParserRuleContext owner = null;
++        for (ParseTree node : nodes(tree)) {
++            if (node instanceof CobolParser.DataDescriptionEntryFormat2Context
++                    || node instanceof TerminalNode && "ADDRESS".equalsIgnoreCase(node.getText()))
++                return null;
++            if (node instanceof CobolParser.DataDescriptionEntryFormat1Context
++                    || node instanceof CobolParser.DataDescriptionEntryFormat1Level77Context)
++                owner = (ParserRuleContext) node;
++            // SET condition TO TRUE writes the condition's owner: none may be the item or its groups.
++            if (node instanceof CobolParser.DataDescriptionEntryFormat3Context && path.contains(owner))
++                return null;
++            if (node instanceof CobolParser.DataRedefinesClauseContext redefines
++                    && names.contains(redefines.getText().replaceFirst("(?i)^REDEFINES", "").toUpperCase(Locale.ROOT)))
++                return null;
++        }
++        // The CICS tree hangs under its COBOL dialect filler without a parent link back to it.
++        ParseTree item = nodes(tree).stream().filter(node -> node instanceof CobolParser.DialectNodeFillerContext
++                && nodes(node).stream().anyMatch(inner -> inner == command)
++                && nodes(node).stream().filter(inner -> inner instanceof CICSParser.AllCicsRuleContext).count() == 1)
++                .findFirst().orElse(null);
++        while (item != null && !(item.getParent() instanceof CobolParser.SentenceContext)) {
++            if (item instanceof CobolParser.StatementContext || item instanceof CobolParser.ConditionalStatementCallContext)
++                return null;
++            item = item.getParent();
++        }
++        if (!(item instanceof CobolParser.DialectStatementContext)
++                || !(item.getParent().getParent() instanceof CobolParser.ParagraphContext paragraph)) return null;
++        List<ParseTree> items = new ArrayList<>();
++        for (CobolParser.SentenceContext sentence : paragraph.sentence())
++            for (ParseTree child : children(sentence))
++                if (child instanceof CobolParser.StatementContext || child instanceof CobolParser.DialectStatementContext)
++                    items.add(child);
++        for (int index = items.indexOf(item) - 1; index >= 0; index--) {
++            ParseTree previous = items.get(index);
++            if (!(previous instanceof CobolParser.StatementContext statement)
++                    || !(statement.getChild(0) instanceof CobolParser.MoveStatementContext
++                    || statement.getChild(0) instanceof CobolParser.ContinueStatementContext
++                    || statement.getChild(0) instanceof CobolParser.SetStatementContext
++                    && statement.getText().matches("(?i)SET[A-Z0-9-]+TOTRUE")))
++                return null;
++            if (!mentions(statement)) continue;
++            if (!(statement.getChild(0) instanceof CobolParser.MoveStatementContext)) return null;
++            Fact fact = effect((ParserRuleContext) statement.getChild(0));
++            if (fact.top() || fact.value() == null || fact.origin() == null) return null;
++            Map<String, Object> assignment = new LinkedHashMap<>();
++            assignment.put("syntax", ParsePipeline.dialectSyntax(fact.origin()));
++            if (fact.sourceProof() != null) assignment.put("sourceResolution", fact.sourceProof());
++            Map<String, Object> proof = new LinkedHashMap<>();
++            proof.put("kind", "structured-reaching-assignments");
++            proof.put("operand", operand);
++            proof.put("definitionSyntax", ParsePipeline.dialectSyntax(definition));
++            proof.put("ancestorSyntax", ancestors.stream().map(ParsePipeline::dialectSyntax).toList());
++            proof.put("assignments", List.of(assignment));
++            proof.put("initialReaches", false);
++            proof.put("reachingValues", List.of(fact.value()));
++            proof.put("usageProof", STRAIGHT_LINE_PROOF);
++            return new Reaching(List.of(fact.value()), proof);
++        }
++        return null;
++    }
++
++    private boolean mentions(ParseTree statement) {
++        for (ParseTree node : nodes(statement)) {
++            if (!(node instanceof TerminalNode) || !names.contains(node.getText().toUpperCase(Locale.ROOT))) continue;
++            CobolParser.QualifiedDataNameContext qualified = ancestor(node, CobolParser.QualifiedDataNameContext.class);
++            if (qualified != null && within(node, CobolParser.InDataContext.class)
++                    && !names.contains(qualified.variableUsageName().getText().toUpperCase(Locale.ROOT)))
++                continue;
++            return true;
++        }
++        return false;
++    }
++
++    private Reaching structured(List<ParserRuleContext> path, ParserRuleContext definition,
++                                List<ParserRuleContext> ancestors, String operand, String value) {
++        CicsReachingValues analysis = this;
++        ParserRuleContext xctl = sinkCommand;
++        Fact initial;
++        try {
++            initial = new Fact(value == null ? null : programName(value), null, null, false);
++        } catch (Unsupported invalid) {
++            return null;
++        }
+         try {
+             analysis.classify(path);
+             analysis.structure();
+             Set<Fact> state = Set.of(initial);
+             for (int index = 0; index < analysis.units.size(); index++)
+                 state = analysis.unit(index, state);
++            // A HANDLE label is entered from wherever its condition is raised: start it with any value.
++            for (String handler : analysis.handlers) {
++                Integer start = analysis.paragraphs.get(handler);
++                if (start == null && analysis.sections.containsKey(handler) && !analysis.sections.get(handler).isEmpty())
++                    start = analysis.sections.get(handler).getFirst();
++                if (start == null) throw new Unsupported();
++                state = Set.of(TOP);
++                for (int index = start; index < analysis.units.size(); index++)
++                    state = analysis.unit(index, state);
++            }
+         } catch (Unsupported unsupported) {
+             return null;
+         }
+-        Set<Fact> facts = analysis.sinks.get((ParserRuleContext) xctl);
++        Set<Fact> facts = analysis.sinks.get(xctl);
+         if (facts == null || facts.isEmpty() || facts.contains(TOP)) return null;
+         List<Fact> assignments = facts.stream().filter(fact -> fact.origin() != null)
+                 .sorted(Comparator.comparingInt(fact -> fact.origin().getStart().getTokenIndex())).toList();
+@@ -134,7 +260,7 @@ final class CicsReachingValues {
+         if (distinct.stream().allMatch(Objects::isNull)) return null;
+         Map<String, Object> proof = new LinkedHashMap<>();
+         proof.put("kind", "structured-reaching-assignments");
+-        proof.put("operand", text.group(1));
++        proof.put("operand", operand);
+         proof.put("definitionSyntax", ParsePipeline.dialectSyntax(definition));
+         proof.put("ancestorSyntax", ancestors.stream().map(ParsePipeline::dialectSyntax).toList());
+         proof.put("assignments", assignmentProof);
+@@ -152,7 +278,9 @@ final class CicsReachingValues {
+     private String programName(String literal) {
+         String value = literal.replaceFirst(" +$", "");
+         if (value.isEmpty()) return null;
+-        if (!value.matches("[A-Za-z0-9@$#]+") || value.length() < minimum || value.length() > maximum)
++        // A longer literal is truncated by the MOVE, so the stored name would differ from the literal.
++        if (!value.matches("[A-Za-z0-9@$#]+") || value.length() < minimum || value.length() > maximum
++                || value.length() > width)
+             throw new Unsupported();
+         return value;
+     }
+@@ -167,12 +295,13 @@ final class CicsReachingValues {
+                     || node instanceof CobolParser.AlterStatementContext
+                     || node instanceof CobolParser.GoToStatementContext
+                     || node instanceof CobolParser.AlteredGoToContext
+-                    || node instanceof CICSParser.Cics_handleContext
+                     || node instanceof CobolParser.DialectIfStatmentContext)
+                 throw new Unsupported();
+             if (node instanceof CobolParser.DataDescriptionEntryFormat1Context
+                     || node instanceof CobolParser.DataDescriptionEntryFormat1Level77Context)
+                 owner = (ParserRuleContext) node;
++            if (node instanceof CICSParser.Cics_labelContext label && ancestor(label, CICSParser.Cics_handleContext.class) != null)
++                handlers.add(label.paragraphNameUsage().getText().toUpperCase(Locale.ROOT));
+             if (node instanceof CobolParser.DataDescriptionEntryFormat3Context && path.contains(owner))
+                 throw new Unsupported();
+             if (node instanceof CobolParser.DataRedefinesClauseContext redefines
+@@ -194,8 +323,8 @@ final class CicsReachingValues {
+                         && (CicsTerminalBindings.operands(command, "COMMAREA").stream().anyMatch(root -> contains(root, node))
+                         || CicsTerminalBindings.operands(command, "LENGTH").stream().anyMatch(root -> contains(root, node))))
+                     continue;
+-                if (command instanceof CICSParser.Cics_xctlContext
+-                        && CicsTerminalBindings.operands(command, "PROGRAM").stream().anyMatch(root -> contains(root, node)
++                if (command.getClass() == sinkCommand.getClass()
++                        && CicsTerminalBindings.operands(command, sinkOption).stream().anyMatch(root -> contains(root, node)
+                         && root.getText().equalsIgnoreCase("(" + field + ")")))
+                     continue;
+                 effects.put(command, TOP);
+@@ -248,7 +377,8 @@ final class CicsReachingValues {
+         if (!source.matches("[A-Za-z][A-Za-z0-9-]*")) return TOP;
+         CicsConstantResolution.Resolved constant = CicsConstantResolution.resolveName(
+                 tree, source, declarations, readOnly, minimum, maximum);
+-        return constant == null ? TOP : new Fact(constant.value(), statement, constant.proof(), false);
++        return constant == null || constant.value().length() > width ? TOP
++                : new Fact(constant.value(), statement, constant.proof(), false);
+     }
+ 
+     /* Name of an unsubscripted, unmodified data reference on the item's own path, else null. */
+@@ -413,12 +543,12 @@ final class CicsReachingValues {
+         if (effects.containsKey(command)) state = Set.of(effects.get(command));
+         boolean handled = nodes(command).stream().anyMatch(node -> node instanceof TerminalNode
+                 && Set.of("RESP", "RESP2", "NOHANDLE").contains(node.getText().toUpperCase(Locale.ROOT)));
+-        if (command instanceof CICSParser.Cics_xctlContext) {
+-            List<ParseTree> program = CicsTerminalBindings.operands(command, "PROGRAM");
+-            if (program.size() == 1 && program.getFirst().getText().equalsIgnoreCase("(" + field + ")"))
++        if (command.getClass() == sinkCommand.getClass()) {
++            List<ParseTree> operand = CicsTerminalBindings.operands(command, sinkOption);
++            if (operand.size() == 1 && operand.getFirst().getText().equalsIgnoreCase("(" + field + ")"))
+                 sinks.computeIfAbsent(command, key -> new HashSet<>()).addAll(state);
+-            return handled ? state : Set.of();
+         }
++        if (command instanceof CICSParser.Cics_xctlContext) return handled ? state : Set.of();
+         if (command instanceof CICSParser.Cics_returnContext) return handled ? state : Set.of();
+         if (command instanceof CICSParser.Cics_abendContext) return Set.of();
+         return state;
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsResourceCatalog.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsResourceCatalog.java
+index da0f674..97b6fa1 100644
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsResourceCatalog.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsResourceCatalog.java
+@@ -27,6 +27,10 @@ final class CicsResourceCatalog {
+         return resource("program", name);
+     }
+ 
++    static Optional<Map<String, Object>> tdqueue(String name) throws IOException {
++        return resource("tdqueue", name);
++    }
++
+     static Optional<Map<String, Object>> transaction(String name) throws IOException {
+         return resource("transaction", name);
+     }
+@@ -95,6 +99,17 @@ final class CicsResourceCatalog {
+                     int keyLength = (Integer) attributes.get("keylength");
+                     if (recordSize <= 0 || keyLength < 0 || keyLength > recordSize)
+                         throw new IllegalArgumentException("Invalid CICS file record/key lengths: " + name);
++                } else if ("tdqueue".equals(kind)) {
++                    // IBM CICS TDQUEUE: only local extrapartition output queues written to a DD with fixed records.
++                    if (!"EXTRA".equals(file.get("type")) || !"OUTPUT".equals(file.get("typefile"))
++                            || !(file.get("ddname") instanceof String ddname) || !ddname.matches("[A-Z@$#][A-Z0-9@$#]{0,7}")
++                            || file.containsKey("dsname") || !(file.get("recordsize") instanceof Integer recordSize)
++                            || recordSize <= 0 || !"FIXED".equals(file.get("recordformat"))
++                            || file.containsKey("remotesystem") || file.containsKey("remotename")
++                            || file.containsKey("indirectname"))
++                        throw new IllegalArgumentException("Only local fixed-record extrapartition output TD queues are supported: " + name);
++                    attributes = Map.of("type", "EXTRA", "typefile", "OUTPUT", "ddname", ddname,
++                            "recordsize", recordSize, "recordformat", "FIXED");
+                 } else if ("transaction".equals(kind)) {
+                     if (!(file.get("program") instanceof String program) || !program.matches("[A-Z0-9@$#_-]{1,8}")
+                             || !"NO".equals(file.get("dynamic")) || !"NO".equals(file.get("routable"))
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsSlotUniverse.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsSlotUniverse.java
+new file mode 100644
+index 0000000..593de4d
+--- /dev/null
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsSlotUniverse.java
+@@ -0,0 +1,452 @@
++package org.smojol.toolkit.analysis.pipeline;
++
++import org.antlr.v4.runtime.ParserRuleContext;
++import org.antlr.v4.runtime.tree.ParseTree;
++import org.antlr.v4.runtime.tree.TerminalNode;
++import org.eclipse.lsp.cobol.core.CobolParser;
++import org.eclipse.lsp.cobol.implicitDialects.cics.CICSParser;
++import org.eclipse.lsp.cobol.implicitDialects.sql.Db2SqlParser;
++
++import java.util.ArrayList;
++import java.util.LinkedHashMap;
++import java.util.LinkedHashSet;
++import java.util.List;
++import java.util.Locale;
++import java.util.Map;
++import java.util.Set;
++import java.util.regex.Matcher;
++import java.util.regex.Pattern;
++
++import static org.smojol.toolkit.analysis.pipeline.CicsConstantResolution.contains;
++import static org.smojol.toolkit.analysis.pipeline.CicsDependencyAnalysis.nodes;
++
++/*
++ * Flow-insensitive write inventory of one 01-level WORKING/LOCAL-STORAGE record. Every procedure reference to the
++ * record or a subordinate name is classified; for each elementary PIC X(1..8) slot the result is the set of all
++ * values the slot can ever hold: its initial VALUE, MOVE literal / proved constant / SPACES / LOW-VALUES,
++ * INITIALIZE, a copy of a sibling slot (MOVE sibling TO slot) and, when the whole record is loaded with
++ * MOVE DFHCOMMAREA(1:EIBCALEN | 1:LENGTH OF record) TO record, the incoming COMMAREA value ("entry").
++ * Any other write reaching a slot (subscripted or reference-modified receivers, group moves, CALL USING, CICS
++ * INTO/SET, SQL host use, ADDRESS OF, REDEFINES/RENAMES aliasing, LINK COMMAREA) makes that slot unsupported.
++ * Control flow is irrelevant: the union covers every path, so GO TO, HANDLE CONDITION and the like are allowed.
++ */
++final class CicsSlotUniverse {
++    static final String LOCAL_PROOF = "single-native-program:flow-insensitive-slot-writes";
++    static final String CLOSURE_PROOF = "estate-closed-world:flow-insensitive-commarea-slot-closure";
++    private static final Pattern SLOT = Pattern.compile(
++            "(0?[2-9]|[1-4][0-9])([A-Z0-9-]+)PIC(?:TURE)?(?:IS)?(?:X\\(0*([1-8])\\)|(X{1,8}))"
++                    + "(?:VALUE(?:IS)?(?:(['\"])([^'\"]*)\\5|(SPACES?|LOW-VALUES?)))?\\.", Pattern.CASE_INSENSITIVE);
++
++    static final class Slot {
++        final ParserRuleContext definition;
++        final String name;
++        final int length;
++        final List<String> values = new ArrayList<>();
++        final LinkedHashSet<String> copies = new LinkedHashSet<>();
++        final List<String> unsupported = new ArrayList<>();
++        final List<Map<String, Object>> writes = new ArrayList<>();
++        boolean entry;
++
++        Slot(ParserRuleContext definition, String name, int length) {
++            this.definition = definition;
++            this.name = name;
++            this.length = length;
++        }
++
++        void value(String value) {
++            if (!values.contains(value)) values.add(value);
++        }
++    }
++
++    final ParserRuleContext record;
++    final String name;
++    final Map<String, Slot> slots = new LinkedHashMap<>();
++    final List<String> issues = new ArrayList<>();
++    final List<ParserRuleContext> entries = new ArrayList<>();
++    boolean loaded;
++    private final Set<String> names = new LinkedHashSet<>();
++    private final Map<String, ParserRuleContext> conditions = new LinkedHashMap<>();
++    private final ParseTree tree;
++    private final CobolDeclarationIndex declarations;
++    private final List<ParseTree> readOnly;
++
++    private CicsSlotUniverse(ParseTree tree, CobolDeclarationIndex declarations, List<ParseTree> readOnly,
++                             ParserRuleContext record) {
++        this.tree = tree;
++        this.declarations = declarations;
++        this.readOnly = readOnly;
++        this.record = record;
++        this.name = CicsConstantResolution.entryName(record);
++    }
++
++    /* The enclosing 01-level record of a declaration, or null when it is not a WORKING/LOCAL-STORAGE record. */
++    static ParserRuleContext recordOf(CobolDeclarationIndex declarations, ParserRuleContext declaration) {
++        List<ParserRuleContext> path = declarations.path(declaration);
++        if (path.isEmpty() || CicsConstantResolution.storageSection(declaration) == null) return null;
++        ParserRuleContext root = path.getFirst();
++        return root instanceof CobolParser.DataDescriptionEntryFormat1Context
++                && root.getStart().getText().matches("0?1") ? root : null;
++    }
++
++    static CicsSlotUniverse analyse(ParseTree tree, CobolDeclarationIndex declarations, List<ParseTree> readOnly,
++                                    ParserRuleContext record) {
++        CicsSlotUniverse universe = new CicsSlotUniverse(tree, declarations, readOnly, record);
++        universe.collect();
++        return universe;
++    }
++
++    private boolean inside(ParserRuleContext entry) {
++        List<ParserRuleContext> path = declarations.path(entry);
++        return !path.isEmpty() && path.getFirst() == record;
++    }
++
++    private List<Slot> under(ParserRuleContext entry) {
++        return slots.values().stream().filter(slot -> declarations.path(slot.definition).contains(entry)).toList();
++    }
++
++    private void unsupported(List<Slot> affected, String reason) {
++        for (Slot slot : affected) if (!slot.unsupported.contains(reason)) slot.unsupported.add(reason);
++    }
++
++    private void collect() {
++        if (!declarations.singleProgram()) issues.add("nested-program-scope");
++        ParserRuleContext owner = null;
++        for (ParseTree node : nodes(tree)) {
++            if (node instanceof CobolParser.DataDescriptionEntryFormat1Context
++                    || node instanceof CobolParser.DataDescriptionEntryFormat1Level77Context) {
++                owner = (ParserRuleContext) node;
++                if (inside(owner)) {
++                    entries.add(owner);
++                    String entry = CicsConstantResolution.entryName(owner);
++                    if (!"FILLER".equals(entry)) names.add(entry);
++                }
++            }
++            if (node instanceof CobolParser.DataDescriptionEntryFormat3Context condition && owner != null
++                    && inside(owner) && condition.getChildCount() > 1)
++                conditions.put(condition.getChild(1).getText().toUpperCase(Locale.ROOT), owner);
++        }
++        for (ParserRuleContext entry : entries) {
++            if (!declarations.children(entry).isEmpty()) continue;
++            Matcher shape = SLOT.matcher(entry.getText());
++            if (!shape.matches() || !shape.group(2).equalsIgnoreCase(CicsConstantResolution.entryName(entry))) continue;
++            int length = shape.group(3) != null ? Integer.parseInt(shape.group(3)) : shape.group(4).length();
++            Slot slot = new Slot(entry, shape.group(2).toUpperCase(Locale.ROOT), length);
++            String initial = shape.group(6) == null ? null : shape.group(6).replaceFirst(" +$", "");
++            if (initial != null && initial.length() > length) slot.unsupported.add("initial-value-truncated");
++            slot.value(initial == null || initial.isEmpty() ? null : initial);
++            slots.putIfAbsent(slot.name, slot);
++        }
++        for (ParseTree node : nodes(tree)) {
++            if (node instanceof CobolParser.DataRedefinesClauseContext redefines) {
++                String subject = redefines.getText().replaceFirst("(?i)^REDEFINES", "").toUpperCase(Locale.ROOT);
++                ParserRuleContext alias = null;
++                for (ParseTree up = redefines.getParent(); up != null && alias == null; up = up.getParent())
++                    if (up instanceof CobolParser.DataDescriptionEntryFormat1Context entry) alias = entry;
++                if (subject.equals(CicsConstantResolution.entryName(record))) issues.add("redefined");
++                else if (alias != null && inside(alias)) {
++                    // Storage shared by the redefined and redefining items: only those slots lose their write inventory.
++                    unsupported(under(alias), "redefined");
++                    for (ParserRuleContext redefined : named(subject)) unsupported(under(redefined), "redefined");
++                    if (named(subject).isEmpty()) issues.add("redefined");
++                } else if (names.contains(subject)) issues.add("redefined");
++            }
++            if (node instanceof CobolParser.DataDescriptionEntryFormat2Context renames
++                    && names.stream().anyMatch(item -> renames.getText().toUpperCase(Locale.ROOT).contains(item)))
++                issues.add("renamed");
++            if (node instanceof Db2SqlParser.SqlCodeContext sql
++                    && sql.getCustomData().get("REKT_SQL_SEMANTIC_TREE") instanceof ParseTree semantic
++                    && nodes(semantic).stream().anyMatch(reference ->
++                    reference.getClass().getSimpleName().startsWith("Dbs_host_")
++                            && names.contains(reference.getText().replaceFirst("^:", "").toUpperCase(Locale.ROOT))))
++                issues.add("sql-host-variable");
++            if (!(node instanceof TerminalNode) || within(node, CobolParser.DataDivisionContext.class)) continue;
++            String token = node.getText().toUpperCase(Locale.ROOT);
++            if ("ADDRESS".equals(token) && node.getParent() != null && names.stream().anyMatch(item ->
++                    node.getParent().getText().toUpperCase(Locale.ROOT).startsWith("ADDRESSOF" + item)))
++                issues.add("address-of");
++            if (conditions.containsKey(token)) {
++                if (CicsConstantResolution.readPosition(node) || within(node, CobolParser.EvaluateSelectContext.class)
++                        || within(node, CobolParser.EvaluateConditionContext.class)) continue;
++                ParserRuleContext parent = conditions.get(token);
++                unsupported(slots.values().stream().filter(slot -> slot.definition == parent).toList(),
++                        "condition-name-write");
++                continue;
++            }
++            if (names.contains(token)) reference(node, token);
++        }
++        List<String> distinct = new ArrayList<>(new LinkedHashSet<>(issues));
++        issues.clear();
++        issues.addAll(distinct);
++    }
++
++    private List<ParserRuleContext> named(String token) {
++        return declarations.hosts(token).stream().filter(this::inside).toList();
++    }
++
++    private void reference(ParseTree node, String token) {
++        ParserRuleContext command = cicsCommand(node);
++        if (command != null) {
++            boolean transfer = command instanceof CICSParser.Cics_xctlContext
++                    || command instanceof CICSParser.Cics_returnContext;
++            if (transfer && (operandContains(command, "COMMAREA", node) || operandContains(command, "LENGTH", node)
++                    || operandContains(command, "PROGRAM", node)))
++                return;
++            if (command instanceof CICSParser.Cics_linkContext) {
++                if (operandContains(command, "PROGRAM", node) || operandContains(command, "LENGTH", node)
++                        || operandContains(command, "DATALENGTH", node)) return;
++                if (operandContains(command, "COMMAREA", node)) {
++                    issues.add("linked-commarea");
++                    return;
++                }
++            }
++            unsupported(named(token).stream().flatMap(entry -> under(entry).stream()).toList(),
++                    "cics-" + command.getClass().getSimpleName());
++            return;
++        }
++        if (within(node, CobolParser.InDataContext.class) || lengthOnly(node)) return;
++        if (CicsConstantResolution.readPosition(node) || within(node, CobolParser.EvaluateSelectContext.class)
++                || within(node, CobolParser.EvaluateConditionContext.class)) return;
++        ParserRuleContext statement = null;
++        for (ParseTree up = node; up != null; up = up.getParent())
++            if (up.getParent() instanceof CobolParser.StatementContext) {
++                statement = (ParserRuleContext) up;
++                break;
++            }
++        CobolParser.GeneralIdentifierContext identifier = ancestor(node, CobolParser.GeneralIdentifierContext.class);
++        CobolParser.QualifiedDataNameContext qualified = identifier == null ? null : identifier.qualifiedDataName();
++        List<ParserRuleContext> targets;
++        if (qualified == null || qualified.variableUsageName() == null) {
++            targets = named(token);
++        } else {
++            List<String> path = new ArrayList<>();
++            path.add(qualified.variableUsageName().getText().toUpperCase(Locale.ROOT));
++            for (CobolParser.InDataContext in : qualified.inData())
++                path.add(in.variableUsageName().getText().toUpperCase(Locale.ROOT));
++            targets = declarations.hosts(path).stream().filter(this::inside).toList();
++            if (targets.isEmpty() && declarations.hosts(path).size() > 0) return;
++            if (targets.isEmpty()) targets = named(token);
++        }
++        List<Slot> affected = targets.stream().flatMap(entry -> under(entry).stream()).distinct().toList();
++        if (statement == null) {
++            issues.add("unstructured-reference:" + token);
++            return;
++        }
++        boolean plain = qualified != null && qualified.tableCall() == null && qualified.referenceModifier() == null
++                && qualified.inData().stream().allMatch(in -> in.tableCall() == null && in.referenceModifier() == null)
++                && targets.size() == 1;
++        if (statement instanceof CobolParser.MoveStatementContext move && move.ALL() == null
++                && move.moveToStatement() != null
++                && move.moveToStatement().generalIdentifier().stream().anyMatch(receiver -> receiver == identifier)) {
++            if (!plain) {
++                unsupported(affected, "subscripted-or-modified-receiver");
++                return;
++            }
++            effect(targets.getFirst(), move.moveToStatement().moveToSendingArea(), statement);
++            return;
++        }
++        if (statement instanceof CobolParser.InitializeStatementContext initialize && plain
++                && initialize.getChildCount() == 1 + initialize.generalIdentifier().size()
++                && initialize.generalIdentifier().contains(identifier)) {
++            for (Slot slot : affected) write(slot, statement, "null", null, null);
++            return;
++        }
++        unsupported(affected, statement.getClass().getSimpleName());
++    }
++
++    private void effect(ParserRuleContext target, CobolParser.MoveToSendingAreaContext sending,
++                        ParserRuleContext statement) {
++        List<Slot> affected = under(target);
++        CobolParser.LiteralContext literal = sending.literal();
++        String text = sending.getText();
++        if (literal != null && literal.figurativeConstant() != null) {
++            if (Set.of("SPACE", "SPACES", "LOW-VALUE", "LOW-VALUES").contains(text.toUpperCase(Locale.ROOT)))
++                for (Slot slot : affected) write(slot, statement, "null", null, null);
++            else
++                unsupported(affected, "figurative-" + text.toUpperCase(Locale.ROOT));
++            return;
++        }
++        if (target == record && text.toUpperCase(Locale.ROOT).matches(
++                "DFHCOMMAREA\\(1:(EIBCALEN|LENGTHOF" + Pattern.quote(name) + ")\\)")) {
++            loaded = true;
++            for (Slot slot : affected) {
++                slot.entry = true;
++                write(slot, statement, "entry", null, null);
++            }
++            return;
++        }
++        Slot slot = slots.values().stream().filter(item -> item.definition == target).findFirst().orElse(null);
++        if (slot == null) {
++            unsupported(affected, "group-move");
++            return;
++        }
++        if (literal != null) {
++            if (literal.NONNUMERICLITERAL() == null || !text.matches("(['\"])[^'\"]*\\1")) {
++                unsupported(affected, "literal");
++                return;
++            }
++            String value = text.substring(1, text.length() - 1).replaceFirst(" +$", "");
++            if (value.length() > slot.length) {
++                unsupported(affected, "literal-truncated");
++                return;
++            }
++            write(slot, statement, value.isEmpty() ? "null" : "value", value.isEmpty() ? null : value, null);
++            return;
++        }
++        if (!text.matches("[A-Za-z][A-Za-z0-9-]*")) {
++            unsupported(affected, "sending-expression");
++            return;
++        }
++        String source = text.toUpperCase(Locale.ROOT);
++        List<ParserRuleContext> sources = declarations.hosts(source);
++        if (sources.size() == 1 && slots.containsKey(source) && slots.get(source).definition == sources.getFirst()) {
++            slot.copies.add(source);
++            write(slot, statement, "copy", source, null);
++            return;
++        }
++        CicsConstantResolution.Resolved constant = CicsConstantResolution.resolveName(
++                tree, text, declarations, readOnly, 1, slot.length);
++        if (constant == null) {
++            unsupported(affected, "sending-item-not-constant:" + source);
++            return;
++        }
++        write(slot, statement, "value", constant.value(), constant.proof());
++    }
++
++    private void write(Slot slot, ParserRuleContext statement, String effect, String value,
++                       Map<String, Object> resolution) {
++        if ("value".equals(effect) || "null".equals(effect)) slot.value(value);
++        Map<String, Object> write = new LinkedHashMap<>();
++        write.put("effect", effect);
++        if (value != null) write.put("copy".equals(effect) ? "source" : "value", value);
++        write.put("line", statement.getStart().getLine());
++        write.put("syntax", statement);
++        if (resolution != null) write.put("sourceResolution", resolution);
++        slot.writes.add(write);
++    }
++
++    /* Value set of one slot inside this program alone; null when it depends on entry or is unsupported. */
++    List<String> local(String slotName, Set<String> visiting) {
++        Slot slot = slots.get(slotName);
++        if (slot == null || !issues.isEmpty() || !slot.unsupported.isEmpty() || slot.entry
++                || !visiting.add(slotName)) return null;
++        List<String> result = new ArrayList<>(slot.values);
++        for (String copy : slot.copies) {
++            List<String> values = local(copy, visiting);
++            if (values == null) return null;
++            for (String value : values) if (!result.contains(value)) result.add(value);
++        }
++        visiting.remove(slotName);
++        return result;
++    }
++
++    /* Unsupported writes of the slot and every slot it copies from; the closure cannot repair these. */
++    Set<String> chainUnsupported(String slotName) {
++        Set<String> result = new LinkedHashSet<>(), seen = new LinkedHashSet<>();
++        List<String> pending = new ArrayList<>(List.of(slotName));
++        while (!pending.isEmpty()) {
++            Slot slot = slots.get(pending.removeLast());
++            if (slot == null || !seen.add(slot.name)) continue;
++            result.addAll(slot.unsupported);
++            pending.addAll(slot.copies);
++        }
++        return result;
++    }
++
++    List<String> layout() {
++        return entries.stream().map(entry -> entry.getText().toUpperCase(Locale.ROOT)).toList();
++    }
++
++    Map<String, Object> export() {
++        Map<String, Object> result = new LinkedHashMap<>();
++        result.put("name", name);
++        result.put("layout", layout());
++        result.put("loaded", loaded);
++        result.put("issues", issues);
++        Map<String, Object> slotExport = new LinkedHashMap<>();
++        for (Slot slot : slots.values()) {
++            Map<String, Object> item = new LinkedHashMap<>();
++            item.put("length", slot.length);
++            item.put("values", slot.values);
++            item.put("entry", slot.entry);
++            item.put("copies", List.copyOf(slot.copies));
++            item.put("unsupported", slot.unsupported);
++            item.put("writeLines", slot.writes.stream().map(write -> write.get("line")).toList());
++            slotExport.put(slot.name, item);
++        }
++        result.put("slots", slotExport);
++        return result;
++    }
++
++    /* Proof for one slot; write syntax is serialised natively so the validator can recheck each assignment. */
++    Map<String, Object> proof(String slotName, String kind, List<String> universe) {
++        Slot slot = slots.get(slotName);
++        Map<String, Object> proof = new LinkedHashMap<>();
++        proof.put("kind", kind);
++        proof.put("operand", slotName);
++        proof.put("record", name);
++        proof.put("definitionSyntax", ParsePipeline.dialectSyntax(slot.definition));
++        proof.put("ancestorSyntax", declarations.path(slot.definition).subList(0,
++                declarations.path(slot.definition).size() - 1).stream().map(ParsePipeline::dialectSyntax).toList());
++        Map<String, Object> slotWrites = new LinkedHashMap<>();
++        Set<String> pending = new LinkedHashSet<>(List.of(slotName));
++        Set<String> done = new LinkedHashSet<>();
++        while (!pending.isEmpty()) {
++            String current = pending.iterator().next();
++            pending.remove(current);
++            if (!done.add(current) || !slots.containsKey(current)) continue;
++            Slot item = slots.get(current);
++            List<Map<String, Object>> writes = new ArrayList<>();
++            for (Map<String, Object> write : item.writes) {
++                Map<String, Object> copy = new LinkedHashMap<>(write);
++                copy.put("syntax", ParsePipeline.dialectSyntax((ParseTree) write.get("syntax")));
++                writes.add(copy);
++            }
++            Map<String, Object> entry = new LinkedHashMap<>();
++            entry.put("definitionSyntax", ParsePipeline.dialectSyntax(item.definition));
++            entry.put("initialValue", initialOf(item));
++            entry.put("entry", item.entry);
++            entry.put("writes", writes);
++            slotWrites.put(current, entry);
++            pending.addAll(item.copies);
++        }
++        proof.put("slots", slotWrites);
++        proof.put("universe", universe);
++        proof.put("usageProof", kind.equals("flow-insensitive-slot-writes") ? LOCAL_PROOF : CLOSURE_PROOF);
++        return proof;
++    }
++
++    private static String initialOf(Slot slot) {
++        Matcher shape = SLOT.matcher(slot.definition.getText());
++        if (!shape.matches() || shape.group(6) == null) return null;
++        String value = shape.group(6).replaceFirst(" +$", "");
++        return value.isEmpty() ? null : value;
++    }
++
++    static boolean operandContains(ParserRuleContext command, String option, ParseTree node) {
++        return CicsTerminalBindings.operands(command, option).stream().anyMatch(root -> contains(root, node));
++    }
++
++    static ParserRuleContext cicsCommand(ParseTree node) {
++        for (ParseTree up = node; up != null; up = up.getParent())
++            if (up.getParent() instanceof CICSParser.AllCicsRuleContext) return (ParserRuleContext) up;
++        return null;
++    }
++
++    private static <T> T ancestor(ParseTree node, Class<T> type) {
++        for (ParseTree up = node.getParent(); up != null; up = up.getParent())
++            if (type.isInstance(up)) return type.cast(up);
++        return null;
++    }
++
++    static boolean within(ParseTree node, Class<?> type) {
++        return ancestor(node, type) != null;
++    }
++
++    /* LENGTH OF item only reads the declared size; it neither reads nor writes the item's storage. */
++    static boolean lengthOnly(ParseTree node) {
++        for (ParseTree up = node.getParent(); up != null; up = up.getParent())
++            if (up instanceof CobolParser.SpecialRegisterContext register)
++                return register.LENGTH() != null;
++        return false;
++    }
++}
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsTerminalBindings.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsTerminalBindings.java
+index 0a186ec..f90d979 100644
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsTerminalBindings.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsTerminalBindings.java
+@@ -5,6 +5,7 @@ import com.google.gson.JsonParser;
+ import org.antlr.v4.runtime.ParserRuleContext;
+ import org.antlr.v4.runtime.tree.ParseTree;
+ import org.antlr.v4.runtime.tree.TerminalNode;
++import org.eclipse.lsp.cobol.implicitDialects.cics.CICSParser;
+ 
+ import java.io.IOException;
+ import java.nio.file.Files;
+@@ -28,7 +29,8 @@ final class CicsTerminalBindings {
+         boolean supported = switch (syntax.getClass().getSimpleName()) {
+             case "Cics_sendContext" -> rules.contains("Cics_send_control_minContext")
+                     || rules.contains("Cics_send_map_minContext")
+-                    || rules.contains("Cics_send_text_stdContext");
++                    || rules.contains("Cics_send_text_stdContext")
++                    || plainSend(syntax);
+             case "Cics_receiveContext" -> rules.contains("Cics_receive_mapContext")
+                     && !rules.contains("Cics_receive_mappingdevContext")
+                     && operands(syntax, "INPARTN").isEmpty();
+@@ -52,7 +54,39 @@ final class CicsTerminalBindings {
+                 issues.add("cics-option-ambiguous:" + option);
+     }
+ 
++    // SEND FROM(area) LENGTH|FLENGTH(n) [WAIT] [RESP/NOHANDLE]: a raw write to the principal facility.
++    // The grammar spreads WAIT, ERASE and RESP over several device alternatives; only those options may follow FROM/LENGTH.
++    private static final Set<Class<?>> PLAIN_SEND_TAIL = Set.of(CICSParser.Cics_send_from_waitContext.class,
++            CICSParser.Cics_send_defaultmaxContext.class, CICSParser.Cics_send_lu23Context.class,
++            CICSParser.Cics_send_from_ctlcharContext.class, CICSParser.Cics_send_3560_3270Context.class,
++            CICSParser.Cics_send_eraseContext.class);
++
++    private static boolean plainSend(ParserRuleContext syntax) {
++        return syntax.getChildCount() == 2
++                && syntax.getChild(1) instanceof CICSParser.Cics_send_groupContext group
++                && group.getChildCount() == 2
++                && group.getChild(0) instanceof CICSParser.Cics_send_fromContext
++                && plainSendTail(group.getChild(1));
++    }
++
++    private static boolean plainSendTail(ParseTree node) {
++        if (node instanceof CICSParser.Cics_handle_responseContext) return true;
++        if (node instanceof TerminalNode) return Set.of("WAIT", "ERASE").contains(node.getText().toUpperCase(Locale.ROOT));
++        if (!PLAIN_SEND_TAIL.contains(node.getClass())
++                || node instanceof CICSParser.Cics_send_eraseContext && node.getChildCount() != 1) return false;
++        for (int index = 0; index < node.getChildCount(); index++)
++            if (!plainSendTail(node.getChild(index))) return false;
++        return true;
++    }
++
+     static boolean supportedHandle(ParseTree syntax) {
++        // HANDLE CONDITION name[(label)]...: each label is bound as a CICS_LABEL; no RESP/NOHANDLE/WAIT.
++        if (syntax.getChildCount() == 2 && syntax.getChild(1) instanceof CICSParser.Cics_handle_conditionContext condition) {
++            for (int index = 1; index < condition.getChildCount(); index++)
++                if (condition.getChild(index) instanceof CICSParser.Cics_handle_responseContext) return false;
++            return condition.getChildCount() > 1;
++        }
++        if (nodes(syntax).stream().noneMatch(node -> node instanceof CICSParser.Cics_handle_abendContext)) return false;
+         List<String> tokens = tokens(syntax);
+         long labels = operands(syntax, "LABEL").size();
+         long cancels = tokens.stream().filter("CANCEL"::equals).count();
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CobolDeclarationIndex.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CobolDeclarationIndex.java
+index a7356a1..a84be6f 100644
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CobolDeclarationIndex.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CobolDeclarationIndex.java
+@@ -55,6 +55,14 @@ final class CobolDeclarationIndex {
+         return result;
+     }
+ 
++    List<ParserRuleContext> members(ParserRuleContext record) {
++        List<ParserRuleContext> result = new ArrayList<>();
++        paths.forEach((entry, path) -> {
++            if (path.size() > 1 && path.getFirst() == record) result.add(entry);
++        });
++        return result;
++    }
++
+     List<ParserRuleContext> labels(String name) {
+         return labels.getOrDefault(name.toUpperCase(Locale.ROOT), List.of());
+     }
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/DependencyAnalysisProfile.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/DependencyAnalysisProfile.java
+index ef36c20..b9d8df7 100644
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/DependencyAnalysisProfile.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/DependencyAnalysisProfile.java
+@@ -16,12 +16,19 @@ import java.util.Map;
+ import java.util.Set;
+ 
+ public final class DependencyAnalysisProfile {
+-    private static final Map<String, String> DOCUMENTATION = Map.of(
+-            "CEEGMT", "ceegmtget-current-greenwich-mean-time",
+-            "CEEDATM", "ceedatmconvert-seconds-character-timestamp",
+-            "CEEDAYS", "ceedaysconvert-date-lilian-format",
+-            "CEELOCT", "ceeloctget-current-local-date-time",
+-            "CEE3ABD", "cee3abdterminate-enclave-abend");
++    private static final String LANGUAGE_ENVIRONMENT = "IBM z/OS Language Environment";
++    private static final String LE_SERVICES = "https://www.ibm.com/docs/en/zos/3.1.0?topic=services-";
++    // Name -> {platform, required documentation reference, declared parameter count}.
++    private static final Map<String, List<Object>> DOCUMENTATION = Map.of(
++            "CEEGMT", List.of(LANGUAGE_ENVIRONMENT, LE_SERVICES + "ceegmtget-current-greenwich-mean-time", 3),
++            "CEEDATM", List.of(LANGUAGE_ENVIRONMENT, LE_SERVICES + "ceedatmconvert-seconds-character-timestamp", 4),
++            "CEEDAYS", List.of(LANGUAGE_ENVIRONMENT, LE_SERVICES + "ceedaysconvert-date-lilian-format", 4),
++            "CEELOCT", List.of(LANGUAGE_ENVIRONMENT, LE_SERVICES + "ceeloctget-current-local-date-time", 4),
++            "CEE3ABD", List.of(LANGUAGE_ENVIRONMENT, LE_SERVICES + "cee3abdterminate-enclave-abend", 2),
++            "CBLTDLI", List.of("IBM IMS",
++                    "https://www.ibm.com/docs/en/SSEPH2_15.4.0/com.ibm.ims154.doc.apg/ims_imsdbcobolapp.htm", 4),
++            "DSNTIAC", List.of("IBM Db2 for z/OS", "https://www.ibm.com/docs/en/db2-for-zos/13.0.0?topic=statements-handling-sql-error-codes-in-cobol-applications", 5));
++    private static final Set<String> ASSEMBLER_SERVICES = Set.of("STIMER");
+     private final Map<?, ?> document;
+     private final String path;
+     private final String hash;
+@@ -57,16 +64,18 @@ public final class DependencyAnalysisProfile {
+             if (!(document.get("runtimeContracts") instanceof Map<?, ?> contracts))
+                 throw new IllegalArgumentException("runtimeContracts must be an explicit object");
+             for (Map.Entry<?, ?> entry : contracts.entrySet()) {
+-                String topic = DOCUMENTATION.get(entry.getKey());
+-                int count = topic == null ? -1 : "CEE3ABD".equals(entry.getKey()) ? 2
+-                        : "CEEGMT".equals(entry.getKey()) ? 3 : 4;
+-                if (count < 0 || !(entry.getValue() instanceof Map<?, ?> contract)
+-                        || !"documented-platform-service".equals(contract.get("kind"))
+-                        || !"IBM z/OS Language Environment".equals(contract.get("platform"))
+-                        || !(contract.get("parameters") instanceof List<?> parameters) || parameters.size() != count
+-                        || !(contract.get("documentation") instanceof List<?> references)
+-                        || !references.contains("https://www.ibm.com/docs/en/zos/3.1.0?topic=services-" + topic)
++                if (!(entry.getValue() instanceof Map<?, ?> contract) || !validParameters(contract.get("parameters"))
+                         || !(contract.get("semantics") instanceof Map<?, ?>))
++                    throw new IllegalArgumentException("Unsupported or incomplete runtime contract: " + entry.getKey());
++                List<Object> expected = DOCUMENTATION.get(entry.getKey());
++                boolean valid = "estate-assembler-routine".equals(contract.get("kind"))
++                        ? expected == null && validAssemblerRoutine(entry.getKey(), contract)
++                        : expected != null && "documented-platform-service".equals(contract.get("kind"))
++                            && expected.get(0).equals(contract.get("platform"))
++                            && contract.get("documentation") instanceof List<?> references
++                            && references.contains(expected.get(1))
++                            && ((List<?>) contract.get("parameters")).size() == (int) expected.get(2);
++                if (!valid)
+                     throw new IllegalArgumentException("Unsupported or incomplete documented runtime contract: " + entry.getKey());
+             }
+             return new DependencyAnalysisProfile(document, path.toString(), Hashing.sha256().hashBytes(bytes).toString());
+@@ -100,4 +109,29 @@ public final class DependencyAnalysisProfile {
+         result.put("resolutionKind", "documented-platform-contract");
+         return result;
+     }
++
++    private static boolean validParameters(Object value) {
++        return value instanceof List<?> parameters && !parameters.isEmpty() && parameters.stream().allMatch(item ->
++                item instanceof Map<?, ?> parameter && "BY REFERENCE".equals(parameter.get("passing"))
++                        && Set.of("in", "out", "inout").contains(parameter.get("direction"))
++                        && parameter.get("name") instanceof String name && !name.isBlank()
++                        && parameter.get("representation") instanceof String text && !text.isBlank());
++    }
++
++    private static boolean boundSource(Map<?, ?> item) {
++        return item.get("source") instanceof String source && !source.startsWith("/") && !source.contains("..")
++                && item.get("sourceSha256") instanceof String sha && sha.matches("[0-9a-f]{64}");
++    }
++
++    // Structural check only; doctor and the conversion gate re-hash the estate sources and check macro closure.
++    private static boolean validAssemblerRoutine(Object name, Map<?, ?> contract) {
++        return "IBM High Level Assembler".equals(contract.get("language")) && name.equals(contract.get("entry"))
++                && boundSource(contract)
++                && contract.get("includes") instanceof List<?> includes && includes.stream().allMatch(item ->
++                        item instanceof Map<?, ?> include && boundSource(include)
++                                && Set.of("macro", "copy").contains(include.get("kind"))
++                                && include.get("name") instanceof String)
++                && contract.get("systemServices") instanceof List<?> services && services.stream().allMatch(item ->
++                        item instanceof Map<?, ?> service && ASSEMBLER_SERVICES.contains(service.get("name")));
++    }
+ }
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
+index 230e67c..08d2f39 100644
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
+@@ -92,6 +92,10 @@ public class ParsePipeline {
+     @Getter private final List<Map<String, String>> dependencyControlTransfers = new ArrayList<>();
+     @Getter private final List<Map<String, Object>> dependencyDialectStatements = new ArrayList<>();
+     @Getter private final Map<String, String> dependencyPresenceEvidence = new LinkedHashMap<>();
++
++    public Map<String, Object> getCommareaInventory() {
++        return cicsDependencies.commareaInventory();
++    }
+     private final Set<ParserRuleContext> recordedDialectRoots =
+             java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+     private final SqlDependencyAnalysis sqlDependencies = new SqlDependencyAnalysis();
+@@ -100,6 +104,10 @@ public class ParsePipeline {
+     @Getter private final List<CallTarget> parserCicsCallTargets = new ArrayList<>();
+     @Getter private final List<CallTarget> parserCicsRunTargets = new ArrayList<>();
+     @Getter private final List<CallTarget> parserCallTargets = new ArrayList<>();
++    /** Dynamic CALL operands proven to hold one never-modified program-name constant, keyed by that name. */
++    @Getter private final Map<String, Map<String, Object>> parserCallResolutions = new LinkedHashMap<>();
++    @Getter private final Set<String> resolvedDynamicOperands = new java.util.HashSet<>();
++    private final Map<CallTarget, CobolParser.CallStatementContext> dynamicCalls = new java.util.IdentityHashMap<>();
+     @Getter private String parsedSourcePath;
+     @Getter private String parsedSourceSha256;
+     @Getter private boolean dependencyParseComplete;
+@@ -233,11 +241,13 @@ public class ParsePipeline {
+         sqlDependencies.bind(tree);
+         fileControl.bind(tree);
+         dependencyDialectStatements.addAll(fileControl.statements());
++        cicsDependencies.sourceSha256(parsedSourceSha256);
+         cicsDependencies.bind(tree, Path.of(parsedSourcePath).getParent(),
+                 cpyPaths == null ? List.of() : cpyPaths.stream().map(File::toPath).toList(),
+                 parserCicsCallTargets, parserCicsRunTargets);
+         platformCopybooks.forEach(binding -> PlatformCopybookContract.validateUses(tree, binding,
+                 cpyPaths == null ? List.of() : cpyPaths.stream().map(File::toPath).toList(), dependencyDiagnostics));
++        resolveDynamicCalls();
+         dependencyParseComplete = diagnostics.isEmpty() && dependencyDiagnostics.isEmpty();
+         attestSupportedAbsence();
+         return navigator;
+@@ -314,7 +324,9 @@ public class ParsePipeline {
+     private void collectParserCalls(ParseTree node) {
+         if (node instanceof CobolParser.CallStatementContext call) {
+             try {
+-                parserCallTargets.add(CallTargetBuilder.target(call));
++                CallTarget target = CallTargetBuilder.target(call);
++                if (call.constantName() == null) dynamicCalls.put(target, call);
++                parserCallTargets.add(target);
+             } catch (RuntimeException e) {
+                 dependencyDiagnostics.add("unsupported-CALL:" + e.getMessage());
+             }
+@@ -323,6 +335,42 @@ public class ParsePipeline {
+             collectParserCalls(node.getChild(index));
+     }
+ 
++    // Runs after dialect integration so EXEC SQL/CICS references count against the constant's read-only proof.
++    private void resolveDynamicCalls() {
++        for (int index = 0; index < parserCallTargets.size(); index++) {
++            CobolParser.CallStatementContext call = dynamicCalls.get(parserCallTargets.get(index));
++            if (call == null) continue;
++            Map<String, Object> resolution = resolveDynamicCall(call);
++            if (resolution == null) continue;
++            String value = (String) resolution.remove("value");
++            // Only documented platform services may replace a DYNAMIC edge; other constants stay unresolved.
++            Map<String, Object> contract = DependencyAnalysisProfile.load().runtimeContract(value);
++            if (contract == null || !(contract.get("definition") instanceof Map<?, ?> definition)
++                    || !"documented-platform-service".equals(definition.get("kind"))) continue;
++            Map<String, Object> previous = parserCallResolutions.putIfAbsent(value, resolution);
++            if (previous != null && !previous.get("operand").equals(resolution.get("operand")))
++                dependencyDiagnostics.add("dynamic-call-resolution-ambiguous:" + value);
++            resolvedDynamicOperands.add((String) resolution.get("operand"));
++            parserCallTargets.set(index, new org.smojol.common.program.StaticCallTarget(value));
++        }
++    }
++
++    private Map<String, Object> resolveDynamicCall(CobolParser.CallStatementContext call) {
++        CobolParser.GeneralIdentifierContext identifier = call.generalIdentifier();
++        if (identifier == null || !identifier.getText().matches("[A-Za-z][A-Za-z0-9-]*")) return null;
++        ParseTree root = call;
++        while (root.getParent() != null) root = root.getParent();
++        CicsConstantResolution.Resolved resolved = CicsConstantResolution.resolveName(root, identifier.getText(),
++                new CobolDeclarationIndex(root), List.of(identifier), 1, 8);
++        if (resolved == null) return null;
++        Map<String, Object> resolution = new LinkedHashMap<>();
++        resolution.put("value", resolved.value().toUpperCase(java.util.Locale.ROOT));
++        resolution.put("operand", identifier.getText().toUpperCase(java.util.Locale.ROOT));
++        resolution.put("targetResolution", resolved.proof());
++        resolution.put("callSyntax", dialectSyntax(call));
++        return resolution;
++    }
++
+     private void collectAbsenceContexts(ParseTree node) {
+         collectDependencyContexts(node, null);
+     }
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/SqlDependencyAnalysis.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/SqlDependencyAnalysis.java
+index ca7604f..c139aaa 100644
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/SqlDependencyAnalysis.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/SqlDependencyAnalysis.java
+@@ -207,6 +207,12 @@ final class SqlDependencyAnalysis {
+      */
+     static final Set<String> DB2_ZOS_BUILTINS_OUTSIDE_GRAMMAR = Set.of("TIMESTAMP_FORMAT");
+ 
++    /**
++     * Fully qualified Db2 for z/OS catalog tables whose contents carry no estate data
++     * (https://www.ibm.com/docs/en/db2-for-zos/13.0.0?topic=tables-sysdummy1: one row, IBMREQD CHAR(1)).
++     */
++    static final Set<String> DB2_ZOS_PLATFORM_RELATIONS = Set.of("SYSIBM.SYSDUMMY1");
++
+     private static String key(String kind, String name) {
+         return kind + ":" + name;
+     }
+@@ -218,7 +224,11 @@ final class SqlDependencyAnalysis {
+ 
+     private void collectReferences(ParseTree node, List<Reference> references) {
+         if (node instanceof ParserRuleContext context) {
+-            String kind = context instanceof Db2SqlParser.Dbs_table_nameContext
++            String kind = (context instanceof Db2SqlParser.Dbs_table_nameContext
++                    || context instanceof Db2SqlParser.Dbs_view_nameContext)
++                    && !(context.getParent() instanceof Db2SqlParser.Dbs_declare_tableContext)
++                    && DB2_ZOS_PLATFORM_RELATIONS.contains(identifier(context.getText())) ? null
++                    : context instanceof Db2SqlParser.Dbs_table_nameContext
+                     || context instanceof Db2SqlParser.Dbs_view_nameContext ? "SQL_RELATION"
+                     : context instanceof Db2SqlParser.Dbs_cursor_nameContext ? "SQL_CURSOR"
+                     : context instanceof Db2SqlParser.Dbs_host_var_identifierContext
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/AnalyseProgramDependenciesTask.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/AnalyseProgramDependenciesTask.java
+index b4b6e82..c774d07 100644
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/AnalyseProgramDependenciesTask.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/AnalyseProgramDependenciesTask.java
+@@ -97,6 +97,7 @@ public class AnalyseProgramDependenciesTask {
+                     program.getDependencyDiagnostics().addAll(pipeline.getDependencyDiagnostics());
+                     program.getDependencyControlTransfers().addAll(pipeline.getDependencyControlTransfers());
+                     program.getDependencyDialectStatements().addAll(pipeline.getDependencyDialectStatements());
++                    program.setCommareaInventory(pipeline.getCommareaInventory());
+                     program.getDependencyDerivedInputs().addAll(pipeline.getDependencyDerivedInputs());
+                     program.getDependencyPresenceEvidence().putAll(pipeline.getDependencyPresenceEvidence());
+                     program.getDependencyCoverage().put("COPY",
+@@ -130,6 +131,15 @@ public class AnalyseProgramDependenciesTask {
+             ParsePipeline pipeline = runner.getDependencyPipelines().get(foundFile.getName());
+             if (pipeline != null) {
+                 java.util.ArrayList<CallTarget> combined = new java.util.ArrayList<>(dependencies);
++                // A dynamic operand proven to hold one constant is replaced by its static target below.
++                combined.removeIf(target -> target.getProgramReferenceType() == ProgramReferenceType.DYNAMIC
++                        && pipeline.getResolvedDynamicOperands().contains(target.getName().toUpperCase(java.util.Locale.ROOT)));
++                // The flow graph can omit CALLs nested in some EVALUATE shapes; the parse tree is authoritative.
++                for (CallTarget target : pipeline.getParserCallTargets())
++                    if (target.getProgramReferenceType() == ProgramReferenceType.STATIC
++                            && combined.stream().noneMatch(existing -> existing.getName().equals(target.getName())
++                            && existing.getProgramReferenceType() == target.getProgramReferenceType()))
++                        combined.add(target);
+                 for (CallTarget target : pipeline.getParserCicsCallTargets())
+                     if (combined.stream().noneMatch(existing -> existing.getName().equals(target.getName())
+                             && existing.getProgramReferenceType() == target.getProgramReferenceType()))
+@@ -158,6 +168,19 @@ public class AnalyseProgramDependenciesTask {
+             if (!callsComplete) program.getDependencyDiagnostics().add("CALL-coverage-incomplete-or-dynamic");
+             for (CobolProgram childDependency : program.staticDependencies())
+                 recurse(childDependency, copyBookPaths);
++            if (pipeline != null)
++                for (CobolProgram child : program.getDependencies()) {
++                    Map<String, Object> resolution = pipeline.getParserCallResolutions().get(child.getName());
++                    if (resolution == null || !"CALL".equals(child.getDependencyKind())
++                            && !"EXTERNAL_RUNTIME".equals(child.getDependencyKind())) continue;
++                    if (!"EXTERNAL_RUNTIME".equals(child.getDependencyKind())) {
++                        program.getDependencyDiagnostics().add("dynamic-call-resolution-unverified:" + child.getName());
++                        continue;
++                    }
++                    Map<String, Object> contract = new java.util.LinkedHashMap<>(child.getRuntimeContract());
++                    contract.put("targetResolution", resolution);
++                    child.setRuntimeContract(contract);
++                }
+             for (CobolProgram child : program.getDependencies()) {
+                 if ("COPY".equals(child.getDependencyKind()) || "PLATFORM_COPY".equals(child.getDependencyKind())
+                         || child.isDependencyBindingComplete()) continue;

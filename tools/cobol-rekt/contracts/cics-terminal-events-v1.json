@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "profileKind": "platform-replacement",
+  "profileName": "cics-terminal-events-v1",
+  "copybooks": {
+    "DFHAID": {
+      "recipe": "symbolic-terminal-events-v1",
+      "selector": "EIBAID",
+      "symbols": {
+        "DFHENTER": "ENTER",
+        "DFHCLEAR": "CLEAR",
+        "DFHPA1": "PA1",
+        "DFHPA2": "PA2",
+        "DFHPA3": "PA3",
+        "DFHPF1": "PF1",
+        "DFHPF2": "PF2",
+        "DFHPF3": "PF3",
+        "DFHPF4": "PF4",
+        "DFHPF5": "PF5",
+        "DFHPF6": "PF6",
+        "DFHPF7": "PF7",
+        "DFHPF8": "PF8",
+        "DFHPF9": "PF9",
+        "DFHPF10": "PF10",
+        "DFHPF11": "PF11",
+        "DFHPF12": "PF12",
+        "DFHPF13": "PF13",
+        "DFHPF14": "PF14",
+        "DFHPF15": "PF15",
+        "DFHPF16": "PF16",
+        "DFHPF17": "PF17",
+        "DFHPF18": "PF18",
+        "DFHPF19": "PF19",
+        "DFHPF20": "PF20",
+        "DFHPF21": "PF21",
+        "DFHPF22": "PF22",
+        "DFHPF23": "PF23",
+        "DFHPF24": "PF24"
+      },
+      "documentation": [
+        "https://www.ibm.com/docs/en/cics-ts/6.x"
+      ],
+      "targetSemantics": "named-events-preserve-source-branches"
+    }
+  }
+}

@@ -1,0 +1,26 @@
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/DependencyAnalysisProfile.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/DependencyAnalysisProfile.java
+@@ -16,6 +16,11 @@
+ import java.util.Set;
+ 
+ public final class DependencyAnalysisProfile {
++    private static final Map<String, String> DOCUMENTATION = Map.of(
++            "CEEGMT", "ceegmtget-current-greenwich-mean-time",
++            "CEEDATM", "ceedatmconvert-seconds-character-timestamp",
++            "CEEDAYS", "ceedaysconvert-date-lilian-format",
++            "CEELOCT", "ceeloctget-current-local-date-time");
+     private final Map<?, ?> document;
+     private final String path;
+     private final String hash;
+@@ -51,9 +56,8 @@
+             if (!(document.get("runtimeContracts") instanceof Map<?, ?> contracts))
+                 throw new IllegalArgumentException("runtimeContracts must be an explicit object");
+             for (Map.Entry<?, ?> entry : contracts.entrySet()) {
+-                int count = "CEEGMT".equals(entry.getKey()) ? 3 : "CEEDATM".equals(entry.getKey()) ? 4 : -1;
+-                String topic = "CEEGMT".equals(entry.getKey())
+-                        ? "ceegmtget-current-greenwich-mean-time" : "ceedatmconvert-seconds-character-timestamp";
++                String topic = DOCUMENTATION.get(entry.getKey());
++                int count = topic == null ? -1 : "CEEGMT".equals(entry.getKey()) ? 3 : 4;
+                 if (count < 0 || !(entry.getValue() instanceof Map<?, ?> contract)
+                         || !"documented-platform-service".equals(contract.get("kind"))
+                         || !"IBM z/OS Language Environment".equals(contract.get("platform"))

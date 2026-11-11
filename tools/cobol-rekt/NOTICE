@@ -9,7 +9,24 @@ The `rekt-oss-mma` image contains locally patched open-source components.
 | che-che4z-lsp-for-cobol dialect adapters | https://github.com/eclipse/che-che4z-lsp-for-cobol | EPL-2.0 |
 | Eclipse Temurin 21 | https://adoptium.net/ | GPLv2 with Classpath Exception |
 | Graphviz | https://graphviz.org/ | EPL-2.0 |
+| SnakeYAML 2.5 | https://bitbucket.org/snakeyaml/snakeyaml | Apache-2.0 |
+
+The host preprocessing support also bundles Broadcom's unmodified SQLDA parser
+copybook under EPL-2.0. Its source revision, hash and license attribution are
+documented in `docs/bundled-system-copybooks.md`; its original notice is retained.
 
 The image builds cobol-rekt from source and applies the patches under
 `patches/`. The upstream source remains owned and licensed by its respective
 copyright holders.
+
+Local changes also include explicit target-analysis profiles, documented platform
+service binding, and native COMP-1/COMP-2 layout metadata. The accompanying profile
+links to IBM documentation; it does not include IBM runtime implementation code.
+Further local changes preserve DB2 null-indicator boundaries and bind supported
+CICS task operands, local labels and source-backed local LINK dependencies.
+Further extensions bind explicit shared SQL declarations and supported BMS-derived
+symbolic layouts to their actual inputs, and retain channel/async CICS commands
+with catalog-backed finite transaction routing and symbolic completion values.
+Additional local changes bind supported INQUIRE ASSOCIATION origin-data operands
+and explicit, documented BMS attribute replacement contracts to original source
+and derived screen layouts. These contracts contain no IBM SDK copybook bytes.

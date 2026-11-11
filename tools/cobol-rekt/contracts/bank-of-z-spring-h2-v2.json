@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "profileName": "bank-of-z-spring-h2-v2",
+  "profileKind": "target-port",
+  "sqlDefaultSchema": "STTESTER",
+  "runtimeContracts": {
+    "CEEGMT": {
+      "kind": "documented-platform-service",
+      "platform": "IBM z/OS Language Environment",
+      "documentation": ["https://www.ibm.com/docs/en/zos/3.1.0?topic=services-ceegmtget-current-greenwich-mean-time"],
+      "parameters": [
+        {"name": "output_GMT_Lilian", "passing": "BY REFERENCE", "direction": "out", "representation": "signed 32-bit binary integer", "meaning": "GMT days since 14 October 1582"},
+        {"name": "output_GMT_seconds", "passing": "BY REFERENCE", "direction": "out", "representation": "64-bit floating point", "meaning": "GMT seconds since midnight 14 October 1582, excluding leap seconds"},
+        {"name": "fc", "passing": "BY REFERENCE", "direction": "out", "representation": "12-byte Language Environment feedback token"}
+      ],
+      "semantics": {
+        "timeZone": "UTC",
+        "successCondition": "CEE000",
+        "unavailableCondition": "CEE2E6",
+        "failureOutputs": "Both numeric outputs are zero when GMT is unavailable.",
+        "feedback": "Preserve the documented feedback condition; do not invent a zero-filled successful token."
+      }
+    },
+    "CEEDATM": {
+      "kind": "documented-platform-service",
+      "platform": "IBM z/OS Language Environment",
+      "documentation": ["https://www.ibm.com/docs/en/zos/3.1.0?topic=services-ceedatmconvert-seconds-character-timestamp"],
+      "parameters": [
+        {"name": "input_seconds", "passing": "BY REFERENCE", "direction": "in", "representation": "64-bit floating point", "meaning": "Seconds since midnight 14 October 1582, excluding leap seconds"},
+        {"name": "picture_string", "passing": "BY REFERENCE", "direction": "in", "representation": "VSTRING: halfword binary length followed by picture characters"},
+        {"name": "output_timestamp", "passing": "BY REFERENCE", "direction": "out", "representation": "80-character fixed-width output"},
+        {"name": "fc", "passing": "BY REFERENCE", "direction": "out", "representation": "12-byte Language Environment feedback token"}
+      ],
+      "semantics": {
+        "minimumSeconds": 86400,
+        "maximumSeconds": 265621679999.999,
+        "successCondition": "CEE000",
+        "invalidSecondsCondition": "CEE2E9",
+        "invalidPictureCondition": "CEE2EM",
+        "truncationCondition": "CEE2EV",
+        "blankPicture": "Uses the Language Environment COUNTRY runtime option; no locale is inferred by this profile.",
+        "failureOutput": "Invalid input produces blank output and non-CEE000 feedback.",
+        "picture": "Implement the documented picture language. The caller's supplied picture is authoritative."
+      }
+    },
+    "CEEDAYS": {
+      "kind": "documented-platform-service",
+      "platform": "IBM z/OS Language Environment",
+      "documentation": ["https://www.ibm.com/docs/en/zos/3.1.0?topic=services-ceedaysconvert-date-lilian-format"],
+      "parameters": [
+        {"name": "input_char_date", "passing": "BY REFERENCE", "direction": "in", "representation": "VSTRING: halfword binary length followed by 5 to 255 date characters"},
+        {"name": "picture_string", "passing": "BY REFERENCE", "direction": "in", "representation": "VSTRING: halfword binary length followed by picture characters"},
+        {"name": "output_Lilian_date", "passing": "BY REFERENCE", "direction": "out", "representation": "signed 32-bit binary integer", "meaning": "Days since 14 October 1582"},
+        {"name": "fc", "passing": "BY REFERENCE", "direction": "out", "representation": "12-byte Language Environment feedback token"}
+      ],
+      "semantics": {
+        "calendar": "Gregorian; valid dates are 15 October 1582 through 31 December 9999.",
+        "successCondition": "CEE000",
+        "failureOutput": "An invalid input date produces zero Lilian days and non-CEE000 feedback.",
+        "picture": "Preserve the supplied picture language and documented leading/trailing character handling.",
+        "centuryWindow": "Two-digit years depend on the runtime century window, configurable through CEESCEN. Do not silently substitute a target date library's default window.",
+        "compilerContext": "COBOL intrinsic date arithmetic requires the original INTDATE setting; this profile does not infer it."
+      }
+    },
+    "CEELOCT": {
+      "kind": "documented-platform-service",
+      "platform": "IBM z/OS Language Environment",
+      "documentation": ["https://www.ibm.com/docs/en/zos/3.1.0?topic=services-ceeloctget-current-local-date-time"],
+      "parameters": [
+        {"name": "output_Lilian", "passing": "BY REFERENCE", "direction": "out", "representation": "signed 32-bit binary integer", "meaning": "Local days since 14 October 1582"},
+        {"name": "output_seconds", "passing": "BY REFERENCE", "direction": "out", "representation": "64-bit floating point", "meaning": "Local seconds since midnight 14 October 1582, excluding leap seconds"},
+        {"name": "output_Gregorian", "passing": "BY REFERENCE", "direction": "out", "representation": "17-byte fixed-length character string YYYYMMDDHHMISS999"},
+        {"name": "fc", "passing": "BY REFERENCE", "direction": "out", "representation": "12-byte Language Environment feedback token"}
+      ],
+      "semantics": {
+        "timeZone": "Runtime-local time; the original deployment time zone must be supplied rather than inferred as UTC.",
+        "successCondition": "CEE000",
+        "unavailableCondition": "CEE2F3",
+        "failureOutputs": "Unavailable local time produces zero numeric outputs and non-CEE000 feedback; no successful character timestamp is fabricated.",
+        "outputConsistency": "The day count, seconds and formatted timestamp represent the same local date/time."
+      }
+    }
+  }
+}

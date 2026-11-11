@@ -1,0 +1,82 @@
+diff --git a/smojol-core/src/main/java/org/smojol/common/program/CobolProgram.java b/smojol-core/src/main/java/org/smojol/common/program/CobolProgram.java
+index be99e7d..3bdae4b 100644
+--- a/smojol-core/src/main/java/org/smojol/common/program/CobolProgram.java
++++ b/smojol-core/src/main/java/org/smojol/common/program/CobolProgram.java
+@@ -20,6 +20,7 @@ public class CobolProgram extends SimpleTreeNode {
+             "COPY", "unavailable", "CALL", "unavailable", "EXEC_CICS", "unavailable",
+             "EXEC_SQL", "unavailable", "FILE_IO", "unavailable"));
+     @Expose @Getter private final List<String> dependencyDiagnostics = new ArrayList<>();
++    @Expose @Getter private final List<Map<String, String>> dependencyControlTransfers = new ArrayList<>();
+     @Expose @Getter private final Map<String, String> dependencyAbsenceEvidence = new LinkedHashMap<>();
+     @Expose @Getter @Setter private String sourcePath;
+     @Expose @Getter @Setter private String sourceSha256;
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
+index d5404b0..72dfbf5 100644
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
+@@ -12,7 +12,9 @@ import org.antlr.v4.runtime.tree.ParseTreeListener;
+ import org.antlr.v4.runtime.tree.ParseTreeWalker;
+ import org.eclipse.lsp.cobol.cli.di.CliModule;
+ import org.eclipse.lsp.cobol.core.CobolParser;
++import org.eclipse.lsp.cobol.implicitDialects.cics.CICSParser;
+ import org.smojol.common.ast.CallTarget;
++import org.smojol.common.ast.NodeText;
+ import org.smojol.toolkit.ast.CallTargetBuilder;
+ import org.eclipse.lsp.cobol.cli.modules.CliClientProvider;
+ import org.eclipse.lsp.cobol.common.CleanerPreprocessor;
+@@ -83,6 +85,7 @@ public class ParsePipeline {
+     @Getter private List<SyntaxError> diagnostics = List.of();
+     @Getter private final List<Map<String, String>> resolvedCopybooks = new ArrayList<>();
+     @Getter private final List<String> dependencyDiagnostics = new ArrayList<>();
++    @Getter private final List<Map<String, String>> dependencyControlTransfers = new ArrayList<>();
+     @Getter private final List<CallTarget> parserCallTargets = new ArrayList<>();
+     @Getter private String parsedSourcePath;
+     @Getter private String parsedSourceSha256;
+@@ -275,9 +278,24 @@ public class ParsePipeline {
+             dialectDependencyContexts.add("unknown-parse-node:" + node.getClass().getSimpleName());
+         if (node instanceof ParserRuleContext context) {
+             String kind = context.getClass().getSimpleName();
++            if (context instanceof CICSParser.Cics_returnContext cicsReturn) {
++                boolean bare = cicsReturn.RETURN() != null && cicsReturn.getChildCount() == 1;
++                Map<String, String> transfer = Map.of(
++                        "kind", "EXEC_CICS", "operation", "RETURN",
++                        "variant", bare ? "bare" : "options",
++                        "sourceText", NodeText.originalText(cicsReturn, NodeText::PASSTHROUGH),
++                        "coordinateSpace", "expanded-parser-input",
++                        "line", Integer.toString(cicsReturn.getStart().getLine()),
++                        "column", Integer.toString(cicsReturn.getStart().getCharPositionInLine()),
++                        "controlEffect", "return-to-cics", "runtimeMapping", "unverified");
++                if (!dependencyControlTransfers.contains(transfer))
++                    dependencyControlTransfers.add(transfer);
++            }
+             if (kind.startsWith("Dialect") || context.getClass().getEnclosingClass() != CobolParser.class)
+                 dialectDependencyContexts.add(kind);
+-            if (kind.startsWith("File") || FILE_IO_CONTEXTS.contains(kind))
++            boolean emptyFileSection = context instanceof CobolParser.FileSectionContext section
++                    && section.fileDescriptionEntry().isEmpty();
++            if ((kind.startsWith("File") && !emptyFileSection) || FILE_IO_CONTEXTS.contains(kind))
+                 fileIoDependencyContexts.add(kind);
+         }
+         for (int index = 0; index < node.getChildCount(); index++)
+@@ -294,6 +312,9 @@ public class ParsePipeline {
+         if (!noDialect)
+             dependencyDiagnostics.add("unsupported-dialect-dependency-contexts:"
+                     + String.join(",", dialectDependencyContexts));
++        dependencyControlTransfers.forEach(transfer -> dependencyDiagnostics.add(
++                "cics-control-transfer-requires-runtime-mapping:RETURN:"
++                        + transfer.get("variant") + ":parser-line=" + transfer.get("line")));
+         boolean noFileIo = fileIoDependencyContexts.isEmpty() && noDialect;
+         dependencyAbsenceCoverage.put("FILE_IO", noFileIo ? "complete" : "partial");
+         if (noFileIo) dependencyAbsenceEvidence.put("FILE_IO", "antlr-tree:no-file-io-contexts");
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/AnalyseProgramDependenciesTask.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/AnalyseProgramDependenciesTask.java
+index 2b9be26..ec8cfc0 100644
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/AnalyseProgramDependenciesTask.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/AnalyseProgramDependenciesTask.java
+@@ -87,6 +87,7 @@ public class AnalyseProgramDependenciesTask {
+                     program.setSourcePath(pipeline.getParsedSourcePath());
+                     program.setSourceSha256(pipeline.getParsedSourceSha256());
+                     program.getDependencyDiagnostics().addAll(pipeline.getDependencyDiagnostics());
++                    program.getDependencyControlTransfers().addAll(pipeline.getDependencyControlTransfers());
+                     program.getDependencyCoverage().put("COPY",
+                             pipeline.isDependencyParseComplete() ? "complete" : "partial");
+                     program.getDependencyCoverage().putAll(pipeline.getDependencyAbsenceCoverage());

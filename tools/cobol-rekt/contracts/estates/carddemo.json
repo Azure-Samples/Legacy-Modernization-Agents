@@ -1,0 +1,233 @@
+{
+  "schemaVersion": 1,
+  "profileName": "carddemo-v1",
+  "profileKind": "target-port",
+  "runtimeContracts": {
+    "CEE3ABD": {
+      "kind": "documented-platform-service",
+      "platform": "IBM z/OS Language Environment",
+      "documentation": [
+        "https://www.ibm.com/docs/en/zos/3.1.0?topic=services-cee3abdterminate-enclave-abend"
+      ],
+      "parameters": [
+        {
+          "name": "abcode",
+          "passing": "BY REFERENCE",
+          "direction": "in",
+          "representation": "fullword binary integer",
+          "meaning": "Abend code to issue, no greater than 4095"
+        },
+        {
+          "name": "clean-up",
+          "passing": "BY REFERENCE",
+          "direction": "in",
+          "representation": "fullword binary integer",
+          "meaning": "0 abends without clean-up; 1 to 5 abend with enclave termination processing and the documented CEEDUMP/system dump variations; illegal values abend without clean-up"
+        }
+      ],
+      "semantics": {
+        "control": "No return to the caller; the enclave terminates with the supplied abend code.",
+        "condition": "No condition or feedback token is associated with this service.",
+        "cleanUp": "Preserve the caller's clean-up value; termination handlers, dumps and user exits depend on it and on the TERMTHDACT runtime option, which this profile does not infer.",
+        "target": "Map to an abnormal process or job termination that carries the abend code; do not convert it into a recoverable exception that returns to the caller."
+      }
+    },
+    "CEEDAYS": {
+      "kind": "documented-platform-service",
+      "platform": "IBM z/OS Language Environment",
+      "documentation": [
+        "https://www.ibm.com/docs/en/zos/3.1.0?topic=services-ceedaysconvert-date-lilian-format"
+      ],
+      "parameters": [
+        {
+          "name": "input_char_date",
+          "passing": "BY REFERENCE",
+          "direction": "in",
+          "representation": "VSTRING: halfword binary length followed by 5 to 255 date characters"
+        },
+        {
+          "name": "picture_string",
+          "passing": "BY REFERENCE",
+          "direction": "in",
+          "representation": "VSTRING: halfword binary length followed by picture characters"
+        },
+        {
+          "name": "output_Lilian_date",
+          "passing": "BY REFERENCE",
+          "direction": "out",
+          "representation": "signed 32-bit binary integer",
+          "meaning": "Days since 14 October 1582"
+        },
+        {
+          "name": "fc",
+          "passing": "BY REFERENCE",
+          "direction": "out",
+          "representation": "12-byte Language Environment feedback token"
+        }
+      ],
+      "semantics": {
+        "calendar": "Gregorian; valid dates are 15 October 1582 through 31 December 9999.",
+        "successCondition": "CEE000",
+        "failureOutput": "An invalid input date produces zero Lilian days and non-CEE000 feedback.",
+        "picture": "Preserve the supplied picture language and documented leading/trailing character handling.",
+        "centuryWindow": "Two-digit years depend on the runtime century window, configurable through CEESCEN. Do not silently substitute a target date library's default window.",
+        "compilerContext": "COBOL intrinsic date arithmetic requires the original INTDATE setting; this profile does not infer it."
+      }
+    },
+    "CBLTDLI": {
+      "kind": "documented-platform-service",
+      "platform": "IBM IMS",
+      "documentation": [
+        "https://www.ibm.com/docs/en/SSEPH2_15.4.0/com.ibm.ims154.doc.apg/ims_imsdbcobolapp.htm"
+      ],
+      "parameters": [
+        {
+          "name": "function",
+          "passing": "BY REFERENCE",
+          "direction": "in",
+          "representation": "4-byte display call function, left-justified and blank-padded (for example GU, GN, GNP, ISRT)"
+        },
+        {
+          "name": "db pcb",
+          "passing": "BY REFERENCE",
+          "direction": "inout",
+          "representation": "database or GSAM PCB group item from the PSB passed on entry; IMS sets its status code and key feedback"
+        },
+        {
+          "name": "i/o area",
+          "passing": "BY REFERENCE",
+          "direction": "inout",
+          "representation": "segment I/O area large enough for the returned data"
+        },
+        {
+          "name": "ssa",
+          "passing": "BY REFERENCE",
+          "direction": "in",
+          "representation": "optional display segment search arguments; up to 15 may follow the I/O area",
+          "occurrence": "0..15"
+        }
+      ],
+      "semantics": {
+        "interface": "DL/I call through the IMS language interface (DFSLI000); the optional leading parmcount is not used by these call sites.",
+        "dataModel": "Segment hierarchy, keys and GSAM datasets come from the estate's DBD and PSB sources (app-authorization-ims-db2-mq/ims); this contract does not infer them.",
+        "status": "Each call's outcome is the PCB status code; blank means success, GE/GB mean not found / end of database. Preserve the caller's status checks.",
+        "target": "Map to an implementation that preserves hierarchical GU/GN/GNP/ISRT positioning per PCB; do not reorder or batch calls."
+      }
+    },
+    "MVSWAIT": {
+      "kind": "estate-assembler-routine",
+      "language": "IBM High Level Assembler",
+      "source": "carddemo/asm/MVSWAIT.asm",
+      "sourceSha256": "7ce0239ae81d44e6d58102e6e467ec1c256066526070b7847570b1343bbbcab1",
+      "entry": "MVSWAIT",
+      "includes": [
+        {
+          "name": "ASMWAIT",
+          "kind": "macro",
+          "source": "carddemo/maclib/ASMWAIT.mac",
+          "sourceSha256": "a87bcd00ae6e3d6654169c17c1f37174307527c8554baacd1b8a6d4da0d31c98"
+        }
+      ],
+      "systemServices": [
+        {
+          "name": "STIMER",
+          "documentation": [
+            "https://www.ibm.com/docs/en/SSLTBW_3.1.0/com.ibm.zos.v3r1.ieaa900/stimer.htm"
+          ]
+        }
+      ],
+      "parameters": [
+        {
+          "name": "delay",
+          "passing": "BY REFERENCE",
+          "direction": "in",
+          "representation": "fullword binary interval; STIMER BINTVL units of 0.01 second, high-order bit must be zero"
+        }
+      ],
+      "semantics": {
+        "control": "Saves the caller's registers, issues STIMER WAIT,BINTVL for the supplied interval, restores registers, sets R15 to 0 and returns.",
+        "saveArea": "Sets byte 12 of the caller's save area to X'FF' after restoring registers (the conventional 'returned' flag); no other caller storage changes.",
+        "limits": "An interval above X'7FFFFFFF' abends X'12F' per STIMER; the routine does not validate the value.",
+        "target": "Map to a blocking delay of interval/100 seconds that returns normally."
+      }
+    },
+    "COBDATFT": {
+      "kind": "estate-assembler-routine",
+      "language": "IBM High Level Assembler",
+      "source": "carddemo/asm/COBDATFT.asm",
+      "sourceSha256": "f0f69d4e8a3cd5b378ded9bd9dd4175d5d4c971762b6be82ee4f29ee0ab8dfce",
+      "entry": "COBDATFT",
+      "includes": [
+        {
+          "name": "COCDATFT",
+          "kind": "copy",
+          "source": "carddemo/maclib/COCDATFT.mac",
+          "sourceSha256": "0e4ae6147453ee88e9688fa056cfd197e3d599bcb7c9be5be426cd98383f3029"
+        }
+      ],
+      "systemServices": [],
+      "parameters": [
+        {
+          "name": "CODATECN-REC",
+          "passing": "BY REFERENCE",
+          "direction": "inout",
+          "representation": "80-byte record laid out by DSECT COCDATFT: type X(1), input date X(20), output type X(1), output date X(20), error message X(38)"
+        }
+      ],
+      "semantics": {
+        "type1": "Input type '1' with output type other than '2': copies YYYYMMDD to output as YYYY-MM-DD (10 bytes).",
+        "type2": "Input type '2' with output type other than '1': copies YYYY-MM-DD to output as YYYYMMDD (8 bytes).",
+        "error": "Any other combination moves 38 bytes starting at literal 'INVALID INPUT' into the error message; bytes 14-38 come from the literal pool and are not determined by the source.",
+        "type1Guard": "The type-1 dash check compares 20 bytes from input+4 with the 1-byte literal and following literal-pool bytes; its outcome is not determined by the source alone.",
+        "untouched": "Output bytes beyond those written and the error message on success are left unchanged.",
+        "target": "Port the documented conversions and flag the two literal-pool dependent behaviours for review rather than guessing them."
+      }
+    },
+    "DSNTIAC": {
+      "kind": "documented-platform-service",
+      "platform": "IBM Db2 for z/OS",
+      "documentation": [
+        "https://www.ibm.com/docs/en/db2-for-zos/13.0.0?topic=statements-handling-sql-error-codes-in-cobol-applications"
+      ],
+      "parameters": [
+        {
+          "name": "eib",
+          "passing": "BY REFERENCE",
+          "direction": "in",
+          "representation": "CICS EXEC interface block (DFHEIBLK)"
+        },
+        {
+          "name": "commarea",
+          "passing": "BY REFERENCE",
+          "direction": "in",
+          "representation": "CICS communication area (DFHCOMMAREA)"
+        },
+        {
+          "name": "sqlca",
+          "passing": "BY REFERENCE",
+          "direction": "in",
+          "representation": "SQL communication area whose SQLCODE and tokens are formatted"
+        },
+        {
+          "name": "message",
+          "passing": "BY REFERENCE",
+          "direction": "inout",
+          "representation": "VARCHAR output area: leading halfword gives the remaining length (minimum 240); text lines of lrecl bytes follow"
+        },
+        {
+          "name": "lrecl",
+          "passing": "BY REFERENCE",
+          "direction": "in",
+          "representation": "fullword binary logical record length of each output line, 72-240"
+        }
+      ],
+      "semantics": {
+        "interface": "Db2-supplied assembler subroutine (SDSNSAMP) for CICS programs that need CICS storage handling; formats the SQLCA the same way as DSNTIAR.",
+        "callSite": "COTRTLIC reaches it through CALL LIT-DSNTIAC (copybook CSDB2RPY), where LIT-DSNTIAC is a never-modified PIC X(7) VALUE 'DSNTIAC'.",
+        "quirk": "CardDemo passes WS-DSNTIAC-LRECL as PIC S9(4) COMP (a halfword, VALUE +72) where the documented parameter is a fullword; on z/OS the routine reads the following two bytes too. Preserve the intended 72-byte line length and report the defect rather than reproducing storage overlap.",
+        "status": "RETURN-CODE is set by the routine; the caller treats zero as success and otherwise reports 'DSNTIAC CD'.",
+        "target": "Map to the target's SQL diagnostic text (for example SQLException message) split into lrecl-sized lines in the message area."
+      }
+    }
+  }
+}

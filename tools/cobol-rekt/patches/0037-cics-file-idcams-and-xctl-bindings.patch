@@ -1,0 +1,497 @@
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsDependencyAnalysis.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsDependencyAnalysis.java
+index eb6a625..47b8159 100644
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsDependencyAnalysis.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsDependencyAnalysis.java
+@@ -29,6 +29,11 @@ final class CicsDependencyAnalysis {
+     private static final Set<String> LOCKS = Set.of("Cics_enqContext", "Cics_deqContext");
+     private static final Set<String> TERMINAL = Set.of("Cics_sendContext", "Cics_receiveContext",
+             "Cics_returnContext", "Cics_inquireContext", "Cics_set_terminalContext", "Cics_bifContext");
++    static final Set<String> FILES = Set.of("Cics_readContext", "Cics_readnextContext", "Cics_writeContext",
++            "Cics_rewriteContext", "Cics_deleteContext", "Cics_startbrContext", "Cics_endbrContext", "Cics_unlockContext");
++    // Keyed VSAM access only: remote, RBA/RRN, pointer, token, generic, request-id and RLS read-integrity variants are not bound.
++    private static final Set<String> FILE_UNSUPPORTED = Set.of("SYSID", "RBA", "RRN", "RBN", "XRBA", "SET", "TOKEN",
++            "MASSINSERT", "GENERIC", "REQID", "DEBKEY", "DEBREC", "UNCOMMITTED", "CONSISTENT", "REPEATABLE", "REPETABLE");
+ 
+     void record(ParserRuleContext context, Map<String, Object> export) {
+         if (INTRINSICS.contains(context.getClass().getSimpleName())
+@@ -36,7 +41,11 @@ final class CicsDependencyAnalysis {
+                 || TERMINAL.contains(context.getClass().getSimpleName())
+                 || context instanceof CICSParser.Cics_handleContext
+                 || context instanceof CICSParser.Cics_runContext
+-                || context instanceof CICSParser.Cics_linkContext)
++                || context instanceof CICSParser.Cics_linkContext
++                || context instanceof CICSParser.Cics_xctlContext
++                || FILES.contains(context.getClass().getSimpleName())
++                && !(context instanceof CICSParser.Cics_writeContext write && write.cics_write_file() == null)
++                && !(context instanceof CICSParser.Cics_deleteContext delete && delete.cics_delete_file().isEmpty()))
+             statements.add(new Statement(context, export));
+     }
+ 
+@@ -107,6 +116,21 @@ final class CicsDependencyAnalysis {
+                     issues.add("cics-transaction-binding-unverified:" + error.getMessage());
+                 }
+             }
++            if (FILES.contains(rule)) {
++                try {
++                    bindFile(statement.syntax(), tree, declarations, constantOperands(), bindings, issues);
++                } catch (IOException | IllegalArgumentException | ClassCastException
++                         | org.yaml.snakeyaml.error.YAMLException error) {
++                    issues.add("cics-file-definition-invalid:" + error.getMessage());
++                }
++            }
++            if (statement.syntax() instanceof CICSParser.Cics_xctlContext) {
++                try {
++                    bindTransfer(statement.syntax(), tree, declarations, constantOperands(), directory, bindings, issues);
++                } catch (IOException | IllegalArgumentException | org.yaml.snakeyaml.error.YAMLException error) {
++                    issues.add("cics-program-binding-invalid:" + error.getMessage());
++                }
++            }
+             if (TERMINAL.contains(rule)) {
+                 try {
+                     List<ParseTree> readOnly = constantOperands();
+@@ -122,6 +146,7 @@ final class CicsDependencyAnalysis {
+             statement.export().put("resourceBindings", bindings);
+             statement.export().put("bindingBasis", TERMINAL.contains(rule) ? "parsed-cics-terminal-operation"
+                     : "Cics_runContext".equals(rule) ? "parsed-cics-async-transaction"
++                    : FILES.contains(rule) ? "parsed-cics-file-operation"
+                     : LOCKS.contains(rule) ? "parsed-cics-lock-operation" : INTRINSICS.contains(rule)
+                     ? "parsed-current-task-operation" : "parsed-cics-control-binding");
+             statement.export().put("bindingStatus", issues.isEmpty() ? "complete" : "unresolved");
+@@ -139,6 +164,12 @@ final class CicsDependencyAnalysis {
+                 operands.addAll(CicsTerminalBindings.operands(statement.syntax(), "MAP"));
+                 operands.addAll(CicsTerminalBindings.operands(statement.syntax(), "MAPSET"));
+             }
++            if (FILES.contains(rule)) {
++                operands.addAll(CicsTerminalBindings.operands(statement.syntax(), "FILE"));
++                operands.addAll(CicsTerminalBindings.operands(statement.syntax(), "DATASET"));
++            }
++            if ("Cics_xctlContext".equals(rule))
++                operands.addAll(CicsTerminalBindings.operands(statement.syntax(), "PROGRAM"));
+         }
+         return operands;
+     }
+@@ -173,6 +204,86 @@ final class CicsDependencyAnalysis {
+         bindings.add(transaction);
+     }
+ 
++    private static String fileService(ParserRuleContext syntax, List<String> options) {
++        return switch (syntax.getStart().getText().toUpperCase(Locale.ROOT)) {
++            case "READ" -> options.contains("UPDATE") ? "update" : "read";
++            case "READNEXT", "READPREV", "STARTBR", "ENDBR" -> "browse";
++            case "WRITE" -> "add";
++            case "REWRITE", "UNLOCK" -> "update";
++            case "DELETE" -> "delete";
++            default -> null;
++        };
++    }
++
++    private void bindFile(ParserRuleContext syntax, ParseTree tree, CobolDeclarationIndex declarations,
++                          List<ParseTree> readOnly, List<Map<String, Object>> bindings,
++                          List<String> issues) throws IOException {
++        List<ParseTree> names = nodes(syntax).stream()
++                .filter(node -> node instanceof CICSParser.Cics_file_nameContext).toList();
++        List<String> options = nodes(syntax).stream().filter(node -> node instanceof TerminalNode
++                        && (node.getParent() == syntax || node.getParent() instanceof CICSParser.Cics_write_fileContext
++                        || node.getParent() instanceof CICSParser.Cics_delete_fileContext
++                        || node.getParent() instanceof CICSParser.Cics_delete_ridfldContext
++                        || node.getParent() instanceof CICSParser.Cics_intoContext))
++                .map(node -> node.getText().toUpperCase(Locale.ROOT)).toList();
++        if (names.size() != 1 || !(names.getFirst().getChild(1) instanceof CICSParser.Cics_nameContext operand)
++                || syntax instanceof CICSParser.Cics_deleteContext && syntax.getChildCount() != 2) {
++            issues.add("cics-file-variant-unsupported");
++            return;
++        }
++        String text = operand.name().getText();
++        if (options.contains("SYSID")) {
++            issues.add("remote-cics-file-binding-unresolved:" + text);
++            return;
++        }
++        if (options.stream().anyMatch(FILE_UNSUPPORTED::contains)) {
++            issues.add("cics-file-variant-unsupported");
++            return;
++        }
++        CicsConstantResolution.Resolved target = CicsConstantResolution.literalOrConstant(
++                tree, operand, declarations, readOnly, 1, 8);
++        if (target == null) {
++            issues.add("dynamic-cics-file-binding-unresolved:" + text);
++            return;
++        }
++        Map<String, Object> binding = CicsResourceCatalog.file(target.value()).orElse(null);
++        if (binding == null) {
++            issues.add("cics-file-definition-not-found:" + target.value());
++            return;
++        }
++        String service = fileService(syntax, options);
++        if (((Map<?, ?>) binding.get("attributes")).get("services") instanceof Map<?, ?> services
++                && (service == null || !"YES".equals(services.get(service)))) {
++            issues.add("cics-file-operation-not-permitted:" + target.value() + ":" + service);
++            return;
++        }
++        binding.put("targetResolution", target.proof());
++        bindings.add(binding);
++    }
++
++    private void bindTransfer(ParserRuleContext syntax, ParseTree tree, CobolDeclarationIndex declarations,
++                              List<ParseTree> readOnly, Path directory,
++                              List<Map<String, Object>> bindings, List<String> issues) throws IOException {
++        List<ParseTree> operands = CicsTerminalBindings.operands(syntax, "PROGRAM");
++        if (operands.size() != 1 || nodes(syntax).stream().anyMatch(node -> node instanceof TerminalNode
++                && node.getParent() == syntax && Set.of("CHANNEL", "INPUTMSG", "INPUTMSGLEN")
++                .contains(node.getText().toUpperCase(Locale.ROOT)))) {
++            issues.add("cics-xctl-variant-unsupported");
++            return;
++        }
++        CicsConstantResolution.Resolved target = CicsConstantResolution.literalOrConstant(
++                tree, operands.getFirst(), declarations, readOnly, 1, 8);
++        if (target == null) {
++            issues.add("dynamic-cics-program-binding-unresolved:" + ((CICSParser.Cics_nameContext) operands.getFirst()).name().getText());
++            return;
++        }
++        Map<String, Object> program = programResource(target.value(), directory, issues);
++        if (program == null) return;
++        program.put("targetResolution", target.proof());
++        program.put("controlEffect", "transfer-control");
++        bindings.add(program);
++    }
++
+     private void reference(String kind, String name, ParserRuleContext syntax,
+                            List<ParserRuleContext> candidates, List<Map<String, String>> references,
+                            List<Map<String, Object>> bindings, List<String> issues) {
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsResourceCatalog.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsResourceCatalog.java
+index 1d56f10..da0f674 100644
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsResourceCatalog.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsResourceCatalog.java
+@@ -59,14 +59,42 @@ final class CicsResourceCatalog {
+                 if (binding != null)
+                     throw new IllegalArgumentException("Ambiguous CICS " + kind + " definition: " + name);
+                 Map<String, Object> attributes;
++                List<?> datasetDefinitions = null;
+                 if ("file".equals(kind)) {
+                     if (!(file.get("dsname") instanceof String dataset) || dataset.isBlank())
+                         throw new IllegalArgumentException("CICS file definition requires dsname: " + name);
+-                    int recordSize = integer(file.get("recordsize"), "recordsize", name);
+-                    int keyLength = integer(file.get("keylength"), "keylength", name);
++                    if (file.containsKey("remotesystem") || file.containsKey("remotename"))
++                        throw new IllegalArgumentException("Remote CICS file definitions are not supported: " + name);
++                    if (csd && !file.containsKey("recordsize") && !file.containsKey("keylength")) {
++                        Map<String, Object> cluster = VsamClusterCatalog.dataset(dataset).orElseThrow(() ->
++                                new IllegalArgumentException("CICS file dataset has no supplied IDCAMS definition: " + name + ":" + dataset));
++                        Map<String, Object> vsam = new LinkedHashMap<>((Map<String, Object>) cluster.get("attributes"));
++                        Map<String, Object> services = new LinkedHashMap<>();
++                        // IBM CICS FILE resource defaults: ADD(NO) BROWSE(NO) DELETE(NO) READ(YES) UPDATE(NO).
++                        for (var service : Map.of("add", "NO", "browse", "NO", "delete", "NO", "read", "YES", "update", "NO").entrySet()) {
++                            Object flag = file.containsKey(service.getKey()) ? file.get(service.getKey()) : service.getValue();
++                            if (!"YES".equals(flag) && !"NO".equals(flag))
++                                throw new IllegalArgumentException("Invalid CICS file " + service.getKey() + " value: " + name);
++                            services.put(service.getKey(), flag);
++                        }
++                        Map<String, Object> merged = new LinkedHashMap<>();
++                        merged.put("dsname", dataset);
++                        merged.putAll(vsam);
++                        merged.put("services", new java.util.TreeMap<>(services));
++                        merged.put("lengthProvenance", "idcams-define");
++                        attributes = merged;
++                        datasetDefinitions = (List<?>) cluster.get("datasetDefinitions");
++                    } else {
++                        int recordSize = integer(file.get("recordsize"), "recordsize", name);
++                        int keyLength = integer(file.get("keylength"), "keylength", name);
++                        if (recordSize <= 0 || keyLength < 0 || keyLength > recordSize)
++                            throw new IllegalArgumentException("Invalid CICS file record/key lengths: " + name);
++                        attributes = Map.of("dsname", dataset, "recordsize", recordSize, "keylength", keyLength);
++                    }
++                    int recordSize = (Integer) attributes.get("recordsize");
++                    int keyLength = (Integer) attributes.get("keylength");
+                     if (recordSize <= 0 || keyLength < 0 || keyLength > recordSize)
+                         throw new IllegalArgumentException("Invalid CICS file record/key lengths: " + name);
+-                    attributes = Map.of("dsname", dataset, "recordsize", recordSize, "keylength", keyLength);
+                 } else if ("transaction".equals(kind)) {
+                     if (!(file.get("program") instanceof String program) || !program.matches("[A-Z0-9@$#_-]{1,8}")
+                             || !"NO".equals(file.get("dynamic")) || !"NO".equals(file.get("routable"))
+@@ -102,6 +130,7 @@ final class CicsResourceCatalog {
+                 binding.put("sourcePath", path.toString());
+                 binding.put("sourceSha256", ParsePipeline.sha256(bytes));
+                 binding.put("attributes", attributes);
++                if (datasetDefinitions != null) binding.put("datasetDefinitions", datasetDefinitions);
+             }
+         }
+         return Optional.ofNullable(binding);
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
+index c95918b..230e67c 100644
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
+@@ -351,7 +351,7 @@ public class ParsePipeline {
+                 && statement.RETURN() != null && statement.getChildCount() == 1;
+         boolean normalResponse = context instanceof CICSParser.CicsDfhRespLiteralContext response
+                 && response.getChildCount() == 4
+-                && Set.of("NORMAL", "INVREQ", "MAPFAIL", "NOTFINISHED", "NOTFND")
++                && Set.of("NORMAL", "INVREQ", "MAPFAIL", "NOTFINISHED", "NOTFND", "ENDFILE", "DUPREC", "DUPKEY")
+                 .contains(response.getChild(2).getText().toUpperCase(java.util.Locale.ROOT));
+         boolean symbolicValue = context instanceof CICSParser.CicsDfhValueLiteralContext value
+                 && value.getChildCount() == 4
+@@ -371,30 +371,6 @@ public class ParsePipeline {
+         if ("EXEC_CICS".equals(kind)) cicsDependencies.record(context, statement);
+         if (context instanceof Db2SqlParser.SqlCodeContext sql)
+             sqlDependencies.record(sql, statement);
+-        if (context instanceof CICSParser.Cics_writeContext write && write.cics_write_file() != null) {
+-            var command = write.cics_write_file();
+-            String operand = command.cics_file_name().cics_name().name().getText();
+-            statement.put("fileOperand", operand);
+-            if (!command.SYSID().isEmpty()) {
+-                statement.put("bindingDiagnostic", "remote-cics-file-binding-unresolved:" + operand);
+-            } else if (operand.length() >= 2 && (operand.charAt(0) == '\'' || operand.charAt(0) == '"')
+-                    && operand.charAt(operand.length() - 1) == operand.charAt(0)) {
+-                String name = operand.substring(1, operand.length() - 1);
+-                try {
+-                    Optional<Map<String, Object>> binding = CicsResourceCatalog.file(name);
+-                    if (binding.isPresent()) {
+-                        statement.put("resourceBindings", List.of(binding.get()));
+-                        statement.put("bindingStatus", "complete");
+-                    } else {
+-                        statement.put("bindingDiagnostic", "cics-file-definition-not-found:" + name);
+-                    }
+-                } catch (IOException | IllegalArgumentException | org.yaml.snakeyaml.error.YAMLException error) {
+-                    statement.put("bindingDiagnostic", "cics-file-definition-invalid:" + name + ":" + error.getMessage());
+-                }
+-            } else {
+-                statement.put("bindingDiagnostic", "dynamic-cics-file-binding-unresolved:" + operand);
+-            }
+-        }
+         dependencyDialectStatements.add(statement);
+     }
+ 
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/VsamClusterCatalog.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/VsamClusterCatalog.java
+new file mode 100644
+index 0000000..13c6d0c
+--- /dev/null
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/VsamClusterCatalog.java
+@@ -0,0 +1,230 @@
++package org.smojol.toolkit.analysis.pipeline;
++
++import java.io.File;
++import java.io.IOException;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.ArrayList;
++import java.util.LinkedHashMap;
++import java.util.List;
++import java.util.Locale;
++import java.util.Map;
++import java.util.Optional;
++import java.util.Set;
++import java.util.regex.Matcher;
++import java.util.regex.Pattern;
++
++/**
++ * Reads IDCAMS DEFINE CLUSTER / ALTERNATEINDEX / PATH commands from the instream SYSIN of
++ * EXEC PGM=IDCAMS steps in supplied JCL (REKT_VSAM_DEFINITIONS). Only explicit KEYS and
++ * RECORDSIZE operands are used; a name defined more than once must agree in every extracted attribute.
++ */
++final class VsamClusterCatalog {
++    private record Define(String type, Map<String, String> operands, String path, String sha256, String text) {}
++
++    private static final Pattern STEP = Pattern.compile("//[A-Z0-9@#$]*\\s+EXEC\\s+(.*)", Pattern.CASE_INSENSITIVE);
++    private static final Pattern IDCAMS = Pattern.compile("PGM=IDCAMS(?:[,\\s].*)?", Pattern.CASE_INSENSITIVE);
++    private static final Pattern SYSIN = Pattern.compile("//SYSIN\\s+DD\\s+\\*(?:[,\\s].*)?", Pattern.CASE_INSENSITIVE);
++    private static final Pattern OPERAND = Pattern.compile("\\s*([A-Z][A-Z0-9]*)\\s*(?:\\(([^()]*)\\))?");
++    private static final Pattern COMPONENT = Pattern.compile("\\s*(DATA|INDEX)\\s*\\(([^()]*(?:\\([^()]*\\)[^()]*)*)\\)");
++    private static final Set<String> TYPES = Set.of("CLUSTER", "ALTERNATEINDEX", "PATH");
++
++    private VsamClusterCatalog() {}
++
++    static Optional<Map<String, Object>> dataset(String dsname) throws IOException {
++        String configured = System.getenv("REKT_VSAM_DEFINITIONS");
++        if (configured == null || configured.isBlank()) return Optional.empty();
++        List<Define> defines = new ArrayList<>();
++        for (String value : configured.split(Pattern.quote(File.pathSeparator))) defines.addAll(read(Path.of(value).toRealPath()));
++        Define path = unique(defines, "PATH", dsname);
++        if (path != null) {
++            Define index = unique(defines, "ALTERNATEINDEX", required(path, "PATHENTRY"));
++            if (index == null) throw new IllegalArgumentException("IDCAMS PATH entry is not a defined alternate index: " + dsname);
++            Define base = unique(defines, "CLUSTER", required(index, "RELATE"));
++            if (base == null) throw new IllegalArgumentException("IDCAMS alternate index base cluster is not defined: " + dsname);
++            int[] keys = pair(index, "KEYS");
++            Map<String, Object> attributes = new LinkedHashMap<>();
++            attributes.put("organization", indexedCluster(base));
++            attributes.put("accessPath", "alternate-index-path");
++            attributes.put("recordsize", pair(base, "RECORDSIZE")[1]);
++            attributes.put("keylength", keys[0]);
++            attributes.put("keyOffset", keys[1]);
++            attributes.put("uniqueKeys", uniqueKeys(index));
++            return Optional.of(result(attributes, defines, List.of(path, index, base)));
++        }
++        Define cluster = unique(defines, "CLUSTER", dsname);
++        if (cluster == null) return Optional.empty();
++        if (unique(defines, "ALTERNATEINDEX", dsname) != null)
++            throw new IllegalArgumentException("IDCAMS name defined as both cluster and alternate index: " + dsname);
++        int[] keys = pair(cluster, "KEYS");
++        Map<String, Object> attributes = new LinkedHashMap<>();
++        attributes.put("organization", indexedCluster(cluster));
++        attributes.put("accessPath", "base-cluster");
++        attributes.put("recordsize", pair(cluster, "RECORDSIZE")[1]);
++        attributes.put("keylength", keys[0]);
++        attributes.put("keyOffset", keys[1]);
++        attributes.put("uniqueKeys", true);
++        return Optional.of(result(attributes, defines, List.of(cluster)));
++    }
++
++    private static Map<String, Object> result(Map<String, Object> attributes, List<Define> all, List<Define> used) {
++        List<Map<String, Object>> sources = new ArrayList<>();
++        for (Define define : used)
++            for (Define candidate : all)
++                if (candidate.type().equals(define.type())
++                        && candidate.operands().get("NAME").equals(define.operands().get("NAME"))) {
++                    Map<String, Object> source = new LinkedHashMap<>();
++                    source.put("type", candidate.type());
++                    source.put("name", candidate.operands().get("NAME"));
++                    source.put("sourcePath", candidate.path());
++                    source.put("sourceSha256", candidate.sha256());
++                    source.put("command", candidate.text());
++                    if (!sources.contains(source)) sources.add(source);
++                }
++        Map<String, Object> result = new LinkedHashMap<>();
++        result.put("attributes", attributes);
++        result.put("datasetDefinitions", sources);
++        return result;
++    }
++
++    private static Define unique(List<Define> defines, String type, String name) {
++        Define found = null;
++        for (Define define : defines) {
++            if (!define.type().equals(type) || !name.equals(define.operands().get("NAME"))) continue;
++            if (found != null && !extracted(found).equals(extracted(define)))
++                throw new IllegalArgumentException("Conflicting IDCAMS " + type + " definitions: " + name);
++            if (found == null) found = define;
++        }
++        return found;
++    }
++
++    private static Map<String, Object> extracted(Define define) {
++        Map<String, Object> values = new LinkedHashMap<>();
++        for (String key : List.of("RELATE", "PATHENTRY")) values.put(key, define.operands().get(key));
++        for (String key : List.of("KEYS", "RECORDSIZE"))
++            values.put(key, define.operands().containsKey(key) ? List.of(pair(define, key)[0], pair(define, key)[1]) : null);
++        for (String key : List.of("INDEXED", "NONINDEXED", "NUMBERED", "LINEAR", "UNIQUEKEY", "NONUNIQUEKEY"))
++            values.put(key, define.operands().containsKey(key));
++        return values;
++    }
++
++    // IBM IDCAMS: DEFINE CLUSTER defaults to INDEXED (KSDS); other organizations are not supported here.
++    private static String indexedCluster(Define cluster) {
++        for (String other : List.of("NONINDEXED", "NUMBERED", "LINEAR"))
++            if (cluster.operands().containsKey(other))
++                throw new IllegalArgumentException("Only indexed (KSDS) clusters are supported: " + cluster.operands().get("NAME"));
++        return "KSDS";
++    }
++
++    // IBM IDCAMS: alternate indexes default to UNIQUEKEY.
++    private static boolean uniqueKeys(Define index) {
++        if (index.operands().containsKey("UNIQUEKEY") && index.operands().containsKey("NONUNIQUEKEY"))
++            throw new IllegalArgumentException("Contradictory IDCAMS key uniqueness: " + index.operands().get("NAME"));
++        return !index.operands().containsKey("NONUNIQUEKEY");
++    }
++
++    private static String required(Define define, String key) {
++        String value = define.operands().get(key);
++        if (value == null || !value.matches("[A-Z0-9@#$]{1,8}(?:\\.[A-Z0-9@#$]{1,8})*"))
++            throw new IllegalArgumentException("IDCAMS " + define.type() + " requires " + key + ": " + define.operands().get("NAME"));
++        return value;
++    }
++
++    private static int[] pair(Define define, String key) {
++        String value = define.operands().get(key);
++        Matcher numbers = value == null ? null : Pattern.compile("([0-9]{1,5})\\s*[,\\s]\\s*([0-9]{1,5})").matcher(value.strip());
++        if (numbers == null || !numbers.matches())
++            throw new IllegalArgumentException("IDCAMS " + define.type() + " requires explicit " + key + ": " + define.operands().get("NAME"));
++        int first = Integer.parseInt(numbers.group(1));
++        int second = Integer.parseInt(numbers.group(2));
++        if ("RECORDSIZE".equals(key) && (first <= 0 || second < first)
++                || "KEYS".equals(key) && first <= 0)
++            throw new IllegalArgumentException("Invalid IDCAMS " + key + ": " + define.operands().get("NAME"));
++        return new int[] {first, second};
++    }
++
++    private static List<Define> read(Path path) throws IOException {
++        byte[] bytes = Files.readAllBytes(path);
++        String sha256 = ParsePipeline.sha256(bytes);
++        List<Define> result = new ArrayList<>();
++        boolean idcams = false;
++        List<String> sysin = null;
++        for (String raw : new String(bytes, StandardCharsets.UTF_8).split("\\R", -1)) {
++            String line = raw.length() > 72 ? raw.substring(0, 72) : raw;
++            if (sysin != null) {
++                if (!line.startsWith("/*") && !line.startsWith("//")) {
++                    sysin.add(line);
++                    continue;
++                }
++                result.addAll(commands(sysin, path, sha256));
++                sysin = null;
++            }
++            if (line.startsWith("//*")) continue;
++            Matcher step = STEP.matcher(line.stripTrailing());
++            if (step.matches()) idcams = IDCAMS.matcher(step.group(1).strip()).matches();
++            else if (idcams && SYSIN.matcher(line.stripTrailing()).matches()) sysin = new ArrayList<>();
++        }
++        if (sysin != null) result.addAll(commands(sysin, path, sha256));
++        return result;
++    }
++
++    private static List<Define> commands(List<String> lines, Path path, String sha256) {
++        List<Define> result = new ArrayList<>();
++        StringBuilder command = new StringBuilder();
++        for (String line : lines) {
++            String text = line.replaceAll("/\\*.*?\\*/", " ").strip();
++            if (text.contains("/*") || text.endsWith("+"))
++                throw new IllegalArgumentException("Unsupported IDCAMS comment/continuation syntax: " + path);
++            boolean continued = text.endsWith("-");
++            command.append(continued ? text.substring(0, text.length() - 1) : text).append(' ');
++            if (continued) continue;
++            String complete = command.toString().strip().replaceAll("\\s+", " ");
++            command.setLength(0);
++            Matcher type = Pattern.compile("DEFINE\\s+([A-Z]+)\\b.*", Pattern.CASE_INSENSITIVE).matcher(complete);
++            if (type.matches() && Set.of("CLUSTER", "ALTERNATEINDEX", "AIX", "PATH")
++                    .contains(type.group(1).toUpperCase(Locale.ROOT)))
++                result.add(define(complete, path, sha256));
++        }
++        if (!command.toString().isBlank())
++            throw new IllegalArgumentException("Unterminated IDCAMS continuation: " + path);
++        return result;
++    }
++
++    private static Define define(String text, Path path, String sha256) {
++        Matcher head = Pattern.compile("DEFINE ([A-Z]+) ?\\(", Pattern.CASE_INSENSITIVE).matcher(text);
++        String type = head.lookingAt() && "AIX".equalsIgnoreCase(head.group(1)) ? "ALTERNATEINDEX"
++                : head.lookingAt() ? head.group(1).toUpperCase(Locale.ROOT) : "";
++        if (!TYPES.contains(type))
++            throw new IllegalArgumentException("Unsupported IDCAMS DEFINE: " + text + ": " + path);
++        int depth = 1;
++        int index = head.end();
++        for (; index < text.length() && depth > 0; index++)
++            depth += text.charAt(index) == '(' ? 1 : text.charAt(index) == ')' ? -1 : 0;
++        if (depth != 0) throw new IllegalArgumentException("Unbalanced IDCAMS DEFINE: " + path);
++        String body = text.substring(head.end(), index - 1);
++        Matcher components = COMPONENT.matcher(text.substring(index));
++        int position = 0;
++        String rest = text.substring(index);
++        while (position < rest.length() && !rest.substring(position).isBlank()) {
++            if (!components.find(position) || components.start() != position)
++                throw new IllegalArgumentException("Unsupported IDCAMS DEFINE components: " + text + ": " + path);
++            position = components.end();
++        }
++        Map<String, String> operands = new LinkedHashMap<>();
++        Matcher operand = OPERAND.matcher(body);
++        position = 0;
++        while (position < body.length() && !body.substring(position).isBlank()) {
++            if (!operand.find(position) || operand.start() != position || operand.end() == position)
++                throw new IllegalArgumentException("Unsupported IDCAMS operand syntax: " + text + ": " + path);
++            String keyword = operand.group(1).toUpperCase(Locale.ROOT);
++            if (operands.containsKey(keyword))
++                throw new IllegalArgumentException("Repeated IDCAMS operand " + keyword + ": " + path);
++            operands.put(keyword, operand.group(2) == null ? "" : operand.group(2).strip().replaceAll("\\s+", " "));
++            position = operand.end();
++        }
++        if (!operands.getOrDefault("NAME", "").matches("[A-Z0-9@#$]{1,8}(?:\\.[A-Z0-9@#$]{1,8})*"))
++            throw new IllegalArgumentException("IDCAMS DEFINE requires NAME: " + text + ": " + path);
++        return new Define(type, operands, path.toString(), sha256, text);
++    }
++}

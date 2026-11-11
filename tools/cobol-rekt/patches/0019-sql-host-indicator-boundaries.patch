@@ -1,0 +1,26 @@
+diff --git a/che-che4z-lsp-for-cobol-integration/server/engine/src/main/antlr4/org/eclipse/lsp/cobol/implicitDialects/sql/Db2SqlParser.g4 b/che-che4z-lsp-for-cobol-integration/server/engine/src/main/antlr4/org/eclipse/lsp/cobol/implicitDialects/sql/Db2SqlParser.g4
+index c2d52ff..ce87acb 100644
+--- a/che-che4z-lsp-for-cobol-integration/server/engine/src/main/antlr4/org/eclipse/lsp/cobol/implicitDialects/sql/Db2SqlParser.g4
++++ b/che-che4z-lsp-for-cobol-integration/server/engine/src/main/antlr4/org/eclipse/lsp/cobol/implicitDialects/sql/Db2SqlParser.g4
+@@ -1678,7 +1678,8 @@ dbs_function_name: dbs_inbuild_functions | T=dbs_sql_identifier {validateLength(
+ dbs_global_variable_name: dbs_generic_name | ROWID;
+ dbs_graphic_string_constant: GRAPHIC_CONSTANT;
+ dbs_history_table_name: dbs_table_name;
+-dbs_host_variable: dbs_host_var_identifier (INDICATOR? dbs_host_var_identifier)?;
++dbs_host_variable: dbs_host_var_identifier (INDICATOR? dbs_host_indicator_identifier)?;
++dbs_host_indicator_identifier: COLONCHAR T=dbs_host_name_container {validateLength($T.text, "Host indicator variable name", 128);};
+ dbs_host_variable_array: IDENTIFIER; // variable array must be defined in the application program
+ dbs_host_var_identifier: T=dbs_host_names_var {validateLength($T.text, "Host variable name", 128);};
+ dbs_id_host_variable: NUMERICLITERAL;
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/SqlDependencyAnalysis.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/SqlDependencyAnalysis.java
+index 841059a..37b9599 100644
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/SqlDependencyAnalysis.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/SqlDependencyAnalysis.java
+@@ -99,6 +99,7 @@ final class SqlDependencyAnalysis {
+                     || context instanceof Db2SqlParser.Dbs_view_nameContext ? "SQL_RELATION"
+                     : context instanceof Db2SqlParser.Dbs_cursor_nameContext ? "SQL_CURSOR"
+                     : context instanceof Db2SqlParser.Dbs_host_var_identifierContext
++                    || context instanceof Db2SqlParser.Dbs_host_indicator_identifierContext
+                     || context instanceof Db2SqlParser.Dbs_host_variable_arrayContext ? "SQL_HOST_VARIABLE"
+                     : context instanceof Db2SqlParser.Dbs_sequence_nameContext ? "SQL_SEQUENCE"
+                     : context instanceof Db2SqlParser.Dbs_statement_nameContext ? "SQL_STATEMENT"

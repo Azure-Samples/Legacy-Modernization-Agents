@@ -227,3 +227,6 @@ Temporary Items
 # Database files (auto-created on first run)
 Data/*.db
 Data/*.db-*
+
+# Native parser test scratch space (kept so Docker Desktop bind mounts stay valid)
+tools/tests/_work/

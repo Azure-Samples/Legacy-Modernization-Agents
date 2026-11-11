@@ -11,15 +11,22 @@ Usage: bms_symbolic_map.py <source-dir> <output-dir>
 The copybook is named after the BMS source file, as z/OS builds name the member, not after
 the mapset label (two sources may declare the same label). A real copybook of that name in
 the source tree always wins, and only files this tool or the stub generator wrote are
-replaced.
+replaced. A supplied symbolic map is never replaced: when its COBOL tokens equal the BMS
+assembly of the same-named source, its preprocessed copy gets the same hash-bound layout proof
+as a generated map, grounded in that BMS source.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
+import re
 import sys
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from rekt_dependency_evidence import (current_transform, definition_problem, digest, preserve, provenance,
+                                      read_json, write_json)
 
 USAGE = "Usage: bms_symbolic_map.py <source-dir> <output-dir>"
 GENERATED_MARKER = "SYMBOLIC MAP GENERATED FROM BMS"
@@ -39,6 +46,7 @@ ATTRIBUTE_SUFFIXES = (
 )
 EXTATT_YES = ("COLOR", "HILIGHT", "PS", "VALIDN")
 TIOA_PREFIX_BYTES = 12
+LAYOUT_RECIPE = "bms-symbolic-map/layout-v1"
 
 
 @dataclass
@@ -48,6 +56,9 @@ class BmsField:
     occurs: int = 1
     picin: str | None = None
     picout: str | None = None
+    position: tuple[int, int] | None = None
+    initial: str | None = None
+    attributes: tuple[str, ...] = ()
 
 
 @dataclass
@@ -56,6 +67,8 @@ class BmsMap:
     attributes: tuple[str, ...]
     tioapfx: bool
     fields: list[BmsField] = field(default_factory=list)
+    size: tuple[int, int] | None = None
+    screen_fields: list[BmsField] = field(default_factory=list)
 
 
 @dataclass
@@ -64,6 +77,7 @@ class BmsMapset:
     mode: str
     lang: str
     maps: list[BmsMap] = field(default_factory=list)
+    storage_auto: bool = False
 
 
 @dataclass
@@ -77,7 +91,7 @@ def _ends_inside_quote(text: str) -> bool:
     return text.count("'") % 2 == 1
 
 
-def logical_lines(text: str) -> list[str]:
+def logical_lines(text: str, strict: bool = False) -> list[str]:
     """Join assembler continuation lines (non-blank column 72, resume in column 16)."""
     result: list[str] = []
     current: str | None = None
@@ -97,9 +111,13 @@ def logical_lines(text: str) -> list[str]:
             if not _ends_inside_quote(current):
                 current = current.rstrip()
             continue
+        if strict and _ends_inside_quote(current):
+            raise ValueError("Unterminated quoted BMS operand")
         result.append(current.rstrip())
         current = None
     if current is not None:
+        if strict:
+            raise ValueError("Unterminated BMS continuation")
         result.append(current.rstrip())
     return result
 
@@ -146,7 +164,7 @@ def _value(raw: str) -> object:
     return raw.upper()
 
 
-def parse_statement(line: str) -> Statement | None:
+def parse_statement(line: str, strict: bool = False) -> Statement | None:
     label = None
     rest = line
     if not line.startswith(" "):
@@ -160,6 +178,9 @@ def parse_statement(line: str) -> Statement | None:
     if len(tokens) > 1:
         for operand in _split_top_level(_operand_field(tokens[1]), ","):
             key, eq, value = operand.partition("=")
+            if strict and (not eq or not key.strip() or not value.strip()
+                           or key.strip().upper() in operands):
+                raise ValueError(f"Malformed or duplicate BMS operand: {operand}")
             if eq and key.strip():
                 operands[key.strip().upper()] = _value(value)
     return Statement(label, macro, operands)
@@ -186,6 +207,25 @@ def _flag(operands: dict[str, object], key: str) -> bool | None:
     return None if value is None else value == "YES"
 
 
+def _integer(operands: dict[str, object], key: str, default: int = 1, minimum: int = 1) -> int:
+    value = int(str(operands.get(key, default)))
+    if value < minimum:
+        raise ValueError(f"{key} must be at least {minimum}, got {value}")
+    return value
+
+
+def _coordinates(operands: dict[str, object], key: str) -> tuple[int, int] | None:
+    value = operands.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, tuple) or len(value) != 2:
+        raise ValueError(f"{key} requires two coordinates, got {value}")
+    coordinates = tuple(int(str(part)) for part in value)
+    if any(part < 1 for part in coordinates):
+        raise ValueError(f"{key} coordinates must be positive, got {value}")
+    return coordinates
+
+
 def parse_bms(text: str) -> list[BmsMapset]:
     mapsets: list[BmsMapset] = []
     mapset: BmsMapset | None = None
@@ -205,10 +245,12 @@ def parse_bms(text: str) -> list[BmsMapset]:
                 name=stmt.label or "",
                 mode=str(stmt.operands.get("MODE", "OUT")),
                 lang=str(stmt.operands.get("LANG", "ASM")),
+                storage_auto=stmt.operands.get("STORAGE") == "AUTO",
             )
             mapsets.append(mapset)
             mapset_attributes = _attributes(stmt.operands) or ()
-            mapset_tioapfx = bool(_flag(stmt.operands, "TIOAPFX"))
+            prefix = _flag(stmt.operands, "TIOAPFX")
+            mapset_tioapfx = mapset.storage_auto if prefix is None else prefix
             current = None
         elif stmt.macro == "DFHMDI" and mapset is not None and stmt.label:
             attributes = _attributes(stmt.operands)
@@ -217,27 +259,44 @@ def parse_bms(text: str) -> list[BmsMapset]:
                 name=stmt.label,
                 attributes=mapset_attributes if attributes is None else attributes,
                 tioapfx=mapset_tioapfx if tioapfx is None else tioapfx,
+                size=_coordinates(stmt.operands, "SIZE"),
             )
             mapset.maps.append(current)
-        elif stmt.macro == "DFHMDF" and current is not None and stmt.label:
-            try:
-                length = int(str(stmt.operands.get("LENGTH", "1")))
-            except ValueError:
-                length = 1
-            try:
-                occurs = int(str(stmt.operands.get("OCCURS", "1")))
-            except ValueError:
-                occurs = 1
+        elif stmt.macro == "DFHMDF" and current is not None:
+            if "LENGTH" not in stmt.operands:
+                raise ValueError("DFHMDF requires an explicit supported LENGTH; no default size is invented")
+            length = _integer(stmt.operands, "LENGTH", minimum=0)
+            occurs = _integer(stmt.operands, "OCCURS")
+            if length == 0 and stmt.label:
+                raise ValueError(f"Named zero-length symbolic fields are not supported: {stmt.label}")
             picin = stmt.operands.get("PICIN")
             picout = stmt.operands.get("PICOUT")
-            current.fields.append(BmsField(
-                name=stmt.label,
-                length=max(length, 1),
-                occurs=max(occurs, 1),
+            attributes = stmt.operands.get("ATTRB", ())
+            screen_field = BmsField(
+                name=stmt.label or "",
+                length=length,
+                occurs=occurs,
                 picin=str(picin) if picin else None,
                 picout=str(picout) if picout else None,
-            ))
+                position=_coordinates(stmt.operands, "POS"),
+                initial=str(stmt.operands["INITIAL"]) if "INITIAL" in stmt.operands else None,
+                attributes=attributes if isinstance(attributes, tuple) else (str(attributes),),
+            )
+            current.screen_fields.append(screen_field)
+            if stmt.label:
+                current.fields.append(screen_field)
     return mapsets
+
+
+def screen_definition(source: Path, source_dir: Path) -> dict:
+    data = source.read_bytes()
+    return {
+        "path": source.relative_to(source_dir).as_posix(),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "resourceName": source.stem.upper(),
+        "mapsets": [asdict(mapset) for mapset in parse_bms(data.decode("utf-8"))
+                    if mapset.lang.upper() in ("COBOL", "COBOL2")],
+    }
 
 
 def _input_entries(fld: BmsField, attributes: tuple[str, ...], level: int, indent: str) -> list[str]:
@@ -268,8 +327,8 @@ def _structure(bms_map: BmsMap, side: str, header: str, counter: list[int]) -> l
     lines = [header]
     if bms_map.tioapfx:
         lines.append(f"{indent}02  FILLER PIC X({TIOA_PREFIX_BYTES}).")
-    if not bms_map.fields:
-        lines.append(f"{indent}02  FILLER PIC X.")
+    if not bms_map.fields and not bms_map.tioapfx:
+        raise ValueError(f"{bms_map.name}: empty symbolic storage cannot be represented without inventing a byte")
     build = _input_entries if side == "I" else _output_entries
     for fld in bms_map.fields:
         if fld.occurs > 1:
@@ -289,33 +348,199 @@ def render_copybook(mapsets: list[BmsMapset], source_name: str) -> str:
     counter = [0]
     for mapset in mapsets:
         mode = mapset.mode.upper()
+        base = None
         for bms_map in mapset.maps:
             has_in = mode in ("IN", "INOUT")
             has_out = mode in ("OUT", "INOUT")
             if has_in:
-                lines.extend(_structure(bms_map, "I", f"       01  {bms_map.name}I.", counter))
+                header = f"       01  {bms_map.name}I"
+                if base and not mapset.storage_auto:
+                    header += f" REDEFINES {base}"
+                lines.extend(_structure(bms_map, "I", header + ".", counter))
+                base = base or f"{bms_map.name}I"
             if has_out:
                 header = (f"       01  {bms_map.name}O REDEFINES {bms_map.name}I."
-                          if has_in else f"       01  {bms_map.name}O.")
+                          if has_in else f"       01  {bms_map.name}O"
+                          + (f" REDEFINES {base}" if base and not mapset.storage_auto else "") + ".")
                 lines.extend(_structure(bms_map, "O", header, counter))
+                base = base or f"{bms_map.name}O"
     return "\n".join(lines) + "\n"
+
+
+def _picture_bytes(picture: str, length: int) -> None:
+    parts = re.findall(r"([AX9Z0B,./+*SVP-])(?:\((\d+)\))?", picture.upper())
+    if not parts or "".join(symbol + (f"({count})" if count else "") for symbol, count in parts) != picture.upper():
+        raise ValueError(f"Unsupported symbolic-map picture: {picture}")
+    size = sum((int(count) if count else 1) for symbol, count in parts if symbol not in "SVP")
+    if size != length:
+        raise ValueError(f"Picture {picture} uses {size} bytes, but LENGTH is {length}")
+
+
+def complete_layout_evidence(source: Path, copybook: Path) -> dict:
+    """Prove the supported symbolic storage recipe against exact original and generated bytes."""
+    data = source.read_bytes()
+    text = data.decode("utf-8")
+    allowed = {
+        "DFHMSD": {"TYPE", "MODE", "LANG", "STORAGE", "CTRL", "EXTATT", "TERM", "TIOAPFX",
+                   "DSATTS", "MAPATTS", "COLOR", "HILIGHT", "OUTLINE", "PS", "SOSI", "TRANSP", "VALIDN"},
+        "DFHMDI": {"SIZE", "COLUMN", "LINE", "CTRL", "TIOAPFX", "EXTATT", "DSATTS", "MAPATTS",
+                   "COLOR", "HILIGHT", "OUTLINE", "PS", "SOSI", "TRANSP", "VALIDN"},
+        "DFHMDF": {"POS", "LENGTH", "OCCURS", "PICIN", "PICOUT", "INITIAL", "ATTRB",
+                   "JUSTIFY", "COLOR", "HILIGHT", "OUTLINE", "PS", "SOSI", "TRANSP", "VALIDN"},
+        "END": set(),
+    }
+    active = False
+    current_map = False
+    for line in logical_lines(text, strict=True):
+        # HLASM listing-control instructions only format the assembly listing.
+        if line.split(None, 1) and line.split(None, 1)[0].upper() in ("TITLE", "EJECT", "SPACE"):
+            continue
+        statement = parse_statement(line, strict=True)
+        if statement is None:
+            continue
+        if statement.macro not in allowed or set(statement.operands) - allowed[statement.macro]:
+            raise ValueError(f"Unsupported symbolic layout statement or operands: {line.strip()}")
+        values = statement.operands
+        if "EXTATT" in values and values["EXTATT"] not in ("YES", "NO", "MAPONLY"):
+            raise ValueError(f"Unsupported EXTATT: {values['EXTATT']}")
+        for key in ("DSATTS", "MAPATTS"):
+            names = values.get(key, ())
+            names = names if isinstance(names, tuple) else (names,)
+            if any(name not in dict(ATTRIBUTE_SUFFIXES) for name in names):
+                raise ValueError(f"Unsupported {key}: {names}")
+        if "TIOAPFX" in values and values["TIOAPFX"] not in ("YES", "NO"):
+            raise ValueError(f"Unsupported TIOAPFX: {values['TIOAPFX']}")
+        if "PS" in values and values["PS"] != "BASE":
+            raise ValueError("Programmed-symbol character sets need separate encoding/layout support")
+        if statement.macro == "DFHMSD":
+            if values.get("TYPE") == "FINAL":
+                if not active:
+                    raise ValueError("DFHMSD FINAL without an active mapset")
+                active, current_map = False, False
+            else:
+                if active or not statement.label:
+                    raise ValueError("Nested or unnamed mapset")
+                # &&SYSPARM is the escaped form used where the source passes through another substitution.
+                if values.get("TYPE") not in ("&SYSPARM", "&&SYSPARM", "MAP", "DSECT"):
+                    raise ValueError("Unsupported mapset assembly type")
+                if values.get("LANG") not in ("COBOL", "COBOL2"):
+                    raise ValueError("Only COBOL symbolic layouts are supported")
+                if values.get("MODE", "OUT") not in ("IN", "OUT", "INOUT"):
+                    raise ValueError("Unsupported symbolic map mode")
+                if values.get("STORAGE") not in (None, "AUTO"):
+                    raise ValueError("Unsupported symbolic map storage")
+                if values.get("TERM", "3270") not in ("3270", "3270-1", "3270-2"):
+                    raise ValueError("Only 3270 symbolic layouts are supported")
+                active, current_map = True, False
+        elif statement.macro == "DFHMDI":
+            if not active or not statement.label:
+                raise ValueError("DFHMDI without an active mapset or map name")
+            current_map = True
+        elif statement.macro == "DFHMDF":
+            if not active or not current_map:
+                raise ValueError("DFHMDF without an active map")
+            attrs = values.get("ATTRB", ())
+            attrs = attrs if isinstance(attrs, tuple) else (attrs,)
+            if "DET" in attrs:
+                raise ValueError("Detectable-field symbolic input layout needs separate support")
+        elif statement.macro == "END" and active:
+            raise ValueError("END before DFHMSD FINAL")
+    if active:
+        raise ValueError("Missing DFHMSD FINAL")
+    mapsets = parse_bms(text)
+    if not mapsets or not all(mapset.maps for mapset in mapsets):
+        raise ValueError("No complete mapset")
+    maps = []
+    for mapset in mapsets:
+        names = set()
+        for screen in mapset.maps:
+            if screen.name in names:
+                raise ValueError(f"Duplicate symbolic map name: {screen.name}")
+            names.add(screen.name)
+            offset = TIOA_PREFIX_BYTES if screen.tioapfx else 0
+            fields = []
+            seen = set()
+            for entry in screen.fields:
+                if entry.name in seen or not re.fullmatch(r"[A-Z][A-Z0-9_-]{0,28}", entry.name):
+                    raise ValueError(f"Duplicate or unsupported symbolic field name: {entry.name}")
+                seen.add(entry.name)
+                if not 1 <= entry.length <= 256:
+                    raise ValueError(f"Unsupported symbolic field length: {entry.length}")
+                for picture in (entry.picin, entry.picout):
+                    if picture:
+                        _picture_bytes(picture, entry.length)
+                stride = 3 + len(screen.attributes) + entry.length
+                fields.append({"name": entry.name, "offset": offset, "dataOffset": offset + 3 + len(screen.attributes),
+                               "length": entry.length, "occurs": entry.occurs, "stride": stride})
+                offset += stride * entry.occurs
+            maps.append({"name": screen.name, "mapset": mapset.name, "mode": mapset.mode, "byteLength": offset,
+                         "extendedAttributes": list(screen.attributes), "fields": fields})
+    rendered = render_copybook(mapsets, source.name).encode("utf-8")
+    output = copybook.read_bytes()
+    if output == rendered:
+        match = "exact-render"
+    elif symbolic_tokens(output.decode("latin-1")) == symbolic_tokens(rendered.decode("utf-8")):
+        match = "token-equivalent"
+    else:
+        raise ValueError("Symbolic copybook differs from its original BMS recipe")
+    return {"schemaVersion": 1, "producer": LAYOUT_RECIPE, "status": "complete",
+            "sourceSha256": hashlib.sha256(data).hexdigest(),
+            "outputSha256": hashlib.sha256(output).hexdigest(), "copybookMatch": match, "maps": maps}
+
+
+def symbolic_tokens(text: str) -> list[str]:
+    """Fixed-format COBOL tokens, ignoring comments, sequence/identification areas and spacing.
+    FIL-Rnnn is the preprocessor's layout-neutral rename of FILLER REDEFINES."""
+    tokens: list[str] = []
+    for line in text.splitlines():
+        if len(line) > 6 and line[6] in "*/":
+            continue
+        tokens.extend("FILLER" if re.fullmatch(r"FIL-R\d+", token) else token for token in line[7:72].split())
+    return tokens
+
+
+def _bind_supplied(bms: Path, name: str, output_dir: Path, warnings: list[str]) -> None:
+    """Prove a supplied symbolic map's preprocessed copy against its same-named BMS source."""
+    if not output_dir.is_dir():
+        return
+    copies = [path for path in output_dir.iterdir() if path.is_file() and path.stem.upper() == name
+              and path.suffix.lower() in COPYBOOK_EXTENSIONS]
+    copies = [path for path in copies if (original := current_transform(path)) is not None
+              and original.suffix.lower() in COPYBOOK_EXTENSIONS]
+    if len(copies) != 1:
+        return
+    copy = copies[0]
+    try:
+        proof = complete_layout_evidence(bms, copy)
+    except (OSError, UnicodeError, ValueError) as exc:
+        warnings.append(f"{bms}: supplied {copy.name} is not proven equivalent; layout unbound ({exc})")
+        return
+    record = read_json(str(copy) + ".preprocess.json")
+    record.update({"bmsSourcePath": str(bms.resolve()), "bmsSourceSha256": digest(bms)})
+    write_json(str(copy) + ".preprocess.json", record)
+    write_json(str(copy) + ".bms-layout.json", proof)
+
+
+def _top_level_only() -> bool:
+    return os.environ.get("REKT_SOURCE_TOP_LEVEL_ONLY") == "true"
 
 
 def _real_copybooks(source_dir: Path) -> set[str]:
     names: set[str] = set()
     for root, dirs, files in os.walk(source_dir):
-        dirs[:] = [d for d in dirs if d not in SKIPPED_DIRS and not d.startswith(".convert-")]
+        dirs[:] = [] if _top_level_only() else [d for d in dirs if d not in SKIPPED_DIRS and not d.startswith(".convert-")]
         for f in files:
             stem, ext = os.path.splitext(f)
             if ext.lower() in COPYBOOK_EXTENSIONS:
-                names.add(stem.upper())
+                if not definition_problem(Path(root) / f):
+                    names.add(stem.upper())
     return names
 
 
 def _bms_sources(source_dir: Path) -> list[Path]:
     found: list[Path] = []
     for root, dirs, files in os.walk(source_dir):
-        dirs[:] = [d for d in dirs if d not in SKIPPED_DIRS and not d.startswith(".convert-")]
+        dirs[:] = [] if _top_level_only() else [d for d in dirs if d not in SKIPPED_DIRS and not d.startswith(".convert-")]
         found.extend(Path(root) / f for f in files if f.lower().endswith(".bms"))
     return sorted(found)
 
@@ -333,28 +558,61 @@ def generate(source_dir: Path, output_dir: Path) -> tuple[list[str], list[str]]:
     generated: list[str] = []
     warnings: list[str] = []
     claimed: dict[str, Path] = {}
+    screens: list[dict] = []
     for bms in _bms_sources(source_dir):
         name = bms.stem.upper()
+        try:
+            screen = screen_definition(bms, source_dir)
+        except (OSError, UnicodeError, ValueError) as exc:
+            warnings.append(f"{bms}: could not parse screen definition ({exc})")
+            continue
+        if any(mapset["maps"] for mapset in screen["mapsets"]):
+            screens.append(screen)
         if name in real:
+            if name in claimed:
+                warnings.append(f"{bms} and {claimed[name]} both describe supplied {name}; layout unbound")
+                continue
+            _bind_supplied(bms, name, output_dir, warnings)
+            claimed[name] = bms
             continue
         if name in claimed:
             warnings.append(f"{bms} and {claimed[name]} both produce {name}.cpy; kept the first")
             continue
         try:
             mapsets = parse_bms(bms.read_text(encoding="utf-8", errors="ignore"))
-        except Exception as exc:  # one bad mapset must not stop the rest
+        except (OSError, UnicodeError, ValueError) as exc:
             warnings.append(f"{bms}: could not parse ({exc})")
             continue
-        mapsets = [m for m in mapsets if m.lang.upper() == "COBOL"]
+        mapsets = [m for m in mapsets if m.lang.upper() in ("COBOL", "COBOL2")]
         if not any(m.maps for m in mapsets):
             continue
         target = output_dir / f"{name}.cpy"
         if not _replaceable(target):
             continue
         output_dir.mkdir(parents=True, exist_ok=True)
-        target.write_text(render_copybook(mapsets, bms.name), encoding="utf-8")
+        proof_path = Path(str(target) + ".bms-layout.json")
+        preserve([target, Path(str(target) + ".preprocess.json"), proof_path], output_dir)
+        try:
+            target.write_text(render_copybook(mapsets, bms.name), encoding="utf-8")
+        except (OSError, ValueError) as exc:
+            warnings.append(f"{bms}: could not generate symbolic storage ({exc})")
+            continue
+        provenance(bms, target, producer="bms-symbolic-map")
+        try:
+            proof = complete_layout_evidence(bms, target)
+        except (OSError, UnicodeError, ValueError) as exc:
+            warnings.append(f"{bms}: symbolic storage remains partial ({exc})")
+            proof = {"schemaVersion": 1, "producer": LAYOUT_RECIPE, "status": "partial",
+                     "diagnostics": [str(exc)]}
+        write_json(proof_path, proof)
         claimed[name] = bms
         generated.append(name)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "bms-screen-definitions.json").write_text(json.dumps({
+        "schemaVersion": 1, "producer": "bms-symbolic-map/screen-v1",
+        "sourceRoot": os.path.relpath(source_dir.resolve(), output_dir.resolve()),
+        "definitions": screens,
+    }, indent=2) + "\n", encoding="utf-8")
     return generated, warnings
 
 

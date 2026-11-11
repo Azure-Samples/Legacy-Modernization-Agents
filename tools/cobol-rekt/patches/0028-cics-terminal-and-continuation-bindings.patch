@@ -1,0 +1,298 @@
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
+@@ -230,7 +230,9 @@
+         dataStructures = dataStructureValidation.run(ops.getDataStructureBuilder(navigator));
+         LOGGER.info(gson.toJson(timingResult));
+         sqlDependencies.bind(tree);
+-        cicsDependencies.bind(tree, Path.of(parsedSourcePath).getParent(), parserCicsCallTargets, parserCicsRunTargets);
++        cicsDependencies.bind(tree, Path.of(parsedSourcePath).getParent(),
++                cpyPaths == null ? List.of() : cpyPaths.stream().map(File::toPath).toList(),
++                parserCicsCallTargets, parserCicsRunTargets);
+         platformCopybooks.forEach(binding -> PlatformCopybookContract.validateUses(tree, binding, dependencyDiagnostics));
+         dependencyParseComplete = diagnostics.isEmpty() && dependencyDiagnostics.isEmpty();
+         attestSupportedAbsence();
+@@ -345,7 +347,8 @@
+                 && Set.of("NORMAL", "INVREQ", "MAPFAIL", "NOTFINISHED", "NOTFND")
+                 .contains(response.getChild(2).getText().toUpperCase(java.util.Locale.ROOT));
+         boolean symbolicValue = context instanceof CICSParser.CicsDfhValueLiteralContext value
+-                && value.getChildCount() == 4 && Set.of("NORMAL", "ABEND", "SECERROR")
++                && value.getChildCount() == 4
++                && Set.of("NORMAL", "ABEND", "SECERROR", "UCTRAN", "TRANIDONLY", "NOUCTRAN")
+                 .contains(value.getChild(2).getText().toUpperCase(java.util.Locale.ROOT));
+         Map<String, Object> statement = new LinkedHashMap<>();
+         statement.put("kind", kind);
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsDependencyAnalysis.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsDependencyAnalysis.java
+@@ -27,23 +27,28 @@
+             "Cics_syncpointContext", "Cics_asktimeContext", "Cics_formattimeContext",
+             "Cics_delayContext", "Cics_getContext", "Cics_putContext", "Cics_fetchContext");
+     private static final Set<String> LOCKS = Set.of("Cics_enqContext", "Cics_deqContext");
++    private static final Set<String> TERMINAL = Set.of("Cics_sendContext", "Cics_receiveContext",
++            "Cics_returnContext", "Cics_inquireContext", "Cics_set_terminalContext", "Cics_bifContext");
+ 
+     void record(ParserRuleContext context, Map<String, Object> export) {
+         if (INTRINSICS.contains(context.getClass().getSimpleName())
+                 || LOCKS.contains(context.getClass().getSimpleName())
++                || TERMINAL.contains(context.getClass().getSimpleName())
+                 || context instanceof CICSParser.Cics_handleContext
+                 || context instanceof CICSParser.Cics_runContext
+                 || context instanceof CICSParser.Cics_linkContext)
+             statements.add(new Statement(context, export));
+     }
+ 
+-    void bind(ParseTree tree, Path directory, List<CallTarget> targets, List<CallTarget> runTargets) {
++    void bind(ParseTree tree, Path directory, List<Path> copyDirectories,
++              List<CallTarget> targets, List<CallTarget> runTargets) {
+         CobolDeclarationIndex declarations = new CobolDeclarationIndex(tree);
+         for (Statement statement : statements) {
+             List<String> issues = new ArrayList<>();
+             List<Map<String, Object>> bindings = new ArrayList<>();
+             List<Map<String, String>> references = new ArrayList<>();
+             String rule = statement.syntax().getClass().getSimpleName();
++            if (TERMINAL.contains(rule)) CicsTerminalBindings.validateVariant(statement.syntax(), issues);
+             if (!declarations.singleProgram()) issues.add("cics-nested-program-scope-unverified");
+             if ("Cics_getContext".equals(rule) && nodes(statement.syntax()).stream()
+                     .noneMatch(node -> node instanceof CICSParser.Cics_get_channelContext)
+@@ -57,13 +62,20 @@
+             if (statement.syntax() instanceof CICSParser.Cics_handleContext
+                     && (nodes(statement.syntax()).stream().noneMatch(node ->
+                     node.getClass().getSimpleName().equals("Cics_handle_abendContext"))
+-                    || nodes(statement.syntax()).stream().noneMatch(node -> node instanceof CICSParser.Cics_labelContext)))
++                    || !CicsTerminalBindings.supportedHandle(statement.syntax())))
+                 issues.add("cics-handle-operation-unsupported");
+             for (ParseTree node : nodes(statement.syntax())) {
+                 if (node instanceof CICSParser.VariableNameUsageContext variable
+                         && variable.getChildCount() > 0
+                         && variable.getChild(0) instanceof CICSParser.GeneralIdentifierContext) {
+                     String name = variable.getText().toUpperCase(Locale.ROOT);
++                    if (CicsTerminalBindings.terminalContext(statement.syntax(), variable)) {
++                        references.add(Map.of("kind", "CICS_CONTEXT", "name", name,
++                                "grammarRule", variable.getClass().getSimpleName()));
++                        bindings.add(new LinkedHashMap<>(Map.of("kind", "CICS_CONTEXT", "name", name,
++                                "definitionScope", "cics-execution-interface", "role", "terminal-id")));
++                        continue;
++                    }
+                     if (programOperand(statement.syntax()) != null
+                             && contains(programOperand(statement.syntax()), variable)) continue;
+                     List<String> names = referenceNames(variable);
+@@ -94,9 +106,19 @@
+                     issues.add("cics-transaction-binding-unverified:" + error.getMessage());
+                 }
+             }
++            if (TERMINAL.contains(rule)) {
++                try {
++                    if (statement.syntax() instanceof CICSParser.Cics_returnContext)
++                        bindContinuation(statement.syntax(), directory, bindings, issues);
++                    CicsTerminalBindings.bindMap(statement.syntax(), copyDirectories, bindings, issues);
++                } catch (IOException | IllegalArgumentException | org.yaml.snakeyaml.error.YAMLException error) {
++                    issues.add("cics-terminal-binding-invalid:" + error.getMessage());
++                }
++            }
+             statement.export().put("resourceReferences", references);
+             statement.export().put("resourceBindings", bindings);
+-            statement.export().put("bindingBasis", "Cics_runContext".equals(rule) ? "parsed-cics-async-transaction"
++            statement.export().put("bindingBasis", TERMINAL.contains(rule) ? "parsed-cics-terminal-operation"
++                    : "Cics_runContext".equals(rule) ? "parsed-cics-async-transaction"
+                     : LOCKS.contains(rule) ? "parsed-cics-lock-operation" : INTRINSICS.contains(rule)
+                     ? "parsed-current-task-operation" : "parsed-cics-control-binding");
+             statement.export().put("bindingStatus", issues.isEmpty() ? "complete" : "unresolved");
+@@ -104,6 +126,33 @@
+         }
+     }
+ 
++    private void bindContinuation(ParserRuleContext syntax, Path directory,
++                                  List<Map<String, Object>> bindings, List<String> issues) throws IOException {
++        List<ParseTree> operands = CicsTerminalBindings.operands(syntax, "TRANSID");
++        if (operands.isEmpty()) return;
++        if (operands.size() != 1) {
++            issues.add("cics-return-transaction-ambiguous");
++            return;
++        }
++        String name = CicsTerminalBindings.literal(operands.getFirst(), 4, 4);
++        if (name == null) {
++            issues.add("dynamic-cics-return-transaction-unresolved:" + operands.getFirst().getText());
++            return;
++        }
++        Map<String, Object> transaction = CicsResourceCatalog.transaction(name).orElse(null);
++        if (transaction == null) {
++            issues.add("cics-transaction-definition-not-found:" + name);
++            return;
++        }
++        Map<?, ?> attributes = (Map<?, ?>) transaction.get("attributes");
++        Map<String, Object> program = programResource((String) attributes.get("program"), directory, issues);
++        if (program == null) return;
++        transaction.put("programBinding", program);
++        transaction.put("targetResolution", Map.of("kind", "literal"));
++        transaction.put("controlEffect", "transaction-continuation");
++        bindings.add(transaction);
++    }
++
+     private void reference(String kind, String name, ParserRuleContext syntax,
+                            List<ParserRuleContext> candidates, List<Map<String, String>> references,
+                            List<Map<String, Object>> bindings, List<String> issues) {
+@@ -269,7 +318,7 @@
+         return false;
+     }
+ 
+-    private static List<ParseTree> nodes(ParseTree root) {
++    static List<ParseTree> nodes(ParseTree root) {
+         List<ParseTree> result = new ArrayList<>();
+         result.add(root);
+         for (int index = 0; index < root.getChildCount(); index++) result.addAll(nodes(root.getChild(index)));
+--- /dev/null
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsTerminalBindings.java
+@@ -0,0 +1,154 @@
++package org.smojol.toolkit.analysis.pipeline;
++
++import com.google.gson.JsonObject;
++import com.google.gson.JsonParser;
++import org.antlr.v4.runtime.ParserRuleContext;
++import org.antlr.v4.runtime.tree.ParseTree;
++import org.antlr.v4.runtime.tree.TerminalNode;
++
++import java.io.IOException;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.ArrayList;
++import java.util.LinkedHashMap;
++import java.util.LinkedHashSet;
++import java.util.List;
++import java.util.Locale;
++import java.util.Map;
++import java.util.Set;
++
++import static org.smojol.toolkit.analysis.pipeline.CicsDependencyAnalysis.nodes;
++
++final class CicsTerminalBindings {
++    private CicsTerminalBindings() {}
++
++    static void validateVariant(ParserRuleContext syntax, List<String> issues) {
++        Set<String> rules = new LinkedHashSet<>();
++        nodes(syntax).forEach(node -> rules.add(node.getClass().getSimpleName()));
++        boolean supported = switch (syntax.getClass().getSimpleName()) {
++            case "Cics_sendContext" -> rules.contains("Cics_send_control_minContext")
++                    || rules.contains("Cics_send_map_minContext")
++                    || rules.contains("Cics_send_text_stdContext");
++            case "Cics_receiveContext" -> rules.contains("Cics_receive_mapContext")
++                    && !rules.contains("Cics_receive_mappingdevContext")
++                    && operands(syntax, "INPARTN").isEmpty();
++            case "Cics_returnContext" -> !rules.contains("Cics_return_inputmsgContext")
++                    && tokens(syntax).stream().noneMatch(Set.of("CHANNEL", "ENDACTIVITY")::contains);
++            case "Cics_inquireContext" -> rules.contains("Cics_inquire_terminalContext");
++            case "Cics_set_terminalContext" -> true;
++            case "Cics_bifContext" -> rules.contains("Cics_bif_deeditContext")
++                    && operands(syntax, "FIELD").size() == 1;
++            default -> false;
++        };
++        if (!supported) issues.add("cics-terminal-variant-unsupported:" + syntax.getClass().getSimpleName());
++        for (String option : List.of("TRANSID", "MAP", "MAPSET", "TERMINAL", "UCTRANST",
++                "COMMAREA", "LENGTH", "FROM", "INTO", "FIELD", "RESP", "RESP2"))
++            if (operands(syntax, option).size() > 1)
++                issues.add("cics-option-ambiguous:" + option);
++    }
++
++    static boolean supportedHandle(ParseTree syntax) {
++        List<String> tokens = tokens(syntax);
++        long labels = operands(syntax, "LABEL").size();
++        long cancels = tokens.stream().filter("CANCEL"::equals).count();
++        return tokens.stream().noneMatch(Set.of("PROGRAM", "RESET")::contains)
++                && (labels == 1 && cancels == 0 || labels == 0 && cancels == 1);
++    }
++
++    static boolean terminalContext(ParseTree syntax, ParseTree variable) {
++        if (!"EIBTRMID".equalsIgnoreCase(variable.getText())
++                || !Set.of("Cics_inquireContext", "Cics_set_terminalContext")
++                .contains(syntax.getClass().getSimpleName())) return false;
++        return operands(syntax, "TERMINAL").stream().anyMatch(operand -> nodes(operand).contains(variable));
++    }
++
++    static List<ParseTree> operands(ParseTree syntax, String option) {
++        List<ParseTree> result = new ArrayList<>();
++        for (ParseTree node : nodes(syntax))
++            for (int index = 1; index < node.getChildCount(); index++)
++                if (node.getChild(index - 1) instanceof TerminalNode
++                        && option.equalsIgnoreCase(node.getChild(index - 1).getText())
++                        && node.getChild(index) instanceof ParserRuleContext)
++                    result.add("MAP".equals(option)
++                            && "Cics_receive_mapContext".equals(node.getChild(index).getClass().getSimpleName())
++                            ? node.getChild(index).getChild(0) : node.getChild(index));
++        return result;
++    }
++
++    static String literal(ParseTree operand, int minimum, int maximum) {
++        String value = operand.getText();
++        if (!value.matches("\\((['\"])[A-Za-z0-9@$#_-]+\\1\\)")) return null;
++        String name = value.substring(2, value.length() - 2);
++        return name.length() >= minimum && name.length() <= maximum ? name : null;
++    }
++
++    private static List<String> tokens(ParseTree syntax) {
++        return nodes(syntax).stream().filter(node -> node instanceof TerminalNode)
++                .map(node -> node.getText().toUpperCase(Locale.ROOT)).toList();
++    }
++
++    static void bindMap(ParseTree syntax, List<Path> directories,
++                        List<Map<String, Object>> bindings, List<String> issues) throws IOException {
++        List<ParseTree> maps = operands(syntax, "MAP");
++        if (maps.isEmpty()) return;
++        List<ParseTree> mapsets = operands(syntax, "MAPSET");
++        String map = maps.size() == 1 ? literal(maps.getFirst(), 1, 7) : null;
++        String mapset = mapsets.isEmpty() ? map : mapsets.size() == 1 ? literal(mapsets.getFirst(), 1, 7) : null;
++        if (map == null || mapset == null) {
++            issues.add("dynamic-cics-map-binding-unresolved");
++            return;
++        }
++        Set<Path> manifests = new LinkedHashSet<>();
++        for (Path directory : directories) {
++            if (!Files.isDirectory(directory)) continue;
++            try (var files = Files.walk(directory)) {
++                for (Path path : files.filter(Files::isRegularFile)
++                        .filter(path -> path.toString().endsWith(".bms-layout.json")).toList())
++                    manifests.add(path.toRealPath());
++            }
++        }
++        List<Map<String, Object>> matches = new ArrayList<>();
++        for (Path path : manifests) {
++            JsonObject proof = JsonParser.parseString(Files.readString(path)).getAsJsonObject();
++            if (!proof.has("maps") || !proof.get("maps").isJsonArray()) continue;
++            for (var entry : proof.getAsJsonArray("maps")) {
++                JsonObject screen = entry.getAsJsonObject();
++                if (!screen.has("mapset") || !screen.has("name")
++                        || !map.equals(screen.get("name").getAsString())
++                        || !mapset.equals(screen.get("mapset").getAsString())) continue;
++                Path output = Path.of(path.toString().replaceFirst("\\.bms-layout\\.json$", ""));
++                Path source = Path.of(output + ".bms-source");
++                if (!Files.isRegularFile(source)) continue;
++                if (!proof.has("schemaVersion") || proof.get("schemaVersion").getAsInt() != 1
++                        || !proof.has("producer") || !"bms-symbolic-map/layout-v1".equals(proof.get("producer").getAsString())
++                        || !proof.has("status") || !"complete".equals(proof.get("status").getAsString())
++                        || !proof.has("sourceSha256") || !proof.has("outputSha256")
++                        || !Files.isRegularFile(source) || !Files.isRegularFile(output)
++                        || !ParsePipeline.sha256(Files.readAllBytes(source)).equals(proof.get("sourceSha256").getAsString())
++                        || !ParsePipeline.sha256(Files.readAllBytes(output)).equals(proof.get("outputSha256").getAsString()))
++                    throw new IllegalArgumentException("Unverified BMS map layout: " + path);
++                String mode = screen.get("mode").getAsString();
++                if ("Cics_receiveContext".equals(syntax.getClass().getSimpleName())
++                        ? !Set.of("IN", "INOUT").contains(mode) : !Set.of("OUT", "INOUT").contains(mode))
++                    throw new IllegalArgumentException("BMS map direction mismatch: " + map);
++                Map<String, Object> binding = new LinkedHashMap<>();
++                binding.put("kind", "CICS_MAP");
++                binding.put("name", map);
++                binding.put("mapset", mapset);
++                binding.put("sourcePath", source.toRealPath().toString());
++                binding.put("sourceSha256", ParsePipeline.sha256(Files.readAllBytes(source)));
++                binding.put("layoutPath", path.toString());
++                binding.put("layoutSha256", ParsePipeline.sha256(Files.readAllBytes(path)));
++                binding.put("outputPath", output.toRealPath().toString());
++                binding.put("outputSha256", ParsePipeline.sha256(Files.readAllBytes(output)));
++                binding.put("definition", screen.deepCopy());
++                matches.add(binding);
++            }
++        }
++        if (matches.size() != 1) {
++            issues.add("cics-map-definition-" + (matches.isEmpty() ? "not-found:" : "ambiguous:") + mapset + ":" + map);
++            return;
++        }
++        bindings.add(matches.getFirst());
++    }
++}

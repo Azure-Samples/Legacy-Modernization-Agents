@@ -1,0 +1,76 @@
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsDependencyAnalysis.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsDependencyAnalysis.java
+index 41ac8ef..2c85152 100644
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsDependencyAnalysis.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsDependencyAnalysis.java
+@@ -179,7 +179,7 @@ final class CicsDependencyAnalysis {
+                 operands.addAll(CicsTerminalBindings.operands(statement.syntax(), "FILE"));
+                 operands.addAll(CicsTerminalBindings.operands(statement.syntax(), "DATASET"));
+             }
+-            if ("Cics_xctlContext".equals(rule) || "Cics_inquireContext".equals(rule)
++            if ("Cics_xctlContext".equals(rule) || "Cics_linkContext".equals(rule) || "Cics_inquireContext".equals(rule)
+                     && nodes(statement.syntax()).stream().anyMatch(node ->
+                     node.getClass().getSimpleName().equals("Cics_inquire_programContext")))
+                 operands.addAll(CicsTerminalBindings.operands(statement.syntax(), "PROGRAM"));
+@@ -405,7 +405,7 @@ final class CicsDependencyAnalysis {
+         } else {
+             List<ParserRuleContext> candidates = declarations.hosts(value);
+             if (candidates.size() != 1 || !declarations.singleProgram()) {
+-                issues.add("dynamic-cics-program-binding-unresolved:" + value);
++                linkTargets(operand, tree, declarations, directory, targets, bindings, issues);
+                 return;
+             }
+             ParserRuleContext declaration = candidates.getFirst();
+@@ -420,7 +420,7 @@ final class CicsDependencyAnalysis {
+             }
+             if (!constant.matches() || constant.group(2).length() + constant.group(3).length() > 8
+                     || storageSection == null || !immutable(tree, value, declaration)) {
+-                issues.add("dynamic-cics-program-binding-unresolved:" + value);
++                linkTargets(operand, tree, declarations, directory, targets, bindings, issues);
+                 return;
+             }
+             name = constant.group(2);
+@@ -437,6 +437,16 @@ final class CicsDependencyAnalysis {
+         targets.add(new StaticCallTarget(name));
+     }
+ 
++    /** LINK operands outside the legacy 01-level constant form use the shared constant/table proofs. */
++    private void linkTargets(ParseTree operand, ParseTree tree, CobolDeclarationIndex declarations, Path directory,
++                             List<CallTarget> targets, List<Map<String, Object>> bindings,
++                             List<String> issues) throws IOException {
++        int before = bindings.size();
++        bindProgramTargets(operand, tree, declarations, constantOperands(), directory, "call", bindings, issues);
++        for (Map<String, Object> binding : bindings.subList(before, bindings.size()))
++            targets.add(new StaticCallTarget((String) binding.get("name")));
++    }
++
+     private Map<String, Object> programResource(String name, Path directory, List<String> issues) throws IOException {
+         Map<String, Object> binding = CicsResourceCatalog.program(name).orElse(null);
+         if (binding == null) {
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/SqlDependencyAnalysis.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/SqlDependencyAnalysis.java
+index ffb3d8b..ca7604f 100644
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/SqlDependencyAnalysis.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/SqlDependencyAnalysis.java
+@@ -201,6 +201,12 @@ final class SqlDependencyAnalysis {
+         for (int index = 0; index < tree.getChildCount(); index++) collectCatalogBodies(tree.getChild(index), bodies);
+     }
+ 
++    /**
++     * Unqualified Db2 13 for z/OS built-in scalar functions missing from the grammar's dbs_inbuild_functions rule
++     * (https://www.ibm.com/docs/en/db2-for-zos/13?topic=functions-timestamp-format). SYSIBM leads the default SQL path.
++     */
++    static final Set<String> DB2_ZOS_BUILTINS_OUTSIDE_GRAMMAR = Set.of("TIMESTAMP_FORMAT");
++
+     private static String key(String kind, String name) {
+         return kind + ":" + name;
+     }
+@@ -222,7 +228,9 @@ final class SqlDependencyAnalysis {
+                     : context instanceof Db2SqlParser.Dbs_statement_nameContext ? "SQL_STATEMENT"
+                     : context instanceof Db2SqlParser.Dbs_distinct_type_nameContext ? "SQL_TYPE"
+                     : context instanceof Db2SqlParser.Dbs_function_nameContext function
+-                    && function.dbs_inbuild_functions() == null ? "SQL_FUNCTION" : null;
++                    && function.dbs_inbuild_functions() == null
++                    && !DB2_ZOS_BUILTINS_OUTSIDE_GRAMMAR.contains(function.getText().toUpperCase(Locale.ROOT))
++                    ? "SQL_FUNCTION" : null;
+             if (kind != null) {
+                 boolean declaration = context.getParent() instanceof Db2SqlParser.Dbs_declare_tableContext
+                         || context instanceof Db2SqlParser.Dbs_cursor_nameContext

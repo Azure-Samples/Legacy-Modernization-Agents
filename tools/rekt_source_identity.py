@@ -18,7 +18,7 @@ to the source root. Exits 1 when any finding blocks staging.
 Blocking kinds:
   copybook-collision              copies differ and a COPY or INCLUDE names them
   copybook-collision-users        follows copybook-collision; files that name it
-  preprocessed-program-collision  duplicate program basename that the preprocessor rewrote
+  preprocessed-program-collision  duplicate program basename with an ambiguous legacy flat rewrite
 
 Informational kinds:
   program-duplicate               same program basename in more than one directory
@@ -63,11 +63,51 @@ def code_lines(text):
 
 def referenced_names(text):
     names = set()
-    for line in code_lines(text):
+    for line in dependency_guard_text(text).splitlines():
         for pattern in REFERENCE_PATTERNS:
             for match in pattern.finditer(line):
                 names.add(match.group(1).upper())
     return names
+
+
+def dependency_guard_text(text):
+    """Mask literals/comments for contradiction checks, retaining quoted dependency operands."""
+    result, quote, operand = [], None, False
+    for line in text.splitlines():
+        if (len(line) > 6 and line[6] in "*/") or line.lstrip().startswith("*>"):
+            continue
+        row, index = [], 0
+        continuation_quote = None
+        if quote and len(line) > 6 and line[6] == "-":
+            start = 7
+            while start < len(line) and line[start].isspace():
+                start += 1
+            if start < len(line) and line[start] == quote:
+                continuation_quote = start
+        while index < len(line):
+            char = line[index]
+            if index == continuation_quote:
+                row.append(" ")
+            elif quote:
+                row.append(char if operand else " ")
+                if char == quote:
+                    if index + 1 < len(line) and line[index + 1] == quote:
+                        row.append(char if operand else " ")
+                        index += 1
+                    else:
+                        quote, operand = None, False
+            elif line[index:index + 2] == "*>":
+                break
+            elif char in "'\"":
+                prefix = "\n".join(result[-1:]) + "".join(row)
+                operand = re.search(r"\b(?:COPY|CALL|INCLUDE)\s*$", prefix, re.IGNORECASE) is not None
+                quote = char
+                row.append(char if operand else " ")
+            else:
+                row.append(char)
+            index += 1
+        result.append("".join(row))
+    return "\n".join(result)
 
 
 def normalised(text):
@@ -89,7 +129,10 @@ def is_used(copybook_stem, references):
 def scan(source_root, shadowed=frozenset()):
     programs, copybooks, references = {}, {}, {}
     for root, dirs, files in os.walk(source_root):
-        dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".convert-")]
+        if os.environ.get("REKT_SOURCE_TOP_LEVEL_ONLY") == "true":
+            dirs[:] = []
+        else:
+            dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".convert-")]
         for name in files:
             path = os.path.join(root, name)
             rel = os.path.relpath(path, source_root).replace(os.sep, "/")
@@ -117,11 +160,11 @@ def users_of(copybook_stem, references):
 def check(source_root, preproc_dir, shadowed=frozenset()):
     programs, copybooks, references = scan(source_root, shadowed)
 
-    preprocessed = set()
+    preprocessed = {}
     if os.path.isdir(preproc_dir):
         for name in os.listdir(preproc_dir):
             if os.path.isfile(os.path.join(preproc_dir, name)):
-                preprocessed.add(name.lower())
+                preprocessed[name.lower()] = os.path.join(preproc_dir, name)
 
     findings, errors = [], []
     for basename, paths in sorted(copybooks.items()):
@@ -144,7 +187,11 @@ def check(source_root, preproc_dir, shadowed=frozenset()):
             paths = sorted(paths)
             findings.append(("program-duplicate", basename, paths))
             if basename in preprocessed:
-                errors.append(("preprocessed-program-collision", basename, paths))
+                from rekt_dependency_evidence import current_transform
+                root_program = next((path for path in paths if "/" not in path), None)
+                if root_program is None or current_transform(
+                        preprocessed[basename], os.path.join(source_root, root_program)) is None:
+                    errors.append(("preprocessed-program-collision", basename, paths))
 
     return findings, errors
 

@@ -1,0 +1,185 @@
+diff --git a/smojol-toolkit/pom.xml b/smojol-toolkit/pom.xml
+index e2ed1e7..cda7580 100644
+--- a/smojol-toolkit/pom.xml
++++ b/smojol-toolkit/pom.xml
+@@ -84,6 +84,11 @@
+     </profiles>
+ 
+     <dependencies>
++        <dependency>
++            <groupId>org.yaml</groupId>
++            <artifactId>snakeyaml</artifactId>
++            <version>2.5</version>
++        </dependency>
+         <dependency>
+             <groupId>org.apache.commons</groupId>
+             <artifactId>commons-csv</artifactId>
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsResourceCatalog.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsResourceCatalog.java
+new file mode 100644
+index 0000000..1d83d8d
+--- /dev/null
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsResourceCatalog.java
+@@ -0,0 +1,70 @@
++package org.smojol.toolkit.analysis.pipeline;
++
++import org.yaml.snakeyaml.LoaderOptions;
++import org.yaml.snakeyaml.Yaml;
++import org.yaml.snakeyaml.constructor.SafeConstructor;
++
++import java.io.File;
++import java.io.IOException;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.LinkedHashMap;
++import java.util.List;
++import java.util.Map;
++import java.util.Optional;
++import java.util.regex.Pattern;
++
++final class CicsResourceCatalog {
++    private CicsResourceCatalog() {}
++
++    static Optional<Map<String, Object>> file(String name) throws IOException {
++        String configured = System.getenv("REKT_CICS_RESOURCE_DEFINITIONS");
++        if (configured == null || configured.isBlank()) return Optional.empty();
++        LoaderOptions options = new LoaderOptions();
++        options.setAllowDuplicateKeys(false);
++        options.setMaxAliasesForCollections(0);
++        options.setCodePointLimit(1_048_576);
++        Map<String, Object> binding = null;
++        for (String value : configured.split(Pattern.quote(File.pathSeparator))) {
++            Path path = Path.of(value).toRealPath();
++            byte[] bytes = Files.readAllBytes(path);
++            Object loaded = new Yaml(new SafeConstructor(options))
++                    .load(new String(bytes, StandardCharsets.UTF_8));
++            if (!(loaded instanceof Map<?, ?> root)
++                    || !(root.get("resourceDefinitions") instanceof List<?> definitions))
++                throw new IllegalArgumentException("CICS resourceDefinitions list required: " + path);
++            for (Object definition : definitions) {
++                if (!(definition instanceof Map<?, ?> entry))
++                    throw new IllegalArgumentException("CICS resource definition must be a mapping: " + path);
++                if (!entry.containsKey("file")) continue;
++                if (!(entry.get("file") instanceof Map<?, ?> file)
++                        || !(file.get("name") instanceof String fileName) || fileName.isBlank())
++                    throw new IllegalArgumentException("CICS file definition requires a name: " + path);
++                if (!name.equals(fileName)) continue;
++                if (binding != null)
++                    throw new IllegalArgumentException("Ambiguous CICS file definition: " + name);
++                if (!(file.get("dsname") instanceof String dataset) || dataset.isBlank())
++                    throw new IllegalArgumentException("CICS file definition requires dsname: " + name);
++                int recordSize = integer(file.get("recordsize"), "recordsize", name);
++                int keyLength = integer(file.get("keylength"), "keylength", name);
++                if (recordSize <= 0 || keyLength < 0 || keyLength > recordSize)
++                    throw new IllegalArgumentException("Invalid CICS file record/key lengths: " + name);
++                binding = new LinkedHashMap<>();
++                binding.put("kind", "CICS_FILE");
++                binding.put("name", name);
++                binding.put("sourcePath", path.toString());
++                binding.put("sourceSha256", ParsePipeline.sha256(bytes));
++                binding.put("attributes", Map.of("dsname", dataset,
++                        "recordsize", recordSize, "keylength", keyLength));
++            }
++        }
++        return Optional.ofNullable(binding);
++    }
++
++    private static int integer(Object value, String field, String name) {
++        if (!(value instanceof Integer))
++            throw new IllegalArgumentException("CICS file " + field + " must be an integer: " + name);
++        return (Integer) value;
++    }
++}
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
+index 2bbd083..8fd9ba0 100644
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
+@@ -228,7 +228,7 @@ public class ParsePipeline {
+         return navigator;
+     }
+ 
+-    private static String sha256(byte[] bytes) {
++    static String sha256(byte[] bytes) {
+         try {
+             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+         } catch (NoSuchAlgorithmException e) {
+@@ -303,6 +303,8 @@ public class ParsePipeline {
+     private void recordDialectStatement(ParserRuleContext context, String kind) {
+         boolean bareReturn = context instanceof CICSParser.Cics_returnContext statement
+                 && statement.RETURN() != null && statement.getChildCount() == 1;
++        boolean normalResponse = context instanceof CICSParser.CicsDfhRespLiteralContext
++                && "DFHRESP(NORMAL)".equalsIgnoreCase(context.getText());
+         Map<String, Object> statement = new LinkedHashMap<>();
+         statement.put("kind", kind);
+         statement.put("operation", context.getStart().getText().toUpperCase(java.util.Locale.ROOT));
+@@ -311,9 +313,33 @@ public class ParsePipeline {
+         statement.put("coordinateSpace", "expanded-parser-input");
+         statement.put("line", context.getStart().getLine());
+         statement.put("column", context.getStart().getCharPositionInLine());
+-        statement.put("bindingStatus", bareReturn ? "complete" : "unresolved");
++        statement.put("bindingStatus", bareReturn || normalResponse ? "complete" : "unresolved");
+         statement.put("runtimeMapping", "unverified");
+         statement.put("syntax", dialectSyntax(context));
++        if (context instanceof CICSParser.Cics_writeContext write && write.cics_write_file() != null) {
++            var command = write.cics_write_file();
++            String operand = command.cics_file_name().cics_name().name().getText();
++            statement.put("fileOperand", operand);
++            if (!command.SYSID().isEmpty()) {
++                statement.put("bindingDiagnostic", "remote-cics-file-binding-unresolved:" + operand);
++            } else if (operand.length() >= 2 && (operand.charAt(0) == '\'' || operand.charAt(0) == '"')
++                    && operand.charAt(operand.length() - 1) == operand.charAt(0)) {
++                String name = operand.substring(1, operand.length() - 1);
++                try {
++                    Optional<Map<String, Object>> binding = CicsResourceCatalog.file(name);
++                    if (binding.isPresent()) {
++                        statement.put("resourceBindings", List.of(binding.get()));
++                        statement.put("bindingStatus", "complete");
++                    } else {
++                        statement.put("bindingDiagnostic", "cics-file-definition-not-found:" + name);
++                    }
++                } catch (IOException | IllegalArgumentException | org.yaml.snakeyaml.error.YAMLException error) {
++                    statement.put("bindingDiagnostic", "cics-file-definition-invalid:" + name + ":" + error.getMessage());
++                }
++            } else {
++                statement.put("bindingDiagnostic", "dynamic-cics-file-binding-unresolved:" + operand);
++            }
++        }
+         dependencyDialectStatements.add(statement);
+     }
+ 
+@@ -381,20 +407,30 @@ public class ParsePipeline {
+                 dependencyAbsenceEvidence.put(kind, noDialect ? "antlr-tree:no-dialect-contexts"
+                         : kind.equals("EXEC_SQL") ? "antlr-tree:no-sql-contexts" : "antlr-tree:no-cics-contexts");
+             else if (complete)
+-                dependencyPresenceEvidence.put(kind, "antlr-tree:resource-free-cics-return");
++                dependencyPresenceEvidence.put(kind, statements.stream()
++                        .allMatch(statement -> "Cics_returnContext".equals(statement.get("grammarRule")))
++                        ? "antlr-tree:resource-free-cics-return" : "antlr-tree:bound-cics-resources");
+             if (!statements.isEmpty() && !complete)
+                 dependencyDiagnostics.add("unresolved-" + kind + "-dependency-bindings:"
+-                        + statements.stream().map(statement -> statement.get("grammarRule").toString())
++                        + statements.stream().filter(statement -> !"complete".equals(statement.get("bindingStatus")))
++                        .map(statement -> statement.get("grammarRule").toString())
+                         .distinct().collect(java.util.stream.Collectors.joining(",")));
++            statements.stream().filter(statement -> statement.containsKey("bindingDiagnostic"))
++                    .forEach(statement -> dependencyDiagnostics.add(statement.get("bindingDiagnostic").toString()));
+         }
+         if (!knownDialects)
+             dependencyDiagnostics.add("unsupported-dialect-dependency-contexts:"
+                     + String.join(",", dialectDependencyContexts));
+         boolean opaqueFileIo = !knownDialects || dependencyDialectStatements.stream()
+                 .anyMatch(statement -> !"complete".equals(statement.get("bindingStatus")));
+-        boolean noFileIo = fileIoDependencyContexts.isEmpty() && !opaqueFileIo;
+-        dependencyAbsenceCoverage.put("FILE_IO", noFileIo ? "complete" : "partial");
+-        if (noFileIo) dependencyAbsenceEvidence.put("FILE_IO", "antlr-tree:no-file-io-contexts");
++        boolean hasBoundFiles = dependencyDialectStatements.stream()
++                .anyMatch(statement -> statement.containsKey("resourceBindings"));
++        boolean fileIoComplete = fileIoDependencyContexts.isEmpty() && !opaqueFileIo;
++        dependencyAbsenceCoverage.put("FILE_IO", fileIoComplete ? "complete" : "partial");
++        if (fileIoComplete && hasBoundFiles)
++            dependencyPresenceEvidence.put("FILE_IO", "antlr-tree:bound-cics-file-resources");
++        else if (fileIoComplete)
++            dependencyAbsenceEvidence.put("FILE_IO", "antlr-tree:no-file-io-contexts");
+         else dependencyDiagnostics.add("unsupported-file-io-dependency-contexts:"
+                 + (fileIoDependencyContexts.isEmpty() ? "opaque-dialect" : String.join(",", fileIoDependencyContexts)));
+     }

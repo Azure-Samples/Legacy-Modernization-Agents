@@ -279,9 +279,11 @@ show_usage() {
     echo ""
     echo -e "${BOLD}Converting a subset:${NC}"
     echo -e "  ${GREEN}--program NAME${NC}       Convert only this program (repeatable, or comma-separated)"
+    echo -e "  ${GREEN}--source DIR${NC}         Use this source directory for conversion or reverse engineering"
     echo -e "  ${GREEN}--job NAME${NC}           Convert the programs this JCL job runs (repeatable, or comma-separated)"
     echo -e "  ${GREEN}--include-callees${NC}    Also convert everything the selection CALLs"
     echo -e "  ${GREEN}--language L${NC}         Java or CSharp (skips the interactive prompt)"
+    echo -e "  ${GREEN}--java-framework F${NC}   Spring or Quarkus (selects Java)"
     echo -e "  ${GREEN}--dry-run${NC}            Show what would convert, call no model"
     echo -e "  ${GREEN}--clean-output${NC}       Clear the target output folder first"
     echo ""
@@ -306,6 +308,7 @@ show_usage() {
     echo -e "  ${GREEN}rekt-parse${NC}      Parse COBOL into ASTs/flowcharts under output/rekt/"
     echo -e "  ${GREEN}rekt-ingest${NC}     Load parsed artifacts into the REKT Neo4j graph"
     echo -e "  ${GREEN}rekt-full${NC}       Run parse then ingest"
+    echo -e "                  ${CYAN}--parallel N${NC} parses N programs at once (1-16, default 1 or REKT_PARSE_JOBS)"
     echo -e "  ${GREEN}rekt-status${NC}     Show REKT container, graph, and export status"
     echo
     echo -e "${BOLD}Examples:${NC}"
@@ -1956,8 +1959,8 @@ run_test() {
     echo ""
     echo "Migration Options:"
     echo "  Standard:         ./doctor.sh run"
-    echo "  Reverse Engineer: dotnet run reverse-engineer --source ./source"
-    echo "  Full Migration:   dotnet run -- --source ./source"
+    echo "  Reverse Engineer: ./doctor.sh reverse-eng"
+    echo "  Conversion only:  ./doctor.sh convert-only"
     echo ""
     echo "Deterministic COBOL Analysis (Cobol-REKT):"
     echo "  Parse + ingest:   ./doctor.sh rekt-full"
@@ -1969,7 +1972,7 @@ run_test() {
         echo "Reverse Engineering Available:"
         echo "  Extract business logic from COBOL before migration"
         echo "  Generate documentation in markdown format"
-        echo "  Run: dotnet run reverse-engineer --source ./source"
+        echo "  Run: ./doctor.sh reverse-eng"
         echo ""
     fi
     if [ "$total_files" -gt 0 ]; then
@@ -2145,29 +2148,7 @@ run_migration() {
         local skip_reverse_eng=""
     fi
 
-    # For options 1 and 3, continue with language selection and migration
-    echo ""
-    echo "🎯 Select Target Language for Migration"
-    echo "========================================"
-    echo "  1) Java (Quarkus)"
-    echo "  2) C# (.NET)"
-    echo ""
-    read -p "Enter choice (1 or 2) [default: 1]: " lang_choice
-    
-    # Trim whitespace from input
-    lang_choice=$(echo "$lang_choice" | tr -d '[:space:]')
-    
-    # Validate the choice explicitly
-    if [[ "$lang_choice" == "2" ]]; then
-        export TARGET_LANGUAGE="CSharp"
-        echo -e "${GREEN}✅ Selected: C# (.NET)${NC}"
-    elif [[ "$lang_choice" == "1" ]] || [[ -z "$lang_choice" ]]; then
-        export TARGET_LANGUAGE="Java"
-        echo -e "${GREEN}✅ Selected: Java (Quarkus)${NC}"
-    else
-        echo -e "${YELLOW}⚠️  Invalid choice '$lang_choice', defaulting to Java${NC}"
-        export TARGET_LANGUAGE="Java"
-    fi
+    select_conversion_target || return 1
 
     # ========================
     # QUALITY GATE: Verify TARGET_LANGUAGE is correctly set before proceeding
@@ -2184,7 +2165,7 @@ run_migration() {
     if [[ "$TARGET_LANGUAGE" == "CSharp" ]]; then
         echo -e "${BOLD}${GREEN}▶▶▶ CONFIRMED: Target Language = C# (.NET) ◀◀◀${NC}"
     else
-        echo -e "${BOLD}${GREEN}▶▶▶ CONFIRMED: Target Language = Java (Quarkus) ◀◀◀${NC}"
+        echo -e "${BOLD}${GREEN}▶▶▶ CONFIRMED: Target Language = Java (${JAVA_FRAMEWORK}) ◀◀◀${NC}"
     fi
     echo -e "${GREEN}✅ Quality Gate PASSED: TARGET_LANGUAGE='$TARGET_LANGUAGE'${NC}"
     echo ""
@@ -2220,7 +2201,7 @@ run_migration() {
     echo -e "${CYAN}🎯 Target: ${TARGET_LANGUAGE}${NC}"
     echo -e "${CYAN}💾 Database: $MIGRATION_DB_PATH${NC}"
     
-    "$DOTNET_CMD" run -- --source ./source $skip_reverse_eng $(program_args)
+    "$DOTNET_CMD" run -- --source "$(conversion_source_dir)" $skip_reverse_eng "${PROGRAM_ARGS[@]}"
     local migration_exit=$?
 
     if [[ $migration_exit -ne 0 ]]; then
@@ -2283,7 +2264,7 @@ run_resume() {
 
     # Run with resume logic
     export MIGRATION_DB_PATH="$REPO_ROOT/Data/migration.db"
-    "$DOTNET_CMD" run -- --source ./source --resume $(program_args)
+    "$DOTNET_CMD" run -- --source "$(conversion_source_dir)" --resume "${PROGRAM_ARGS[@]}"
 }
 
 # Function to monitor migration
@@ -2502,7 +2483,7 @@ run_reverse_engineering() {
 
     # Run the reverse engineering command - chunking is auto-detected
     export MIGRATION_DB_PATH="$REPO_ROOT/Data/migration.db"
-    "$DOTNET_CMD" run reverse-engineer --source ./source $(program_args)
+    "$DOTNET_CMD" run reverse-engineer --source "$(conversion_source_dir)" "${PROGRAM_ARGS[@]}"
 
     local exit_code=$?
 
@@ -2540,6 +2521,37 @@ run_reverse_engineering() {
     fi
 
     return $exit_code
+}
+
+select_conversion_target() {
+    if [[ -z "${TARGET_LANGUAGE:-}" ]]; then
+        echo ""
+        echo "Select Target Language"
+        echo "======================"
+        echo "  1) Java (Quarkus)"
+        echo "  2) C# (.NET)"
+        echo "  3) Java (Spring Boot)"
+        local lang_choice
+        read -p "Enter choice (1-3) [default: 1]: " -r lang_choice
+        lang_choice="$(echo "$lang_choice" | tr -d '[:space:]')"
+        case "$lang_choice" in
+            ""|1) export TARGET_LANGUAGE="Java" JAVA_FRAMEWORK="Quarkus" ;;
+            2) export TARGET_LANGUAGE="CSharp" ;;
+            3) export TARGET_LANGUAGE="Java" JAVA_FRAMEWORK="Spring" ;;
+            *) echo "Invalid target choice: $lang_choice" >&2; return 1 ;;
+        esac
+    fi
+    case "$TARGET_LANGUAGE" in
+        Java)
+            case "${JAVA_FRAMEWORK:-Quarkus}" in
+                Spring|Quarkus) export JAVA_FRAMEWORK="${JAVA_FRAMEWORK:-Quarkus}" ;;
+                *) echo "Invalid Java framework: $JAVA_FRAMEWORK (use Spring or Quarkus)" >&2; return 1 ;;
+            esac
+            echo "Selected target: Java ($JAVA_FRAMEWORK)"
+            ;;
+        CSharp) echo "Selected target: C# (.NET)" ;;
+        *) echo "Invalid target language: $TARGET_LANGUAGE" >&2; return 1 ;;
+    esac
 }
 
 # Function to run conversion-only (skip reverse engineering)
@@ -2599,30 +2611,7 @@ run_conversion_only() {
     fi
     echo ""
 
-    # ------------------------------------------------------------------
-    # TARGET LANGUAGE SELECTION (if not already set)
-    # ------------------------------------------------------------------
-    if [[ -z "$TARGET_LANGUAGE" ]]; then
-        echo "🎯 Select Target Language"
-        echo "========================"
-        echo "  1) Java (Quarkus)"
-        echo "  2) C# (.NET)"
-        echo ""
-        read -p "Enter choice (1 or 2) [default: 1]: " lang_choice
-        lang_choice=$(echo "$lang_choice" | tr -d '[:space:]')
-        
-        if [[ "$lang_choice" == "2" ]]; then
-            export TARGET_LANGUAGE="CSharp"
-            echo -e "${GREEN}✅ Selected: C# (.NET)${NC}"
-        elif [[ "$lang_choice" == "1" ]] || [[ -z "$lang_choice" ]]; then
-            export TARGET_LANGUAGE="Java"
-            echo -e "${GREEN}✅ Selected: Java (Quarkus)${NC}"
-        else
-            echo -e "${YELLOW}⚠️  Invalid choice, defaulting to Java${NC}"
-            export TARGET_LANGUAGE="Java"
-        fi
-        echo ""
-    fi
+    select_conversion_target || return 1
     # Export output folder variables based on language selection
     export_run_output_folder
 
@@ -2635,7 +2624,7 @@ run_conversion_only() {
         resume_flag="--resume"
     fi
     
-    "$DOTNET_CMD" run -- --source ./source --skip-reverse-engineering $reuse_re_flag $resume_flag $(program_args)
+    "$DOTNET_CMD" run -- --source "$(conversion_source_dir)" --skip-reverse-engineering $reuse_re_flag $resume_flag "${PROGRAM_ARGS[@]}"
     local migration_exit=$?
 
     if [[ $migration_exit -ne 0 ]]; then
@@ -2680,8 +2669,41 @@ REKT_CONTAINER="$(resolve_runtime_setting REKT_CONTAINER cobol-rekt)"
 REKT_POPULATOR_CONTAINER="$(resolve_runtime_setting REKT_POPULATOR_CONTAINER cobol-graph-populator)"
 PORTAL_CONTAINER="$(resolve_runtime_setting PORTAL_CONTAINER cobol-migration-portal)"
 REKT_GENERATED_COPYBOOK_DIRS="$(resolve_runtime_setting REKT_GENERATED_COPYBOOK_DIRS copy-generated)"
+# The parser image tag is a digest of everything the Dockerfile builds from, so adding or
+# changing a patch selects a new image instead of reusing a stale parser.
+rekt_image_digest() {
+    local dir="$REPO_ROOT/tools/cobol-rekt" hasher=(sha256sum)
+    # Evaluated at startup for every command; only parser commands need the build context.
+    [[ -d "$dir" ]] || { printf 'no-build-context'; return 0; }
+    command -v sha256sum >/dev/null 2>&1 || hasher=(shasum -a 256)
+    (cd "$dir" && for file in Dockerfile LICENSE LICENSE.cobol-rekt NOTICE README.md patches/*.patch; do
+        [[ -f "$file" ]] || continue
+        printf '%s\n' "$file"
+        tr -d '\r' < "$file" | "${hasher[@]}"
+    done) | "${hasher[@]}" | cut -c1-16
+}
+REKT_IMAGE="$(resolve_runtime_setting REKT_IMAGE "rekt-oss-mma:$(rekt_image_digest)")"
+# Contract profiles are bound into evidence by host path, so the parser sees them at that path.
+REKT_CONTRACTS_DIR="$REPO_ROOT/tools/cobol-rekt/contracts"
 export NEO4J_CONTAINER NEO4J_HTTP_PORT NEO4J_BOLT_PORT REKT_CONTAINER REKT_POPULATOR_CONTAINER PORTAL_CONTAINER \
-    REKT_GENERATED_COPYBOOK_DIRS
+    REKT_GENERATED_COPYBOOK_DIRS REKT_IMAGE REKT_CONTRACTS_DIR
+# Optional dependency inputs preserve an explicitly empty shell override.
+if [[ "${REKT_CICS_RESOURCE_DEFINITIONS+x}" != x ]]; then
+    configured_resources="$(read_local_config_value REKT_CICS_RESOURCE_DEFINITIONS)"
+    [[ -z "$configured_resources" ]] || export REKT_CICS_RESOURCE_DEFINITIONS="$configured_resources"
+fi
+if [[ "${REKT_DEPENDENCY_PROFILE+x}" != x ]]; then
+    configured_profile="$(read_local_config_value REKT_DEPENDENCY_PROFILE)"
+    [[ -z "$configured_profile" ]] || export REKT_DEPENDENCY_PROFILE="$configured_profile"
+fi
+if [[ "${REKT_PLATFORM_CONTRACTS+x}" != x ]]; then
+    configured_platform="$(read_local_config_value REKT_PLATFORM_CONTRACTS)"
+    [[ -z "$configured_platform" ]] || export REKT_PLATFORM_CONTRACTS="$configured_platform"
+fi
+if [[ "${REKT_SQL_DECLARATIONS+x}" != x ]]; then
+    configured_sql="$(read_local_config_value REKT_SQL_DECLARATIONS)"
+    [[ -z "$configured_sql" ]] || export REKT_SQL_DECLARATIONS="$configured_sql"
+fi
 # A moved port is passed on to the CLI and portal; otherwise their own settings apply unchanged.
 if [[ "$NEO4J_BOLT_PORT" != "7687" && -z "${ApplicationSettings__Neo4j__Uri:-}" ]]; then
     export ApplicationSettings__Neo4j__Uri="bolt://localhost:$NEO4J_BOLT_PORT"
@@ -2794,9 +2816,7 @@ run_compose() {
         docker-compose -f "$REPO_ROOT/docker-compose.yml" "$@"
     fi
 }
-# Written by tools/preprocess-for-rekt.sh into synthesised copybooks and read by
-# StubCopybookCatalog.Marker. It is the only reliable way to tell an invented layout from
-# real content, because both live in source/.preprocessed/.
+# Historical placeholder marker; absence of this marker does not attest authenticity.
 REKT_STUB_MARKER="AUTO-GENERATED STUB COPYBOOK"
 NEO4J_IMAGE="neo4j:5.15.0"
 
@@ -2916,20 +2936,43 @@ ensure_rekt_containers() {
             return 1
         fi
 
-        if ! grep -Eq '^[[:space:]]*NEO4J_PASSWORD[[:space:]]*=[[:space:]]*[^[:space:]#]+' "$REPO_ROOT/Config/ai-config.local.env"; then
+        local configured_password
+        configured_password="$(read_local_config_value NEO4J_PASSWORD)"
+        if [[ -z "$configured_password" ]]; then
             echo -e "${RED}❌ NEO4J_PASSWORD is empty in Config/ai-config.local.env${NC}"
             echo ""
             echo "Edit Config/ai-config.local.env and set a strong local password:"
             echo "  NEO4J_PASSWORD=<your-local-password>"
             return 1
         fi
+        export NEO4J_PASSWORD="$configured_password"
     fi
 
     ensure_neo4j_image || return 1
 
     # Start only the rekt services (leave existing neo4j untouched).
     local compose_output
-    if ! compose_output=$(run_compose up -d "$NEO4J_SERVICE" "$REKT_SERVICE" 2>&1); then
+    local services=("$NEO4J_SERVICE" "$REKT_SERVICE")
+    local containers=("$NEO4J_CONTAINER" "$REKT_CONTAINER")
+    [[ "${1:-}" == "neo4j-only" ]] && services=("$NEO4J_SERVICE")
+    [[ "${1:-}" == "neo4j-only" ]] && containers=("$NEO4J_CONTAINER")
+    local already_running=true container
+    for container in "${containers[@]}"; do
+        if [[ "$(docker inspect --format '{{.State.Running}}' "$container" 2>/dev/null)" != "true" ]]; then
+            already_running=false
+        fi
+    done
+    local rekt_image=""
+    [[ "${1:-}" == "neo4j-only" ]] || rekt_image="$(docker inspect --format '{{.Config.Image}}' "$REKT_CONTAINER" 2>/dev/null || true)"
+    if [[ "$already_running" == true && -n "$rekt_image" && "$rekt_image" != "$REKT_IMAGE" ]]; then
+        # Only the parser is recreated; a running Neo4j is left untouched.
+        echo "  Parser container $REKT_CONTAINER runs $rekt_image; switching to $REKT_IMAGE (built from tools/cobol-rekt patches, first build takes several minutes)."
+        services=("$REKT_SERVICE")
+        already_running=false
+    fi
+    if [[ "$already_running" == true ]]; then
+        echo "  Reusing running named services; checking health, credentials and output access."
+    elif ! compose_output=$(run_compose up -d "${services[@]}" 2>&1); then
         echo -e "${RED}❌ Failed to start Cobol-REKT containers:${NC}"
         printf '%s\n' "$compose_output" | sed 's/^/  /'
         echo ""
@@ -2986,6 +3029,7 @@ ensure_rekt_containers() {
         return 1
     fi
     echo -e "  ${GREEN}✅ REKT graph credentials accepted${NC}"
+    [[ "${1:-}" == "neo4j-only" ]] && return 0
 
     # Verify rekt CLI is available
     if container_exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar --version >/dev/null 2>&1; then
@@ -3010,18 +3054,224 @@ ensure_rekt_containers() {
     fi
 }
 
+run_rekt_logged() {
+    local log="$1"
+    shift
+    "$@" 2>&1 | tee -a "$log"
+    local statuses=("${PIPESTATUS[@]}")
+    if [[ "${statuses[1]}" -ne 0 ]]; then
+        echo "Native parser log could not be persisted: $log" >&2
+        return 1
+    fi
+    return "${statuses[0]}"
+}
+
+# Each top-level folder of source/ is an independent estate; loose files at the source/
+# root form the ".root" estate. Estates are preprocessed and staged separately so one
+# estate's copybooks or platform contract snapshot can never change another's evidence.
+# When programs sit in only one of those groups, source/ is a single estate (".all") so
+# layouts such as source/cbl + source/cpy + source/jcl resolve across their folders.
+rekt_estate_of() {
+    if [[ "${_REKT_SINGLE_ESTATE:-false}" == "true" ]]; then
+        printf '.all\n'
+        return 0
+    fi
+    case "$1" in
+        */*) printf '%s\n' "${1%%/*}" ;;
+        *) printf '.root\n' ;;
+    esac
+}
+
+rekt_estate_dir() {
+    if [[ "$1" == ".root" || "$1" == ".all" ]]; then
+        printf '%s\n' "$REPO_ROOT/source"
+    else
+        printf '%s\n' "$REPO_ROOT/source/$1"
+    fi
+}
+
+# The platform contract is snapshotted per estate at preprocessing time, so evidence binds
+# to that estate's snapshot and editing the shared profile only affects estates rescanned.
+rekt_platform_contracts_for() {
+    local estate="$1" view="$2"
+    if [[ -z "${REKT_PLATFORM_CONTRACTS:-}" ]]; then
+        printf '%s\n' "${REKT_PLATFORM_CONTRACTS:-}"
+        return 0
+    fi
+    local rel=".preprocessed/platform-contracts.json"
+    [[ "$estate" == ".root" || "$estate" == ".all" ]] || rel="$estate/$rel"
+    if [[ "$view" == container ]]; then
+        printf '/source/%s\n' "$rel"
+    else
+        printf '%s/source/%s\n' "$REPO_ROOT" "$rel"
+    fi
+}
+
+# An estate-specific target profile (tools/cobol-rekt/contracts/estates/<estate>.json) replaces
+# the configured REKT_DEPENDENCY_PROFILE for that estate only, so estates never share contracts.
+rekt_dependency_profile_for() {
+    local estate_profile="$REPO_ROOT/tools/cobol-rekt/contracts/estates/$1.json"
+    if [[ "$1" != .* && -f "$estate_profile" ]]; then
+        printf '%s\n' "$estate_profile"
+    else
+        printf '%s\n' "${REKT_DEPENDENCY_PROFILE:-}"
+    fi
+}
+
+# CICS resource definitions follow the estate: a configured catalog under the estate wins,
+# otherwise the estate's own supplied DFHCSDUP files (*.csd) are used, so estates never
+# resolve transactions or programs from another estate's CSD.
+rekt_cics_resources_for() {
+    local estate="$1" configured="${REKT_CICS_RESOURCE_DEFINITIONS:-}" item
+    if [[ "$estate" == .* || ! -d "$REPO_ROOT/source/$estate" ]]; then
+        printf '%s\n' "$configured"
+        return 0
+    fi
+    if [[ -n "$configured" ]]; then
+        local inside=true; local -a items=()
+        IFS=':' read -r -a items <<< "$configured"
+        for item in "${items[@]}"; do
+            [[ "$item" == "/source/$estate/"* ]] || inside=false
+        done
+        if [[ "$inside" == true ]]; then
+            printf '%s\n' "$configured"
+            return 0
+        fi
+    fi
+    local csd
+    csd="$(cd "$REPO_ROOT/source/$estate" && find . -path '*/.*' -prune -o -type f -iname '*.csd' -print \
+        | LC_ALL=C sort | sed "s|^\./|/source/$estate/|" | paste -sd: -)"
+    printf '%s\n' "${csd:-$configured}"
+}
+
+# Estate JCL with IDCAMS steps: the parser reads DEFINE CLUSTER/ALTERNATEINDEX/PATH for CSD file lengths.
+rekt_vsam_definitions_for() {
+    local estate="$1"
+    [[ "$estate" == .* || ! -d "$REPO_ROOT/source/$estate" ]] && return 0
+    (cd "$REPO_ROOT/source/$estate" && find . -path '*/.*' -prune -o -type f \( -iname '*.jcl' -o -iname '*.prc' \) -print0 \
+        | xargs -0 grep -lis 'PGM=IDCAMS' | LC_ALL=C sort | sed "s|^\./|/source/$estate/|" | paste -sd: -)
+}
+
+rekt_source_programs() {
+    "$PYTHON_CMD" - "$REPO_ROOT/source" <<'PYEOF'
+import os, sys
+root = sys.argv[1]
+for base, dirs, files in os.walk(root):
+    dirs[:] = sorted(d for d in dirs
+                     if d not in (".rekt-staging", ".preprocessed") and not d.startswith(".convert-"))
+    for name in sorted(files):
+        if name.lower().endswith((".cbl", ".cob")):
+            print(os.path.relpath(os.path.join(base, name), root).replace(os.sep, "/"))
+PYEOF
+}
+
+rekt_programs_in_estate() {
+    local rel
+    while IFS= read -r rel; do
+        [[ -n "$rel" && "$(rekt_estate_of "$rel")" == "$2" ]] && printf '%s\n' "$rel"
+    done < "$1"
+    return 0
+}
+
+export_rekt_dependencies() {
+    local rel_program="$1" err_log="$2" work_dir="$3"
+    local export_status=0
+    local estate
+    estate="$(rekt_estate_of "$rel_program")"
+    local estate_staging="$REPO_ROOT/source/.rekt-staging/$estate"
+    local dependency_src_dir="/source/.rekt-staging/$estate/.dependency-input/$rel_program"
+    local -a resource_environment=()
+    local cics_resources
+    cics_resources="$(rekt_cics_resources_for "$estate")"
+    if [[ "${REKT_CICS_RESOURCE_DEFINITIONS+x}" == x || -n "$cics_resources" ]]; then
+        resource_environment=(-e "REKT_CICS_RESOURCE_DEFINITIONS=$cics_resources")
+    fi
+    if [[ "${rekt_commarea_pass:-false}" == true && -f "$REPO_ROOT/output/rekt/$estate/.commarea-closure.json" ]]; then
+        resource_environment+=(-e "REKT_COMMAREA_CLOSURE=/output/$estate/.commarea-closure.json")
+    fi
+    local vsam_definitions
+    vsam_definitions="$(rekt_vsam_definitions_for "$estate")"
+    [[ -z "$vsam_definitions" ]] || resource_environment+=(-e "REKT_VSAM_DEFINITIONS=$vsam_definitions")
+    local dependency_profile
+    dependency_profile="$(rekt_dependency_profile_for "$estate")"
+    if [[ -n "$dependency_profile" ]]; then
+        resource_environment+=(-e "REKT_DEPENDENCY_PROFILE=$dependency_profile")
+    fi
+    if [[ "${REKT_PLATFORM_CONTRACTS+x}" == x ]]; then
+        resource_environment+=(-e "REKT_PLATFORM_CONTRACTS=$(rekt_platform_contracts_for "$estate" container)")
+    fi
+    if [[ "${REKT_SQL_DECLARATIONS+x}" == x ]]; then
+        resource_environment+=(-e "REKT_SQL_DECLARATIONS=$REKT_SQL_DECLARATIONS")
+    fi
+    if "$PYTHON_CMD" "$REPO_ROOT/tools/rekt_dependency_evidence.py" dependency-search-view \
+        --staging-root "$estate_staging" --relative-path "$rel_program" 2>>"$err_log"; then
+        echo "  Exporting dependencies: $rel_program"
+        run_rekt_logged "$err_log" container_exec "${resource_environment[@]}" -w "$work_dir" "$REKT_CONTAINER" java -jar /app/smojol-cli.jar dependency "$(basename "$rel_program")" \
+            --srcDir="$dependency_src_dir" --copyBooksDir="/source/.rekt-staging/$estate" \
+            --dialectJarPath=/app/dialect-idms.jar \
+            --export="/output/${rel_program}-deps.json" || export_status=$?
+    else
+        export_status=24
+    fi
+    local -a host_platform_environment=()
+    if [[ "${REKT_PLATFORM_CONTRACTS+x}" == x ]]; then
+        host_platform_environment=(env "REKT_PLATFORM_CONTRACTS=$(rekt_platform_contracts_for "$estate" host)")
+    fi
+    if [[ -n "$dependency_profile" ]]; then
+        host_platform_environment=(env ${host_platform_environment[@]+"${host_platform_environment[@]:1}"} "REKT_DEPENDENCY_PROFILE=$dependency_profile")
+    fi
+    ${host_platform_environment[@]+"${host_platform_environment[@]}"} "$PYTHON_CMD" "$REPO_ROOT/tools/rekt_dependency_evidence.py" write \
+        --source-root "$REPO_ROOT/source" --relative-path "$rel_program" \
+        --staging-root "$estate_staging" --output-root "$REPO_ROOT/output/rekt" \
+        --export-exit-code "$export_status" || return 1
+    return "$export_status"
+}
+
+native_activity_program() {
+    [[ -n "${_REKT_ACTIVITY_PATH:-}" ]] || return 0
+    "$PYTHON_CMD" "$REPO_ROOT/tools/native_run_activity.py" program "$_REKT_ACTIVITY_PATH" \
+        --program "$1" --status "$2" --source-root "$REPO_ROOT/source" \
+        --output-root "$REPO_ROOT/output/rekt" || echo "Warning: native program journal update failed" >&2
+}
+
+native_activity_stage() {
+    [[ -n "${_REKT_ACTIVITY_PATH:-}" ]] || return 0
+    "$PYTHON_CMD" "$REPO_ROOT/tools/native_run_activity.py" stage "$_REKT_ACTIVITY_PATH" --stage "$1"
+}
+
+run_native_activity() (
+    # Subshell confines signal/exit traps and journal identity to this invocation.
+    local operation="$1" stage="$2" implementation="$3"
+    _REKT_ACTIVITY_PATH=$("$PYTHON_CMD" "$REPO_ROOT/tools/native_run_activity.py" start \
+        "$REPO_ROOT/output/rekt-scans" --command "$operation" --stage "$stage") || return 1
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'rc=$?; "$PYTHON_CMD" "$REPO_ROOT/tools/native_run_activity.py" finish "$_REKT_ACTIVITY_PATH" --exit-code "$rc"' EXIT
+    local native_log
+    native_log="$(dirname "$_REKT_ACTIVITY_PATH")/native.log"
+    # Both streams go to the log, but stderr stays stderr for callers.
+    "$implementation" > >(tee -a "$native_log") 2> >(tee -a "$native_log" >&2)
+)
+
 run_rekt_parse() {
+    if [[ -n "${_REKT_ACTIVITY_PATH:-}" ]]; then
+        native_activity_stage "Native parsing" || return 1
+        run_rekt_parse_impl
+    else
+        run_native_activity rekt-parse "Native parsing" run_rekt_parse_impl
+    fi
+}
+
+run_rekt_parse_impl() {
     echo -e "${CYAN}╔══════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║   Cobol-REKT: Parse COBOL → AST/CFG/Data JSON              ║${NC}"
     echo -e "${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
 
-    detect_docker_api_version
-    ensure_rekt_containers || return 1
-
     # The portal resolves the estate through COBOL_SOURCE_FOLDER while this script parses
     # source/. When they disagree the parse succeeds and every portal view reads empty,
     # with nothing to explain why.
-    local configured_source="${COBOL_SOURCE_FOLDER:-source}"
+    local configured_source
+    configured_source="$(resolve_runtime_setting COBOL_SOURCE_FOLDER source)"
     if [[ "$configured_source" != "source" ]]; then
         echo -e "${RED}❌ COBOL_SOURCE_FOLDER is '$configured_source' but the parser reads source/${NC}"
         echo ""
@@ -3047,156 +3297,228 @@ run_rekt_parse() {
         2>/dev/null | wc -l | tr -d ' ')
 
     echo -e "${BLUE}  Found: ${cobol_count} programs, ${copy_count} copybooks${NC}"
-
-    if [[ "$cobol_count" -eq 0 ]]; then
-        echo -e "${RED}❌ No .cbl/.cob files found in source/. Drop COBOL files there first.${NC}"
-        return 1
+    if [[ -n "${_REKT_ACTIVITY_PATH:-}" && -z "${_REKT_PROGRAM_FILTER:-}" ]]; then
+        "$PYTHON_CMD" "$REPO_ROOT/tools/native_run_activity.py" stage "$_REKT_ACTIVITY_PATH" \
+            --stage "Native parsing" --expected-programs "$cobol_count" || return 1
     fi
 
-    # Copybooks are staged into one flat folder, so two with the same name cannot both be used.
-    # A generated stand-in (a folder named in REKT_GENERATED_COPYBOOK_DIRS) gives way to the one
-    # real copybook of that name; the preprocessor, the collision check and staging all skip it.
+    if [[ "$cobol_count" -eq 0 ]]; then
+        local jcl_dir
+        jcl_dir="$(jcl_source_dir)" || return 1
+        if [[ -z "$(find -L "$jcl_dir" -type f -iname '*.jcl' -print -quit 2>/dev/null)" ]]; then
+            echo -e "${RED}❌ No COBOL programs in source/ or .jcl files under $jcl_dir.${NC}"
+            return 1
+        fi
+        if [[ -n "${_REKT_PROGRAM_FILTER:-}" ]]; then
+            echo -e "${RED}❌ A COBOL program filter cannot be used for a JCL-only scan.${NC}"
+            return 1
+        fi
+        echo -e "${BLUE}  No COBOL programs; scanning JCL only.${NC}"
+        scan_rekt_jcl || return 1
+        return 0
+    fi
+
+    validate_rekt_jcl_source || return 1
+    detect_docker_api_version
+    ensure_rekt_containers || return 1
+
+    # Use the same exclusion policy for preprocessing, identity checks and staging.
+    # Unproven generated definitions remain missing, even when no genuine replacement exists.
     local shadowed_copybooks_file
-    shadowed_copybooks_file="$(mktemp)"
-    "$PYTHON_CMD" - "$REPO_ROOT/source" "$REKT_GENERATED_COPYBOOK_DIRS" > "$shadowed_copybooks_file" <<'PYEOF'
+    mkdir -p "$REPO_ROOT/output/rekt/.work"
+    shadowed_copybooks_file="$REPO_ROOT/output/rekt/.work/shadowed-copybooks-$$.txt"
+    "$PYTHON_CMD" - "$REPO_ROOT/source" "$REPO_ROOT/tools" > "$shadowed_copybooks_file" <<'PYEOF'
 import os, sys
+sys.path.insert(0, sys.argv[2])
+from rekt_dependency_evidence import original_files, definition_problem
 
-source_root = sys.argv[1]
-generated_dirs = {d.strip().lower() for d in sys.argv[2].split(',') if d.strip()}
-skip_dirs = {'.preprocessed', '.rekt-staging'}
-copybooks = {}
-for root, dirs, files in os.walk(source_root):
-    dirs[:] = [d for d in dirs if d not in skip_dirs and not d.startswith('.convert-')]
-    for name in files:
-        if name.lower().endswith('.cpy'):
-            copybooks.setdefault(name.lower(), []).append(os.path.join(root, name))
-
-for paths in copybooks.values():
-    if len(paths) < 2:
-        continue
-    generated = [p for p in paths
-                 if any(part.lower() in generated_dirs
-                        for part in os.path.relpath(os.path.dirname(p), source_root).split(os.sep))]
-    if len(paths) - len(generated) == 1:
-        for p in generated:
-            print(p)
+for path in original_files(sys.argv[1]):
+    if path.suffix.lower() in ('.cpy', '.cpb') and definition_problem(path):
+        print(path)
 PYEOF
     export REKT_SHADOWED_COPYBOOKS_FILE="$shadowed_copybooks_file"
     if [[ -s "$shadowed_copybooks_file" ]]; then
-        echo -e "  ${BLUE}Generated copybooks replaced by a real copybook of the same name:${NC}"
+        echo -e "  ${YELLOW}Excluded placeholder/unverified definitions (genuine input still required):${NC}"
         local shadowed
         while IFS= read -r shadowed; do
             echo -e "    ${BLUE}↳ ${shadowed#"$REPO_ROOT/source/"}${NC}"
         done < "$shadowed_copybooks_file"
     fi
 
-    # Preprocess files that need IMS/DLI or dialect compatibility transformations
-    echo -e "${BLUE}  Running preprocessor for IMS/DLI and dialect compatibility...${NC}"
-    if [[ -x "$REPO_ROOT/tools/preprocess-for-rekt.sh" ]]; then
-        "$REPO_ROOT/tools/preprocess-for-rekt.sh" "$REPO_ROOT/source" 2>/dev/null
-        if [[ -d "$REPO_ROOT/source/.preprocessed" ]]; then
-            local preproc_count=0
-            local pp_p
-            for pp_p in cbl cob cpy; do
-                local hits
-                hits=$(find "$REPO_ROOT/source/.preprocessed" -maxdepth 1 \
-                    \( -name "*.${pp_p}" -o -name "*.$(echo $pp_p | tr 'a-z' 'A-Z')" \) 2>/dev/null | wc -l | tr -d ' ')
-                preproc_count=$((preproc_count + hits))
-            done
-            if [[ "$preproc_count" -gt 0 ]]; then
-                echo -e "  ${GREEN}✅ Preprocessed ${preproc_count} file(s) for rekt compatibility${NC}"
+    local rekt_programs_file="$REPO_ROOT/output/rekt/.work/rekt-programs-$$.txt"
+    rekt_source_programs > "$rekt_programs_file" || return 1
+
+    # Decided from every program, not the filter, so a filtered scan stages the same estates.
+    local _REKT_SINGLE_ESTATE=false
+    local program_groups
+    program_groups=$(while IFS= read -r _rel; do rekt_estate_of "$_rel"; done < "$rekt_programs_file" \
+        | sort -u | wc -l | tr -d ' ')
+    if [[ "$program_groups" -le 1 ]]; then
+        _REKT_SINGLE_ESTATE=true
+    else
+        local _folder
+        for _folder in "$REPO_ROOT"/source/*/; do
+            _folder="$(basename "$_folder")"
+            grep -q "^$_folder/" "$rekt_programs_file" && continue
+            if [[ -n "$(find "$REPO_ROOT/source/$_folder" -type f \( -iname '*.cpy' -o -iname '*.bms' \) \
+                ! -path '*/.preprocessed/*' -print -quit 2>/dev/null)" ]]; then
+                echo -e "  ${YELLOW}⚠️  source/$_folder has copybooks or maps but no programs, and source/ holds several estates,${NC}"
+                echo -e "     ${YELLOW}so no estate reads it. Move it into the estate folder that uses it.${NC}"
             fi
+        done
+    fi
+
+    # Resolve the optional program filter to exact source-relative program paths.
+    local rekt_filter_file=""
+    local rekt_filter_active=false
+    if [[ -n "${_REKT_PROGRAM_FILTER:-}" ]]; then
+        rekt_filter_active=true
+        local filter_resolution_output=""
+        if ! filter_resolution_output=$("$PYTHON_CMD" - "$rekt_programs_file" "$_REKT_PROGRAM_FILTER" <<'PYEOF'
+import os, sys
+from collections import defaultdict
+
+with open(sys.argv[1], encoding='utf-8') as handle:
+    programs = [line.strip() for line in handle if line.strip()]
+selectors = sys.argv[2]
+
+exact = {p.lower(): p for p in programs}
+by_basename = defaultdict(list)
+by_stem = defaultdict(list)
+for rel in programs:
+    basename = os.path.basename(rel)
+    by_basename[basename.lower()].append(rel)
+    by_stem[os.path.splitext(basename)[0].lower()].append(rel)
+
+resolved = []
+for raw in selectors.split(','):
+    selector = raw.strip()
+    if not selector:
+        continue
+    normalized = selector.replace('\\', '/').lstrip('./').lstrip('/')
+    match = exact.get(normalized.lower())
+    if match:
+        if match not in resolved:
+            resolved.append(match)
+        continue
+
+    basename_matches = by_basename.get(os.path.basename(normalized).lower(), [])
+    if len(basename_matches) == 1:
+        match = basename_matches[0]
+        if match not in resolved:
+            resolved.append(match)
+        continue
+    if len(basename_matches) > 1:
+        print(
+            "Program selector '%s' matched multiple programs by basename: %s. Use a source-relative path."
+            % (selector, ", ".join(sorted(basename_matches)))
+        )
+        sys.exit(1)
+
+    stem_matches = by_stem.get(os.path.splitext(os.path.basename(normalized))[0].lower(), [])
+    if len(stem_matches) == 1:
+        match = stem_matches[0]
+        if match not in resolved:
+            resolved.append(match)
+        continue
+    if len(stem_matches) > 1:
+        print(
+            "Program selector '%s' matched multiple programs by stem: %s. Use a source-relative path."
+            % (selector, ", ".join(sorted(stem_matches)))
+        )
+        sys.exit(1)
+
+    print("Program selector '%s' did not match any program." % selector)
+    sys.exit(1)
+
+if not resolved:
+    print("Program filter did not resolve to any programs.")
+    sys.exit(1)
+
+print("\n".join(resolved))
+PYEOF
+); then
+            echo -e "${RED}❌ Invalid _REKT_PROGRAM_FILTER.${NC}"
+            while IFS= read -r line; do
+                [[ -z "$line" ]] && continue
+                echo -e "    ${YELLOW}↳ ${line}${NC}"
+            done <<< "$filter_resolution_output"
+            return 1
+        fi
+        rekt_filter_file="$REPO_ROOT/output/rekt/.work/rekt-program-filter-$$.txt"
+        printf '%s\n' "$filter_resolution_output" > "$rekt_filter_file"
+        echo -e "  ${BLUE}REKT program filter: ${_REKT_PROGRAM_FILTER}${NC}"
+        if [[ -n "${_REKT_ACTIVITY_PATH:-}" ]]; then
+            local selected_count
+            selected_count=$(wc -l < "$rekt_filter_file" | tr -d '[:space:]')
+            "$PYTHON_CMD" "$REPO_ROOT/tools/native_run_activity.py" stage "$_REKT_ACTIVITY_PATH" \
+                --stage "Native parsing" --expected-programs "$selected_count" || return 1
         fi
     fi
 
-    local preprocessed_dir="$REPO_ROOT/source/.preprocessed"
-    local identity_check_output=""
-    if ! identity_check_output=$("$PYTHON_CMD" "$REPO_ROOT/tools/rekt_source_identity.py" \
-        "$REPO_ROOT/source" "$preprocessed_dir" "$shadowed_copybooks_file"); then
-        echo -e "${RED}❌ Source identity collisions prevent safe REKT staging.${NC}"
-        local -a _fields
-        while IFS=$'\t' read -r -a _fields; do
-            [[ ${#_fields[@]} -lt 2 ]] && continue
-            case "${_fields[0]}" in
-                copybook-collision)
-                    echo -e "  ${RED}copybook basename collision:${NC} ${_fields[1]}"
-                    echo -e "    ${YELLOW}REKT resolves COPY by name from one folder, and these copies differ.${NC}"
-                    ;;
-                copybook-collision-users)
-                    if [[ ${#_fields[@]} -gt 2 ]]; then
-                        echo -e "    ${YELLOW}named by:${NC} ${_fields[*]:2}"
-                    fi
-                    continue
-                    ;;
-                preprocessed-program-collision)
-                    echo -e "  ${RED}preprocessed program basename collision:${NC} ${_fields[1]}"
-                    echo -e "    ${YELLOW}preprocess-for-rekt.sh stages flat outputs for this basename, so the transformed source is ambiguous.${NC}"
-                    ;;
-                *) continue ;;
-            esac
-            local _path
-            for _path in "${_fields[@]:2}"; do
-                echo -e "    ${YELLOW}↳ ${_path}${NC}"
-            done
-        done <<< "$identity_check_output"
-        echo ""
-        echo "Rename one copy, or move the estate that is not being parsed out of source/."
-        return 1
+    local rekt_estates_list
+    if [[ "$rekt_filter_active" == "true" ]]; then
+        rekt_estates_list=$(while IFS= read -r _rel; do rekt_estate_of "$_rel"; done < "$rekt_filter_file" | sort -u)
+    else
+        rekt_estates_list=$(while IFS= read -r _rel; do rekt_estate_of "$_rel"; done < "$rekt_programs_file" | sort -u)
     fi
+    local -a rekt_estates=()
+    local _estate_key
+    while IFS= read -r _estate_key; do
+        [[ -n "$_estate_key" ]] && rekt_estates+=("$_estate_key")
+    done <<< "$rekt_estates_list"
+    echo -e "  ${BLUE}Estates (parsed independently): ${rekt_estates[*]}${NC}"
 
-    local _identical_dupes _unused_dupes
-    _identical_dupes=$(grep -c '^copybook-duplicate-identical' <<< "$identity_check_output" || true)
-    _unused_dupes=$(grep '^copybook-duplicate-unused' <<< "$identity_check_output" | cut -f2 | tr '\n' ' ' || true)
-    if [[ "$_identical_dupes" -gt 0 ]]; then
-        echo -e "  ${BLUE}ℹ️  ${_identical_dupes} copybook name(s) appear in several folders with the same text; one copy is staged.${NC}"
-    fi
-    if [[ -n "${_unused_dupes// /}" ]]; then
-        echo -e "  ${BLUE}ℹ️  Copybooks that differ but share a name, and that no COPY or INCLUDE uses, so the parse never reads them:${NC}"
-        echo -e "     ${_unused_dupes% }"
-    fi
-
+    # The scan cache is keyed by basename, so duplicates are checked across all estates.
+    local program_duplicates_output
+    program_duplicates_output=$("$PYTHON_CMD" - "$rekt_programs_file" <<'PYEOF'
+import os, sys
+from collections import defaultdict
+paths = defaultdict(list)
+for line in open(sys.argv[1], encoding='utf-8'):
+    rel = line.strip()
+    if rel:
+        paths[os.path.basename(rel).lower()].append(rel)
+for name, rels in sorted(paths.items()):
+    if len(rels) > 1:
+        print("\t".join(["program-duplicate", name] + rels))
+PYEOF
+)
     local duplicate_program_basenames=""
     while IFS=$'\t' read -r issue basename _paths; do
         if [[ "$issue" == "program-duplicate" ]]; then
             duplicate_program_basenames="$duplicate_program_basenames $basename"
         fi
-    done <<< "$identity_check_output"
+    done <<< "$program_duplicates_output"
 
-    # Build a staging dir that preserves source-relative program identity.
-    # Copybooks remain flat at the root because smojol resolves COPY targets by basename.
-    # The container sees this as /source/.rekt-staging (bind-mounted from source/).
-    local staging_dir="$REPO_ROOT/source/.rekt-staging"
-    rm -rf "$staging_dir" 2>/dev/null || true
+    # Programs are staged at their source-relative path under their estate, next to that
+    # estate's copybooks only. The container sees this as /source/.rekt-staging/<estate>.
+    local staging_base="$REPO_ROOT/source/.rekt-staging"
+    rm -rf "$staging_base" 2>/dev/null || true
     # A failed clean leaves the previous run staged, and the next parse then reports success
     # while emitting a fraction of the artifacts. Refuse rather than degrade silently.
-    if [[ -d "$staging_dir" && -n "$(ls -A "$staging_dir" 2>/dev/null)" ]]; then
-        echo -e "${RED}❌ Could not clear $staging_dir${NC}"
+    if [[ -d "$staging_base" && -n "$(ls -A "$staging_base" 2>/dev/null)" ]]; then
+        echo -e "${RED}❌ Could not clear $staging_base${NC}"
         echo ""
         echo "Stale staging makes the parse emit far fewer artifacts than it reports."
         echo "The container mounts /source read-only, so clear it from the host:"
         echo "  rm -rf source/.rekt-staging"
         return 1
     fi
-    mkdir -p "$staging_dir"
-    local generated_stubs_file="$staging_dir/.generated-stubs"
-    : > "$generated_stubs_file"
+    mkdir -p "$staging_base"
+    local parser_run_identity
+    parser_run_identity=$("$PYTHON_CMD" -c 'import uuid; print(uuid.uuid4().hex)') || return 1
+
+    local estate estate_dir estate_staging preprocessed_dir estate_top_only
+    local -a estate_find=()
 
     stage_copybook_file() {
         local src_file="$1"
         local file_name
         file_name="$(basename "$src_file")"
-        local target="$staging_dir/$file_name"
-        if [[ -f "$preprocessed_dir/$file_name" ]]; then
-            cp "$preprocessed_dir/$file_name" "$target" 2>/dev/null || true
-            if [[ -f "$preprocessed_dir/$file_name.preprocess.json" ]]; then
-                cp "$preprocessed_dir/$file_name.preprocess.json" "$target.preprocess.json" 2>/dev/null || true
-            fi
-        else
-            cp "$src_file" "$target" 2>/dev/null || true
-        fi
-        if [[ -f "$target" ]]; then
-            perl -0pi -e 's/MOVE ([01])\(1\)\s+TO/MOVE $1 TO/g' "$target" 2>/dev/null || true
-        fi
+        local target="$estate_staging/$file_name"
+        "$PYTHON_CMD" "$REPO_ROOT/tools/rekt_dependency_evidence.py" stage \
+            --source "$src_file" --target "$target" --transformed "$preprocessed_dir/$file_name" || true
     }
 
     stage_program_file() {
@@ -3204,77 +3526,157 @@ PYEOF
         local file_name
         file_name="$(basename "$src_file")"
         local rel_path="${src_file#"$REPO_ROOT/source/"}"
-        local target="$staging_dir/$rel_path"
+        local target="$estate_staging/$rel_path"
+        local transformed="$preprocessed_dir/${src_file#"$estate_dir/"}"
+        [[ -f "$transformed" ]] || transformed="$preprocessed_dir/$file_name"
         mkdir -p "$(dirname "$target")"
-        if [[ -f "$preprocessed_dir/$file_name" ]]; then
-            cp "$preprocessed_dir/$file_name" "$target" 2>/dev/null || true
-            if [[ -f "$preprocessed_dir/$file_name.preprocess.json" ]]; then
-                cp "$preprocessed_dir/$file_name.preprocess.json" "$target.preprocess.json" 2>/dev/null || true
-            fi
-        else
-            cp "$src_file" "$target" 2>/dev/null || true
-        fi
-        if [[ -f "$target" ]]; then
-            perl -0pi -e 's/MOVE ([01])\(1\)\s+TO/MOVE $1 TO/g' "$target" 2>/dev/null || true
-        fi
+        "$PYTHON_CMD" "$REPO_ROOT/tools/rekt_dependency_evidence.py" stage \
+            --source "$src_file" --target "$target" --transformed "$transformed" || return 1
     }
 
-    # Collect all copybooks (recursive) into the flat staging root.
-    while IFS= read -r cpyfile; do
-        grep -qxF "$cpyfile" "$shadowed_copybooks_file" && continue
-        stage_copybook_file "$cpyfile"
-    done < <(find "$REPO_ROOT/source" \( -name "*.cpy" -o -name "*.CPY" \) \
-        ! -path "*/.rekt-staging/*" \
-        ! -path "*/.preprocessed/*")
+    local identity_check_output=""
+    for estate in "${rekt_estates[@]}"; do
+        estate_dir="$(rekt_estate_dir "$estate")"
+        estate_staging="$staging_base/$estate"
+        preprocessed_dir="$estate_dir/.preprocessed"
+        estate_find=()
+        estate_top_only=false
+        if [[ "$estate" == ".root" ]]; then
+            # Loose root files are one estate; the folders beside them are other estates.
+            estate_find=(-maxdepth 1)
+            estate_top_only=true
+        fi
 
-    # Stage eight-character aliases before stubs. They are copies of real copybooks under a
-    # shortened name, so recording them as generated stubs would mark every program using a
-    # long copybook name as stub-backed and degrade its reported fidelity.
-    if [[ -d "$preprocessed_dir/aliases" ]]; then
-        while IFS= read -r alias_cpy; do
-            local alias_name
-            alias_name="$(basename "$alias_cpy")"
-            local alias_target="$staging_dir/$alias_name"
-            [[ -f "$alias_target" ]] || cp "$alias_cpy" "$alias_target" 2>/dev/null || true
-        done < <(find "$preprocessed_dir/aliases" -maxdepth 1 \( -name "*.cpy" -o -name "*.CPY" \) -type f 2>/dev/null)
-    fi
-
-    # Stage the remaining preprocessed copybooks after real copybooks without overwriting them.
-    #
-    # .preprocessed/ holds three kinds of file: rewritten copies of real source copybooks,
-    # bundled system copybooks such as SQLCA, and synthesised stubs. Only the last kind
-    # degrades a program's fidelity, and only the last kind carries the generator's marker.
-    # Recording by directory instead of by marker reported real content as invented, which
-    # downgraded every program reaching a bundled copybook to StubBacked.
-    if [[ -d "$preprocessed_dir" ]]; then
-        while IFS= read -r stub_cpy; do
-            local stub_name
-            stub_name="$(basename "$stub_cpy")"
-            local stub_target="$staging_dir/$stub_name"
-            # Don't overwrite a real copybook that was already staged
-            if [[ ! -f "$stub_target" ]]; then
-                cp "$stub_cpy" "$stub_target" 2>/dev/null || true
-                if grep -qF "$REKT_STUB_MARKER" "$stub_cpy" 2>/dev/null; then
-                    printf '%s\n' "${stub_name%.*}" | tr '[:lower:]' '[:upper:]' >> "$generated_stubs_file"
-                fi
-                if [[ -f "$stub_cpy.preprocess.json" ]]; then
-                    cp "$stub_cpy.preprocess.json" "$stub_target.preprocess.json" 2>/dev/null || true
+        # Preprocess files that need IMS/DLI or dialect compatibility transformations
+        echo -e "${BLUE}  [$estate] Running preprocessor for IMS/DLI and dialect compatibility...${NC}"
+        if [[ -x "$REPO_ROOT/tools/preprocess-for-rekt.sh" ]]; then
+            REKT_SOURCE_TOP_LEVEL_ONLY="$estate_top_only" \
+                "$REPO_ROOT/tools/preprocess-for-rekt.sh" "$estate_dir" 2>/dev/null
+            if [[ -d "$preprocessed_dir" ]]; then
+                local preproc_count=0
+                local pp_p
+                for pp_p in cbl cob cpy; do
+                    local hits
+                    hits=$(find "$preprocessed_dir" \
+                        \( -name .previous -o -name aliases \) -prune -o -type f \
+                        \( -name "*.${pp_p}" -o -name "*.$(echo $pp_p | tr 'a-z' 'A-Z')" \) -print 2>/dev/null | wc -l | tr -d ' ')
+                    preproc_count=$((preproc_count + hits))
+                done
+                if [[ "$preproc_count" -gt 0 ]]; then
+                    echo -e "  ${GREEN}✅ Preprocessed ${preproc_count} file(s) for rekt compatibility${NC}"
                 fi
             fi
-        done < <(find "$preprocessed_dir" -maxdepth 1 \( -name "*.cpy" -o -name "*.CPY" \) -type f 2>/dev/null)
+        fi
+
+        local estate_identity=""
+        if ! estate_identity=$(REKT_SOURCE_TOP_LEVEL_ONLY="$estate_top_only" "$PYTHON_CMD" \
+            "$REPO_ROOT/tools/rekt_source_identity.py" \
+            "$estate_dir" "$preprocessed_dir" "$shadowed_copybooks_file"); then
+            echo -e "${RED}❌ Source identity collisions in estate '$estate' prevent safe REKT staging.${NC}"
+            local -a _fields
+            while IFS=$'\t' read -r -a _fields; do
+                [[ ${#_fields[@]} -lt 2 ]] && continue
+                case "${_fields[0]}" in
+                    copybook-collision)
+                        echo -e "  ${RED}copybook basename collision:${NC} ${_fields[1]}"
+                        echo -e "    ${YELLOW}REKT resolves COPY by name from one folder, and these copies differ.${NC}"
+                        ;;
+                    copybook-collision-users)
+                        if [[ ${#_fields[@]} -gt 2 ]]; then
+                            echo -e "    ${YELLOW}named by:${NC} ${_fields[*]:2}"
+                        fi
+                        continue
+                        ;;
+                    preprocessed-program-collision)
+                        echo -e "  ${RED}preprocessed program basename collision:${NC} ${_fields[1]}"
+                        echo -e "    ${YELLOW}An unbound legacy flat rewrite exists for this basename; regenerate source-relative preprocessing.${NC}"
+                        ;;
+                    *) continue ;;
+                esac
+                local _path
+                for _path in "${_fields[@]:2}"; do
+                    echo -e "    ${YELLOW}↳ ${_path}${NC}"
+                done
+            done <<< "$estate_identity"
+            echo ""
+            echo "Rename one copy within the estate, or split it into separate top-level folders."
+            return 1
+        fi
+        identity_check_output="${identity_check_output:+$identity_check_output$'\n'}$estate_identity"
+
+        mkdir -p "$estate_staging"
+        : > "$estate_staging/.generated-stubs"
+
+        # Collect the estate's copybooks (recursive) into its flat staging root.
+        while IFS= read -r cpyfile; do
+            grep -qxF "$cpyfile" "$shadowed_copybooks_file" && continue
+            stage_copybook_file "$cpyfile"
+        done < <(find "$estate_dir" ${estate_find[@]+"${estate_find[@]}"} \( -name "*.cpy" -o -name "*.CPY" \) \
+            ! -path "*/.rekt-staging/*" \
+            ! -path "*/.preprocessed/*" \
+            ! -path "*/.convert-*")
+
+        # Stage eight-character aliases of genuine copybooks.
+        if [[ -d "$preprocessed_dir/aliases" ]]; then
+            while IFS= read -r alias_cpy; do
+                if grep -qF "$REKT_STUB_MARKER" "$alias_cpy"; then
+                    echo -e "  ${YELLOW}Ignoring generated placeholder alias: $alias_cpy${NC}"
+                    continue
+                fi
+                local alias_name
+                alias_name="$(basename "$alias_cpy")"
+                local alias_target="$estate_staging/$alias_name"
+                if [[ ! -f "$alias_target" ]]; then
+                    "$PYTHON_CMD" "$REPO_ROOT/tools/rekt_dependency_evidence.py" stage --derived \
+                        --source "$alias_cpy" --target "$alias_target" || true
+                fi
+            done < <(find "$preprocessed_dir/aliases" -maxdepth 1 \( -name "*.cpy" -o -name "*.CPY" \) -type f 2>/dev/null)
+        fi
+
+        # Stage the remaining preprocessed copybooks after real copybooks without overwriting them.
+        #
+        # Legacy placeholders must not satisfy missing dependencies on subsequent runs.
+        if [[ -d "$preprocessed_dir" ]]; then
+            while IFS= read -r stub_cpy; do
+                if grep -qF "$REKT_STUB_MARKER" "$stub_cpy"; then
+                    echo -e "  ${YELLOW}Ignoring generated placeholder; supply the genuine copybook: $stub_cpy${NC}"
+                    continue
+                fi
+                local stub_name
+                stub_name="$(basename "$stub_cpy")"
+                local stub_target="$estate_staging/$stub_name"
+                # Don't overwrite a real copybook that was already staged
+                if [[ ! -f "$stub_target" ]]; then
+                    "$PYTHON_CMD" "$REPO_ROOT/tools/rekt_dependency_evidence.py" stage --derived \
+                        --source "$stub_cpy" --target "$stub_target" || true
+                fi
+            done < <(find "$preprocessed_dir" -maxdepth 1 \( -name "*.cpy" -o -name "*.CPY" \) -type f 2>/dev/null)
+        fi
+
+        # Collect the estate's COBOL programs while preserving their source-relative path.
+        while IFS= read -r cblfile; do
+            stage_program_file "$cblfile" || return 1
+        done < <(find "$estate_dir" ${estate_find[@]+"${estate_find[@]}"} \( -name "*.cbl" -o -name "*.CBL" -o -name "*.cob" -o -name "*.COB" \) \
+            ! -path "*/.rekt-staging/*" \
+            ! -path "*/.preprocessed/*" \
+            ! -path "*/.convert-*")
+    done
+
+    local _identical_dupes _unused_dupes
+    _identical_dupes=$(grep -c '^copybook-duplicate-identical' <<< "$identity_check_output" || true)
+    _unused_dupes=$(grep '^copybook-duplicate-unused' <<< "$identity_check_output" | cut -f2 | tr '\n' ' ' || true)
+    if [[ "$_identical_dupes" -gt 0 ]]; then
+        echo -e "  ${BLUE}ℹ️  ${_identical_dupes} copybook name(s) appear in several folders of one estate with the same text; one copy is staged.${NC}"
+    fi
+    if [[ -n "${_unused_dupes// /}" ]]; then
+        echo -e "  ${BLUE}ℹ️  Copybooks that differ but share a name, and that no COPY or INCLUDE uses, so the parse never reads them:${NC}"
+        echo -e "     ${_unused_dupes% }"
     fi
 
-    # Collect all COBOL programs (recursive) while preserving their source-relative path.
-    while IFS= read -r cblfile; do
-        stage_program_file "$cblfile"
-    done < <(find "$REPO_ROOT/source" \( -name "*.cbl" -o -name "*.CBL" -o -name "*.cob" -o -name "*.COB" \) \
-        ! -path "*/.rekt-staging/*" \
-        ! -path "*/.preprocessed/*")
-
     local staged_cbl staged_cpy
-    staged_cbl=$(find "$staging_dir" -type f \( -name "*.cbl" -o -name "*.CBL" -o -name "*.cob" -o -name "*.COB" \) | wc -l | tr -d ' ')
-    staged_cpy=$(find "$staging_dir" -type f \( -name "*.cpy" -o -name "*.CPY" \) | wc -l | tr -d ' ')
-    echo -e "  ${BLUE}Staged: ${staged_cbl} program(s), ${staged_cpy} copybook(s) → source/.rekt-staging/${NC}"
+    staged_cbl=$(find "$staging_base" -type f \( -name "*.cbl" -o -name "*.CBL" -o -name "*.cob" -o -name "*.COB" \) | wc -l | tr -d ' ')
+    staged_cpy=$(find "$staging_base" -type f \( -name "*.cpy" -o -name "*.CPY" \) | wc -l | tr -d ' ')
+    echo -e "  ${BLUE}Staged: ${staged_cbl} program(s), ${staged_cpy} copybook(s) → source/.rekt-staging/<estate>/${NC}"
 
     # Restart stale Docker Desktop bind mounts before they produce empty parser output.
     if [[ "$staged_cbl" -gt 0 ]]; then
@@ -3294,42 +3696,23 @@ PYEOF
         fi
     fi
 
-    # Clear previous run outputs first so the missing-copybook report below survives.
-    # Use find-delete rather than rm -rf dir to preserve the Docker bind mount (./output/rekt:/output).
-    # A filtered run clears only its own programs once the filter resolves; the graph ingest
-    # reads everything here, so a full wipe would drop every other program from the estate.
+    # Old evidence is preserved per source immediately before reparsing, never wiped
+    # estate-wide. In particular, a failed run must not destroy unrelated artifacts.
     mkdir -p "$REPO_ROOT/output/rekt"
-    if [[ -z "${_REKT_PROGRAM_FILTER:-}" ]]; then
-        find "$REPO_ROOT/output/rekt" -mindepth 1 -delete 2>/dev/null || true
+    if [[ -f "$REPO_ROOT/output/rekt/missing-copybooks.txt" ]]; then
+        mv "$REPO_ROOT/output/rekt/missing-copybooks.txt" \
+            "$REPO_ROOT/output/rekt/.work/missing-copybooks-$parser_run_identity.txt" || return 1
     fi
 
     # Report missing copybooks before parsing so reduced coverage is explicit.
     local missing_report="$REPO_ROOT/output/rekt/missing-copybooks.txt"
     mkdir -p "$REPO_ROOT/output/rekt"
-    "$PYTHON_CMD" - "$staging_dir" "$missing_report" "$generated_stubs_file" >/dev/null 2>&1 <<'PYEOF' || true
+    "$PYTHON_CMD" - "$staging_base" "$missing_report" >/dev/null 2>&1 <<'PYEOF' || true
 import os, re, sys
 from collections import defaultdict
 
-staging_dir = sys.argv[1]
+staging_base = sys.argv[1]
 report_path = sys.argv[2]
-stubs_path = sys.argv[3] if len(sys.argv) > 3 else ''
-
-# Names that exist in staging only because a placeholder was synthesised for them. Staging
-# happens before this scan, so treating the staged file as evidence of availability would
-# report a copybook as present precisely because it was missing.
-synthesised = set()
-if stubs_path and os.path.exists(stubs_path):
-    with open(stubs_path, encoding='utf-8') as handle:
-        synthesised = {line.strip().upper() for line in handle if line.strip()}
-
-# Available copybook stems (case-insensitive), as staged
-available = set()
-for root, _, files in os.walk(staging_dir):
-    for name in files:
-        stem, ext = os.path.splitext(name)
-        if ext.lower() == '.cpy':
-            available.add(stem.upper())
-available -= synthesised
 
 # Match COPY / -COPY directives in non-comment lines.
 # Handles: COPY NAME., COPY 'NAME'., COPY NAME REPLACING ...
@@ -3339,28 +3722,45 @@ copy_pat = re.compile(
 )
 
 referenced_by = defaultdict(set)  # copybook_name → set(referencing_files)
-staged_sources = []
-for root, _, files in os.walk(staging_dir):
-    for name in files:
-        if name.lower().endswith(('.cbl', '.cob', '.cpy')):
-            path = os.path.join(root, name)
-            rel = os.path.relpath(path, staging_dir).replace(os.sep, '/')
-            staged_sources.append((rel, path))
-
-for rel_name, path in sorted(staged_sources):
-    try:
-        with open(path, 'r', encoding='latin-1') as f:
-            for line in f:
-                # Skip comments (col 7 = '*') and lines too short
-                if len(line) > 6 and line[6] == '*':
-                    continue
-                m = copy_pat.match(line.rstrip())
-                if m:
-                    cpy = m.group(1).upper()
-                    if cpy not in available:
-                        referenced_by[cpy].add(rel_name)
-    except OSError:
+# COPY resolves only within the program's own estate staging directory.
+for estate in sorted(os.listdir(staging_base)):
+    staging_dir = os.path.join(staging_base, estate)
+    if not os.path.isdir(staging_dir):
         continue
+    # Names that exist in staging only because a placeholder was synthesised for them would
+    # otherwise be reported as present precisely because they were missing.
+    stubs_path = os.path.join(staging_dir, '.generated-stubs')
+    synthesised = set()
+    if os.path.exists(stubs_path):
+        with open(stubs_path, encoding='utf-8') as handle:
+            synthesised = {line.strip().upper() for line in handle if line.strip()}
+    available = set()
+    staged_sources = []
+    for root, _, files in os.walk(staging_dir):
+        for name in files:
+            stem, ext = os.path.splitext(name)
+            if ext.lower() == '.cpy':
+                available.add(stem.upper())
+            if name.lower().endswith(('.cbl', '.cob', '.cpy')):
+                path = os.path.join(root, name)
+                rel = os.path.relpath(path, staging_dir).replace(os.sep, '/')
+                staged_sources.append((rel, path))
+    available -= synthesised
+
+    for rel_name, path in sorted(staged_sources):
+        try:
+            with open(path, 'r', encoding='latin-1') as f:
+                for line in f:
+                    # Skip comments (col 7 = '*') and lines too short
+                    if len(line) > 6 and line[6] == '*':
+                        continue
+                    m = copy_pat.match(line.rstrip())
+                    if m:
+                        cpy = m.group(1).upper()
+                        if cpy not in available:
+                            referenced_by[cpy].add(rel_name)
+        except OSError:
+            continue
 
 if not referenced_by:
     # Truncate the report so stale entries don't linger.
@@ -3417,102 +3817,6 @@ print(len(lines))
     local filtered_out=0
     local failed_files=""
 
-    # Resolve the optional program filter to exact source-relative program paths.
-    local rekt_filter_file=""
-    local rekt_filter_active=false
-    if [[ -n "${_REKT_PROGRAM_FILTER:-}" ]]; then
-        rekt_filter_active=true
-        local filter_resolution_output=""
-        if ! filter_resolution_output=$("$PYTHON_CMD" - "$staging_dir" "$_REKT_PROGRAM_FILTER" <<'PYEOF'
-import os, sys
-from collections import defaultdict
-
-staging_dir = sys.argv[1]
-selectors = sys.argv[2]
-programs = []
-for root, _, files in os.walk(staging_dir):
-    for name in files:
-        if name.lower().endswith(('.cbl', '.cob')):
-            path = os.path.join(root, name)
-            rel = os.path.relpath(path, staging_dir).replace(os.sep, '/')
-            programs.append(rel)
-
-exact = {p.lower(): p for p in programs}
-by_basename = defaultdict(list)
-by_stem = defaultdict(list)
-for rel in programs:
-    basename = os.path.basename(rel)
-    by_basename[basename.lower()].append(rel)
-    by_stem[os.path.splitext(basename)[0].lower()].append(rel)
-
-resolved = []
-for raw in selectors.split(','):
-    selector = raw.strip()
-    if not selector:
-        continue
-    normalized = selector.replace('\\', '/').lstrip('./').lstrip('/')
-    match = exact.get(normalized.lower())
-    if match:
-        if match not in resolved:
-            resolved.append(match)
-        continue
-
-    basename_matches = by_basename.get(os.path.basename(normalized).lower(), [])
-    if len(basename_matches) == 1:
-        match = basename_matches[0]
-        if match not in resolved:
-            resolved.append(match)
-        continue
-    if len(basename_matches) > 1:
-        print(
-            "Program selector '%s' matched multiple staged programs by basename: %s. Use a source-relative path."
-            % (selector, ", ".join(sorted(basename_matches)))
-        )
-        sys.exit(1)
-
-    stem_matches = by_stem.get(os.path.splitext(os.path.basename(normalized))[0].lower(), [])
-    if len(stem_matches) == 1:
-        match = stem_matches[0]
-        if match not in resolved:
-            resolved.append(match)
-        continue
-    if len(stem_matches) > 1:
-        print(
-            "Program selector '%s' matched multiple staged programs by stem: %s. Use a source-relative path."
-            % (selector, ", ".join(sorted(stem_matches)))
-        )
-        sys.exit(1)
-
-    print("Program selector '%s' did not match any staged program." % selector)
-    sys.exit(1)
-
-if not resolved:
-    print("Program filter did not resolve to any staged programs.")
-    sys.exit(1)
-
-print("\n".join(resolved))
-PYEOF
-); then
-            echo -e "${RED}❌ Invalid _REKT_PROGRAM_FILTER.${NC}"
-            while IFS= read -r line; do
-                [[ -z "$line" ]] && continue
-                echo -e "    ${YELLOW}↳ ${line}${NC}"
-            done <<< "$filter_resolution_output"
-            return 1
-        fi
-        rekt_filter_file="$staging_dir/.rekt-program-filter"
-        printf '%s\n' "$filter_resolution_output" > "$rekt_filter_file"
-        local filtered_rel
-        while IFS= read -r filtered_rel; do
-            [[ -z "$filtered_rel" ]] && continue
-            rm -rf "$REPO_ROOT/output/rekt/${filtered_rel}.report"
-            rm -f "$REPO_ROOT/output/rekt/${filtered_rel}.parse.log" \
-                "$REPO_ROOT/output/rekt/${filtered_rel}-deps.json" \
-                "$REPO_ROOT/output/rekt/${filtered_rel}.facts.json"
-        done < "$rekt_filter_file"
-        echo -e "  ${BLUE}REKT program filter: ${_REKT_PROGRAM_FILTER}${NC}"
-    fi
-
     # Incremental scanning is opt-in to preserve full-scan behavior by default.
     local rekt_inc=false
     [[ "${_REKT_INCREMENTAL:-false}" == "true" ]] && rekt_inc=true
@@ -3526,7 +3830,7 @@ PYEOF
                 [[ -z "$_path" ]] && continue
                 echo -e "    ${YELLOW}↳ ${_path}${NC}"
             done
-        done <<< "$identity_check_output"
+        done <<< "$program_duplicates_output"
         echo -e "  ${YELLOW}Disable _REKT_INCREMENTAL or disambiguate these basenames before rerunning.${NC}"
         return 1
     fi
@@ -3537,32 +3841,42 @@ PYEOF
     # what lets the portal report the fidelity the parser observed instead of inferring it
     # from which directories happen to exist.
     if command -v dotnet >/dev/null 2>&1 && [[ -f "$REPO_ROOT/CobolToQuarkusMigration.csproj" ]]; then
-        rekt_manifest=$(mktemp -t rekt-scan-manifest.XXXXXX)
+        rekt_manifest="$REPO_ROOT/output/rekt/.work/scan-manifest-$$.txt"
+        : > "$rekt_manifest"
     fi
     if [[ "$rekt_inc" == "true" ]]; then
         if command -v dotnet >/dev/null 2>&1 && [[ -f "$REPO_ROOT/CobolToQuarkusMigration.csproj" ]]; then
             local rekt_db="${_REKT_SCAN_DB:-$REPO_ROOT/Data/rekt-scan.db}"
             local rekt_plan_file
-            rekt_plan_file=$(mktemp -t rekt-scan-plan.XXXXXX)
+            rekt_plan_file="$REPO_ROOT/output/rekt/.work/scan-plan-$$.txt"
             echo -e "  ${BLUE}Incremental REKT cache: planning…${NC}"
-            # Forward the filter so the planner only considers targeted programs.
-            local _plan_programs_arg=()
-            if [[ "$rekt_filter_active" == "true" ]]; then
-                local incremental_program_filter=""
-                while IFS= read -r filtered_program; do
-                    [[ -z "$filtered_program" ]] && continue
-                    local filtered_basename
-                    filtered_basename="$(basename "$filtered_program")"
-                    incremental_program_filter="${incremental_program_filter:+$incremental_program_filter,}$filtered_basename"
-                done < "$rekt_filter_file"
-                _plan_programs_arg=(--programs "$incremental_program_filter")
-            fi
-            if (cd "$REPO_ROOT" && dotnet run --project CobolToQuarkusMigration.csproj --no-build -- \
-                    rekt-scan-cache plan "$staging_dir" \
-                    --db "$rekt_db" \
-                    --verify-artifacts-in "$REPO_ROOT/output/rekt" \
-                    "${_plan_programs_arg[@]}" \
-                    > "$rekt_plan_file" 2>/dev/null); then
+            # Plan each estate against its own staging; forward the filter so the planner
+            # only considers targeted programs.
+            local _plan_ok=true
+            : > "$rekt_plan_file"
+            for estate in "${rekt_estates[@]}"; do
+                local -a _plan_programs_arg=()
+                if [[ "$rekt_filter_active" == "true" ]]; then
+                    local incremental_program_filter=""
+                    while IFS= read -r filtered_program; do
+                        [[ -z "$filtered_program" ]] && continue
+                        local filtered_basename
+                        filtered_basename="$(basename "$filtered_program")"
+                        incremental_program_filter="${incremental_program_filter:+$incremental_program_filter,}$filtered_basename"
+                    done < <(rekt_programs_in_estate "$rekt_filter_file" "$estate")
+                    _plan_programs_arg=(--programs "$incremental_program_filter")
+                fi
+                if ! (cd "$REPO_ROOT" && dotnet run --project CobolToQuarkusMigration.csproj --no-build -- \
+                        rekt-scan-cache plan "$staging_base/$estate" \
+                        --db "$rekt_db" \
+                        --verify-artifacts-in "$REPO_ROOT/output/rekt" \
+                        ${_plan_programs_arg[@]+"${_plan_programs_arg[@]}"} \
+                        >> "$rekt_plan_file" 2>/dev/null); then
+                    _plan_ok=false
+                    break
+                fi
+            done
+            if [[ "$_plan_ok" == true ]]; then
                 local _skip_count=0 _parse_count=0
                 while IFS=$'\t' read -r action basename reason; do
                     [[ -z "$action" ]] && continue
@@ -3590,16 +3904,18 @@ PYEOF
     # It is invoked by basename and its output is moved back to the nested layout, which
     # the artifact locators and the v2-source-relative identity scheme depend on.
     relocate_rekt_report() {
-        local flat_name="$1" nested_rel="$2"
-        [[ "$flat_name" == "$nested_rel" ]] && return 0
+        local flat_name="$1" nested_rel="$2" work_rel="$3"
 
         local out_root="$REPO_ROOT/output/rekt"
-        local flat_path="$out_root/${flat_name}.report"
+        local flat_path="$out_root/$work_rel/${flat_name}.report"
         local nested_path="$out_root/${nested_rel}.report"
         [[ -d "$flat_path" ]] || return 0
 
         mkdir -p "$(dirname "$nested_path")"
-        rm -rf "$nested_path"
+        if [[ -d "$nested_path" ]]; then
+            echo -e "${RED}Refusing to replace unpreserved report: $nested_path${NC}" >&2
+            return 1
+        fi
         mv "$flat_path" "$nested_path"
     }
 
@@ -3607,39 +3923,46 @@ PYEOF
     # would report a program as fully parsed when consumers will find no structure for it.
     rekt_structure_written() {
         local report="$REPO_ROOT/output/rekt/${1}.report"
-        compgen -G "$report/flow_ast/*.json" >/dev/null && compgen -G "$report/cfg/*.json" >/dev/null
+        "$PYTHON_CMD" "$REPO_ROOT/tools/rekt_parse_diagnostics.py" --structure "$report"
     }
 
-    # Use process substitution so succeeded/failed counters persist outside the loop
-    while IFS= read -r cbl_file; do
-        [[ -e "$cbl_file" ]] || continue
+    # One program: parse, dependency export and evidence. It records its outcome in
+    # "$1.status" (and its scan-cache row in "$1.manifest") instead of shared counters,
+    # so several can run as background jobs. A missing status file means a fatal error.
+    rekt_parse_program() {
+        local result="$1" cbl_file="$2"
         local fname
         fname=$(basename "$cbl_file")
-        local rel_program="${cbl_file#"$staging_dir"/}"
-        # Strip any recognised program extension (case-insensitive) to get the stem.
-        local stem="${fname%.*}"
+        local estate_rel="${cbl_file#"$staging_base"/}"
+        local rel_program="${estate_rel#*/}"
+        local estate
+        estate="$(rekt_estate_of "$rel_program")"
+        local estate_staging="$staging_base/$estate"
+        local generated_stubs_file="$estate_staging/.generated-stubs"
         local rel_log_path="${rel_program}.parse.log"
         local err_log="$REPO_ROOT/output/rekt/$rel_log_path"
         mkdir -p "$(dirname "$err_log")"
-
-        # Skip files outside the requested program filter.
-        if [[ "$rekt_filter_active" == "true" ]] && ! grep -Fqx "$rel_program" "$rekt_filter_file"; then
-            filtered_out=$((filtered_out + 1))
-            continue
-        fi
-
-        # Honor the incremental planner's skip decision.
-        if [[ "$rekt_inc" == "true" ]] && [[ " $rekt_skip_set " == *" $fname "* ]]; then
-            echo -e "  Skipping $rel_program ${GREEN}(cached)${NC}"
-            succeeded=$((succeeded + 1))
-            skipped=$((skipped + 1))
-            continue
-        fi
-
+        native_activity_program "$rel_program" running
         local rel_output_dir="$REPO_ROOT/output/rekt/$(dirname "$rel_program")"
         mkdir -p "$rel_output_dir"
-        echo -ne "  Parsing $rel_program..."
+        "$PYTHON_CMD" "$REPO_ROOT/tools/rekt_dependency_evidence.py" quarantine \
+            --output-root "$REPO_ROOT/output/rekt" --relative-path "$rel_program" || return 1
+        local report_work_rel=".work/reports/$parser_run_identity/$rel_program"
+        mkdir -p "$REPO_ROOT/output/rekt/$report_work_rel"
+        : > "$err_log"
+        echo -e "  Parsing $rel_program..."
         local parse_outcome="Failed"
+        # The CLI resolves program names recursively by basename. Give it exactly one
+        # program rather than allowing a same-named source in another estate to win.
+        local parser_program_dir="$estate_staging/.parser-input/$rel_program"
+        mkdir -p "$parser_program_dir"
+        cp "$cbl_file" "$parser_program_dir/$fname" || return 1
+        local parser_src_dir="/source/.rekt-staging/$estate/.parser-input/$rel_program"
+        local parser_copybooks_dir="/source/.rekt-staging/$estate"
+        local -a platform_environment=()
+        if [[ "${REKT_PLATFORM_CONTRACTS+x}" == x ]]; then
+            platform_environment=(-e "REKT_PLATFORM_CONTRACTS=$(rekt_platform_contracts_for "$estate" container)")
+        fi
         local stub_warnings=""
         if [[ -s "$generated_stubs_file" ]]; then
             stub_warnings=$("$PYTHON_CMD" - "$cbl_file" "$generated_stubs_file" <<'PYEOF'
@@ -3670,104 +3993,273 @@ PYEOF
         fi
 
         # Attempt 1: Standard dialect (handles CICS, SQL, standard COBOL)
-        if container_exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
+        if run_rekt_logged "$err_log" container_exec "${platform_environment[@]}" "$REKT_CONTAINER" env REKT_ALLOW_MISSING_COPYBOOKS=true java -jar /app/smojol-cli.jar run "$fname" \
             --commands="BUILD_BASE_ANALYSIS WRITE_FLOW_AST WRITE_CFG WRITE_DATA_STRUCTURES" \
-            --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
+            --srcDir="$parser_src_dir" --copyBooksDir="$parser_copybooks_dir" \
             --dialectJarPath=/app/dialect-idms.jar \
-            --reportDir=/output \
-            --generation=PROGRAM >/dev/null 2>"$err_log" && rekt_structure_written "$fname"; then
+            --reportDir="/output/$report_work_rel" \
+            --generation=PROGRAM && rekt_structure_written "$report_work_rel/$fname"; then
             echo -e " ${GREEN}✅${NC}"
-            rm -f "$err_log"
-            succeeded=$((succeeded + 1))
             parse_outcome="Full"
         else
             # Attempt 2: Retry without dialect JAR (for IMS/DL/I and other dialects)
-            if container_exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
+            if run_rekt_logged "$err_log" container_exec "${platform_environment[@]}" "$REKT_CONTAINER" env REKT_ALLOW_MISSING_COPYBOOKS=true java -jar /app/smojol-cli.jar run "$fname" \
                 --commands="BUILD_BASE_ANALYSIS WRITE_FLOW_AST WRITE_CFG WRITE_DATA_STRUCTURES" \
-                --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
-                --reportDir=/output \
-                --generation=PROGRAM >/dev/null 2>>"$err_log" && rekt_structure_written "$fname"; then
+                --srcDir="$parser_src_dir" --copyBooksDir="$parser_copybooks_dir" \
+                --reportDir="/output/$report_work_rel" \
+                --generation=PROGRAM && rekt_structure_written "$report_work_rel/$fname"; then
                 echo -e " ${GREEN}✅${NC} (no-dialect mode)"
-                rm -f "$err_log"
-                succeeded=$((succeeded + 1))
                 parse_outcome="NoDialect"
             else
                 # Attempt 3: Raw AST only (tolerates more parse errors)
-                if container_exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar run "$fname" \
+                if run_rekt_logged "$err_log" container_exec "${platform_environment[@]}" "$REKT_CONTAINER" env REKT_ALLOW_MISSING_COPYBOOKS=true java -jar /app/smojol-cli.jar run "$fname" \
                     --commands="WRITE_RAW_AST" \
-                    --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
-                    --reportDir=/output \
-                    --generation=PROGRAM >/dev/null 2>>"$err_log"; then
+                    --srcDir="$parser_src_dir" --copyBooksDir="$parser_copybooks_dir" \
+                    --reportDir="/output/$report_work_rel" \
+                    --generation=PROGRAM; then
                     echo -e " ${YELLOW}⚠️${NC} (raw AST only — complex copybooks)"
-                    rm -f "$err_log"
-                    succeeded=$((succeeded + 1))
                     parse_outcome="RawAst"
                 else
-                    # Dependency extraction can remain useful when AST writing fails.
-                    local dep_ok=false
-                    if container_exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar dependency "$fname" \
-                        --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
-                        --dialectJarPath=/app/dialect-idms.jar \
-                        --export=/output/"${rel_program}"-deps.json >/dev/null 2>>"$err_log"; then
-                        dep_ok=true
-                    fi
                     # Also try validate (may report warnings but still useful)
-                    container_exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar validate "$fname" \
-                        --srcDir=/source/.rekt-staging --copyBooksDir=/source/.rekt-staging \
-                        --dialectJarPath=/app/dialect-idms.jar >/dev/null 2>>"$err_log" || true
-
-                    if [[ "$dep_ok" == true ]]; then
-                        echo -e " ${YELLOW}⚠️${NC} (deps only — AST writer bug)"
-                        # Show smojol error hint. Prefer "Caused by:" (root cause); fall back to first match.
-                        # Full log available at output/rekt/<source-relative>.parse.log
-                        local err_hint
-                        err_hint=$(grep -Eo '(Exception|Error|Caused by): .{1,120}' "$err_log" 2>/dev/null \
-                            | grep -i 'caused by' | head -1)
-                        [[ -z "$err_hint" ]] && \
-                            err_hint=$(grep -Eo '(Exception|Error|Caused by): .{1,120}' "$err_log" 2>/dev/null | head -1)
-                        [[ -n "$err_hint" ]] && echo -e "    ${YELLOW}↳ smojol: $err_hint${NC}"
-                        echo -e "    ${YELLOW}↳ log: output/rekt/${rel_log_path}${NC}"
-                        succeeded=$((succeeded + 1))
-                        parse_outcome="DepsOnly"
-                    else
-                        echo -e " ${RED}❌${NC}"
-                        echo -e "    ${RED}↳ log: output/rekt/${rel_log_path}${NC}"
-                        failed=$((failed + 1))
-                        failed_files="${failed_files} ${rel_program}"
-                        parse_outcome="Failed"
-                    fi
+                    run_rekt_logged "$err_log" container_exec "$REKT_CONTAINER" java -jar /app/smojol-cli.jar validate "$fname" \
+                        --srcDir="$parser_src_dir" --copyBooksDir="$parser_copybooks_dir" \
+                        --dialectJarPath=/app/dialect-idms.jar || true
                 fi
             fi
         fi
 
         # Relocated per program rather than after the loop, so two programs sharing a
         # basename cannot overwrite each other's flat report.
-        relocate_rekt_report "$fname" "$rel_program"
+        relocate_rekt_report "$fname" "$rel_program" "$report_work_rel" || return 1
 
+        # Dependency evidence is independent of structural success. Always export,
+        # including recovered/raw/failed parses, and preserve the exporter diagnostics.
+        local dep_ok=false
+        if export_rekt_dependencies "$rel_program" "$err_log" "/output/$report_work_rel"; then
+            dep_ok=true
+        fi
+        if [[ "$parse_outcome" == "Failed" ]]; then
+            if [[ "$dep_ok" == true ]]; then
+                echo -e " ${YELLOW}⚠️${NC} (dependency export only — coverage remains separately qualified)"
+                parse_outcome="DepsOnly"
+            else
+                echo -e " ${RED}❌${NC}"
+            fi
+        fi
+        local dependency_warnings
+        dependency_warnings=$("$PYTHON_CMD" - "$REPO_ROOT/output/rekt/${rel_program}.report/dependency-evidence.json" <<'PYEOF'
+import json, sys
+evidence = json.load(open(sys.argv[1], encoding="utf-8"))
+print("|".join(str(item).replace("|", "/").replace("\n", " ") for item in evidence["unresolvedDiagnostics"]))
+PYEOF
+) || return 1
+        if [[ -n "$dependency_warnings" ]]; then
+            stub_warnings="${stub_warnings:+$stub_warnings|}$dependency_warnings"
+        fi
+
+        local diagnostic_path="$REPO_ROOT/output/rekt/${rel_program}.report/parse-diagnostics.json"
+        if [[ -f "$diagnostic_path" ]]; then
+            local missing_warnings
+            missing_warnings=$("$PYTHON_CMD" "$REPO_ROOT/tools/rekt_parse_diagnostics.py" "$diagnostic_path") || return 1
+            if [[ -n "$missing_warnings" ]]; then
+                stub_warnings="${stub_warnings:+$stub_warnings|}$missing_warnings"
+                if [[ "$parse_outcome" == "Full" || "$parse_outcome" == "NoDialect" ]]; then
+                    parse_outcome="Partial"
+                fi
+                echo -e "    ${YELLOW}↳ unresolved copybooks; recovered nodes are partial evidence${NC}"
+            fi
+        fi
         if [[ -n "$stub_warnings" ]]; then
             if [[ "$parse_outcome" == "Full" || "$parse_outcome" == "NoDialect" ]]; then
-                parse_outcome="StubBacked"
+                parse_outcome="Partial"
             fi
-            echo -e "    ${YELLOW}↳ generated copybook stub used; structural facts are degraded${NC}"
+            echo -e "    ${YELLOW}↳ incomplete dependency evidence: $stub_warnings${NC}"
         fi
 
-        # Append outcomes for batch recording after the loop.
+        # Outcomes are merged in program order after all workers finish.
         if [[ -n "$rekt_manifest" ]]; then
-            printf '%s\t%s\t%s\n' "$fname" "$parse_outcome" "$stub_warnings" >> "$rekt_manifest"
+            printf '%s\t%s\t%s\n' "$fname" "$parse_outcome" "$stub_warnings" > "$result.manifest" || return 1
         fi
-    done < <(find "$staging_dir" -type f \( -name "*.cbl" -o -name "*.CBL" -o -name "*.cob" -o -name "*.COB" \) | sort)
+        native_activity_program "$rel_program" "$parse_outcome"
+        printf '%s\t%s\n' "$parse_outcome" "$rel_program" > "$result.status"
+    }
 
-    # Persist outcomes in one dotnet invocation.
-    if [[ -n "$rekt_manifest" && -s "$rekt_manifest" ]]; then
+    local parse_jobs="${REKT_PARSE_JOBS:-1}"
+    if ! [[ "$parse_jobs" =~ ^[0-9]+$ ]] || (( parse_jobs < 1 || parse_jobs > 16 )); then
+        echo -e "${RED}❌ REKT_PARSE_JOBS must be a whole number from 1 to 16 (got '$parse_jobs').${NC}"
+        return 1
+    fi
+    if (( parse_jobs > 1 )); then
+        echo -e "  ${BLUE}Parallel parsing: up to $parse_jobs programs at once (REKT_PARSE_JOBS).${NC}"
+    fi
+    local parse_results
+    parse_results=$(mktemp -d "${TMPDIR:-/tmp}/rekt-parse.XXXXXX") || return 1
+    local parse_index=0
+    local -a parse_pids=()
+
+    # Use process substitution so succeeded/failed counters persist outside the loop
+    while IFS= read -r cbl_file; do
+        [[ -e "$cbl_file" ]] || continue
+        local fname
+        fname=$(basename "$cbl_file")
+        local estate_rel="${cbl_file#"$staging_base"/}"
+        local rel_program="${estate_rel#*/}"
+        # Strip any recognised program extension (case-insensitive) to get the stem.
+        local stem="${fname%.*}"
+        local rel_log_path="${rel_program}.parse.log"
+        local err_log="$REPO_ROOT/output/rekt/$rel_log_path"
+        mkdir -p "$(dirname "$err_log")"
+
+        # Skip files outside the requested program filter.
+        if [[ "$rekt_filter_active" == "true" ]] && ! grep -Fqx "$rel_program" "$rekt_filter_file"; then
+            filtered_out=$((filtered_out + 1))
+            continue
+        fi
+
+        # Honor the incremental planner's skip decision.
+        if [[ "$rekt_inc" == "true" ]] && [[ " $rekt_skip_set " == *" $fname "* ]] \
+            && "$PYTHON_CMD" "$REPO_ROOT/tools/rekt_dependency_evidence.py" validate \
+                --source-root "$REPO_ROOT/source" --relative-path "$rel_program" --output-root "$REPO_ROOT/output/rekt"; then
+            echo -e "  Skipping $rel_program ${GREEN}(cached)${NC}"
+            succeeded=$((succeeded + 1))
+            skipped=$((skipped + 1))
+            native_activity_program "$rel_program" cached
+            continue
+        fi
+
+        parse_index=$((parse_index + 1))
+        local result
+        result="$parse_results/$(printf '%06d' "$parse_index")"
+        if (( parse_jobs == 1 )); then
+            if ! rekt_parse_program "$result" "$cbl_file"; then
+                rm -rf "$parse_results"
+                return 1
+            fi
+            continue
+        fi
+        # bash 3.2 has no `wait -n`; poll for a free slot instead.
+        while [[ $(jobs -rp | wc -l) -ge $parse_jobs ]]; do
+            sleep 1
+        done
+        (
+            rekt_parse_program "$result" "$cbl_file" > "$result.log" 2>&1
+            rc=$?
+            # Print each program's output as one block so parallel logs stay readable.
+            until mkdir "$parse_results/.print" 2>/dev/null; do sleep 0.2; done
+            cat "$result.log"
+            rmdir "$parse_results/.print"
+            exit "$rc"
+        ) &
+        parse_pids+=("$!")
+    done < <(for estate in "${rekt_estates[@]}"; do
+            find "$staging_base/$estate" \( -name .parser-input -o -name .dependency-input \) -prune -o -type f \( -name "*.cbl" -o -name "*.CBL" -o -name "*.cob" -o -name "*.COB" \) -print
+        done | sort)
+    local parse_pid
+    for parse_pid in ${parse_pids[@]+"${parse_pids[@]}"}; do
+        wait "$parse_pid" || true
+    done
+
+    # Pass 2: XCTL targets carried in a COMMAREA slot need every program's slot writes. Build the
+    # estate closure from pass-1 exports, then re-export the programs that asked for it (or used an older one).
+    local estate closure_result closure_program closure_file
+    local -a closure_pids=()
+    for estate in "${rekt_estates[@]}"; do
+        "$PYTHON_CMD" "$REPO_ROOT/tools/rekt_dependency_evidence.py" commarea-closure \
+            --source-root "$REPO_ROOT/source" --output-root "$REPO_ROOT/output/rekt" --estate "$estate" 2>/dev/null || return 1
+    done
+    rekt_commarea_pass=true
+    while IFS=$'\t' read -r closure_result closure_program; do
+        [[ -n "$closure_program" ]] || continue
+        closure_file="$staging_base/$(rekt_estate_of "$closure_program")/$closure_program"
+        echo -e "  ${BLUE}COMMAREA closure:${NC} re-exporting $closure_program"
+        if (( parse_jobs == 1 )); then
+            rekt_parse_program "$closure_result" "$closure_file" || { rm -rf "$parse_results"; return 1; }
+            continue
+        fi
+        while [[ $(jobs -rp | wc -l) -ge $parse_jobs ]]; do
+            sleep 1
+        done
+        (
+            rekt_parse_program "$closure_result" "$closure_file" > "$closure_result.log" 2>&1
+            rc=$?
+            until mkdir "$parse_results/.print" 2>/dev/null; do sleep 0.2; done
+            cat "$closure_result.log"
+            rmdir "$parse_results/.print"
+            exit "$rc"
+        ) &
+        closure_pids+=("$!")
+    done < <("$PYTHON_CMD" - "$parse_results" "$REPO_ROOT/output/rekt" <<'PYEOF'
+import hashlib, json, sys
+from pathlib import Path
+results, output = Path(sys.argv[1]), Path(sys.argv[2])
+for status in sorted(results.glob("*.status")):
+    program = status.read_text(encoding="utf-8").rstrip("\n").split("\t")[1]
+    try:
+        evidence = json.loads((output / (program + ".report") / "dependency-evidence.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, IndexError):
+        continue
+    closure = output / program.split("/")[0] / ".commarea-closure.json"
+    pending = any(str(item).removeprefix("native:").startswith("cics-commarea-closure-") for item in evidence.get("unresolvedDiagnostics", []))
+    stale = any(item.get("kind") == "COMMAREA_CLOSURE" and (not closure.is_file()
+                or item.get("sha256") != hashlib.sha256(closure.read_bytes()).hexdigest())
+                for item in evidence.get("definitions", []))
+    if pending or stale:
+        print(f"{str(status)[:-len('.status')]}\t{program}")
+PYEOF
+)
+    for parse_pid in ${closure_pids[@]+"${closure_pids[@]}"}; do
+        wait "$parse_pid" || true
+    done
+    rekt_commarea_pass=false
+
+    local parse_fatal=false parse_i parse_status_outcome parse_status_program
+    for (( parse_i = 1; parse_i <= parse_index; parse_i++ )); do
+        result="$parse_results/$(printf '%06d' "$parse_i")"
+        if [[ ! -f "$result.status" ]]; then
+            parse_fatal=true
+            continue
+        fi
+        IFS=$'\t' read -r parse_status_outcome parse_status_program < "$result.status"
+        if [[ "$parse_status_outcome" == "Failed" ]]; then
+            failed=$((failed + 1))
+            failed_files="${failed_files} ${parse_status_program}"
+        else
+            succeeded=$((succeeded + 1))
+        fi
+        if [[ -n "$rekt_manifest" && -f "$result.manifest" ]]; then
+            cat "$result.manifest" >> "${rekt_manifest%.txt}-$(rekt_estate_of "$parse_status_program").txt"
+        fi
+    done
+    rm -rf "$parse_results"
+    if [[ "$parse_fatal" == true ]]; then
+        echo -e "${RED}❌ A program parse stopped with an internal error; see the output above.${NC}"
+        return 1
+    fi
+    for estate in "${rekt_estates[@]}"; do
+        rm -rf "$staging_base/$estate/.parser-input" "$staging_base/$estate/.dependency-input"
+    done
+
+    # Persist outcomes with one dotnet invocation per estate, against that estate's staging.
+    if [[ -n "$rekt_manifest" ]]; then
         local rekt_db="${_REKT_SCAN_DB:-$REPO_ROOT/Data/rekt-scan.db}"
-        # The cache is keyed by basename, so duplicates would overwrite each other. The portal
-        # already refuses to trust an entry whose basename is ambiguous, so recording is safe.
-        (cd "$REPO_ROOT" && dotnet run --project CobolToQuarkusMigration.csproj --no-build -- \
-                rekt-scan-cache record-batch "$rekt_manifest" \
-                --staging-dir "$staging_dir" \
-                --db "$rekt_db" >/dev/null 2>&1) && \
-            echo -e "  ${GREEN}✅ Parse outcomes recorded to $(basename "$rekt_db")${NC}" || \
+        local record_ok=true recorded_any=false estate_manifest
+        for estate in "${rekt_estates[@]}"; do
+            estate_manifest="${rekt_manifest%.txt}-$estate.txt"
+            [[ -s "$estate_manifest" ]] || continue
+            recorded_any=true
+            # The cache is keyed by basename, so duplicates would overwrite each other. The portal
+            # already refuses to trust an entry whose basename is ambiguous, so recording is safe.
+            (cd "$REPO_ROOT" && dotnet run --project CobolToQuarkusMigration.csproj --no-build -- \
+                    rekt-scan-cache record-batch "$estate_manifest" \
+                    --staging-dir "$staging_base/$estate" \
+                    --db "$rekt_db" >/dev/null 2>&1) || record_ok=false
+            rm -f "$estate_manifest"
+        done
+        if [[ "$recorded_any" == true && "$record_ok" == true ]]; then
+            echo -e "  ${GREEN}✅ Parse outcomes recorded to $(basename "$rekt_db")${NC}"
+        elif [[ "$recorded_any" == true ]]; then
             echo -e "  ${YELLOW}⚠️  Could not record parse outcomes; fidelity falls back to artifacts.${NC}"
+        fi
         rm -f "$rekt_manifest"
     fi
 
@@ -3777,31 +4269,41 @@ PYEOF
         if command -v dotnet >/dev/null 2>&1 && [[ -f "$REPO_ROOT/CobolToQuarkusMigration.csproj" ]]; then
             local pf_db="${_REKT_SCAN_DB:-$REPO_ROOT/Data/rekt-scan.db}"
             echo -e "  ${BLUE}Extracting program-facts.json …${NC}"
-            local pf_extract_args=(
-                program-facts extract "$staging_dir"
-                --rekt-dir "$REPO_ROOT/output/rekt"
-                --output-dir "$REPO_ROOT/output/rekt"
-                --repo-root "$REPO_ROOT"
-            )
-            # Forward the scan-cache DB only when it exists; the extractor
-            # uses it for confidence inference but treats it as optional.
-            [[ -f "$pf_db" ]] && pf_extract_args+=(--scan-cache-db "$pf_db")
-            # Limit fact extraction to programs included in partial runs.
-            if [[ "$rekt_filter_active" == "true" ]]; then
-                pf_extract_args+=(--programs "$_REKT_PROGRAM_FILTER")
+            local pf_command=(dotnet run --project CobolToQuarkusMigration.csproj --no-build --)
+            if [[ -n "${MIGRATION_CLI_ASSEMBLY:-}" ]]; then
+                pf_command=(dotnet "$MIGRATION_CLI_ASSEMBLY")
             fi
-            if (cd "$REPO_ROOT" && dotnet run --project CobolToQuarkusMigration.csproj --no-build -- \
-                    "${pf_extract_args[@]}" 2>/dev/null); then
-                : # success summary already printed to stderr by the CLI
-            else
+            local pf_ok=true
+            for estate in "${rekt_estates[@]}"; do
+                local -a pf_extract_args=(
+                    program-facts extract "$staging_base/$estate"
+                    --rekt-dir "$REPO_ROOT/output/rekt"
+                    --output-dir "$REPO_ROOT/output/rekt"
+                    --repo-root "$REPO_ROOT"
+                )
+                # Forward the scan-cache DB only when it exists; the extractor
+                # uses it for confidence inference but treats it as optional.
+                [[ -f "$pf_db" ]] && pf_extract_args+=(--scan-cache-db "$pf_db")
+                # Limit fact extraction to programs included in partial runs.
+                if [[ "$rekt_filter_active" == "true" ]]; then
+                    local estate_programs
+                    estate_programs=$(rekt_programs_in_estate "$rekt_filter_file" "$estate" | paste -sd, -)
+                    [[ -n "$estate_programs" ]] || continue
+                    pf_extract_args+=(--programs "$estate_programs")
+                fi
+                (cd "$REPO_ROOT" && "${pf_command[@]}" \
+                        "${pf_extract_args[@]}" 2>/dev/null) || pf_ok=false
+            done
+            if [[ "$pf_ok" != true ]]; then
                 echo -e "  ${YELLOW}⚠️  program-facts extract failed — facts not refreshed (this run continues uncached for facts).${NC}"
             fi
 
-            # Prune orphans only when explicitly requested.
+            # Prune orphans only when explicitly requested. Orphans are judged against every
+            # program in source/, so facts of estates not scanned in this run are kept.
             if [[ "${_PROGRAM_FACTS_PRUNE_ORPHANS:-false}" == "true" ]]; then
-                (cd "$REPO_ROOT" && dotnet run --project CobolToQuarkusMigration.csproj --no-build -- \
+                (cd "$REPO_ROOT" && "${pf_command[@]}" \
                         program-facts prune-orphans "$REPO_ROOT/output/rekt" \
-                        --staging-dir "$staging_dir" 2>/dev/null) || true
+                        --staging-dir "$REPO_ROOT/source" 2>/dev/null) || true
             fi
         else
             echo -e "  ${YELLOW}⚠️  dotnet/project not available — program facts not extracted.${NC}"
@@ -3809,15 +4311,10 @@ PYEOF
     fi
 
     # Clean up staging dir — it lives inside source/ which is gitignored
-    rm -rf "$staging_dir"
-    rm -f "$shadowed_copybooks_file"
+    rm -rf "$staging_base"
+    rm -f "$shadowed_copybooks_file" "$rekt_programs_file" ${rekt_filter_file:+"$rekt_filter_file"}
 
-    # JCL is parsed deterministically from source/, without REKT; failures are non-fatal.
-    if command -v dotnet >/dev/null 2>&1 && [[ -f "$REPO_ROOT/CobolToQuarkusMigration.csproj" ]]; then
-        (cd "$REPO_ROOT" && dotnet run --project CobolToQuarkusMigration.csproj --no-build -- \
-                jcl-facts "$REPO_ROOT/source" --output-dir "$REPO_ROOT/output/rekt") || \
-            echo -e "  ${YELLOW}⚠️  jcl-facts failed — JCL job facts not refreshed.${NC}"
-    fi
+    scan_rekt_jcl || return 1
 
     echo -e "\n${GREEN}  Parsed: $succeeded succeeded ($skipped from cache), $failed failed${NC}"
     if [[ "$rekt_filter_active" == "true" && "$filtered_out" -gt 0 ]]; then
@@ -3827,7 +4324,7 @@ PYEOF
     local degraded
     degraded=$(find "$REPO_ROOT/output/rekt" -name '*.parse.log' 2>/dev/null | wc -l | tr -d ' ')
     if [[ "$degraded" -gt 0 ]]; then
-        echo -e "${YELLOW}  ⚠️  ${degraded} program(s) parsed with reduced fidelity (deps-only / raw-AST fallback).${NC}"
+        echo -e "${YELLOW}  ⚠️  ${degraded} program(s) parsed with reduced fidelity (partial / dependencies-only / raw AST).${NC}"
         echo -e "${YELLOW}      These usually mean missing copybooks or smojol parser limitations.${NC}"
         echo -e "${YELLOW}      Inspect: output/rekt/**/*.parse.log${NC}"
     fi
@@ -3848,13 +4345,65 @@ PYEOF
     echo -e "${BLUE}  Output: output/rekt/${NC}"
 }
 
+validate_rekt_jcl_source() {
+    local jcl_dir
+    jcl_dir="$(jcl_source_dir)" || return 1
+    if [[ ! -d "$jcl_dir" ]]; then
+        echo -e "${RED}❌ JCL source directory not found: $jcl_dir${NC}"
+        return 1
+    fi
+    if [[ -z "$(find -L "$jcl_dir" -type f -iname '*.jcl' -print -quit 2>/dev/null)" ]]; then
+        if [[ -n "$(resolve_runtime_setting JCL_SOURCE_FOLDER '')" ]]; then
+            echo -e "${RED}❌ No .jcl files found in configured JCL_SOURCE_FOLDER: $jcl_dir${NC}"
+            return 1
+        fi
+    fi
+}
+
+scan_rekt_jcl() {
+    native_activity_stage "Native JCL scan" || return 1
+    validate_rekt_jcl_source || return 1
+    local jcl_dir allow_empty=()
+    jcl_dir="$(jcl_source_dir)" || return 1
+    if [[ -z "$(resolve_runtime_setting JCL_SOURCE_FOLDER '')" ]] && \
+        [[ -z "$(find -L "$jcl_dir" -type f -iname '*.jcl' -print -quit 2>/dev/null)" ]]; then
+        allow_empty=(--allow-empty)
+    fi
+    mkdir -p "$REPO_ROOT/output/rekt" || return 1
+    : > "$REPO_ROOT/output/rekt/.jcl-scan-failed" || return 1
+    echo -e "${BLUE}  Parsing JCL from $jcl_dir → output/rekt/${NC}"
+    local cli_command=("${DOTNET_CMD:-dotnet}" run --project CobolToQuarkusMigration.csproj --)
+    if [[ -n "${MIGRATION_CLI_ASSEMBLY:-}" ]]; then
+        cli_command=("${DOTNET_CMD:-dotnet}" "$MIGRATION_CLI_ASSEMBLY")
+    fi
+    if ! (cd "$REPO_ROOT" && "${cli_command[@]}" \
+            jcl-facts "$jcl_dir" --output-dir "$REPO_ROOT/output/rekt" "${allow_empty[@]}"); then
+        echo -e "${RED}❌ JCL scan failed; ingestion was not started.${NC}"
+        return 1
+    fi
+    rm -f "$REPO_ROOT/output/rekt/.jcl-scan-failed"
+}
+
 run_rekt_ingest() {
+    if [[ -n "${_REKT_ACTIVITY_PATH:-}" ]]; then
+        native_activity_stage "Native graph ingestion" || return 1
+        run_rekt_ingest_impl
+    else
+        run_native_activity rekt-ingest "Native graph ingestion" run_rekt_ingest_impl
+    fi
+}
+
+run_rekt_ingest_impl() {
     echo -e "${CYAN}╔══════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║   Graph Populator: Ingest into Neo4j                        ║${NC}"
     echo -e "${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
 
+    if [[ -f "$REPO_ROOT/output/rekt/.jcl-scan-failed" ]]; then
+        echo -e "${RED}❌ JCL refresh did not complete; rerun rekt-parse before ingestion.${NC}"
+        return 1
+    fi
     detect_docker_api_version
-    ensure_rekt_containers || return 1
+    ensure_rekt_containers neo4j-only || return 1
 
     local db_path
     db_path="$(get_migration_db_path)"
@@ -3901,7 +4450,7 @@ run_rekt_ingest() {
     # the artifacts on disk: reports present with no AST ingested means the run lost its output.
     local report_dirs
     report_dirs=$(find "$REPO_ROOT/output/rekt" -name '*.report' -type d 2>/dev/null | wc -l | tr -d ' ')
-    if [[ "$report_dirs" -gt 0 ]]; then
+    if [[ "$report_dirs" -gt 0 && -n "$(find "$REPO_ROOT/source" -type f \( -iname '*.cbl' -o -iname '*.cob' \) -print -quit)" ]]; then
         local ast_files
         ast_files=$(container_exec "$NEO4J_CONTAINER" cypher-shell -u neo4j \
             -p "$NEO4J_PASSWORD" --format plain \
@@ -3922,6 +4471,10 @@ run_rekt_ingest() {
 }
 
 run_rekt_full() {
+    run_native_activity rekt-full "Native parsing" run_rekt_full_impl
+}
+
+run_rekt_full_impl() {
     echo -e "${CYAN}╔══════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║   Cobol-REKT Full Pipeline: Parse → Ingest                ║${NC}"
     echo -e "${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
@@ -3978,8 +4531,6 @@ run_rekt_status() {
     echo -e "    Neo4j: http://localhost:$NEO4J_HTTP_PORT (bolt://localhost:$NEO4J_BOLT_PORT)"
 }
 
-# Emits the --programs argument when a selection is active, and nothing otherwise,
-# so an unscoped run is byte-identical to what it was before selection existed.
 # Each conversion writes to a folder named for when it ran. Writing every run to
 # output/<lang> meant a second run silently overwrote the first: two runs could not be
 # compared, a demo could not be kept, and a partial re-run left the previous run's files
@@ -3994,12 +4545,6 @@ export_run_output_folder() {
     else
         export CSHARP_OUTPUT_FOLDER="output/csharp/$stamp"
         echo -e "  ${CYAN}Run output: $CSHARP_OUTPUT_FOLDER${NC}"
-    fi
-}
-
-program_args() {
-    if [[ -n "${PROGRAM_SELECTION:-}" ]]; then
-        printf '%s' "--programs $PROGRAM_SELECTION"
     fi
 }
 
@@ -4039,6 +4584,8 @@ conversion_preflight() {
 
 SELECTED_PROGRAMS=()
 SELECTED_JOBS=()
+PROGRAM_ARGS=()
+CONVERSION_SOURCE_OVERRIDE=""
 INCLUDE_CALLEES=false
 DRY_RUN=false
 CLEAN_OUTPUT=false
@@ -4118,11 +4665,13 @@ for p in d.get('callClosure') or []:
 # which looks exactly like a run that succeeded. Checked before any model is called.
 validate_selection() {
     local unmatched=()
+    local source_dir
+    source_dir="$(conversion_source_dir)" || return 1
     local identity
     for identity in "${SELECTED_PROGRAMS[@]}"; do
-        if [[ -z "$(find -L "$REPO_ROOT/${COBOL_SOURCE_FOLDER:-source}" -path "*${identity}" -print -quit 2>/dev/null)" ]] \
-           && [[ -z "$(find -L "$REPO_ROOT/${COBOL_SOURCE_FOLDER:-source}" -name "${identity}" -print -quit 2>/dev/null)" ]] \
-           && [[ -z "$(find -L "$REPO_ROOT/${COBOL_SOURCE_FOLDER:-source}" -name "${identity}.*" -print -quit 2>/dev/null)" ]]; then
+        if [[ -z "$(find -L "$source_dir" -path "*${identity}" -print -quit 2>/dev/null)" ]] \
+           && [[ -z "$(find -L "$source_dir" -name "${identity}" -print -quit 2>/dev/null)" ]] \
+           && [[ -z "$(find -L "$source_dir" -name "${identity}.*" -print -quit 2>/dev/null)" ]]; then
             unmatched+=("$identity")
         fi
     done
@@ -4142,7 +4691,8 @@ validate_selection() {
 # that converts it.
 run_estate_graph() {
     local cluster="${1:-}"
-    local src="$REPO_ROOT/${COBOL_SOURCE_FOLDER:-source}"
+    local src
+    src="$(conversion_source_dir)" || return 1
     local jcl_dir
     jcl_dir="$(jcl_source_dir)"
     if [[ ! -d "$src" ]]; then
@@ -4188,10 +4738,27 @@ run_estate_graph() {
 # ── JCL ─────────────────────────────────────────────────────────────────────
 
 # Where the JCL is: JCL_SOURCE_FOLDER when set, else the COBOL source folder, as the conversion reads it.
-jcl_source_dir() {
-    local dir="${JCL_SOURCE_FOLDER:-${COBOL_SOURCE_FOLDER:-source}}"
-    [[ "$dir" == /* ]] || dir="$REPO_ROOT/$dir"
+resolve_source_path() {
+    local dir="$1"
+    dir="${dir//\\//}"
+    case "$dir" in
+        [A-Za-z]:/*|//*)
+            if command -v cygpath >/dev/null 2>&1; then
+                dir="$(cygpath -u "$dir")" || return 1
+            fi
+            ;;
+        /*) ;;
+        *) dir="$REPO_ROOT/$dir" ;;
+    esac
     printf '%s' "$dir"
+}
+
+conversion_source_dir() {
+    resolve_source_path "${CONVERSION_SOURCE_OVERRIDE:-$(resolve_runtime_setting COBOL_SOURCE_FOLDER source)}"
+}
+
+jcl_source_dir() {
+    resolve_source_path "$(resolve_runtime_setting JCL_SOURCE_FOLDER "$(conversion_source_dir)")"
 }
 
 current_run_output_dir() {
@@ -4204,7 +4771,8 @@ current_run_output_dir() {
 
 # The COBOL source of a program id, source-relative, or nothing when the estate does not have it.
 program_source_for() {
-    local root="$REPO_ROOT/${COBOL_SOURCE_FOLDER:-source}"
+    local root
+    root="$(conversion_source_dir)" || return 1
     local found
     found=$(find -L "$root" \( -name .rekt-staging -o -name .preprocessed \) -prune -o \
         -type f \( -iname "$1.cbl" -o -iname "$1.cob" \) -print -quit 2>/dev/null)
@@ -4234,7 +4802,7 @@ resolve_job_selection() {
     while IFS=$'\t' read -r job file programs; do
         echo -e "  ${BOLD}$job${NC}  $file"
         if [[ -z "$programs" ]]; then
-            echo -e "    runs utilities only, no estate programs"
+            echo -e "    no resolved estate programs; check procedure and utility diagnostics"
             continue
         fi
         IFS=',' read -ra _progs <<< "$programs"
@@ -4301,8 +4869,8 @@ for e in entries:
     programs = e.get("programs") or []
     print(f"  ⚠️  {e['job']:<10} " + "; ".join(filter(None, [
         (f"{len(e.get('programsImplemented') or [])}/{len(programs)} program(s) converted"
-         + (f", not yet: {', '.join(missing)}" if missing else "")) if programs else "runs utilities only",
-        f"{len(blocked)} step(s) cannot run (procedure missing or condition unreadable)" if blocked else "",
+         + (f", not yet: {', '.join(missing)}" if missing else "")) if programs else "no resolved estate programs",
+        f"{len(blocked)} step(s) cannot run (missing procedure, unsupported utility or unreadable condition)" if blocked else "",
     ])))
 print(f"  {ready} of {len(entries)} job(s) have every program and step they need.")
 if ready < len(entries):
@@ -4392,6 +4960,15 @@ run_jcl_jobs() {
     echo -e "  ${CYAN}./doctor.sh run --job <JOB> --language $TARGET_LANGUAGE${NC}   (or every job: ./doctor.sh run)"
 }
 
+# Validates REKT_PARSE_JOBS (set directly or by --parallel N) before a parse starts.
+validate_rekt_parse_jobs() {
+    local jobs="${REKT_PARSE_JOBS:-1}"
+    if ! [[ "$jobs" =~ ^[0-9]+$ ]] || (( jobs < 1 || jobs > 16 )); then
+        echo -e "${RED}❌ Parallel parse jobs must be a whole number from 1 to 16 (got '$jobs').${NC}"
+        return 1
+    fi
+}
+
 # Two runs writing to one output directory interleave their files, and the result
 # looks like a single successful conversion.
 guard_concurrent_run() {
@@ -4440,6 +5017,10 @@ show_dry_run() {
     echo -e "${BOLD}Dry run — nothing will be converted${NC}"
     echo ""
     echo -e "  Target language: ${GREEN}${TARGET_LANGUAGE:-Java}${NC}"
+    echo -e "  Source folder: $(conversion_source_dir)"
+    if [[ "${TARGET_LANGUAGE:-Java}" == "Java" ]]; then
+        echo -e "  Java framework: ${GREEN}${JAVA_FRAMEWORK:-Quarkus}${NC}"
+    fi
     echo -e "  Programs (${#SELECTED_PROGRAMS[@]}):"
     printf '    %s\n' "${SELECTED_PROGRAMS[@]}"
     echo ""
@@ -4457,8 +5038,16 @@ main() {
     # Selector flags are pre-parsed so they may appear in any position. Repeating
     # --program selects more programs; the flags are removed before command routing.
     local positional=()
+    local java_framework_selected=false
+    local parallel_selected=false
     while [[ $# -gt 0 ]]; do
         case "$1" in
+            --source)
+                if [[ -z "${2:-}" ]]; then
+                    echo "❌ --source requires a source directory" >&2; exit 1
+                fi
+                CONVERSION_SOURCE_OVERRIDE="$2"
+                shift 2 ;;
             --program|--programs)
                 if [[ -z "${2:-}" ]]; then
                     echo -e "${RED}❌ $1 requires a program name or path${NC}"; exit 1
@@ -4466,7 +5055,8 @@ main() {
                 IFS=',' read -ra _names <<< "$2"
                 local _n
                 for _n in "${_names[@]}"; do
-                    _n="$(echo "$_n" | xargs)"
+                    _n="${_n#"${_n%%[![:space:]]*}"}"
+                    _n="${_n%"${_n##*[![:space:]]}"}"
                     [[ -n "$_n" ]] && SELECTED_PROGRAMS+=("$_n")
                 done
                 shift 2 ;;
@@ -4480,6 +5070,13 @@ main() {
                     _j="$(echo "$_j" | xargs)"
                     [[ -n "$_j" ]] && SELECTED_JOBS+=("$_j")
                 done
+                shift 2 ;;
+            --parallel)
+                if [[ -z "${2:-}" ]]; then
+                    echo -e "${RED}❌ --parallel requires a number of programs to parse at once${NC}"; exit 1
+                fi
+                export REKT_PARSE_JOBS="$2"
+                parallel_selected=true
                 shift 2 ;;
             --include-callees)
                 INCLUDE_CALLEES=true; shift ;;
@@ -4497,11 +5094,39 @@ main() {
                     *) echo -e "${RED}❌ Unknown language: $2 (use Java or CSharp)${NC}"; exit 1 ;;
                 esac
                 shift 2 ;;
+            --java-framework)
+                if [[ -z "${2:-}" ]]; then
+                    echo "❌ --java-framework requires Spring or Quarkus" >&2; exit 1
+                fi
+                case "$(echo "$2" | tr '[:upper:]' '[:lower:]')" in
+                    spring) export JAVA_FRAMEWORK="Spring" ;;
+                    quarkus) export JAVA_FRAMEWORK="Quarkus" ;;
+                    *) echo "❌ Unknown Java framework: $2 (use Spring or Quarkus)" >&2; exit 1 ;;
+                esac
+                export TARGET_LANGUAGE="${TARGET_LANGUAGE:-Java}"
+                java_framework_selected=true
+                shift 2 ;;
             *)
                 positional+=("$1"); shift ;;
         esac
     done
     set -- "${positional[@]}"
+    if [[ -n "$CONVERSION_SOURCE_OVERRIDE" ]]; then
+        case "${1:-doctor}" in
+            run|run-chunked|chunked|convert-only|conversion-only|convert|reverse-eng|reverse-engineer|reverse|resume) ;;
+            *) echo "❌ --source is supported only for conversion and reverse-engineering commands" >&2; exit 1 ;;
+        esac
+    fi
+    if [[ "$parallel_selected" == "true" ]]; then
+        case "${1:-doctor}" in
+            rekt|rekt-parse|rekt-full) ;;
+            *) echo "❌ --parallel is supported only for rekt-parse and rekt-full" >&2; exit 1 ;;
+        esac
+    fi
+    if [[ "$java_framework_selected" == "true" && "$TARGET_LANGUAGE" != "Java" ]]; then
+        echo "❌ --java-framework cannot be combined with a non-Java target" >&2
+        exit 1
+    fi
 
     local job_callees=false
     if [[ ${#SELECTED_JOBS[@]} -gt 0 && "${1:-}" != "jcl" ]]; then
@@ -4528,6 +5153,9 @@ main() {
         validate_selection || exit 1
         export PROGRAM_SELECTION="$(IFS=','; echo "${SELECTED_PROGRAMS[*]}")"
         echo -e "${CYAN}🎯 Selection: ${#SELECTED_PROGRAMS[@]} program(s)${NC}"
+    fi
+    if [[ -n "${PROGRAM_SELECTION:-}" ]]; then
+        PROGRAM_ARGS=(--programs "$PROGRAM_SELECTION")
     fi
 
     case "${1:-doctor}" in
@@ -4581,12 +5209,14 @@ main() {
             run_validate
             ;;
         "rekt"|"rekt-parse")
+            validate_rekt_parse_jobs || exit 1
             run_rekt_parse
             ;;
         "rekt-ingest")
             run_rekt_ingest
             ;;
         "rekt-full")
+            validate_rekt_parse_jobs || exit 1
             run_rekt_full
             ;;
         "rekt-status")

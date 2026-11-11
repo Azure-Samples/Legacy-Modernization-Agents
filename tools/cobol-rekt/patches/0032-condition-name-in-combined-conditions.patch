@@ -1,0 +1,32 @@
+diff --git a/smojol-core/src/main/java/org/smojol/common/vm/expression/ConditionVisitor.java b/smojol-core/src/main/java/org/smojol/common/vm/expression/ConditionVisitor.java
+--- a/smojol-core/src/main/java/org/smojol/common/vm/expression/ConditionVisitor.java
++++ b/smojol-core/src/main/java/org/smojol/common/vm/expression/ConditionVisitor.java
+@@ -25,13 +25,15 @@
+         // TODO: Handle dialect nodes, currently will fail if dialect node is present
+         if (ctx.additionalCondition().isEmpty()) return expression;
+         CobolExpression modifiedExpression = expression;
+-        ComparisonOperator mostRecentOperator = expression.getClass() == SimpleConditionExpression.class ? ((SimpleConditionExpression) expression).getComparison().getRelationalOperation() : null;
+-        CobolExpression mostRecentLhs = expression.getClass() == SimpleConditionExpression.class ? ((SimpleConditionExpression) expression).getLhs() : null;
++        ComparisonOperator mostRecentOperator = isRelation(expression) ? ((SimpleConditionExpression) expression).getComparison().getRelationalOperation() : null;
++        CobolExpression mostRecentLhs = isRelation(expression) ? ((SimpleConditionExpression) expression).getLhs() : null;
+         for (CobolParser.AdditionalConditionContext c : ctx.additionalCondition()) {
+             AdditionalConditionVisitor additionalConditionVisitor = new AdditionalConditionVisitor(mostRecentLhs, mostRecentOperator, dataRoot);
+             c.accept(additionalConditionVisitor);
+             CobolExpression additionalExpression = additionalConditionVisitor.getExpression();
+-            if (additionalExpression.getClass() == SimpleConditionExpression.class) {
++            // Only a complete relation supplies the subject and operator of later abbreviated
++            // relations; a condition-name (level 88) has neither and leaves them unchanged.
++            if (isRelation(additionalExpression)) {
+                 mostRecentOperator = additionalConditionVisitor.getRelationalOperation();
+                 mostRecentLhs = additionalConditionVisitor.getLhs();
+             }
+@@ -42,4 +44,9 @@
+         if (ctx.NOT() != null) expression = new NotExpression(expression);
+         return expression;
+     }
++
++    private static boolean isRelation(CobolExpression expression) {
++        return expression.getClass() == SimpleConditionExpression.class
++                && ((SimpleConditionExpression) expression).getComparison() != null;
++    }
+ }

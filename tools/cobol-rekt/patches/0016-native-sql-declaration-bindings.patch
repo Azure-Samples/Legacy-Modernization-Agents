@@ -1,0 +1,284 @@
+diff --git a/che-che4z-lsp-for-cobol-integration/server/engine/src/main/antlr4/org/eclipse/lsp/cobol/implicitDialects/sql/Db2SqlLexer.g4 b/che-che4z-lsp-for-cobol-integration/server/engine/src/main/antlr4/org/eclipse/lsp/cobol/implicitDialects/sql/Db2SqlLexer.g4
+index 2737a8c..f7e464f 100644
+--- a/che-che4z-lsp-for-cobol-integration/server/engine/src/main/antlr4/org/eclipse/lsp/cobol/implicitDialects/sql/Db2SqlLexer.g4
++++ b/che-che4z-lsp-for-cobol-integration/server/engine/src/main/antlr4/org/eclipse/lsp/cobol/implicitDialects/sql/Db2SqlLexer.g4
+@@ -16,6 +16,7 @@ channels{COMMENTS}
+ 
+ // DB2 SQL Reserved Keywords
+ 
++ABS : A B S;
+ ABSOLUTE : A B S O L U T E;
+ ACCELERATION : A C C E L E R A T I O N;
+ ACCELERATOR : A C C E L E R A T O R;
+diff --git a/che-che4z-lsp-for-cobol-integration/server/engine/src/main/antlr4/org/eclipse/lsp/cobol/implicitDialects/sql/Db2SqlParser.g4 b/che-che4z-lsp-for-cobol-integration/server/engine/src/main/antlr4/org/eclipse/lsp/cobol/implicitDialects/sql/Db2SqlParser.g4
+index 1e6a4be..c2d52ff 100644
+--- a/che-che4z-lsp-for-cobol-integration/server/engine/src/main/antlr4/org/eclipse/lsp/cobol/implicitDialects/sql/Db2SqlParser.g4
++++ b/che-che4z-lsp-for-cobol-integration/server/engine/src/main/antlr4/org/eclipse/lsp/cobol/implicitDialects/sql/Db2SqlParser.g4
+@@ -641,7 +641,7 @@ dbs_declare_global_identity: (EXCLUDING|INCLUDING) IDENTITY (COLUMN ATTRIBUTES)?
+ dbs_declare_statement: dbs_statement_name (dbs_comma_separator dbs_statement_name)* STATEMENT;
+ 
+ dbs_declare_table: DECLARE (dbs_table_name | dbs_view_name) TABLE LPARENCHAR dbs_declare_table_loop (dbs_comma_separator dbs_declare_table_loop)* RPARENCHAR;
+-dbs_declare_table_loop: dbs_column_name (dbs_distinct_type_name | dbs_declare_table_bit) (NOT NULL (WITH DEFAULT)?)?;
++dbs_declare_table_loop: dbs_column_name (dbs_declare_table_bit | dbs_distinct_type_name) (NOT NULL (WITH DEFAULT)?)?;
+ dbs_declare_table_bit: (dbs_declare_table_bit_int | dbs_declare_table_bit_decimal | dbs_declare_table_bit_float | dbs_declare_table_bit_decfloat | dbs_declare_table_bit_char |
+                         dbs_declare_table_bit_clob | dbs_declare_table_bit_varchar | dbs_declare_table_bit_graphic | dbs_declare_table_bit_binary | DATE | TIME | TIMESTAMP | ROWID | XML);
+ dbs_declare_table_bit_int: (SMALLINT | INT | INTEGER | BIGINT);
+@@ -1498,7 +1498,7 @@ db2sql_system_privileges: ACCESSCTRL | ARCHIVE | BINDADD | BINDAGENT | BSDS | CR
+ 
+ db2sql_table_view_privileges: ALTER | DELETE | INDEX | INSERT | REFERENCES | SELECT | TRIGGER | UPDATE;
+ 
+-dbs_inbuild_functions : ASCII  | AVG | BLOB | BIGINT | BINARY | CARDINALITY | CHAR | CHARACTER_LENGTH | CAST
++dbs_inbuild_functions : ABS | ASCII  | AVG | BLOB | BIGINT | BINARY | CARDINALITY | CHAR | CHARACTER_LENGTH | CAST
+                         | CHAR_LENGTH | CLOB | COALESCE | CONCAT | CONTAINS | CORR | CORRELATION | COUNT | COUNT_BIG
+                         | COVARIANCE | CUME_DIST | DATE | DAY | DAYOFMONTH | DAYOFWEEK | DAYOFYEAR | DAYS | DBCLOB
+                         | DECIMAL | DEC | DECFLOAT | DOUBLE | EXIT | EXTRACT | FLOAT | GRAPHIC | GROUP | GROUPING
+@@ -1559,7 +1559,7 @@ dbs_generic_name: dbs_host_names | NONNUMERICLITERAL;
+ dbs_host_names: dbs_special_name | IDENTIFIER ;
+ dbs_host_names_var:  COLONCHAR? dbs_host_name_container;
+ dbs_host_name_container: dbs_host_names (MINUSCHAR (dbs_host_names | dbs_integer))*;
+-dbs_special_name: ABSOLUTE | ACCELERATION | ACCELERATOR | ACCESS | ACCESSCTRL | ACCTNG| ACTION | ACTIVATE | ACTIVE
++dbs_special_name: ABS | ABSOLUTE | ACCELERATION | ACCELERATOR | ACCESS | ACCESSCTRL | ACCTNG| ACTION | ACTIVATE | ACTIVE
+                   | ADD | ADDRESS | AFTER | AGE| ALGORITHM | ALIAS | ALL | ALLOCATE | ALLOW | ALTER | ALTERIN | ALWAYS
+                   | AND | ANY | APPEND | APPLCOMPAT | APPLICATION | APPLNAME | ARCHIVE | ARRAY| ARRAY_EXISTS | AS
+                   | ASC | ASCII | ASENSITIVE | ASSEMBLE | ASSOCIATE | ASUTIME | AT | ATOMIC | ATTRIBUTES | AUDIT
+@@ -1674,7 +1674,7 @@ dbs_hint_variable:  dbs_variable;
+ dbs_hint_string_constant:  IDENTIFIER;
+ dbs_fetch_clause: FETCH (FIRST | NEXT) (PLUSCHAR? dbs_integer)? (ROW | ROWS) ONLY;
+ dbs_field_name: dbs_sql_identifier;
+-dbs_function_name: T=dbs_sql_identifier {validateLength($T.text, "Function name", 128);} | dbs_inbuild_functions; //must not be any of the  system-reserved keywords
++dbs_function_name: dbs_inbuild_functions | T=dbs_sql_identifier {validateLength($T.text, "Function name", 128);}; //must not be any of the  system-reserved keywords
+ dbs_global_variable_name: dbs_generic_name | ROWID;
+ dbs_graphic_string_constant: GRAPHIC_CONSTANT;
+ dbs_history_table_name: dbs_table_name;
+diff --git a/che-che4z-lsp-for-cobol-integration/server/engine/src/main/java/org/eclipse/lsp/cobol/implicitDialects/sql/Db2SqlSubstitutingVisitor.java b/che-che4z-lsp-for-cobol-integration/server/engine/src/main/java/org/eclipse/lsp/cobol/implicitDialects/sql/Db2SqlSubstitutingVisitor.java
+index 2ee967d..951343a 100644
+--- a/che-che4z-lsp-for-cobol-integration/server/engine/src/main/java/org/eclipse/lsp/cobol/implicitDialects/sql/Db2SqlSubstitutingVisitor.java
++++ b/che-che4z-lsp-for-cobol-integration/server/engine/src/main/java/org/eclipse/lsp/cobol/implicitDialects/sql/Db2SqlSubstitutingVisitor.java
+@@ -346,7 +346,9 @@ class Db2SqlSubstitutingVisitor extends MarkerDb2SqlVisitor {
+         //    String intervalText = VisitorHelper.getIntervalText(ctx);
+         String sqlCode = preProcessSqlComment(ctx);
+ 
+-        List<Node> nodes = this.visitStartSqlRule(parseSQL(sqlCode, ctx));
++        Db2SqlParser.StartSqlRuleContext semanticTree = parseSQL(sqlCode, ctx);
++        ctx.getCustomData().put("REKT_SQL_SEMANTIC_TREE", semanticTree);
++        List<Node> nodes = this.visitStartSqlRule(semanticTree);
+         Db2SqlVisitorHelper.adjustNodeLocations(ctx, context, nodes);
+ 
+         Locality locality =
+@@ -632,4 +634,3 @@ class Db2SqlSubstitutingVisitor extends MarkerDb2SqlVisitor {
+         extractions++;
+     }
+ }
+-
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
+index 8fd9ba0..772458a 100644
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
+@@ -92,6 +92,7 @@ public class ParsePipeline {
+     @Getter private final Map<String, String> dependencyPresenceEvidence = new LinkedHashMap<>();
+     private final Set<ParserRuleContext> recordedDialectRoots =
+             java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
++    private final SqlDependencyAnalysis sqlDependencies = new SqlDependencyAnalysis();
+     @Getter private final List<CallTarget> parserCallTargets = new ArrayList<>();
+     @Getter private String parsedSourcePath;
+     @Getter private String parsedSourceSha256;
+@@ -223,6 +224,7 @@ public class ParsePipeline {
+         navigator = navigatorBuilder.navigator(tree);
+         dataStructures = dataStructureValidation.run(ops.getDataStructureBuilder(navigator));
+         LOGGER.info(gson.toJson(timingResult));
++        sqlDependencies.bind(tree);
+         dependencyParseComplete = diagnostics.isEmpty() && dependencyDiagnostics.isEmpty();
+         attestSupportedAbsence();
+         return navigator;
+@@ -291,7 +293,7 @@ public class ParsePipeline {
+         return false;
+     }
+ 
+-    private Map<String, Object> dialectSyntax(ParseTree node) {
++    static Map<String, Object> dialectSyntax(ParseTree node) {
+         if (!(node instanceof ParserRuleContext context))
+             return Map.of("token", node.getText());
+         List<Map<String, Object>> children = new ArrayList<>();
+@@ -316,6 +318,8 @@ public class ParsePipeline {
+         statement.put("bindingStatus", bareReturn || normalResponse ? "complete" : "unresolved");
+         statement.put("runtimeMapping", "unverified");
+         statement.put("syntax", dialectSyntax(context));
++        if (context instanceof Db2SqlParser.SqlCodeContext sql)
++            sqlDependencies.record(sql, statement);
+         if (context instanceof CICSParser.Cics_writeContext write && write.cics_write_file() != null) {
+             var command = write.cics_write_file();
+             String operand = command.cics_file_name().cics_name().name().getText();
+@@ -407,7 +411,8 @@ public class ParsePipeline {
+                 dependencyAbsenceEvidence.put(kind, noDialect ? "antlr-tree:no-dialect-contexts"
+                         : kind.equals("EXEC_SQL") ? "antlr-tree:no-sql-contexts" : "antlr-tree:no-cics-contexts");
+             else if (complete)
+-                dependencyPresenceEvidence.put(kind, statements.stream()
++                dependencyPresenceEvidence.put(kind, kind.equals("EXEC_SQL")
++                        ? "antlr-tree:bound-sql-resources" : statements.stream()
+                         .allMatch(statement -> "Cics_returnContext".equals(statement.get("grammarRule")))
+                         ? "antlr-tree:resource-free-cics-return" : "antlr-tree:bound-cics-resources");
+             if (!statements.isEmpty() && !complete)
+@@ -417,6 +422,9 @@ public class ParsePipeline {
+                         .distinct().collect(java.util.stream.Collectors.joining(",")));
+             statements.stream().filter(statement -> statement.containsKey("bindingDiagnostic"))
+                     .forEach(statement -> dependencyDiagnostics.add(statement.get("bindingDiagnostic").toString()));
++            statements.stream().filter(statement -> statement.get("bindingDiagnostics") instanceof List<?>)
++                    .forEach(statement -> ((List<?>) statement.get("bindingDiagnostics"))
++                            .forEach(issue -> dependencyDiagnostics.add(issue.toString())));
+         }
+         if (!knownDialects)
+             dependencyDiagnostics.add("unsupported-dialect-dependency-contexts:"
+@@ -424,11 +432,15 @@ public class ParsePipeline {
+         boolean opaqueFileIo = !knownDialects || dependencyDialectStatements.stream()
+                 .anyMatch(statement -> !"complete".equals(statement.get("bindingStatus")));
+         boolean hasBoundFiles = dependencyDialectStatements.stream()
+-                .anyMatch(statement -> statement.containsKey("resourceBindings"));
++                .anyMatch(statement -> "EXEC_CICS".equals(statement.get("kind"))
++                        && statement.containsKey("resourceBindings"));
+         boolean fileIoComplete = fileIoDependencyContexts.isEmpty() && !opaqueFileIo;
+         dependencyAbsenceCoverage.put("FILE_IO", fileIoComplete ? "complete" : "partial");
+         if (fileIoComplete && hasBoundFiles)
+             dependencyPresenceEvidence.put("FILE_IO", "antlr-tree:bound-cics-file-resources");
++        else if (fileIoComplete && dependencyDialectStatements.stream()
++                .anyMatch(statement -> "EXEC_SQL".equals(statement.get("kind"))))
++            dependencyPresenceEvidence.put("FILE_IO", "antlr-tree:bound-sql-resources");
+         else if (fileIoComplete)
+             dependencyAbsenceEvidence.put("FILE_IO", "antlr-tree:no-file-io-contexts");
+         else dependencyDiagnostics.add("unsupported-file-io-dependency-contexts:"
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/SqlDependencyAnalysis.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/SqlDependencyAnalysis.java
+new file mode 100644
+index 0000000..6d8a997
+--- /dev/null
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/SqlDependencyAnalysis.java
+@@ -0,0 +1,131 @@
++package org.smojol.toolkit.analysis.pipeline;
++
++import org.antlr.v4.runtime.ParserRuleContext;
++import org.antlr.v4.runtime.tree.ParseTree;
++import org.eclipse.lsp.cobol.core.CobolParser;
++import org.eclipse.lsp.cobol.implicitDialects.sql.Db2SqlParser;
++
++import java.util.ArrayList;
++import java.util.LinkedHashMap;
++import java.util.List;
++import java.util.Locale;
++import java.util.Map;
++import java.util.Set;
++
++final class SqlDependencyAnalysis {
++    private record Reference(String kind, String name, ParserRuleContext syntax, boolean declaration) {}
++    private record Statement(Map<String, Object> export, List<Reference> references) {}
++    private final List<Statement> statements = new ArrayList<>();
++    private static final Set<String> SUPPORTED_OPERATIONS = Set.of(
++            "DECLARE", "SELECT", "INSERT", "UPDATE", "DELETE",
++            "OPEN", "FETCH", "CLOSE", "COMMIT", "ROLLBACK");
++
++    void record(Db2SqlParser.SqlCodeContext context, Map<String, Object> export) {
++        if (!(context.getCustomData().get("REKT_SQL_SEMANTIC_TREE")
++                instanceof Db2SqlParser.StartSqlRuleContext syntax)) {
++            export.put("semanticStatus", "unavailable");
++            export.put("bindingDiagnostics", List.of("sql-semantic-tree-unavailable"));
++            return;
++        }
++        List<Reference> references = new ArrayList<>();
++        collectReferences(syntax, references);
++        export.put("semanticSyntax", ParsePipeline.dialectSyntax(syntax));
++        export.put("semanticStatus", "complete");
++        export.put("resourceReferences", references.stream().map(reference -> Map.of(
++                "kind", reference.kind(), "name", reference.name(),
++                "role", reference.declaration() ? "declaration" : "reference",
++                "grammarRule", reference.syntax().getClass().getSimpleName())).toList());
++        statements.add(new Statement(export, references));
++    }
++
++    void bind(ParseTree program) {
++        Map<String, List<ParserRuleContext>> definitions = new LinkedHashMap<>();
++        collectHostDeclarations(program, definitions);
++        for (Statement statement : statements) {
++            for (Reference reference : statement.references())
++                if (reference.declaration())
++                    definitions.computeIfAbsent(key(reference.kind(), reference.name()), ignored -> new ArrayList<>())
++                            .add((ParserRuleContext) reference.syntax().getParent());
++        }
++        boolean singleProgram = countPrograms(program) == 1;
++        for (Statement statement : statements) {
++            List<Map<String, Object>> bindings = new ArrayList<>();
++            List<String> issues = new ArrayList<>();
++            String operation = statement.export().get("operation").toString();
++            if (!singleProgram) issues.add("sql-nested-program-scope-unverified");
++            if (!SUPPORTED_OPERATIONS.contains(operation)
++                    || operation.equals("DECLARE") && statement.references().stream().noneMatch(Reference::declaration))
++                issues.add("sql-dependency-operation-unsupported:" + operation);
++            for (Reference reference : statement.references()) {
++                if (reference.declaration()) continue;
++                List<ParserRuleContext> candidates = definitions.getOrDefault(key(reference.kind(), reference.name()), List.of());
++                if (candidates.size() != 1) {
++                    issues.add("sql-" + (candidates.isEmpty() ? "declaration-not-found:" : "declaration-ambiguous:")
++                            + reference.kind() + ":" + reference.name());
++                    continue;
++                }
++                bindings.add(Map.of("kind", reference.kind(), "name", reference.name(),
++                        "definitionScope", "expanded-parser-input",
++                        "definitionSyntax", ParsePipeline.dialectSyntax(candidates.get(0))));
++            }
++            statement.export().put("resourceBindings", bindings);
++            statement.export().put("bindingStatus", issues.isEmpty() ? "complete" : "unresolved");
++            if (!issues.isEmpty()) statement.export().put("bindingDiagnostics", issues.stream().distinct().toList());
++        }
++    }
++
++    private static String key(String kind, String name) {
++        return kind + ":" + name;
++    }
++
++    private static String identifier(String text) {
++        String name = text.startsWith(":") ? text.substring(1) : text;
++        return name.contains("\"") ? name : name.toUpperCase(Locale.ROOT);
++    }
++
++    private void collectReferences(ParseTree node, List<Reference> references) {
++        if (node instanceof ParserRuleContext context) {
++            String kind = context instanceof Db2SqlParser.Dbs_table_nameContext
++                    || context instanceof Db2SqlParser.Dbs_view_nameContext ? "SQL_RELATION"
++                    : context instanceof Db2SqlParser.Dbs_cursor_nameContext ? "SQL_CURSOR"
++                    : context instanceof Db2SqlParser.Dbs_host_var_identifierContext
++                    || context instanceof Db2SqlParser.Dbs_host_variable_arrayContext ? "SQL_HOST_VARIABLE"
++                    : context instanceof Db2SqlParser.Dbs_sequence_nameContext ? "SQL_SEQUENCE"
++                    : context instanceof Db2SqlParser.Dbs_statement_nameContext ? "SQL_STATEMENT"
++                    : context instanceof Db2SqlParser.Dbs_distinct_type_nameContext ? "SQL_TYPE"
++                    : context instanceof Db2SqlParser.Dbs_function_nameContext function
++                    && function.dbs_inbuild_functions() == null ? "SQL_FUNCTION" : null;
++            if (kind != null) {
++                boolean declaration = context.getParent() instanceof Db2SqlParser.Dbs_declare_tableContext
++                        || context instanceof Db2SqlParser.Dbs_cursor_nameContext
++                        && context.getParent() instanceof Db2SqlParser.Dbs_declare_cursorContext;
++                references.add(new Reference(kind, identifier(context.getText()), context, declaration));
++                return;
++            }
++        }
++        for (int index = 0; index < node.getChildCount(); index++)
++            collectReferences(node.getChild(index), references);
++    }
++
++    private void collectHostDeclarations(ParseTree node, Map<String, List<ParserRuleContext>> definitions) {
++        if (node instanceof CobolParser.DataDescriptionEntryFormat1Context entry && entry.entryName() != null)
++            addHost(entry.entryName().getText(), entry, definitions);
++        else if (node instanceof CobolParser.DataDescriptionEntryFormat1Level77Context entry && entry.entryName() != null)
++            addHost(entry.entryName().getText(), entry, definitions);
++        for (int index = 0; index < node.getChildCount(); index++)
++            collectHostDeclarations(node.getChild(index), definitions);
++    }
++
++    private void addHost(String name, ParserRuleContext declaration,
++                         Map<String, List<ParserRuleContext>> definitions) {
++        if (!"FILLER".equalsIgnoreCase(name))
++            definitions.computeIfAbsent(key("SQL_HOST_VARIABLE", identifier(name)), ignored -> new ArrayList<>())
++                    .add(declaration);
++    }
++
++    private int countPrograms(ParseTree node) {
++        int count = node instanceof CobolParser.ProgramUnitContext ? 1 : 0;
++        for (int index = 0; index < node.getChildCount(); index++) count += countPrograms(node.getChild(index));
++        return count;
++    }
++}

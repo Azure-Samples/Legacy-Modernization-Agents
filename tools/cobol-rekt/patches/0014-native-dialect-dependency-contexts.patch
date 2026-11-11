@@ -1,0 +1,192 @@
+diff --git a/smojol-core/src/main/java/org/smojol/common/program/CobolProgram.java b/smojol-core/src/main/java/org/smojol/common/program/CobolProgram.java
+index 3bdae4b..7f83828 100644
+--- a/smojol-core/src/main/java/org/smojol/common/program/CobolProgram.java
++++ b/smojol-core/src/main/java/org/smojol/common/program/CobolProgram.java
+@@ -21,6 +21,8 @@ public class CobolProgram extends SimpleTreeNode {
+             "EXEC_SQL", "unavailable", "FILE_IO", "unavailable"));
+     @Expose @Getter private final List<String> dependencyDiagnostics = new ArrayList<>();
+     @Expose @Getter private final List<Map<String, String>> dependencyControlTransfers = new ArrayList<>();
++    @Expose @Getter private final List<Map<String, Object>> dependencyDialectStatements = new ArrayList<>();
++    @Expose @Getter private final Map<String, String> dependencyPresenceEvidence = new LinkedHashMap<>();
+     @Expose @Getter private final Map<String, String> dependencyAbsenceEvidence = new LinkedHashMap<>();
+     @Expose @Getter @Setter private String sourcePath;
+     @Expose @Getter @Setter private String sourceSha256;
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
+index 72dfbf5..2bbd083 100644
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
+@@ -13,6 +13,8 @@ import org.antlr.v4.runtime.tree.ParseTreeWalker;
+ import org.eclipse.lsp.cobol.cli.di.CliModule;
+ import org.eclipse.lsp.cobol.core.CobolParser;
+ import org.eclipse.lsp.cobol.implicitDialects.cics.CICSParser;
++import org.eclipse.lsp.cobol.implicitDialects.sql.Db2SqlParser;
++import org.smojol.common.idms.DialectContainerNode;
+ import org.smojol.common.ast.CallTarget;
+ import org.smojol.common.ast.NodeText;
+ import org.smojol.toolkit.ast.CallTargetBuilder;
+@@ -86,6 +88,10 @@ public class ParsePipeline {
+     @Getter private final List<Map<String, String>> resolvedCopybooks = new ArrayList<>();
+     @Getter private final List<String> dependencyDiagnostics = new ArrayList<>();
+     @Getter private final List<Map<String, String>> dependencyControlTransfers = new ArrayList<>();
++    @Getter private final List<Map<String, Object>> dependencyDialectStatements = new ArrayList<>();
++    @Getter private final Map<String, String> dependencyPresenceEvidence = new LinkedHashMap<>();
++    private final Set<ParserRuleContext> recordedDialectRoots =
++            java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+     @Getter private final List<CallTarget> parserCallTargets = new ArrayList<>();
+     @Getter private String parsedSourcePath;
+     @Getter private String parsedSourceSha256;
+@@ -203,7 +209,6 @@ public class ParsePipeline {
+ 
+         tree = lastStageResult.getData().getTree();
+         collectParserCalls(tree);
+-        collectAbsenceContexts(tree);
+         ParseTreeWalker walker = new ParseTreeWalker();
+         EntityNavigatorBuilder navigatorBuilder = ops.getCobolEntityNavigatorBuilder();
+         dialect.verifyNoNullDialectStatements(tree, navigatorBuilder);
+@@ -273,11 +278,65 @@ public class ParsePipeline {
+     }
+ 
+     private void collectAbsenceContexts(ParseTree node) {
++        collectDependencyContexts(node, null);
++    }
++
++    private boolean containsSupportedDialect(ParseTree node) {
++        if (node instanceof ParserRuleContext context
++                && (context.getClass().getEnclosingClass() == CICSParser.class
++                || context.getClass().getEnclosingClass() == Db2SqlParser.class))
++            return true;
++        for (int index = 0; index < node.getChildCount(); index++)
++            if (containsSupportedDialect(node.getChild(index))) return true;
++        return false;
++    }
++
++    private Map<String, Object> dialectSyntax(ParseTree node) {
++        if (!(node instanceof ParserRuleContext context))
++            return Map.of("token", node.getText());
++        List<Map<String, Object>> children = new ArrayList<>();
++        for (int index = 0; index < context.getChildCount(); index++)
++            children.add(dialectSyntax(context.getChild(index)));
++        return Map.of("rule", context.getClass().getSimpleName(), "children", children);
++    }
++
++    private void recordDialectStatement(ParserRuleContext context, String kind) {
++        boolean bareReturn = context instanceof CICSParser.Cics_returnContext statement
++                && statement.RETURN() != null && statement.getChildCount() == 1;
++        Map<String, Object> statement = new LinkedHashMap<>();
++        statement.put("kind", kind);
++        statement.put("operation", context.getStart().getText().toUpperCase(java.util.Locale.ROOT));
++        statement.put("grammarRule", context.getClass().getSimpleName());
++        statement.put("sourceText", NodeText.originalText(context, NodeText::PASSTHROUGH));
++        statement.put("coordinateSpace", "expanded-parser-input");
++        statement.put("line", context.getStart().getLine());
++        statement.put("column", context.getStart().getCharPositionInLine());
++        statement.put("bindingStatus", bareReturn ? "complete" : "unresolved");
++        statement.put("runtimeMapping", "unverified");
++        statement.put("syntax", dialectSyntax(context));
++        dependencyDialectStatements.add(statement);
++    }
++
++    private void collectDependencyContexts(ParseTree node, Class<?> parentParser) {
+         if (node instanceof org.antlr.v4.runtime.tree.ErrorNode
+                 || (!(node instanceof ParserRuleContext) && !(node instanceof org.antlr.v4.runtime.tree.TerminalNode)))
+             dialectDependencyContexts.add("unknown-parse-node:" + node.getClass().getSimpleName());
++        Class<?> parser = parentParser;
+         if (node instanceof ParserRuleContext context) {
+             String kind = context.getClass().getSimpleName();
++            parser = context.getClass().getEnclosingClass();
++            boolean cics = parser == CICSParser.class;
++            boolean sql = parser == Db2SqlParser.class;
++            if ((cics || sql) && parser != parentParser && recordedDialectRoots.add(context)) {
++                if (context instanceof CICSParser.CicsExecBlockContext block && !block.allCicsRule().isEmpty()) {
++                    for (CICSParser.AllCicsRuleContext command : block.allCicsRule())
++                        recordDialectStatement((ParserRuleContext) command.getChild(0), "EXEC_CICS");
++                } else if (context instanceof Db2SqlParser.ExecRuleContext block && block.sqlCode() != null) {
++                    recordDialectStatement(block.sqlCode(), "EXEC_SQL");
++                } else {
++                    recordDialectStatement(context, cics ? "EXEC_CICS" : "EXEC_SQL");
++                }
++            }
+             if (context instanceof CICSParser.Cics_returnContext cicsReturn) {
+                 boolean bare = cicsReturn.RETURN() != null && cicsReturn.getChildCount() == 1;
+                 Map<String, String> transfer = Map.of(
+@@ -291,7 +350,13 @@ public class ParsePipeline {
+                 if (!dependencyControlTransfers.contains(transfer))
+                     dependencyControlTransfers.add(transfer);
+             }
+-            if (kind.startsWith("Dialect") || context.getClass().getEnclosingClass() != CobolParser.class)
++            boolean restoredGuid = context instanceof CobolParser.DialectGuidContext
++                    && context.getParent() instanceof CobolParser.DialectNodeFillerContext filler
++                    && containsSupportedDialect(filler);
++            boolean wrapper = context instanceof DialectContainerNode
++                    || kind.startsWith("Dialect") && !restoredGuid;
++            if (wrapper ? !containsSupportedDialect(context)
++                    : parser != CobolParser.class && !cics && !sql)
+                 dialectDependencyContexts.add(kind);
+             boolean emptyFileSection = context instanceof CobolParser.FileSectionContext section
+                     && section.fileDescriptionEntry().isEmpty();
+@@ -299,23 +364,35 @@ public class ParsePipeline {
+                 fileIoDependencyContexts.add(kind);
+         }
+         for (int index = 0; index < node.getChildCount(); index++)
+-            collectAbsenceContexts(node.getChild(index));
++            collectDependencyContexts(node.getChild(index), parser);
+     }
+ 
+     private void attestSupportedAbsence() {
+         if (!dependencyParseComplete) return;
+-        boolean noDialect = dialectDependencyContexts.isEmpty();
++        boolean knownDialects = dialectDependencyContexts.isEmpty();
++        boolean noDialect = knownDialects && dependencyDialectStatements.isEmpty();
+         for (String kind : List.of("EXEC_SQL", "EXEC_CICS")) {
+-            dependencyAbsenceCoverage.put(kind, noDialect ? "complete" : "partial");
+-            if (noDialect) dependencyAbsenceEvidence.put(kind, "antlr-tree:no-dialect-contexts");
++            List<Map<String, Object>> statements = dependencyDialectStatements.stream()
++                    .filter(statement -> kind.equals(statement.get("kind"))).toList();
++            boolean complete = knownDialects && statements.stream()
++                    .allMatch(statement -> "complete".equals(statement.get("bindingStatus")));
++            dependencyAbsenceCoverage.put(kind, complete ? "complete" : "partial");
++            if (complete && statements.isEmpty())
++                dependencyAbsenceEvidence.put(kind, noDialect ? "antlr-tree:no-dialect-contexts"
++                        : kind.equals("EXEC_SQL") ? "antlr-tree:no-sql-contexts" : "antlr-tree:no-cics-contexts");
++            else if (complete)
++                dependencyPresenceEvidence.put(kind, "antlr-tree:resource-free-cics-return");
++            if (!statements.isEmpty() && !complete)
++                dependencyDiagnostics.add("unresolved-" + kind + "-dependency-bindings:"
++                        + statements.stream().map(statement -> statement.get("grammarRule").toString())
++                        .distinct().collect(java.util.stream.Collectors.joining(",")));
+         }
+-        if (!noDialect)
++        if (!knownDialects)
+             dependencyDiagnostics.add("unsupported-dialect-dependency-contexts:"
+                     + String.join(",", dialectDependencyContexts));
+-        dependencyControlTransfers.forEach(transfer -> dependencyDiagnostics.add(
+-                "cics-control-transfer-requires-runtime-mapping:RETURN:"
+-                        + transfer.get("variant") + ":parser-line=" + transfer.get("line")));
+-        boolean noFileIo = fileIoDependencyContexts.isEmpty() && noDialect;
++        boolean opaqueFileIo = !knownDialects || dependencyDialectStatements.stream()
++                .anyMatch(statement -> !"complete".equals(statement.get("bindingStatus")));
++        boolean noFileIo = fileIoDependencyContexts.isEmpty() && !opaqueFileIo;
+         dependencyAbsenceCoverage.put("FILE_IO", noFileIo ? "complete" : "partial");
+         if (noFileIo) dependencyAbsenceEvidence.put("FILE_IO", "antlr-tree:no-file-io-contexts");
+         else dependencyDiagnostics.add("unsupported-file-io-dependency-contexts:"
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/AnalyseProgramDependenciesTask.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/AnalyseProgramDependenciesTask.java
+index ec8cfc0..4063bf3 100644
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/AnalyseProgramDependenciesTask.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/AnalyseProgramDependenciesTask.java
+@@ -88,6 +88,8 @@ public class AnalyseProgramDependenciesTask {
+                     program.setSourceSha256(pipeline.getParsedSourceSha256());
+                     program.getDependencyDiagnostics().addAll(pipeline.getDependencyDiagnostics());
+                     program.getDependencyControlTransfers().addAll(pipeline.getDependencyControlTransfers());
++                    program.getDependencyDialectStatements().addAll(pipeline.getDependencyDialectStatements());
++                    program.getDependencyPresenceEvidence().putAll(pipeline.getDependencyPresenceEvidence());
+                     program.getDependencyCoverage().put("COPY",
+                             pipeline.isDependencyParseComplete() ? "complete" : "partial");
+                     program.getDependencyCoverage().putAll(pipeline.getDependencyAbsenceCoverage());
+@@ -136,6 +138,7 @@ public class AnalyseProgramDependenciesTask {
+                     if (!"complete".equals(child.getDependencyCoverage().get(kind))) {
+                         program.getDependencyCoverage().put(kind, "partial");
+                         program.getDependencyAbsenceEvidence().remove(kind);
++                        program.getDependencyPresenceEvidence().remove(kind);
+                     }
+                 }
+                 if ("CALL".equals(child.getDependencyKind()))

@@ -1,0 +1,409 @@
+diff --git a/smojol-cli/src/main/java/org/smojol/cli/DependencyAnalysisCommand.java b/smojol-cli/src/main/java/org/smojol/cli/DependencyAnalysisCommand.java
+--- a/smojol-cli/src/main/java/org/smojol/cli/DependencyAnalysisCommand.java
++++ b/smojol-cli/src/main/java/org/smojol/cli/DependencyAnalysisCommand.java
+@@ -77,7 +77,11 @@
+             case AnalysisTaskResultOK ok -> ok.getDetail();
+             case AnalysisTaskResultError e -> throw new RuntimeException(e.getException());
+         };
+-        if (exportPath != null) new ExportProgramDependenciesTask(exportPath).run(root);
++        if (exportPath != null) {
++            AnalysisTaskResult exported = new ExportProgramDependenciesTask(exportPath).run(root);
++            if (exported instanceof AnalysisTaskResultError error)
++                throw new IOException("Dependency export failed", error.getException());
++        }
+         if (injectIntoNeo4j)
+             try (GraphSDK graphSDK = new GraphSDK(new Neo4JDriverBuilder().fromEnv())) {
+                 new InjectProgramDependenciesIntoNeo4JTask(new NodeSpecBuilder(new NamespaceQualifier("DEP-GRAPH")),
+@@ -85,6 +89,6 @@
+             } catch (Exception e) {
+                 throw new RuntimeException(e);
+             }
+-        return 0;
++        return root.isDependencyAnalysisComplete() ? 0 : 1;
+     }
+ }
+diff --git a/smojol-core/src/main/java/org/smojol/common/program/CobolProgram.java b/smojol-core/src/main/java/org/smojol/common/program/CobolProgram.java
+--- a/smojol-core/src/main/java/org/smojol/common/program/CobolProgram.java
++++ b/smojol-core/src/main/java/org/smojol/common/program/CobolProgram.java
+@@ -4,14 +4,27 @@
+ import hu.webarticum.treeprinter.SimpleTreeNode;
+ import hu.webarticum.treeprinter.TreeNode;
+ import lombok.Getter;
++import lombok.Setter;
+ import org.smojol.common.ast.CallTarget;
+ 
+ import java.util.ArrayList;
+ import java.util.List;
++import java.util.Map;
++import java.util.LinkedHashMap;
+ 
+ public class CobolProgram extends SimpleTreeNode {
+     @Expose @Getter private final CallTarget callTarget;
+     @Expose @Getter private final List<CobolProgram> dependencies = new ArrayList<>();
++    @Expose @Getter private final int dependencyExportSchemaVersion = 1;
++    @Expose @Getter private final Map<String, String> dependencyCoverage = new LinkedHashMap<>(Map.of(
++            "COPY", "unavailable", "CALL", "unavailable", "EXEC_CICS", "unavailable",
++            "EXEC_SQL", "unavailable", "FILE_IO", "unavailable"));
++    @Expose @Getter private final List<String> dependencyDiagnostics = new ArrayList<>();
++    @Expose @Getter private final Map<String, String> dependencyAbsenceEvidence = new LinkedHashMap<>();
++    @Expose @Getter @Setter private String sourcePath;
++    @Expose @Getter @Setter private String sourceSha256;
++    @Expose @Getter @Setter private String dependencyKind = "CALL";
++    @Expose @Getter @Setter private boolean dependencyAnalysisComplete;
+ 
+     public CobolProgram(CallTarget callTarget) {
+         super(callTarget.getName());
+@@ -23,7 +36,8 @@
+     }
+ 
+     public List<CobolProgram> staticDependencies() {
+-        return dependencies.stream().filter(CobolProgram::isStatic).toList();
++        return dependencies.stream().filter(CobolProgram::isStatic)
++                .filter(program -> !"COPY".equals(program.dependencyKind)).toList();
+     }
+ 
+     @Override
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
+@@ -11,6 +11,9 @@
+ import org.antlr.v4.runtime.tree.ParseTreeListener;
+ import org.antlr.v4.runtime.tree.ParseTreeWalker;
+ import org.eclipse.lsp.cobol.cli.di.CliModule;
++import org.eclipse.lsp.cobol.core.CobolParser;
++import org.smojol.common.ast.CallTarget;
++import org.smojol.toolkit.ast.CallTargetBuilder;
+ import org.eclipse.lsp.cobol.cli.modules.CliClientProvider;
+ import org.eclipse.lsp.cobol.common.CleanerPreprocessor;
+ import org.eclipse.lsp.cobol.common.ResultWithErrors;
+@@ -47,6 +50,17 @@
+ import java.util.List;
+ import java.util.Optional;
+ import java.util.logging.Logger;
++import java.util.ArrayList;
++import java.util.Map;
++import java.util.HexFormat;
++import java.net.URI;
++import java.nio.file.Path;
++import java.nio.file.Paths;
++import java.security.MessageDigest;
++import java.security.NoSuchAlgorithmException;
++import java.util.Set;
++import java.util.LinkedHashSet;
++import java.util.LinkedHashMap;
+ 
+ /**
+  * The parse pipeline extracts out the functionality of the parse pipeline into an independent
+@@ -67,6 +81,23 @@
+     @Getter private List<ParseTree> transfersOfControl;
+     @Getter private List<ParseTree> subroutineCalls;
+     @Getter private List<SyntaxError> diagnostics = List.of();
++    @Getter private final List<Map<String, String>> resolvedCopybooks = new ArrayList<>();
++    @Getter private final List<String> dependencyDiagnostics = new ArrayList<>();
++    @Getter private final List<CallTarget> parserCallTargets = new ArrayList<>();
++    @Getter private String parsedSourcePath;
++    @Getter private String parsedSourceSha256;
++    @Getter private boolean dependencyParseComplete;
++    @Getter private final Map<String, String> dependencyAbsenceCoverage = new LinkedHashMap<>(Map.of(
++            "EXEC_SQL", "unavailable", "EXEC_CICS", "unavailable", "FILE_IO", "unavailable"));
++    @Getter private final Map<String, String> dependencyAbsenceEvidence = new LinkedHashMap<>();
++    private final Set<String> dialectDependencyContexts = new LinkedHashSet<>();
++    private final Set<String> fileIoDependencyContexts = new LinkedHashSet<>();
++    private static final Set<String> FILE_IO_CONTEXTS = Set.of(
++            "OpenStatementContext", "CloseStatementContext", "ReadStatementContext",
++            "WriteStatementContext", "RewriteStatementContext", "DeleteStatementContext",
++            "StartStatementContext", "SortStatementContext", "MergeStatementContext",
++            "ReturnStatementContext", "ReleaseStatementContext", "IoControlParagraphContext",
++            "I_o_controlParagraphContext");
+ 
+     public ParsePipeline(SourceConfig sourceConfig, ComponentsBuilder ops, LanguageDialect dialect) {
+         this.src = sourceConfig.source();
+@@ -105,7 +136,10 @@
+ 
+         String documentUri = src.toURI().toString();
+ //        String text = new String(Files.readAllBytes(src.toPath()));
+-        String text = new String(ops.getResourceOperations().readAllBytes(src.toPath()));
++        byte[] sourceBytes = ops.getResourceOperations().readAllBytes(src.toPath());
++        parsedSourcePath = src.toPath().toAbsolutePath().normalize().toString();
++        parsedSourceSha256 = sha256(sourceBytes);
++        String text = new String(sourceBytes);
+ 
+         ResultWithErrors<ExtendedText> resultWithErrors = preprocessor.cleanUpCode(documentUri, text);
+         AnalysisContext ctx =
+@@ -135,6 +169,7 @@
+         StageResult<ParserStageResult> lastStageResult = (StageResult<ParserStageResult>) pipelineResult.getLastStageResult();
+         errorFinalizerService.processLateErrors(ctx, ctx.getCopybooksRepository());
+         diagnostics = List.copyOf(ctx.getAccumulatedErrors());
++        snapshotCopybooks(ctx);
+ 
+         // Local patch (Azure-Samples/COBOL-Modernization-Agents): allow
+         // warning-only diagnostics to retain a recovered parse tree. ERROR
+@@ -164,11 +199,14 @@
+         }
+ 
+         tree = lastStageResult.getData().getTree();
++        collectParserCalls(tree);
++        collectAbsenceContexts(tree);
+         ParseTreeWalker walker = new ParseTreeWalker();
+         EntityNavigatorBuilder navigatorBuilder = ops.getCobolEntityNavigatorBuilder();
+         dialect.verifyNoNullDialectStatements(tree, navigatorBuilder);
+         DialectIntegratorListener dialectIntegrationListener = new DialectIntegratorListener();
+         walker.walk(dialectIntegrationListener, tree);
++        collectAbsenceContexts(tree);
+         LOGGER.info("Restored " + dialectIntegrationListener.getRestores() + " nodes.");
+         LOGGER.info("Building tree...");
+         LOGGER.info("Built tree");
+@@ -177,7 +215,90 @@
+         navigator = navigatorBuilder.navigator(tree);
+         dataStructures = dataStructureValidation.run(ops.getDataStructureBuilder(navigator));
+         LOGGER.info(gson.toJson(timingResult));
++        dependencyParseComplete = diagnostics.isEmpty() && dependencyDiagnostics.isEmpty();
++        attestSupportedAbsence();
+         return navigator;
++    }
++
++    private static String sha256(byte[] bytes) {
++        try {
++            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
++        } catch (NoSuchAlgorithmException e) {
++            throw new IllegalStateException(e);
++        }
++    }
++
++    private void snapshotCopybooks(AnalysisContext ctx) {
++        if (ctx.getCopybooksRepository() == null) {
++            dependencyDiagnostics.add("copybook-repository-unavailable");
++            return;
++        }
++        var repository = ctx.getCopybooksRepository();
++        for (String name : repository.getUsages().keySet()) {
++            if (repository.getDefinitions().get(name).isEmpty())
++                dependencyDiagnostics.add("unresolved-copybook:" + name);
++        }
++        for (var definition : repository.getDefinitions().entries()) {
++            try {
++                Path path = Paths.get(URI.create(definition.getValue())).toAbsolutePath().normalize();
++                byte[] definitionBytes = ops.getResourceOperations().readAllBytes(path);
++                resolvedCopybooks.add(Map.of("name", path.getFileName().toString(),
++                        "path", path.toString(),
++                        "sha256", sha256(definitionBytes)));
++                if (new String(definitionBytes, java.nio.charset.StandardCharsets.ISO_8859_1)
++                        .contains("SYMBOLIC MAP GENERATED FROM BMS"))
++                    dependencyDiagnostics.add("partial-derived-bms-layout:" + path.getFileName());
++            } catch (IOException | RuntimeException e) {
++                dependencyDiagnostics.add("unreadable-copybook:" + definition.getKey() + ":" + e.getMessage());
++            }
++        }
++        diagnostics.forEach(error -> dependencyDiagnostics.add("parser-diagnostic:"
++                + (error.getErrorCode() == null ? "" : error.getErrorCode().getLabel())
++                + ":" + error.getSuggestion()));
++    }
++
++    private void collectParserCalls(ParseTree node) {
++        if (node instanceof CobolParser.CallStatementContext call) {
++            try {
++                parserCallTargets.add(CallTargetBuilder.target(call));
++            } catch (RuntimeException e) {
++                dependencyDiagnostics.add("unsupported-CALL:" + e.getMessage());
++            }
++        }
++        for (int index = 0; index < node.getChildCount(); index++)
++            collectParserCalls(node.getChild(index));
++    }
++
++    private void collectAbsenceContexts(ParseTree node) {
++        if (node instanceof org.antlr.v4.runtime.tree.ErrorNode
++                || (!(node instanceof ParserRuleContext) && !(node instanceof org.antlr.v4.runtime.tree.TerminalNode)))
++            dialectDependencyContexts.add("unknown-parse-node:" + node.getClass().getSimpleName());
++        if (node instanceof ParserRuleContext context) {
++            String kind = context.getClass().getSimpleName();
++            if (kind.startsWith("Dialect") || context.getClass().getEnclosingClass() != CobolParser.class)
++                dialectDependencyContexts.add(kind);
++            if (kind.startsWith("File") || FILE_IO_CONTEXTS.contains(kind))
++                fileIoDependencyContexts.add(kind);
++        }
++        for (int index = 0; index < node.getChildCount(); index++)
++            collectAbsenceContexts(node.getChild(index));
++    }
++
++    private void attestSupportedAbsence() {
++        if (!dependencyParseComplete) return;
++        boolean noDialect = dialectDependencyContexts.isEmpty();
++        for (String kind : List.of("EXEC_SQL", "EXEC_CICS")) {
++            dependencyAbsenceCoverage.put(kind, noDialect ? "complete" : "partial");
++            if (noDialect) dependencyAbsenceEvidence.put(kind, "antlr-tree:no-dialect-contexts");
++        }
++        if (!noDialect)
++            dependencyDiagnostics.add("unsupported-dialect-dependency-contexts:"
++                    + String.join(",", dialectDependencyContexts));
++        boolean noFileIo = fileIoDependencyContexts.isEmpty() && noDialect;
++        dependencyAbsenceCoverage.put("FILE_IO", noFileIo ? "complete" : "partial");
++        if (noFileIo) dependencyAbsenceEvidence.put("FILE_IO", "antlr-tree:no-file-io-contexts");
++        else dependencyDiagnostics.add("unsupported-file-io-dependency-contexts:"
++                + (fileIoDependencyContexts.isEmpty() ? "opaque-dialect" : String.join(",", fileIoDependencyContexts)));
+     }
+ 
+     private static Pipeline setupPipeline(Injector diCtx, CleanerPreprocessor preprocessor) {
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/AnalyseProgramDependenciesTask.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/AnalyseProgramDependenciesTask.java
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/AnalyseProgramDependenciesTask.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/AnalyseProgramDependenciesTask.java
+@@ -7,6 +7,8 @@
+ import org.smojol.common.ast.CallTarget;
+ import org.smojol.common.program.CobolProgram;
+ import org.smojol.common.program.StaticCallTarget;
++import org.smojol.common.ast.ProgramReferenceType;
++import org.smojol.toolkit.analysis.pipeline.ParsePipeline;
+ import org.smojol.common.flowchart.ConsoleColors;
+ import org.smojol.common.flowchart.FlowchartOutputFormat;
+ import org.smojol.common.id.UUIDProvider;
+@@ -24,6 +26,8 @@
+ import java.io.IOException;
+ import java.util.List;
+ import java.util.Map;
++import java.util.Set;
++import java.util.HashSet;
+ import java.util.logging.Logger;
+ 
+ import static org.smojol.toolkit.task.CommandLineAnalysisTask.BUILD_BASE_ANALYSIS;
+@@ -37,6 +41,7 @@
+     private final LanguageDialect dialect;
+     private final ProgramSearch programSearch;
+     private final ResourceOperations resourceOperations;
++    private final Set<String> activeSources = new HashSet<>();
+ 
+     public AnalyseProgramDependenciesTask(String sourceDir, List<File> copyBookPaths, String reportRootDir, String dialectJarPath, LanguageDialect dialect, ProgramSearch programSearch, ResourceOperations resourceOperations) {
+         this.sourceDir = sourceDir;
+@@ -50,32 +55,107 @@
+ 
+     private void recurse(CobolProgram program, List<File> copyBookPaths) throws IOException {
+         Pair<File, String> searchResult = programSearch.run(program.getName(), sourceDir);
+-        if (searchResult == ProgramSearch.NO_PATH) return;
++        if (searchResult == ProgramSearch.NO_PATH && !program.getName().contains(".")) {
++            for (String extension : List.of(".cbl", ".CBL", ".cob", ".COB")) {
++                searchResult = programSearch.run(program.getName() + extension, sourceDir);
++                if (searchResult != ProgramSearch.NO_PATH) break;
++            }
++        }
++        if (searchResult == ProgramSearch.NO_PATH) {
++            program.getDependencyDiagnostics().add("source-not-found:" + program.getName());
++            return;
++        }
+         File foundFile = searchResult.getLeft();
+         String srcDir = searchResult.getRight();
++        if (!activeSources.add(foundFile.getAbsolutePath())) {
++            program.getDependencyDiagnostics().add("recursive-call-cycle:" + program.getName());
++            return;
++        }
+         LOGGER.info("Found " + foundFile.getName() + " in " + srcDir);
+         try {
+             UUIDProvider idProvider = new UUIDProvider();
+-            Map<String, List<AnalysisTaskResult>> results = new CodeTaskRunner(srcDir,
++            CodeTaskRunner runner = new CodeTaskRunner(srcDir,
+                     reportRootDir, copyBookPaths, dialectJarPath,
+-                    dialect, new FullProgram(FlowchartOutputFormat.SVG, idProvider), idProvider, new OccursIgnoringFormat1DataStructureBuilder(), programSearch, resourceOperations)
+-                    .runForPrograms(ImmutableList.of(BUILD_BASE_ANALYSIS, CommandLineAnalysisTask.BUILD_PROGRAM_DEPENDENCIES), ImmutableList.of(foundFile.getName()));
+-            AnalysisTaskResult first = results.get(program.getName()).get(1);
++                    dialect, new FullProgram(FlowchartOutputFormat.SVG, idProvider), idProvider, new OccursIgnoringFormat1DataStructureBuilder(), programSearch, resourceOperations);
++            Map<String, List<AnalysisTaskResult>> results;
++            try {
++                results = runner.runForPrograms(ImmutableList.of(BUILD_BASE_ANALYSIS,
++                        CommandLineAnalysisTask.BUILD_PROGRAM_DEPENDENCIES), ImmutableList.of(foundFile.getName()));
++            } finally {
++                ParsePipeline pipeline = runner.getDependencyPipelines().get(foundFile.getName());
++                if (pipeline != null) {
++                    program.setSourcePath(pipeline.getParsedSourcePath());
++                    program.setSourceSha256(pipeline.getParsedSourceSha256());
++                    program.getDependencyDiagnostics().addAll(pipeline.getDependencyDiagnostics());
++                    program.getDependencyCoverage().put("COPY",
++                            pipeline.isDependencyParseComplete() ? "complete" : "partial");
++                    program.getDependencyCoverage().putAll(pipeline.getDependencyAbsenceCoverage());
++                    program.getDependencyAbsenceEvidence().putAll(pipeline.getDependencyAbsenceEvidence());
++                    for (Map<String, String> copybook : pipeline.getResolvedCopybooks()) {
++                        CobolProgram child = new CobolProgram(new StaticCallTarget(copybook.get("name")));
++                        child.setDependencyKind("COPY");
++                        child.setSourcePath(copybook.get("path"));
++                        child.setSourceSha256(copybook.get("sha256"));
++                        program.addAll(List.of(child));
++                    }
++                }
++            }
++            List<AnalysisTaskResult> programResults = results.get(foundFile.getName());
++            if (programResults == null || programResults.size() < 2)
++                throw new IllegalStateException("dependency analysis did not produce results");
++            AnalysisTaskResult first = programResults.get(1);
+             List<CallTarget> dependencies = switch (first) {
+                 case AnalysisTaskResultOK o -> o.getDetail();
+                 case AnalysisTaskResultError e -> throw new RuntimeException(e.getException());
+             };
+-            program.addAll(dependencies.stream().map(CobolProgram::new).toList());
+-
++            ParsePipeline pipeline = runner.getDependencyPipelines().get(foundFile.getName());
++            program.addAll(dependencies.stream().map(target -> {
++                CobolProgram child = new CobolProgram(target);
++                boolean standardCall = pipeline != null && pipeline.getParserCallTargets().stream()
++                        .anyMatch(call -> call.getName().equals(target.getName())
++                        && call.getProgramReferenceType() == target.getProgramReferenceType());
++                child.setDependencyKind(standardCall ? "CALL" : "EXTERNAL_CONTROL");
++                return child;
++            }).toList());
++            boolean callsComplete = pipeline != null && pipeline.isDependencyParseComplete()
++                    && pipeline.getParserCallTargets().stream().allMatch(target ->
++                    target.getProgramReferenceType() == ProgramReferenceType.STATIC
++                    && dependencies.stream().anyMatch(exported -> exported.getName().equals(target.getName())
++                    && exported.getProgramReferenceType() == target.getProgramReferenceType()));
++            program.getDependencyCoverage().put("CALL", callsComplete ? "complete" : "partial");
++            if (!callsComplete) program.getDependencyDiagnostics().add("CALL-coverage-incomplete-or-dynamic");
+             for (CobolProgram childDependency : program.staticDependencies())
+                 recurse(childDependency, copyBookPaths);
++            for (CobolProgram child : program.getDependencies()) {
++                if ("COPY".equals(child.getDependencyKind()) || child.isDependencyAnalysisComplete()) continue;
++                program.getDependencyDiagnostics().add("incomplete-callee:" + child.getName());
++                child.getDependencyDiagnostics().forEach(issue ->
++                        program.getDependencyDiagnostics().add("callee:" + child.getName() + ":" + issue));
++                for (String kind : program.getDependencyCoverage().keySet()) {
++                    if (!"complete".equals(child.getDependencyCoverage().get(kind))) {
++                        program.getDependencyCoverage().put(kind, "partial");
++                        program.getDependencyAbsenceEvidence().remove(kind);
++                    }
++                }
++                if ("CALL".equals(child.getDependencyKind()))
++                    program.getDependencyCoverage().put("CALL", "partial");
++            }
++            program.setDependencyAnalysisComplete(pipeline != null && pipeline.isDependencyParseComplete()
++                    && program.getDependencyDiagnostics().isEmpty()
++                    && program.getDependencyCoverage().values().stream().allMatch("complete"::equals)
++                    && program.getDependencies().stream().filter(child -> !"COPY".equals(child.getDependencyKind()))
++                    .allMatch(CobolProgram::isDependencyAnalysisComplete));
+         } catch (IOException | RuntimeException e) {
++            program.getDependencyDiagnostics().add("dependency-analysis-failed:" + e.getMessage());
+             LOGGER.severe(ConsoleColors.red("Error, terminating recursion down this path. Error: " + ExceptionUtils.getStackTrace(e)));
++        } finally {
++            activeSources.remove(foundFile.getAbsolutePath());
+         }
+     }
+ 
+     public AnalysisTaskResult run(String programName) throws IOException {
+         CobolProgram rootProgram = new CobolProgram(new StaticCallTarget(programName));
++        rootProgram.setDependencyKind("PROGRAM");
+         recurse(rootProgram, copyBookPaths);
+         new ListingTreePrinter().print(rootProgram);
+         return AnalysisTaskResult.OK(CommandLineAnalysisTask.BUILD_PROGRAM_DEPENDENCIES, rootProgram);
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/CodeTaskRunner.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/CodeTaskRunner.java
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/CodeTaskRunner.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/CodeTaskRunner.java
+@@ -57,6 +57,7 @@
+     private final Format1DataStructureBuildStrategy format1DataStructureBuilder;
+     private final ProgramSearch programSearch;
+     private final ResourceOperations resourceOperations;
++    @Getter private final Map<String, ParsePipeline> dependencyPipelines = new HashMap<>();
+ 
+     public CodeTaskRunner(String sourceDir, String reportRootDir, List<File> copyBookPaths, String dialectJarPath, LanguageDialect dialect, FlowchartGenerationStrategy flowchartGenerationStrategy, IdProvider idProvider, Format1DataStructureBuildStrategy format1DataStructureBuilder, ProgramSearch programSearch, ResourceOperations resourceOperations) {
+         this.sourceDir = sourceDir;
+@@ -141,6 +142,7 @@
+                 new EntityNavigatorBuilder(), new UnresolvedReferenceThrowStrategy(),
+                 format1DataStructureBuilder, idProvider, resourceOperations);
+         ParsePipeline pipeline = new ParsePipeline(sourceConfig, ops, dialect);
++        dependencyPipelines.put(programFilename, pipeline);
+         GraphBuildConfig graphBuildConfig = new GraphBuildConfig(
+                 NodeReferenceStrategy.EXISTING_CFG_NODE,
+                 NodeReferenceStrategy.EXISTING_CFG_NODE);

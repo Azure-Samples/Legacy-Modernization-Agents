@@ -1,0 +1,420 @@
+--- a/che-che4z-lsp-for-cobol-integration/server/engine/src/main/antlr4/org/eclipse/lsp/cobol/implicitDialects/cics/CICSLexer.g4
++++ b/che-che4z-lsp-for-cobol-integration/server/engine/src/main/antlr4/org/eclipse/lsp/cobol/implicitDialects/cics/CICSLexer.g4
+@@ -43,6 +43,7 @@
+ ALTSCRNWD : A L T S C R N W D;
+ ANALYZERSTAT: A N A L Y Z E R S T A T;
+ AND : A N D;
++ANY : A N Y;
+ ANYKEY : A N Y K E Y;
+ APLKYBD : A P L K Y B D;
+ APLTEXT : A P L T E X T;
+@@ -102,6 +103,7 @@
+ CHANGE : C H A N G E;
+ CHANGETIME : C H A N G E T I M E;
+ CHANNEL : C H A N N E L;
++CHILD : C H I L D;
+ CHAR : C H A R;
+ CHARACTERSET : C H A R A C T E R S E T;
+ CLNTCODEPAGE: C L N T C O D E P A G E;
+@@ -299,6 +301,7 @@
+ FCT : F C T;
+ FEPI :  F E P I;
+ FIELD : F I E L D;
++FETCH : F E T C H;
+ FILE : F I L E;
+ FIRESTATUS : F I R E S T A T U S;
+ FLAG: F L A G;
+--- a/che-che4z-lsp-for-cobol-integration/server/engine/src/main/antlr4/org/eclipse/lsp/cobol/implicitDialects/cics/CICSParser.g4
++++ b/che-che4z-lsp-for-cobol-integration/server/engine/src/main/antlr4/org/eclipse/lsp/cobol/implicitDialects/cics/CICSParser.g4
+@@ -26,7 +26,7 @@
+ allCicsRule: cics_send | cics_receive | cics_add | cics_address | cics_allocate | cics_asktime | cics_assign | cics_bif |
+                        cics_build | cics_cancel | cics_change | cics_change_task | cics_check | cics_connect | cics_converttime |
+                        cics_define | cics_delay | cics_delete | cics_deleteq | cics_deq | cics_document | cics_dump | cics_endbr |
+-                       cics_endbrowse | cics_enq | cics_enter | cics_extract | cics_force | cics_formattime | cics_free |
++                       cics_endbrowse | cics_enq | cics_enter | cics_extract | cics_fetch | cics_force | cics_formattime | cics_free |
+                        cics_freemain | cics_gds | cics_get | cics_getmain | cics_getnext | cics_handle | cics_ignore | cics_inquire |
+                        cics_invoke | cics_issue | cics_link | cics_load | cics_monitor | cics_move | cics_point | cics_pop |
+                        cics_post | cics_purge | cics_push | cics_put | cics_query | cics_read | cics_readnext |
+@@ -729,8 +729,11 @@
+             REQID cics_name | LDC cics_name | NLEOM | cics_handle_response)*;
+ 
+ /** RUN */
+-cics_run: RUN (ACTIVITY cics_data_value | ACQACTIVITY | ACQPROCESS | SYNCHRONOUS | ASYNCHRONOUS | FACILITYTOKN cics_data_value |
+-          INPUTEVENT cics_data_value | cics_handle_response)+;
++cics_run: RUN (cics_run_transid | (ACTIVITY cics_data_value | ACQACTIVITY | ACQPROCESS | SYNCHRONOUS | ASYNCHRONOUS | FACILITYTOKN cics_data_value |
++          INPUTEVENT cics_data_value | cics_handle_response)+);
++cics_run_transid: TRANSID cics_name (CHANNEL cics_data_value | CHILD cics_data_area | cics_handle_response)+;
++cics_fetch: FETCH (ANY cics_data_area | CHILD cics_data_value)
++          (CHANNEL cics_data_area | COMPSTATUS cics_cvda | ABCODE cics_data_area | NOSUSPEND | cics_handle_response)*;
+ 
+ /** SIGNAL EVENT */
+ cics_signal: SIGNAL (EVENT cics_data_value | FROMCHANNEL cics_data_value | FROM cics_data_area | FROMLENGTH cics_data_value | cics_handle_response)*;
+@@ -1002,7 +1005,7 @@
+     | cicsTranslatorCompileDirectivedKeywords
+     ;
+ 
+-cicsLexerDefinedVariableUsageTokens: ABCODE | ABDUMP | ABEND | ABORT | ABPROGRAM | ABSTIME | ACCUM | ACEE | ACQACTIVITY
++cicsLexerDefinedVariableUsageTokens: ANY | CHILD | FETCH | ABCODE | ABDUMP | ABEND | ABORT | ABPROGRAM | ABSTIME | ACCUM | ACEE | ACQACTIVITY
+     | ACQPROCESS | ACQUACTIVITY | ACTION | ACTIVITY | ACTIVITYID | ACTPARTN | AID | ALARM | ALTSCRNHT | ALTSCRNWD
+     | ANYKEY | APLKYBD | APLTEXT | APPLID | AS | ASA | ASIS | ASKTIME | ASRAINTRPT | ASRAKEY | ASRAPSW | ASRAREGS | ASRASPC
+     | ASRASTG | ASYNCHRONOUS | ATTACH | ATTACHID | ATTRIBUTES | AUTHENTICATE | AUTOPAGE | AUXILIARY | BASE64
+@@ -1165,7 +1168,7 @@
+    ;
+ 
+ cicsDfhValueLiteral
+-   : DFHVALUE LPARENCHAR (cics_conditions | cicsWord | literal) RPARENCHAR
++   : DFHVALUE LPARENCHAR (cics_conditions | cicsWord | literal | ABEND) RPARENCHAR
+    ;
+ 
+ literal
+--- a/che-che4z-lsp-for-cobol-integration/server/engine/src/main/java/org/eclipse/lsp/cobol/implicitDialects/cics/CicsSubstitutingVisitor.java
++++ b/che-che4z-lsp-for-cobol-integration/server/engine/src/main/java/org/eclipse/lsp/cobol/implicitDialects/cics/CicsSubstitutingVisitor.java
+@@ -173,8 +173,7 @@
+ 
+   @Override
+   public List<Node> visitCicsDfhValueLiteral(CICSParser.CicsDfhValueLiteralContext ctx) {
+-//      replaceWithMetadata(ctx, "");
+-    addReplacementContext(ctx);
++    replaceWithMetadata(ctx, "");
+     return visitChildren(ctx);
+   }
+ 
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/AnalyseProgramDependenciesTask.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/AnalyseProgramDependenciesTask.java
+@@ -137,7 +137,9 @@
+                         && call.getProgramReferenceType() == target.getProgramReferenceType());
+                 boolean cicsLink = pipeline != null && pipeline.getParserCicsCallTargets().stream()
+                         .anyMatch(call -> call.getName().equals(target.getName()));
+-                child.setDependencyKind(standardCall ? "CALL" : cicsLink ? "CICS_LINK" : "EXTERNAL_CONTROL");
++                boolean cicsRun = pipeline != null && pipeline.getParserCicsRunTargets().stream()
++                        .anyMatch(call -> call.getName().equals(target.getName()));
++                child.setDependencyKind(standardCall ? "CALL" : cicsRun ? "CICS_RUN" : cicsLink ? "CICS_LINK" : "EXTERNAL_CONTROL");
+                 return child;
+             }).toList());
+             boolean callsComplete = pipeline != null && pipeline.isDependencyParseComplete()
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsDependencyAnalysis.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsDependencyAnalysis.java
+@@ -24,18 +24,20 @@
+     private record Statement(ParserRuleContext syntax, Map<String, Object> export) {}
+     private final List<Statement> statements = new ArrayList<>();
+     private static final Set<String> INTRINSICS = Set.of("Cics_assignContext", "Cics_abendContext",
+-            "Cics_syncpointContext", "Cics_asktimeContext", "Cics_formattimeContext");
++            "Cics_syncpointContext", "Cics_asktimeContext", "Cics_formattimeContext",
++            "Cics_delayContext", "Cics_getContext", "Cics_putContext", "Cics_fetchContext");
+     private static final Set<String> LOCKS = Set.of("Cics_enqContext", "Cics_deqContext");
+ 
+     void record(ParserRuleContext context, Map<String, Object> export) {
+         if (INTRINSICS.contains(context.getClass().getSimpleName())
+                 || LOCKS.contains(context.getClass().getSimpleName())
+                 || context instanceof CICSParser.Cics_handleContext
++                || context instanceof CICSParser.Cics_runContext
+                 || context instanceof CICSParser.Cics_linkContext)
+             statements.add(new Statement(context, export));
+     }
+ 
+-    void bind(ParseTree tree, Path directory, List<CallTarget> targets) {
++    void bind(ParseTree tree, Path directory, List<CallTarget> targets, List<CallTarget> runTargets) {
+         CobolDeclarationIndex declarations = new CobolDeclarationIndex(tree);
+         for (Statement statement : statements) {
+             List<String> issues = new ArrayList<>();
+@@ -43,6 +45,11 @@
+             List<Map<String, String>> references = new ArrayList<>();
+             String rule = statement.syntax().getClass().getSimpleName();
+             if (!declarations.singleProgram()) issues.add("cics-nested-program-scope-unverified");
++            if ("Cics_getContext".equals(rule) && nodes(statement.syntax()).stream()
++                    .noneMatch(node -> node instanceof CICSParser.Cics_get_channelContext)
++                    || "Cics_putContext".equals(rule) && nodes(statement.syntax()).stream()
++                    .noneMatch(node -> node instanceof CICSParser.Cics_put_channelContext))
++                issues.add("cics-container-variant-unsupported");
+             if (LOCKS.contains(rule) && nodes(statement.syntax()).stream()
+                     .filter(node -> node instanceof TerminalNode && "RESOURCE".equalsIgnoreCase(node.getText()))
+                     .count() != 1)
+@@ -80,9 +87,17 @@
+                     issues.add("cics-program-binding-invalid:" + error.getMessage());
+                 }
+             }
++            if (statement.syntax() instanceof CICSParser.Cics_runContext) {
++                try {
++                    bindTransaction(statement, tree, declarations, directory, targets, runTargets, bindings, issues);
++                } catch (IOException | IllegalArgumentException | org.yaml.snakeyaml.error.YAMLException error) {
++                    issues.add("cics-transaction-binding-unverified:" + error.getMessage());
++                }
++            }
+             statement.export().put("resourceReferences", references);
+             statement.export().put("resourceBindings", bindings);
+-            statement.export().put("bindingBasis", LOCKS.contains(rule) ? "parsed-cics-lock-operation" : INTRINSICS.contains(rule)
++            statement.export().put("bindingBasis", "Cics_runContext".equals(rule) ? "parsed-cics-async-transaction"
++                    : LOCKS.contains(rule) ? "parsed-cics-lock-operation" : INTRINSICS.contains(rule)
+                     ? "parsed-current-task-operation" : "parsed-cics-control-binding");
+             statement.export().put("bindingStatus", issues.isEmpty() ? "complete" : "unresolved");
+             if (!issues.isEmpty()) statement.export().put("bindingDiagnostics", issues.stream().distinct().toList());
+@@ -157,10 +172,18 @@
+             resolution.put("definitionSyntax", ParsePipeline.dialectSyntax(declaration));
+             resolution.put("usageProof", "single-native-program:all-symbol-references-are-cics-program-operands");
+         }
++        Map<String, Object> binding = programResource(name, directory, issues);
++        if (binding == null) return;
++        binding.put("targetResolution", resolution);
++        bindings.add(binding);
++        targets.add(new StaticCallTarget(name));
++    }
++
++    private Map<String, Object> programResource(String name, Path directory, List<String> issues) throws IOException {
+         Map<String, Object> binding = CicsResourceCatalog.program(name).orElse(null);
+         if (binding == null) {
+             issues.add("cics-program-definition-not-found:" + name);
+-            return;
++            return null;
+         }
+         List<Path> sources;
+         try (var files = Files.walk(directory)) {
+@@ -170,15 +193,48 @@
+         }
+         if (sources.size() != 1) {
+             issues.add("cics-program-source-" + (sources.isEmpty() ? "not-found:" : "ambiguous:") + name);
+-            return;
++            return null;
+         }
+         binding.put("programSourcePath", sources.getFirst().toRealPath().toString());
+         binding.put("programSourceSha256", ParsePipeline.sha256(Files.readAllBytes(sources.getFirst())));
+-        binding.put("targetResolution", resolution);
+-        bindings.add(binding);
+-        targets.add(new StaticCallTarget(name));
++        return binding;
+     }
+ 
++    private void bindTransaction(Statement statement, ParseTree tree, CobolDeclarationIndex declarations,
++                                 Path directory, List<CallTarget> targets, List<CallTarget> runTargets,
++                                 List<Map<String, Object>> bindings, List<String> issues) throws IOException {
++        List<ParseTree> variants = nodes(statement.syntax()).stream()
++                .filter(node -> node instanceof CICSParser.Cics_run_transidContext).toList();
++        if (variants.size() != 1 || nodes(statement.syntax()).stream().filter(node ->
++                node instanceof TerminalNode && "CHILD".equalsIgnoreCase(node.getText())).count() != 1) {
++            issues.add("cics-run-variant-unsupported");
++            return;
++        }
++        CICSParser.Cics_run_transidContext command = (CICSParser.Cics_run_transidContext) variants.getFirst();
++        var resolution = CicsTransactionResolution.resolve(tree, statement.syntax(),
++                command.cics_name().name().getText(), declarations);
++        List<Map<String, Object>> resolved = new ArrayList<>();
++        List<CallTarget> children = new ArrayList<>();
++        for (String name : resolution.names()) {
++            Map<String, Object> transaction = CicsResourceCatalog.transaction(name).orElse(null);
++            if (transaction == null) {
++                issues.add("cics-transaction-definition-not-found:" + name);
++                return;
++            }
++            Map<?, ?> attributes = (Map<?, ?>) transaction.get("attributes");
++            String program = (String) attributes.get("program");
++            Map<String, Object> binding = programResource(program, directory, issues);
++            if (binding == null) return;
++            transaction.put("programBinding", binding);
++            transaction.put("targetResolution", resolution.proof());
++            resolved.add(transaction);
++            children.add(new StaticCallTarget(program));
++        }
++        bindings.addAll(resolved);
++        targets.addAll(children);
++        runTargets.addAll(children);
++    }
++
+     private boolean immutable(ParseTree tree, String name, ParserRuleContext declaration) {
+         List<ParseTree> allowed = statements.stream().map(statement -> programOperand(statement.syntax()))
+                 .filter(java.util.Objects::nonNull).map(node -> (ParseTree) node).toList();
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsResourceCatalog.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsResourceCatalog.java
+@@ -26,6 +26,10 @@
+         return resource("program", name);
+     }
+ 
++    static Optional<Map<String, Object>> transaction(String name) throws IOException {
++        return resource("transaction", name);
++    }
++
+     private static Optional<Map<String, Object>> resource(String kind, String name) throws IOException {
+         String configured = System.getenv("REKT_CICS_RESOURCE_DEFINITIONS");
+         if (configured == null || configured.isBlank()) return Optional.empty();
+@@ -61,6 +65,13 @@
+                     if (recordSize <= 0 || keyLength < 0 || keyLength > recordSize)
+                         throw new IllegalArgumentException("Invalid CICS file record/key lengths: " + name);
+                     attributes = Map.of("dsname", dataset, "recordsize", recordSize, "keylength", keyLength);
++                } else if ("transaction".equals(kind)) {
++                    if (!(file.get("program") instanceof String program) || !program.matches("[A-Z0-9@$#_-]{1,8}")
++                            || !"NO".equals(file.get("dynamic")) || !"NO".equals(file.get("routable"))
++                            || !"ENABLED".equals(file.get("status"))
++                            || file.containsKey("remotesystem") || file.containsKey("remotename"))
++                        throw new IllegalArgumentException("Only enabled, explicitly local non-dynamic transactions are supported: " + name);
++                    attributes = Map.of("program", program, "dynamic", "NO", "routable", "NO", "status", "ENABLED");
+                 } else {
+                     if (!"COBOL".equals(file.get("language")) || !"NO".equals(file.get("dynamic"))
+                             || file.containsKey("remotesystem") || file.containsKey("remotename"))
+--- /dev/null
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsTransactionResolution.java
+@@ -0,0 +1,129 @@
++package org.smojol.toolkit.analysis.pipeline;
++
++import org.antlr.v4.runtime.ParserRuleContext;
++import org.antlr.v4.runtime.tree.ParseTree;
++import org.antlr.v4.runtime.tree.TerminalNode;
++import org.eclipse.lsp.cobol.implicitDialects.sql.Db2SqlParser;
++
++import java.util.ArrayList;
++import java.util.LinkedHashMap;
++import java.util.List;
++import java.util.Map;
++import java.util.Set;
++import java.util.regex.Matcher;
++import java.util.regex.Pattern;
++
++final class CicsTransactionResolution {
++    record Resolution(List<String> names, Map<String, Object> proof) {}
++
++    static Resolution resolve(ParseTree tree, ParserRuleContext command, String operand,
++                              CobolDeclarationIndex declarations) {
++        if (operand.matches("(['\"])[A-Za-z0-9@$#_-]{4}\\1"))
++            return new Resolution(List.of(operand.substring(1, 5)), Map.of("kind", "literal"));
++        List<ParserRuleContext> targets = declarations.hosts(operand);
++        if (!operand.matches("[A-Z][A-Z0-9_-]*") || targets.size() != 1
++                || !local(targets.getFirst())
++                || !targets.getFirst().getText().matches("01" + Pattern.quote(operand)
++                + "PIC(?:TURE)?(?:IS)?X\\(0*4\\)(?:VALUE(?:IS)?SPACES?)?\\."))
++            throw new IllegalArgumentException("dynamic-cics-transaction-binding-unresolved:" + operand);
++        List<ParseTree> loops = nodes(tree).stream()
++                .filter(node -> rule(node).equals("PerformInlineStatementContext")
++                        && nodes(node).contains(command)).toList();
++        if (loops.size() != 1)
++            throw new IllegalArgumentException("cics-transaction-loop-scope-unverified:" + operand);
++        ParseTree loop = loops.getFirst();
++        ParseTree header = children(loop).stream().filter(node -> rule(node).equals("PerformTypeContext"))
++                .findFirst().orElseThrow(() -> new IllegalArgumentException("cics-transaction-loop-header-missing"));
++        Matcher bounds = Pattern.compile("(?:WITH)?(?:TESTBEFORE)?VARYING([A-Z][A-Z0-9_-]*)"
++                + "FROM([1-8])BY1UNTIL\\1>([1-8])(?:WITHTESTBEFORE)?").matcher(header.getText());
++        if (!bounds.matches() || Integer.parseInt(bounds.group(2)) > Integer.parseInt(bounds.group(3)))
++            throw new IllegalArgumentException("cics-transaction-loop-bounds-unverified:" + operand);
++        String counter = bounds.group(1);
++        List<ParserRuleContext> counters = declarations.hosts(counter);
++        if (counters.size() != 1 || !local(counters.getFirst())
++                || !counters.getFirst().getText().matches("01" + Pattern.quote(counter)
++                + "PIC(?:TURE)?(?:IS)?9(?:VALUE(?:IS)?0)?\\."))
++            throw new IllegalArgumentException("cics-transaction-counter-layout-unverified:" + counter);
++        ParseTree first = children(loop).stream()
++                .filter(node -> !(node instanceof TerminalNode) && node != header).findFirst()
++                .orElseThrow(() -> new IllegalArgumentException("cics-transaction-loop-body-missing"));
++        List<ParseTree> strings = nodes(first).stream()
++                .filter(node -> rule(node).equals("StringStatementContext")).toList();
++        if (strings.size() != 1 || nodes(first).stream().anyMatch(node ->
++                Set.of("IfStatementContext", "EvaluateStatementContext", "PerformStatementContext").contains(rule(node))))
++            throw new IllegalArgumentException("cics-transaction-string-not-unconditional:" + operand);
++        ParseTree string = strings.getFirst();
++        Matcher construction = Pattern.compile("STRING(['\"])([A-Za-z0-9@$#_-]{3})\\1"
++                + "DELIMITED(?:BY)?SIZE,?" + Pattern.quote(counter)
++                + "DELIMITED(?:BY)?SIZEINTO" + Pattern.quote(operand) + "(?:END-STRING)?")
++                .matcher(string.getText());
++        if (!construction.matches())
++            throw new IllegalArgumentException("cics-transaction-string-construction-unverified:" + operand);
++        for (ParseTree node : nodes(tree)) {
++            if (node instanceof TerminalNode && "ADDRESS".equalsIgnoreCase(node.getText()))
++                throw new IllegalArgumentException("cics-transaction-address-escape-unverified");
++            if (node instanceof TerminalNode && operand.equalsIgnoreCase(node.getText())
++                    && !nodes(targets.getFirst()).contains(node)
++                    && !nodes(string).contains(node)
++                    && !(nodes(command).contains(node) && nodes(loop).contains(command))
++                    && !readOnly(node, Set.of("DisplayOperandContext")))
++                throw new IllegalArgumentException("cics-transaction-target-mutation-or-escape:" + operand);
++            if (node instanceof TerminalNode && counter.equalsIgnoreCase(node.getText())
++                    && !nodes(counters.getFirst()).contains(node) && !nodes(header).contains(node)
++                    && !readOnly(node, Set.of("StringSendingContext", "EvaluateSelectContext", "DisplayOperandContext")))
++                throw new IllegalArgumentException("cics-transaction-counter-mutation-or-escape:" + counter);
++            if (node instanceof Db2SqlParser.SqlCodeContext sql
++                    && sql.getCustomData().get("REKT_SQL_SEMANTIC_TREE") instanceof ParseTree semantic
++                    && nodes(semantic).stream().anyMatch(reference ->
++                    rule(reference).startsWith("Dbs_host_")
++                            && Set.of(operand, counter).contains(reference.getText().replaceFirst("^:", ""))))
++                throw new IllegalArgumentException("cics-transaction-sql-host-escape-unverified");
++        }
++        List<String> names = new ArrayList<>();
++        for (int value = Integer.parseInt(bounds.group(2)); value <= Integer.parseInt(bounds.group(3)); value++)
++            names.add(construction.group(2) + value);
++        Map<String, Object> proof = new LinkedHashMap<>();
++        proof.put("kind", "bounded-varying-string");
++        proof.put("operand", operand);
++        proof.put("counter", counter);
++        proof.put("definitionSyntax", ParsePipeline.dialectSyntax(targets.getFirst()));
++        proof.put("counterDefinitionSyntax", ParsePipeline.dialectSyntax(counters.getFirst()));
++        proof.put("loopHeaderSyntax", ParsePipeline.dialectSyntax(header));
++        proof.put("stringSyntax", ParsePipeline.dialectSyntax(string));
++        proof.put("usageProof", "single-native-program:unconditional-string-with-read-only-target-and-counter-uses");
++        proof.put("transactionNames", names);
++        return new Resolution(names, proof);
++    }
++
++    private static boolean local(ParseTree declaration) {
++        for (ParseTree parent = declaration.getParent(); parent != null; parent = parent.getParent())
++            if (Set.of("WorkingStorageSectionContext", "LocalStorageSectionContext").contains(rule(parent))) return true;
++        return false;
++    }
++
++    private static boolean readOnly(ParseTree node, Set<String> allowed) {
++        for (ParseTree parent = node.getParent(); parent != null; parent = parent.getParent()) {
++            if (allowed.contains(rule(parent))) return true;
++            if (rule(parent).equals("FunctionCallContext")
++                    || rule(parent).endsWith("StatementContext") && !rule(parent).equals("StatementContext")) return false;
++        }
++        return false;
++    }
++
++    private static String rule(ParseTree node) {
++        return node.getClass().getSimpleName();
++    }
++
++    private static List<ParseTree> children(ParseTree node) {
++        List<ParseTree> result = new ArrayList<>();
++        for (int index = 0; index < node.getChildCount(); index++) result.add(node.getChild(index));
++        return result;
++    }
++
++    private static List<ParseTree> nodes(ParseTree root) {
++        List<ParseTree> result = new ArrayList<>();
++        result.add(root);
++        for (ParseTree child : children(root)) result.addAll(nodes(child));
++        return result;
++    }
++}
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
+@@ -96,6 +96,7 @@
+     private final SqlDependencyAnalysis sqlDependencies = new SqlDependencyAnalysis();
+     private final CicsDependencyAnalysis cicsDependencies = new CicsDependencyAnalysis();
+     @Getter private final List<CallTarget> parserCicsCallTargets = new ArrayList<>();
++    @Getter private final List<CallTarget> parserCicsRunTargets = new ArrayList<>();
+     @Getter private final List<CallTarget> parserCallTargets = new ArrayList<>();
+     @Getter private String parsedSourcePath;
+     @Getter private String parsedSourceSha256;
+@@ -228,7 +229,7 @@
+         dataStructures = dataStructureValidation.run(ops.getDataStructureBuilder(navigator));
+         LOGGER.info(gson.toJson(timingResult));
+         sqlDependencies.bind(tree);
+-        cicsDependencies.bind(tree, Path.of(parsedSourcePath).getParent(), parserCicsCallTargets);
++        cicsDependencies.bind(tree, Path.of(parsedSourcePath).getParent(), parserCicsCallTargets, parserCicsRunTargets);
+         dependencyParseComplete = diagnostics.isEmpty() && dependencyDiagnostics.isEmpty();
+         attestSupportedAbsence();
+         return navigator;
+@@ -336,6 +337,9 @@
+                 && response.getChildCount() == 4
+                 && Set.of("NORMAL", "INVREQ", "MAPFAIL", "NOTFINISHED", "NOTFND")
+                 .contains(response.getChild(2).getText().toUpperCase(java.util.Locale.ROOT));
++        boolean symbolicValue = context instanceof CICSParser.CicsDfhValueLiteralContext value
++                && value.getChildCount() == 4 && Set.of("NORMAL", "ABEND", "SECERROR")
++                .contains(value.getChild(2).getText().toUpperCase(java.util.Locale.ROOT));
+         Map<String, Object> statement = new LinkedHashMap<>();
+         statement.put("kind", kind);
+         statement.put("operation", context.getStart().getText().toUpperCase(java.util.Locale.ROOT));
+@@ -344,7 +348,7 @@
+         statement.put("coordinateSpace", "expanded-parser-input");
+         statement.put("line", context.getStart().getLine());
+         statement.put("column", context.getStart().getCharPositionInLine());
+-        statement.put("bindingStatus", bareReturn || normalResponse ? "complete" : "unresolved");
++        statement.put("bindingStatus", bareReturn || normalResponse || symbolicValue ? "complete" : "unresolved");
+         statement.put("runtimeMapping", "unverified");
+         statement.put("syntax", dialectSyntax(context));
+         if ("EXEC_CICS".equals(kind)) cicsDependencies.record(context, statement);

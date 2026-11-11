@@ -1,0 +1,25 @@
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsResourceCatalog.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsResourceCatalog.java
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsResourceCatalog.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsResourceCatalog.java
+@@ -73,10 +73,19 @@
+                         throw new IllegalArgumentException("Only enabled, explicitly local non-dynamic transactions are supported: " + name);
+                     attributes = Map.of("program", program, "dynamic", "NO", "routable", "NO", "status", "ENABLED");
+                 } else {
+-                    if (!"COBOL".equals(file.get("language")) || !"NO".equals(file.get("dynamic"))
++                    if (!"COBOL".equals(file.get("language"))
+                             || file.containsKey("remotesystem") || file.containsKey("remotename"))
+                         throw new IllegalArgumentException("Only explicitly local, non-dynamic COBOL program resources are supported: " + name);
+-                    attributes = Map.of("language", "COBOL", "dynamic", "NO");
++                    // IBM CICS PROGRAM resources default to DYNAMIC(NO) when the attribute is omitted.
++                    if (!file.containsKey("dynamic")) {
++                        attributes = Map.of("language", "COBOL", "dynamic", "NO", "dynamicProvenance", "cics-default");
++                    } else if ("NO".equals(file.get("dynamic"))) {
++                        attributes = Map.of("language", "COBOL", "dynamic", "NO");
++                    } else if ("YES".equals(file.get("dynamic"))) {
++                        throw new IllegalArgumentException("Dynamic CICS program resources are not supported: " + name);
++                    } else {
++                        throw new IllegalArgumentException("Invalid CICS program DYNAMIC value (expected YES or NO): " + name);
++                    }
+                 }
+                 binding = new LinkedHashMap<>();
+                 binding.put("kind", "CICS_" + kind.toUpperCase(java.util.Locale.ROOT));
