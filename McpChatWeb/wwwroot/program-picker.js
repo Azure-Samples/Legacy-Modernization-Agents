@@ -16,18 +16,16 @@
 // Parse fidelity is how much of a program the COBOL parser actually recovered. It is not a
 // quality score for the program: it describes what the converter will have to work from.
 //
-// The usual reason for Partial is a COPY target that is not in the source drop. The parser
-// generates a stub so it can finish, but a stub has no record layout, so every field the
-// program reads through that copybook is unknown. A conversion still produces code; it
-// invents the structure it could not read.
+// Structural fidelity is separate from the strict dependency gate. Missing inputs must never
+// be described as permission to infer layouts or invent an implementation.
 const PP_FIDELITY = {
   full: {
-    label: 'Full', color: '#10b981',
-    why: 'Every COPY target was found and the program parsed completely. The conversion works from the real record layouts.',
+    label: 'Full', color: 'var(--cp-text-muted)',
+    why: 'A full structural parse was recorded. This does not establish complete dependency evidence or conversion readiness.',
   },
   partial: {
     label: 'Partial', color: '#f59e0b',
-    why: 'The program parsed, but at least one copybook it COPYs was not in the source. The parser substituted a generated stub, so the fields behind that copybook have no known layout and the conversion will infer them.',
+    why: 'Partial structural evidence was recorded. Missing inputs and unresolved dependency evidence remain blockers; conversion must not invent their contents.',
   },
   'deps-only': {
     label: 'Deps only', color: '#38bdf8',
@@ -35,7 +33,7 @@ const PP_FIDELITY = {
   },
   failed: {
     label: 'Failed', color: '#ef4444',
-    why: 'The parser could not read this program. Converting it means working from the raw source alone.',
+    why: 'The parser failed for this program. Strict conversion still requires valid dependency evidence.',
   },
   'not-parsed': {
     label: 'Not parsed', color: '#64748b',
@@ -55,6 +53,10 @@ class ProgramPickerView {
     this.includeClosure = false;
     this.note = null;
     this.loaded = false;
+    this.readiness = null;
+    this.dependencyPlans = new Map();
+    this.commandRevision = 0;
+    this.readinessRevision = 0;
   }
 
   get root() {
@@ -70,13 +72,28 @@ class ProgramPickerView {
   }
 
   async load() {
+    const revision = ++this.readinessRevision;
+    this.readiness = null;
+    this.dependencyPlans.clear();
+    this.details.clear();
+    this.activeDetail = null;
+    this.readinessWarning = 'Checking dependency evidence. Conversion is blocked until checked.';
+    this.render();
     try {
-      const resp = await fetch('/api/modernization/programs');
+      const [resp, assessment] = await Promise.all([
+        fetch('/api/modernization/programs'),
+        window.ConversionReadiness.read().then(report => ({ report }), error => ({ error }))
+      ]);
+      if (revision !== this.readinessRevision) return;
+      this.readiness = assessment.report || null;
+      this.dependencyPlans = new Map((this.readiness?.programs || []).map(p => [p.program, p]));
+      this.readinessWarning = assessment.error ? `Dependency readiness unavailable: ${assessment.error.message}. Conversion is blocked until checked.` : null;
       if (!resp.ok) {
         this.note = `Program list unavailable (HTTP ${resp.status}).`;
         return;
       }
       const payload = await resp.json();
+      if (revision !== this.readinessRevision) return;
       this.programs = payload.programs || [];
       this.totals = {
         programs: payload.totalPrograms || 0,
@@ -84,6 +101,7 @@ class ProgramPickerView {
       };
       this.note = payload.note || null;
     } catch (e) {
+      if (revision !== this.readinessRevision) return;
       console.error('Failed to load program list:', e);
       this.note = 'Program list could not be loaded.';
     }
@@ -110,9 +128,10 @@ class ProgramPickerView {
 
     const visible = this.visiblePrograms();
     const selectedCount = this.selected.size;
+    const blockedCount = [...this.selected].filter(id => this.dependencyPlans.get(id)?.status !== 'eligible').length;
 
     root.innerHTML = `
-      <div class="pp-wrap">
+      <div class="pp-wrap" data-portal-theme="dark">
         <div class="pp-header">
           <div>
             <h2 class="pp-title">Choose programs to convert</h2>
@@ -130,11 +149,17 @@ class ProgramPickerView {
               <span class="pp-legend-note">Parse fidelity — hover for what each means</span>
             </div>
           </div>
+          <button id="pp-refresh-readiness" type="button">Refresh readiness</button>
           <input id="pp-filter" class="pp-filter" type="text" placeholder="Filter by name or path"
                  value="${this.escape(this.filter)}" />
         </div>
 
         ${this.note ? `<div class="pp-note">${this.escape(this.note)}</div>` : ''}
+        ${this.readinessWarning ? `<div class="dep-readiness" role="alert">${this.escape(this.readinessWarning)}</div>` : ''}
+        <div class="dep-readiness">Dependency evidence (separate from parse fidelity):
+          ${Object.keys(window.ConversionReadiness.states).map(key =>
+            `<span class="dep-state dep-state-${key}">${this.escape(window.ConversionReadiness.states[key].label)}</span>`).join('')}
+        </div>
 
         <div class="pp-body">
           <div class="pp-list-pane">
@@ -162,6 +187,7 @@ class ProgramPickerView {
             ${selectedCount === 0
               ? 'Nothing selected.'
               : `<strong>${selectedCount}</strong> program${selectedCount === 1 ? '' : 's'} selected`}
+            ${blockedCount ? `<span class="dep-state dep-state-missing" role="status">${blockedCount} selected program(s) lack passing dependency evidence. Conversion will not start.</span>` : ''}
           </div>
           <label class="pp-closure">
             <input type="checkbox" id="pp-include-closure" ${this.includeClosure ? 'checked' : ''} />
@@ -171,8 +197,8 @@ class ProgramPickerView {
             <option value="java" ${this.language === 'java' ? 'selected' : ''}>Java</option>
             <option value="csharp" ${this.language === 'csharp' ? 'selected' : ''}>C#</option>
           </select>
-          <button id="pp-convert" class="pp-convert" ${selectedCount === 0 ? 'disabled' : ''}>
-            Convert selection
+          <button id="pp-convert" class="pp-convert" ${selectedCount === 0 || blockedCount ? 'disabled' : ''}>
+            Review conversion command
           </button>
         </div>
 
@@ -191,11 +217,11 @@ class ProgramPickerView {
     // A partially parsed program is the single most useful warning on this screen, so it
     // sits on the row rather than behind a click.
     const warn = p.missingCopybookCount > 0
-      ? `<span class="pp-warn" title="Copybooks this program COPYs were not found. Their record layouts will be inferred rather than carried.">${p.missingCopybookCount} missing copybook${p.missingCopybookCount === 1 ? '' : 's'}</span>`
+      ? `<span class="pp-warn" title="Required copybooks were not found. Their record layouts must not be invented.">${p.missingCopybookCount} missing copybook${p.missingCopybookCount === 1 ? '' : 's'}</span>`
       : '';
 
     return `
-      <div class="pp-row ${checked ? 'pp-row-selected' : ''}" data-identity="${this.escape(id)}">
+      <div class="pp-row dep-row-${window.ConversionReadiness.state(this.dependencyPlans.get(id))} ${checked ? 'pp-row-selected' : ''}" data-identity="${this.escape(id)}">
         <label class="pp-row-main">
           <input type="checkbox" class="pp-check" data-identity="${this.escape(id)}" ${checked} />
           <span class="pp-name">${this.escape(p.basename)}</span>
@@ -203,9 +229,10 @@ class ProgramPickerView {
         </label>
         <div class="pp-row-meta">
           <span class="pp-loc">${p.linesOfCode.toLocaleString()} lines</span>
-          <span class="pp-fid" style="color:${fid.color}" title="${this.escape(fid.why)}">${fid.label}</span>
+          <span class="pp-fid" style="color:${fid.color}" title="${this.escape(fid.why)}">Parse: ${fid.label}</span>
           ${p.callClosureCount > 0 ? `<span class="pp-closure-count" title="Programs in this estate reachable by CALL from here">+${p.callClosureCount} called</span>` : ''}
           ${warn}
+          ${window.ConversionReadiness.badge(this.dependencyPlans.get(id))}
           <button class="pp-inspect" data-identity="${this.escape(id)}">Details</button>
         </div>
       </div>
@@ -247,12 +274,15 @@ class ProgramPickerView {
           <span title="How confident the extractor was in the facts it recorded">Facts confidence: ${d.factsConfidence ?? 0}</span>
         </div>
         <div class="pp-detail-why">${this.escape(fid.why)}</div>
+        ${window.ConversionReadiness.details(this.readiness
+          && this.dependencyPlans.has(d.relativePath || d.identity)
+          ? { ...this.readiness, programs: [this.dependencyPlans.get(d.relativePath || d.identity)] } : null)}
         ${d.note ? `<div class="pp-detail-note">${this.escape(d.note)}</div>` : ''}
         ${list('Calls', d.calls, 'Names this program CALLs. Some may be external modules that are not part of this estate.')}
         ${list('Call closure in this estate', d.callClosure, 'Programs here that are reachable by CALL. These are the ones "Add call closure" would include.')}
         ${list('Called by', d.calledBy, 'Programs that CALL this one. Converting this without them leaves callers pointing at COBOL.')}
         ${list('Copybooks', d.copybooks)}
-        ${list('Missing copybooks', d.missingCopybooks, 'Referenced but not found. Their layouts will be inferred rather than carried across.')}
+        ${list('Missing copybooks', d.missingCopybooks, 'Referenced but not found. Supply the real definitions; their layouts must not be invented.')}
       </div>
     `;
   }
@@ -277,6 +307,7 @@ class ProgramPickerView {
   // Expanding the closure needs each selected program's reachable set, which only the
   // detail endpoint carries. Fetched on demand so the list view stays one request.
   async resolveSelection() {
+    const revision = this.readinessRevision;
     const chosen = Array.from(this.selected);
     if (!this.includeClosure) return chosen;
 
@@ -285,18 +316,24 @@ class ProgramPickerView {
       if (!this.details.has(identity)) {
         try {
           const resp = await fetch(`/api/modernization/program/${encodeURI(identity)}`);
-          if (resp.ok) this.details.set(identity, await resp.json());
+          if (!resp.ok) throw new Error(`Call closure unavailable for ${identity} (HTTP ${resp.status}).`);
+          const detail = await resp.json();
+          if (revision !== this.readinessRevision) throw new Error('The inventory changed while checking call closure. Review the current selection again.');
+          this.details.set(identity, detail);
         } catch (e) {
           console.error('Failed to expand closure for', identity, e);
+          throw e;
         }
       }
       const d = this.details.get(identity);
-      (d?.callClosure || []).forEach(p => expanded.add(p));
+      if (!Array.isArray(d?.callClosure)) throw new Error(`Call closure is unavailable for ${identity}; conversion scope cannot be confirmed.`);
+      d.callClosure.forEach(p => expanded.add(p));
     }
     return Array.from(expanded);
   }
 
   async renderCommand() {
+    const revision = ++this.commandRevision;
     const target = document.getElementById('pp-command');
     if (!target) return;
 
@@ -305,23 +342,35 @@ class ProgramPickerView {
       return;
     }
 
-    const identities = await this.resolveSelection();
+    let identities;
+    try { identities = await this.resolveSelection(); }
+    catch (error) {
+      if (revision === this.commandRevision) target.innerHTML = `<p role="alert">${this.escape(error.message)}</p>`;
+      return;
+    }
+    if (revision !== this.commandRevision) return;
+    const selectedPlans = identities.map(id => this.dependencyPlans.get(id));
+    if (selectedPlans.some(p => p?.status !== 'eligible')) {
+      target.innerHTML = `<p class="dep-state dep-state-missing" role="status">Conversion will not start: required program dependency evidence is missing, rejected or not checked.</p>`
+        + window.ConversionReadiness.details(this.readiness
+          ? { ...this.readiness, programs: selectedPlans.filter(Boolean) } : null);
+      return;
+    }
     const added = identities.length - this.selected.size;
 
     target.innerHTML = `
       <div class="pp-command-box">
         <div class="pp-command-head">
-          Converting <strong>${identities.length}</strong> program${identities.length === 1 ? '' : 's'} to
+          Command preview only: <strong>${identities.length}</strong> program${identities.length === 1 ? '' : 's'} to
           <strong>${this.language === 'java' ? 'Java' : 'C#'}</strong>${added > 0 ? ` (${added} added by call closure)` : ''}
         </div>
-        <pre class="pp-command-text">./doctor.sh convert-only \\
-  --language ${this.language === 'java' ? 'Java' : 'CSharp'} \\
-${identities.map(i => `  --program ${i}`).join(' \\\n')}</pre>
+        <pre class="pp-command-text">${this.escape(window.ConversionReadiness.command(
+          this.readiness, identities, this.language === 'java' ? 'Java' : 'CSharp'))}</pre>
         <div class="pp-command-hint">
-          Copybooks are always included, so they are not listed. Add
-          <code>--dry-run</code> to see what this would convert without calling a model.
-          Running through <code>doctor.sh</code> rather than the CLI directly picks up the
-          concurrent-run guard and the existing failure and retry handling.
+          Review each applicable agent's prompts in <code>Agents/Prompts</code> before running this command.
+          This doctor.sh command checks setup and connectivity and binds the assessed source, evidence folder and exact program selection.
+          Copybooks are read as context and are not listed as conversion targets.
+          Run from the repository root; the CLI repeats its dependency checks.
         </div>
       </div>
     `;
@@ -388,7 +437,35 @@ ${identities.map(i => `  --program ${i}`).join(' \\\n')}</pre>
     }
 
     const convert = document.getElementById('pp-convert');
-    if (convert) convert.addEventListener('click', () => this.renderCommand());
+    if (convert) convert.addEventListener('click', async () => {
+      if (this.reviewing) return;
+      this.reviewing = true;
+      convert.disabled = true;
+      try {
+        const request = {
+          command: 'convert-only', programs: await this.resolveSelection(),
+          targetLanguage: this.language === 'java' ? 'Java' : 'CSharp', dependencyMode: 'strict',
+          sourceFolder: this.readiness?.sourceFolder
+        };
+        this.readiness = await window.ConversionReadiness.read(request);
+        this.dependencyPlans = new Map(this.readiness.programs.map(p => [p.program, p]));
+        if (window.ConversionReadiness.allows(this.readiness)
+            && !await window.ConversionReadiness.reviewPrompts(request)) return;
+        await this.renderCommand();
+      } catch (error) {
+        document.getElementById('pp-command').innerHTML = `<p role="alert">${this.escape(error.message)}</p>`;
+      } finally {
+        this.reviewing = false;
+        convert.disabled = this.selected.size === 0
+          || [...this.selected].some(id => this.dependencyPlans.get(id)?.status !== 'eligible');
+      }
+    });
+    document.getElementById('pp-refresh-readiness')?.addEventListener('click', async () => {
+      this.loaded = false;
+      await this.load();
+      this.loaded = true;
+      this.render();
+    });
 
     if (this.selected.size > 0) this.renderCommand();
   }

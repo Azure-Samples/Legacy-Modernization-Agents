@@ -192,7 +192,10 @@ public sealed class McpProcessClient : IMcpClient, IDisposable
         return string.Empty;
     }
 
-    public async Task<string> SendChatAsync(string prompt, CancellationToken cancellationToken = default)
+    public Task<string> SendChatAsync(string prompt, CancellationToken cancellationToken = default)
+        => SendChatAsync(prompt, new ChatSendOptions(), cancellationToken);
+
+    public async Task<string> SendChatAsync(string prompt, ChatSendOptions options, CancellationToken cancellationToken = default)
     {
         await EnsureReadyAsync(cancellationToken).ConfigureAwait(false);
 
@@ -223,6 +226,8 @@ public sealed class McpProcessClient : IMcpClient, IDisposable
             ["model"] = "cobol-migration-insights",
             ["messages"] = messages
         };
+        if (!string.IsNullOrWhiteSpace(options.Context)) parameters["context"] = options.Context;
+        if (options.MaxOutputTokens is > 0) parameters["maxOutputTokens"] = options.MaxOutputTokens.Value;
 
         var response = await SendRequestAsync("messages/create", parameters, cancellationToken).ConfigureAwait(false);
         var contentNode = response["content"] as JsonArray;
@@ -398,6 +403,7 @@ public sealed class McpProcessClient : IMcpClient, IDisposable
         }
 
         _process = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start MCP process");
+        var startedProcess = _process;
         _stdin = new StreamWriter(_process.StandardInput.BaseStream, new UTF8Encoding(false)) { AutoFlush = true };
         _stdout = new StreamReader(_process.StandardOutput.BaseStream, new UTF8Encoding(false));
 
@@ -406,7 +412,7 @@ public sealed class McpProcessClient : IMcpClient, IDisposable
             try
             {
                 string? line;
-                while ((line = await _process.StandardError.ReadLineAsync().ConfigureAwait(false)) is not null)
+                while ((line = await startedProcess.StandardError.ReadLineAsync().ConfigureAwait(false)) is not null)
                 {
                     Console.Error.WriteLine($"[MCP] {line}");
                     RememberStderr(line);
@@ -416,7 +422,7 @@ public sealed class McpProcessClient : IMcpClient, IDisposable
             {
                 // ignore
             }
-        }, cancellationToken);
+        });
 
         _initialized = false;
         return Task.CompletedTask;
@@ -455,6 +461,8 @@ public sealed class McpProcessClient : IMcpClient, IDisposable
         await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            if (_process?.HasExited == true)
+                throw await CreateExitedExceptionAsync().ConfigureAwait(false);
             try
             {
                 await _stdin.WriteAsync($"Content-Length: {bytes.Length}\r\n\r\n").ConfigureAwait(false);
@@ -507,6 +515,22 @@ public sealed class McpProcessClient : IMcpClient, IDisposable
 
                 throw new InvalidOperationException("MCP response did not include a 'result' object");
             }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // A cancelled read may consume part of a frame; never reuse that transport.
+            _initialized = false;
+            if (_process is { HasExited: false } process)
+            {
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch (InvalidOperationException) when (process.HasExited) { }
+                if (!process.WaitForExit(2000))
+                    throw new InvalidOperationException("Cancelled MCP transport could not be stopped; restart the MCP connection.");
+            }
+            throw;
         }
         finally
         {
@@ -579,7 +603,7 @@ public sealed class McpProcessClient : IMcpClient, IDisposable
 
         string? line;
         Dictionary<string, string> headers = new(StringComparer.OrdinalIgnoreCase);
-        while ((line = await _stdout.ReadLineAsync().ConfigureAwait(false)) is not null)
+        while ((line = await _stdout.ReadLineAsync(cancellationToken).ConfigureAwait(false)) is not null)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -612,7 +636,8 @@ public sealed class McpProcessClient : IMcpClient, IDisposable
         while (totalRead < contentLength)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var read = await _stdout.ReadAsync(buffer, totalRead, contentLength - totalRead).ConfigureAwait(false);
+            var read = await _stdout.ReadAsync(buffer.AsMemory(totalRead, contentLength - totalRead),
+                cancellationToken).ConfigureAwait(false);
             if (read == 0)
             {
                 return null;

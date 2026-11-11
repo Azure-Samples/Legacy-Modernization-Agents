@@ -66,6 +66,32 @@ public class WebAppTests : IClassFixture<WebAppFactory>
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 
+    [Fact]
+    public async Task ReadinessPreviewAndStartUseTheSameScopeAndRejectStaleEvidenceWithoutAChild()
+    {
+        var client = _factory.CreateClient();
+        var source = Path.Combine(_factory.ManagedRunRoot, "source", "readiness-test");
+        Directory.CreateDirectory(source);
+        var file = Path.Combine(source, "MAIN.cbl");
+        File.WriteAllText(file, "       PROGRAM-ID. MAIN.\n       PROCEDURE DIVISION.\n           STOP RUN.\n");
+        var request = new StartRunRequest("convert-only", SourceFolder: "source/readiness-test", Programs: ["MAIN.cbl"]);
+        var missing = await client.PostAsJsonAsync("/api/runs/start", request);
+        Assert.Equal(HttpStatusCode.Conflict, missing.StatusCode);
+        CobolToQuarkusMigration.Tests.Helpers.DependencyEvidenceFixture.Write(_factory.ManagedRunRoot, source, "MAIN.cbl");
+        var preview = await client.PostAsJsonAsync("/api/runs/readiness", request);
+        preview.EnsureSuccessStatusCode();
+        var payload = await preview.Content.ReadFromJsonAsync<JsonObject>();
+        Assert.True(payload!["strictAllowed"]!.GetValue<bool>());
+        Assert.True(preview.Headers.CacheControl!.NoStore);
+        File.AppendAllText(file, "\n      * Modified after preview\n");
+        var stale = await client.PostAsJsonAsync("/api/runs/start", request);
+        Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
+        Assert.All(_factory.Services.GetRequiredService<ProcessManager>().GetAllRuns(),
+            run => Assert.Null(run.ProcessId));
+        var invalid = await client.PostAsJsonAsync("/api/runs/start", request with { TargetLanguage = "invalid" });
+        Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
+    }
+
     [Theory]
     [InlineData("../secret")]
     [InlineData("../../secret")]
@@ -85,13 +111,24 @@ public class WebAppTests : IClassFixture<WebAppFactory>
 
 public sealed class WebAppFactory : WebApplicationFactory<Program>
 {
+    internal string ManagedRunRoot { get; } = Path.Combine(Path.GetTempPath(), "lma-web-managed-" + Guid.NewGuid().ToString("N"));
+
     protected override void ConfigureWebHost(Microsoft.AspNetCore.Hosting.IWebHostBuilder builder)
     {
         builder.ConfigureServices(services =>
         {
             services.RemoveAll<IMcpClient>();
             services.AddSingleton<IMcpClient, FakeMcpClient>();
+            services.RemoveAll<ProcessManager>();
+            services.AddSingleton(_ => new ProcessManager(ManagedRunRoot));
         });
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        base.Dispose(disposing);
+        if (disposing && Directory.Exists(ManagedRunRoot))
+            Directory.Delete(ManagedRunRoot, recursive: true);
     }
 
     private sealed class FakeMcpClient : IMcpClient
@@ -112,6 +149,9 @@ public sealed class WebAppFactory : WebApplicationFactory<Program>
             => Task.FromResult($"Resource content for: {uri}");
 
         public Task<string> SendChatAsync(string prompt, CancellationToken cancellationToken = default)
+            => Task.FromResult($"Echo: {prompt}");
+
+        public Task<string> SendChatAsync(string prompt, ChatSendOptions options, CancellationToken cancellationToken = default)
             => Task.FromResult($"Echo: {prompt}");
 
         public Task<JsonObject> CallToolAsync(string toolName, Dictionary<string, object> arguments, CancellationToken cancellationToken = default)

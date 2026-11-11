@@ -9,6 +9,56 @@ namespace McpChatWeb.Tests.Modernization;
 
 public class RektEstateReaderTests
 {
+    [Theory]
+    [InlineData("null")]
+    [InlineData("{}")]
+    [InlineData("[]")]
+    [InlineData("broken")]
+    public async Task PersistedDiagnostics_WithEmptyOrMalformedAst_DoNotCreditRecovery(string payload)
+    {
+        using var fixture = new EstateFixture();
+        fixture.AddProgram("RECOVERY.cbl").AddFacts("RECOVERY.cbl", confidence: 3)
+            .AddReportDirectory("RECOVERY.cbl").AddReportFlowAst("RECOVERY.cbl");
+        System.IO.File.WriteAllText(
+            System.IO.Path.Combine(fixture.RektDir, "RECOVERY.cbl.report", "flow_ast", "RECOVERY.cbl.json"),
+            payload);
+        System.IO.File.WriteAllText(
+            System.IO.Path.Combine(fixture.RektDir, "RECOVERY.cbl.report", "parse-diagnostics.json"),
+            """[{"code":"missing copybook","message":"ABSENT: Copybook not found","severity":"ERROR"}]""");
+        await fixture.AddScanEntryAsync("RECOVERY.cbl", RektParseOutcome.Full, RektScanConfidence.High);
+
+        var record = Assert.Single((await ReaderFor(fixture).ReadAsync()).Programs);
+
+        Assert.Equal(ParseFidelity.Failed, record.ParseFidelity);
+        Assert.Equal(FidelitySources.Artifacts, record.FidelitySource);
+    }
+
+    [Fact]
+    public async Task PersistedDiagnostics_OverrideStaleFullCacheAndFacts()
+    {
+        using var fixture = new EstateFixture();
+        fixture.AddProgram("RECOVERY.cbl").AddFacts("RECOVERY.cbl", confidence: 3)
+            .AddReportDirectory("RECOVERY.cbl").AddReportFlowAst("RECOVERY.cbl");
+        System.IO.File.WriteAllText(
+            System.IO.Path.Combine(fixture.RektDir, "RECOVERY.cbl.report", "parse-diagnostics.json"),
+            """[{"code":"missing copybook","message":"ABSENT: Copybook not found","severity":"ERROR"}]""");
+        await fixture.AddScanEntryAsync("RECOVERY.cbl", RektParseOutcome.Full, RektScanConfidence.High);
+        var record = Assert.Single((await ReaderFor(fixture).ReadAsync()).Programs);
+        Assert.Equal(ParseFidelity.Partial, record.ParseFidelity);
+        Assert.Equal(FidelitySources.Artifacts, record.FidelitySource);
+    }
+
+    [Fact]
+    public async Task RecoveredMissingCopybookAst_IsNeverFull()
+    {
+        using var fixture = new EstateFixture();
+        fixture.AddProgram("RECOVERY.cbl").AddFacts("RECOVERY.cbl", confidence: 3);
+        await fixture.AddScanEntryAsync("RECOVERY.cbl", RektParseOutcome.Partial, RektScanConfidence.Partial);
+        var record = Assert.Single((await ReaderFor(fixture).ReadAsync()).Programs);
+        Assert.Equal(ParseFidelity.Partial, record.ParseFidelity);
+        Assert.Equal(FidelitySources.ScanCache, record.FidelitySource);
+    }
+
     private static RektEstateReader ReaderFor(EstateFixture fixture) =>
         new(NullLogger<RektEstateReader>.Instance, fixture.RepoRoot);
 
@@ -187,6 +237,42 @@ public class RektEstateReaderTests
 
         Assert.Empty(estate.Programs);
         Assert.NotNull(estate.Note);
+    }
+
+    [Fact]
+    public async Task RepeatedRead_DoesNotEvictPublishedEstateForParserScratchWrites()
+    {
+        using var fixture = new EstateFixture();
+        fixture.AddProgram("CUSTOMER.cbl");
+        var reader = ReaderFor(fixture);
+        var first = await reader.ReadAsync();
+
+        fixture.AddProgram(".rekt-staging/TEMP.cbl");
+        fixture.AddProgram(".preprocessed/TEMP.cbl");
+        fixture.AddFacts(".work/CUSTOMER.cbl", confidence: 3);
+        fixture.AddFacts(".previous/CUSTOMER.cbl", confidence: 3);
+
+        var second = await reader.ReadAsync();
+
+        Assert.Same(first, second);
+        Assert.False(Assert.Single(second.Programs).HasFacts);
+    }
+
+    [Fact]
+    public async Task RepeatedRead_PicksUpNewFactsAfterAnInventoryMiss()
+    {
+        using var fixture = new EstateFixture();
+        fixture.AddProgram("billing/CUSTOMER.cbl");
+        var reader = ReaderFor(fixture);
+
+        var first = await reader.ReadAsync();
+        Assert.False(Assert.Single(first.Programs).HasFacts);
+
+        fixture.AddFacts("billing/CUSTOMER.cbl", confidence: 3);
+        var second = await reader.ReadAsync();
+
+        Assert.True(Assert.Single(second.Programs).HasFacts);
+        Assert.Equal(ParseFidelity.Full, second.Programs[0].ParseFidelity);
     }
 
     [Fact]

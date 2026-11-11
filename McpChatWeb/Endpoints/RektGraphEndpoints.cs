@@ -23,12 +23,16 @@ public static class RektGraphEndpoints
             {
                 await using var session = RektNeo4j.Shared.AsyncSession();
                 var cursor = await session.RunAsync(@"
-                    MATCH (f:CobolFile)
+                    MATCH (f:CobolFile)-[:HAS_AST]->(:ASTNode)
                     WHERE f.runId IS NOT NULL
                     WITH f.runId AS runId,
                          count(DISTINCT f.fileName) AS fileCount,
                          max(COALESCE(f.lineCount, 0)) AS maxLines
-                    RETURN runId, fileCount, maxLines
+                    OPTIONAL MATCH (scan:RektScan {id: runId})
+                    RETURN runId, fileCount, maxLines, scan.name AS name,
+                           scan.ingestionStatus AS ingestionStatus, scan.evidenceNote AS evidenceNote,
+                           scan.expectedProgramCount AS expectedProgramCount,
+                           scan.astProgramCount AS astProgramCount, scan.structuralGaps AS structuralGaps
                     ORDER BY runId DESC");
 
                 var runs = new List<object>();
@@ -39,6 +43,12 @@ public static class RektGraphEndpoints
                         runId = r["runId"].As<long>(),
                         fileCount = r["fileCount"].As<int>(),
                         maxLines = r["maxLines"].As<int>(),
+                        name = r["name"].As<string?>(),
+                        ingestionStatus = r["ingestionStatus"].As<string?>(),
+                        evidenceNote = r["evidenceNote"].As<string?>(),
+                        expectedProgramCount = r["expectedProgramCount"].As<int?>(),
+                        astProgramCount = r["astProgramCount"].As<int?>(),
+                        structuralGaps = r["structuralGaps"].As<List<string>?>(),
                     });
                 }
 
@@ -164,54 +174,59 @@ public static class RektGraphEndpoints
                 var driver = McpChatWeb.Services.RektNeo4j.Shared;
                 await using var session = driver.AsyncSession();
 
-                // Return files with AST data + flag which ones have CFG edges.
-                // When a specific scan run is requested, filter to that run only.
-                //
-                // Otherwise report the latest scan, meaning the highest run id in the graph and
-                // the programs belonging to it. Taking max(runId) per program instead keeps every
-                // program any scan ever saw: the graph accumulates across runs, so an estate that
-                // once held 173 programs still offered all of them after a rescan found 36, and a
-                // caller picking one would be working from a program that no longer exists.
+                // Use file/root links instead of scanning every statement in every snapshot.
+                // EXISTS stops on the first CFG edge instead of expanding and counting them all.
+                Action<TransactionConfigBuilder> timeout = config => config.WithTimeout(TimeSpan.FromSeconds(12));
                 var result = scanRunId.HasValue
                     ? await session.RunAsync(@"
-                        MATCH (a:ASTNode) WHERE a.program IS NOT NULL AND coalesce(a.runId, 0) = $runId
-                        WITH DISTINCT a.program AS program
-                        OPTIONAL MATCH (cfg:ASTNode {program: program})-[:FOLLOWED_BY|JUMPS_TO]->()
-                        WHERE coalesce(cfg.runId, 0) = $runId
-                        WITH program, count(cfg) > 0 AS hasCfg
-                        RETURN program AS name, hasCfg
+                        MATCH (f:CobolFile {runId: $runId})-[:HAS_AST]->(root:ASTNode)
+                        WITH DISTINCT f, coalesce(root.program, f.fileName) AS program
+                        RETURN program AS name, EXISTS {
+                            MATCH (cfg:ASTNode {program: program, runId: $runId})-[:FOLLOWED_BY|JUMPS_TO]->()
+                        } AS hasCfg, $runId AS runId,
+                            f.dependencyDiagnostics AS diagnostics,
+                            f.dependencyEvidenceAvailable AS dependencyEvidenceAvailable
                         ORDER BY program",
-                        new { runId = scanRunId.Value })
+                        new Dictionary<string, object> { ["runId"] = scanRunId.Value }, timeout)
                     : await session.RunAsync(@"
-                        MATCH (a:ASTNode) WHERE a.program IS NOT NULL
-                        WITH max(coalesce(a.runId, 0)) AS latestRun
-                        MATCH (b:ASTNode)
-                        WHERE b.program IS NOT NULL AND coalesce(b.runId, 0) = latestRun
-                        WITH DISTINCT b.program AS program, latestRun
-                        OPTIONAL MATCH (cfg:ASTNode {program: program})-[:FOLLOWED_BY|JUMPS_TO]->()
-                        WHERE coalesce(cfg.runId, 0) = latestRun
-                        WITH program, count(cfg) > 0 AS hasCfg
-                        RETURN program AS name, hasCfg
-                        ORDER BY program");
+                        MATCH (file:CobolFile)-[:HAS_AST]->(:ASTNode)
+                        WITH max(file.runId) AS latestRun
+                        MATCH (f:CobolFile {runId: latestRun})-[:HAS_AST]->(root:ASTNode)
+                        WITH DISTINCT f, coalesce(root.program, f.fileName) AS program, latestRun
+                        RETURN program AS name, EXISTS {
+                            MATCH (cfg:ASTNode {program: program, runId: latestRun})-[:FOLLOWED_BY|JUMPS_TO]->()
+                        } AS hasCfg, latestRun AS runId,
+                            f.dependencyDiagnostics AS diagnostics,
+                            f.dependencyEvidenceAvailable AS dependencyEvidenceAvailable
+                        ORDER BY program", null, timeout);
 
                 var files = new List<object>();
-                await result.ForEachAsync(r => files.Add(new
+                await result.ForEachAsync(r =>
                 {
-                    name = r["name"].As<string>(),
-                    hasAst = true,
-                    hasCfg = r["hasCfg"].As<bool>(),
-                    kind = "cobol",
-                    job = (string?)null,
-                }));
+                    var diagnostics = r["diagnostics"].As<List<string>?>() ?? [];
+                    var reportAvailable = r["dependencyEvidenceAvailable"].As<bool?>() == true;
+                    files.Add(new
+                    {
+                        name = r["name"].As<string>(),
+                        hasAst = true,
+                        hasCfg = r["hasCfg"].As<bool>(),
+                        runId = r["runId"].As<long>(),
+                        diagnostics,
+                        dependencyEvidenceAvailable = reportAvailable,
+                        evidence = AstEvidenceSummary.FromRecorded(reportAvailable, diagnostics),
+                        kind = "cobol",
+                        job = (string?)null,
+                    });
+                });
 
                 // JCL jobs are a graph of their own (JclNode), so they are listed beside the programs
                 // rather than mixed into the AST queries every COBOL view relies on.
                 var jobs = await session.RunAsync($@"
                     {JclRunScope}
                     MATCH (j:JclNode {{nodeType: 'JCL_JOB'}}) WHERE j.runId = _r
-                    RETURN j.program AS name, j.name AS job
+                    RETURN j.program AS name, j.name AS job, j.runId AS runId
                     ORDER BY j.program",
-                    new { runId = scanRunId.GetValueOrDefault(0) });
+                    new Dictionary<string, object> { ["runId"] = scanRunId.GetValueOrDefault(0) }, timeout);
                 await jobs.ForEachAsync(r => files.Add(new
                 {
                     name = r["name"].As<string>(),
@@ -219,6 +234,7 @@ public static class RektGraphEndpoints
                     hasCfg = false,
                     kind = "jcl",
                     job = r["job"].As<string?>(),
+                    runId = r["runId"].As<long>(),
                 }));
 
                 return Results.Ok(files);
@@ -234,12 +250,11 @@ public static class RektGraphEndpoints
                 or InvalidOperationException)
             {
                 Console.WriteLine($"⚠️ Rekt files endpoint: {ex.Message}");
-                return Results.Ok(Array.Empty<object>());
+                return Results.Problem("REKT graph is unavailable. Check the graph connection and retry.", statusCode: 503);
             }
         });
 
-        // Sections and paragraphs for one program, with statement counts gathered separately so a
-        // slow count cannot take the whole response down with it.
+        // Structural nodes only; statement counts are unavailable, not zero.
         group.MapGet("/structure", async (string file, long? scanRunId, CancellationToken cancellationToken) =>
         {
             if (!RektNeo4j.IsConfigured)
@@ -266,24 +281,26 @@ public static class RektGraphEndpoints
                 {
                     // Use pinned scanRunId if provided, otherwise auto-select the latest run for this file.
                     var structRunId = scanRunId.GetValueOrDefault(0);
-                    var structRunInit = structRunId > 0
+                    var structRunInit = scanRunId.HasValue
                         ? "WITH $runId AS _r"
                         : "MATCH (a0:ASTNode {program: $file}) WITH max(coalesce(a0.runId, 0)) AS _r";
-                    // PHASE 1: get sections + paragraphs WITHOUT statement counts.
-                    // This is the cheap, almost-certain-to-finish part — just a
-                    // 2-hop walk from the program root. We do the statement counts
-                    // in a separate query (Phase 2) so a slow stmt count doesn't
-                    // kill the whole response. Each phase is independently bounded
-                    // by txTimeout.
+                    // PARAGRAPHS is a container, not a section. Only expose it separately
+                    // for paragraphs directly under the procedure division (no SECTION).
                     var result = await session.RunAsync($@"
                         {structRunInit}
-                        MATCH (root:ASTNode {{program: $file}})-[:CONTAINS*1..2]->(sec:ASTNode)
-                        WHERE coalesce(root.runId, 0) = _r
-                          AND coalesce(sec.runId, 0) = _r
-                          AND sec.nodeType IN ['SECTION', 'PARAGRAPHS']
+                        MATCH (sec:ASTNode {{program: $file}})
+                        WHERE coalesce(sec.runId, 0) = _r
+                          AND (sec.nodeType = 'SECTION' OR
+                            (sec.nodeType = 'PARAGRAPHS' AND EXISTS {{
+                              MATCH (root:ASTNode {{program: $file, nodeType: 'PROCEDURE_DIVISION_BODY'}})-[:CONTAINS]->(sec)
+                              WHERE coalesce(root.runId, 0) = _r
+                            }}))
                         OPTIONAL MATCH (sec)-[:CONTAINS*1..2]->(para:ASTNode)
-                        WHERE para.nodeType IN ['PARAGRAPH', 'PARAGRAPH_NAME']
+                        WHERE para.nodeType = 'PARAGRAPH'
+                          AND para.program = $file
                           AND coalesce(para.runId, 0) = _r
+                        WITH DISTINCT sec, para
+                        WHERE para IS NOT NULL OR sec.nodeType = 'SECTION'
                         RETURN sec.id AS sectionId, sec.name AS sectionName, sec.nodeType AS sectionType,
                                sec.startLine AS secStart, sec.endLine AS secEnd,
                                para.id AS paraId, para.name AS paraName, para.nodeType AS paraType,
@@ -304,12 +321,12 @@ public static class RektGraphEndpoints
                         paraType = r["paraType"].As<string?>() ?? "",
                         paraStart = r["paraStart"].As<int?>() ?? -1,
                         paraEnd = r["paraEnd"].As<int?>() ?? -1,
-                        stmtCount = 0,
-                        sqlCount = 0,
-                        performCount = 0,
-                        moveCount = 0,
-                        branchCount = 0,
-                        callCount = 0
+                        stmtCount = (int?)null,
+                        sqlCount = (int?)null,
+                        performCount = (int?)null,
+                        moveCount = (int?)null,
+                        branchCount = (int?)null,
+                        callCount = (int?)null
                     }));
 
                     if (sections.Count > 0) { matchedProgram = candidate; break; }
@@ -326,12 +343,14 @@ public static class RektGraphEndpoints
                 var performEdges = new List<object>();
                 try
                 {
-                    var cfgResult = await session.RunAsync(@"
-                        MATCH (a0:ASTNode {program: $file})
-                        WITH max(coalesce(a0.runId, 0)) AS _r
-                        MATCH (p:ASTNode {program: $file, nodeType: 'PERFORM'})
+                    var cfgRunInit = scanRunId.HasValue
+                        ? "WITH $runId AS _r"
+                        : "MATCH (a0:ASTNode {program: $file}) WITH max(coalesce(a0.runId, 0)) AS _r";
+                    var cfgResult = await session.RunAsync($@"
+                        {cfgRunInit}
+                        MATCH (p:ASTNode {{program: $file, nodeType: 'PERFORM'}})
                         WHERE coalesce(p.runId, 0) = _r AND p.name IS NOT NULL AND p.name <> ''
-                        MATCH (caller:ASTNode {program: $file})-[c:CONTAINS*1..6]->(p)
+                        MATCH (caller:ASTNode {{program: $file}})-[c:CONTAINS*1..6]->(p)
                         WHERE coalesce(caller.runId, 0) = _r
                           AND caller.nodeType IN ['PARAGRAPH', 'PARAGRAPHS', 'SECTION']
                           AND caller.name IS NOT NULL AND caller.name <> '' AND caller.name <> 'para-group:'
@@ -341,7 +360,7 @@ public static class RektGraphEndpoints
                         RETURN DISTINCT caller AS caller, p.name AS target, p.label AS label
                         ORDER BY caller
                         LIMIT 800",
-                        new Dictionary<string, object> { ["file"] = matchedProgram! },
+                        new Dictionary<string, object> { ["file"] = matchedProgram!, ["runId"] = scanRunId.GetValueOrDefault(0) },
                         txTimeout);
 
                     await cfgResult.ForEachAsync(r => performEdges.Add(new
@@ -356,7 +375,7 @@ public static class RektGraphEndpoints
                     Console.WriteLine($"⏱ CFG sub-query timed out for {matchedProgram} — returning sections without performEdges.");
                 }
 
-                return Results.Ok(new { program = matchedProgram, sections, performEdges });
+                return Results.Ok(new { program = matchedProgram, sections, performEdges, statementCountsAvailable = false });
             }
             catch (Neo4j.Driver.Neo4jException nex) when (nex.Message.Contains("timeout", StringComparison.OrdinalIgnoreCase) || nex.Message.Contains("transaction has been terminated", StringComparison.OrdinalIgnoreCase))
             {
@@ -396,7 +415,7 @@ public static class RektGraphEndpoints
                 var edges = new List<object>();
                 string? matchedProgram = null;
                 var astRunId = scanRunId.GetValueOrDefault(0);
-                var astRunInit = astRunId > 0
+                var astRunInit = scanRunId.HasValue
                     ? "WITH $runId AS _r"
                     : "MATCH (a0:ASTNode {program: $file}) WITH max(coalesce(a0.runId, 0)) AS _r";
 
@@ -545,7 +564,7 @@ public static class RektGraphEndpoints
         if (long.TryParse(requested, out var explicitRun)) return explicitRun;
 
         var cursor = await session.RunAsync(
-            "MATCH (f:CobolFile) WHERE f.runId IS NOT NULL RETURN max(f.runId) AS latest");
+            "MATCH (f:CobolFile)-[:HAS_AST]->(:ASTNode) WHERE f.runId IS NOT NULL RETURN max(f.runId) AS latest");
         await foreach (var record in cursor.WithCancellation(cancellationToken))
             return record["latest"].As<long?>();
         return null;

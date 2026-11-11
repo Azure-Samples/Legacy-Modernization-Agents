@@ -22,6 +22,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\McpChatWeb\McpChatWeb.csproj" />
+    <Compile Include="..\CobolToQuarkusMigration.Tests\Helpers\DependencyEvidenceFixture.cs" Link="Helpers\DependencyEvidenceFixture.cs" />
   </ItemGroup>
 
 </Project>

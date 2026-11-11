@@ -492,7 +492,8 @@ async function rescorePrompt(promptId, btn) {
   }
 }
 
-function openPromptEditor(promptId) {
+function openPromptEditor(promptId, promptTemplates) {
+  if (Array.isArray(promptTemplates)) _promptsCache = promptTemplates;
   const prompt = _promptsCache?.find(p => p.id === promptId);
   if (!prompt) return;
 

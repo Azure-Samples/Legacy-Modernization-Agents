@@ -13,12 +13,17 @@ class ASTExplorer {
     this.structureData = null;
     this.expandedSections = new Set();
     this.selectedNodeId = null;
+    this.viewRevision = 0;
+    this.fileRuns = new Map();
+    this.fileListController = null;
 
     const fileSelect = document.getElementById('ast-file-select');
     if (fileSelect) {
       fileSelect.addEventListener('change', (e) => {
         this.currentFile = e.target.value;
+        this.updateEvidenceNote();
         if (this.currentFile) this.loadView(this.currentFile);
+        else { ++this.viewRevision; this.clearView('Select a file from this scan.'); }
       });
     }
 
@@ -34,30 +39,304 @@ class ASTExplorer {
   async loadFileList() {
     const select = document.getElementById('ast-file-select');
     if (!select) return;
+    const revision = ++this.viewRevision;
+    this.fileListController?.abort();
+    const controller = new AbortController();
+    this.fileListController = controller;
+    let timedOut = false;
+    const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, 15000);
+    select.disabled = true;
+    this.clearView('Loading scan files...');
+    const previousNote = document.getElementById('ast-evidence-note');
+    if (previousNote) previousNote.hidden = true;
     try {
       let files = [];
-      const scanParam = typeof _currentScanRunId !== 'undefined' && _currentScanRunId &&
-        _currentScanRunId !== 'all' && _currentScanRunId !== 'latest'
-        ? `?scanRunId=${_currentScanRunId}` : '';
-      const rektResp = await fetch('/api/graph/rekt/files' + scanParam);
-      if (rektResp.ok) files = await rektResp.json();
+      const selectedRun = window.getSelectedScanRunId?.();
+      const scanParam = selectedRun && selectedRun !== 'all'
+        ? `?scanRunId=${encodeURIComponent(selectedRun)}` : '';
+      const rektResp = await fetch('/api/graph/rekt/files' + scanParam, { signal: controller.signal });
+      if (!rektResp.ok) throw new Error(`Scan file list failed (${rektResp.status})`);
+      files = await rektResp.json();
+      if (revision !== this.viewRevision) return;
 
       const current = select.value;
       this.fileKinds = new Map(files.map(f => [f.name, f.kind || 'cobol']));
+      this.fileRuns = new Map(files.map(f => [f.name, f.runId]));
+      this.fileEvidence = new Map(files.map(f => [f.name, f]));
       select.querySelectorAll('option:not(:first-child)').forEach(o => o.remove());
       for (const f of files) {
         const opt = document.createElement('option');
         opt.value = f.name;
         opt.textContent = f.kind === 'jcl'
           ? `JCL · ${f.job || f.name.replace(/.*\//, '')}`
-          : f.name.replace('flow-ast-', '');
+          : f.name.replace('flow-ast-', '') + this.evidenceLabel(f);
         select.appendChild(opt);
       }
-      if (current) select.value = current;
-    } catch (e) { console.error('Explorer: file list error', e); }
+      this.currentFile = files.some(file => file.name === current) ? current : null;
+      select.value = this.currentFile || '';
+      select.disabled = false;
+      this.structureData = null;
+      this.expandedSections.clear();
+      this.selectedNodeId = null;
+      this.updateEvidenceNote();
+      this.clearView(files.length ? 'Select a file from this scan.' : 'No AST files in this scan.');
+      if (this.currentFile) await this.loadView(this.currentFile);
+    } catch (e) {
+      if (revision !== this.viewRevision) return;
+      console.error('Explorer: file list error', e);
+      this.currentFile = null;
+      this.fileRuns.clear();
+      this.fileEvidence?.clear();
+      this.structureData = null;
+      select.querySelectorAll('option:not(:first-child)').forEach(option => option.remove());
+      select.value = '';
+      const note = document.getElementById('ast-evidence-note');
+      if (note) note.hidden = true;
+      this.clearView(timedOut ? 'Scan file listing timed out after 15 seconds. Check the graph connection and retry.'
+        : `Unable to load scan: ${e.message}`);
+    } finally {
+      clearTimeout(timeout);
+      if (this.fileListController === controller) this.fileListController = null;
+    }
+  }
+
+  scanQuery() {
+    const runId = this.fileRuns.get(this.currentFile);
+    return runId == null ? '' : `&scanRunId=${encodeURIComponent(runId)}`;
+  }
+
+  updateEvidenceNote() {
+    const note = document.getElementById('ast-evidence-note');
+    if (!note) return;
+    const scan = window.getSelectedScanRun?.();
+    const evidence = this.fileEvidence?.get(this.currentFile);
+    const files = [...(this.fileEvidence?.values() || [])].filter(file => file.kind !== 'jcl');
+    const withDiagnostics = files.filter(file => file.diagnostics?.length).length;
+    const cleanReports = files.filter(file => file.dependencyEvidenceAvailable === true && !file.diagnostics?.length).length;
+    const missingReports = files.filter(file => file.dependencyEvidenceAvailable !== true).length;
+    const esc = value => this._escHtml(String(value));
+    let html = `<p><strong>${esc(scan?.name || 'Selected scan')} — Structure and dependency evidence are different.</strong></p>`;
+    const sameSnapshot = scan?.runId != null
+      && files.every(file => file.runId != null && String(file.runId) === String(scan.runId));
+    const count = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
+    const expected = sameSnapshot ? count(scan.expectedProgramCount) : null;
+    const astTotal = sameSnapshot ? count(scan.astProgramCount) : null;
+    const missingAst = expected != null && astTotal != null && expected >= astTotal ? expected - astTotal : null;
+    html += `<p><strong>Recorded scan coverage:</strong> ${astTotal ?? 'AST total not recorded'}/${expected ?? 'source program total not recorded'} programs with AST; `
+      + `${missingAst ?? 'missing-AST count not measured for this snapshot'} programs without AST. `
+      + 'These are program counts, not a percentage of AST completeness. The file picker lists AST-bearing files only.</p>';
+    if (missingAst == null) {
+      html += '<p class="evidence-limit">Missing evidence: consistent <code>expectedProgramCount</code>, '
+        + '<code>astProgramCount</code> and source inventory for this exact snapshot. '
+        + 'Regenerate the inventory/scan manifest and ingest a new named snapshot; do not infer affected-program counts from visible AST files.</p>';
+    }
+    if (sameSnapshot && Array.isArray(scan.structuralGaps)) {
+      html += `<details><summary>Recorded programs without AST (${scan.structuralGaps.length} names)</summary>`
+        + (scan.structuralGaps.length ? `<ul>${scan.structuralGaps.map(name => `<li><code>${esc(name)}</code></li>`).join('')}</ul>`
+          : '<p>No structural gap names recorded in this snapshot.</p>') + '</details>';
+    } else {
+      html += '<p class="evidence-limit">Missing-AST program names are not recorded for this snapshot.</p>';
+    }
+    html += '<p><strong>Visible AST inventory:</strong> '
+      + `${files.length} COBOL files with recorded AST structure; ${withDiagnostics} with recorded diagnostics; `
+      + `${cleanReports} with a dependency report and no recorded diagnostics; ${missingReports} without a recorded dependency report. `
+      + `JCL jobs are separate and not included in these counts.</p>`;
+
+    const common = new Map();
+    for (const file of files) {
+      for (const code of new Set(this.diagnosticDetails(file).map(detail => detail.code))) {
+        common.set(code, (common.get(code) || 0) + 1);
+      }
+    }
+    if (common.size) {
+      const conditions = [...common.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+      const formatConditions = values => values
+        .map(([code, count]) => `<code>${esc(code)}</code> (${count} files)`).join('; ');
+      html += `<p><strong>Why files are flagged:</strong> ${formatConditions(conditions.slice(0, 3))}. `
+        + 'These are recorded conditions, not all missing dependencies or parser errors.</p>';
+      if (conditions.length > 3) html += `<details><summary>Other shared diagnostic conditions</summary><p>${formatConditions(conditions.slice(3))}</p></details>`;
+    }
+
+    if (evidence?.kind === 'jcl') {
+      html += '<p><strong>Selected job:</strong> JCL graph available; COBOL parser and COPY readiness do not apply to this view.</p>';
+    } else if (evidence) {
+      const details = this.diagnosticDetails(evidence);
+      html += `<p><strong>${esc(evidence.name)}</strong> (snapshot ${esc(evidence.runId ?? 'not recorded')})<br>`
+        + '<strong>Structural output:</strong> AST recorded and available for inspection, not a complete-parse guarantee.<br>'
+        + `<strong>Dependency readiness:</strong> ${details.length ? 'Not established — recorded issues below.'
+          : evidence.dependencyEvidenceAvailable === true ? 'No diagnostics recorded in the dependency report; completeness not established.'
+          : 'Not recorded — dependency report unavailable.'}<br>`
+        + '<strong>Parser/source health:</strong> No separate parser-success or original-source validation result is recorded in this inventory. '
+        + 'Parser diagnostics, when present, are listed separately from missing inputs.</p>';
+      html += '<p><strong>Draft conversion is opt-in, partial and not verified.</strong> '
+        + `${esc(evidence.evidence?.missingDraftEvidence || 'Current source/export/definition hashes, provenance and dependency-domain coverage have not been validated by this graph projection.')} `
+        + `${esc(evidence.evidence?.draftAction || 'Use the local draft plan to assess whole-program isolation. Missing COPY can affect shared fields and control flow; no routine is declared safe without deterministic usage evidence.')} `
+        + 'The graph snapshot alone never authorizes conversion.</p>';
+      html += '<button type="button" id="ast-assess-draft">Assess selected snapshot eligibility (no model calls)</button>'
+        + '<div id="ast-draft-assessment" role="status"></div>';
+      const uniqueInputs = categories => [...new Map(details
+        .filter(detail => categories.includes(detail.category))
+        .map(detail => [JSON.stringify([detail.category, detail.item, detail.location]), detail])).values()];
+      const missing = uniqueInputs(['missing-copybook', 'missing-input']);
+      if (missing.length) {
+        html += '<p><strong>Exact recorded missing inputs</strong> (unique input/location entries, not an affected-code count; all diagnostic records retained below):</p><ul>'
+          + missing.map(detail => `<li><strong>${detail.category === 'missing-copybook' ? 'COPY' : 'Source'} `
+            + `${esc(detail.item || 'name not recorded')}</strong> — ${esc(detail.reason)} `
+            + `Location: ${esc(detail.location || 'not recorded; consult the snapshot report/source')}. `
+            + `${esc(detail.action)}</li>`).join('') + '</ul>';
+      }
+      const unreadable = uniqueInputs(['unreadable-copybook']);
+      if (unreadable.length) {
+        html += '<p><strong>Unreadable COPY inputs — not confirmed absent files:</strong></p><ul>'
+          + unreadable.map(detail => `<li><strong>COPY ${esc(detail.item || 'name not recorded')}</strong> — `
+            + `${esc(detail.reason)} ${esc(detail.action)}</li>`).join('') + '</ul>';
+      }
+      if (details.length) {
+        const categories = new Map();
+        for (const detail of details) categories.set(detail.category, (categories.get(detail.category) || 0) + 1);
+        html += `<details><summary>All ${details.length} recorded diagnostics — ${[...categories.entries()]
+          .map(([category, count]) => `${esc(this.diagnosticCategory(category))}: ${count}`).join('; ')}</summary><ul>`
+          + details.map(detail => `<li><strong>${esc(this.diagnosticCategory(detail.category))}</strong>: `
+            + `<code>${esc(detail.raw)}</code><br>${esc(detail.reason)}<br>`
+            + `Location: ${esc(detail.location || 'not separately recorded; any location in the raw message above is preserved')}. `
+            + `${esc(detail.action)}</li>`).join('') + '</ul></details>';
+      } else if (evidence.dependencyEvidenceAvailable !== true) {
+        html += '<p>Regenerate dependency-evidence.json for the exact source inputs and ingest a new named snapshot. '
+          + 'Do not substitute another scan’s report or placeholder copybooks.</p>';
+      } else {
+        html += '<p>No missing COPY names were recorded. Verify coverage, input identities/hashes and absence proofs with the strict dependency gate before conversion.</p>';
+      }
+    } else {
+      html += '<p>Select a file to see exact missing inputs, parser diagnostics, unsupported coverage and corrective actions.</p>';
+    }
+    html += '<p class="evidence-limit">An AST can be useful for navigation even with a small but blocking missing input. '
+      + 'AST node counts do not prove percentage completeness, source health or behavioral correctness. '
+      + 'Even a report with no diagnostics is not proof of complete, verified dependencies. Strict conversion evidence gates remain required.</p>';
+    if (scan?.evidenceNote) html += `<details><summary>Snapshot evidence note</summary><p>${esc(scan.evidenceNote)}</p></details>`;
+    const expanded = note.querySelector?.('.ast-evidence-disclosure')?.open === true;
+    const coverage = astTotal != null && expected != null
+      ? `${astTotal}/${expected} programs with AST` : `${files.length} AST files visible`;
+    note.innerHTML = `<details class="ast-evidence-disclosure"${expanded ? ' open' : ''}>`
+      + `<summary>Evidence &amp; diagnostics <span class="ast-evidence-coverage">${esc(coverage)}</span></summary>`
+      + `<div class="ast-evidence-body">${html}</div></details>`;
+    note.title = '';
+    note.hidden = false;
+    document.getElementById('ast-assess-draft')?.addEventListener('click', () => this.assessLocalDraft());
+  }
+
+  async assessLocalDraft() {
+    const out = document.getElementById('ast-draft-assessment');
+    if (!out) return;
+    const scanRunId = this.fileRuns.get(this.currentFile) || window.getSelectedScanRunId?.() || 'unrecorded';
+    out.textContent = 'Requesting exact selected-snapshot evidence binding. No default-path substitution or model calls.';
+    const esc = value => this._escHtml(String(value));
+    try {
+      const response = await fetch(`/api/estate/draft-plan?scanRunId=${encodeURIComponent(scanRunId)}`);
+      if (!response.ok) {
+        const deficiency = await response.json().catch(() => ({}));
+        throw new Error([deficiency.missingEvidence, deficiency.reason, deficiency.action]
+          .filter(Boolean).join(' ') || `Selected-snapshot assessment failed (${response.status}); supply readable local source/dependency artifacts through an approved snapshot binding`);
+      }
+      const plan = await response.json();
+      if (document.getElementById('ast-draft-assessment') !== out) return;
+      const selectedPrograms = (plan.programs || []).filter(program => program.program === this.currentFile);
+      if (!selectedPrograms.length) throw new Error(`The bound plan contains no assessment for ${this.currentFile}; no eligibility or routine impact is established for this file`);
+      out.innerHTML = '<p><strong>Selected-snapshot source only — PARTIAL / NOT VERIFIED.</strong> '
+        + 'This does not reclassify the historical snapshot or start conversion.</p>'
+        + `<p>Showing ${esc(this.currentFile)} from ${esc(plan.programs?.length || 0)} assessed programs.</p>`
+        + `<p>${esc(plan.isolation)}</p><ul>`
+        + selectedPrograms.map(program => `<li><strong>${esc(program.program)}</strong>: ${esc(program.status)}`
+          + (program.blockers?.length ? '<ul>' + program.blockers.map(blocker =>
+            `<li>${esc(blocker.category)} — Missing input/evidence: ${esc(blocker.missingEvidence)}. `
+            + `Reason: ${esc(blocker.reason)} Action: ${esc(blocker.action)} `
+            + (blocker.routine ? `Routine: ${esc(blocker.routine)}. `
+              : 'Routine impact cannot be attributed: this whole-program assessment has no validated usage/control-flow linkage. ')
+            + (blocker.location ? `Location: ${esc(blocker.location)}. `
+              : 'Location is not linked in this assessment; consult the scan’s parser/export diagnostics. ')
+            + (blocker.raw ? `<details><summary>Exact recorded evidence</summary><code>${esc(blocker.raw)}</code></details>` : '')
+            + '</li>').join('') + '</ul>'
+            : ' — current whole-program dependency evidence passed; no behavioral verification asserted.')
+          + '</li>').join('') + '</ul>';
+    } catch (error) {
+      out.textContent = `${error.message}; no eligibility established. No default-path assessment or model call was performed. Retry only with an approved exact snapshot source/artifact binding.`;
+    }
+  }
+
+  evidenceLabel(file) {
+    if (!file.diagnostics?.length) {
+      return file.dependencyEvidenceAvailable === true ? ' [no recorded diagnostics]' : ' [evidence not recorded]';
+    }
+    const details = this.diagnosticDetails(file);
+    const copies = new Set(details.filter(detail => detail.category === 'missing-copybook').map(detail => detail.item));
+    const unreadable = new Set(details.filter(detail => detail.category === 'unreadable-copybook').map(detail => detail.item));
+    const labels = [];
+    if (copies.size) labels.push(`${copies.size} missing COPY names`);
+    if (unreadable.size) labels.push(`${unreadable.size} unreadable COPY names`);
+    return labels.length ? ` [${labels.join('; ')}; inspect evidence]` : ' [diagnostics; inspect evidence]';
+  }
+
+  diagnosticCategory(category) {
+    return {
+      'missing-copybook': 'Missing COPY inputs', 'missing-input': 'Missing source inputs',
+      'unreadable-copybook': 'Unreadable COPY inputs / provider configuration',
+      'parser': 'Parser diagnostics', 'unsupported': 'Unsupported coverage',
+      'not-recorded': 'Incomplete / not recorded evidence', 'unverified-input': 'Unverified inputs / resolution',
+      'analysis-failed': 'Analysis / export failures', 'export-failure': 'Analysis / export failures',
+      'derived-layout': 'Incomplete derived layout', 'binding-gap': 'Unresolved exporter bindings',
+      'missing-declaration': 'Required declaration unresolved', 'runtime-mapping': 'Target-runtime mapping unverified',
+      'platform-replacement': 'Platform replacement contract', 'unresolved-semantics': 'Unresolved semantics',
+      'other': 'Other diagnostics'
+    }[category] || 'Other diagnostics';
+  }
+
+  diagnosticDetails(file) {
+    if (file.evidence?.diagnostics) return file.evidence.diagnostics;
+    // Older portal backends expose strings only. Never turn an unknown diagnostic into a missing input.
+    return (file.diagnostics || []).map(raw => {
+      const value = raw.replace(/^native:/, '');
+      const separator = value.indexOf(':');
+      const code = separator < 0 ? value : value.slice(0, separator);
+      let item = separator < 0 ? null : value.slice(separator + 1);
+      const parserMissingCopy = code === 'parser-diagnostic' && item?.startsWith('missing copybook:');
+      if (parserMissingCopy) item = item.slice('missing copybook:'.length).split(':', 1)[0];
+      if (code === 'unreadable-copybook') {
+        const input = item?.split(':', 1)[0];
+        return {
+          raw, code, item: input, category: 'unreadable-copybook', location: null,
+          reason: 'COPY input could not be read. A provider/configuration or input-access failure is not proof that the real file is absent. Recorded diagnostic: ' + raw,
+          action: 'Check input access and install or configure the required provider; regenerate evidence into a new named snapshot.'
+        };
+      }
+      const category = code === 'unresolved-copybook' || parserMissingCopy ? 'missing-copybook'
+        : code === 'source-not-found' ? 'missing-input'
+        : code === 'parser-diagnostic' ? 'parser'
+        : code.startsWith('unsupported-') ? 'unsupported' : 'other';
+      return {
+        raw, code, item, category, location: null,
+        reason: category === 'missing-copybook' ? 'COPY input could not be resolved.'
+          : category === 'missing-input' ? 'Required source input was not found.'
+          : 'Recorded diagnostic; inspect the exact message.',
+        action: ['missing-copybook', 'missing-input'].includes(category)
+          ? 'Supply the real input, check include/search paths and rescan into a new snapshot.'
+          : 'Inspect dependency-evidence.json / parse-diagnostics.json for this snapshot; correct the recorded issue and regenerate evidence.'
+      };
+    });
+  }
+
+  clearView(message) {
+    if (this.network) { this.network.destroy(); this.network = null; }
+    const graph = document.getElementById('ast-graph');
+    if (graph) graph.textContent = message;
+    const source = document.getElementById('ast-source-panel');
+    if (source) source.textContent = 'Select a section or paragraph to view source.';
+    const inspector = document.getElementById('ast-inspector-content');
+    if (inspector) inspector.textContent = 'Select a paragraph to inspect statements.';
+    const stats = document.getElementById('ast-stats-bar');
+    if (stats) stats.textContent = '';
   }
 
   async loadView(fileName) {
+    ++this.viewRevision;
     // A JCL job has no COBOL structure or CFG; its only view is the job graph.
     if (this.fileKinds?.get(fileName) === 'jcl') {
       await this.loadRawGraph(fileName, 'ast');
@@ -76,55 +355,54 @@ class ASTExplorer {
     const graphEl = document.getElementById('ast-graph');
     const sourceEl = document.getElementById('ast-source-panel');
     if (!graphEl) return;
+    const revision = this.viewRevision;
 
     graphEl.innerHTML = '<div class="ast-loading">Loading program structure...</div>';
     if (sourceEl) sourceEl.innerHTML = '<div class="source-placeholder">Select a section or paragraph to view source</div>';
 
     try {
-      const scanParam = typeof _currentScanRunId !== 'undefined' && _currentScanRunId &&
-        _currentScanRunId !== 'all' && _currentScanRunId !== 'latest'
-        ? `&scanRunId=${_currentScanRunId}` : '';
+      const scanParam = this.scanQuery();
       const resp = await fetch(`/api/graph/rekt/structure?file=${encodeURIComponent(fileName)}${scanParam}`);
+      if (revision !== this.viewRevision) return;
       if (!resp.ok) {
         graphEl.innerHTML = `<div class="ast-empty">No structure data for ${this._escHtml(fileName.replace('flow-ast-',''))}.<br><code>./doctor.sh rekt-full</code></div>`;
         return;
       }
-      this.structureData = await resp.json();
+      const data = await resp.json();
+      if (revision !== this.viewRevision) return;
+      this.structureData = data;
       this.renderStructureTree(graphEl);
       this.updateStructureStats();
       // Auto-load full source
       this.loadFullSource(fileName.replace('flow-ast-', ''));
     } catch (e) {
+      if (revision !== this.viewRevision) return;
       console.error('Structure load error:', e);
       graphEl.innerHTML = `<div class="ast-error">Error: ${e.message}</div>`;
     }
   }
 
-  renderStructureTree(container) {
-    const data = this.structureData;
-    if (!data?.sections?.length) {
-      container.innerHTML = '<div class="ast-empty">No sections found.</div>';
-      return;
-    }
-
-    // Group paragraphs by section
+  _structureGroups() {
     const sectionMap = new Map();
-    for (const row of data.sections) {
+    for (const row of this.structureData?.sections || []) {
       const key = row.sectionId || row.sectionName;
       if (!sectionMap.has(key)) {
         sectionMap.set(key, {
           id: row.sectionId, name: row.sectionName || 'UNNAMED',
           type: row.sectionType, startLine: row.secStart, endLine: row.secEnd,
+          countsAvailable: this.structureData.statementCountsAvailable === true,
           paragraphs: [], totalStmts: 0, totalSql: 0,
           totalPerforms: 0, totalMoves: 0, totalBranches: 0, totalCalls: 0,
         });
       }
       const sec = sectionMap.get(key);
-      if (row.paraId) {
+      if (row.paraId && row.paraType !== 'PARAGRAPH_NAME'
+          && !sec.paragraphs.some(para => para.id === row.paraId)) {
+        sec.countsAvailable &&= Number.isFinite(row.stmtCount);
         sec.paragraphs.push({
           id: row.paraId, name: row.paraName || 'UNNAMED', type: row.paraType,
           startLine: row.paraStart, endLine: row.paraEnd,
-          stmtCount: row.stmtCount || 0, sqlCount: row.sqlCount || 0,
+          stmtCount: row.stmtCount, sqlCount: row.sqlCount,
           performCount: row.performCount || 0, moveCount: row.moveCount || 0,
           branchCount: row.branchCount || 0, callCount: row.callCount || 0,
         });
@@ -136,13 +414,32 @@ class ASTExplorer {
         sec.totalCalls += row.callCount || 0;
       }
     }
+    return sectionMap;
+  }
+
+  _structureTotals(sectionMap) {
+    const groups = [...sectionMap.values()];
+    return {
+      sections: groups.filter(sec => sec.type === 'SECTION').length,
+      paragraphs: new Set(groups.flatMap(sec => sec.paragraphs.map(para => para.id))).size,
+      statements: this.structureData.statementCountsAvailable === true
+        && groups.every(sec => sec.countsAvailable)
+        ? groups.reduce((sum, sec) => sum + sec.totalStmts, 0) : null,
+    };
+  }
+
+  renderStructureTree(container) {
+    const data = this.structureData;
+    if (!data?.sections?.length) {
+      container.innerHTML = '<div class="ast-empty">No sections found.</div>';
+      return;
+    }
+    const sectionMap = this._structureGroups();
+    const totals = this._structureTotals(sectionMap);
 
     let html = '<div class="structure-tree">';
 
     // Program overview card for architects
-    const totalSections = sectionMap.size;
-    const totalParas = [...sectionMap.values()].reduce((s, sec) => s + sec.paragraphs.length, 0);
-    const totalStmts = [...sectionMap.values()].reduce((s, sec) => s + sec.totalStmts, 0);
     const totalSql = [...sectionMap.values()].reduce((s, sec) => s + sec.totalSql, 0);
     const totalCalls = [...sectionMap.values()].reduce((s, sec) => s + sec.totalCalls, 0);
     const progName = (this.currentFile || '').replace('flow-ast-', '').replace('.cbl', '');
@@ -150,9 +447,9 @@ class ASTExplorer {
     html += `<div class="structure-overview">
       <div class="overview-title">${this._escHtml(progName)}</div>
       <div class="overview-grid">
-        <div class="overview-stat"><span class="ov-num">${totalSections}</span><span class="ov-label">Sections</span></div>
-        <div class="overview-stat"><span class="ov-num">${totalParas}</span><span class="ov-label">Paragraphs</span></div>
-        <div class="overview-stat"><span class="ov-num">${totalStmts}</span><span class="ov-label">Statements</span></div>
+        <div class="overview-stat"><span class="ov-num">${totals.sections}</span><span class="ov-label">Sections</span></div>
+        <div class="overview-stat"><span class="ov-num">${totals.paragraphs}</span><span class="ov-label">Paragraphs</span></div>
+        <div class="overview-stat"><span class="ov-num">${totals.statements ?? 'Unavailable'}</span><span class="ov-label">Statements</span></div>
         ${totalSql > 0 ? `<div class="overview-stat sql"><span class="ov-num">${totalSql}</span><span class="ov-label">SQL Queries</span></div>` : ''}
         ${totalCalls > 0 ? `<div class="overview-stat call"><span class="ov-num">${totalCalls}</span><span class="ov-label">CALLs</span></div>` : ''}
       </div>
@@ -165,14 +462,14 @@ class ASTExplorer {
       const paraCount = sec.paragraphs.length;
       const dominant = this._dominantType(sec);
       // Describe what this section does
-      const purpose = sec.totalSql > 3 ? 'Database operations' : sec.totalCalls > 0 ? 'External calls' : sec.totalPerforms > sec.totalMoves ? 'Orchestration' : 'Data processing';
+      const purpose = !sec.countsAvailable ? 'Statement counts unavailable' : sec.totalSql > 3 ? 'Database operations' : sec.totalCalls > 0 ? 'External calls' : sec.totalPerforms > sec.totalMoves ? 'Orchestration' : 'Data processing';
 
       html += `
         <div class="structure-section ${isExpanded ? 'expanded' : ''}" data-section-id="${key}">
           <div class="section-header" onclick="astExplorer.toggleSection('${this._escAttr(key)}')">
             <span class="section-chevron">${isExpanded ? '▼' : '▶'}</span>
             <span class="section-icon ${dominant.cssClass}">§</span>
-            <span class="section-name">${this._escHtml(sec.name)}</span>
+            <span class="section-name">${sec.type === 'PARAGRAPHS' ? 'Unsectioned paragraphs' : this._escHtml(sec.name)}</span>
             <span class="section-purpose">${purpose}</span>
             <span class="section-badge">${paraCount} para</span>
             <span class="section-stats">
@@ -254,6 +551,7 @@ class ASTExplorer {
   async loadSourceForRange(startLine, endLine, label) {
     const sourceEl = document.getElementById('ast-source-panel');
     if (!sourceEl) return;
+    const revision = this.viewRevision;
 
     if (!startLine || startLine <= 0) {
       // No line info — load full file and try to find by name
@@ -264,11 +562,14 @@ class ASTExplorer {
     try {
       const baseName = (this.currentFile || '').replace('flow-ast-', '');
       const padding = 10;
-      const resp = await fetch(`/api/source/content?file=${encodeURIComponent(baseName)}&startLine=${Math.max(1, startLine - padding)}&endLine=${endLine + padding}`);
+      const resp = await fetch(`/api/source/content?file=${encodeURIComponent(baseName)}&startLine=${Math.max(1, startLine - padding)}&endLine=${endLine + padding}${this.scanQuery()}`);
+      if (revision !== this.viewRevision) return;
       if (!resp.ok) { await this.loadFullSource(label, label); return; }
       const data = await resp.json();
+      if (revision !== this.viewRevision) return;
       this._renderSource(data, startLine, endLine, label);
     } catch (e) {
+      if (revision !== this.viewRevision) return;
       sourceEl.innerHTML = `<div class="source-error">Error loading source: ${e.message}</div>`;
     }
   }
@@ -276,14 +577,20 @@ class ASTExplorer {
   async loadFullSource(label, searchTerm) {
     const sourceEl = document.getElementById('ast-source-panel');
     if (!sourceEl) return;
+    const revision = this.viewRevision;
     try {
       const baseName = (this.currentFile || '').replace('flow-ast-', '');
-      const resp = await fetch(`/api/source/content?file=${encodeURIComponent(baseName)}`);
+      const resp = await fetch(`/api/source/content?file=${encodeURIComponent(baseName)}${this.scanQuery()}`);
+      if (revision !== this.viewRevision) return;
       if (!resp.ok) {
-        sourceEl.innerHTML = `<div class="source-placeholder"><span class="source-icon">📁</span><span>Source file not found for <strong>${this._escHtml(baseName)}</strong></span><span class="source-hint">Place file in source/ directory</span></div>`;
+        const hint = this.scanQuery()
+          ? 'Stored source is unavailable for this scan; re-ingest its snapshot.'
+          : 'Place file in source/ directory';
+        sourceEl.innerHTML = `<div class="source-placeholder"><span class="source-icon">📁</span><span>Source file not found for <strong>${this._escHtml(baseName)}</strong></span><span class="source-hint">${hint}</span></div>`;
         return;
       }
       const data = await resp.json();
+      if (revision !== this.viewRevision) return;
 
       // If a search term is provided and no line highlights, find the term in source
       let foundLine = -1;
@@ -299,6 +606,7 @@ class ASTExplorer {
 
       this._renderSource(data, foundLine, foundLine, label || baseName);
     } catch (e) {
+      if (revision !== this.viewRevision) return;
       sourceEl.innerHTML = `<div class="source-error">Error: ${e.message}</div>`;
     }
   }
@@ -334,18 +642,20 @@ class ASTExplorer {
   async loadParagraphDetail(paraId, paraName) {
     const inspectorEl = document.getElementById('ast-inspector-content');
     if (!inspectorEl) return;
+    const revision = this.viewRevision;
 
     try {
-      const scanParam = typeof _currentScanRunId !== 'undefined' && _currentScanRunId &&
-        _currentScanRunId !== 'all' && _currentScanRunId !== 'latest'
-        ? `&scanRunId=${_currentScanRunId}` : '';
+      const scanParam = this.scanQuery();
       const resp = await fetch(`/api/graph/rekt/ast?file=${encodeURIComponent(this.currentFile)}${scanParam}`);
+      if (revision !== this.viewRevision) return;
       if (!resp.ok) return;
       const astData = await resp.json();
+      if (revision !== this.viewRevision) return;
 
       // Build parent→children map from edges
       const edgeMap = new Map();
       for (const e of astData.edges || []) {
+        if (e.type !== 'CONTAINS') continue;
         const from = e.from || e.source;
         const to = e.to || e.target;
         if (!edgeMap.has(from)) edgeMap.set(from, []);
@@ -378,7 +688,7 @@ class ASTExplorer {
       }
 
       let html = `<div class="inspector-header">${this._escHtml(paraName)}</div>`;
-      html += `<div class="inspector-summary">${statements.length} statements</div>`;
+      html += `<div class="inspector-summary">${statements.length} AST detail nodes (not a statement count)</div>`;
       html += '<div class="type-breakdown">';
       const total = statements.length || 1;
       for (const [type, count] of Object.entries(stmtTypes).sort((a, b) => b[1] - a[1])) {
@@ -402,6 +712,7 @@ class ASTExplorer {
 
       inspectorEl.innerHTML = html;
     } catch (e) {
+      if (revision !== this.viewRevision) return;
       inspectorEl.innerHTML = `<div class="inspector-error">Error: ${e.message}</div>`;
     }
   }
@@ -410,16 +721,15 @@ class ASTExplorer {
     const statsEl = document.getElementById('ast-stats-bar');
     if (!statsEl || !this.structureData) return;
     const data = this.structureData;
-    const sections = new Set(data.sections.map(r => r.sectionId)).size;
-    const paragraphs = new Set(data.sections.filter(r => r.paraId).map(r => r.paraId)).size;
-    const totalStmts = data.sections.reduce((sum, r) => sum + (r.stmtCount || 0), 0);
-    const totalSql = data.sections.reduce((sum, r) => sum + (r.sqlCount || 0), 0);
+    const sectionMap = this._structureGroups();
+    const totals = this._structureTotals(sectionMap);
+    const totalSql = [...sectionMap.values()].reduce((sum, sec) => sum + sec.totalSql, 0);
     const performs = data.performEdges?.length || 0;
 
     statsEl.innerHTML = `
-      <span class="ast-stat">${sections} sections</span>
-      <span class="ast-stat">${paragraphs} paragraphs</span>
-      <span class="ast-stat">${totalStmts} statements</span>
+      <span class="ast-stat">${totals.sections} sections</span>
+      <span class="ast-stat">${totals.paragraphs} paragraphs</span>
+      <span class="ast-stat">${totals.statements === null ? 'Statements unavailable' : `${totals.statements} statements`}</span>
       ${totalSql > 0 ? `<span class="ast-stat sql">${totalSql} SQL</span>` : ''}
       ${performs > 0 ? `<span class="ast-stat perform">${performs} PERFORM calls</span>` : ''}`;
   }
@@ -431,6 +741,7 @@ class ASTExplorer {
   async loadRawGraph(fileName, forcedMode) {
     const container = document.getElementById('ast-graph');
     if (!container) return;
+    const revision = this.viewRevision;
     container.innerHTML = '<div class="ast-loading">Loading AST...</div>';
     const sourceEl = document.getElementById('ast-source-panel');
     if (sourceEl) sourceEl.innerHTML = '<div class="source-placeholder">Click a node to view its source code</div>';
@@ -441,11 +752,10 @@ class ASTExplorer {
     const mode = forcedMode || (validModes.has(this.viewMode) ? this.viewMode : 'ast');
 
     try {
-      const scanParam = typeof _currentScanRunId !== 'undefined' && _currentScanRunId &&
-        _currentScanRunId !== 'all' && _currentScanRunId !== 'latest'
-        ? `&scanRunId=${_currentScanRunId}` : '';
+      const scanParam = this.scanQuery();
       const endpoint = `/api/graph/rekt/${mode}?file=${encodeURIComponent(fileName)}${scanParam}`;
       const resp = await fetch(endpoint);
+      if (revision !== this.viewRevision) return;
       if (!resp.ok) { container.innerHTML = `<div class="ast-empty">No ${mode.toUpperCase()} data for ${this._escHtml(fileName)}</div>`; return; }
       const ct = resp.headers.get('content-type') || '';
       if (!ct.includes('application/json')) {
@@ -453,8 +763,12 @@ class ASTExplorer {
         return;
       }
       const graphData = await resp.json();
+      if (revision !== this.viewRevision) return;
       this.renderVisNetwork(graphData, container);
-    } catch (e) { container.innerHTML = `<div class="ast-error">Error: ${e.message}</div>`; }
+    } catch (e) {
+      if (revision === this.viewRevision)
+        container.innerHTML = `<div class="ast-error">Error: ${e.message}</div>`;
+    }
   }
 
   renderVisNetwork(graphData, container) {
@@ -583,7 +897,7 @@ class ASTExplorer {
   // ═══════════════════════════════════════════════════════════════════
 
   _humanType(nodeType) {
-    const map = { DIALECT: 'SQL', DIALECT_CONTAINER: 'SQL', MOVE: 'MOVE', PERFORM: 'PERFORM', CALL: 'CALL',
+    const map = { DIALECT: 'EMBEDDED', DIALECT_CONTAINER: 'EMBEDDED CONTAINER', MOVE: 'MOVE', PERFORM: 'PERFORM', CALL: 'CALL',
       IF_BRANCH: 'IF', IF_YES: 'THEN', IF_NO: 'ELSE', EVALUATE: 'EVALUATE', COMPUTE: 'COMPUTE', ADD: 'ADD',
       DISPLAY: 'DISPLAY', EXIT: 'EXIT', GENERIC_STATEMENT: 'STMT', SECTION: 'SECTION', PARAGRAPH: 'PARA',
       SECTION_HEADER: 'SECTION', PARAGRAPH_NAME: 'PARA', PARAGRAPHS: 'PARAGRAPHS',
@@ -595,7 +909,7 @@ class ASTExplorer {
   }
 
   _typeColor(humanType) {
-    const colors = { SQL: '#a855f7', MOVE: '#84cc16', PERFORM: '#06b6d4', CALL: '#ef4444',
+    const colors = { SQL: '#a855f7', EMBEDDED: '#a855f7', 'EMBEDDED CONTAINER': '#a855f7', MOVE: '#84cc16', PERFORM: '#06b6d4', CALL: '#ef4444',
       IF: '#ec4899', THEN: '#ec4899', ELSE: '#94a3b8', EVALUATE: '#f59e0b', COMPUTE: '#f97316',
       ADD: '#eab308', DISPLAY: '#14b8a6', EXIT: '#475569', STMT: '#64748b', SECTION: '#8b5cf6', PARA: '#10b981' };
     return colors[humanType] || '#64748b';

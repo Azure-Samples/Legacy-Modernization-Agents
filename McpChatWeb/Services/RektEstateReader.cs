@@ -73,8 +73,8 @@ public sealed class RektEstateReader
         }
     }
 
-    // Size and write time of every source and artifact entry. A re-parse rewrites artifacts,
-    // and an edited program changes its own entry, so either invalidates the cache.
+    // Track published artifacts and business inputs, not parser scratch work. Otherwise an
+    // in-progress scan continually evicts the estate before it has published any new evidence.
     private string ComputeEstateStamp()
     {
         var builder = new System.Text.StringBuilder();
@@ -84,13 +84,28 @@ public sealed class RektEstateReader
             if (!Directory.Exists(root)) continue;
             try
             {
-                foreach (var entry in Directory
-                    .EnumerateFileSystemEntries(root, "*", SearchOption.AllDirectories)
-                    .OrderBy(p => p, StringComparer.Ordinal))
+                System.IO.Enumeration.FileSystemEnumerable<FileSystemInfo>.FindPredicate includeEntry =
+                    (ref System.IO.Enumeration.FileSystemEntry entry) =>
+                        root == SourceRoot
+                            ? !SourceTypeRegistry.IsScratchPath(entry.FileName.ToString())
+                            : entry.FileName is not (".previous" or ".work");
+                var entries = new System.IO.Enumeration.FileSystemEnumerable<FileSystemInfo>(
+                    root,
+                    (ref System.IO.Enumeration.FileSystemEntry entry) => entry.ToFileSystemInfo(),
+                    new EnumerationOptions
+                    {
+                        RecurseSubdirectories = true,
+                        AttributesToSkip = 0,
+                        IgnoreInaccessible = false,
+                    })
                 {
-                    var info = new FileInfo(entry);
-                    builder.Append(entry).Append(':')
-                        .Append(info.Exists ? info.Length : -1).Append(':')
+                    ShouldRecursePredicate = includeEntry,
+                    ShouldIncludePredicate = includeEntry,
+                };
+                foreach (var info in entries.OrderBy(info => info.FullName, StringComparer.Ordinal))
+                {
+                    builder.Append(info.FullName).Append(':')
+                        .Append(info is FileInfo file ? file.Length : -1).Append(':')
                         .Append(info.LastWriteTimeUtc.Ticks).Append('|');
                 }
             }
@@ -166,6 +181,12 @@ public sealed class RektEstateReader
             basenameCounts.Keys, cancellationToken).ConfigureAwait(false);
 
         var rektDir = RektDir;
+        // Most copybooks have no facts. Share one inventory instead of recursively searching
+        // the entire artifact tree again for each missing file.
+        var factsFilePaths = Directory.Exists(rektDir)
+            ? Directory.EnumerateFiles(rektDir, "*" + ProgramFactsArtifactLocator.FactsSuffix,
+                SearchOption.AllDirectories).ToArray()
+            : Array.Empty<string>();
         var programs = new List<RektProgramRecord>(relativePaths.Count);
 
         foreach (var relativePath in relativePaths)
@@ -176,7 +197,7 @@ public sealed class RektEstateReader
             var stem = Path.GetFileNameWithoutExtension(basename);
             var ambiguous = basenameCounts.GetValueOrDefault(basename, 0) > 1;
 
-            var facts = TryLoadFacts(rektDir, relativePath);
+            var facts = TryLoadFacts(rektDir, relativePath, factsFilePaths);
             var reportDir = ResolveReportDirectory(rektDir, relativePath, basename, stem, ambiguous);
             var depsPath = ResolveDependencyFile(rektDir, relativePath, basename, stem, ambiguous);
 
@@ -256,12 +277,19 @@ public sealed class RektEstateReader
         string? reportDir,
         bool hasDeps)
     {
+        if (reportDir is not null && File.Exists(Path.Join(reportDir, "parse-diagnostics.json")))
+        {
+            return HasFlowAstContent(reportDir)
+                ? (ParseFidelity.Partial, FidelitySources.Artifacts)
+                : (hasDeps ? ParseFidelity.DepsOnly : ParseFidelity.Failed, FidelitySources.Artifacts);
+        }
+
         if (scanEntry is not null)
         {
             var fidelity = scanEntry.ParseOutcome switch
             {
                 RektParseOutcome.Full => ParseFidelity.Full,
-                RektParseOutcome.NoDialect or RektParseOutcome.StubBacked => ParseFidelity.Partial,
+                RektParseOutcome.NoDialect or RektParseOutcome.StubBacked or RektParseOutcome.Partial => ParseFidelity.Partial,
                 RektParseOutcome.RawAst => ParseFidelity.Partial,
                 RektParseOutcome.DepsOnly => ParseFidelity.DepsOnly,
                 _ => ParseFidelity.Failed,
@@ -300,20 +328,30 @@ public sealed class RektEstateReader
         try
         {
             var flowAstDir = Path.Join(reportDir, "flow_ast");
-            return Directory.Exists(flowAstDir) && Directory.EnumerateFiles(flowAstDir, "*.json").Any();
+            return Directory.Exists(flowAstDir) && Directory.EnumerateFiles(flowAstDir, "*.json").Any(path =>
+            {
+                using var document = JsonDocument.Parse(File.ReadAllText(path));
+                return document.RootElement.ValueKind switch
+                {
+                    JsonValueKind.Object => document.RootElement.EnumerateObject().Any(),
+                    JsonValueKind.Array => document.RootElement.GetArrayLength() > 0,
+                    _ => false,
+                };
+            });
         }
-        // An unreadable directory is indistinguishable from an absent flow AST, and both mean
-        // the same thing here. Anything else is a defect and must not be reported as fidelity.
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        // Unreadable or malformed artifacts cannot establish recovered structure.
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+            or System.Security.SecurityException or JsonException)
         {
             return false;
         }
     }
 
-    private static ProgramFacts? TryLoadFacts(string rektDir, string relativePath)
+    private static ProgramFacts? TryLoadFacts(
+        string rektDir, string relativePath, IReadOnlyCollection<string> factsFilePaths)
     {
         if (!Directory.Exists(rektDir)) return null;
-        try { return ProgramFactsArtifactLocator.TryLoad(rektDir, relativePath); }
+        try { return ProgramFactsArtifactLocator.TryLoad(rektDir, relativePath, factsFilePaths); }
         // Unreadable or malformed facts are indistinguishable from absent ones here. Anything
         // else is a defect, and must not be reported as a program lacking facts.
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException

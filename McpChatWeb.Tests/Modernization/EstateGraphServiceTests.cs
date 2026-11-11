@@ -181,7 +181,7 @@ public class ProcessManagerProgramSelectionTests
     public void NoSelectionConvertsEverything()
     {
         Assert.Empty(ProcessManager.ValidatePrograms("convert-only", null));
-        Assert.Empty(ProcessManager.ValidatePrograms("convert-only", ["", "  "]));
+        Assert.Empty(ProcessManager.ValidatePrograms("convert-only", []));
     }
 
     [Fact]
@@ -198,6 +198,8 @@ public class ProcessManagerProgramSelectionTests
     [InlineData("a.cbl,b.cbl")]
     [InlineData("a.cbl;rm -rf")]
     [InlineData("a b.cbl")]
+    [InlineData("")]
+    [InlineData("  ")]
     public void AnythingElseIsRejected(string selector) =>
         Assert.Throws<ArgumentException>(() => ProcessManager.ValidatePrograms("convert-only", [selector]));
 
@@ -258,6 +260,7 @@ public class EstateEndpointsTests : IClassFixture<Integration.WebAppFactory>
         var response = await _factory.CreateClient().PostAsJsonAsync("/api/estate/slice/convert", new { clusterId = "NO-SUCH-CLUSTER" });
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.NotEmpty(Directory.GetFiles(Path.Combine(_factory.ManagedRunRoot, "Logs", "portal-history"), "*.json"));
     }
 
     [Fact]
@@ -266,5 +269,6 @@ public class EstateEndpointsTests : IClassFixture<Integration.WebAppFactory>
         var response = await _factory.CreateClient().PostAsJsonAsync("/api/estate/slice/convert", new { clusterId = "" });
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.NotEmpty(Directory.GetFiles(Path.Combine(_factory.ManagedRunRoot, "Logs", "portal-history"), "*.json"));
     }
 }

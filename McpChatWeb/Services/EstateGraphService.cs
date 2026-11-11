@@ -35,7 +35,8 @@ public sealed record EstateNodeDetail(
     IReadOnlyList<EstateEdge> Outgoing,
     IReadOnlyList<EstateEdge> Incoming);
 
-public sealed record EstateSliceView(EstateSlice Slice, string Command, IReadOnlyList<string> Selectors);
+public sealed record EstateSliceView(EstateSlice Slice, string Command, IReadOnlyList<string> Selectors,
+    DependencyReadiness? Readiness = null);
 
 // Builds the estate graph from the same source folder the conversion reads, and rebuilds it only
 // when that source changes. Deterministic: no model is involved.
@@ -194,7 +195,10 @@ public sealed class EstateGraphService
         var slice = EstateAnalysis.Slice(graph, clusterId);
         if (slice is null) return null;
         var selectors = includeNeeds ? slice.ProgramSelectors.Concat(slice.NeedSelectors).ToList() : slice.ProgramSelectors.ToList();
-        return new EstateSliceView(slice, $"./doctor.sh convert-only --program {string.Join(',', selectors)}", selectors);
+        var readiness = await DependencyReadiness.AssessAsync(SourceRoot,
+            CobolToQuarkusMigration.Helpers.ConversionEligibility.FactsDirectory(_rekt.RepoRoot), selectors, ct);
+        return new EstateSliceView(slice, $"./doctor.sh convert-only --program {string.Join(',', selectors)}",
+            selectors, readiness);
     }
 
     private async Task<Dictionary<string, EstateProgramStatus>> ProgramStatusAsync(EstateGraph graph, CancellationToken ct)

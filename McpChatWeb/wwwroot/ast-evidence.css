@@ -1,0 +1,41 @@
+.ast-evidence {
+  background: var(--cp-surface);
+  color: var(--cp-text);
+  border: 1px solid var(--cp-border);
+  border-radius: 0.625rem;
+  padding: 0;
+  margin: 8px;
+  font: 13px/1.5 "Segoe UI", Aptos, Calibri, -apple-system, BlinkMacSystemFont, sans-serif;
+  flex-shrink: 0;
+  min-width: 0;
+}
+.ast-evidence-disclosure > summary {
+  cursor: pointer;
+  padding: 8px 12px;
+  font-weight: 600;
+}
+.ast-evidence-disclosure > summary:focus-visible {
+  outline: 2px solid var(--cp-accent);
+  outline-offset: -2px;
+}
+.ast-evidence-coverage {
+  margin-left: 12px;
+  color: var(--cp-text-muted);
+  font-weight: 400;
+}
+.ast-evidence-body {
+  padding: 12px;
+  border-top: 1px solid var(--cp-border);
+  max-height: 36vh;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+.ast-evidence p { margin: 0 0 8px; }
+.ast-evidence p:last-child { margin-bottom: 0; }
+.ast-evidence ul { margin: 8px 0; padding-left: 24px; }
+.ast-evidence li { margin-bottom: 12px; }
+.ast-evidence code {
+  font-family: Consolas, "Courier New", Courier, monospace;
+  overflow-wrap: anywhere;
+}
+.ast-evidence .evidence-limit { color: var(--cp-text-muted); }
