@@ -22,8 +22,8 @@ public static class CopybookMemberContract
     }
 
     /// <summary>
-    /// One member per named data item, flat on the copybook's type. A lone 01 record is the type
-    /// itself and is not listed; items under an OCCURS are arrays; 88-levels are booleans.
+    /// One member per named data item, flat on the copybook's type. A lone 01 group is the type
+    /// itself and is not listed, but a lone elementary item is the data it holds; items under an OCCURS are arrays; 88-levels are booleans.
     /// Placeholders such as <c>:XXXX:</c> are dropped, since one type serves every REPLACING.
     /// </summary>
     /// <param name="resolveCopybook">Text of a copybook this one copies, by name; a nested COPY is
@@ -69,7 +69,7 @@ public static class CopybookMemberContract
         foreach (var e in entries)
         {
             if (e.CobolName.Equals("FILLER", StringComparison.OrdinalIgnoreCase)) continue;
-            if (e.Level == 1 && records == 1) continue;
+            if (e.Level == 1 && records == 1 && e.IsGroup) continue;
 
             var name = MemberName(e.CobolName, typeName);
             if (name.Length == 0 || !seen.Add(name)) continue;

@@ -1386,7 +1386,8 @@ internal static class Program
         // doctor.sh calls list-models during setup to populate the model picker, before any
         // config file has been written; its handler talks to the Copilot SDK, not Azure.
         return command is not
-            ("program-facts" or "rekt-scan-cache" or "conversation" or "list-models" or "estate-graph");
+            ("program-facts" or "rekt-scan-cache" or "conversation" or "list-models" or "estate-graph"
+                or "jcl-facts" or "jcl-jobs" or "jcl-programs");
     }
 
     // Matched against the literals shipped in ai-config.env.example. An unedited placeholder that

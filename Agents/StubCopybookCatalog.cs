@@ -36,16 +36,23 @@ public sealed class StubCopybookCatalog
 
     public static StubCopybookCatalog Load(string repoRoot, string sourceFolder)
     {
-        var dir = Path.Combine(repoRoot, sourceFolder, ".preprocessed");
-        if (!Directory.Exists(dir)) return Empty;
+        var root = Path.Combine(repoRoot, sourceFolder);
+        if (!Directory.Exists(root)) return Empty;
+
+        // Each top-level estate is preprocessed into its own <estate>/.preprocessed directory.
+        var dirs = new[] { Path.Combine(root, ".preprocessed") }
+            .Concat(Directory.EnumerateDirectories(root)
+                .Where(d => !Path.GetFileName(d).StartsWith('.'))
+                .Select(d => Path.Combine(d, ".preprocessed")))
+            .Where(Directory.Exists);
 
         var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var copybooks = new List<string>();
 
-        foreach (var path in Directory.EnumerateFiles(dir, "*.cpy", SearchOption.AllDirectories))
+        foreach (var path in dirs.SelectMany(d => Directory.EnumerateFiles(d, "*.cpy", SearchOption.AllDirectories)))
         {
             string text;
-            try { text = File.ReadAllText(path); }
+            try { text = Helpers.CobolSourceReader.Read(path); }
             catch (IOException) { continue; }
 
             if (!text.Contains(Marker, StringComparison.Ordinal)) continue;

@@ -1,6 +1,8 @@
 using CobolToQuarkusMigration.Agents.Infrastructure.Facts;
 using CobolToQuarkusMigration.Agents.Infrastructure.RektCache;
 using CobolToQuarkusMigration.Helpers;
+using CobolToQuarkusMigration.Models;
+using CobolToQuarkusMigration.Tests.Helpers;
 using FluentAssertions;
 using Xunit;
 
@@ -114,11 +116,26 @@ public sealed class ProgramFactsExtractorTests : IDisposable
               ]
             }
             """);
+        await File.WriteAllTextAsync(
+            Path.Combine(rektDir, "finance", "SENDER.cbl.report", "parse-diagnostics.json"),
+            """[{"code":"missing copybook","message":"ABSENT: Copybook not found","severity":"ERROR"}]""");
+        var scanCache = new SqliteRektScanCache(Path.Combine(_root, "scan.db"));
+        await scanCache.UpsertAsync(new RektScanEntry
+        {
+            Basename = "SENDER.cbl",
+            RelativePath = "finance/SENDER.cbl",
+            IdentitySchemeVersion = "v1-basename",
+            PreprocessedHash = "hash",
+            ParseOutcome = RektParseOutcome.Full,
+            Confidence = RektScanConfidence.High,
+            ParsedAtUtc = DateTime.UtcNow,
+        });
 
         var extractor = new ProgramFactsExtractor(
             repoRoot: _root,
             stagingDir: stagingDir,
-            rektDir: rektDir);
+            rektDir: rektDir,
+            scanCache: scanCache);
 
         var written = await extractor.ExtractAllAsync(
             new[] { "finance/SENDER.cbl", "shared/RECEIVER.cbl" },
@@ -140,6 +157,8 @@ public sealed class ProgramFactsExtractorTests : IDisposable
         senderFacts.RelativePath.Should().Be("finance/SENDER.cbl");
         senderFacts.PreprocessNotes.Should().ContainSingle();
         senderFacts.Callees.Should().Equal("shared/RECEIVER.cbl");
+        senderFacts.Warnings.Should().Contain("missing-copybook:ABSENT: Copybook not found");
+        senderFacts.Confidence.Should().Be(FactConfidence.Partial);
         receiverFacts!.RelativePath.Should().Be("shared/RECEIVER.cbl");
         receiverFacts.Callers.Should().Equal("finance/SENDER.cbl");
     }
@@ -168,6 +187,93 @@ public sealed class ProgramFactsExtractorTests : IDisposable
         facts.Should().NotBeNull();
         facts!.Warnings.Should().Contain("generated-copybook-stub:MISSING");
         facts.Confidence.Should().NotBe(FactConfidence.High);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ExtractAllAsync_FilteredExtractionResolvesCalleesAgainstTheWholeSourceCatalog(
+        bool ambiguousCallee)
+    {
+        var staging = Path.Combine(_root, "staging");
+        Directory.CreateDirectory(Path.Combine(staging, "finance"));
+        Directory.CreateDirectory(Path.Combine(staging, "shared"));
+        var callerPath = Path.Combine(staging, "finance", "SENDER.cbl");
+        var callerContent = "       PROGRAM-ID. SENDER.\n           CALL 'RECEIVER'.";
+        await File.WriteAllTextAsync(callerPath, callerContent);
+        var calleePath = Path.Combine(staging, "shared", "RECEIVER.cbl");
+        await File.WriteAllTextAsync(calleePath, "       PROGRAM-ID. RECEIVER.\n           GOBACK.");
+        if (ambiguousCallee)
+        {
+            Directory.CreateDirectory(Path.Combine(staging, "archive"));
+            File.Copy(calleePath, Path.Combine(staging, "archive", "RECEIVER.cbl"));
+        }
+        DependencyEvidenceFixture.Write(_root, staging, "finance/SENDER.cbl", new DependencyDefinition
+        {
+            Kind = "CALL", Name = "RECEIVER", Path = calleePath,
+            Sha256 = DependencyEvidenceFixture.Hash(calleePath)
+        });
+        var factsRoot = Path.Combine(_root, "output", "rekt");
+
+        var written = await new ProgramFactsExtractor(_root, staging)
+            .ExtractAllAsync(["finance/SENDER.cbl"], factsRoot);
+
+        written.Should().Be(1);
+        var facts = ProgramFactsArtifactLocator.TryLoad(factsRoot, "finance/SENDER.cbl")!;
+        facts.Callees.Should().Equal(ambiguousCallee ? "RECEIVER" : "shared/RECEIVER.cbl");
+        ProgramFactsArtifactLocator.TryLoad(factsRoot, "shared/RECEIVER.cbl").Should().BeNull();
+        if (!ambiguousCallee)
+        {
+            var caller = new CobolFile
+            {
+                FileName = "SENDER.cbl", FilePath = callerPath, Content = callerContent
+            };
+            new DependencyEvidenceGate(factsRoot).RequireVerified([caller], staging)
+                .Dependencies.Should().ContainSingle().Which.TargetFile.Should().Be("shared/RECEIVER.cbl");
+        }
+    }
+
+    [Fact]
+    public async Task ExtractAllAsync_PreservesCallerOriginInsteadOfFlatteningCalledProgramsSubtrees()
+    {
+        var staging = Path.Combine(_root, "staging");
+        Directory.CreateDirectory(staging);
+        CobolFile Source(string name, string content)
+        {
+            var path = Path.Combine(staging, name);
+            File.WriteAllText(path, content);
+            return new() { FileName = name, FilePath = path, Content = content };
+        }
+        DependencyDefinition Definition(string kind, CobolFile file) => new()
+        {
+            Kind = kind, Name = file.FileName, Path = file.FilePath, Sha256 = DependencyEvidenceFixture.Hash(file.FilePath)
+        };
+        Source("A.cbl", "           CALL 'B'.");
+        var b = Source("B.cbl", "           CALL 'C'.\n       COPY Q.");
+        var c = Source("C.cbl", "           STOP RUN.");
+        var q = Source("Q.cpy", "       01 Q-RECORD PIC X.");
+        var evidence = DependencyEvidenceFixture.Write(_root, staging, "A.cbl",
+            Definition("CALL", b), Definition("CALL", c), Definition("COPY", q));
+        DependencyEvidenceFixture.BindExport(_root, evidence, """
+            {"callTarget":{"name":"A.cbl"},"dependencies":[
+              {"dependencyKind":"CALL","callTarget":{"name":"B.cbl"},"dependencies":[
+                {"dependencyKind":"CALL","callTarget":{"name":"C.cbl"},"dependencies":[]},
+                {"dependencyKind":"COPY","callTarget":{"name":"Q.cpy"},"dependencies":[]}]}]}
+            """);
+        DependencyEvidenceFixture.Write(_root, staging, "B.cbl", Definition("CALL", c), Definition("COPY", q));
+        DependencyEvidenceFixture.Write(_root, staging, "C.cbl");
+        var output = Path.Combine(_root, "facts");
+        await new ProgramFactsExtractor(_root, staging).ExtractAllAsync(["A.cbl", "B.cbl", "C.cbl"], output);
+
+        var aFacts = ProgramFactsArtifactLocator.TryLoad(output, "A.cbl")!;
+        var bFacts = ProgramFactsArtifactLocator.TryLoad(output, "B.cbl")!;
+        var cFacts = ProgramFactsArtifactLocator.TryLoad(output, "C.cbl")!;
+        aFacts.Callees.Should().Equal("B.cbl");
+        aFacts.Data.CopybooksUsed.Should().BeEmpty();
+        bFacts.Callees.Should().Equal("C.cbl");
+        bFacts.Data.CopybooksUsed.Should().Equal("Q.cpy");
+        bFacts.Callers.Should().Equal("A.cbl");
+        cFacts.Callers.Should().Equal("B.cbl");
     }
 
     public void Dispose()

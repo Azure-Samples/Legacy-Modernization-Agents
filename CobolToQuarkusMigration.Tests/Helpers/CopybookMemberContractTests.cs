@@ -54,6 +54,14 @@ public class CopybookMemberContractTests
     }
 
     [Fact]
+    public void ALoneElementaryItemIsTheTypesOnlyMember()
+    {
+        var members = CopybookMemberContract.Parse("       77 SORTCODE           PIC 9(6) VALUE 987654.", "Sortcode");
+
+        members.Should().ContainSingle().Which.Name.Should().Be("SortcodeValue");
+    }
+
+    [Fact]
     public void SeveralRecordsAreEachAMemberAndANameEqualToTheTypeIsSuffixed()
     {
         const string text = "       01  REC-A.\n           05 A-FIELD PIC X.\n       01  REC-B PIC 9(3).\n       01  HOLDER PIC X.\n";

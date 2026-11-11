@@ -15,5 +15,7 @@ public class CodeFile
 
     public string OriginalCobolFileName { get; set; } = string.Empty;
 
+    public string OriginalSourcePath { get; set; } = string.Empty;
+
     public string TargetLanguage { get; set; } = string.Empty;
 }

@@ -252,4 +252,23 @@ public sealed class EstateMissionViewTests : IDisposable
         options.LowRiskCarveScore.Should().Be(defaults.LowRiskCarveScore);
         options.ModerateCarveScore.Should().Be(defaults.ModerateCarveScore);
     }
+
+    [Fact]
+    public void JobsInAFolderWithoutProgramsJoinTheEstateOfTheProgramsTheyRun()
+    {
+        Write("pay/cbl/PAYCALC.cbl", Cobol("PROGRAM-ID. PAYCALC.", "PROCEDURE DIVISION.", "    GOBACK."));
+        Write("shop/cbl/ORDMAIN.cbl", Cobol("PROGRAM-ID. ORDMAIN.", "PROCEDURE DIVISION.", "    GOBACK."));
+        Write("jcl/PAYJOB.jcl", "//PAYJOB   JOB (ACCT),'PAY'\n//STEP1    EXEC PGM=PAYCALC\n");
+        Write("pay/jcl/PAYDAY.jcl", "//PAYDAY   JOB (ACCT),'PAY'\n//STEP1    EXEC PGM=ORDMAIN\n");
+
+        var doc = EstateMissionView.Build(EstateGraphBuilder.Build(_root),
+            new Dictionary<string, EstateMissionStatus>(), new EstateGraphOptions());
+        string? EstateOfJob(string name) => doc.Nodes.Single(n => n.Type == EstateNodeKind.Job && n.Label == name).Estate;
+
+        EstateOfJob("PAYJOB").Should().Be("pay");
+        // A job inside an estate folder stays there, even when it runs another estate's program.
+        EstateOfJob("PAYDAY").Should().Be("pay");
+        doc.Estates.Select(e => e.Id).Should().Equal("pay", "shop");
+        doc.Estates.Single(e => e.Id == "pay").Jobs.Should().Be(2);
+    }
 }

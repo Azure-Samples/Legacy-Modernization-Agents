@@ -176,6 +176,7 @@ public sealed class IncrementalScanPlanner
         RektParseOutcome.Full       => RektScanConfidence.High,
         RektParseOutcome.StubBacked => RektScanConfidence.Partial,
         RektParseOutcome.NoDialect  => RektScanConfidence.Partial,
+        RektParseOutcome.Partial    => RektScanConfidence.Partial,
         RektParseOutcome.RawAst     => RektScanConfidence.Low,
         RektParseOutcome.DepsOnly   => RektScanConfidence.Low,
         _                           => RektScanConfidence.None,

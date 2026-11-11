@@ -6,11 +6,6 @@ namespace CobolToQuarkusMigration.Models;
 public class JavaFile : CodeFile
 {
     /// <summary>
-    /// Gets or sets the full path to the file.
-    /// </summary>
-    public string FilePath { get; set; } = string.Empty;
-
-    /// <summary>
     /// Gets or sets the package name (alias for NamespaceName).
     /// </summary>
     public string PackageName

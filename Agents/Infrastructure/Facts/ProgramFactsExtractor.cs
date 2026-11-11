@@ -51,7 +51,8 @@ public sealed class ProgramFactsExtractor
             .Where(path => !string.IsNullOrWhiteSpace(path))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
-        var catalog = new ProgramSourceCatalog(targets);
+        var catalog = new ProgramSourceCatalog(
+            SourcePathHelper.EnumerateProgramRelativePaths(_stagingDir).Concat(targets));
 
         // Pre-compute an inverse callees → callers map by scanning every
         // deps.json once. Avoids O(N²) per-extraction work.
@@ -97,7 +98,7 @@ public sealed class ProgramFactsExtractor
         var srcPath = Path.Combine(_stagingDir, SourcePathHelper.ToOsRelativePath(programRelativePath));
         if (File.Exists(srcPath))
         {
-            sourceContent = await File.ReadAllTextAsync(srcPath, cancellationToken);
+            sourceContent = await CobolSourceReader.ReadAsync(srcPath, cancellationToken);
         }
 
         var sourceHash = string.IsNullOrEmpty(sourceContent)
@@ -114,6 +115,21 @@ public sealed class ProgramFactsExtractor
             && ctx.CallTargets.Count == 0 && ctx.SqlStatements.Count == 0)
             warnings.Add("rekt-output-empty: no AST/CFG/DataStructure JSONs found");
         warnings.AddRange(GetGeneratedStubWarnings(sourceContent));
+        var diagnosticPath = Path.Combine(
+            _rektDir, SourcePathHelper.ToOsRelativePath(programRelativePath) + ".report", "parse-diagnostics.json");
+        if (File.Exists(diagnosticPath))
+        {
+            using var diagnostics = JsonDocument.Parse(
+                await File.ReadAllTextAsync(diagnosticPath, cancellationToken));
+            foreach (var diagnostic in diagnostics.RootElement.EnumerateArray())
+            {
+                if (diagnostic.TryGetProperty("code", out var code)
+                    && code.GetString() == "missing copybook")
+                {
+                    warnings.Add($"missing-copybook:{diagnostic.GetProperty("message").GetString()}");
+                }
+            }
+        }
 
         RektScanEntry? cacheEntry = null;
         if (_scanCache is not null && catalog.HasUniqueBasename(basename, out var uniqueProgramPath)
@@ -148,7 +164,9 @@ public sealed class ProgramFactsExtractor
                 Redefines: !string.IsNullOrEmpty(d.Redefines)))
             .ToList();
 
+        // A dynamic operand is a data name; only resolved targets (bound via the export) are callees.
         var calleesList = ctx.CallTargets
+            .Where(c => !c.IsDynamic)
             .Select(c => catalog.ResolveCallTarget(c.TargetProgram) ?? c.TargetProgram)
             .Where(n => !string.IsNullOrEmpty(n))
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -180,6 +198,7 @@ public sealed class ProgramFactsExtractor
             RelativePath = programRelativePath,
             SourceHash = sourceHash,
             Confidence = confidence,
+            DependencyEvidence = DependencyEvidenceGate.LoadEvidence(_rektDir, programRelativePath),
             Warnings = warnings.Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
             PreprocessNotes = preprocessNotes,
             Summary = new ProgramSummary
@@ -243,7 +262,8 @@ public sealed class ProgramFactsExtractor
             confidence = warnings.Count == 0 ? FactConfidence.Low : FactConfidence.None;
         }
 
-        return warnings.Any(w => w.StartsWith("generated-copybook-stub:", StringComparison.OrdinalIgnoreCase))
+        return warnings.Any(w => w.StartsWith("generated-copybook-stub:", StringComparison.OrdinalIgnoreCase)
+                || w.StartsWith("missing-copybook:", StringComparison.OrdinalIgnoreCase))
             && confidence > FactConfidence.Partial
                 ? FactConfidence.Partial
                 : confidence;

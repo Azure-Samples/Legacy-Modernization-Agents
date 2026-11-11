@@ -427,7 +427,7 @@ public class ModelProfileSettings
 /// </summary>
 public class CompileGateSettings
 {
-    /// <summary>Whether generated C# is built and repaired after conversion.</summary>
+    // Gates both generated Java and C# with their actual build tools.
     public bool Enabled { get; set; } = true;
 
     /// <summary>Repair rounds after the first build; 0 only measures. Override: COMPILE_REPAIR_MAX_ROUNDS.</summary>
@@ -436,7 +436,7 @@ public class CompileGateSettings
     /// <summary>Files repaired concurrently within a round.</summary>
     public int MaxConcurrentRepairs { get; set; } = 4;
 
-    /// <summary>Time allowed for one dotnet build of the generated project.</summary>
+    // Bound each generated-project build independently from provider request timeouts.
     public int BuildTimeoutSeconds { get; set; } = 300;
 
     /// <summary>Declarations from other files included in one repair prompt.</summary>

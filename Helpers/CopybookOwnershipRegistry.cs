@@ -56,8 +56,8 @@ public sealed class CopybookOwnershipRegistry
         var registry = new CopybookOwnershipRegistry();
         if (!Directory.Exists(sourceFolder)) return registry;
 
-        var copybooks = Read(SourceTypeRegistry.EnumerateCopybookFiles(sourceFolder));
-        var programs = Read(SourceTypeRegistry.EnumerateProgramFiles(sourceFolder));
+        var copybooks = Read(ConversionSourceScope.Filter(SourceTypeRegistry.EnumerateCopybookFiles(sourceFolder)));
+        var programs = Read(ConversionSourceScope.Filter(SourceTypeRegistry.EnumerateProgramFiles(sourceFolder)));
         registry._copybookStems.UnionWith(copybooks.Keys);
         registry._programStems.UnionWith(programs.Keys);
 
@@ -180,11 +180,11 @@ public sealed class CopybookOwnershipRegistry
     private static Dictionary<string, string> Read(IEnumerable<string> paths)
     {
         var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var path in paths)
+        foreach (var path in CobolSourceReader.RequireUniqueStems(paths))
         {
             try
             {
-                map[Path.GetFileNameWithoutExtension(Path.GetFileName(path))] = File.ReadAllText(path);
+                map[Path.GetFileNameWithoutExtension(Path.GetFileName(path))] = CobolSourceReader.Read(path);
             }
             catch (IOException)
             {
@@ -221,11 +221,12 @@ public static class CopybookOwnershipRegistryHolder
 
     public static CopybookOwnershipRegistry GetOrBuild(string repoRoot, string sourceFolder)
     {
-        var key = Path.IsPathRooted(sourceFolder) ? sourceFolder : Path.Join(repoRoot, sourceFolder);
+        var folder = Path.IsPathRooted(sourceFolder) ? sourceFolder : Path.Join(repoRoot, sourceFolder);
+        var key = folder + "#" + ConversionSourceScope.Key;
         lock (Lock)
         {
             if (Cache.TryGetValue(key, out var existing)) return existing;
-            return Cache[key] = CopybookOwnershipRegistry.Build(key);
+            return Cache[key] = CopybookOwnershipRegistry.Build(folder);
         }
     }
 }

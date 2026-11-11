@@ -182,12 +182,12 @@ public sealed class CopybookOwnershipRegistryTests : IDisposable
     {
         Copybook("INQACCS");
         Program("INQACCS", "INQACCS");
-        Program("BNK1DAC", "INQACCS");
+        Program("ORDER01", "INQACCS");
 
         var registry = Build();
 
         var ownership = registry.Ownerships.Should().ContainSingle().Subject;
-        ownership.UsedBy.Should().BeEquivalentTo("INQACCS", "BNK1DAC");
+        ownership.UsedBy.Should().BeEquivalentTo("INQACCS", "ORDER01");
         registry.ToPromptBlock("INQACCS.cpy", "C#")
             .Should().Contain("You are the only file that declares it")
             .And.Contain("THIS FILE IS A COPYBOOK");

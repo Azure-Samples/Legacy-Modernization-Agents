@@ -1,4 +1,9 @@
+using System.Text.Json;
+
 namespace CobolToQuarkusMigration.Models;
+
+public sealed record RuntimeImplementationRequirement(
+    string Program, string Kind, string Operation, JsonElement Evidence);
 
 /// <summary>
 /// Represents a dependency relationship between COBOL files.
@@ -62,6 +67,14 @@ public class DependencyMap
     /// Gets or sets AI-generated insights about the dependency structure.
     /// </summary>
     public string AnalysisInsights { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Evidence diagnostics, separate from advisory AI insights. This text is not a reusable
+    /// authority token: conversion revalidates source/export/definition hashes and per-kind coverage.
+    /// </summary>
+    public List<string> EvidenceDiagnostics { get; set; } = new();
+
+    public List<RuntimeImplementationRequirement> RuntimeRequirements { get; set; } = new();
 
     /// <summary>
     /// Gets or sets the complexity metrics.

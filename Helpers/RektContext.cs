@@ -10,6 +10,7 @@ public enum StructuralProvenance
     RektNative,      // Full REKT JSON present and parsed cleanly
     RektPartial,     // Only dependency export available (AST writer NPE)
     LlmExtracted,    // Structure synthesised by StructuralExtractorAgent from source
+    SourceDeclared,
 }
 
 public sealed class StructuralContext

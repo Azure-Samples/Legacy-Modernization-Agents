@@ -128,7 +128,9 @@ public static class JclJobWriter
             plan.Programs,
             plan.Programs.Where(implemented.Contains).ToList(),
             plan.Programs.Where(p => !implemented.Contains(p)).ToList(),
-            plan.Steps.Where(s => s.Kind == JclPlanStepKind.Unresolved || s.GuardError is not null).Select(s => s.Name).ToList(),
+            plan.Steps.Where(s => s.Kind == JclPlanStepKind.Unresolved || s.GuardError is not null ||
+                (s.Kind == JclPlanStepKind.Utility && s.Program?.ToUpperInvariant() is not ("IEFBR14" or "IDCAMS")))
+                .Select(s => s.Name).ToList(),
             plan.Diagnostics)).ToList();
         return JsonSerializer.Serialize(entries, JclEstate.JsonOptions);
     }
