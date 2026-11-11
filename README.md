@@ -5,11 +5,70 @@ The migration uses Microsoft Agent Framework with a multi-provider architecture 
 
 ## 🎬 Portal Demo
 
-![Portal Demo](gifdemowithgraphandreportign.gif)
+The portal (`./doctor.sh portal`, http://localhost:5028) shows your estate, what the agents did, and what the parser saw. The three demos below use the public Bank-of-Z sample.
 
-*The web portal provides real-time visualization of migration progress, dependency graphs, and AI-powered Q&A.*
+### Estate Mission Control: Bank-of-Z
+
+![Estate Mission Control showing the Bank-of-Z estate](docs/images/bank-of-z-estate-mission-control.gif)
+
+> [!NOTE]
+> **What you are seeing:** a map of every program, CICS transaction, API, DB2 table and data store in the estate. It is built deterministically from source (COBOL, copybooks, BMS, CICS definitions, DDL and JCL), with no model calls.
+>
+> - **Pick an estate** (here Bank-of-Z) to focus the graph.
+> - **Click any node** to light up its connections. The side panel lists its calls, reads and writes, each with `file:line` evidence. The demo walks from transaction `OMEN` to the `BNKMENU` menu, the `CRECUST` program, the `ACCOUNT` table, and `ABNDPROC`, the shared abend handler and most connected program.
+> - **Program rings** show the dependency check: green means ready to convert, yellow means evidence is missing.
+> - **Search** finds any program, transaction or table.
+> - **Carve-out plan** groups programs into candidate service slices and migration waves, with the data each slice owns.
+>
+> See [Estate Mission Control](#estate-mission-control).
+
+### AI Loop: what the agents actually did
+
+![AI Loop showing a completed model run and a native REKT scan](docs/images/ai-loop.gif)
+
+> [!NOTE]
+> **What you are seeing:** a timeline of each run, built from recorded evidence rather than inferred progress.
+>
+> - **Pick a run** from the dropdown. Model runs show the loop: Discover, Analyze, Convert, Test, Compile, Parity and Report, with a gate result on each stage.
+> - **Context handoffs** list which source files and copybooks each agent received, and whether earlier context was reused.
+> - **Native REKT scans** (parse only) appear too, with real stage timings and no model calls.
+> - **Follow newest** switches to the live run so you can watch a conversion as it happens.
+
+### AST Explorer: Structure and Raw AST
+
+![AST Explorer showing the Structure view and the Raw AST view](docs/images/ast-explorer-raw-ast.gif)
+
+> [!NOTE]
+> **What you are seeing:** the parsed structure of each COBOL program, side by side with its source.
+>
+> - **Structure view:** expand a section and click a paragraph. The source jumps to it, and the Inspector shows its statement mix (MOVE, IF, PERFORM and so on).
+> - **Raw AST view:** the parser's own nodes. Hover a node for its type, name and parser ID. Click a statement to see the exact COBOL the parser captured, or a paragraph to open its source range.
+> - **Why it matters:** check for parse gaps before you convert. If a statement is not in the AST, the agents never saw it.
+>
+> See [AST Explorer](#ast-explorer).
+
+### Converted Bank-of-Z: 80s terminal and side-by-side code
+
+![Converted Bank-of-Z running in a 3270-style terminal, then COBOL and Java side by side](docs/images/bank-of-z-80s-terminal-and-code.gif)
+
+> [!NOTE]
+> **What you are seeing:** the 32 Bank-of-Z COBOL/CICS programs converted to Java Spring Boot microservices and running. The demo uses fictional sample data.
+>
+> - **80s terminal:** an IBM 3270-style screen rendered from the original BMS maps, driven by the converted Java. One-click scenarios look up a customer, display an account, and transfer funds. The transfer updates both accounts and writes a PROCTRAN audit row in one transaction.
+> - **Comparison page:** conversion time, the five services (each former CICS region is a service, and cross-domain LINKs became REST calls), and a code browser with the original COBOL on the left and the generated Java on the right.
+
+> [!IMPORTANT]
+> **The code is mapped 1:1 on purpose.** One COBOL program becomes one Java class, paragraph by paragraph, so you can trace each COBOL step to its Java equivalent. This is a way to show that the AI understood the COBOL, not a recommended target design. A real modernization would refactor further into idiomatic services and domain models.
 
 ---
+
+> [!IMPORTANT]
+> **The clone does not contain your estate. Add your source files to `source/` before scanning.**
+> Copy COBOL, copybooks, JCL jobs and their procedures/INCLUDE members into that folder
+> (subfolders are supported), or set `JCL_SOURCE_FOLDER` for an external JCL library.
+> `bash ./doctor.sh rekt-full` discovers COBOL, JCL, or both and loads the graph;
+> it does **not** generate executable jobs. `bash ./doctor.sh jcl` is the separate
+> job-scaffolding command. See [JCL discovery and facts](docs/jcl-job-facts.md).
 
 > [!IMPORTANT]
 > **Sign in before you run anything that calls a model.** The framework takes its token from your local sign-in; it does not prompt for one.
@@ -28,10 +87,10 @@ The migration uses Microsoft Agent Framework with a multi-provider architecture 
 > |---|---|---|
 > | 1 | *(copy files)* | **Put your sources in `source/`**: COBOL programs (`.cbl`), copybooks (`.cpy`), BMS maps (`.bms`), CICS definitions, and JCL jobs (`.jcl`) with their procedures and INCLUDE members (`.proc`, `.prc`, `.inc`). Subfolders are fine |
 > | 2 | `./doctor.sh setup` | **Configure the framework**: AI provider, credentials, models and local services |
-> | 3 | `./doctor.sh rekt-full` | **Parse the estate (before any conversion)**: parses the COBOL with REKT into the REKT Neo4j graph and the JCL into `output/rekt/`. No model is called. See [Parse first: rekt-full](#parse-first-rekt-full) |
+> | 3 | `./doctor.sh rekt-full` | **Discover and scan COBOL, JCL, or both**: parses COBOL with REKT, extracts JCL facts into `output/rekt/`, and ingests both into Neo4j. JCL-only input is supported; no executable jobs or model calls. See [Parse first: rekt-full](#parse-first-rekt-full) |
 > | 4 | `./doctor.sh portal` | **Open the portal** at http://localhost:5028 |
 > | 5 | *(portal)* | **Pick what to migrate in 🛰 Estate Mission Control**: switch to **✂️ Carve-out plan**, click a cluster, and press **📦 Stage slice**. The panel lists the programs, what they call, and what is missing from `source/`, and gives the exact command to run. **🔁 Send to AI loop** starts the conversion from the portal instead. See [Estate Mission Control](#estate-mission-control) |
-> | 6 | *(the suggested command)* | **Convert the slice**, for example `./doctor.sh convert-only --program BNK1CCA.cbl,BNK1CCS.cbl` |
+> | 6 | *(the suggested command)* | **Convert the slice**, for example `./doctor.sh convert-only --program ORDER01.cbl,ORDER02.cbl` |
 >
 > Example commands:
 >
@@ -51,6 +110,7 @@ The migration uses Microsoft Agent Framework with a multi-provider architecture 
 >
 > | Command | What it does |
 > |---|---|
+> | `./doctor.sh rekt-full` | **Scan JCL (with or without COBOL)**: facts and graph only; no executable scaffolding. Respects `JCL_SOURCE_FOLDER` |
 > | `./doctor.sh jcl --language CSharp` (or `Java`) | **JCL only, no model, seconds**: generates one job per JCL job into `output/<language>/<run>/`, compiles it (`dotnet build`, or `mvn compile` for Java), and lists per job which programs and procedures are still missing |
 > | `./doctor.sh run --job NAME --language CSharp` | **Job plus its programs**: converts the COBOL programs the job runs (add `--dry-run` to preview them), then generates the job so it can run end to end |
 >
@@ -78,7 +138,7 @@ flowchart LR
 | Step | Calls a model? | Needs Docker? | Writes to |
 |---|---|---|---|
 | `setup` | No (only lists models) | Pulls the Neo4j image | `Config/ai-config.local.env` |
-| `rekt-full` | No | Yes (REKT parser + REKT Neo4j) | `source/.preprocessed/`, `output/rekt/`, REKT Neo4j |
+| `rekt-full` | No | Neo4j; REKT parser only when COBOL is present | `source/.preprocessed/` (COBOL), `output/rekt/`, Neo4j |
 | `portal` | Only for chat | No for Estate Mission Control; Neo4j for the graph tabs | Nothing (reads) |
 | `estate` / Estate Mission Control | No | No (built from `source/` alone) | `output/estate/` |
 | `convert-only` / `run` | Yes | Migration Neo4j (started for you) for the dependency graph | `output/<language>/<run>/`, `Data/migration.db`, migration Neo4j |
@@ -398,9 +458,15 @@ dotnet build
 ./doctor.sh portal        # Launch web portal only (http://localhost:5028)
 ./doctor.sh reverse-eng   # Extract business logic, persist to DB, launch portal
 ./doctor.sh convert-only  # Conversion only; prompts to reuse persisted RE context
+./doctor.sh convert-only --java-framework Spring # Java Spring Boot instead of Quarkus
 ./doctor.sh jcl           # Jobs from the JCL alone, no model: what each job still needs
 ./doctor.sh estate        # Slices and migration waves from the source alone, no model
 ```
+
+`--java-framework Spring` selects Java explicitly and skips the target-language prompt;
+`--java-framework Quarkus` retains the existing Java target. Without flags, the
+interactive menu also offers Spring Boot. Framework selection does not waive REKT
+dependency requirements or turn a source-isolated partial run into a complete application.
 
 #### Business Logic Persistence and --reuse-re
 
@@ -408,11 +474,11 @@ After every `reverse-eng` or full `run`, extracted business logic is persisted t
 
 | Mode | Command | RE context in prompts? |
 |------|---------|------------------------|
-| Full migration | `./doctor.sh run` | ❌ No — RE runs first and writes its report; add `--reuse-re` to inject it |
+| Full migration | `./doctor.sh run` | ❌ No — RE runs first and writes its report |
 | Pure conversion | `./doctor.sh convert-only` → answer **N** | ❌ No context |
 | Conversion + cached RE | `./doctor.sh convert-only` → answer **Y** | ✅ Yes — loads persisted results from the last RE run over the same source folder |
 
-The `--reuse-re` flag can also be passed directly: `dotnet run -- --source ./source --skip-reverse-engineering --reuse-re`.
+Use `./doctor.sh convert-only` and answer **Y** to reuse saved RE results. Keep conversions behind `doctor.sh` so configuration and connectivity checks run before conversion.
 
 Injection is off by default. On IBM Bank-of-Z, converters given the business logic followed the summary instead of translating every paragraph, and dropped error and abend handling. Only a run over the same source folder is reused, so one estate's report never reaches another. A file whose content changed since that run gets no business logic, and the run lists it. The converters treat the report as context: when it disagrees with the COBOL source or the REKT facts, the source wins first and the facts second.
 
@@ -430,6 +496,30 @@ It parses every program with REKT, records how much of each program the parser r
 cat output/rekt/missing-copybooks.txt # add these to source/ and run rekt-full again
 ```
 
+> [!TIP]
+> **Parallel parsing for large estates.** By default, programs are parsed one at a time (about 2 minutes each on a laptop, because called programs are parsed with their callers). Add `--parallel N` to parse up to N programs at once in the REKT container:
+>
+> ```bash
+> ./doctor.sh rekt-full --parallel 4            # parse 4 programs at once, then ingest
+> ./doctor.sh rekt-parse --parallel 4           # parse only
+> REKT_PARSE_JOBS=4 ./doctor.sh rekt-full       # same, via environment (or put it in Config/ai-config.local.env)
+> ```
+>
+> | Setting | Meaning |
+> |---|---|
+> | `--parallel N` / `REKT_PARSE_JOBS=N` | 1–16 programs at once. Defaults to `1` (sequential). The flag overrides the variable. |
+> | Recommended N | 2–4. Each job runs its own parser JVM next to Neo4j, so allow about 1 GB of Docker memory per job. Too many jobs causes swapping and slows the scan. |
+> | Incremental | Unchanged programs with valid evidence are skipped as `(cached)` before any job starts. A rerun after a small change takes minutes. |
+>
+> The results are identical to a sequential scan. Each program has its own work folders. The scan cache and the Mission Control activity journal are merged in program order (the journal uses a file lock). Each program's console output is printed as one block when it finishes. If any program stops with an internal error, the scan waits for the running jobs and then fails; nothing is ingested.
+
+> [!IMPORTANT]
+> **Several estates in one `source/` folder.** When programs sit in more than one top-level folder of `source/` (for example `source/bank-of-z/` and `source/carddemo/`), each folder is an independent estate. Loose files directly in `source/` form one more estate. Each estate is preprocessed and staged on its own, so its programs resolve COPY and CALL only within that folder (subfolders included, such as `cbl/`, `cpy/` and `jcl/`). Scanning one estate never changes another's evidence, and each estate binds to its own snapshot of the platform contracts (`<estate>/.preprocessed/platform-contracts.json`). Editing the shared contracts profile therefore only affects estates that you scan again.
+>
+> When programs sit in only one top-level folder (a layout such as `source/cbl/`, `source/cpy/` and `source/jcl/`), all of `source/` is one estate, and programs find copybooks in the sibling folders. If `source/` holds several estates and a top-level folder has copybooks or BMS maps but no programs, the parse warns that no estate reads it; move it into the estate folder that uses it.
+>
+> In Estate Mission Control, a JCL job in a folder without programs (such as `source/jcl/`) is shown in the estate of the programs it runs.
+
 Read the summary at the end before converting:
 
 ```
@@ -438,9 +528,15 @@ Read the summary at the end before converting:
   ⚠️  38 missing copybook(s) — see output/rekt/missing-copybooks.txt
 ```
 
-A missing copybook makes the programs that COPY it *Partial*: the parser substitutes a generated stub, so the fields behind it have no known layout and the conversion has to infer them. Add the real copybooks and parse again for the best result. Details of each program are in `output/rekt/**/*.parse.log`.
+A missing copybook remains an unresolved dependency: its fields and layout must not be inferred or fabricated. Missing-copybook-only parser recovery can retain partial evidence with diagnostics; it does not establish a complete AST or make conversion ready. Add the real copybooks and parse again. Details of each program are in `output/rekt/**/*.parse.log`.
 
-CICS screen maps are the exception: if `source/` holds the BMS mapsets (`*.bms`), the parse generates each symbolic map copybook (`<map>I` / `<map>O`) from them, as the z/OS BMS assembly step would, so programs that `COPY` a mapset keep full fidelity. The copybook takes the `.bms` file name, and a real copybook of that name always wins. Set `REKT_NO_BMS_MAPS=true` to turn this off.
+The parser bundles declared SQLCA and SQLDA reference inputs when no accepted
+source definition exists. See [bundled system copybooks](docs/bundled-system-copybooks.md)
+for provenance, licensing and the distinction from a customer's installed SDK.
+
+CICS screen layouts can be derived from real definitions rather than guessed: if `source/` holds the BMS mapsets (`*.bms`), the parse generates symbolic map copybooks (`<map>I` / `<map>O`) from them. The copybook takes the `.bms` file name, and a real copybook of that name always wins. These generated layouts still require validation; they do not establish complete program parsing or conversion by themselves. Set `REKT_NO_BMS_MAPS=true` to turn this off.
+
+The same BMS parser also writes `source/.preprocessed/bms-screen-definitions.json`: source paths and hashes, map dimensions, field positions, initial text, protection/numeric attributes, and unnamed labels and zero-length attribute boundaries. Named symbolic-copybook fields remain separate from visual fields. Invalid lengths or coordinates produce explicit warnings rather than invented one-byte fields. This manifest can drive a web adapter; having a rendered layout does **not** prove that its COBOL screen program, CICS SEND/RECEIVE operations, transaction navigation, or missing vendor copybooks have been converted.
 
 Then convert, either everything or a selection:
 
@@ -567,11 +663,34 @@ The tabs that read parse results need `./doctor.sh rekt-full` first.
 Open **🛰 Estate Mission Control**. The panel expands to full width. Screenshots: [Estate Mission Control at a glance](#-estate-mission-control-at-a-glance). Everything on it is built from the source without a model, and every node and edge records the file and line it came from.
 
 - **KPIs** across the top: programs and lines, entry points (transactions, APIs, batch jobs), online and batch programs, data stores, how many programs REKT parsed, how many have a converted output, carve-out clusters and shared hubs, and programs that need attention (unreferenced, unreachable, or referenced but not in the source).
-- **Explore** mode draws the estate as one graph. Use **Group** to group by business function, carve-out cluster or estate, the **Nodes**, **Kind**, **Tech** and **Status** chips to filter, and the search box to find a program, transaction or table. The ring around a program shows its status: converted with parity of 90% or more, converted, parsed, not parsed yet, or referenced but not in the source. Select a node for its metrics, description, conversion parity and every relationship with its evidence. The right panel shows the inputs scanned, the programs per business function and the list that needs attention.
+- **Explore** mode draws the estate as one graph. Use **Group** to group by business function, carve-out cluster or estate, the **Nodes**, **Kind**, **Tech** and **Status** chips to filter, and the search box to find a program, transaction or table. The ring around a program shows its dependency-evidence state: missing, rejected, check passed or not checked. Parse fidelity and conversion parity are separate observations. Select a node for its metrics, description, conversion parity and every relationship with its evidence. The right panel shows the inputs scanned, the programs per business function and the list that needs attention.
 - **Carve-out plan** mode shows the migration waves. Wave 0 holds the hub programs as shared services; each later wave can be converted once the waves it calls into are done. Each cluster is tiered **low-risk**, **moderate** or **core** by its carve score.
 - **Cluster card**: select a cluster card, or a cluster title in the graph, to see why the cluster was formed, its members and entry points, the data it **owns** (moves with it) and the data it **shares** with other clusters (needs a data-access API or sync), the inbound calls that become service APIs, its outbound dependencies and what is missing from the source.
 - **Stage slice** lists the programs to convert, what they call outside the cluster, what is missing and the equivalent `./doctor.sh convert-only --program …` command. **Send to AI loop** starts that conversion in Java or C#, using the provider and model selected in Mission Control. Follow it on the **🔁 AI Loop** tab.
 - **Rebuild graph** rescans the source. Use it after adding files to `source/`.
+
+The graph renders without waiting for the full dependency-readiness assessment.
+**Refresh readiness** updates evidence statuses and details without rebuilding or
+relaying out the graph. Pending checks are not displayed as passed.
+
+**Input availability** in the overview and program details distinguishes present
+hash-matching bindings, shared source paths, configured inputs outside the source
+tree, unmatched local filenames, placeholders, unbound candidates, stale evidence
+and unreadable files. Shared means outside the program's top-level source folder;
+it is not a rejection. Overview counts are deduplicated within the selected estate,
+using the most restrictive status when bindings disagree. Missing or invalid
+inventory is shown as unknown, never as zero dependencies. Unresolved declarations
+and exporter bindings, unsupported parser constructs and unverified target-runtime
+mappings have separate explanations and actions.
+Availability does not authorise conversion or establish behavioral equivalence.
+
+**Send to AI loop does not run the parser.** Strict conversion reads evidence from
+`REKT_FACTS_FOLDER`, defaulting to `output/rekt`. A scan saved elsewhere does not
+automatically bind a conversion to that snapshot's sources and artifacts. If a
+run stops before its first model call with `missing dependency-evidence.json`,
+the required evidence is absent from the conversion's facts directory; changing
+the model will not fix it. Supply matching source/evidence inputs and regenerate
+stale facts before retrying. Do not bypass the strict gate.
 
 The same plan is available from the command line:
 
@@ -586,11 +705,26 @@ See [Estate Mission Control and the AI Loop](docs/estate-mission-control.md) for
 
 Open **🌳 AST Explorer** and choose a program from the list at the top. JCL jobs appear in the same list as `JCL · <job>`. The list is filled from the REKT graph, so it is empty until `./doctor.sh rekt-full` has run.
 
+Changing snapshots cancels the previous inventory request; an inventory taking
+longer than 15 seconds shows a timeout rather than an indefinite loading state.
+The graph-populator schema includes a program/snapshot AST index for these lookups;
+existing graphs need the updated schema applied, not just a portal rebuild.
+
 - The bar under the list counts the program's sections, paragraphs, statements and PERFORM calls.
 - The left side draws the parse tree: sections, paragraphs, sentences and statements (SQL, CICS, MOVE, PERFORM, IF), with PERFORM targets linked. Hover a node for its type, name and line range. **Raw AST** shows the tree as the parser produced it.
 - Select a section or paragraph to show its source on the right, with the line highlighted. **Full File** shows the whole program.
 
 Use it to check what the conversion will work from: a program whose parse fidelity is *Deps only* has no paragraphs or statements here.
+
+The evidence overview separates **recorded AST structure** (useful for navigating sections and source) from **dependency readiness** and **parser/source health**. It counts files with diagnostics, reports with no recorded diagnostics, and unavailable reports for the selected snapshot only; JCL is excluded from COBOL evidence counts. Shared diagnostic codes show why many or even all files may be flagged. For example, an export failure or source-hash verification failure across every file is an evidence-pipeline problem, not proof that every program is missing copybooks or has unusable structure.
+
+When the snapshot records `expectedProgramCount`, `astProgramCount` and `structuralGaps`, the overview also shows the full program inventory versus AST-bearing programs (for example, **78/117 programs with AST; 39 without AST**) and a collapsed list of recorded missing-AST program names. The file picker itself contains AST-bearing files only. Older snapshots without these metadata retain **unknown** totals/names; visible file counts are never substituted for the full program inventory. These counts measure programs with recorded structural artifacts, not percentage AST completeness.
+
+Select a file for exact recorded missing COPY/source names, reasons and corrective actions. Other diagnostics are grouped separately as parser diagnostics, unsupported coverage, unverified inputs, analysis/export failures, incomplete/not-recorded evidence or unclassified diagnostics. Expand **All recorded diagnostics** for the original messages. Source locations are displayed only when recorded; the current graph stores strings, not structured diagnostic locations, so locations embedded in original messages are preserved verbatim and unavailable locations are explicitly marked. Supply real missing inputs and correct search paths, parser configuration or evidence provenance as indicated, then regenerate evidence into a **new named snapshot**, never overwrite an old one or substitute placeholder definitions.
+
+**Unreadable COPY inputs** are separate from missing inputs: `native:unreadable-copybook:SQLCA:Provider "implicit" not installed` records a provider/configuration failure, not proof that the real SQLCA file is absent. The selected-file details preserve the input name and exact diagnostic and direct you to correct provider configuration/input access before regenerating evidence.
+
+A clean-file label means **no diagnostics recorded**, not “fully dependency-ready.” The graph inventory records report presence and diagnostic strings, but does not expose the complete coverage, absence proofs and verified source hashes required by the strict conversion gate. Consequently this view cannot prove any file fully dependency-ready, even if its report is clean. Neither AST node counts nor a small number of missing definitions measure percentage completeness or prove behavioral correctness: a mostly useful structural tree can coexist with a small but blocking missing input. Strict conversion gating, run-scoped source selection and exact snapshot isolation remain unchanged.
 
 ### Convert Programs
 
@@ -598,8 +732,8 @@ Open **🎯 Convert Programs** to choose what to convert.
 
 1. **The list** has one row per COBOL program: a compilable unit with a `PROGRAM-ID` and a `PROCEDURE DIVISION`. Copybooks are not listed; they are record layouts, and each is carried in by the programs that COPY it. Filter by name or path in the top right.
 2. **Parse fidelity** on each row comes from `rekt-full`. Hover a label for its meaning:
-   - **Full**: every copybook was found and the program parsed completely; the conversion works from the real record layouts.
-   - **Partial**: at least one copybook is missing (shown as *N missing copybooks*), so its fields have no known layout and the conversion infers them.
+   - **Parse: Full**: the recorded structural parse outcome is Full, shown neutrally rather than as approval. Conversion may still be blocked by missing or unverified inputs, incomplete exported coverage or unresolved runtime bindings.
+   - **Parse: Partial**: the parser recovered only part of the structure, for example because of a missing copybook or unsupported dialect. Missing layouts remain blocking dependencies; conversion must not invent them.
    - **Deps only**: only the dependency list was recovered, so there is much less to convert from.
 3. **Details** shows what converting that program would pull in: its call closure (the programs reachable by CALL), its copybooks and its missing copybooks.
 4. Tick the programs you want, choose **Java** or **C#**, and tick **Add call closure** to add every program the selection CALLs (the same as `--include-callees`), so a converted program never calls one that was not converted.
@@ -787,6 +921,19 @@ OUTPUT STRUCTURE:
 
 Similarly for C#, edit `Agents/Prompts/CSharpConverter.md`.
 
+> [!NOTE]
+> **Microservice-style output is set in the prompts. It is not a separate mode.** By default each COBOL program becomes one program-level unit (for example a `@Service`), which is **not** automatically a deployed microservice. To get output organized by service boundaries:
+>
+> | Step | How |
+> |---|---|
+> | **1. Choose Spring** | Set `JAVA_FRAMEWORK=Spring` (or pick option 3, *Java (Spring Boot)*, in `./doctor.sh run`). The whole-file converter then uses `Agents/Prompts/JavaSpringConverter.md`, and chunked files also apply its `StructuralPolicy` section. That prompt already separates local constructor injection from real cross-service HTTP clients |
+> | **2. Open Prompt Studio** | Portal (http://localhost:5028) → **Prompt Studio** → `JavaSpringConverter` (and `ChunkAwareJavaConverter` for large files). Saved edits are written back to `Agents/Prompts/<Id>.md`, so CLI runs use them too |
+> | **3. Supply the service boundaries** | In the `System` section, add your domain map: which COBOL programs belong to which service (for example *Customers*, *Accounts*, *Transfers*). Use Mission Control clusters and waves as the starting point. The prompt groups programs behind business-capability classes instead of one service per COBOL file |
+> | **4. State the cross-service rules** | Name the request/response contracts, service URLs, timeouts, error propagation and commit/rollback policy. Calls inside a service stay injected beans; calls across services become configured HTTP clients. `@Transactional` never spans HTTP, and missing contracts are reported as blockers, not invented |
+> | **5. Score and run** | Use **Generate with AI Enhancement** and the quality score in Prompt Studio, then convert one Mission Control slice with `./doctor.sh convert-only` |
+>
+> The prompts shape the code. Separate deployments, API gateways and the browser front end still need an explicit application-assembly step, and the readiness gate still applies: generating services does not prove behavioural equivalence.
+
 ---
 
 ## 📐 File Splitting & Naming
@@ -835,6 +982,47 @@ public enum FileSplitStrategy
 ```
 
 ### Naming Conversion
+
+Java conversion defaults to Quarkus. Set `JAVA_FRAMEWORK=Spring` (or
+`ConversionSettings.JavaFramework` to `Spring`) to use the existing whole-file and
+chunked Java agents with Spring Boot instructions, constructor injection and
+source-backed SQL mappings. Generated Spring projects receive a Boot entry point
+and Maven dependencies matching their imports; selecting Spring does not imply
+CICS/IMS runtime equivalence or resolve missing inputs.
+
+Program-level translation units are not automatically microservices. The Spring
+prompt follows a supplied domain map for higher-level capability classes,
+distinguishes local injection from real cross-service clients, and does not
+claim that transactions span HTTP. Domain aggregation, separate deployments and
+browser/API assembly still require an explicit application-assembly step.
+
+Explicit `--dependency-mode partial` (or `dependencyMode: "partial"` in the
+managed launch API) selects a separate source-isolated Spring conversion path.
+It translates restricted routines with locally established field declarations,
+plus bounded straight-line prefixes before unsupported effects. Standard COPY
+inputs are used only when their names resolve uniquely; the supported simple
+pseudo-text replacement does not change quoted literals. Vendor prefix-copy
+directives, missing fields, aliases/tables requiring unresolved layouts and
+unsupported control/runtime effects remain excluded with specific reasons.
+This mode does not relax strict whole-program dependency gates.
+`partial-tree-plan.json` records original/COPY hashes, source ranges, selected
+routines/fragments, omissions and actual generation outcomes. Maven compilation
+is measured separately; no whole-program entry point, unavailable callee body
+or behavioral-equivalence claim is generated. AI Loop records actual model
+requests, per-program stages, process logs and the partial outcome.
+
+For an isolated native scan, set `REKT_FACTS_FOLDER` to its exact artifact directory
+and select the matching original source root. Dependency gates, discovery,
+structural context and verified COPY context use that directory rather than stale
+`output/rekt` artifacts; source and definition hash checks remain mandatory.
+`POST /api/runs/start` accepts optional `javaFramework: "Spring"` and
+`rektFactsFolder: "output/rekt-scans/<scan>/artifacts"` for a managed attempt.
+Portal artifact paths must be existing, unlinked repository-relative directories.
+Managed attempts retain their console logs and actual terminal status in AI Loop,
+including attempts blocked before any model call.
+An immutable portal deployment can set `MIGRATION_CLI_ASSEMBLY` to an existing
+absolute CLI `.dll` path, so managed launches use that tested build without
+rebuilding or overwriting binaries loaded by another process.
 
 Naming strategies are configured in `ConversionSettings`:
 
@@ -1011,6 +1199,21 @@ sequenceDiagram
 ### Smart Chunking & Token Strategy
 
 Large COBOL files (>3,000 lines or >150K characters) are automatically split at semantic boundaries (DIVISION → SECTION → paragraph) and processed with content-aware reasoning effort. A three-tier complexity scoring system analyzes each file's COBOL patterns (EXEC SQL, CICS, REDEFINES, etc.) to dynamically allocate reasoning effort and output tokens — simple files get fast processing while complex files get thorough analysis.
+
+> [!NOTE]
+> **Chunking is fully automatic. You do not choose chunks, sizes or boundaries.** Each file is measured and planned before any model call, so every request stays inside the model's context window.
+>
+> | Step | What the framework does automatically | Default (`Config/appsettings.json` → `ChunkingSettings`) |
+> |---|---|---|
+> | **1. Decide** | Measures each file and chunks it only when it is too large for one request; smaller files go through whole | `AutoChunkLineThreshold` 3,000 lines · `AutoChunkCharThreshold` 150,000 chars |
+> | **2. Split on meaning** | Finds DIVISIONs, SECTIONs and paragraphs and cuts at the highest-level boundary that fits, so logic is never cut mid-paragraph | Priority DIVISION > SECTION > paragraph |
+> | **3. Bound each chunk** | Caps every chunk by both lines and estimated tokens | `MaxLinesPerChunk` 1,500 · `MaxTokensPerChunk` 28,000 |
+> | **4. Fall back safely** | If a single unit is still too large, it switches to line-based chunks with overlap so no statement loses its surroundings | `OverlapLines` 300 |
+> | **5. Carry context, not the whole file** | Keeps the last chunks in full, compresses older ones, and passes signatures and type mappings forward | `FullDetailChunkWindow` 3 · `CompressionRatio` 0.3 |
+> | **6. Size the answer** | Scores COBOL complexity (SQL, CICS, REDEFINES…) to pick reasoning effort and output-token budget per file | Low / medium / high tiers |
+> | **7. Pace and reassemble** | Runs chunks in parallel within the TPM/RPM budget, then reassembles them in order and checks for gaps, duplicates and syntax errors | `MaxParallelChunks` 6 |
+>
+> Run `./doctor.sh chunking-health` to see which files will be chunked. To tune, change the settings above; the split itself stays automatic.
 
 ```mermaid
 flowchart TD
@@ -1498,3 +1701,12 @@ Collaboration between Microsoft's Global Black Belt team and [Bankdata](https://
 ## License
 
 MIT License - Copyright (c) Microsoft Corporation.
+## Explicit partial draft conversion
+
+Strict dependency verification remains the default. To convert only independently justified
+whole programs while retaining explicit blocked plans, use `--dependency-mode draft` on the
+.NET migration CLI, or `CONVERSION_DEPENDENCY_MODE=draft` with existing launch commands.
+Mission Control and estate slice launches expose the same explicit policy. Draft requires a
+fresh output directory and is always **partial / not verified**; missing COPY and unsupported
+dependency domains are not waived. See [dependency eligibility](docs/dependency-health-and-flow-explorer.md#dependency-eligibility-strict-versus-explicit-draft)
+for the plan artifact, corrective-action contract, read-only planning API and current routine-isolation limits.

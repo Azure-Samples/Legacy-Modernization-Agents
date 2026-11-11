@@ -823,7 +823,7 @@ CREATE TABLE forward_references (
 1. **File Too Large → Uses Chunking Automatically**
    ```bash
    # SmartMigrationOrchestrator auto-detects and routes
-   dotnet run --source source
+   ./doctor.sh run --source source
    ```
 
 2. **Chunk Too Large Error**

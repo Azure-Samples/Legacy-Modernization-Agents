@@ -542,9 +542,6 @@ The web portal at `http://localhost:5028` provides:
 ./doctor.sh convert-only
 # → answer Y to inject business logic from last RE run
 
-# Or pass flags directly
-dotnet run -- --source ./source --skip-reverse-engineering --reuse-re
-
 # Check chunking infrastructure health
 ./doctor.sh chunking-health
 

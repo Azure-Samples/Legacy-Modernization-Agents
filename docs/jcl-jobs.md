@@ -1,4 +1,4 @@
-**Last updated**: 2026-10-01
+**Last updated**: 2026-10-22
 
 # Jobs generated from JCL
 
@@ -17,7 +17,7 @@ The namespace is `{root}.Jobs` (C#) or `{root}.jobs` (Java), under the same root
 
 - the programs it runs;
 - which of them the converted code already implements through the batch-program contract, and which it does not yet;
-- the steps that cannot run (a procedure that is not in the source, or a condition that could not be read);
+- the steps that cannot run (a procedure that is not in the source, an unsupported utility, or a condition that could not be read);
 - the parser's diagnostics.
 
 In C#, the jobs are part of the generated project and go through the compile gate with the programs. The compile gate does not repair generated `.g.cs` files, because they are rewritten on the next scaffold.
@@ -137,10 +137,17 @@ Any other utility, such as a sort, a Db2 unload or a copy program, stops the job
 
 | Command | What it does |
 |---|---|
+| `./doctor.sh rekt-full` | Discovers COBOL/JCL/both, writes facts and ingests the graph, without generating jobs; JCL-only input is supported |
 | `./doctor.sh jcl` | Generates the jobs alone into a new run folder, without a model, compiles them (Java with Maven when installed), and lists per job the programs not yet converted and the steps that cannot run |
 | `./doctor.sh run --job NAME` | Converts the programs the job runs, and what they CALL when the portal is up, with the contract above, then generates the jobs. A program that is not in the source is listed, not converted |
 
 A job runs end to end only when its programs are converted, so `run --job` (or `run` for all) is the way to convert a batch application. `--job` takes the job name or the member name, can be repeated or comma-separated, and works with `convert-only` and `--dry-run`. After the run, the jobs are summarised from `jobs-manifest.json`.
+
+No resolved estate programs does not mean “utilities only” or “ready”: an unresolved
+procedure or unsupported utility is reported as blocked. The default readiness
+summary recognizes only `IEFBR14` and `IDCAMS` utility implementations; individual
+IDCAMS commands, dataset availability and custom utility implementations still
+require runtime verification. No additional utility execution is supplied by discovery.
 
 ## From the command line
 
