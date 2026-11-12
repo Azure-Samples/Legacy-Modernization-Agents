@@ -434,7 +434,6 @@ def copy_expanded_text(text, definitions, active=()):
 
 
 def bms_source_uses_bound(binding, source, definitions):
-    import re
     from rekt_dependency_evidence import dependency_guard_text
     fields = set()
     for path in {item["path"] for item in definitions if item["kind"] in ("BMS_LAYOUT", "CICS_MAP_LAYOUT")}:
