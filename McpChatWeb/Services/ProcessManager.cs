@@ -153,21 +153,33 @@ public class ProcessManager : IDisposable
 
     public ProcessManager(string repoRoot) : this(repoRoot, "dotnet") { }
 
-    public Task<DependencyReadiness> AssessDependenciesAsync(
+    public async Task<DependencyReadiness> AssessDependenciesAsync(
         string? sourceFolder = null, string? factsFolder = null, IReadOnlyList<string>? programs = null,
-        CancellationToken ct = default) =>
-        DependencyReadiness.AssessAsync(ResolveSourceRoot(sourceFolder), ResolveFactsRoot(factsFolder),
+        CancellationToken ct = default)
+    {
+        var sourceRoot = ResolveSourceRoot(sourceFolder);
+        var readiness = await DependencyReadiness.AssessAsync(sourceRoot, ResolveFactsRoot(factsFolder),
             programs is null ? null : ValidatePrograms("convert-only", programs), ct);
+        return WithSourceFolderId(readiness, sourceRoot);
+    }
 
     // Whole-estate readiness for display only; launches call AssessDependenciesAsync for a fresh check.
-    public Task<DependencyReadiness> GetEstateReadinessAsync(string? sourceFolder = null, CancellationToken ct = default)
+    // refresh discards the cached assessment, so an explicit refresh always re-reads every input.
+    public async Task<DependencyReadiness> GetEstateReadinessAsync(
+        string? sourceFolder = null, CancellationToken ct = default, bool refresh = false)
     {
         var sourceRoot = ResolveSourceRoot(sourceFolder);
         var factsRoot = ResolveFactsRoot(null);
         _readinessCache ??= new DependencyReadinessCache([Path.Combine(_repoRoot, "tools")]);
-        return _readinessCache.GetAsync(sourceRoot, factsRoot,
-            token => DependencyReadiness.AssessAsync(sourceRoot, factsRoot, null, token), ct);
+        if (refresh) _readinessCache.Invalidate(sourceRoot, factsRoot);
+        var readiness = await _readinessCache.GetAsync(sourceRoot, factsRoot,
+            token => DependencyReadiness.AssessAsync(sourceRoot, factsRoot, null, token), ct,
+            DependencyReadiness.ReferencedInputs);
+        return WithSourceFolderId(readiness, sourceRoot);
     }
+
+    private DependencyReadiness WithSourceFolderId(DependencyReadiness readiness, string sourceRoot) =>
+        readiness with { SourceFolderId = Path.GetRelativePath(_repoRoot, sourceRoot).Replace('\\', '/') };
 
     public static bool RequiresDependencyEvidence(string? command) =>
         command?.ToLowerInvariant() is "migrate" or "run" or "full" or "convert-only" or "convert"

@@ -127,14 +127,14 @@
       else this.renderOverview();
     }
 
-    async refreshReadiness() {
+    async refreshReadiness(refresh = false) {
       if (this.readinessLoading) return;
       const revision = ++this.readinessRevision;
       this.readinessLoading = true;
       this.readiness = null; this.dependencyPlans.clear();
       this.readinessWarning = 'Checking dependency evidence… Program rings remain not checked until the current assessment completes.';
       this.updateReadinessView();
-      const assessment = await window.ConversionReadiness.read().then(report => ({ report }), error => ({ error }));
+      const assessment = await window.ConversionReadiness.read(undefined, { refresh }).then(report => ({ report }), error => ({ error }));
       this.applyReadiness(assessment, revision);
     }
 
@@ -236,7 +236,7 @@
       let t;
       $('#emc-search').oninput = (e) => { clearTimeout(t); t = setTimeout(() => { this.f.search = e.target.value.trim().toUpperCase(); this.highlightSearch(); }, 250); };
       $('#emc-fit').onclick = () => this.cy?.fit(undefined, 30);
-      $('#emc-readiness-refresh').onclick = () => this.refreshReadiness();
+      $('#emc-readiness-refresh').onclick = () => this.refreshReadiness(true);
       $('#emc-relayout').onclick = () => this.layout(true);
       $('#emc-rebuild').onclick = () => this.rebuild();
       this.root.querySelectorAll('[data-chip]').forEach(el => el.onclick = () => {

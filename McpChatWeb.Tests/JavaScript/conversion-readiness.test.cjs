@@ -267,3 +267,29 @@ test('Mission Control blocks missing evidence, honours prompt cancellation and p
     assert.equal(alerts.length, mode === 'blocked' ? 1 : 0);
   }
 });
+
+test('ProgramPickerView checks a selection with the repository-relative source folder and drops a check a refresh superseded', async () => {
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  const f = fixture((url, init) => (init?.method === 'POST' ? pending : reply({ programs: [] })));
+  vm.runInContext(readFileSync(join(__dirname, '../../McpChatWeb/wwwroot/program-picker.js'), 'utf8'), f.context);
+  const view = new f.window.ProgramPickerView('root');
+  view.readiness = { sourceFolder: 'C:\\estates\\my estate\\source', sourceFolderId: 'source', programs: [] };
+  view.selected.add('A.cbl');
+  const check = view.assessSelection();
+  await settle();
+  assert.equal(JSON.parse(f.requests[0][1].body).sourceFolder, 'source');
+
+  view.readinessRevision++;
+  view.dependencyPlans.set('A.cbl', { program: 'A.cbl', status: 'blocked' });
+  release(reply({ sourceFolderId: 'source', programs: [{ program: 'A.cbl', status: 'eligible' }], strictAllowed: true }));
+  await assert.rejects(check, /refreshed while checking/);
+  assert.equal(view.dependencyPlans.get('A.cbl').status, 'blocked');
+});
+
+test('an explicit readiness refresh asks the server to bypass its cache', async () => {
+  const f = fixture(reply({ programs: [] }));
+  await f.api.read();
+  await f.api.read(undefined, { refresh: true });
+  assert.deepEqual(f.requests.map(r => r[0]), ['/api/runs/readiness', '/api/runs/readiness?refresh=true']);
+});

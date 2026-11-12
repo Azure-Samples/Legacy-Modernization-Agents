@@ -83,4 +83,48 @@ public sealed class DependencyReadinessCacheTests : IDisposable
 
         Assert.Equal(2, _assessments);
     }
+    [Fact]
+    public async Task An_edit_to_a_referenced_input_outside_the_watched_roots_forces_a_fresh_assessment()
+    {
+        var profiles = Directory.CreateDirectory(Path.Combine(_root, "profiles")).FullName;
+        var profile = Path.Combine(profiles, "target-port.json");
+        await File.WriteAllTextAsync(profile, "{}");
+        using var cache = new DependencyReadinessCache();
+        await cache.GetAsync(_source, _facts, Assess, referencedInputs: _ => [profile]);
+        // The first result was read before the profile was watched, so it is not reused.
+        var watched = await cache.GetAsync(_source, _facts, Assess, referencedInputs: _ => [profile]);
+        Assert.Same(watched, await cache.GetAsync(_source, _facts, Assess, referencedInputs: _ => [profile]));
+
+        await File.WriteAllTextAsync(profile, "{\"changed\":true}");
+        DependencyReadiness? fresh = null;
+        for (var i = 0; i < 50 && (fresh is null || ReferenceEquals(fresh, watched)); i++)
+        {
+            await Task.Delay(100);
+            fresh = await cache.GetAsync(_source, _facts, Assess, referencedInputs: _ => [profile]);
+        }
+        Assert.NotSame(watched, fresh);
+    }
+
+    [Fact]
+    public async Task A_referenced_input_in_a_missing_directory_is_never_cached()
+    {
+        var absent = Path.Combine(_root, "absent", "contract.json");
+        using var cache = new DependencyReadinessCache();
+        await cache.GetAsync(_source, _facts, Assess, referencedInputs: _ => [absent]);
+        await cache.GetAsync(_source, _facts, Assess, referencedInputs: _ => [absent]);
+        await cache.GetAsync(_source, _facts, Assess, referencedInputs: _ => [absent]);
+
+        Assert.Equal(3, _assessments);
+    }
+
+    [Fact]
+    public async Task Invalidate_discards_the_cached_assessment()
+    {
+        using var cache = new DependencyReadinessCache();
+        var first = await cache.GetAsync(_source, _facts, Assess);
+        cache.Invalidate(_source, _facts);
+
+        Assert.NotSame(first, await cache.GetAsync(_source, _facts, Assess));
+        Assert.Equal(2, _assessments);
+    }
 }

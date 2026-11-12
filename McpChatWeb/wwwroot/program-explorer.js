@@ -47,7 +47,7 @@ class ProgramExplorerView {
     this.render();
   }
 
-  async loadList() {
+  async loadList(refresh = false) {
     const revision = ++this.readinessRevision;
     this.readiness = null;
     this.dependencyPlans.clear();
@@ -56,7 +56,7 @@ class ProgramExplorerView {
     try {
       const [resp, assessment] = await Promise.all([
         fetch('/api/modernization/programs'),
-        window.ConversionReadiness.read().then(report => ({ report }), error => ({ error }))
+        window.ConversionReadiness.read(undefined, { refresh }).then(report => ({ report }), error => ({ error }))
       ]);
       if (revision !== this.readinessRevision) return;
       this.readiness = assessment.report || null;
@@ -160,7 +160,7 @@ class ProgramExplorerView {
     this.bindRows();
     this.bindDetail();
     document.getElementById('px-refresh-readiness')?.addEventListener('click', async () => {
-      await this.loadList();
+      await this.loadList(true);
       this.render();
     });
   }

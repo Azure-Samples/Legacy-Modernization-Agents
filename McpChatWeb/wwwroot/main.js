@@ -279,8 +279,11 @@ async function handleChatSubmit(event) {
     renderMcpVisual(payload.model, payload.isMcpCall);
 
     if (window.ChatHistory) {
+      const answerLabel = payload.reportPath
+        ? (reportContext === 'latest' ? 'latest: ' : '') + String(payload.reportPath).split('/').pop()
+        : scopeLabel;
       window.ChatHistory.completeMessage(pendingAnswer, payload.response ?? 'No content returned.', {
-        pending: false, model: payload.model, runId: payload.runId, scope, scopeLabel
+        pending: false, model: payload.model, runId: payload.runId, scope, scopeLabel: answerLabel
       });
     } else {
       responseBody.textContent = payload.response ?? 'No content returned.';

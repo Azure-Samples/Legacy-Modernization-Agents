@@ -71,7 +71,7 @@ class ProgramPickerView {
     this.render();
   }
 
-  async load() {
+  async load(refresh = false) {
     const revision = ++this.readinessRevision;
     this.readiness = null;
     this.dependencyPlans.clear();
@@ -82,7 +82,7 @@ class ProgramPickerView {
     try {
       const [resp, assessment] = await Promise.all([
         fetch('/api/modernization/programs'),
-        window.ConversionReadiness.read().then(report => ({ report }), error => ({ error }))
+        window.ConversionReadiness.read(undefined, { refresh }).then(report => ({ report }), error => ({ error }))
       ]);
       if (revision !== this.readinessRevision) return;
       this.readiness = assessment.report || null;
@@ -312,6 +312,22 @@ class ProgramPickerView {
     this.readiness = { ...assessment, programs: [...this.dependencyPlans.values()] };
   }
 
+  // The selection check is sent with the repository-relative source folder the readiness API
+  // reports (the absolute one is display-only), and a refresh started meanwhile supersedes it.
+  async assessSelection() {
+    const request = {
+      command: 'convert-only', programs: await this.resolveSelection(),
+      targetLanguage: this.language === 'java' ? 'Java' : 'CSharp', dependencyMode: 'strict',
+      sourceFolder: this.readiness?.sourceFolderId
+    };
+    const revision = this.readinessRevision;
+    const assessment = await window.ConversionReadiness.read(request);
+    if (revision !== this.readinessRevision)
+      throw new Error('Readiness was refreshed while checking this selection. Review the current selection again.');
+    this.mergeAssessment(assessment);
+    return { request, assessment };
+  }
+
   async resolveSelection() {
     const revision = this.readinessRevision;
     const chosen = Array.from(this.selected);
@@ -448,13 +464,7 @@ class ProgramPickerView {
       this.reviewing = true;
       convert.disabled = true;
       try {
-        const request = {
-          command: 'convert-only', programs: await this.resolveSelection(),
-          targetLanguage: this.language === 'java' ? 'Java' : 'CSharp', dependencyMode: 'strict',
-          sourceFolder: this.readiness?.sourceFolder
-        };
-        const assessment = await window.ConversionReadiness.read(request);
-        this.mergeAssessment(assessment);
+        const { request, assessment } = await this.assessSelection();
         if (window.ConversionReadiness.allows(assessment)
             && !await window.ConversionReadiness.reviewPrompts(request)) return;
         await this.renderCommand();
@@ -468,7 +478,7 @@ class ProgramPickerView {
     });
     document.getElementById('pp-refresh-readiness')?.addEventListener('click', async () => {
       this.loaded = false;
-      await this.load();
+      await this.load(true);
       this.loaded = true;
       this.render();
     });

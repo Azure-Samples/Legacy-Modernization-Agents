@@ -116,6 +116,10 @@ public static class ReportCatalog
         return HasLinkedComponent(repoRoot, full) ? null : full;
     }
 
+    // The identity the portal lists reports under, for a path Resolve returned.
+    public static string RelativePath(string repoRoot, string resolvedPath) =>
+        Path.GetRelativePath(repoRoot, resolvedPath).Replace('\\', '/');
+
     private static bool HasLinkedComponent(string repoRoot, string fullPath)
     {
         var root = Path.GetFullPath(repoRoot);

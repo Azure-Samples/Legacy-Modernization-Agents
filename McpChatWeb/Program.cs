@@ -397,7 +397,7 @@ app.MapPost("/api/chat", async (ChatRequest request, IMcpClient client, Cancella
 			var reportPrompt = ReportChat.BuildPrompt(Path.GetFileName(reportPath), reportContent, request.Prompt, request.History, reportOptions);
 			Console.WriteLine($"📊 Chat with report: {Path.GetFileName(reportPath)} ({reportContent.Length:N0} chars, prompt {reportPrompt.Length:N0} chars)");
 			var reportAnswer = await client.SendChatAsync(reportPrompt, new ChatSendOptions(ReportChat.McpContext, reportOptions.MaxAnswerTokens), cancellationToken);
-			return Results.Ok(new ChatResponse(reportAnswer, null));
+			return Results.Ok(new ChatResponse(reportAnswer, null, ReportCatalog.RelativePath(chatRepoRoot, reportPath)));
 		}
 		catch (OperationCanceledException) { throw; }
 		catch (Exception ex)
@@ -6334,13 +6334,13 @@ app.MapGet("/api/source/analyze", () =>
 // ═══════════════════════════════════════════════════════════════════════════════
 
 app.MapGet("/api/runs/readiness", async Task<IResult> (
-    string? sourceFolder, HttpResponse response, McpChatWeb.Services.ProcessManager pm,
+    string? sourceFolder, bool? refresh, HttpResponse response, McpChatWeb.Services.ProcessManager pm,
     McpChatWeb.Services.RektEstateReader reader, CancellationToken ct) =>
 {
     try
     {
         response.Headers.CacheControl = "no-store";
-        return Results.Ok(await pm.GetEstateReadinessAsync(sourceFolder ?? reader.SourceFolderName, ct));
+        return Results.Ok(await pm.GetEstateReadinessAsync(sourceFolder ?? reader.SourceFolderName, ct, refresh == true));
     }
     catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
     catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)

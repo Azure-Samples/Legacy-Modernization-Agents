@@ -133,8 +133,9 @@
       </details>
     </section>`;
   }
-  async function read(request) {
-    const response = await fetch('/api/runs/readiness', request
+  // refresh asks the server to discard its cached estate assessment and re-read every input.
+  async function read(request, { refresh = false } = {}) {
+    const response = await fetch(refresh && !request ? '/api/runs/readiness?refresh=true' : '/api/runs/readiness', request
       ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request), cache: 'no-store' }
       : { cache: 'no-store' });
     const report = await response.json();

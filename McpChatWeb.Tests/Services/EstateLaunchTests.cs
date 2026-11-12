@@ -146,6 +146,24 @@ public sealed class EstateLaunchTests : IDisposable
         Assert.Empty(manager.GetAllRuns());
     }
 
+    [Fact]
+    public async Task ReadinessReportsARepositoryRelativeSourceFolderThatSelectionChecksAccept()
+    {
+        var estate = Path.Combine(_root, "my estate");
+        Directory.CreateDirectory(Path.Combine(estate, "source"));
+        File.WriteAllText(Path.Combine(estate, "source", "MAIN.cbl"),
+            "       PROGRAM-ID. MAIN.\n       PROCEDURE DIVISION.\n           STOP RUN.\n");
+        using var manager = new ProcessManager(estate, "never-executed");
+        var inventory = await manager.GetEstateReadinessAsync();
+        Assert.Equal("source", inventory.SourceFolderId);
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            manager.AssessDependenciesAsync(inventory.SourceFolder, programs: ["MAIN.cbl"]));
+
+        var selected = await manager.AssessDependenciesAsync(inventory.SourceFolderId, programs: ["MAIN.cbl"]);
+        Assert.Equal("MAIN.cbl", Assert.Single(selected.Programs).Program);
+        Assert.Equal("source", selected.SourceFolderId);
+    }
+
     [Theory]
     [InlineData("strict")]
     [InlineData("draft")]

@@ -48,13 +48,17 @@ async function loadScanRuns() {
     // A run covering one or two files is a re-scan of a single program, not a
     // scan of the estate, and picking one would silently empty every view.
     const meaningful = runs.filter(r => r.fileCount > 2 || r.name).slice(0, 15);
-    _latestRunId = meaningful.length > 0
-      ? meaningful.reduce((max, r) => (r.runId > max ? r.runId : max), meaningful[0].runId)
+    // "Latest" follows the newest COBOL AST run, as the server does; a JCL-only
+    // scan stays selectable explicitly without emptying every COBOL view.
+    const withAst = meaningful.filter(r => r.fileCount > 0);
+    _latestRunId = withAst.length > 0
+      ? withAst.reduce((max, r) => (r.runId > max ? r.runId : max), withAst[0].runId)
       : null;
     for (const run of meaningful) {
       const opt = document.createElement('option');
       opt.value = run.runId;
-      opt.textContent = `${run.name || `Run ${run.runId}`} (${run.fileCount} file${run.fileCount === 1 ? '' : 's'})`;
+      const jobs = run.jclJobCount > 0 ? `, ${run.jclJobCount} JCL job${run.jclJobCount === 1 ? '' : 's'}` : '';
+      opt.textContent = `${run.name || `Run ${run.runId}`} (${run.fileCount} file${run.fileCount === 1 ? '' : 's'}${jobs})`;
       if (run.ingestionStatus && run.ingestionStatus !== 'complete')
         opt.textContent += ` [${run.ingestionStatus}]`;
       select.appendChild(opt);

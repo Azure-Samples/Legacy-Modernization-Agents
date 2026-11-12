@@ -22,14 +22,30 @@ public static class RektGraphEndpoints
             try
             {
                 await using var session = RektNeo4j.Shared.AsyncSession();
+                // A named scan may hold only JCL jobs, so the catalogue is the union of AST runs,
+                // scan records and JCL runs; fileCount still counts COBOL files with AST only.
                 var cursor = await session.RunAsync(@"
-                    MATCH (f:CobolFile)-[:HAS_AST]->(:ASTNode)
-                    WHERE f.runId IS NOT NULL
-                    WITH f.runId AS runId,
+                    CALL {
+                        MATCH (f:CobolFile)-[:HAS_AST]->(:ASTNode)
+                        WHERE f.runId IS NOT NULL
+                        RETURN DISTINCT f.runId AS runId
+                        UNION
+                        MATCH (s:RektScan)
+                        WHERE s.id IS NOT NULL
+                        RETURN s.id AS runId
+                        UNION
+                        MATCH (j:JclNode {nodeType: 'JCL_JOB'})
+                        WHERE j.runId IS NOT NULL
+                        RETURN DISTINCT j.runId AS runId
+                    }
+                    OPTIONAL MATCH (f:CobolFile {runId: runId})-[:HAS_AST]->(:ASTNode)
+                    WITH runId,
                          count(DISTINCT f.fileName) AS fileCount,
                          max(COALESCE(f.lineCount, 0)) AS maxLines
+                    OPTIONAL MATCH (job:JclNode {nodeType: 'JCL_JOB', runId: runId})
+                    WITH runId, fileCount, maxLines, count(DISTINCT job.program) AS jclJobCount
                     OPTIONAL MATCH (scan:RektScan {id: runId})
-                    RETURN runId, fileCount, maxLines, scan.name AS name,
+                    RETURN runId, fileCount, maxLines, jclJobCount, scan.name AS name,
                            scan.ingestionStatus AS ingestionStatus, scan.evidenceNote AS evidenceNote,
                            scan.expectedProgramCount AS expectedProgramCount,
                            scan.astProgramCount AS astProgramCount, scan.structuralGaps AS structuralGaps
@@ -42,7 +58,8 @@ public static class RektGraphEndpoints
                     {
                         runId = r["runId"].As<long>(),
                         fileCount = r["fileCount"].As<int>(),
-                        maxLines = r["maxLines"].As<int>(),
+                        maxLines = r["maxLines"].As<int?>() ?? 0,
+                        jclJobCount = r["jclJobCount"].As<int>(),
                         name = r["name"].As<string?>(),
                         ingestionStatus = r["ingestionStatus"].As<string?>(),
                         evidenceNote = r["evidenceNote"].As<string?>(),

@@ -238,4 +238,19 @@ public class ReportChatTests : IDisposable
         Assert.Equal(7, options.MaxSavedConversations);
         Assert.Equal(new PortalChatOptions().WholeReportMaxChars, options.WholeReportMaxChars);
     }
+    [Fact]
+    public void Latest_resolves_to_the_report_present_at_question_time()
+    {
+        var older = Path.Combine(_root, "output", "reverse-engineering-details.md");
+        File.WriteAllText(older, "# old");
+        File.SetLastWriteTimeUtc(older, DateTime.UtcNow.AddHours(-1));
+        Assert.Equal("output/reverse-engineering-details.md",
+            ReportCatalog.RelativePath(_root, ReportCatalog.Resolve(_root, "latest")!));
+
+        var newer = Path.Combine(_root, "output", "run-2", "reverse-engineering-report.md");
+        Directory.CreateDirectory(Path.GetDirectoryName(newer)!);
+        File.WriteAllText(newer, "# new");
+        Assert.Equal("output/run-2/reverse-engineering-report.md",
+            ReportCatalog.RelativePath(_root, ReportCatalog.Resolve(_root, "latest")!));
+    }
 }

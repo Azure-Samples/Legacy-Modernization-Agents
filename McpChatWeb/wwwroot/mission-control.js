@@ -6,7 +6,6 @@ let _managedRuns = [];
 let _activeRunId = null;
 let _runPollInterval = null;
 let _reportsList = [];
-let _latestReportPath = null;
 let _chatWithReport = null; // path of report being used as chat context
 let _startingRun = false;
 
@@ -418,7 +417,6 @@ async function loadReports() {
     if (!res.ok) return;
     const data = await res.json();
     _reportsList = data.reports || [];
-    _latestReportPath = data.latestPath || null;
     renderReportDropdown();
   } catch { /* silent */ }
 }
@@ -472,6 +470,7 @@ function selectReport() {
 window.getChatReportContext = function() { return _chatWithReport; };
 window.getChatReportLabel = function() {
   if (!_chatWithReport) return null;
-  if (_chatWithReport === 'latest') return _latestReportPath ? `latest: ${_latestReportPath.split('/').pop()}` : 'latest report';
+  // "latest" is resolved again by the server for every question; the answer names the report used.
+  if (_chatWithReport === 'latest') return 'latest report';
   return _chatWithReport.split('/').pop();
 };

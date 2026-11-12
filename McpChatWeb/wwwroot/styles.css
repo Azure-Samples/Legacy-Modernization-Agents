@@ -8398,8 +8398,14 @@ main.three-panel-layout {
   padding: 0 4px; font-size: 12px; opacity: 0;
   transition: opacity 80ms ease, color 80ms ease;
 }
-.ch-item:hover .ch-item-del { opacity: 1; }
-.ch-item-del:hover { color: #ef4444; }
+.ch-item:hover .ch-item-del,
+.ch-item:focus-within .ch-item-del { opacity: 1; }
+.ch-item-del:hover, .ch-item-del:focus-visible { color: #ef4444; }
+.ch-storage-notice {
+  color: #fbbf24; font-size: 11px; padding: 6px; margin-bottom: 6px;
+  border: 1px solid rgba(251, 191, 36, 0.35); border-radius: 6px;
+}
+.ch-storage-error { color: #f87171; border-color: rgba(248, 113, 113, 0.45); }
 
 /* ═══════════════════════════════════════════════════════════════════
    Chat transcript (ChatGPT-style bubbles)

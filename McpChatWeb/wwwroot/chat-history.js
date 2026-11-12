@@ -9,11 +9,16 @@
   const CURRENT_KEY = 'mcp.chatHistory.currentId';
 
   const settings = { maxHistoryMessages: 8, maxSavedConversations: 100 };
+  // Browsers allow roughly 5 MB per origin, shared with every other key; full answers are kept,
+  // so the conversation count alone does not bound the stored size.
+  const MAX_STORAGE_CHARS = 2000000;
 
   const state = {
     conversations: [], // [{id, title, createdAt, updatedAt, messages: [{role, content, ts, scope, scopeLabel, model, runId, pending, error, kind}]}]
     currentId: null,
     searchQuery: '',
+    storageError: null, // set while the latest save failed; cleared by the next successful save
+    prunedCount: 0,     // chats removed this session to fit browser storage
   };
 
   function load() {
@@ -30,17 +35,53 @@
     }
   }
 
+  function isQuotaError(e) {
+    return e?.name === 'QuotaExceededError' || e?.name === 'NS_ERROR_DOM_QUOTA_REACHED'
+      || e?.code === 22 || e?.code === 1014;
+  }
+
+  // Drops the least recently used chat other than the open one; false when none is left.
+  function pruneOldest() {
+    const others = state.conversations.filter(c => c.id !== state.currentId);
+    if (others.length === 0) return false;
+    const oldest = others.reduce((a, b) => ((b.updatedAt || 0) < (a.updatedAt || 0) ? b : a));
+    state.conversations = state.conversations.filter(c => c !== oldest);
+    state.prunedCount++;
+    return true;
+  }
+
   function save() {
-    try {
-      if (state.conversations.length > settings.maxSavedConversations) {
-        state.conversations = state.conversations
-          .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
-          .slice(0, settings.maxSavedConversations);
+    if (state.conversations.length > settings.maxSavedConversations) {
+      state.conversations = state.conversations
+        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+        .slice(0, settings.maxSavedConversations);
+    }
+    state.storageError = null;
+    for (;;) {
+      const json = JSON.stringify(state.conversations);
+      try {
+        if (json.length > MAX_STORAGE_CHARS) throw Object.assign(new Error('Chat history exceeds its storage budget.'), { name: 'QuotaExceededError' });
+        localStorage.setItem(STORAGE_KEY, json);
+        break;
+      } catch (e) {
+        if (isQuotaError(e) && pruneOldest()) continue;
+        console.warn('Saving chat history failed', e);
+        state.storageError = isQuotaError(e)
+          ? 'This chat is too large to save in browser storage. New messages will be lost when the page is closed.'
+          : 'Chat history cannot be saved in this browser. New messages will be lost when the page is closed.';
+        break;
       }
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.conversations));
+    }
+    try {
       if (state.currentId) localStorage.setItem(CURRENT_KEY, state.currentId);
       else localStorage.removeItem(CURRENT_KEY);
-    } catch (e) { console.warn('Saving chat history failed', e); }
+    } catch { /* only the reopened chat is lost */ }
+  }
+
+  function storageNotice() {
+    if (state.storageError) return `<div class="ch-storage-notice ch-storage-error" role="alert">${esc(state.storageError)}</div>`;
+    if (state.prunedCount > 0) return `<div class="ch-storage-notice" role="status">${state.prunedCount} older chat${state.prunedCount === 1 ? ' was' : 's were'} removed to stay within browser storage.</div>`;
+    return '';
   }
 
   function getCurrent() {
@@ -130,7 +171,7 @@
                    (c.messages || []).some(m => (m.content || '').toLowerCase().includes(q)))
       .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
     if (items.length === 0) {
-      root.innerHTML = '<div class="ch-empty">No saved chats yet.</div>';
+      root.innerHTML = storageNotice() + '<div class="ch-empty">No saved chats yet.</div>';
       return;
     }
     const buckets = { Today: [], Yesterday: [], 'Previous 7 days': [], Older: [] };
@@ -145,7 +186,7 @@
       else if (t >= weekAgo) buckets['Previous 7 days'].push(c);
       else buckets.Older.push(c);
     }
-    let html = '';
+    let html = storageNotice();
     for (const [label, list] of Object.entries(buckets)) {
       if (list.length === 0) continue;
       html += `<div class="ch-bucket">${label}</div>`;
@@ -235,13 +276,16 @@
   }
 
   // Small markdown subset. Input is escaped first (quotes included), so model output cannot
-  // break out of an attribute or inject markup.
+  // break out of an attribute or inject markup. Code is swapped for placeholders before any
+  // other rule runs and restored last, so its contents are never formatted.
   function renderMarkdown(s) {
     if (!s) return '<div class="ct-text"></div>';
-    let html = esc(s);
-    html = html.replace(/```([a-zA-Z0-9_+-]*)\n([\s\S]*?)```/g, (_, lang, code) =>
-      `<pre class="ct-code"><code data-lang="${lang || ''}">${code}</code></pre>`);
-    html = html.replace(/`([^`\n]+)`/g, '<code class="ct-icode">$1</code>');
+    const code = [];
+    const hold = (kind, rendered) => `\u0000${kind}${code.push(rendered) - 1}\u0000`;
+    let html = esc(String(s).replace(/\u0000/g, ''));
+    html = html.replace(/```([a-zA-Z0-9_+-]*)\n([\s\S]*?)```/g, (_, lang, body) =>
+      `\n\n${hold('B', `<pre class="ct-code"><code data-lang="${lang || ''}">${body}</code></pre>`)}\n\n`);
+    html = html.replace(/`([^`\n]+)`/g, (_, body) => hold('I', `<code class="ct-icode">${body}</code>`));
     html = html.replace(/^###\s+(.+)$/gm, '<h4>$1</h4>')
                .replace(/^##\s+(.+)$/gm, '<h3>$1</h3>')
                .replace(/^#\s+(.+)$/gm, '<h2>$1</h2>');
@@ -252,10 +296,11 @@
       return `${lead}<ul>${items.map(i => `<li>${i}</li>`).join('')}</ul>`;
     });
     html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
-    html = html.split(/\n\n+/).map(p => {
-      if (/^<(h\d|ul|pre|ol|blockquote)/.test(p.trim())) return p;
+    html = html.split(/\n\n+/).filter(p => p.trim()).map(p => {
+      if (/^(<(h\d|ul|pre|ol|blockquote)|\u0000B\d+\u0000$)/.test(p.trim())) return p;
       return `<p>${p.replace(/\n/g, '<br>')}</p>`;
     }).join('');
+    html = html.replace(/\u0000[BI](\d+)\u0000/g, (_, i) => code[Number(i)]);
     return `<div class="ct-text">${html}</div>`;
   }
 

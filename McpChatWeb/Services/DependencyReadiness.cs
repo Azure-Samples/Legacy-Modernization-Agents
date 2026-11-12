@@ -8,6 +8,10 @@ public sealed record DependencyReadiness(
     IReadOnlyList<ProgramConversionPlan> Programs, string SourceFolder, string FactsFolder,
     DateTime CheckedAt, string? SelectionError = null)
 {
+    // Repository-relative source folder, the form launch and selection requests accept back;
+    // SourceFolder is absolute and may hold characters the launch path validation rejects.
+    public string? SourceFolderId { get; init; }
+
     public bool StrictAllowed => Programs.Count > 0
         && Programs.All(p => p.Status == "eligible") && SelectionError is null;
     public bool DraftAllowed => Programs.Any(p => p.Status == "eligible") && SelectionError is null;
@@ -24,6 +28,25 @@ public sealed record DependencyReadiness(
         ?? "Conversion will not start: the selected programs lack valid program dependency evidence. "
         + "Review the per-program blockers, supply the real inputs and regenerate matching parser evidence and facts. "
         + "Parsed structure alone does not establish dependency readiness.";
+
+    // Every file the assessment hash-checks through recorded evidence: the bound export and each
+    // resolved definition (profiles and runtime contracts included), wherever they live.
+    public static IEnumerable<string> ReferencedInputs(DependencyReadiness readiness)
+    {
+        var paths = new List<string>();
+        foreach (var plan in readiness.Programs)
+        {
+            try
+            {
+                if (DependencyEvidenceGate.LoadEvidence(readiness.FactsFolder, plan.Program) is not { } evidence) continue;
+                if (!string.IsNullOrWhiteSpace(evidence.ExportPath)) paths.Add(evidence.ExportPath);
+                paths.AddRange(evidence.Definitions.Select(d => d.Path).Where(p => !string.IsNullOrWhiteSpace(p)));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+                or System.Text.Json.JsonException or ArgumentException or NotSupportedException) { }
+        }
+        return paths;
+    }
 
     public static async Task<DependencyReadiness> AssessAsync(
         string sourceRoot, string factsRoot, IReadOnlyList<string>? selectors = null,
