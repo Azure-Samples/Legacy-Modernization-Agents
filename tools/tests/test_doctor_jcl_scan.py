@@ -10,6 +10,18 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 
+
+def _bash():
+    # On Windows a bare "bash" resolves to the System32 WSL stub before Git Bash.
+    if os.name == "nt" and (git := shutil.which("git")):
+        for candidate in (Path(git).parent.parent / "bin" / "bash.exe", Path(git).parent / "bash.exe"):
+            if candidate.exists():
+                return str(candidate)
+    return shutil.which("bash") or "bash"
+
+
+BASH = _bash()
+
 STUB = r'''
 import json, os, subprocess, sys
 from pathlib import Path
@@ -113,7 +125,7 @@ class JclCommandFixture(unittest.TestCase):
         return path
 
     def run_command(self, *args):
-        return subprocess.run(["bash", (self.root / "doctor.sh").as_posix(), *args],
+        return subprocess.run([BASH, (self.root / "doctor.sh").as_posix(), *args],
                               cwd=self.root, env=self.env, capture_output=True, text=True, timeout=90)
 
     def calls(self, kind):
