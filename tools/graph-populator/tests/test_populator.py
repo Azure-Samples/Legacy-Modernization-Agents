@@ -110,6 +110,9 @@ class NamedRektScanTests(unittest.TestCase):
         driver.session.return_value.__enter__.return_value.execute_write.side_effect = lambda action: action(transaction)
         with tempfile.TemporaryDirectory() as directory:
             begin_rekt_scan(driver, 8, "snapshot-v2", directory, directory)
+        occupancy = transaction.run.call_args_list[0].args[0]
+        for label in ("CobolFile", "RektScan", "Run", "JclNode"):
+            self.assertIn(f"(:{label} {{", occupancy)  # JCL-only ingests leave only JclNode data behind.
         create = transaction.run.call_args
         self.assertIn("CREATE (s:RektScan", create.args[0])
         self.assertEqual("snapshot-v2", create.kwargs["name"])

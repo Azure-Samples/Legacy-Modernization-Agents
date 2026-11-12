@@ -567,7 +567,8 @@ def begin_rekt_scan(driver, run_id: int, name: str, source_dir: str, output_dir:
         occupied = tx.run(
             "RETURN EXISTS { MATCH (:CobolFile {runId: $runId}) } "
             "OR EXISTS { MATCH (:RektScan {id: $runId}) } "
-            "OR EXISTS { MATCH (:Run {id: $runId}) } AS occupied",
+            "OR EXISTS { MATCH (:Run {id: $runId}) } "
+            "OR EXISTS { MATCH (:JclNode {runId: $runId}) } AS occupied",
             runId=run_id,
         ).single()["occupied"]
         if occupied:

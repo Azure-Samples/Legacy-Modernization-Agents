@@ -86,6 +86,33 @@ class RektSourceIdentityTests(unittest.TestCase):
         )
         self.assertEqual(["one/PROGA.cbl"], rows[1][2:])
 
+    def test_apostrophes_outside_program_text_do_not_hide_a_later_copy(self):
+        self.write("one/SHARED.cpy", "       01 WS-A PIC X.\n")
+        self.write("two/SHARED.cpy", "       01 WS-B PIC 9.\n")
+        self.write(
+            "one/AUTHORED.cbl",
+            "       IDENTIFICATION DIVISION.\n"
+            "       PROGRAM-ID. AUTHORED.\n"
+            "       AUTHOR. O'CONNOR.\n"
+            "       DATA DIVISION.\n"
+            "       WORKING-STORAGE SECTION.\n"
+            "           COPY SHARED.\n",
+        )
+        self.write(
+            "two/SEQUENCED.cbl",
+            "000100 IDENTIFICATION DIVISION.                                         ID'00001\n"
+            "000200 PROGRAM-ID. SEQUENCED.\n"
+            "000300 DATA DIVISION.\n"
+            "000400 WORKING-STORAGE SECTION.\n"
+            "000500     COPY SHARED.\n",
+        )
+
+        code, rows = self.run_check()
+
+        self.assertEqual(1, code)
+        self.assertEqual("copybook-collision", rows[0][0])
+        self.assertEqual(["one/AUTHORED.cbl", "two/SEQUENCED.cbl"], sorted(rows[1][2:]))
+
     def test_use_through_the_eight_character_alias_counts(self):
         self.write("one/INPUT-AREA_request_0.cpy", "       01 WS-A PIC X.\n")
         self.write("two/INPUT-AREA_request_0.cpy", "       01 WS-B PIC 9.\n")

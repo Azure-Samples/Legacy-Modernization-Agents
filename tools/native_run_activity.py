@@ -8,7 +8,6 @@ Parser process exit codes are not reconstructed from artifact availability.
 import argparse
 import contextlib
 import datetime
-import fcntl
 import json
 import os
 from pathlib import Path
@@ -25,15 +24,43 @@ def write(path, data):
     os.replace(pending, path)
 
 
+try:
+    import fcntl
+except ImportError:  # Windows (Git Bash) has no fcntl; msvcrt byte-range locks give the same exclusion.
+    fcntl = None
+    import msvcrt
+
+
+def _lock_exclusive(handle):
+    if fcntl:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        return
+    handle.seek(0)
+    while True:
+        try:
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            return
+        except OSError:
+            continue  # LK_LOCK gives up after ~10s; keep waiting like flock does.
+
+
+def _unlock(handle):
+    if fcntl:
+        fcntl.flock(handle, fcntl.LOCK_UN)
+        return
+    handle.seek(0)
+    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+
+
 @contextlib.contextmanager
 def journal_lock(path):
     # Parallel parse jobs update the same journal; serialise each read-modify-write.
     with open(path.with_suffix(".lock"), "a", encoding="utf-8") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
+        _lock_exclusive(handle)
         try:
             yield
         finally:
-            fcntl.flock(handle, fcntl.LOCK_UN)
+            _unlock(handle)
 
 
 def measurements(source_root, output_root, relative_path):

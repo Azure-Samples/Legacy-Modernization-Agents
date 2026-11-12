@@ -70,10 +70,41 @@ def referenced_names(text):
     return names
 
 
+_IDENTIFICATION = re.compile(r"\s*(?:IDENTIFICATION|ID)\s+DIVISION\b", re.IGNORECASE)
+_LATER_DIVISION = re.compile(r"\s*(?:ENVIRONMENT|DATA|PROCEDURE)\s+DIVISION\b", re.IGNORECASE)
+_COMMENT_ENTRY = re.compile(r"\s*(?:AUTHOR|INSTALLATION|DATE-WRITTEN|DATE-COMPILED|SECURITY|REMARKS)\s*\.",
+                            re.IGNORECASE)
+_PARAGRAPH = re.compile(r"\s*(?:PROGRAM-ID|AUTHOR|INSTALLATION|DATE-WRITTEN|DATE-COMPILED|SECURITY|REMARKS)\b",
+                        re.IGNORECASE)
+
+
+def program_text_lines(text):
+    """Blank sequence areas and IDENTIFICATION comment-entries, keeping line and column positions."""
+    free = re.search(r">>\s*SOURCE\s+(?:FORMAT\s+)?(?:IS\s+)?FREE\b", text, re.IGNORECASE) is not None
+    identification = documentary = False
+    for raw in text.splitlines():
+        fixed = (not free and len(raw) > 6 and raw[6] in " -*/Dd"
+                 and all(c == " " or c.isascii() and c.isdigit() for c in raw[:6]))
+        line = "      " + raw[6:72] if fixed else raw
+        area = line[7:] if fixed else line
+        if _IDENTIFICATION.match(area):
+            identification = True
+        elif _LATER_DIVISION.match(area):
+            identification = documentary = False
+        elif documentary and (_PARAGRAPH.match(area) or (fixed and area[:4].strip())):
+            documentary = False
+        # Comment-entries are free text, so an apostrophe there must not open a literal.
+        if identification and (entry := _COMMENT_ENTRY.match(area)):
+            documentary = True
+            yield line[:len(line) - len(area) + entry.end()]
+        else:
+            yield "" if documentary else line
+
+
 def dependency_guard_text(text):
     """Mask literals/comments for contradiction checks, retaining quoted dependency operands."""
     result, quote, operand = [], None, False
-    for line in text.splitlines():
+    for line in program_text_lines(text):
         if (len(line) > 6 and line[6] in "*/") or line.lstrip().startswith("*>"):
             continue
         row, index = [], 0

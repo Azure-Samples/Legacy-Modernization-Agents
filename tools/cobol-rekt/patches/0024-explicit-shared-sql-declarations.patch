@@ -104,7 +104,7 @@
 +                List<String> problems = new ArrayList<>();
 +                List<String> bodies = new ArrayList<>();
 +                if (path.toString().toLowerCase(Locale.ROOT).endsWith(".sql")) {
-+                    bodies.add(normalized);
++                    bodies.add(text);
 +                } else {
 +                    Db2SqlParser parser = sqlParser(normalized, problems);
 +                    collectCatalogBodies(parser.startRule(), bodies);
