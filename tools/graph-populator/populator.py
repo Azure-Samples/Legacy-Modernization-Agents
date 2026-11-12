@@ -556,12 +556,21 @@ def migrate_sqlite(driver, db_path: str) -> dict[str, int]:
 
 # Full Ingestion Pipeline
 
-def begin_rekt_scan(driver, run_id: int, name: str, source_dir: str, output_dir: str) -> None:
+def begin_rekt_scan(driver, run_id: int, name: str, source_dir: str, output_dir: str,
+                    manifest_path: str | None = None) -> None:
     name = name.strip()
     if not name:
         raise ValueError("A named REKT scan requires a nonempty name.")
     if not Path(source_dir).is_dir() or not Path(output_dir).is_dir():
         raise ValueError("A named REKT scan requires existing source and artifact directories.")
+    if manifest_path is not None:
+        if not Path(manifest_path).is_file():
+            raise ValueError("The named REKT scan manifest does not exist.")
+        manifest = Path(manifest_path).resolve()
+    else:
+        # Named scans keep scan.json beside their artifacts directory (output/rekt-scans/<name>/).
+        candidate = Path(output_dir).resolve().parent / "scan.json"
+        manifest = candidate if candidate.is_file() else None
 
     def create(tx):
         occupied = tx.run(
@@ -575,10 +584,11 @@ def begin_rekt_scan(driver, run_id: int, name: str, source_dir: str, output_dir:
             raise ValueError(f"Run ID {run_id} already contains data; choose a fresh ID to preserve it.")
         tx.run(
             "CREATE (s:RektScan {id: $runId, name: $name, sourceDirectory: $source, "
-            "outputDirectory: $output, createdAt: datetime(), ingestionStatus: 'ingesting', "
+            "outputDirectory: $output, manifestPath: $manifest, createdAt: datetime(), ingestionStatus: 'ingesting', "
             "evidenceNote: 'Structural parser evidence only; source is the ingested snapshot and may be normalized. Missing inputs or unsupported dependency coverage may remain; this is not verified conversion.'})",
             runId=run_id, name=name, source=str(Path(source_dir).resolve()),
             output=str(Path(output_dir).resolve()),
+            manifest=str(manifest) if manifest is not None else None,
         ).consume()
 
     with driver.session() as session:
@@ -785,7 +795,10 @@ def schema():
 @click.option("--run-id", default=1, type=int, help="Migration run ID")
 @click.option("--sqlite-db", default=None, help="Optional SQLite DB to migrate from")
 @click.option("--scan-name", default=None, help="Name a fresh REKT scan without replacing an existing run")
-def ingest(source_dir: str, rekt_output: str, run_id: int, sqlite_db: str | None, scan_name: str | None = None):
+@click.option("--scan-manifest", default=None,
+              help="Named scan's scan.json (default: scan.json beside the --rekt-output directory)")
+def ingest(source_dir: str, rekt_output: str, run_id: int, sqlite_db: str | None, scan_name: str | None = None,
+           scan_manifest: str | None = None):
     """Full ingestion: rekt JSON exports + optional SQLite migration."""
     if (Path(rekt_output) / ".jcl-scan-failed").exists():
         raise ValueError("JCL refresh did not complete; rerun jcl-facts before ingestion.")
@@ -795,7 +808,7 @@ def ingest(source_dir: str, rekt_output: str, run_id: int, sqlite_db: str | None
         console.print("[bold blue]Applying schema...[/bold blue]")
         apply_schema(driver)
         if scan_name is not None:
-            begin_rekt_scan(driver, run_id, scan_name, source_dir, rekt_output)
+            begin_rekt_scan(driver, run_id, scan_name, source_dir, rekt_output, scan_manifest)
             scan_started = True
 
         if sqlite_db:

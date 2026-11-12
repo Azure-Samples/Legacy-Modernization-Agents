@@ -51,11 +51,7 @@
   }
 
   function save() {
-    if (state.conversations.length > settings.maxSavedConversations) {
-      state.conversations = state.conversations
-        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
-        .slice(0, settings.maxSavedConversations);
-    }
+    while (state.conversations.length > settings.maxSavedConversations && pruneOldest()) { /* keeps the open chat */ }
     state.storageError = null;
     for (;;) {
       const json = JSON.stringify(state.conversations);

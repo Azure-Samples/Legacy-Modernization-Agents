@@ -88,6 +88,31 @@ test('a full browser store drops the oldest chats, keeps the open one and says s
   assert.match(list.innerHTML, /role="status">1 older chat was removed to stay within browser storage/);
 });
 
+test('a lowered saved-chat limit keeps an older chat the user opens', async () => {
+  const store = new Map([['mcp.chatHistory.v1', JSON.stringify([
+    { id: 'old', title: 'old', updatedAt: 1, messages: [{ role: 'user', content: 'old question' }] },
+    { id: 'mid', title: 'mid', updatedAt: 2, messages: [] },
+    { id: 'new', title: 'new', updatedAt: 3, messages: [] },
+  ])]]);
+  const list = { innerHTML: '', querySelectorAll: () => [] };
+  const window = {};
+  vm.runInNewContext(source, {
+    window, console, Date, Math, JSON, Number,
+    localStorage: { getItem: k => store.get(k) ?? null, setItem: (k, v) => store.set(k, v), removeItem: k => store.delete(k) },
+    document: { readyState: 'complete', getElementById: id => (id === 'ch-list' ? list : null) },
+    fetch: async () => ({ ok: true, json: async () => ({ maxHistoryMessages: 8, maxSavedConversations: 2 }) }),
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  const history = window.ChatHistory;
+
+  history.selectConversation('old');
+
+  assert.equal(history.getCurrent()?.id, 'old');
+  assert.deepEqual(plain(history.getCurrent().messages.map(m => m.content)), ['old question']);
+  assert.deepEqual(JSON.parse(store.get('mcp.chatHistory.v1')).map(c => c.id).sort(), ['new', 'old']);
+  assert.match(list.innerHTML, /role="status">1 older chat was removed/);
+});
+
 test('a failed save is shown to the user instead of only logged', () => {
   const { history, list } = loadWith({
     setItem: () => { throw Object.assign(new Error('denied'), { name: 'SecurityError' }); },

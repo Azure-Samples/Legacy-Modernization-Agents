@@ -118,6 +118,28 @@ class NamedRektScanTests(unittest.TestCase):
         self.assertEqual("snapshot-v2", create.kwargs["name"])
         self.assertEqual(8, create.kwargs["runId"])
 
+    def test_named_scan_records_its_manifest_beside_the_artifacts(self):
+        driver = MagicMock()
+        transaction = MagicMock()
+        transaction.run.return_value.single.return_value = {"occupied": False}
+        driver.session.return_value.__enter__.return_value.execute_write.side_effect = lambda action: action(transaction)
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory) / "snapshot-v2"
+            parsed = folder / "inputs" / "parsed-source"
+            artifacts = folder / "artifacts"
+            parsed.mkdir(parents=True)
+            artifacts.mkdir()
+            (folder / "scan.json").write_text("{}", encoding="utf-8")
+            begin_rekt_scan(driver, 8, "snapshot-v2", str(parsed), str(artifacts))
+            create = transaction.run.call_args
+            self.assertIn("manifestPath: $manifest", create.args[0])
+            self.assertEqual(str((folder / "scan.json").resolve()), create.kwargs["manifest"])
+
+            explicit = Path(directory) / "elsewhere.json"
+            explicit.write_text("{}", encoding="utf-8")
+            begin_rekt_scan(driver, 9, "snapshot-v2", str(parsed), str(artifacts), str(explicit))
+            self.assertEqual(str(explicit.resolve()), transaction.run.call_args.kwargs["manifest"])
+
     def test_missing_artifact_directory_is_rejected_before_accessing_graph(self):
         driver = MagicMock()
         with tempfile.TemporaryDirectory() as directory:

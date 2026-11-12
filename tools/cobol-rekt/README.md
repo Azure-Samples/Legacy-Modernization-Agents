@@ -412,6 +412,9 @@ python3 tools/graph-populator/populator.py ingest \
 ```
 
 A named scan requires an unused numeric run ID and existing input directories.
+Ingestion records the scan's `scan.json` manifest path (by default the one beside
+the artifacts directory, or `--scan-manifest`) so the portal can bind selected-snapshot
+draft assessment to that exact evidence.
 Its source snapshot must contain the exact prepared bytes the parser used, so
 line ranges agree with the displayed source. Retain original bytes and
 transformation provenance separately rather than relabeling normalized inputs as
