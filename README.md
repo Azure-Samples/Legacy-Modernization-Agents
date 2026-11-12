@@ -378,7 +378,7 @@ The SafetyFactor reserves headroom below your quota limit to handle:
 ```json
 {
   "ChunkingSettings": {
-    "MaxParallelChunks": 6,        // Parallel code conversion jobs
+    "MaxParallelChunks": 6,        // Files converted in parallel; one file's chunks run in order
     "MaxParallelAnalysis": 6,      // Parallel analysis jobs
     "RateLimitSafetyFactor": 0.7   // 70% of quota
   },
@@ -1211,7 +1211,7 @@ Large COBOL files (>3,000 lines or >150K characters) are automatically split at 
 > | **4. Fall back safely** | If a single unit is still too large, it switches to line-based chunks with overlap so no statement loses its surroundings | `OverlapLines` 300 |
 > | **5. Carry context, not the whole file** | Keeps the last chunks in full, compresses older ones, and passes signatures and type mappings forward | `FullDetailChunkWindow` 3 · `CompressionRatio` 0.3 |
 > | **6. Size the answer** | Scores COBOL complexity (SQL, CICS, REDEFINES…) to pick reasoning effort and output-token budget per file | Low / medium / high tiers |
-> | **7. Pace and reassemble** | Runs chunks in parallel within the TPM/RPM budget, then reassembles them in order and checks for gaps, duplicates and syntax errors | `MaxParallelChunks` 6 |
+> | **7. Pace and reassemble** | Converts different files in parallel within the TPM/RPM budget; one file's chunks run in order, each seeing the end of the previous chunk's output. Then reassembles them in order and checks for gaps, duplicates and syntax errors | `MaxParallelChunks` 6 |
 >
 > Run `./doctor.sh chunking-health` to see which files will be chunked. To tune, change the settings above; the split itself stays automatic.
 
