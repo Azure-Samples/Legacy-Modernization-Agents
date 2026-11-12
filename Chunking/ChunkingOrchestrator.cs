@@ -102,7 +102,8 @@ public class ChunkingOrchestrator
 
     /// <summary>
     /// Processes chunks for conversion, calling the conversion callback for each chunk.
-    /// Supports parallel processing based on ChunkingSettings.EnableParallelProcessing.
+    /// Chunks of the same file run strictly sequentially and each chunk receives the tail of
+    /// the previous chunk's generated code as continuation state.
     /// </summary>
     public async Task<ChunkingResult> ProcessChunksAsync(
         int runId,
@@ -157,29 +158,18 @@ public class ChunkingOrchestrator
             await typeMappingTable.RegisterMappingAsync(runId, plan.SourceFile, mapping, cancellationToken);
         }
 
-        // Determine processing mode
+        // Chunks of one file are always converted in order: middle/last chunks may continue a
+        // method body opened earlier and need the preceding generated code as continuation state.
+        // Parallelism is applied across files by the caller, never within a file.
         var chunksToProcess = plan.Chunks.Skip(startChunk).ToList();
-        
-        if (_chunkingSettings.EnableParallelProcessing && chunksToProcess.Count > 1)
-        {
-            _logger.LogInformation(
-                "Starting parallel chunk processing: {Count} chunks with max {Parallel} concurrent workers",
-                chunksToProcess.Count, _chunkingSettings.MaxParallelChunks);
-            
-            await ProcessChunksParallelAsync(
-                runId, plan, chunksToProcess, startChunk, contextManager, validator, 
-                convertChunkAsync, result, cancellationToken);
-        }
-        else
-        {
-            _logger.LogInformation(
-                "Starting sequential chunk processing: {Count} chunks",
-                chunksToProcess.Count);
-            
-            await ProcessChunksSequentialAsync(
-                runId, plan, chunksToProcess, startChunk, contextManager, validator,
-                convertChunkAsync, result, cancellationToken);
-        }
+
+        _logger.LogInformation(
+            "Starting sequential chunk processing: {Count} chunks",
+            chunksToProcess.Count);
+
+        await ProcessChunksSequentialAsync(
+            runId, plan, chunksToProcess, startChunk, contextManager, validator,
+            convertChunkAsync, result, cancellationToken);
 
         // Run reconciliation pass
         if (_conversionSettings.EnableReconciliationPass && result.SuccessfulChunks > 0)
@@ -209,7 +199,7 @@ public class ChunkingOrchestrator
     }
 
     /// <summary>
-    /// Processes chunks sequentially (original behavior).
+    /// Processes chunks sequentially, threading the previous chunk's output into the next context.
     /// </summary>
     private async Task ProcessChunksSequentialAsync(
         int runId,
@@ -222,6 +212,7 @@ public class ChunkingOrchestrator
         ChunkingResult result,
         CancellationToken cancellationToken)
     {
+        string? previousGeneratedCode = null;
         for (int i = 0; i < chunksToProcess.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -230,8 +221,11 @@ public class ChunkingOrchestrator
             var chunk = chunksToProcess[i];
             
             var processingResult = await ProcessSingleChunkAsync(
-                runId, plan.SourceFile, chunkIndex, plan.ChunkCount, chunk,
+                runId, plan.SourceFile, chunkIndex, plan.ChunkCount, chunk, previousGeneratedCode,
                 contextManager, validator, convertChunkAsync, cancellationToken);
+            previousGeneratedCode = processingResult.Success
+                ? processingResult.ConversionResult?.ConvertedCode
+                : null;
             
             lock (result)
             {
@@ -250,98 +244,6 @@ public class ChunkingOrchestrator
     }
 
     /// <summary>
-    /// Processes chunks in parallel with rate limiting.
-    /// </summary>
-    private async Task ProcessChunksParallelAsync(
-        int runId,
-        ChunkingPlan plan,
-        List<ChunkResult> chunksToProcess,
-        int startIndex,
-        IContextManager contextManager,
-        ConversionValidator validator,
-        Func<ChunkResult, ChunkContext, Task<ChunkConversionResult>> convertChunkAsync,
-        ChunkingResult result,
-        CancellationToken cancellationToken)
-    {
-        var maxParallel = Math.Min(_chunkingSettings.MaxParallelChunks, chunksToProcess.Count);
-        using var semaphore = new SemaphoreSlim(maxParallel, maxParallel);
-        var staggerDelay = _chunkingSettings.ParallelStaggerDelayMs;
-        var processingLock = new object();
-        var completedCount = 0;
-
-        _logger.LogInformation(
-            "Parallel processing: {Total} chunks with {Parallel} workers, {Stagger}ms stagger delay",
-            chunksToProcess.Count, maxParallel, staggerDelay);
-
-        // Create tasks for all chunks
-        var tasks = new List<Task>();
-        
-        for (int i = 0; i < chunksToProcess.Count; i++)
-        {
-            var localIndex = i;
-            var chunkIndex = startIndex + i;
-            var chunk = chunksToProcess[i];
-
-            // Stagger task starts to avoid burst requests
-            if (i > 0 && staggerDelay > 0)
-            {
-                await Task.Delay(Math.Min(staggerDelay, 500), cancellationToken);
-            }
-
-            var task = Task.Run(async () =>
-            {
-                await semaphore.WaitAsync(cancellationToken);
-                try
-                {
-                    _logger.LogInformation(
-                        "🚀 Starting chunk {Index}/{Total} (worker slot acquired)",
-                        chunkIndex + 1, plan.ChunkCount);
-
-                    var processingResult = await ProcessSingleChunkAsync(
-                        runId, plan.SourceFile, chunkIndex, plan.ChunkCount, chunk,
-                        contextManager, validator, convertChunkAsync, cancellationToken);
-
-                    lock (processingLock)
-                    {
-                        result.ChunkResults.Add(processingResult);
-                        if (processingResult.Success)
-                            result.SuccessfulChunks++;
-                        else
-                            result.FailedChunks++;
-                        
-                        completedCount++;
-                        
-                        // Progress update
-                        var percent = (completedCount * 100) / chunksToProcess.Count;
-                        _logger.LogInformation(
-                            "📊 Progress: {Completed}/{Total} chunks ({Percent}%) - Success: {Success}, Failed: {Failed}",
-                            completedCount, chunksToProcess.Count, percent, 
-                            result.SuccessfulChunks, result.FailedChunks);
-                    }
-
-                    if (!processingResult.Success && !_chunkingSettings.EnableResumability)
-                    {
-                        _logger.LogError("Chunk {Index} failed and resumability is disabled", chunkIndex);
-                    }
-                }
-                finally
-                {
-                    semaphore.Release();
-                }
-            }, cancellationToken);
-
-            tasks.Add(task);
-        }
-
-        // Wait for all tasks to complete
-        await Task.WhenAll(tasks);
-
-        _logger.LogInformation(
-            "✅ Parallel processing complete: {Success}/{Total} chunks successful",
-            result.SuccessfulChunks, chunksToProcess.Count);
-    }
-
-    /// <summary>
     /// Processes a single chunk with context building, conversion, and validation.
     /// </summary>
     private async Task<ChunkProcessingResult> ProcessSingleChunkAsync(
@@ -350,6 +252,7 @@ public class ChunkingOrchestrator
         int chunkIndex,
         int totalChunks,
         ChunkResult chunk,
+        string? previousGeneratedCode,
         IContextManager contextManager,
         ConversionValidator validator,
         Func<ChunkResult, ChunkContext, Task<ChunkConversionResult>> convertChunkAsync,
@@ -365,6 +268,7 @@ public class ChunkingOrchestrator
         {
             // Build context for this chunk
             var context = await contextManager.BuildContextForChunkAsync(runId, chunk, cancellationToken);
+            context.PreviousChunkTail = ChunkContext.TailOf(previousGeneratedCode);
 
             // Call the conversion callback
             var conversionResult = await convertChunkAsync(chunk, context);

@@ -411,6 +411,16 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
                 }));
         }
 
+        if (!string.IsNullOrWhiteSpace(context.PreviousChunkTail))
+        {
+            sb.AppendLine();
+            sb.AppendLine(PromptLoader.LoadSectionValidated(
+                "ChunkAwareJavaConverter", "PreviousChunkTail", new Dictionary<string, string>
+                {
+                    ["Code"] = context.PreviousChunkTail
+                }));
+        }
+
         if (context.PreviousVariables.Any())
         {
             var items = string.Join(

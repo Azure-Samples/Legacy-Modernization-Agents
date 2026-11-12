@@ -15,7 +15,20 @@ public static class JavaSourceLexical
     public static string MaskNonCode(string source)
     {
         var masked = source.ToCharArray();
-        var state = 0;
+        Scan(source, masked, 0);
+        return new string(masked);
+    }
+
+    // States: 0 code, 1 line comment, 2 block comment, 3 string, 4 char, 5 text block.
+    // String and char literals cannot span lines in Java, so they end at a newline; this also
+    // keeps prose apostrophes around fenced responses from swallowing later lines.
+    private static int Scan(string source, char[]? masked, int state)
+    {
+        void Blank(int index)
+        {
+            if (masked is not null) masked[index] = ' ';
+        }
+
         for (var i = 0; i < source.Length; i++)
         {
             var ch = source[i];
@@ -25,43 +38,43 @@ public static class JavaSourceLexical
                 if (ch == '/' && (next == '/' || next == '*'))
                 {
                     state = next == '/' ? 1 : 2;
-                    masked[i] = masked[i + 1] = ' ';
+                    Blank(i); Blank(i + 1);
                     i++;
                 }
                 else if (ch == '"' && source.AsSpan(i).StartsWith("\"\"\""))
                 {
                     state = 5;
-                    masked[i] = masked[i + 1] = masked[i + 2] = ' ';
+                    Blank(i); Blank(i + 1); Blank(i + 2);
                     i += 2;
                 }
                 else if (ch == '"' || ch == '\'')
                 {
                     state = ch == '"' ? 3 : 4;
-                    masked[i] = ' ';
+                    Blank(i);
                 }
                 continue;
             }
-            if (ch != '\r' && ch != '\n') masked[i] = ' ';
-            if (state == 1 && (ch == '\n' || ch == '\r')) state = 0;
+            if (ch != '\r' && ch != '\n') Blank(i);
+            if ((state == 1 || state == 3 || state == 4) && (ch == '\n' || ch == '\r')) state = 0;
             else if (state == 2 && ch == '*' && next == '/')
             {
-                masked[++i] = ' ';
+                Blank(++i);
                 state = 0;
             }
             else if (state >= 3 && ch == '\\' && i + 1 < source.Length)
             {
-                if (next != '\r' && next != '\n') masked[i + 1] = ' ';
+                if (next != '\r' && next != '\n') Blank(i + 1);
                 i++;
             }
             else if (state == 3 && ch == '"' || state == 4 && ch == '\'') state = 0;
             else if (state == 5 && ch == '"' && source.AsSpan(i).StartsWith("\"\"\""))
             {
-                masked[i + 1] = masked[i + 2] = ' ';
+                Blank(i + 1); Blank(i + 2);
                 i += 2;
                 state = 0;
             }
         }
-        return new string(masked);
+        return state;
     }
 
     public static string? PackageName(string source)
@@ -147,10 +160,12 @@ public static class JavaSourceLexical
         var blocks = new List<string>();
         List<string>? current = null;
         var sawFence = false;
+        var state = 0;
         foreach (var line in lines)
         {
             var trimmed = line.Trim();
-            if (trimmed.StartsWith("```", StringComparison.Ordinal))
+            // Backtick lines inside Java comments, strings or text blocks are source, not framing.
+            if (state == 0 && trimmed.StartsWith("```", StringComparison.Ordinal))
             {
                 sawFence = true;
                 if (current is not null)
@@ -163,7 +178,11 @@ public static class JavaSourceLexical
                 else
                     throw new InvalidOperationException("Non-Java fenced output cannot be treated as a Java compilation unit.");
             }
-            else if (current is not null) current.Add(line);
+            else
+            {
+                current?.Add(line);
+                state = Scan(line + "\n", null, state);
+            }
         }
         if (current is not null) blocks.Add(string.Join('\n', current));
         if (blocks.Count > 1 && blocks.Count(IsComplete) > 1)

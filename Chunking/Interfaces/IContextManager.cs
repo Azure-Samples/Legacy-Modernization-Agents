@@ -118,6 +118,23 @@ public class ChunkContext
     /// Estimated token count for this context.
     /// </summary>
     public int EstimatedTokens { get; set; }
+
+    /// <summary>
+    /// Trailing lines of the code generated for the immediately preceding chunk of the same
+    /// file, so a continuation chunk can see the open scope (e.g. an unfinished method body).
+    /// Null for the first chunk, after a failed predecessor, or when resuming.
+    /// </summary>
+    public string? PreviousChunkTail { get; set; }
+
+    public const int PreviousChunkTailLines = 80;
+
+    public static string? TailOf(string? generatedCode)
+    {
+        if (string.IsNullOrWhiteSpace(generatedCode))
+            return null;
+        var lines = generatedCode.Replace("\r\n", "\n").TrimEnd().Split('\n');
+        return string.Join("\n", lines.Skip(Math.Max(0, lines.Length - PreviousChunkTailLines)));
+    }
 }
 
 /// <summary>

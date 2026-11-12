@@ -77,7 +77,8 @@ public static class JavaConverterProjection
         sb.AppendLine();
 
         sb.AppendLine(PromptLoader.LoadSectionValidated(
-            "RektContext", "JavaDbTablesHeader", new Dictionary<string, string>()));
+            spring ? "JavaSpringConverter" : "RektContext",
+            spring ? "DbTablesHeader" : "JavaDbTablesHeader", new Dictionary<string, string>()));
         if (facts.Io.DbTables.Count == 0)
             sb.AppendLine("  (none)");
         else
@@ -139,7 +140,8 @@ public static class JavaConverterProjection
         sb.AppendLine();
 
         sb.AppendLine(PromptLoader.LoadSectionValidated(
-            "RektContext", "JavaExternalEffectsHeader", new Dictionary<string, string>()));
+            spring ? "JavaSpringConverter" : "RektContext",
+            spring ? "ExternalEffectsHeader" : "JavaExternalEffectsHeader", new Dictionary<string, string>()));
         if (facts.ExternalEffects.Count == 0)
             sb.AppendLine("  (none)");
         else

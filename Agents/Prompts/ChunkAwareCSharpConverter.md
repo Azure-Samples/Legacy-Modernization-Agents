@@ -88,6 +88,11 @@ Methods defined in previous chunks (maintain consistency):
 Variables defined in previous chunks:
 {{Items}}
 
+## SECTION: PreviousChunkTail
+
+End of the code you generated for the previous chunk of this file (already emitted; do NOT repeat it). Continue exactly from this point: if it ends inside an open method body, continue that body; otherwise start with new members.
+{{Code}}
+
 ## SECTION: SemanticUnits
 
 Semantic units in this chunk:
@@ -126,7 +131,7 @@ Common suffixes: Page (Blazor routable pages), Component (reusable Blazor UI), L
 
 ## SECTION: ChunkMiddle
 
-- This is a MIDDLE chunk - continue from previous chunk
+- This is a MIDDLE chunk - continue from previous chunk. Chunks are generated in order; the end of the previous chunk's output is provided below when available.
 - Do NOT include using/namespace/class declaration
 - Do NOT close the class yet
 - Output new methods, fields and properties, or continue a method body opened earlier. Never repeat a previous member, even if identical.

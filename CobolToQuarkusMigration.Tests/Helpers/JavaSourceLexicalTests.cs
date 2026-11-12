@@ -73,6 +73,15 @@ public sealed class JavaSourceLexicalTests
     }
 
     [Fact]
+    public void FenceLikeLinesInsideTextBlocksAreSourceNotResponseFraming()
+    {
+        const string unit = "package p;\npublic class Docs {\n    String json = \"\"\"\n```json\n{\"a\": 1}\n```\n\"\"\";\n    String java = \"\"\"\n    ```java\n    int x;\n    ```\n    \"\"\";\n}";
+        JavaSourceLexical.ExtractResponse(unit).Should().Be(unit);
+        JavaSourceLexical.ExtractResponse("Here's the class:\n```java\n" + unit + "\n```\nDone")
+            .Should().Be(unit);
+    }
+
+    [Fact]
     public void IdentifierRenamePreservesCommentsAndLiteralContents()
     {
         const string source = "class Old { Old self; String s = \"Old\"; /* Old */ String b = \"\"\"\nOld\n\"\"\"; }";

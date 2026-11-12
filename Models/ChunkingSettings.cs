@@ -102,6 +102,9 @@ public class ChunkingSettings
 
     /// <summary>
     /// Maximum number of chunks to process concurrently.
+    /// Chunks of the same file are always converted sequentially because continuation chunks
+    /// depend on the preceding chunk's output; large files are parallelised across files
+    /// (see <see cref="MaxParallelAnalysis"/>), so this value no longer splits one file.
     /// Higher values speed up processing but increase API load.
     /// With 300K TPM limit and ~30K tokens/request, 3 parallel workers is safe.
     /// Default: 3.

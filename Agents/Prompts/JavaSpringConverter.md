@@ -74,3 +74,11 @@ DATA STRUCTURE AND CALL MAPPINGS:
 ## SECTION: CallTargetsHeader
 
 CALL TARGETS (verified callees use constructor-injected Spring services within a module; explicitly assigned remote domains require real configured clients):
+
+## SECTION: DbTablesHeader
+
+IO — DB TABLES (each becomes a Spring Data JDBC/JPA repository or JdbcTemplate access preserving the exact SQL):
+
+## SECTION: ExternalEffectsHeader
+
+EXTERNAL EFFECTS (use to choose Spring Boot starters / configuration):
