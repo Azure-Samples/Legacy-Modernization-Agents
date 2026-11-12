@@ -443,6 +443,47 @@ public class ChunkingOrchestratorTests : IDisposable
     }
 
     [Fact]
+    public async Task ProcessChunksAsync_ResumeAfterFailedMiddleChunk_RestoresPersistedFragmentsAndSeedsTail()
+    {
+        var plan = await _orchestrator.AnalyzeFileAsync("resume-hole.cbl", GenerateCobolProgram(400));
+        plan.ChunkCount.Should().BeGreaterThan(3);
+
+        await _orchestrator.ProcessChunksAsync(7, plan, (chunk, _) => Task.FromResult(new ChunkConversionResult
+        {
+            ChunkIndex = chunk.ChunkIndex,
+            SourceFile = chunk.SourceFile,
+            Success = chunk.ChunkIndex != 2,
+            ErrorMessage = chunk.ChunkIndex == 2 ? "provider timeout" : null,
+            ConvertedCode = chunk.ChunkIndex == 2 ? "" : $"    void first{chunk.ChunkIndex}() {{"
+        }));
+
+        var reconverted = new List<int>();
+        var tails = new Dictionary<int, string?>();
+        var result = await _orchestrator.ProcessChunksAsync(7, plan, (chunk, context) =>
+        {
+            reconverted.Add(chunk.ChunkIndex);
+            tails[chunk.ChunkIndex] = context.PreviousChunkTail;
+            return Task.FromResult(new ChunkConversionResult
+            {
+                ChunkIndex = chunk.ChunkIndex,
+                SourceFile = chunk.SourceFile,
+                Success = true,
+                ConvertedCode = $"    void second{chunk.ChunkIndex}() {{"
+            });
+        });
+
+        reconverted.Should().Equal(Enumerable.Range(2, plan.ChunkCount - 2));
+        tails[2].Should().Be("    void first1() {");
+        result.FailedChunks.Should().Be(0);
+        result.SuccessfulChunks.Should().Be(plan.ChunkCount);
+        result.ChunkResults.Select(c => c.ChunkIndex).Should().Equal(Enumerable.Range(0, plan.ChunkCount));
+        result.ChunkResults.Select(c => c.ConversionResult.ChunkIndex).Should().Equal(Enumerable.Range(0, plan.ChunkCount));
+        result.ChunkResults[0].ConversionResult.ConvertedCode.Should().Be("    void first0() {");
+        result.ChunkResults[1].ConversionResult.ConvertedCode.Should().Be("    void first1() {");
+        result.ChunkResults[2].ConversionResult.ConvertedCode.Should().Be("    void second2() {");
+    }
+
+    [Fact]
     public async Task ProcessChunksAsync_TracksProcessingTime()
     {
         // Arrange

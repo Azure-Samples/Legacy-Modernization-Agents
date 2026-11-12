@@ -122,15 +122,20 @@ public class ChunkingOrchestrator
         var contextManager = GetContextManager();
         var validator = GetValidator();
 
-        // Check for resumability
         int startChunk = 0;
+        string? resumedPreviousCode = null;
         if (_chunkingSettings.EnableResumability)
         {
-            startChunk = await contextManager.GetLastCompletedChunkIndexAsync(
-                runId, plan.SourceFile, cancellationToken) + 1;
-
-            if (startChunk > 0)
+            var lastCompleted = await contextManager.GetLastCompletedChunkIndexAsync(
+                runId, plan.SourceFile, cancellationToken);
+            if (lastCompleted >= 0)
             {
+                var restored = await RestorePersistedPrefixAsync(
+                    runId, plan, lastCompleted, contextManager, cancellationToken);
+                startChunk = restored.Count;
+                resumedPreviousCode = restored.LastOrDefault()?.ConversionResult.ConvertedCode;
+                result.ChunkResults.AddRange(restored);
+                result.SuccessfulChunks += restored.Count;
                 _logger.LogInformation("Resuming from chunk {Index} for {File}", startChunk, plan.SourceFile);
             }
         }
@@ -168,7 +173,7 @@ public class ChunkingOrchestrator
             chunksToProcess.Count);
 
         await ProcessChunksSequentialAsync(
-            runId, plan, chunksToProcess, startChunk, contextManager, validator,
+            runId, plan, chunksToProcess, startChunk, resumedPreviousCode, contextManager, validator,
             convertChunkAsync, result, cancellationToken);
 
         // Run reconciliation pass
@@ -206,13 +211,13 @@ public class ChunkingOrchestrator
         ChunkingPlan plan,
         List<ChunkResult> chunksToProcess,
         int startIndex,
+        string? previousGeneratedCode,
         IContextManager contextManager,
         ConversionValidator validator,
         Func<ChunkResult, ChunkContext, Task<ChunkConversionResult>> convertChunkAsync,
         ChunkingResult result,
         CancellationToken cancellationToken)
     {
-        string? previousGeneratedCode = null;
         for (int i = 0; i < chunksToProcess.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -241,6 +246,31 @@ public class ChunkingOrchestrator
                 throw new InvalidOperationException($"Chunk {chunkIndex} failed and resumability is disabled");
             }
         }
+    }
+
+    // Only the contiguous accepted prefix is reused: a failed or missing earlier chunk is a hole that
+    // must be reconverted, and later fragments depend on its output as continuation state.
+    private static async Task<List<ChunkProcessingResult>> RestorePersistedPrefixAsync(
+        int runId,
+        ChunkingPlan plan,
+        int lastCompletedIndex,
+        IContextManager contextManager,
+        CancellationToken cancellationToken)
+    {
+        var history = await contextManager.GetFileHistoryAsync(runId, plan.SourceFile, cancellationToken);
+        var persisted = history.ChunkResults
+            .GroupBy(r => r.ChunkIndex)
+            .ToDictionary(g => g.Key, g => g.Last());
+        var restored = new List<ChunkProcessingResult>();
+        for (var index = 0; index <= lastCompletedIndex && index < plan.ChunkCount; index++)
+        {
+            if (!persisted.TryGetValue(index, out var fragment)
+                || !fragment.Success
+                || string.IsNullOrWhiteSpace(fragment.ConvertedCode))
+                break;
+            restored.Add(new ChunkProcessingResult { ChunkIndex = index, Success = true, ConversionResult = fragment });
+        }
+        return restored;
     }
 
     /// <summary>

@@ -78,6 +78,33 @@ public sealed class CompileRepairSourceIdentityTests : IDisposable
     }
 
     [Fact]
+    public async Task ScannedFilesFromRelativeSourceDirectoryMatchConverterRecordedOriginalPaths()
+    {
+        var (generated, originals, sources) = await CreateSources();
+        foreach (var original in originals)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(original.FilePath)!);
+            await File.WriteAllTextAsync(original.FilePath, original.Content);
+        }
+        var relativeSourceRoot = Path.GetRelativePath(Environment.CurrentDirectory, Path.Combine(_root, "source"));
+        Path.IsPathRooted(relativeSourceRoot).Should().BeFalse();
+        var scanned = await new FileHelper(NullLogger<FileHelper>.Instance).ScanDirectoryForCobolFilesAsync(relativeSourceRoot);
+        scanned.Should().HaveCount(2).And.OnlyContain(file => !Path.IsPathRooted(file.FilePath));
+        foreach (var file in generated)
+            file.OriginalSourcePath = SourcePathHelper.ForFile(
+                scanned.Single(s => Path.GetFullPath(s.FilePath) == Path.GetFullPath(file.OriginalSourcePath)));
+
+        var sourceIndex = new CompileRepairSourceIndex(_root, generated, scanned, relativeSourceRoot);
+
+        var leftFile = sources.Keys.Single(file => file.StartsWith("Left/", StringComparison.Ordinal));
+        var tasks = CompileRepairPlanner.PlanWithSourceIdentity(
+            [new CompilerDiagnostic(leftFile, 2, 1, "CS1002", "; expected")],
+            GeneratedTypeIndex.FromSources(sources), sources, "Shared", new CompileGateSettings(), sourceIndex);
+        tasks.Should().ContainSingle().Which.Instructions.Should().ContainSingle().Which
+            .Should().Contain("LEFT-ONLY").And.NotContain("RIGHT-ONLY");
+    }
+
+    [Fact]
     public void LegacyDictionaryCannotSilentlyCollapseNormalizedMemberNames()
     {
         var sources = new Dictionary<string, string> { ["A.cs"] = "class A {}" };

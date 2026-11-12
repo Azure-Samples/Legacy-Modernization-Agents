@@ -18,8 +18,9 @@ public sealed class CompileRepairSourceIndex
         var sources = new Dictionary<string, Source>(StringComparer.Ordinal);
         foreach (var file in sourceFiles)
         {
-            var identity = SourceIdentity(
-                string.IsNullOrWhiteSpace(file.FilePath) ? file.FileName : file.FilePath, sourceDirectory);
+            // Scanned paths are process-relative (e.g. "source/MAIN.cbl"); resolve them exactly as converters
+            // record OriginalSourcePath instead of re-rooting them under sourceDirectory.
+            var identity = SourceIdentity(SourcePathHelper.ForFile(file), sourceDirectory);
             if (!sources.TryAdd(identity, new Source(identity, file.Content)))
                 throw new InvalidOperationException($"Duplicate COBOL source identity '{identity}' in compile repair.");
         }
