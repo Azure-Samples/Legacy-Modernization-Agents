@@ -4,7 +4,17 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>COBOL Migration MCP Chat</title>
+  <script>
+    (() => {
+      const param = new URLSearchParams(window.location.search).get("scoutTheme");
+      const theme =
+        param || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      document.documentElement.setAttribute("data-theme", theme);
+    })();
+  </script>
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="ai-loop.css">
+  <link rel="stylesheet" href="ast-evidence.css">
   <script type="text/javascript" src="https://unpkg.com/vis-network@9.1.2/standalone/umd/vis-network.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@11.1.0/marked.min.js"></script>
   <script type="module">
@@ -116,6 +126,10 @@
               <option value="fast">🏃 Fast</option>
               <option value="thorough">🔬 Thorough</option>
             </select>
+            <select id="mc-dependency-mode" class="mc-select" aria-label="Conversion dependency policy">
+              <option value="strict">Strict dependency verification (default)</option>
+              <option value="draft">Partial draft — not verified (whole justified programs only)</option>
+            </select>
           </div>
 
           <!-- Command Buttons -->
@@ -193,6 +207,17 @@
       <button id="showAllRunsBtn" class="info-button">📊 View All Runs & Data Guide</button>
       <button id="showArchitectureBtn" class="info-button">📄 Reverse Engineering Results</button>
       <button id="showMigrationMonitorBtn" class="info-button migration-monitor-btn">🔄 Migration Monitor</button>
+
+      <!-- Saved chats (stored in this browser) -->
+      <div class="ch-section" id="ch-section">
+        <div class="ch-header">
+          <span class="ch-title">💬 Saved Chats</span>
+          <button id="ch-new-btn" class="btn-small" title="Start a new chat">＋ New</button>
+        </div>
+        <input type="search" id="ch-search" class="ch-search" placeholder="Search chats…">
+        <div id="ch-list" class="ch-list"><div class="ch-empty">No saved chats yet.</div></div>
+      </div>
+
       <div id="resources-list" class="resource-list"></div>
     </section>
 
@@ -309,6 +334,8 @@
           </div>
         </div>
       </div>
+
+      <div id="chat-transcript" class="chat-transcript" hidden></div>
 
       <article id="response" class="response" hidden>
         <h3>Response</h3>
@@ -521,7 +548,8 @@
       <div id="dependency-graph"></div>
 
       <!-- AST Explorer — what the parser produced for one program, and the source behind it -->
-      <div id="ast-explorer-container" class="dashboard-panel" style="display: none;">
+      <div id="ast-explorer-container" class="dashboard-panel" style="display: none; flex-direction: column;">
+        <div id="ast-evidence-note" class="ast-evidence" role="status" hidden></div>
         <div id="ast-controls" style="padding: 8px; display: flex; gap: 8px; align-items: center; background: rgba(15,23,42,0.8); border-bottom: 1px solid #334155;">
           <select id="ast-file-select" style="flex: 1; padding: 6px; background: #1e293b; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; font-size: 13px;">
             <option value="">Select file to explore...</option>
@@ -533,7 +561,7 @@
           <button onclick="astExplorer?.refresh()" class="btn-small">Refresh</button>
         </div>
         <div id="ast-stats-bar" style="padding: 4px 12px; background: rgba(15,23,42,0.6); border-bottom: 1px solid #1e293b; font-size: 12px; color: #94a3b8; display: flex; gap: 12px; align-items: center;"></div>
-        <div style="display: flex; height: calc(100% - 78px);">
+        <div style="display: flex; flex: 1; min-height: 0;">
           <div id="ast-graph" style="flex: 3; min-width: 0; overflow-y: auto; border-right: 1px solid #334155;"></div>
           <div id="ast-source-panel" style="flex: 4; min-width: 0; overflow: hidden; background: #0c1222; border-right: 1px solid #334155;">
             <div class="source-placeholder">Select a section or paragraph to view source</div>
@@ -580,7 +608,7 @@
       </div>
       <!-- AI Loop — per-agent model calls and quality gates for a run -->
       <div id="ai-loop-container" class="dashboard-panel" style="display: none;">
-        <div id="ai-loop-root" style="height:100%;overflow:auto;background:#0a0e1a;"></div>
+        <div id="ai-loop-root" style="height:100%;overflow:auto;"></div>
       </div>
       <!-- Modernization Intelligence — deterministic decision surface -->
       <div id="modernization-intelligence-container" class="dashboard-panel" style="display: none;">
@@ -1318,12 +1346,14 @@ curl http://localhost:5028/api/data-retrieval-guide</code></pre>
 
   <script src="run-selector.js"></script>
   <script src="graph.js"></script>
+  <script src="chat-history.js"></script>
   <script src="main.js"></script>
   <script src="runs-viewer.js"></script>
   <script src="activity-dashboard.js"></script>
   <script src="migration-monitor.js"></script>
   <script src="model-prompt-panel.js"></script>
   <script src="model-setup-modal.js"></script>
+  <script src="conversion-readiness.js"></script>
   <script src="mission-control.js"></script>
   <script src="ast-explorer.js"></script>
   <script src="services-view.js"></script>

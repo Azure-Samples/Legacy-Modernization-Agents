@@ -133,7 +133,8 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
             // REKT structural context + shared-types registry (opt-in via ENABLE_REKT_CONTEXT).
             var structuralContextBuilder = new StringBuilder();
             await RektPromptInjector.InjectAsync(
-                structuralContextBuilder, "C#", cobolFile.FileName, AgentName, _runId, Logger);
+                structuralContextBuilder, "C#", SourcePathHelper.ForFile(cobolFile), AgentName, _runId, Logger, SourceDirectory, RepositoryRoot,
+                verifiedDraftContext: Settings?.ConversionSettings.DependencyMode == "draft");
 
             var userPrompt = PromptLoader.LoadSectionValidated("CSharpConverter", "User", new Dictionary<string, string>
             {
@@ -208,7 +209,7 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
 
             // Extract AI's semantic class name (based on domain/action/type pattern)
             string aiClassName = ExtractClassNameFromCode(csharpCode);
-            string namespaceName = GetNamespaceName(csharpCode);
+            string namespaceName = GetNamespaceName(csharpCode) ?? AssignedNamespace(cobolFile, "C#");
 
             // Prefer AI-generated semantic name if it's not generic
             // Fall back to filename-derived name only if AI gave a generic name
@@ -241,6 +242,7 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
                 ClassName = finalClassName,
                 NamespaceName = namespaceName,
                 OriginalCobolFileName = cobolFile.FileName,
+                OriginalSourcePath = SourcePathHelper.ForFile(cobolFile),
                 TargetLanguage = TargetLanguage
             };
         }
@@ -335,7 +337,7 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
     private CodeFile CreateFallbackCodeFile(CobolFile cobolFile, CobolAnalysis cobolAnalysis, string reason)
     {
         var className = NamingHelper.GetFallbackClassName(cobolFile.FileName);
-        var namespaceName = "CobolMigration.Fallback";
+        var namespaceName = AssignedNamespace(cobolFile, "C#");
         var sanitizedReason = reason.Replace("\"", "'");
 
         var csharpCode = $$"""
@@ -362,6 +364,7 @@ public class {{className}}
             ClassName = className,
             Content = csharpCode,
             OriginalCobolFileName = cobolFile.FileName,
+            OriginalSourcePath = SourcePathHelper.ForFile(cobolFile),
             TargetLanguage = TargetLanguage
         };
     }
@@ -450,7 +453,7 @@ public class {{className}}
         return "ConvertedCobolProgram";
     }
 
-    private string GetNamespaceName(string csharpCode)
+    private string? GetNamespaceName(string csharpCode)
     {
         var namespaceIndex = csharpCode.IndexOf("namespace ");
         if (namespaceIndex >= 0)
@@ -460,7 +463,7 @@ public class {{className}}
             var end = remaining.IndexOfAny(new[] { ';', '{', '\r', '\n' });
             if (end >= 0) return remaining.Substring(0, end).Trim();
         }
-        return "CobolMigration.Legacy";
+        return null;
     }
 
     private string SanitizeCobolContent(string cobolContent)

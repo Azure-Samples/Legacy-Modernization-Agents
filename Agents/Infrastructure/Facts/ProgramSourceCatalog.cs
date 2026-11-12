@@ -258,7 +258,13 @@ public static class ProgramFactsArtifactLocator
             : null;
     }
 
-    public static ProgramFacts? TryLoad(string factsDir, string programIdentity)
+    public static ProgramFacts? TryLoad(
+        string factsDir, string programIdentity, IReadOnlyCollection<string>? factsFilePaths = null) =>
+        TryLoad(factsDir, programIdentity, factsFilePaths is null ? null : () => factsFilePaths);
+
+    // The listing is only needed by the recursive fallback, so callers sharing one walk pass it lazily.
+    public static ProgramFacts? TryLoad(
+        string factsDir, string programIdentity, Func<IReadOnlyCollection<string>>? factsFilePaths)
     {
         if (string.IsNullOrWhiteSpace(factsDir) || string.IsNullOrWhiteSpace(programIdentity))
             return null;
@@ -287,15 +293,20 @@ public static class ProgramFactsArtifactLocator
 
             var facts = TryLoadFromPath(candidate);
             if (facts is null) continue;
+            if (basename.EndsWith(".cpy", StringComparison.OrdinalIgnoreCase)
+                && !Describes(facts, normalizedIdentity)) continue;
             if (!namesADirectory || Describes(facts, normalizedIdentity)) return facts;
         }
 
         if (!Directory.Exists(factsDir)) return null;
 
-        var recursiveMatches = Directory.EnumerateFiles(
+        var recursiveMatches = (factsFilePaths?.Invoke() ?? Directory.EnumerateFiles(
                 factsDir,
                 basename + FactsSuffix,
-                SearchOption.AllDirectories)
+                SearchOption.AllDirectories).ToArray())
+            .Where(path => string.Equals(
+                Path.GetFileName(path), basename + FactsSuffix, StringComparison.OrdinalIgnoreCase))
+            .Where(path => IsActiveArtifactPath(path, factsDir))
             .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
@@ -312,6 +323,10 @@ public static class ProgramFactsArtifactLocator
 
         return exactRelativeMatch?.Facts;
     }
+
+    internal static bool IsActiveArtifactPath(string path, string factsRoot) =>
+        !Path.GetRelativePath(factsRoot, path).Split('/', '\\').Any(
+            segment => segment is ".previous" or ".work");
 
     private static bool Describes(ProgramFacts? facts, string normalizedIdentity) =>
         facts is not null &&

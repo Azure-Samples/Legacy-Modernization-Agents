@@ -25,6 +25,8 @@ public abstract class AgentBase
     protected readonly IRateLimiter? RateLimiter;
     protected readonly AppSettings? Settings;
     protected readonly bool UseResponsesApi;
+    public string? SourceDirectory { get; set; }
+    public string? RepositoryRoot { get; set; }
 
     protected abstract string AgentName { get; }
 
@@ -37,6 +39,26 @@ public abstract class AgentBase
 
     protected string ProviderName =>
         ChatClient is CopilotChatClient ? "GitHub Copilot" : "Azure OpenAI";
+
+    // Used when the reply declares no package or namespace (a diagnostic placeholder, or no reply
+    // at all). A shared catch-all puts a program and a copybook with the same stem in one place,
+    // where the second write is rejected as a collision and the whole run is lost.
+    protected string AssignedNamespace(CobolFile file, string targetLanguage)
+    {
+        if (file.IsCopybook || SourceTypeRegistry.IsCopybook(file.FileName))
+            return ConversionNamespacePolicy.ForSharedTypes(targetLanguage);
+
+        string? relative = null;
+        if (!string.IsNullOrWhiteSpace(SourceDirectory) && Path.IsPathRooted(file.FilePath))
+        {
+            var root = Path.IsPathRooted(SourceDirectory)
+                ? SourceDirectory
+                : Path.Combine(RepositoryRoot ?? Directory.GetCurrentDirectory(), SourceDirectory);
+            var candidate = SourcePathHelper.RelativeToSource(file.FilePath, Path.GetFullPath(root));
+            if (!candidate.StartsWith("../", StringComparison.Ordinal)) relative = candidate;
+        }
+        return ConversionNamespacePolicy.ForProgram(targetLanguage, relative);
+    }
 
     /// <summary>Detected capabilities of the configured model (family, reasoning strategy, etc.).</summary>
     protected ModelCapabilities Capabilities { get; }
@@ -115,26 +137,30 @@ public abstract class AgentBase
         string contextIdentifier)
     {
         var estimatedInputTokens = TokenHelper.EstimateTokens(systemPrompt + userPrompt);
-        using var reservation = RateLimiter is null ? null : await RateLimiter.AcquireAsync(estimatedInputTokens);
+        var cancellationToken = AiLoopEvents.CancellationToken;
+        cancellationToken.ThrowIfCancellationRequested();
+        using var reservation = RateLimiter is null ? null : await RateLimiter.AcquireAsync(estimatedInputTokens, cancellationToken);
 
-        Logger.LogDebug("[{Agent}] Executing {ApiType} for {Context}", 
+        Logger.LogDebug("[{Agent}] Executing {ApiType} for {Context}",
             AgentName, UseResponsesApi ? "Responses API" : "Chat Completions API", contextIdentifier);
 
         // Log the request
-        ChatLogger?.LogUserMessage(AgentName, contextIdentifier, userPrompt, systemPrompt);
-        EnhancedLogger?.LogBehindTheScenes("API_CALL", UseResponsesApi ? "ResponsesAPI" : "ChatCompletion", 
+        EnhancedLogger?.LogBehindTheScenes("API_CALL", UseResponsesApi ? "ResponsesAPI" : "ChatCompletion",
             $"Calling {ProviderName} for {contextIdentifier}", AgentName);
 
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var requestId = AiLoopEvents.RequestStarted(AgentName, ProviderName, ModelId, contextIdentifier, systemPrompt, userPrompt);
+        ChatLogger?.LogUserMessage(AgentName, contextIdentifier, userPrompt, systemPrompt, requestId);
         long? inputTokens = null, outputTokens = null;
+        var outcomeRecorded = false;
         try
         {
             string responseText;
-            
+
             if (UseResponsesApi && ResponsesClient != null)
             {
                 // Use Responses API for codex models with auto-optimized token settings
-                responseText = await ResponsesClient.GetResponseAutoAsync(systemPrompt, userPrompt);
+                responseText = await ResponsesClient.GetResponseAutoAsync(systemPrompt, userPrompt, cancellationToken);
                 _endedNormally.TryRemove(contextIdentifier, out _);
             }
             else if (ChatClient != null)
@@ -157,7 +183,7 @@ public abstract class AgentBase
                 // Apply model-specific reasoning options
                 ApplyModelSpecificOptions(options, reasoningEffort, maxTokens);
 
-                var response = await ChatClient.GetResponseAsync(messages, options);
+                var response = await ChatClient.GetResponseAsync(messages, options, cancellationToken);
                 responseText = ExtractResponseText(response);
                 inputTokens = response.Usage?.InputTokenCount;
                 outputTokens = response.Usage?.OutputTokenCount;
@@ -171,26 +197,77 @@ public abstract class AgentBase
                 throw new InvalidOperationException("No API client configured");
             }
 
-            // Log the response
-            ChatLogger?.LogAIResponse(AgentName, contextIdentifier, responseText);
-            EnhancedLogger?.LogBehindTheScenes("API_RESPONSE", UseResponsesApi ? "ResponsesAPI" : "ChatCompletion", 
-                $"Received {responseText.Length} chars from {ProviderName}", AgentName);
-
-            reservation?.Commit((int)((inputTokens ?? estimatedInputTokens) + (outputTokens ?? TokenHelper.EstimateTokens(responseText))));
-
             AiLoopEvents.Call(AgentName, ProviderName, ModelId, contextIdentifier, stopwatch.ElapsedMilliseconds,
-                true, systemPrompt.Length + userPrompt.Length, responseText.Length, inputTokens, outputTokens, null);
+                true, systemPrompt.Length + userPrompt.Length, responseText.Length, inputTokens, outputTokens, null, requestId);
+            outcomeRecorded = true;
+            reservation?.Commit((int)((inputTokens ?? estimatedInputTokens) + (outputTokens ?? TokenHelper.EstimateTokens(responseText))));
+            ChatLogger?.LogAIResponse(AgentName, contextIdentifier, responseText, requestId: requestId);
+            EnhancedLogger?.LogBehindTheScenes("API_RESPONSE", UseResponsesApi ? "ResponsesAPI" : "ChatCompletion",
+                $"Received {responseText.Length} chars from {ProviderName}", AgentName);
             return responseText;
         }
         catch (Exception ex)
         {
             if (LlmErrorClassifier.IsRateLimit(ex))
                 RateLimiter?.NoteRateLimitResponse(LlmErrorClassifier.GetRetryAfter(ex) ?? LlmErrorClassifier.DefaultRateLimitCooldown);
-            AiLoopEvents.Call(AgentName, ProviderName, ModelId, contextIdentifier, stopwatch.ElapsedMilliseconds,
-                false, systemPrompt.Length + userPrompt.Length, 0, inputTokens, outputTokens,
-                $"{ex.GetType().Name}: {ex.Message}");
-            Logger.LogError(ex, "[{Agent}] Error executing {ApiType} for {Context}", 
+            if (!outcomeRecorded)
+                AiLoopEvents.Call(AgentName, ProviderName, ModelId, contextIdentifier, stopwatch.ElapsedMilliseconds,
+                    false, systemPrompt.Length + userPrompt.Length, 0, inputTokens, outputTokens,
+                    ex.GetType().Name, requestId, ex is OperationCanceledException);
+            Logger.LogError(ex, "[{Agent}] Error executing {ApiType} for {Context}",
                 AgentName, UseResponsesApi ? "Responses API" : "Chat Completions", contextIdentifier);
+            throw;
+        }
+    }
+
+    private async Task<string> ExecuteEscalationAsync(string systemPrompt, string userPrompt, string context,
+        int maxTokens, string effort)
+    {
+        var estimated = TokenHelper.EstimateTokens(systemPrompt + userPrompt);
+        var cancellationToken = AiLoopEvents.CancellationToken;
+        cancellationToken.ThrowIfCancellationRequested();
+        using var reservation = RateLimiter is null ? null : await RateLimiter.AcquireAsync(estimated, cancellationToken);
+        var requestId = AiLoopEvents.RequestStarted(AgentName, ProviderName, ModelId, context, systemPrompt, userPrompt);
+        ChatLogger?.LogUserMessage(AgentName, context, userPrompt, systemPrompt, requestId);
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        long? input = null, output = null;
+        var outcomeRecorded = false;
+        try
+        {
+            string text;
+            if (UseResponsesApi && ResponsesClient is not null)
+            {
+                text = await ResponsesClient.GetResponseAsync(systemPrompt, userPrompt, maxTokens, effort, cancellationToken);
+                _endedNormally.TryRemove(context, out _);
+            }
+            else
+            {
+                var options = new ChatOptions { ModelId = ModelId, MaxOutputTokens = maxTokens };
+                ApplyModelSpecificOptions(options, effort, maxTokens);
+                var response = await ChatClient!.GetResponseAsync(
+                    [new AIChatMessage(ChatRole.System, systemPrompt), new AIChatMessage(ChatRole.User, userPrompt)], options,
+                    cancellationToken);
+                text = ExtractResponseText(response);
+                input = response.Usage?.InputTokenCount;
+                output = response.Usage?.OutputTokenCount;
+                DetectTruncation(response, text, maxTokens, effort, context);
+                _endedNormally[context] = response.FinishReason == ChatFinishReason.Stop;
+            }
+            AiLoopEvents.Call(AgentName, ProviderName, ModelId, context, stopwatch.ElapsedMilliseconds, true,
+                systemPrompt.Length + userPrompt.Length, text.Length, input, output, null, requestId);
+            outcomeRecorded = true;
+            reservation?.Commit((int)((input ?? estimated) + (output ?? TokenHelper.EstimateTokens(text))));
+            ChatLogger?.LogAIResponse(AgentName, context, text, requestId: requestId);
+            return text;
+        }
+        catch (Exception ex)
+        {
+            if (LlmErrorClassifier.IsRateLimit(ex))
+                RateLimiter?.NoteRateLimitResponse(LlmErrorClassifier.GetRetryAfter(ex) ?? LlmErrorClassifier.DefaultRateLimitCooldown);
+            if (!outcomeRecorded)
+                AiLoopEvents.Call(AgentName, ProviderName, ModelId, context, stopwatch.ElapsedMilliseconds, false,
+                    systemPrompt.Length + userPrompt.Length, 0, input, output, ex.GetType().Name, requestId,
+                    ex is OperationCanceledException);
             throw;
         }
     }
@@ -216,6 +293,10 @@ public abstract class AgentBase
             {
                 var response = await ExecuteChatCompletionAsync(systemPrompt, userPrompt, contextIdentifier);
                 return (response, false, null);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
             }
             // ── Reasoning exhaustion catch (before transient error catch) ──
             catch (ReasoningExhaustionException rex) when (UseResponsesApi && ResponsesClient != null)
@@ -271,14 +352,13 @@ public abstract class AgentBase
 
                     try
                     {
-                        var retryResponse = await ResponsesClient.GetResponseAsync(
-                            systemPrompt, userPrompt, currentMaxTokens, currentEffort);
+                        var retryResponse = await ExecuteEscalationAsync(
+                            systemPrompt, userPrompt, contextIdentifier, currentMaxTokens, currentEffort);
 
                         EnhancedLogger?.LogBehindTheScenes("REASONING_EXHAUSTION_RECOVERED", "SUCCESS",
                             $"Recovered on retry {exhaustionRetry + 1} with tokens={currentMaxTokens}, effort='{currentEffort}'",
                             AgentName);
 
-                        ChatLogger?.LogAIResponse(AgentName, contextIdentifier, retryResponse);
                         return (retryResponse, false, null);
                     }
                     catch (ReasoningExhaustionException)
@@ -362,30 +442,13 @@ public abstract class AgentBase
 
                     try
                     {
-                        var messages = new List<AIChatMessage>
-                        {
-                            new AIChatMessage(ChatRole.System, systemPrompt),
-                            new AIChatMessage(ChatRole.User, userPrompt)
-                        };
-                        var retryOptions = new ChatOptions
-                        {
-                            ModelId = ModelId,
-                            MaxOutputTokens = currentMaxTokens
-                        };
-                        ApplyModelSpecificOptions(retryOptions, currentEffort, currentMaxTokens);
-
-                        var retryResponse = await ChatClient!.GetResponseAsync(messages, retryOptions);
-                        var retryText = ExtractResponseText(retryResponse);
-
-                        // Re-check for truncation on the retry
-                        DetectTruncation(retryResponse, retryText, currentMaxTokens, currentEffort, contextIdentifier);
-                        _endedNormally[contextIdentifier] = retryResponse.FinishReason == ChatFinishReason.Stop;
+                        var retryText = await ExecuteEscalationAsync(
+                            systemPrompt, userPrompt, contextIdentifier, currentMaxTokens, currentEffort);
 
                         EnhancedLogger?.LogBehindTheScenes("OUTPUT_TRUNCATION_RECOVERED", "SUCCESS",
                             $"Recovered on retry {truncRetry + 1} with tokens={currentMaxTokens}, effort='{currentEffort}'",
                             AgentName);
 
-                        ChatLogger?.LogAIResponse(AgentName, contextIdentifier, retryText);
                         return (retryText, false, null);
                     }
                     catch (OutputTruncationException)
@@ -443,7 +506,7 @@ public abstract class AgentBase
                 EnhancedLogger?.LogBehindTheScenes("RATE_LIMIT", "THROTTLED",
                     $"Rate limited, waiting {delay.TotalSeconds:F0}s before retry");
 
-                await Task.Delay(delay);
+                await Task.Delay(delay, AiLoopEvents.CancellationToken);
             }
             catch (Exception ex) when (IsTransientError(ex) && attempt < maxRetries)
             {
@@ -458,7 +521,7 @@ public abstract class AgentBase
                 EnhancedLogger?.LogBehindTheScenes("RETRY", "TRANSIENT_ERROR",
                     $"Retry {attempt}/{maxRetries} for {contextIdentifier}: {ex.Message}");
 
-                await Task.Delay(delay);
+                await Task.Delay(delay, AiLoopEvents.CancellationToken);
             }
             catch (Exception ex) when (IsContentFilterError(ex))
             {
@@ -503,7 +566,7 @@ public abstract class AgentBase
         // The ChatResponse has a Messages property for multi-turn, 
         // or we can look at the last message
         var sb = new StringBuilder();
-        
+
         // Get assistant messages
         foreach (var message in response.Messages)
         {
@@ -662,12 +725,11 @@ ADAPTIVE RE-CHUNK INSTRUCTIONS (PART 2 of 2):
                 AgentName, contextIdentifier);
 
             firstResponse = UseResponsesApi && ResponsesClient != null
-                ? await ResponsesClient.GetResponseAsync(firstSystemPrompt, firstUserPrompt,
-                    maxOutputTokens, reasoningEffort)
+                ? await ExecuteEscalationAsync(firstSystemPrompt, firstUserPrompt,
+                    $"{contextIdentifier} [rechunk-part-1]", maxOutputTokens, reasoningEffort)
                 : await ExecuteChatCompletionAsync(firstSystemPrompt, firstUserPrompt,
                     $"{contextIdentifier} [rechunk-part-1]");
 
-            ChatLogger?.LogAIResponse(AgentName, $"{contextIdentifier} [rechunk-part-1]", firstResponse);
         }
         catch (OperationCanceledException)
         {
@@ -687,12 +749,11 @@ ADAPTIVE RE-CHUNK INSTRUCTIONS (PART 2 of 2):
                 AgentName, contextIdentifier);
 
             secondResponse = UseResponsesApi && ResponsesClient != null
-                ? await ResponsesClient.GetResponseAsync(secondSystemPrompt, secondUserPrompt,
-                    maxOutputTokens, reasoningEffort)
+                ? await ExecuteEscalationAsync(secondSystemPrompt, secondUserPrompt,
+                    $"{contextIdentifier} [rechunk-part-2]", maxOutputTokens, reasoningEffort)
                 : await ExecuteChatCompletionAsync(secondSystemPrompt, secondUserPrompt,
                     $"{contextIdentifier} [rechunk-part-2]");
 
-            ChatLogger?.LogAIResponse(AgentName, $"{contextIdentifier} [rechunk-part-2]", secondResponse);
         }
         catch (OperationCanceledException)
         {

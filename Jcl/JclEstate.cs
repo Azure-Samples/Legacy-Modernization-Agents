@@ -10,6 +10,7 @@ public sealed record JclJobFacts
 
     public int SchemaVersion { get; init; } = CurrentSchemaVersion;
     public required JclJob Job { get; init; }
+    public string? SourceRoot { get; init; }
 
     // Every program the job runs, utilities excluded, in step order.
     public required IReadOnlyList<string> Programs { get; init; }
@@ -22,6 +23,7 @@ public static class JclEstate
 {
     public const string LineageFileName = "jcl-lineage.json";
     public const string FactsSuffix = ".job.json";
+    public const string FailureFileName = ".jcl-scan-failed";
 
     public static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -39,9 +41,7 @@ public static class JclEstate
                      .Distinct(StringComparer.OrdinalIgnoreCase)
                      .OrderBy(f => f, StringComparer.OrdinalIgnoreCase))
         {
-            string text;
-            try { text = File.ReadAllText(file); }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { continue; }
+            var text = File.ReadAllText(file);
             if (JclParser.IsMember(text)) continue;
             jobs.Add(parser.Parse(text, Path.GetRelativePath(sourceRoot, file).Replace('\\', '/')));
         }
@@ -65,19 +65,30 @@ public static class JclEstate
         Path.Join(outputDir, relativePath + FactsSuffix);
 
     // Writes the facts and returns how many jobs were written.
-    public static int Write(string sourceRoot, string outputDir)
+    public static int Write(string sourceRoot, string outputDir, bool allowEmpty = false)
     {
+        Directory.CreateDirectory(outputDir);
+        var failureFile = Path.Join(outputDir, FailureFileName);
+        File.WriteAllText(failureFile, "JCL refresh did not complete; rerun jcl-facts before ingestion.");
+        if (!Directory.Exists(sourceRoot))
+            throw new DirectoryNotFoundException($"Source dir not found: {sourceRoot}");
         var jobs = Parse(sourceRoot);
+        if (jobs.Count == 0 && !allowEmpty)
+            throw new InvalidDataException("No JCL jobs were parsed. Procedures, INCLUDE members and file extensions alone are not jobs.");
         var lineage = JclEstateLineage.Build(jobs);
+        var currentFiles = new HashSet<string>(StringComparer.Ordinal);
         foreach (var facts in Facts(jobs, lineage))
         {
             var path = FactsPath(outputDir, facts.Job.File);
+            currentFiles.Add(Path.GetFullPath(path));
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            File.WriteAllText(path, JsonSerializer.Serialize(facts, JsonOptions));
+            File.WriteAllText(path, JsonSerializer.Serialize(facts with { SourceRoot = Path.GetFullPath(sourceRoot) }, JsonOptions));
         }
 
-        Directory.CreateDirectory(outputDir);
         File.WriteAllText(Path.Join(outputDir, LineageFileName), JsonSerializer.Serialize(lineage, JsonOptions));
+        foreach (var stale in Directory.EnumerateFiles(outputDir, "*" + FactsSuffix, SearchOption.AllDirectories))
+            if (!currentFiles.Contains(Path.GetFullPath(stale))) File.Delete(stale);
+        File.Delete(failureFile);
         return jobs.Count;
     }
 }

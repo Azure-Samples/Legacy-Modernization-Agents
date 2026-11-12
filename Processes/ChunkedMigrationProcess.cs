@@ -28,11 +28,17 @@ public class ChunkedMigrationProcess
     private readonly EnhancedLogger _enhancedLogger;
     private readonly ChatLogger _chatLogger;
     private readonly IMigrationRepository _migrationRepository;
+    private readonly MigrationExecutionOptions _execution;
 
     private ChunkingOrchestrator? _chunkingOrchestrator;
     private IChunkAwareConverter? _chunkAwareConverter;
     private CompileRepairAgent? _compileRepairAgent;
     private CompileGateResult? _compileGate;
+    private ParityRepairAgent? _parityRepairAgent;
+    private GeneratedOutputValidationResult? _validation;
+    private string? _sourceRoot;
+    private CallTargetRegistry SourceCallTargets => CallTargetRegistryHolder.GetOrBuild(
+        _execution.RepositoryRoot ?? Directory.GetCurrentDirectory(), _sourceRoot!);
     private ICobolAnalyzerAgent? _cobolAnalyzerAgent;
     private IDependencyMapperAgent? _dependencyMapperAgent;
 
@@ -45,16 +51,20 @@ public class ChunkedMigrationProcess
         ILogger<ChunkedMigrationProcess> logger,
         FileHelper fileHelper,
         AppSettings settings,
-        IMigrationRepository migrationRepository)
+        IMigrationRepository migrationRepository,
+        MigrationExecutionOptions? execution = null,
+        ChatLogger? chatLogger = null)
     {
         _chatClient = chatClient;
         _responsesApiClient = responsesApiClient;
         _logger = logger;
         _fileHelper = fileHelper;
         _settings = settings;
+        _execution = execution ?? new();
         _enhancedLogger = new EnhancedLogger(logger);
         var providerName = chatClient is Agents.Infrastructure.CopilotChatClient ? "GitHub Copilot" : "Azure OpenAI";
-        _chatLogger = new ChatLogger(LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger<ChatLogger>(), providerName: providerName);
+        _chatLogger = chatLogger ?? new ChatLogger(LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger<ChatLogger>(),
+            logDirectory: _execution.LogDirectory, providerName: providerName);
         _migrationRepository = migrationRepository;
     }
 
@@ -109,6 +119,9 @@ public class ChunkedMigrationProcess
                 _enhancedLogger, _chatLogger, settings: _settings);
         }
 
+        _parityRepairAgent = ParityRepairAgent.Create(_responsesApiClient, _chatClient,
+            loggerFactory.CreateLogger<ParityRepairAgent>(), _settings.AISettings.ResolveJavaConverterModelId(), _settings);
+
         // Initialize standard agents
         _enhancedLogger.ShowStep(3, 4, "CobolAnalyzerAgent", "COBOL structure analysis");
         _cobolAnalyzerAgent = CobolAnalyzerAgent.Create(
@@ -156,36 +169,50 @@ public class ChunkedMigrationProcess
         CancellationToken cancellationToken = default,
         string? runType = null)
     {
+        _validation = null;
+        _compileGate = null;
         var targetName = _settings.ApplicationSettings.TargetLanguage == TargetLanguage.CSharp 
-            ? "C# .NET" : "Java Quarkus";
+            ? "C# .NET" : JavaGeneration.TargetName(_settings.ConversionSettings);
         
         _enhancedLogger.ShowSectionHeader(
             $"CHUNKED COBOL TO {targetName} MIGRATION",
             $"Smart chunking enabled (max {_settings.ChunkingSettings.MaxLinesPerChunk} lines/chunk)");
 
-        if (_chunkingOrchestrator == null || _chunkAwareConverter == null)
-        {
-            throw new InvalidOperationException("Agents not initialized. Call InitializeAgents() first.");
-        }
-
         var startTime = DateTime.UtcNow;
         var runId = existingRunId ?? await _migrationRepository.StartRunAsync(cobolSourceFolder, outputFolder);
-        MetricsSink.CurrentRunId = runId;
-        AiLoopEvents.Started(runId, existingRunId.HasValue ? "resume" : "chunked", targetName, outputFolder);
-
-        // Pass run ID to converter for spec lookup
-        _chunkAwareConverter.SetRunId(runId);
-        
-        // Show initial dashboard
-        _enhancedLogger.ShowDashboardSummary(runId, targetName, "Running", "1/6: File Discovery", 5);
+        using var attempt = AiLoopEvents.BeginRun(runId, existingRunId.HasValue ? "resume" : "chunked",
+            targetName, outputFolder, cancellationToken, reuseExistingAttempt: true);
 
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            _sourceRoot = Path.GetFullPath(cobolSourceFolder);
+            if (_chunkingOrchestrator == null || _chunkAwareConverter == null)
+                throw new InvalidOperationException("Agents not initialized. Call InitializeAgents() first.");
+            // Pass run ID to converter for spec lookup
+            _chunkAwareConverter.SetRunId(runId);
+            var repositoryRoot = _execution.RepositoryRoot
+                ?? Environment.GetEnvironmentVariable("REPO_ROOT") ?? Directory.GetCurrentDirectory();
+            foreach (var agent in new AgentBase?[]
+                     {
+                         _chunkAwareConverter as AgentBase, _cobolAnalyzerAgent as AgentBase,
+                         _dependencyMapperAgent as AgentBase, _compileRepairAgent, _parityRepairAgent
+                     })
+            {
+                if (agent is null) continue;
+                agent.SourceDirectory = _sourceRoot;
+                agent.RepositoryRoot = repositoryRoot;
+            }
+
+            // Show initial dashboard
+            _enhancedLogger.ShowDashboardSummary(runId, targetName, "Running", "1/6: File Discovery", 5);
+
             // Step 1: Discover files
             _enhancedLogger.ShowStep(1, 6, "File Discovery", "Scanning for COBOL programs");
             progressCallback?.Invoke("Scanning for COBOL files", 1, 6, null);
 
             var cobolFiles = await _fileHelper.ScanDirectoryForCobolFilesAsync(cobolSourceFolder);
+            cancellationToken.ThrowIfCancellationRequested();
             PromptLoader.CodebaseProfile = PromptLoader.GenerateCodebaseProfile(cobolFiles);
             await _migrationRepository.SaveCobolFilesAsync(runId, cobolFiles);
 
@@ -210,10 +237,22 @@ public class ChunkedMigrationProcess
             _enhancedLogger.ShowStep(2, 6, "Dependency Analysis", "Mapping file relationships");
             progressCallback?.Invoke("Analyzing dependencies", 2, 6, null);
 
+            cobolFiles = ConversionEligibility.Select(cobolFiles, _sourceRoot,
+                ConversionEligibility.FactsDirectory(repositoryRoot), outputFolder,
+                _settings.ConversionSettings, _existingDependencyMap);
+            if (ConversionEligibility.IsDraft(_settings.ConversionSettings))
+            {
+                _existingDependencyMap = null;
+                (smallFiles, largeFiles) = CategorizeBySize(cobolFiles);
+                PromptLoader.CodebaseProfile = PromptLoader.GenerateCodebaseProfile(cobolFiles);
+            }
+
             DependencyMap dependencyMap;
             if (_existingDependencyMap != null)
             {
                 dependencyMap = _existingDependencyMap;
+                dependencyMap.MermaidDiagram = await _dependencyMapperAgent!.GenerateMermaidDiagramAsync(
+                    dependencyMap, enableAiGeneration: false);
                 _enhancedLogger.ShowSuccess($"Reusing dependency map from reverse engineering ({dependencyMap.Dependencies.Count} relationships)");
             }
             else
@@ -329,6 +368,7 @@ public class ChunkedMigrationProcess
             progressCallback?.Invoke("Assembling converted code", 5, 6, null);
 
             var assembledFiles = AssembleChunkedFiles(largeFileResults);
+            await SaveAssemblyDiagnosticsAsync(largeFileResults, outputFolder);
 
             // Step 6: Output generation
             _enhancedLogger.ShowDashboardSummary(runId, targetName, "Running", "6/6: Output Generation", 95);
@@ -337,18 +377,16 @@ public class ChunkedMigrationProcess
 
             var allFiles = smallFileResults.Concat(assembledFiles).ToList();
             await SaveOutputFilesAsync(allFiles, outputFolder);
-            JclJobGeneration.Run(_settings.JclJobs, cobolSourceFolder, outputFolder, _settings.ApplicationSettings.TargetLanguage, _logger);
+            if (!ConversionEligibility.IsDraft(_settings.ConversionSettings))
+                JclJobGeneration.Run(_settings.JclJobs, cobolSourceFolder, outputFolder, _settings.ApplicationSettings.TargetLanguage, _logger);
 
-            // Same scaffolding as the unchunked path, so a run with a large program in it can be
-            // compiled too. Chunk assembly concatenates per-chunk output, which is exactly where a
-            // second file-scoped namespace appears, and the scaffold rewrites those.
             if (_settings.ApplicationSettings.TargetLanguage == TargetLanguage.CSharp)
             {
                 try
                 {
                     var scaffold = GeneratedProjectScaffold.Write(
                         outputFolder, ConversionNamespacePolicy.Root("C#"),
-                        callTargets: CallTargetRegistryHolder.ForRunningRepository(),
+                        callTargets: SourceCallTargets,
                         sharedNamespace: ConversionNamespacePolicy.ForSharedTypes("C#"));
 
                     if (scaffold.WroteAnything)
@@ -363,7 +401,7 @@ public class ChunkedMigrationProcess
                     _logger.LogWarning("Could not write build scaffolding: {Message}", ex.Message);
                 }
 
-                if (_settings.CompileGate.Enabled)
+                if (_settings.CompileGate.Enabled && largeFileResults.All(result => result.Success))
                 {
                     progressCallback?.Invoke("Compiling generated code", 6, 6, null);
                     _compileGate = await CSharpCompileGate.RunAsync(
@@ -373,36 +411,62 @@ public class ChunkedMigrationProcess
                         _compileRepairAgent,
                         _settings.CompileGate,
                         _logger,
-                        cobolFiles
-                            .GroupBy(f => Path.GetFileNameWithoutExtension(f.FileName), StringComparer.OrdinalIgnoreCase)
-                            .ToDictionary(g => g.Key, g => g.First().Content, StringComparer.OrdinalIgnoreCase),
-                        callTargets: CallTargetRegistryHolder.ForRunningRepository());
+                        callTargets: SourceCallTargets,
+                        cancellationToken: cancellationToken,
+                        generatedFiles: allFiles,
+                        sourceFiles: cobolFiles,
+                        sourceDirectory: cobolSourceFolder);
                 }
             }
 
             // Generate reports
             await GenerateChunkedMigrationReportAsync(
-                cobolFiles, allFiles, largeFileResults, dependencyMap, outputFolder, startTime);
+                cobolFiles, allFiles, largeFileResults, dependencyMap, outputFolder, startTime, cancellationToken);
 
             // Save full chat log for traceability
             await _chatLogger.SaveChatLogAsync();
             await _chatLogger.SaveChatLogJsonAsync();
             _logger.LogInformation("Full chat logs saved to Logs folder");
 
-            _enhancedLogger.ShowDashboardSummary(runId, targetName, "Completed", "Done", 100);
-            await _migrationRepository.CompleteRunAsync(runId, "Completed", runType);
-            AiLoopEvents.Finished(runId, "completed", startTime);
+            EnsureAssemblyComplete(largeFileResults);
+
+            if (_validation is { Accepted: false })
+            {
+                const string failure = "Generated output failed validation; see the migration report.";
+                _enhancedLogger.ShowWarning(failure);
+                _enhancedLogger.ShowDashboardSummary(runId, targetName, "Failed", "Validation failed", 100);
+                await _migrationRepository.CompleteRunAsync(runId, "Failed", failure);
+                AiLoopEvents.Finished(runId, "failed", startTime, failure, "ValidationFailed");
+                progressCallback?.Invoke(failure, 6, 6, 100);
+                return;
+            }
+            _enhancedLogger.ShowDashboardSummary(runId, targetName,
+                ConversionEligibility.IsDraft(_settings.ConversionSettings) ? "Partial — NOT VERIFIED" : "Completed", "Done", 100);
+            var terminalStatus = ConversionEligibility.IsDraft(_settings.ConversionSettings) ? "Partial" : "Completed";
+            await _migrationRepository.CompleteRunAsync(runId, terminalStatus,
+                terminalStatus == "Partial" ? "Draft subset; not verified. See draft-conversion-plan.json." : runType);
+            AiLoopEvents.Finished(runId, terminalStatus.ToLowerInvariant(), startTime);
 
             _enhancedLogger.ShowSuccess(
                 $"Chunked migration completed: {allFiles.Count} files generated");
 
-            progressCallback?.Invoke("Migration completed successfully", 6, 6, 100);
+            progressCallback?.Invoke(terminalStatus == "Partial" ? "Partial draft — not verified" : "Migration completed successfully", 6, 6, 100);
         }
         catch (Exception ex)
         {
-            AiLoopEvents.Finished(runId, "failed", startTime, ex.Message);
+            if (AiLoopEvents.IsFinished) throw;
+            AiLoopEvents.Finished(runId, ex is OperationCanceledException ? "cancelled" : "failed", startTime,
+                ex.GetType().Name, ex.GetType().Name);
             _enhancedLogger.ShowError($"Migration failed: {ex.Message}", ex);
-            await _migrationRepository.CompleteRunAsync(runId, "Failed", ex.Message);
+            try
+            {
+                await _migrationRepository.CompleteRunAsync(runId,
+                    ex is OperationCanceledException ? "Cancelled" : "Failed", ex.GetType().Name);
+            }
+            catch (Exception persistenceError)
+            {
+                _logger.LogWarning(persistenceError, "Failed to finalize migration run {RunId}", runId);
+            }
             throw;
         }
     }
@@ -507,7 +571,7 @@ public class ChunkedMigrationProcess
                 ChunkIndex = 0,
                 TotalChunks = 1,
                 Content = file.Content,
-                SourceFile = file.FileName,
+                SourceFile = SourcePathHelper.ForFile(file),
                 StartLine = 1,
                 EndLine = file.Content.Split('\n').Length
             };
@@ -529,6 +593,7 @@ public class ChunkedMigrationProcess
                     Content = conversionResult.ConvertedCode,
                     ClassName = ExtractClassName(conversionResult.ConvertedCode),
                     OriginalCobolFileName = file.FileName,
+                    OriginalSourcePath = SourcePathHelper.ForFile(file),
                     TargetLanguage = _chunkAwareConverter.TargetLanguage
                 });
             }
@@ -575,58 +640,23 @@ public class ChunkedMigrationProcess
 
         return new ChunkedFileResult
         {
-            SourceFile = file.FileName,
+            SourceFile = SourcePathHelper.ForFile(file),
             Plan = plan,
-            Result = chunkingResult,
-            Success = chunkingResult.IsConsistent && chunkingResult.FailedChunks == 0
+            Result = chunkingResult
         };
     }
 
-    private List<CodeFile> AssembleChunkedFiles(List<ChunkedFileResult> chunkedResults)
+    internal List<CodeFile> AssembleChunkedFiles(List<ChunkedFileResult> chunkedResults)
     {
         var results = new List<CodeFile>();
         var isJava = _settings.ApplicationSettings.TargetLanguage == TargetLanguage.Java;
 
         foreach (var chunkedResult in chunkedResults)
         {
-            results.AddRange(CreateFailedChunkDiagnosticFiles(chunkedResult, isJava));
-
-            // Get successful chunks - we'll generate output even if some failed
-            var successfulChunks = chunkedResult.Result.ChunkResults
-                .Where(r => r.Success && !string.IsNullOrEmpty(r.ConversionResult?.ConvertedCode))
-                .OrderBy(r => r.ChunkIndex)
-                .ToList();
-
-            if (!successfulChunks.Any())
-            {
-                _logger.LogWarning(
-                    "Skipping assembly of {File} - no successful chunks to assemble",
-                    chunkedResult.SourceFile);
-                continue;
-            }
-
-            if (chunkedResult.Result.FailedChunks > 0)
-            {
-                _logger.LogWarning(
-                    "Assembling {File} with {Success}/{Total} successful chunks ({Failed} failed)",
-                    chunkedResult.SourceFile,
-                    successfulChunks.Count,
-                    chunkedResult.Result.TotalChunks,
-                    chunkedResult.Result.FailedChunks);
-            }
-
-            if (isJava)
-            {
-                // Java: Generate multiple files based on detected classes
-                var javaFiles = AssembleJavaFiles(chunkedResult, successfulChunks);
-                results.AddRange(javaFiles);
-            }
-            else
-            {
-                // C#: Generate multiple files based on detected classes (similar to Java)
-                var csharpFiles = AssembleCSharpFiles(chunkedResult, successfulChunks);
-                results.AddRange(csharpFiles);
-            }
+            results.AddRange(ChunkedOutputAssembler.Assemble(chunkedResult, isJava));
+            if (!chunkedResult.Success)
+                _logger.LogWarning("Assembly rejected {Source}: {Errors}", chunkedResult.SourceFile,
+                    string.Join("; ", chunkedResult.AssemblyErrors));
         }
 
         return results;
@@ -636,518 +666,50 @@ public class ChunkedMigrationProcess
         ChunkedFileResult chunkedResult,
         bool isJava)
     {
-        var extension = isJava ? ".java" : ".cs";
         var language = isJava ? "Java" : "CSharp";
         var sourceStem = Path.GetFileNameWithoutExtension(chunkedResult.SourceFile);
 
         return chunkedResult.Result.ChunkResults
-            .Where(r => !r.Success
-                && !string.IsNullOrWhiteSpace(r.ConversionResult?.ConvertedCode)
-                && r.ConversionResult.ConvertedCode.Contains(
-                    "CHUNK CONVERSION DID NOT PRODUCE USABLE",
-                    StringComparison.Ordinal))
+            .Where(r => !chunkedResult.Success || !r.Success)
             .OrderBy(r => r.ChunkIndex)
-            .Select(r => new CodeFile
+            .Select((r, arrival) => new CodeFile
             {
-                FileName = $"{sourceStem}.chunk-{r.ChunkIndex + 1}.failed{extension}",
+                FileName = $"{sourceStem}.chunk-{r.ChunkIndex + 1}.arrival-{arrival + 1}.rejected.txt",
                 ClassName = $"{sourceStem}Chunk{r.ChunkIndex + 1}Failed",
-                Content = r.ConversionResult.ConvertedCode,
-                OriginalCobolFileName = chunkedResult.SourceFile,
+                Content = r.ConversionResult?.ConvertedCode ?? "",
+                OriginalCobolFileName = Path.GetFileName(chunkedResult.SourceFile),
+                OriginalSourcePath = chunkedResult.SourceFile,
                 TargetLanguage = language
             })
             .ToList();
     }
 
-    private List<CodeFile> AssembleCSharpFiles(ChunkedFileResult chunkedResult, List<ChunkProcessingResult> successfulChunks)
+    internal static async Task SaveAssemblyDiagnosticsAsync(
+        IReadOnlyList<ChunkedFileResult> results, string outputFolder)
     {
-        var results = new List<CodeFile>();
-        var baseClassName = GetClassNameFromFile(chunkedResult.SourceFile);
-        var namespacePrefix = _settings.AssemblySettings?.CSharp?.NamespacePrefix ?? "CobolMigration";
-        var namespaceName = $"{namespacePrefix}.{baseClassName}";
-
-        // Collect all using statements and detect distinct classes
-        var allUsings = new HashSet<string>();
-        var classSegments = new Dictionary<string, StringBuilder>();
-        var mainClassName = baseClassName;
-
-        foreach (var chunkResult in successfulChunks)
+        for (var i = 0; i < results.Count; i++)
         {
-            var code = chunkResult.ConversionResult?.ConvertedCode ?? "";
-            
-            // Extract using statements
-            foreach (var line in code.Split('\n'))
-            {
-                var trimmed = line.Trim();
-                if (trimmed.StartsWith("using ") && trimmed.EndsWith(";"))
-                {
-                    allUsings.Add(trimmed);
-                }
-            }
-
-            // Detect class names in this chunk
-            var detectedClasses = ExtractCSharpClassNames(code);
-            
-            if (detectedClasses.Count == 0)
-            {
-                // No class detected, add to main class
-                if (!classSegments.ContainsKey(mainClassName))
-                {
-                    classSegments[mainClassName] = new StringBuilder();
-                }
-                classSegments[mainClassName].AppendLine(ExtractCSharpClassContent(code));
-            }
-            else
-            {
-                // Add content to detected classes
-                foreach (var className in detectedClasses)
-                {
-                    var actualClassName = SanitizeCSharpClassName(className);
-                    if (!classSegments.ContainsKey(actualClassName))
-                    {
-                        classSegments[actualClassName] = new StringBuilder();
-                    }
-                    classSegments[actualClassName].AppendLine(ExtractCSharpClassContentForClass(code, className));
-                }
-            }
+            var result = results[i];
+            if (result.Success) continue;
+            // Diagnostics never enter the generated-source tree or a compiler input list.
+            var directory = Path.Combine(outputFolder, "assembly-diagnostics", $"source-{i + 1}");
+            Directory.CreateDirectory(directory);
+            await File.WriteAllTextAsync(Path.Combine(directory, "assembly-errors.txt"),
+                $"Source: {result.SourceFile}\nExpected chunks: {result.Plan.ChunkCount}\nReceived indices: " +
+                string.Join(", ", result.Result.ChunkResults.Select(c => c.ChunkIndex)) + "\n" +
+                string.Join("\n", result.AssemblyErrors.Concat(result.Result.ChunkResults
+                    .Where(c => !c.Success || c.ConversionResult is not { Success: true })
+                    .Select(c => $"Chunk {c.ChunkIndex}: {c.ConversionResult?.ErrorMessage ?? "conversion failed"}"))));
+            foreach (var diagnostic in CreateFailedChunkDiagnosticFiles(result, isJava: false))
+                await File.WriteAllTextAsync(Path.Combine(directory, diagnostic.FileName), diagnostic.Content);
         }
-
-        // If no classes detected at all, create a main class
-        if (classSegments.Count == 0)
-        {
-            classSegments[mainClassName] = new StringBuilder();
-            foreach (var chunkResult in successfulChunks)
-            {
-                classSegments[mainClassName].AppendLine(chunkResult.ConversionResult?.ConvertedCode ?? "// Empty chunk");
-            }
-        }
-
-        // Generate a file for each class
-        foreach (var kvp in classSegments)
-        {
-            var className = kvp.Key;
-            var content = kvp.Value.ToString();
-            
-            var csharpFile = new StringBuilder();
-            
-            // Using statements
-            foreach (var usingStmt in allUsings.OrderBy(u => u))
-            {
-                csharpFile.AppendLine(usingStmt);
-            }
-            
-            // Add common C# usings if not present
-            var commonUsings = new[]
-            {
-                "using System;",
-                "using System.Collections.Generic;",
-                "using System.Linq;",
-                "using System.Text;"
-            };
-            
-            foreach (var commonUsing in commonUsings)
-            {
-                if (!allUsings.Any(u => u.Equals(commonUsing, StringComparison.OrdinalIgnoreCase)))
-                {
-                    csharpFile.AppendLine(commonUsing);
-                }
-            }
-            
-            csharpFile.AppendLine();
-            
-            // Namespace declaration
-            csharpFile.AppendLine($"namespace {namespaceName};");
-            csharpFile.AppendLine();
-            
-            // Class declaration
-            csharpFile.AppendLine($"/// <summary>");
-            csharpFile.AppendLine($"/// Converted from COBOL source: {chunkedResult.SourceFile}");
-            csharpFile.AppendLine($"/// </summary>");
-            csharpFile.AppendLine($"public partial class {className}");
-            csharpFile.AppendLine("{");
-            csharpFile.AppendLine(content);
-            csharpFile.AppendLine("}");
-
-            results.Add(new CodeFile
-            {
-                FileName = $"{className}.cs",
-                Content = csharpFile.ToString(),
-                ClassName = className,
-                OriginalCobolFileName = chunkedResult.SourceFile,
-                TargetLanguage = "CSharp"
-            });
-        }
-
-        _logger.LogInformation(
-            "Assembled {FileCount} C# files from {ChunkCount} chunks for {SourceFile}",
-            results.Count, successfulChunks.Count, chunkedResult.SourceFile);
-
-        return results;
     }
 
-    private List<string> ExtractCSharpClassNames(string code)
+    internal static void EnsureAssemblyComplete(IReadOnlyList<ChunkedFileResult> results)
     {
-        var classNames = new List<string>();
-        // Regex to match class definitions, ignoring comments and other text
-        // Matches: [modifiers] class ClassName
-        var regex = new System.Text.RegularExpressions.Regex(
-            @"^\s*(?:public|protected|private|internal)?\s*(?:static)?\s*(?:sealed|abstract|partial)?\s*class\s+([a-zA-Z0-9_]+)",
-            System.Text.RegularExpressions.RegexOptions.Multiline);
-        
-        foreach (System.Text.RegularExpressions.Match match in regex.Matches(code))
-        {
-            if (match.Success)
-            {
-                classNames.Add(match.Groups[1].Value);
-            }
-        }
-        
-        return classNames.Distinct().ToList();
-    }
-
-    private string SanitizeCSharpClassName(string className)
-    {
-        // Remove any invalid characters and ensure valid C# class name
-        var sanitized = new StringBuilder();
-        bool capitalizeNext = true;
-        
-        foreach (var c in className)
-        {
-            if (char.IsLetterOrDigit(c))
-            {
-                sanitized.Append(capitalizeNext ? char.ToUpper(c) : c);
-                capitalizeNext = false;
-            }
-            else if (c == '_' || c == '-')
-            {
-                capitalizeNext = true;
-            }
-        }
-        
-        // Ensure it starts with a letter
-        var result = sanitized.ToString();
-        if (result.Length > 0 && char.IsDigit(result[0]))
-        {
-            result = "Class" + result;
-        }
-        
-        return string.IsNullOrEmpty(result) ? "ConvertedClass" : result;
-    }
-
-    private string ExtractCSharpClassContent(string code)
-    {
-        // Extract content between class braces
-        var classStart = code.IndexOf('{');
-        var classEnd = code.LastIndexOf('}');
-        
-        if (classStart >= 0 && classEnd > classStart)
-        {
-            return code.Substring(classStart + 1, classEnd - classStart - 1).Trim();
-        }
-        
-        // If no braces found, return cleaned code without using/namespace statements
-        var lines = code.Split('\n')
-            .Where(l => !l.Trim().StartsWith("using ") && 
-                       !l.Trim().StartsWith("namespace ") &&
-                       !l.Trim().StartsWith("public class ") &&
-                       !l.Trim().StartsWith("public partial class ") &&
-                       !l.Trim().StartsWith("class "));
-        
-        return string.Join("\n", lines);
-    }
-
-    private string ExtractCSharpClassContentForClass(string code, string targetClassName)
-    {
-        // Find the specific class and extract its content
-        var lines = code.Split('\n');
-        var inTargetClass = false;
-        var braceCount = 0;
-        var content = new StringBuilder();
-        
-        // Regex to match the specific class definition
-        var classRegex = new System.Text.RegularExpressions.Regex(
-            @"^\s*(?:public|protected|private|internal)?\s*(?:static)?\s*(?:sealed|abstract|partial)?\s*class\s+" + 
-            System.Text.RegularExpressions.Regex.Escape(targetClassName) + @"\b");
-
-        foreach (var line in lines)
-        {
-            var trimmed = line.Trim();
-            
-            if (!inTargetClass && classRegex.IsMatch(line))
-            {
-                inTargetClass = true;
-                braceCount = 0;
-            }
-            
-            if (inTargetClass)
-            {
-                foreach (var c in line)
-                {
-                    if (c == '{') braceCount++;
-                    else if (c == '}') braceCount--;
-                }
-                
-                // Skip the class declaration line itself
-                if (!classRegex.IsMatch(line) && braceCount >= 0)
-                {
-                    // Don't include the final closing brace
-                    if (braceCount > 0 || !trimmed.StartsWith("}"))
-                    {
-                        content.AppendLine(line);
-                    }
-                }
-                
-                if (braceCount == 0 && content.Length > 0)
-                {
-                    break; // End of class
-                }
-            }
-        }
-        
-        return content.ToString().Trim();
-    }
-
-    private List<CodeFile> AssembleJavaFiles(ChunkedFileResult chunkedResult, List<ChunkProcessingResult> successfulChunks)
-    {
-        var results = new List<CodeFile>();
-        var baseClassName = GetClassNameFromFile(chunkedResult.SourceFile);
-        var packagePrefix = _settings.AssemblySettings?.Java?.PackagePrefix ?? "com.example.cobol";
-        var packageName = $"{packagePrefix}.{baseClassName.ToLower()}";
-
-        // Collect all imports and detect distinct classes
-        var allImports = new HashSet<string>();
-        var classSegments = new Dictionary<string, StringBuilder>();
-        var mainClassName = baseClassName;
-
-        foreach (var chunkResult in successfulChunks)
-        {
-            var code = chunkResult.ConversionResult?.ConvertedCode ?? "";
-            
-            // Extract imports
-            foreach (var line in code.Split('\n'))
-            {
-                var trimmed = line.Trim();
-                if (trimmed.StartsWith("import ") && trimmed.EndsWith(";"))
-                {
-                    allImports.Add(trimmed);
-                }
-            }
-
-            // Detect class names in this chunk
-            var detectedClasses = ExtractJavaClassNames(code);
-            
-            if (detectedClasses.Count == 0)
-            {
-                // No class detected, add to main class
-                if (!classSegments.ContainsKey(mainClassName))
-                {
-                    classSegments[mainClassName] = new StringBuilder();
-                }
-                classSegments[mainClassName].AppendLine(ExtractJavaClassContent(code));
-            }
-            else
-            {
-                // Add content to detected classes
-                foreach (var className in detectedClasses)
-                {
-                    var actualClassName = SanitizeJavaClassName(className);
-                    if (!classSegments.ContainsKey(actualClassName))
-                    {
-                        classSegments[actualClassName] = new StringBuilder();
-                    }
-                    classSegments[actualClassName].AppendLine(ExtractJavaClassContentForClass(code, className));
-                }
-            }
-        }
-
-        // If no classes detected at all, create a main class
-        if (classSegments.Count == 0)
-        {
-            classSegments[mainClassName] = new StringBuilder();
-            foreach (var chunkResult in successfulChunks)
-            {
-                classSegments[mainClassName].AppendLine(chunkResult.ConversionResult?.ConvertedCode ?? "// Empty chunk");
-            }
-        }
-
-        // Generate a file for each class
-        foreach (var kvp in classSegments)
-        {
-            var className = kvp.Key;
-            var content = kvp.Value.ToString();
-            
-            var javaFile = new StringBuilder();
-            
-            // Package declaration
-            javaFile.AppendLine($"package {packageName};");
-            javaFile.AppendLine();
-            
-            // Imports
-            foreach (var import in allImports.OrderBy(i => i))
-            {
-                javaFile.AppendLine(import);
-            }
-            
-            // Add common Java imports if not present
-            var commonImports = new[]
-            {
-                "import java.math.BigDecimal;",
-                "import java.util.*;",
-                "import jakarta.enterprise.context.ApplicationScoped;"
-            };
-            
-            foreach (var commonImport in commonImports)
-            {
-                if (!allImports.Any(i => i.Contains(commonImport.Split(' ')[1].TrimEnd(';'))))
-                {
-                    javaFile.AppendLine(commonImport);
-                }
-            }
-            
-            javaFile.AppendLine();
-            
-            // Class with Quarkus annotation
-            javaFile.AppendLine("@ApplicationScoped");
-            javaFile.AppendLine($"public class {className} {{");
-            javaFile.AppendLine();
-            javaFile.AppendLine(content);
-            javaFile.AppendLine("}");
-
-            results.Add(new CodeFile
-            {
-                FileName = $"{className}.java",
-                Content = javaFile.ToString(),
-                ClassName = className,
-                OriginalCobolFileName = chunkedResult.SourceFile,
-                TargetLanguage = "Java"
-            });
-        }
-
-        _logger.LogInformation(
-            "Assembled {FileCount} Java files from {ChunkCount} chunks for {SourceFile}",
-            results.Count, successfulChunks.Count, chunkedResult.SourceFile);
-
-        return results;
-    }
-
-    private List<string> ExtractJavaClassNames(string code)
-    {
-        var classNames = new List<string>();
-        // Regex to match class definitions, ignoring comments and other text
-        // Matches: [modifiers] class ClassName
-        var regex = new System.Text.RegularExpressions.Regex(
-            @"^\s*(?:public|protected|private)?\s*(?:static)?\s*(?:final)?\s*(?:abstract)?\s*class\s+([a-zA-Z0-9_]+)",
-            System.Text.RegularExpressions.RegexOptions.Multiline);
-        
-        foreach (System.Text.RegularExpressions.Match match in regex.Matches(code))
-        {
-            if (match.Success)
-            {
-                classNames.Add(match.Groups[1].Value);
-            }
-        }
-        
-        return classNames.Distinct().ToList();
-    }
-
-    private string SanitizeJavaClassName(string className)
-    {
-        // Remove any invalid characters and ensure valid Java class name
-        var sanitized = new StringBuilder();
-        bool capitalizeNext = true;
-        
-        foreach (var c in className)
-        {
-            if (char.IsLetterOrDigit(c))
-            {
-                sanitized.Append(capitalizeNext ? char.ToUpper(c) : c);
-                capitalizeNext = false;
-            }
-            else if (c == '_' || c == '-')
-            {
-                capitalizeNext = true;
-            }
-        }
-        
-        // Ensure it starts with a letter
-        var result = sanitized.ToString();
-        if (result.Length > 0 && char.IsDigit(result[0]))
-        {
-            result = "Class" + result;
-        }
-        
-        return string.IsNullOrEmpty(result) ? "ConvertedClass" : result;
-    }
-
-    private string ExtractJavaClassContent(string code)
-    {
-        // Extract content between class braces
-        var classStart = code.IndexOf('{');
-        var classEnd = code.LastIndexOf('}');
-        
-        if (classStart >= 0 && classEnd > classStart)
-        {
-            return code.Substring(classStart + 1, classEnd - classStart - 1).Trim();
-        }
-        
-        // If no braces found, return cleaned code without package/import statements
-        var lines = code.Split('\n')
-            .Where(l => !l.Trim().StartsWith("package ") && 
-                       !l.Trim().StartsWith("import ") &&
-                       !l.Trim().StartsWith("public class ") &&
-                       !l.Trim().StartsWith("class "));
-        
-        return string.Join("\n", lines);
-    }
-
-    private string ExtractJavaClassContentForClass(string code, string targetClassName)
-    {
-        // Find the specific class and extract its content
-        var lines = code.Split('\n');
-        var inTargetClass = false;
-        var braceCount = 0;
-        var content = new StringBuilder();
-        
-        // Regex to match the specific class definition
-        var classRegex = new System.Text.RegularExpressions.Regex(
-            @"^\s*(?:public|protected|private)?\s*(?:static)?\s*(?:final)?\s*(?:abstract)?\s*class\s+" + 
-            System.Text.RegularExpressions.Regex.Escape(targetClassName) + @"\b");
-
-        foreach (var line in lines)
-        {
-            var trimmed = line.Trim();
-            
-            if (!inTargetClass && classRegex.IsMatch(line))
-            {
-                inTargetClass = true;
-                braceCount = 0;
-            }
-            
-            if (inTargetClass)
-            {
-                foreach (var c in line)
-                {
-                    if (c == '{') braceCount++;
-                    else if (c == '}') braceCount--;
-                }
-                
-                // Skip the class declaration line itself
-                if (!classRegex.IsMatch(line) && braceCount >= 0)
-                {
-                    // Don't include the final closing brace
-                    if (braceCount > 0 || !trimmed.StartsWith("}"))
-                    {
-                        content.AppendLine(line);
-                    }
-                }
-                
-                if (braceCount == 0 && content.Length > 0)
-                {
-                    break; // End of class
-                }
-            }
-        }
-        
-        return content.ToString().Trim();
+        var failures = results.Where(r => !r.Success).Select(r => r.SourceFile).ToList();
+        if (failures.Count > 0)
+            throw new InvalidDataException($"Chunk assembly incomplete for: {string.Join(", ", failures)}. See assembly-diagnostics; generated output is not a complete migration.");
     }
 
     private async Task SaveOutputFilesAsync(List<CodeFile> files, string outputFolder)
@@ -1168,8 +730,15 @@ public class ChunkedMigrationProcess
         List<ChunkedFileResult> chunkedResults,
         DependencyMap dependencyMap,
         string outputFolder,
-        DateTime startTime)
+        DateTime startTime,
+        CancellationToken cancellationToken = default)
     {
+        _validation = chunkedResults.Any(result => !result.Success)
+            ? new(false, "\n## Conversion validation\nNot evaluated: chunk assembly is incomplete.\n", null, null)
+            : await GeneratedOutputValidator.RunAsync(generatedFiles, cobolFiles,
+                _sourceRoot!, outputFolder, _settings.ApplicationSettings.TargetLanguage, _settings.CompileGate, _logger,
+                _parityRepairAgent is null ? null : _parityRepairAgent.RepairAsync, _execution, cancellationToken,
+                _settings.ConversionSettings);
         var totalTime = DateTime.UtcNow - startTime;
         var reportPath = Path.Combine(outputFolder, "chunked-migration-report.md");
 
@@ -1184,6 +753,8 @@ public class ChunkedMigrationProcess
 
         // Chunking statistics
         report.AppendLine("## 📊 Chunking Statistics");
+        if (ConversionEligibility.IsDraft(_settings.ConversionSettings))
+            report.AppendLine("\n> PARTIAL DRAFT — NOT VERIFIED. Results cover only eligible whole programs. Blocked areas have no generated implementation. See draft-conversion-plan.json; routine impact is not measured. JCL entry points are not generated.\n");
         report.AppendLine($"- **Total Files**: {cobolFiles.Count}");
         report.AppendLine($"- **Chunked Files**: {chunkedResults.Count}");
         report.AppendLine($"- **Total Chunks Processed**: {chunkedResults.Sum(r => r.Result.TotalChunks)}");
@@ -1200,8 +771,8 @@ public class ChunkedMigrationProcess
 
             foreach (var result in chunkedResults)
             {
-                var success = result.Result.SuccessfulChunks == result.Result.TotalChunks
-                    ? "✅" : $"⚠️ {result.Result.SuccessfulChunks}/{result.Result.TotalChunks}";
+                var success = result.Success
+                    ? "✅" : $"❌ Assembly rejected: {string.Join("; ", result.AssemblyErrors)}";
                 report.AppendLine(
                     $"| {result.SourceFile} | {result.Plan.TotalLines} | {result.Plan.ChunkCount} | {success} | {result.Result.TotalProcessingTimeMs}ms |");
             }
@@ -1240,11 +811,12 @@ public class ChunkedMigrationProcess
         report.AppendLine($"- **Progressive Compression**: {_settings.ChunkingSettings.EnableProgressiveCompression}");
         report.AppendLine();
 
-        var parity = await ConversionParityPostPass.RunAsync(
-            generatedFiles, outputFolder, langName, _logger,
-            cobolFiles.Select(f => f.FileName));
-        if (!string.IsNullOrWhiteSpace(parity)) report.Append(parity);
-        if (_compileGate is not null) report.Append(_compileGate.ToMarkdown(_settings.CompileGate.MaxErrorsInReport));
+        report.Append(_validation.Markdown);
+        if (_compileGate is not null)
+        {
+            report.AppendLine("\n### Initial C# compiler-repair history\n");
+            report.Append(_compileGate.ToMarkdown(_settings.CompileGate.MaxErrorsInReport));
+        }
 
         await File.WriteAllTextAsync(reportPath, report.ToString());
         _logger.LogInformation("Chunked migration report saved to {Path}", reportPath);
@@ -1315,4 +887,5 @@ public class ChunkedFileResult
     public ChunkingPlan Plan { get; set; } = new();
     public ChunkingResult Result { get; set; } = new();
     public bool Success { get; set; }
+    public List<string> AssemblyErrors { get; } = [];
 }

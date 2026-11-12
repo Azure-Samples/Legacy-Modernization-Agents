@@ -66,7 +66,10 @@ public sealed record StartRunRequest(
     string? SourceFolder = null,
     string? Provider = null,  // "AzureOpenAI" | "GitHubCopilot"; null keeps the portal's configured provider
     string? ModelId = null,            // e.g. "openai/gpt-4o", "claude-opus-4", "gpt-5.3-codex"
-    IReadOnlyList<string>? Programs = null  // file names or source-relative paths; null converts everything
+    IReadOnlyList<string>? Programs = null,  // file names or source-relative paths; null converts everything
+    string DependencyMode = "strict",
+    string? JavaFramework = null,
+    string? RektFactsFolder = null
 );
 
 public sealed record StopRunRequest(string RunId);
@@ -81,7 +84,11 @@ public sealed record RunStatusDto(
     DateTime StartedAt,
     DateTime? CompletedAt,
     int? ExitCode,
-    int? ProcessId
+    int? ProcessId,
+    string? Error = null,
+    string? OutputFolder = null,
+    string? LogUrl = null,
+    string? HistoryWarning = null
 );
 
 // ── File Upload Contracts ────────────────────────────────────────────────────

@@ -6,7 +6,8 @@ namespace CobolToQuarkusMigration.Helpers;
 using System.Text;
 using System.Text.RegularExpressions;
 
-public sealed record CopybookMember(string CobolName, string Name, string CSharpType, string JavaType);
+/// <param name="Level">The declared COBOL level, so 88 conditions and 66 RENAMES stay distinguishable from storage.</param>
+public sealed record CopybookMember(string CobolName, string Name, string CSharpType, string JavaType, int Level);
 
 public static class CopybookMemberContract
 {
@@ -19,11 +20,12 @@ public static class CopybookMemberContract
     private sealed record Entry(int Level, string CobolName, int Dimensions, string? Picture, string Text)
     {
         public bool IsGroup { get; set; }
+        public int DeclaredLevel { get; init; } = Level;
     }
 
     /// <summary>
-    /// One member per named data item, flat on the copybook's type. A lone 01 record is the type
-    /// itself and is not listed; items under an OCCURS are arrays; 88-levels are booleans.
+    /// One member per named data item, flat on the copybook's type. A lone 01 group is the type
+    /// itself and is not listed, but a lone elementary item is the data it holds; items under an OCCURS are arrays; 88-levels are booleans.
     /// Placeholders such as <c>:XXXX:</c> are dropped, since one type serves every REPLACING.
     /// </summary>
     /// <param name="resolveCopybook">Text of a copybook this one copies, by name; a nested COPY is
@@ -50,6 +52,7 @@ public static class CopybookMemberContract
                 continue;
             }
 
+            var declaredLevel = level;
             if (level is 66 or 77) level = 1;
             while (dimensionsAt.Count > 0 && dimensionsAt.Peek().Level >= level) dimensionsAt.Pop();
             var inherited = dimensionsAt.Count > 0 ? dimensionsAt.Peek().Dimensions : 0;
@@ -60,7 +63,10 @@ public static class CopybookMemberContract
             if (parent is not null && parent.Level < level) parent.IsGroup = true;
 
             var pic = Picture.Match(text);
-            entries.Add(new Entry(level, name, dimensions, pic.Success ? pic.Groups["pic"].Value.TrimEnd('.') : null, text));
+            entries.Add(new Entry(level, name, dimensions, pic.Success ? pic.Groups["pic"].Value.TrimEnd('.') : null, text)
+            {
+                DeclaredLevel = declaredLevel
+            });
         }
 
         var records = entries.Count(e => e.Level == 1);
@@ -69,7 +75,7 @@ public static class CopybookMemberContract
         foreach (var e in entries)
         {
             if (e.CobolName.Equals("FILLER", StringComparison.OrdinalIgnoreCase)) continue;
-            if (e.Level == 1 && records == 1) continue;
+            if (e.Level == 1 && records == 1 && e.IsGroup) continue;
 
             var name = MemberName(e.CobolName, typeName);
             if (name.Length == 0 || !seen.Add(name)) continue;
@@ -77,7 +83,8 @@ public static class CopybookMemberContract
             var (cs, java) = e.Level == 88 ? ("bool", "boolean")
                 : e.IsGroup ? ("string", "String")
                 : ScalarTypes(e.Picture, e.Text);
-            members.Add(new CopybookMember(e.CobolName, name, cs + Rank(e.Dimensions, cs: true), java + Rank(e.Dimensions, cs: false)));
+            members.Add(new CopybookMember(e.CobolName, name, cs + Rank(e.Dimensions, cs: true), java + Rank(e.Dimensions, cs: false),
+                e.DeclaredLevel));
         }
 
         return members;

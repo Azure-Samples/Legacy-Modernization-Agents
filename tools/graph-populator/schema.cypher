@@ -3,6 +3,7 @@
 
 // Uniqueness constraints
 CREATE CONSTRAINT run_id          IF NOT EXISTS FOR (n:Run)           REQUIRE n.id IS UNIQUE;
+CREATE CONSTRAINT rekt_scan_id    IF NOT EXISTS FOR (n:RektScan)      REQUIRE n.id IS UNIQUE;
 CREATE CONSTRAINT cobolfile_uid   IF NOT EXISTS FOR (n:CobolFile)     REQUIRE n.uid IS UNIQUE;
 DROP CONSTRAINT astnode_id IF EXISTS;
 CREATE CONSTRAINT astnode_uid     IF NOT EXISTS FOR (n:ASTNode)       REQUIRE n.uid IS UNIQUE;
@@ -24,6 +25,7 @@ CREATE CONSTRAINT metrics_uid     IF NOT EXISTS FOR (n:Metrics)       REQUIRE n.
 CREATE CONSTRAINT jclnode_uid     IF NOT EXISTS FOR (n:JclNode)       REQUIRE n.uid IS UNIQUE;
 
 // Composite indexes
+CREATE INDEX astnode_program_run  IF NOT EXISTS FOR (n:ASTNode)       ON (n.program, n.runId);
 CREATE INDEX astnode_program_type IF NOT EXISTS FOR (n:ASTNode)       ON (n.program, n.nodeType);
 CREATE INDEX astnode_program_line IF NOT EXISTS FOR (n:ASTNode)       ON (n.program, n.startLine);
 CREATE INDEX cfgnode_program      IF NOT EXISTS FOR (n:CFGNode)       ON (n.program);

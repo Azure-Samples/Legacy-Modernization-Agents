@@ -26,7 +26,7 @@ public sealed class StructuralContextProvider
         _loader = new RektContextLoader(repoRoot);
         _llmFallback = llmFallback;
         _fallbackToAi = fallbackToAi;
-        _llmCacheDir = Path.Combine(repoRoot, "output", "rekt", "llm-derived");
+        _llmCacheDir = Path.Combine(ConversionEligibility.FactsDirectory(repoRoot), "llm-derived");
         Directory.CreateDirectory(_llmCacheDir);
     }
 
@@ -46,6 +46,28 @@ public sealed class StructuralContextProvider
         // 1) Non-COBOL artefacts: dispatch to deterministic readers.
         var ext = Path.GetExtension(programFileName).ToLowerInvariant();
         var srcPath = Path.Combine(_repoRoot, _sourceFolder, programFileName);
+        if (ext == ".cpy" && File.Exists(srcPath))
+        {
+            var text = await File.ReadAllTextAsync(srcPath);
+            var members = CopybookMemberContract.Parse(text, NamingHelper.DeriveClassNameFromCobolFile(programFileName));
+            return new StructuralContext
+            {
+                Program = programFileName,
+                Provenance = StructuralProvenance.SourceDeclared,
+                Confidence = 0.8,
+                Context = new RektContext
+                {
+                    Program = programFileName,
+                    IsCopybook = true,
+                    DataStructure = members.Select(m => new RektDataItem
+                    {
+                        Name = m.CobolName,
+                        Level = m.Level
+                    }).ToList()
+                },
+                Notes = "Direct copybook members only; nested COPY expansion and storage-layout equivalence are not measured."
+            };
+        }
         if (ext is ".bms")
         {
             var mapset = BmsReader.ParseFile(srcPath);
@@ -147,7 +169,7 @@ public sealed class StructuralContextProvider
             }
             if (extracted is null && File.Exists(srcPath))
             {
-                var source = await File.ReadAllTextAsync(srcPath);
+                var source = await CobolSourceReader.ReadAsync(srcPath);
                 extracted = await _llmFallback(programFileName, source);
                 if (extracted != null)
                 {

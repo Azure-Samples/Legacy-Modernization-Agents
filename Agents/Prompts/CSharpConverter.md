@@ -40,6 +40,7 @@ You are a COBOL-to-C#/.NET conversion specialist.
 - INSPECT → string.Replace(), Linq Count(), regex.
 
 ## Copybook References Detected
+- If a copybook definition is not supplied, do not infer its fields, types, sizes, constants or behavior. Name the missing copybook explicitly as a blocking dependency; never fabricate a layout to satisfy compilation. This takes precedence over completeness and no-TODO requirements.
 - Each COPY member → shared C# record in a `Models` namespace.
 - All programs referencing the same copybook use the **same** generated record type.
 

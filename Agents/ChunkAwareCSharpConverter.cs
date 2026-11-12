@@ -127,6 +127,7 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
             };
         }
 
+        var rawResponse = "";
         try
         {
             var systemPrompt = BuildChunkAwareSystemPrompt(chunk, context);
@@ -134,6 +135,7 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
 
             var (csharpCode, usedFallback, fallbackReason) = await ExecuteWithFallbackAsync(
                 systemPrompt, userPrompt, $"{chunk.SourceFile} chunk {chunk.ChunkIndex}");
+            rawResponse = csharpCode;
 
             stopwatch.Stop();
 
@@ -145,6 +147,7 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
                     SourceFile = chunk.SourceFile,
                     Success = false,
                     ErrorMessage = fallbackReason ?? "Fallback triggered",
+                    ConvertedCode = rawResponse,
                     ProcessingTimeMs = stopwatch.ElapsedMilliseconds
                 };
             }
@@ -159,17 +162,8 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
                     requireStructure: chunk.ChunkIndex == 0,
                     out var reason))
             {
-                var diagnosticStub = ConversionOutputGuard.BuildChunkDiagnosticStub(
-                    "C#",
-                    chunk.SourceFile,
-                    chunk.ChunkIndex,
-                    context.TotalChunks,
-                    chunk.StartLine,
-                    chunk.EndLine,
-                    reason);
-
                 Logger.LogWarning(
-                    "[ChunkAwareCSharpConverter] Empty/unusable chunk output for {File} chunk {Idx} — writing diagnostic stub",
+                    "[ChunkAwareCSharpConverter] Empty/unusable chunk output for {File} chunk {Idx} — retaining raw response",
                     chunk.SourceFile,
                     chunk.ChunkIndex);
 
@@ -179,7 +173,7 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
                     SourceFile = chunk.SourceFile,
                     Success = false,
                     ErrorMessage = reason,
-                    ConvertedCode = diagnosticStub,
+                    ConvertedCode = rawResponse,
                     ProcessingTimeMs = stopwatch.ElapsedMilliseconds
                 };
             }
@@ -207,6 +201,7 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
                 SourceFile = chunk.SourceFile,
                 Success = false,
                 ErrorMessage = ex.Message,
+                ConvertedCode = rawResponse,
                 ProcessingTimeMs = stopwatch.ElapsedMilliseconds
             };
         }
@@ -286,7 +281,7 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
         var chunk = new ChunkResult
         {
             ChunkIndex = 0,
-            SourceFile = cobolFile.FileName,
+            SourceFile = SourcePathHelper.ForFile(cobolFile),
             Content = cobolFile.Content,
             StartLine = 1,
             EndLine = cobolFile.Content.Split('\n').Length
@@ -302,6 +297,7 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
             Content = result.ConvertedCode ?? string.Empty,
             ClassName = NamingHelper.DeriveClassNameFromCobolFile(cobolFile.FileName),
             OriginalCobolFileName = cobolFile.FileName,
+            OriginalSourcePath = SourcePathHelper.ForFile(cobolFile),
             TargetLanguage = TargetLanguage
         };
     }
@@ -391,7 +387,8 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
             ["TotalChunks"] = context.TotalChunks.ToString()
         }));
 
-        var chunkSection = chunk.ChunkIndex == 0 ? "ChunkFirst"
+        var chunkSection = context.TotalChunks <= 1 ? "ChunkSingle"
+            : chunk.ChunkIndex == 0 ? "ChunkFirst"
             : chunk.ChunkIndex == context.TotalChunks - 1 ? "ChunkLast"
             : "ChunkMiddle";
         sb.AppendLine(PromptLoader.LoadSectionValidated(
@@ -408,6 +405,16 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
                 "ChunkAwareCSharpConverter", "PreviousSignatures", new Dictionary<string, string>
                 {
                     ["Items"] = items
+                }));
+        }
+
+        if (!string.IsNullOrWhiteSpace(context.PreviousChunkTail))
+        {
+            sb.AppendLine();
+            sb.AppendLine(PromptLoader.LoadSectionValidated(
+                "ChunkAwareCSharpConverter", "PreviousChunkTail", new Dictionary<string, string>
+                {
+                    ["Code"] = context.PreviousChunkTail
                 }));
         }
 
@@ -461,7 +468,8 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
         var structuralContextBuilder = new StringBuilder();
         await RektPromptInjector.InjectAsync(
             structuralContextBuilder, "C#", chunk.SourceFile ?? "(unknown)",
-            "ChunkAwareCSharpConverter", _runId, Logger);
+            "ChunkAwareCSharpConverter", _runId, Logger, SourceDirectory, RepositoryRoot,
+            verifiedDraftContext: Settings?.ConversionSettings.DependencyMode == "draft");
 
         return PromptLoader.LoadSectionValidated("ChunkAwareCSharpConverter", "User", new Dictionary<string, string>
         {
@@ -477,45 +485,7 @@ public class ChunkAwareCSharpConverter : AgentBase, IChunkAwareConverter
 
     private string ExtractCSharpCode(string input)
     {
-        if (string.IsNullOrWhiteSpace(input))
-            return input;
-
-        if (input.Contains("```csharp") || input.Contains("```cs"))
-        {
-            var startMarker = input.Contains("```csharp") ? "```csharp" : "```cs";
-            int startIndex = input.IndexOf(startMarker);
-            if (startIndex >= 0)
-            {
-                startIndex += startMarker.Length;
-                int endIndex = input.IndexOf("```", startIndex);
-                if (endIndex >= 0)
-                {
-                    return input.Substring(startIndex, endIndex - startIndex).Trim();
-                }
-            }
-        }
-
-        if (input.StartsWith("```"))
-        {
-            var lines = input.Split('\n');
-            var codeLines = new List<string>();
-            var inCodeBlock = false;
-
-            foreach (var line in lines)
-            {
-                if (line.TrimStart().StartsWith("```"))
-                {
-                    inCodeBlock = !inCodeBlock;
-                    continue;
-                }
-                if (inCodeBlock) codeLines.Add(line);
-            }
-
-            if (codeLines.Any())
-                return string.Join("\n", codeLines).Trim();
-        }
-
-        return input.Trim();
+        return ChunkOutputProtocol.ReadResponse(input, "csharp");
     }
 
     private List<MethodSignature> ExtractDefinedMethods(string csharpCode)

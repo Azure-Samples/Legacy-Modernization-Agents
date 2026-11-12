@@ -7,6 +7,7 @@ using CobolToQuarkusMigration.Helpers;
 using System.Diagnostics;
 using System.Text;
 using System.Text.RegularExpressions;
+using ChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
 namespace CobolToQuarkusMigration.Agents;
 
@@ -125,6 +126,7 @@ public class CobolAnalyzerAgent : ICobolAnalyzerAgent
 
         try
         {
+            AiLoopEvents.CancellationToken.ThrowIfCancellationRequested();
             // Character limit for API safety (use configured threshold or default to 150K)
             int maxContentChars = _settings?.ChunkingSettings?.AutoChunkCharThreshold ?? 150_000;
 
@@ -139,6 +141,7 @@ public class CobolAnalyzerAgent : ICobolAnalyzerAgent
                               "Large files are automatically chunked for processing. Truncation is disabled to preserve context.";
 
                 _logger.LogError(errorMsg);
+                AiLoopEvents.Fallback(AgentName, cobolFile.FileName, "input_too_large", null);
 
                 return new CobolAnalysis
                 {
@@ -302,65 +305,15 @@ public class CobolAnalyzerAgent : ICobolAnalyzerAgent
         while (attempt < maxRetries)
         {
             attempt++;
-            IRateLimitReservation? reservation = null;
 
             try
             {
-                string response;
-
-                var estimatedInputTokens = TokenHelper.EstimateTokens(systemPrompt + userPrompt);
-                if (_rateLimiter != null)
-                    reservation = await _rateLimiter.AcquireAsync(estimatedInputTokens);
-
-                // Log the request
-                _chatLogger?.LogUserMessage(AgentName, contextIdentifier, userPrompt, systemPrompt);
-                
-                if (_useResponsesApi && _responsesClient != null)
-                {
-                    _enhancedLogger?.LogBehindTheScenes("API_CALL", "ResponsesAPI",
-                        $"Calling {ProviderName} Responses API for {contextIdentifier}", AgentName);
-                    // Use auto-optimized token settings based on input size
-                    response = await _responsesClient.GetResponseAutoAsync(systemPrompt, userPrompt);
-                }
-                else if (_chatClient != null)
-                {
-                    _enhancedLogger?.LogBehindTheScenes("API_CALL", "ChatCompletion",
-                        $"Calling {ProviderName} Chat API for {contextIdentifier}", AgentName);
-                    
-                    var (maxTokens, reasoningEffort) = CalculateTokenSettings(systemPrompt, userPrompt);
-
-                    var messages = new List<Microsoft.Extensions.AI.ChatMessage>
-                    {
-                        new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.System, systemPrompt),
-                        new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.User, userPrompt)
-                    };
-                    
-                    var options = new Microsoft.Extensions.AI.ChatOptions
-                    {
-                        ModelId = _modelId,
-                        MaxOutputTokens = maxTokens
-                    };
-
-                    ApplyModelSpecificOptions(options, reasoningEffort, maxTokens);
-                    
-                    var chatResponse = await _chatClient.GetResponseAsync(messages, options);
-                    response = ExtractResponseText(chatResponse);
-
-                    // ── Truncation detection ──
-                    DetectTruncation(chatResponse, response, maxTokens, reasoningEffort, contextIdentifier);
-                }
-                else
-                {
-                    throw new InvalidOperationException("No API client configured");
-                }
-
-                // Log the response
-                _chatLogger?.LogAIResponse(AgentName, contextIdentifier, response);
-                _enhancedLogger?.LogBehindTheScenes("API_RESPONSE", _useResponsesApi ? "ResponsesAPI" : "ChatCompletion",
-                    $"Received {response.Length} chars from {ProviderName}", AgentName);
-
-                reservation?.Commit(estimatedInputTokens + TokenHelper.EstimateTokens(response));
+                var response = await ExecuteAttemptAsync(systemPrompt, userPrompt, contextIdentifier);
                 return (response, false, null);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
             }
             // ── Output truncation catch ──
             catch (OutputTruncationException otex)
@@ -398,29 +351,16 @@ public class CobolAnalyzerAgent : ICobolAnalyzerAgent
                     _logger.LogInformation(
                         "[CobolAnalyzerAgent] Truncation retry {Retry}/{Max} for {Context}: tokens={Tokens}, effort='{Effort}'",
                         truncRetry + 1, maxTruncRetries, contextIdentifier, currentMaxTokens, currentEffort);
+                    AiLoopEvents.Retry(AgentName, contextIdentifier, "output_truncation", truncRetry + 1);
 
                     try
                     {
-                        var retryMessages = new List<Microsoft.Extensions.AI.ChatMessage>
-                        {
-                            new(Microsoft.Extensions.AI.ChatRole.System, systemPrompt),
-                            new(Microsoft.Extensions.AI.ChatRole.User, userPrompt)
-                        };
-                        var retryOptions = new Microsoft.Extensions.AI.ChatOptions
-                        {
-                            ModelId = _modelId,
-                            MaxOutputTokens = currentMaxTokens
-                        };
-                        ApplyModelSpecificOptions(retryOptions, currentEffort, currentMaxTokens);
-
-                        var retryResponse = await _chatClient!.GetResponseAsync(retryMessages, retryOptions);
-                        var retryText = ExtractResponseText(retryResponse);
-                        DetectTruncation(retryResponse, retryText, currentMaxTokens, currentEffort, contextIdentifier);
+                        var retryText = await ExecuteAttemptAsync(systemPrompt, userPrompt, contextIdentifier,
+                            currentMaxTokens, currentEffort);
 
                         _enhancedLogger?.LogBehindTheScenes("OUTPUT_TRUNCATION_RECOVERED", "SUCCESS",
                             $"Recovered on retry {truncRetry + 1} with tokens={currentMaxTokens}", AgentName);
 
-                        _chatLogger?.LogAIResponse(AgentName, contextIdentifier, retryText);
                         return (retryText, false, null);
                     }
                     catch (OutputTruncationException)
@@ -430,6 +370,7 @@ public class CobolAnalyzerAgent : ICobolAnalyzerAgent
                     }
                 }
 
+                AiLoopEvents.Fallback(AgentName, contextIdentifier, "output_truncation", null);
                 return (string.Empty, true,
                     $"Output truncation: all {maxTruncRetries} escalation retries failed");
             }
@@ -444,12 +385,14 @@ public class CobolAnalyzerAgent : ICobolAnalyzerAgent
                 {
                     var reason = $"Rate limited: provider asked to wait {retryAfter!.Value.TotalSeconds:F0}s, over the {maxWait.TotalSeconds:F0}s limit (ModelProfile.RateLimitMaxWaitSeconds)";
                     _logger.LogWarning("[{Agent}] {Reason} for {Context}", AgentName, reason, contextIdentifier);
+                    AiLoopEvents.Fallback(AgentName, contextIdentifier, "rate_limit_wait_exceeded", null);
                     return (string.Empty, true, reason);
                 }
                 _logger.LogWarning("[{Agent}] Rate limited on attempt {Attempt}/{MaxRetries} for {Context}. Retrying in {Delay:F0}s ({Source})",
                     AgentName, attempt, maxRetries, contextIdentifier, delay.TotalSeconds,
                     retryAfter is null ? "back-off" : "Retry-After");
-                await Task.Delay(delay);
+                AiLoopEvents.Retry(AgentName, contextIdentifier, "rate_limit", attempt);
+                await Task.Delay(delay, AiLoopEvents.CancellationToken);
             }
             catch (Exception ex) when (IsTransientError(ex) && attempt < maxRetries)
             {
@@ -457,23 +400,79 @@ public class CobolAnalyzerAgent : ICobolAnalyzerAgent
                 var delay = LlmErrorClassifier.TransientDelay(attempt);
                 _logger.LogWarning("[{Agent}] Transient error on attempt {Attempt}/{MaxRetries} for {Context}. Retrying in {Delay}s. Error: {Error}",
                     AgentName, attempt, maxRetries, contextIdentifier, delay.TotalSeconds, ex.Message);
-                await Task.Delay(delay);
+                AiLoopEvents.Retry(AgentName, contextIdentifier, "transient_error", attempt);
+                await Task.Delay(delay, AiLoopEvents.CancellationToken);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[{Agent}] Non-retryable error for {Context}: {Error}",
                     AgentName, contextIdentifier, ex.Message);
+                AiLoopEvents.Fallback(AgentName, contextIdentifier, "non_retryable_error", null);
                 return (string.Empty, true, ex.Message);
-            }
-            finally
-            {
-                reservation?.Dispose();
             }
         }
 
         var finalReason = $"Max retries ({maxRetries}) exhausted. Last error: {lastException?.Message}";
         _logger.LogError("[{Agent}] {Reason}", AgentName, finalReason);
+        AiLoopEvents.Fallback(AgentName, contextIdentifier, "retries_exhausted", null);
         return (string.Empty, true, finalReason);
+    }
+
+    private async Task<string> ExecuteAttemptAsync(string systemPrompt, string userPrompt, string context,
+        int? maxTokens = null, string? reasoningEffort = null)
+    {
+        var cancellationToken = AiLoopEvents.CancellationToken;
+        cancellationToken.ThrowIfCancellationRequested();
+        var estimated = TokenHelper.EstimateTokens(systemPrompt + userPrompt);
+        using var reservation = _rateLimiter is null ? null : await _rateLimiter.AcquireAsync(estimated, cancellationToken);
+        var requestId = AiLoopEvents.RequestStarted(AgentName, ProviderName, _modelId, context, systemPrompt, userPrompt);
+        _chatLogger?.LogUserMessage(AgentName, context, userPrompt, systemPrompt, requestId);
+        var stopwatch = Stopwatch.StartNew();
+        long? input = null, output = null;
+        var outcomeRecorded = false;
+        try
+        {
+            string text;
+            if (_useResponsesApi && _responsesClient is not null)
+            {
+                text = await _responsesClient.GetResponseAutoAsync(systemPrompt, userPrompt, cancellationToken);
+            }
+            else if (_chatClient is not null)
+            {
+                var (tokens, effort) = maxTokens is { } supplied
+                    ? (supplied, reasoningEffort!)
+                    : CalculateTokenSettings(systemPrompt, userPrompt);
+                var options = new ChatOptions { ModelId = _modelId, MaxOutputTokens = tokens };
+                ApplyModelSpecificOptions(options, effort, tokens);
+                var response = await _chatClient.GetResponseAsync(
+                    [new ChatMessage(ChatRole.System, systemPrompt), new ChatMessage(ChatRole.User, userPrompt)],
+                    options, cancellationToken);
+                text = ExtractResponseText(response);
+                input = response.Usage?.InputTokenCount;
+                output = response.Usage?.OutputTokenCount;
+                DetectTruncation(response, text, tokens, effort, context);
+            }
+            else
+            {
+                throw new InvalidOperationException("No API client configured");
+            }
+            AiLoopEvents.Call(AgentName, ProviderName, _modelId, context, stopwatch.ElapsedMilliseconds, true,
+                systemPrompt.Length + userPrompt.Length, text.Length, input, output, null, requestId);
+            outcomeRecorded = true;
+            reservation?.Commit((int)((input ?? estimated) + (output ?? TokenHelper.EstimateTokens(text))));
+            _chatLogger?.LogAIResponse(AgentName, context, text, requestId: requestId);
+            return text;
+        }
+        catch (Exception ex)
+        {
+            if (LlmErrorClassifier.IsRateLimit(ex))
+                _rateLimiter?.NoteRateLimitResponse(LlmErrorClassifier.GetRetryAfter(ex) ?? LlmErrorClassifier.DefaultRateLimitCooldown);
+            if (!outcomeRecorded)
+                AiLoopEvents.Call(AgentName, ProviderName, _modelId, context, stopwatch.ElapsedMilliseconds, false,
+                    systemPrompt.Length + userPrompt.Length, 0, input, output, ex.GetType().Name, requestId,
+                    ex is OperationCanceledException);
+            throw;
+        }
     }
 
     private string ExtractResponseText(Microsoft.Extensions.AI.ChatResponse response)

@@ -30,6 +30,7 @@ public class SmartMigrationOrchestrator
     /// </summary>
     public class MigrationStats
     {
+        public int? RunId { get; set; }
         public int TotalFiles { get; set; }
         public int SmallFiles { get; set; }
         public int LargeFiles { get; set; }
@@ -94,85 +95,145 @@ public class SmartMigrationOrchestrator
     {
         var stats = new MigrationStats();
         var targetName = _settings.ApplicationSettings.TargetLanguage == TargetLanguage.CSharp 
-            ? "C# .NET" : "Java Quarkus";
+            ? "C# .NET" : JavaGeneration.TargetName(_settings.ConversionSettings);
+        var startTime = DateTime.UtcNow;
+        var runId = existingRunId ?? await _migrationRepository.StartRunAsync(cobolSourceFolder, outputFolder);
+        stats.RunId = runId;
+        using var attempt = AiLoopEvents.BeginRun(runId, existingRunId.HasValue ? "resume"
+            : ConversionEligibility.IsPartial(_settings.ConversionSettings) ? "partial-tree" : "smart",
+            targetName, outputFolder, cancellationToken);
 
-        _enhancedLogger.ShowSectionHeader(
-            $"🧠 SMART MIGRATION ORCHESTRATOR",
-            $"Intelligent file routing for COBOL to {targetName}");
-
-        if (existingRunId.HasValue)
+        try
         {
-            _enhancedLogger.ShowWarning($"Resuming migration for Run ID: {existingRunId}");
-        }
+            cancellationToken.ThrowIfCancellationRequested();
+            _enhancedLogger.ShowSectionHeader(
+                $"🧠 SMART MIGRATION ORCHESTRATOR",
+                $"Intelligent file routing for COBOL to {targetName}");
 
-        // Step 1: Scan and categorize files
-        _enhancedLogger.ShowStep(1, 4, "File Analysis", "Scanning and categorizing COBOL files");
-        progressCallback?.Invoke("Analyzing files for chunking requirements", 1, 4);
+            if (existingRunId.HasValue)
+            {
+                _enhancedLogger.ShowWarning($"Resuming migration for Run ID: {existingRunId}");
+            }
 
-        var cobolFiles = await _fileHelper.ScanDirectoryForCobolFilesAsync(cobolSourceFolder);
-        PromptLoader.CodebaseProfile = PromptLoader.GenerateCodebaseProfile(cobolFiles);
-        
-        if (cobolFiles.Count == 0)
-        {
-            _enhancedLogger.ShowWarning($"No COBOL files found in folder: {cobolSourceFolder}");
+            // Step 1: Scan and categorize files
+            _enhancedLogger.ShowStep(1, 4, "File Analysis", "Scanning and categorizing COBOL files");
+            progressCallback?.Invoke("Analyzing files for chunking requirements", 1, 4);
+
+            var cobolFiles = await _fileHelper.ScanDirectoryForCobolFilesAsync(cobolSourceFolder);
+            cancellationToken.ThrowIfCancellationRequested();
+            PromptLoader.CodebaseProfile = PromptLoader.GenerateCodebaseProfile(cobolFiles);
+
+            if (cobolFiles.Count == 0)
+            {
+                _enhancedLogger.ShowWarning($"No COBOL files found in folder: {cobolSourceFolder}");
+                await _migrationRepository.CompleteRunAsync(runId, "NoFiles", "No COBOL programs discovered");
+                AiLoopEvents.Finished(runId, "no_files", startTime);
+                return stats;
+            }
+
+            stats.TotalFiles = cobolFiles.Count;
+
+            if (ConversionEligibility.IsPartial(_settings.ConversionSettings))
+            {
+                var sourceRoot = Path.GetFullPath(cobolSourceFolder);
+                await _migrationRepository.SaveCobolFilesAsync(runId, cobolFiles, cancellationToken);
+                var converter = Agents.JavaConverterAgent.Create(_responsesClient, _chatClient,
+                    _loggerFactory.CreateLogger<Agents.JavaConverterAgent>(),
+                    _settings.AISettings.ResolveJavaConverterModelId(), settings: _settings, runId: runId);
+                converter.SourceDirectory = sourceRoot;
+                converter.RepositoryRoot = Environment.GetEnvironmentVariable("REPO_ROOT") ?? Directory.GetCurrentDirectory();
+                var repair = Agents.ParityRepairAgent.Create(_responsesClient, _chatClient,
+                    _loggerFactory.CreateLogger<Agents.ParityRepairAgent>(),
+                    _settings.AISettings.ResolveJavaConverterModelId(), _settings);
+                await new PartialTreeMigrationProcess(converter, _settings, _logger).RunAsync(
+                    cobolFiles, sourceRoot, outputFolder, repair.RepairAsync, cancellationToken);
+                await _migrationRepository.CompleteRunAsync(runId,
+                    Environment.ExitCode == 0 ? "Partial" : "Failed",
+                    "Source-isolated routine subset, NOT a complete application; see partial-tree-plan.json.", cancellationToken);
+                AiLoopEvents.Finished(runId, Environment.ExitCode == 0 ? "partial" : "failed", startTime);
+                return stats;
+            }
+
+            // Step 2: Categorize files
+            var (smallFiles, largeFiles) = CategorizeFiles(cobolFiles, stats);
+            stats.SmallFiles = smallFiles.Count;
+            stats.LargeFiles = largeFiles.Count;
+
+            // Display categorization summary
+            DisplayCategorizationSummary(stats);
+
+            // Step 3: Process files based on category
+            _enhancedLogger.ShowStep(2, 4, "Migration Routing", "Routing files to appropriate process");
+
+            if (largeFiles.Count > 0)
+            {
+                // Process large files with ChunkedMigrationProcess
+                Console.WriteLine($"📦 Routing {largeFiles.Count} large file(s) to ChunkedMigrationProcess");
+                progressCallback?.Invoke($"Processing {largeFiles.Count} large files with smart chunking", 2, 4);
+
+                await ProcessLargeFilesAsync(
+                    largeFiles,
+                    smallFiles,
+                    cobolSourceFolder,
+                    outputFolder,
+                    stats,
+                    progressCallback,
+                    runId,
+                    businessLogicExtracts,
+                    existingDependencyMap,
+                    cancellationToken,
+                    runType);
+            }
+            else if (smallFiles.Count > 0)
+            {
+                // All files are small - use standard MigrationProcess
+                Console.WriteLine($"⚡ All {smallFiles.Count} file(s) are small - using direct conversion");
+                progressCallback?.Invoke($"Processing {smallFiles.Count} files directly", 2, 4);
+
+                await ProcessSmallFilesOnlyAsync(
+                    cobolSourceFolder,
+                    outputFolder,
+                    progressCallback,
+                    runId,
+                    businessLogicExtracts,
+                    existingDependencyMap,
+                    runType: runType,
+                    cancellationToken: cancellationToken);
+
+                stats.DirectFiles = smallFiles.Count;
+            }
+
+            // Step 4: Summary
+            if (ConversionEligibility.IsDraft(_settings.ConversionSettings))
+            {
+                _enhancedLogger.ShowWarning("Partial draft — NOT VERIFIED. Only independently justified programs were eligible; see draft-conversion-plan.json for blocked inputs. Selected-input routing counts are not converted-program counts.");
+            }
+            else
+            {
+                _enhancedLogger.ShowStep(4, 4, "Migration Complete", "All files processed");
+                DisplayFinalSummary(stats);
+            }
+
             return stats;
         }
-
-        stats.TotalFiles = cobolFiles.Count;
-
-        // Step 2: Categorize files
-        var (smallFiles, largeFiles) = CategorizeFiles(cobolFiles, stats);
-        stats.SmallFiles = smallFiles.Count;
-        stats.LargeFiles = largeFiles.Count;
-
-        // Display categorization summary
-        DisplayCategorizationSummary(stats);
-
-        // Step 3: Process files based on category
-        _enhancedLogger.ShowStep(2, 4, "Migration Routing", "Routing files to appropriate process");
-
-        if (largeFiles.Count > 0)
+        catch (Exception ex)
         {
-            // Process large files with ChunkedMigrationProcess
-            Console.WriteLine($"📦 Routing {largeFiles.Count} large file(s) to ChunkedMigrationProcess");
-            progressCallback?.Invoke($"Processing {largeFiles.Count} large files with smart chunking", 2, 4);
-
-            await ProcessLargeFilesAsync(
-                largeFiles, 
-                smallFiles, 
-                cobolSourceFolder, 
-                outputFolder, 
-                stats,
-                progressCallback,
-                existingRunId,
-                businessLogicExtracts,
-                existingDependencyMap,
-                cancellationToken,
-                runType);
+            if (!AiLoopEvents.IsFinished)
+            {
+                AiLoopEvents.Finished(runId, ex is OperationCanceledException ? "cancelled" : "failed", startTime,
+                    ex.GetType().Name, ex.GetType().Name);
+                try
+                {
+                    await _migrationRepository.CompleteRunAsync(runId,
+                        ex is OperationCanceledException ? "Cancelled" : "Failed", ex.GetType().Name);
+                }
+                catch (Exception persistenceError)
+                {
+                    _logger.LogWarning(persistenceError, "Failed to finalize migration run {RunId}", runId);
+                }
+            }
+            throw;
         }
-        else if (smallFiles.Count > 0)
-        {
-            // All files are small - use standard MigrationProcess
-            Console.WriteLine($"⚡ All {smallFiles.Count} file(s) are small - using direct conversion");
-            progressCallback?.Invoke($"Processing {smallFiles.Count} files directly", 2, 4);
-
-            await ProcessSmallFilesOnlyAsync(
-                cobolSourceFolder, 
-                outputFolder, 
-                progressCallback,
-                existingRunId,
-                businessLogicExtracts,
-                existingDependencyMap,
-                runType: runType);
-            
-            stats.DirectFiles = smallFiles.Count;
-        }
-
-        // Step 4: Summary
-        _enhancedLogger.ShowStep(4, 4, "Migration Complete", "All files processed");
-        DisplayFinalSummary(stats);
-
-        return stats;
     }
 
     /// <summary>
@@ -297,7 +358,8 @@ public class SmartMigrationOrchestrator
         int? existingRunId = null,
         List<BusinessLogic>? businessLogicExtracts = null,
         DependencyMap? existingDependencyMap = null,
-        string? runType = null)
+        string? runType = null,
+        CancellationToken cancellationToken = default)
     {
         _enhancedLogger.ShowSectionHeader(
             "⚡ DIRECT MIGRATION PROCESS",
@@ -331,7 +393,8 @@ public class SmartMigrationOrchestrator
                 progressCallback?.Invoke(status, current + 1, 4);
             },
             existingRunId,
-            runType);
+            runType,
+            cancellationToken);
     }
 
     /// <summary>

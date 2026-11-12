@@ -1,4 +1,4 @@
-**Last updated**: 2026-10-01
+**Last updated**: 2026-10-22
 
 # JCL job facts
 
@@ -8,13 +8,60 @@ The portal's Service Chain view reads jobs through it, and conversion turns each
 
 ## Running it
 
-`./doctor.sh rekt-parse` runs it after the COBOL parse. It can also be run on its own:
+`./doctor.sh rekt-full` scans COBOL and JCL, then ingests their facts into Neo4j.
+JCL-only folders are supported; no COBOL program is required. It does not generate
+executable job scaffolding (`./doctor.sh jcl` remains the separate command for that).
+
+```bash
+bash ./doctor.sh rekt-full
+```
+
+JCL is discovered recursively with a case-insensitive `.jcl` extension under
+`source/`, or under `JCL_SOURCE_FOLDER` when configured:
+
+```bash
+JCL_SOURCE_FOLDER="C:/path/to/jobs" bash ./doctor.sh rekt-full
+```
+
+Nonempty shell settings take precedence over `Config/ai-config.local.env`; with no
+nonempty setting in either place the default is `source/`. Relative paths are relative to the checkout,
+not the caller's current directory. Absolute POSIX paths, Windows drive paths
+(`C:/jobs`, `C:\jobs`), UNC paths and Git Bash paths (`/c/jobs`) are supported;
+quote paths containing spaces. Git Bash uses `cygpath` for drive and UNC paths.
+An explicitly configured missing directory or empty JCL library fails before parsing.
+These options do not change the REKT COBOL-root restriction:
+`COBOL_SOURCE_FOLDER` must remain `source`, even for a JCL-only scan.
+
+`./doctor.sh rekt-parse` performs the same fact extraction without ingestion.
+JCL-only parsing needs the .NET CLI, but not REKT or Neo4j containers; ingestion
+starts only Neo4j. Mixed/COBOL parsing still needs the REKT parser.
+The extractor can also be run on its own:
 
 ```bash
 dotnet run --project CobolToQuarkusMigration.csproj -- jcl-facts source --output-dir output/rekt
 ```
 
-A failure is reported as a warning and never stops the parse.
+A failed JCL extraction stops the pipeline before ingestion; an explicitly configured
+JCL folder with no jobs is reported as an error. Missing procedures or INCLUDE
+definitions remain diagnostics rather than invented content.
+An extension alone does not establish a job: a library containing only procedures,
+INCLUDE members or unparseable text fails with “No JCL jobs were parsed”.
+A COBOL program filter is refused for JCL-only input rather than silently ignored.
+
+### Refresh and failure handling
+
+A successful extraction replaces current JCL facts and removes only stale
+`*.job.json` artifacts for jobs no longer present, including when the final job is
+deleted from a mixed estate. A COBOL-only scan passes `--allow-empty` to refresh the
+empty JCL subset. Direct `jcl-facts` calls reject zero jobs unless that option is
+explicitly supplied; configured JCL libraries must contain a job.
+
+JCL evidence is retained across failed extraction instead of broadly deleting
+`output/rekt/`. `.jcl-scan-failed` marks incomplete refreshes; both `rekt-ingest` and
+the Python ingestion consumer refuse them before writing graph data. Fix the input
+and rerun `rekt-parse`/`rekt-full` (or `jcl-facts`) to refresh successfully. Do not
+remove the marker to present old evidence as current. Other retained artifacts are
+not removed by the JCL-only path; COBOL full scans retain their existing COBOL cleanup.
 
 ## What it reads
 
@@ -61,6 +108,8 @@ Output goes under `output/rekt/`:
   - One file per job, with its steps, DDs, conditions, Db2 runs, dataset effects, symbols and diagnostics.
   - `programs`: the estate programs the job runs.
   - `upstream` and `downstream`: the jobs it depends on through data.
+  - `sourceRoot`: the absolute JCL library root used for source retrieval during ingestion.
+    Source-relative `job.file` identities are unchanged.
 - **`jcl-lineage.json`**
   - Every dataset with each job and step that creates, reads, appends to or deletes it.
   - The job dependencies inferred from those uses.
@@ -103,6 +152,9 @@ The inferred order comes from data only. A scheduler may enforce more, and it ca
 | `FEEDS` | Job → job, labelled with the datasets that connect them |
 
 A fact file written by a newer schema than the populator knows is skipped with a warning rather than loaded wrongly.
+For external libraries the populator reads source blocks from the fact's `sourceRoot`,
+not an unrelated same-relative-name file under `source/`. Older facts without this
+field retain the `--source-dir` fallback; regenerate them when moving JCL externally.
 
 ## Diagnostics
 

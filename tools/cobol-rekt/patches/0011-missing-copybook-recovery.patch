@@ -1,0 +1,76 @@
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
+index b598c93..8e83b7d 100644
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
+@@ -66,6 +66,7 @@ public class ParsePipeline {
+     @Getter private ParserRuleContext tree;
+     @Getter private List<ParseTree> transfersOfControl;
+     @Getter private List<ParseTree> subroutineCalls;
++    @Getter private List<SyntaxError> diagnostics = List.of();
+
+     public ParsePipeline(SourceConfig sourceConfig, ComponentsBuilder ops, LanguageDialect dialect) {
+         this.src = sourceConfig.source();
+@@ -133,6 +134,7 @@ public class ParsePipeline {
+
+         StageResult<ParserStageResult> lastStageResult = (StageResult<ParserStageResult>) pipelineResult.getLastStageResult();
+         errorFinalizerService.processLateErrors(ctx, ctx.getCopybooksRepository());
++        diagnostics = List.copyOf(ctx.getAccumulatedErrors());
+
+         // Local patch (Azure-Samples/COBOL-Modernization-Agents): allow
+         // warning-only diagnostics to retain a recovered parse tree. ERROR
+@@ -142,15 +144,17 @@ public class ParsePipeline {
+             ctx.getAccumulatedErrors().forEach(e -> LOGGER.info(e.toString()));
+             long fatalCount = ctx.getAccumulatedErrors().stream()
+                 .filter(e -> e.getSeverity() == org.eclipse.lsp.cobol.common.error.ErrorSeverity.ERROR)
++                .filter(e -> !("true".equalsIgnoreCase(System.getenv("REKT_ALLOW_MISSING_COPYBOOKS"))
++                    && e.getErrorCode() == org.eclipse.lsp.cobol.common.error.ErrorCodes.MISSING_COPYBOOK))
+                 .count();
+             if (fatalCount > 0) {
+                 throw new ParseDiagnosticRuntimeError(
+                     "Parsing produced ERROR diagnostics — refusing partial authoritative output.",
+                     ctx.getAccumulatedErrors());
+             }
+-            LOGGER.warning("Parser produced " + ctx.getAccumulatedErrors().size()
+-                + " warning diagnostic(s) — proceeding with recovered AST "
+-                + "(Azure-Samples local patch).");
++            LOGGER.warning("Parser produced " + diagnostics.size()
++                + " diagnostic(s) — proceeding with recovered AST; missing copybook "
++                + "definitions remain unresolved and this is not complete evidence.");
+             if (lastStageResult == null || lastStageResult.getData() == null
+                     || lastStageResult.getData().getTree() == null) {
+                 throw new ParseDiagnosticRuntimeError(
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/CodeTaskRunner.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/CodeTaskRunner.java
+index f32e5f0..772f043 100644
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/CodeTaskRunner.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/CodeTaskRunner.java
+@@ -152,9 +152,29 @@ public class CodeTaskRunner {
+                 graphBuildConfig, dataStructuresOutputConfig, unifiedModelOutputConfig, similarityOutputConfig,
+                 mermaidOutputConfig, transpilerModelOutputConfig,
+                 llmOutputConfig, idProvider, resourceOperations, new Neo4JDriverBuilder());
+-        return tasks.getFirst() != CommandLineAnalysisTask.BUILD_BASE_ANALYSIS
++        try {
++            return tasks.getFirst() != CommandLineAnalysisTask.BUILD_BASE_ANALYSIS
+                 ? pipelineTasks.run(Stream.concat(Stream.of(CommandLineAnalysisTask.BUILD_BASE_ANALYSIS), tasks.stream()).toList())
+                 : pipelineTasks.run(tasks);
++        } finally {
++            if (!pipeline.getDiagnostics().isEmpty()) {
++                Path diagnosticPath = Paths.get(reportRootDir, programReportDir, "parse-diagnostics.json");
++                java.nio.file.Files.createDirectories(diagnosticPath.getParent());
++                List<Map<String, Object>> diagnostics = pipeline.getDiagnostics().stream().map(error -> {
++                    Map<String, Object> detail = new LinkedHashMap<>();
++                    detail.put("code", error.getErrorCode() == null ? null : error.getErrorCode().getLabel());
++                    detail.put("severity", error.getSeverity() == null ? null : error.getSeverity().name());
++                    detail.put("message", error.getSuggestion());
++                    detail.put("location", error.getLocation());
++                    return detail;
++                }).toList();
++                java.nio.file.Files.writeString(diagnosticPath,
++                    new com.google.gson.GsonBuilder().setPrettyPrinting().create().toJson(diagnostics));
++            } else {
++                // The report directory is reused, so a clean rerun must not keep an earlier run's errors.
++                java.nio.file.Files.deleteIfExists(Paths.get(reportRootDir, programReportDir, "parse-diagnostics.json"));
++            }
++        }
+ //        return pipelineTasks.run(Stream.concat(Stream.of(CommandLineAnalysisTask.BUILD_BASE_ANALYSIS), tasks.stream()).toList());
+     }
+ }

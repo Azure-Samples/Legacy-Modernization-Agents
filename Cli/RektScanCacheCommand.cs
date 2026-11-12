@@ -107,7 +107,7 @@ public static class RektScanCacheCommand
         var basenameArg = new Argument<string>("basename", "Program basename (with extension) that was parsed.");
         cmd.AddArgument(basenameArg);
 
-        var outcomeOption = new Option<string>("--outcome", "Parse outcome: Full | StubBacked | NoDialect | RawAst | DepsOnly | Failed")
+        var outcomeOption = new Option<string>("--outcome", "Parse outcome: Full | Partial | StubBacked | NoDialect | RawAst | DepsOnly | Failed")
         { IsRequired = true };
         cmd.AddOption(outcomeOption);
 
@@ -164,7 +164,7 @@ public static class RektScanCacheCommand
 
         var manifestArg = new Argument<string>("manifest",
             "Path to a TSV file: <basename>\\t<outcome>\\t<warning>|<warning> per line. " +
-            "Outcome ∈ {Full, StubBacked, NoDialect, RawAst, DepsOnly, Failed}.");
+            "Outcome ∈ {Full, Partial, StubBacked, NoDialect, RawAst, DepsOnly, Failed}.");
         cmd.AddArgument(manifestArg);
 
         var stagingDirOption = new Option<string>("--staging-dir",
@@ -304,12 +304,12 @@ public static class RektScanCacheCommand
 
         foreach (var c in copybooks)
         {
-            try { graph.AddFile(Path.GetFileName(c), File.ReadAllText(c), isCopybook: true); }
+            try { graph.AddFile(Path.GetFileName(c), CobolSourceReader.Read(c), isCopybook: true); }
             catch (Exception ex) { logger.LogWarning(ex, "Skipping unreadable copybook {Path}", c); }
         }
         foreach (var p in programs)
         {
-            try { graph.AddFile(Path.GetFileName(p), File.ReadAllText(p), isCopybook: false); }
+            try { graph.AddFile(Path.GetFileName(p), CobolSourceReader.Read(p), isCopybook: false); }
             catch (Exception ex) { logger.LogWarning(ex, "Skipping unreadable program {Path}", p); }
         }
         return graph;

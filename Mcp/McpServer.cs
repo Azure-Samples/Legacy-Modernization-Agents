@@ -23,6 +23,7 @@ public sealed class McpServer
     private readonly int _runId;
     private readonly ILogger<McpServer> _logger;
     private readonly StreamReader _reader;
+    private bool _inputClosed;
     private readonly StreamWriter _writer;
     private readonly Stream _outputStream;
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web)
@@ -36,6 +37,8 @@ public sealed class McpServer
     private readonly BusinessLogicExtractorAgent? _extractorAgent;
     private readonly ProfileManager _profileManager;
 
+    // Used only when the caller does not send maxOutputTokens (the portal sends PortalChat.MaxAnswerTokens).
+    private const int DefaultChatMaxOutputTokens = 4000;
     private MigrationRunSummary? _runSummaryCache;
     private DependencyMap? _dependencyMapCache;
     private IReadOnlyList<CobolAnalysis>? _analysisCache;
@@ -146,6 +149,12 @@ public sealed class McpServer
             var request = await ReadRequestAsync(cancellationToken);
             if (request is null)
             {
+                // EOF means the parent process is gone; looping on a closed pipe orphans this server.
+                if (_inputClosed)
+                {
+                    _logger.LogInformation("MCP input closed; shutting down");
+                    return;
+                }
                 await Task.Delay(25, cancellationToken);
                 continue;
             }
@@ -442,17 +451,41 @@ public sealed class McpServer
         }
 
         var prompt = ExtractUserPrompt(request.Params.Value);
-        var summary = await EnsureRunSummaryAsync();
-        if (summary is null)
+        string responseText;
+
+        if (IsReportContext(request.Params.Value))
         {
-            await WriteErrorAsync(request.Id, -32002, "No migration runs have been recorded yet");
-            return;
+            // The portal sent the report sections with the question. Run context would only pull
+            // the answer toward the run, and a report can be asked about before any run exists.
+            if (_chatClient is null || string.IsNullOrEmpty(_modelId))
+            {
+                await WriteErrorAsync(request.Id, -32003, "No chat model is configured, so the report cannot be queried. Set the chat model in Config/ai-config.local.env.");
+                return;
+            }
+            try
+            {
+                responseText = await GetReportAnswerAsync(prompt, ReadMaxOutputTokens(request.Params.Value));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Report chat failed");
+                await WriteErrorAsync(request.Id, -32004, $"The model could not answer from the report: {ex.Message}");
+                return;
+            }
         }
+        else
+        {
+            var summary = await EnsureRunSummaryAsync();
+            if (summary is null)
+            {
+                await WriteErrorAsync(request.Id, -32002, "No migration runs have been recorded yet");
+                return;
+            }
 
-        var dependencyMap = await EnsureDependencyMapAsync();
-        var analyses = await EnsureAnalysesAsync();
-
-        var responseText = await BuildChatResponseAsync(prompt, summary, dependencyMap, analyses);
+            var dependencyMap = await EnsureDependencyMapAsync();
+            var analyses = await EnsureAnalysesAsync();
+            responseText = await BuildChatResponseAsync(prompt, summary, dependencyMap, analyses, ReadMaxOutputTokens(request.Params.Value));
+        }
 
         var result = new JsonObject
         {
@@ -496,6 +529,7 @@ public sealed class McpServer
 
         if (line is null)
         {
+            _inputClosed = true;
             return null;
         }
 
@@ -511,6 +545,7 @@ public sealed class McpServer
             var read = await _reader.ReadAsync(buffer, totalRead, contentLength - totalRead);
             if (read == 0)
             {
+                _inputClosed = true;
                 return null;
             }
             totalRead += read;
@@ -751,10 +786,31 @@ public sealed class McpServer
         };
     }
 
-    private async Task<string> BuildChatResponseAsync(string prompt, MigrationRunSummary summary, DependencyMap? dependencyMap, IReadOnlyList<CobolAnalysis> analyses)
+    // The model's answer is returned on its own. Run statistics, insights and dependency lists used
+    // to be wrapped around every answer, so any question read as a summary of the latest run; they
+    // now appear only when there is no model answer to give.
+    private async Task<string> BuildChatResponseAsync(string prompt, MigrationRunSummary summary, DependencyMap? dependencyMap, IReadOnlyList<CobolAnalysis> analyses, int maxOutputTokens)
     {
         var builder = new StringBuilder();
 
+        if (!string.IsNullOrWhiteSpace(prompt) && _chatClient != null && !string.IsNullOrEmpty(_modelId))
+        {
+            try
+            {
+                return await GetAIResponseAsync(prompt, summary, dependencyMap, analyses, maxOutputTokens);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to get AI response for question: {Prompt}", prompt);
+                builder.AppendLine($"The chat model could not answer ({ex.Message}). This is what the migration database holds:");
+            }
+        }
+        else
+        {
+            builder.AppendLine("No chat model is configured. This is what the migration database holds:");
+        }
+
+        builder.AppendLine();
         builder.AppendLine($"Run {summary.RunId} ({summary.Status})");
         if (summary.Metrics is not null)
         {
@@ -765,51 +821,8 @@ public sealed class McpServer
             }
         }
 
-        if (!string.IsNullOrWhiteSpace(summary.AnalysisInsights))
+        if (!string.IsNullOrWhiteSpace(prompt))
         {
-            builder.AppendLine();
-            builder.AppendLine("Insights:");
-            builder.AppendLine(summary.AnalysisInsights);
-        }
-
-        // Use IChatClient to answer custom questions
-        if (!string.IsNullOrWhiteSpace(prompt) && _chatClient != null && !string.IsNullOrEmpty(_modelId))
-        {
-            builder.AppendLine();
-            builder.AppendLine($"Your question: {prompt}");
-            builder.AppendLine();
-
-            try
-            {
-                var aiResponse = await GetAIResponseAsync(prompt, summary, dependencyMap, analyses);
-                
-                // Big ASCII banner to make AI response easy to find
-                builder.AppendLine();
-                builder.AppendLine("╔══════════════════════════════════════════════════════════════════╗");
-                builder.AppendLine("║     _    ___      _    _   _ ______        _______ ____          ║");
-                builder.AppendLine("║    / \\  |_ _|    / \\  | \\ | / ___\\ \\      / / ____|  _ \\         ║");
-                builder.AppendLine("║   / _ \\  | |    / _ \\ |  \\| \\___ \\\\ \\ /\\ / /|  _| | |_) |        ║");
-                builder.AppendLine("║  / ___ \\ | |   / ___ \\| |\\  |___) |\\ V  V / | |___|  _ <         ║");
-                builder.AppendLine("║ /_/   \\_\\___|_/_/   \\_\\_| \\_|____/  \\_/\\_/  |_____|_| \\_\\        ║");
-                builder.AppendLine("║                                                                  ║");
-                builder.AppendLine($"║  Model: {_modelId,-54} ║");
-                builder.AppendLine("╚══════════════════════════════════════════════════════════════════╝");
-                builder.AppendLine();
-                builder.AppendLine(aiResponse);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to get AI response for question: {Prompt}", prompt);
-                builder.AppendLine($"Unable to get AI answer. Error: {ex.Message}");
-                // builder.AppendLine(ex.StackTrace); // Uncomment for more details if needed
-                builder.AppendLine("Using fallback response.");
-                AppendFallbackResponse(builder, prompt, analyses, dependencyMap);
-            }
-        }
-        else if (!string.IsNullOrWhiteSpace(prompt))
-        {
-            builder.AppendLine();
-            builder.AppendLine($"Your question: {prompt}");
             AppendFallbackResponse(builder, prompt, analyses, dependencyMap);
         }
 
@@ -831,6 +844,31 @@ public sealed class McpServer
         builder.AppendLine($"• Specific analysis: insights://runs/{_runId}/analyses/<program>");
 
         return builder.ToString();
+    }
+
+    internal static int ReadMaxOutputTokens(JsonElement parameters) =>
+        parameters.TryGetProperty("maxOutputTokens", out var value)
+        && value.ValueKind == JsonValueKind.Number
+        && value.TryGetInt32(out var tokens) && tokens > 0
+            ? tokens
+            : DefaultChatMaxOutputTokens;
+
+    internal static bool IsReportContext(JsonElement parameters) =>
+        parameters.TryGetProperty("context", out var context)
+        && context.ValueKind == JsonValueKind.String
+        && string.Equals(context.GetString(), "report", StringComparison.OrdinalIgnoreCase);
+
+    private async Task<string> GetReportAnswerAsync(string prompt, int maxOutputTokens)
+    {
+        var messages = new List<Microsoft.Extensions.AI.ChatMessage>
+        {
+            new(ChatRole.System, "You answer questions about a reverse-engineering report, using only the report text in the user message. Answer only the question asked; do not summarise the report unless asked."),
+            new(ChatRole.User, prompt)
+        };
+
+        var response = await _chatClient!.GetResponseAsync(messages, new ChatOptions { MaxOutputTokens = maxOutputTokens });
+        var text = ExtractResponseText(response);
+        return string.IsNullOrWhiteSpace(text) ? $"Unable to generate response. FinishReason: {response.FinishReason}" : text;
     }
 
     private void AppendFallbackResponse(StringBuilder builder, string prompt, IReadOnlyList<CobolAnalysis> analyses, DependencyMap? dependencyMap)
@@ -895,7 +933,7 @@ public sealed class McpServer
         return result;
     }
 
-    private async Task<string> GetAIResponseAsync(string prompt, MigrationRunSummary summary, DependencyMap? dependencyMap, IReadOnlyList<CobolAnalysis> analyses)
+    private async Task<string> GetAIResponseAsync(string prompt, MigrationRunSummary summary, DependencyMap? dependencyMap, IReadOnlyList<CobolAnalysis> analyses, int maxOutputTokens)
     {
         // Build context for the AI
         var contextBuilder = new StringBuilder();
@@ -934,13 +972,13 @@ public sealed class McpServer
         // Use IChatClient for the response
         var messages = new List<Microsoft.Extensions.AI.ChatMessage>
         {
-            new(ChatRole.System, "You are an expert COBOL migration assistant. Answer questions about the COBOL to Java migration project based on the provided context. Be concise and specific."),
+            new(ChatRole.System, "You are an expert COBOL migration assistant. Answer only the question asked, using the context below as reference. Do not summarise the run, its statistics or the estate unless the question asks for a summary. Be concise and specific."),
             new(ChatRole.User, $"Context:\n{contextBuilder}\n\nUser Question: {prompt}")
         };
 
         var chatOptions = new ChatOptions
         {
-            MaxOutputTokens = 4000
+            MaxOutputTokens = maxOutputTokens
         };
 
         var response = await _chatClient!.GetResponseAsync(messages, chatOptions);

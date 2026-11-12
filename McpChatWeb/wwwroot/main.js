@@ -219,45 +219,54 @@ async function handleChatSubmit(event) {
     return;
   }
 
-  // Hide previous response and show stage 1: Database Query
+  const reportContext = typeof getChatReportContext === 'function' ? getChatReportContext() : null;
+  const scope = reportContext ? 'report' : 'database';
+  const scopeLabel = reportContext
+    ? (typeof getChatReportLabel === 'function' ? getChatReportLabel() : String(reportContext).split('/').pop())
+    : null;
+  // History is the conversation before this question; read it before the question is appended.
+  const history = window.ChatHistory ? window.ChatHistory.getRecentMessages() : [];
+  let pendingAnswer = null;
+  if (window.ChatHistory) {
+    window.ChatHistory.appendMessage('user', prompt, { scope, scopeLabel });
+    pendingAnswer = window.ChatHistory.appendMessage('assistant', '', { pending: true, scope, scopeLabel });
+    promptInput.value = '';
+  }
+
   responseCard.hidden = true;
-  setLoadingStage('db');
-  updateStageStatus('db', 'Fetching migration data...');
+  setLoadingStage(reportContext ? 'ai' : 'db');
+  updateStageStatus(reportContext ? 'ai' : 'db', reportContext ? 'Reading report...' : 'Fetching migration data...');
   toggleLoading(chatForm.querySelector('button'), true);
   setRunSummary('');
   renderMcpVisual(null, false);
-  
+
   try {
-    // Move to stage 2: Azure OpenAI
-    setTimeout(() => {
-      setLoadingStage('ai');
-      updateStageStatus('ai', 'Processing with AI...');
-    }, 300);
-    
+    if (!reportContext) {
+      setTimeout(() => {
+        setLoadingStage('ai');
+        updateStageStatus('ai', 'Processing with AI...');
+      }, 300);
+    }
+
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json'
       },
-      body: JSON.stringify({ 
-        prompt,
-        reportContext: typeof getChatReportContext === 'function' ? getChatReportContext() : null
-      })
+      body: JSON.stringify({ prompt, reportContext, history })
     });
 
-    // Move to stage 3: Building Response
     setLoadingStage('response');
     updateStageStatus('response', 'Formatting results...');
 
     if (!res.ok) {
-      // Try to extract detailed error from the response body
       let message;
       const contentType = res.headers.get('content-type') || '';
       if (contentType.includes('application/problem+json') || contentType.includes('application/json')) {
         try {
           const errBody = await res.json();
-          message = errBody.detail || errBody.title || errBody.message || JSON.stringify(errBody);
+          message = errBody.detail || errBody.error || errBody.title || errBody.message || JSON.stringify(errBody);
         } catch { message = await res.text(); }
       } else {
         message = await res.text();
@@ -266,37 +275,38 @@ async function handleChatSubmit(event) {
     }
 
     const payload = await res.json();
-    
-    // Small delay to show final stage
-    await new Promise(resolve => setTimeout(resolve, 300));
-    
     setRunSummary(payload.runSummary);
     renderMcpVisual(payload.model, payload.isMcpCall);
-    responseBody.textContent = payload.response ?? 'No content returned.';
-    responseCard.hidden = false;
-    
-    // If the response includes a runId, update the graph to show that run
-    console.log('Chat response received:', { hasRunId: !!payload.runId, runId: payload.runId, hasGraph: !!window.dependencyGraph });
+
+    if (window.ChatHistory) {
+      const answerLabel = payload.reportPath
+        ? (reportContext === 'latest' ? 'latest: ' : '') + String(payload.reportPath).split('/').pop()
+        : scopeLabel;
+      window.ChatHistory.completeMessage(pendingAnswer, payload.response ?? 'No content returned.', {
+        pending: false, model: payload.model, runId: payload.runId, scope, scopeLabel: answerLabel
+      });
+    } else {
+      responseBody.textContent = payload.response ?? 'No content returned.';
+      responseCard.hidden = false;
+    }
+
     if (payload.runId) {
       if (window.dependencyGraph) {
-        console.log(`✅ Updating graph to Run ${payload.runId}...`);
         window.dependencyGraph.loadGraphForRun(payload.runId);
       } else {
-        console.warn('⚠️ Graph not ready yet, retrying in 500ms...');
         setTimeout(() => {
-          if (window.dependencyGraph) {
-            console.log(`✅ Delayed update: Loading graph for Run ${payload.runId}`);
-            window.dependencyGraph.loadGraphForRun(payload.runId);
-          } else {
-            console.error('❌ Graph still not available after delay');
-          }
+          if (window.dependencyGraph) window.dependencyGraph.loadGraphForRun(payload.runId);
         }, 500);
       }
     }
   } catch (err) {
-    responseBody.textContent = `❌ Chat Error\n\n${err.message}`;
-    responseCard.hidden = false;
-    responseCard.classList.add('error-response');
+    if (window.ChatHistory) {
+      window.ChatHistory.completeMessage(pendingAnswer, `❌ ${err.message}`, { pending: false, error: true });
+    } else {
+      responseBody.textContent = `❌ Chat Error\n\n${err.message}`;
+      responseCard.hidden = false;
+      responseCard.classList.add('error-response');
+    }
   } finally {
     setLoadingStage('done');
     toggleLoading(chatForm.querySelector('button'), false);

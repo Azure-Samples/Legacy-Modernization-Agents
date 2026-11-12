@@ -1,10 +1,10 @@
-**Last updated**: 2026-09-09
+**Last updated**: 2026-10-22
 
 # Conversion Parity Validation
 
 Code generation reports success whenever the model returns *something*. Nothing checked that the generated Java or C# actually represented the COBOL it came from, so a conversion could drop paragraphs, data fields, `CALL` targets or SQL access entirely and still be recorded as a win.
 
-This feature compares four axes of structural evidence against the identifiers actually present in each generated file, and reports what is missing. It makes no LLM calls; the result is reproducible from the same inputs.
+The scorer compares four axes of structural evidence against identifiers in generated files. Scoring is deterministic. The migration pipeline can additionally request bounded, source-backed model repairs, and always scores the resulting files again.
 
 It is a **preview feature**, like the REKT scan it reads from.
 
@@ -22,6 +22,8 @@ It is a **preview feature**, like the REKT scan it reads from.
 Weights are renormalised over the axes that have at least one expected symbol. A program with no SQL is scored out of the remaining 0.85, not penalised for the absence.
 
 `ProgramFacts` carries no field or section *names* — `Summary.Sections` is a count, and `ControlFlow.EntryPoints` holds only the first section — so those two axes must come from `StructuralContext`. Facts are preferred for callees and SQL tables, because those carry the operation-name fix from the dependency-health work.
+
+Copybooks are measured against their directly declared members, not procedures, calls or SQL borrowed from a same-stem program. Their `SourceDeclared` provenance and evidence notes state that nested `COPY` expansion and storage-layout equivalence are not established.
 
 ## How a symbol is matched
 
@@ -74,9 +76,105 @@ An axis with at least one expected symbol and **no code match at all** is theref
 
 ## Evidence quality
 
-`tools/preprocess-for-rekt.sh` synthesises a placeholder copybook whenever a `COPY` target cannot be resolved, containing invented `<NAME>-STUB` and `<NAME>-VAL` fields and a marker comment. Those fields exist only as preprocessing artefacts, while the real fields the program actually uses are absent entirely.
+### Required dependency evidence before conversion
 
-Expecting them in generated code produces gaps no conversion can close, so they are excluded. Detection is exact — the file must contain the marker string — rather than a guess at the `-STUB` suffix, which could drop real fields.
+Both direct and chunked migration now fail closed **before dependency commentary,
+source analysis or conversion model calls** when required REKT dependency evidence
+is missing, incomplete, stale or placeholder-backed. A reused reverse-engineering
+map is not an exemption: current evidence is revalidated and its relationships must
+match the current parser export. Rejection persists a failed run with explicit
+diagnostics; no generated-source success fallback is written.
+
+The source-relative sidecar is
+`output/rekt/<relativePath>.report/dependency-evidence.json`. Its contract is:
+
+| Field | Required evidence |
+|---|---|
+| `schemaVersion`, `producer` | Sidecar schema `1`, producer `cobol-rekt/dependency`; not an inferred parser version |
+| `relativePath`, `originalSourcePath`, `originalSourceSha256` | Exact selected-source-relative identity, absolute original path, SHA256 of original file bytes |
+| `exportPath`, `exportSha256`, `exportExitCode` | Absolute active REKT dependency export, its raw-byte SHA256 and successful export exit |
+| `coverage` | Explicit parser-backed `complete` for each of `COPY`, `CALL`, `EXEC_SQL`, `EXEC_CICS`, `FILE_IO`; missing, `partial` and `unavailable` block |
+| `definitions` | Actual resolved dependency names/kinds, absolute definition paths and raw-byte SHA256 values; grounded generated COPY inputs may additionally use `BMS` / `COPY_INPUT` |
+| `unresolvedDiagnostics`, `placeholderContaminated` | No unresolved required inputs, and explicit absence of placeholder contamination |
+
+`ProgramFacts.dependencyEvidence` retains this provenance, but the conversion gate
+reads the current sidecar and rehashes the actual source, export and definitions.
+If a facts projection exists, its evidence snapshot and dependency entries must
+match that current export; stale legacy facts must be regenerated, not injected
+into conversion prompts alongside a newly verified map.
+`ProgramFacts.SourceHash` still covers staged/preprocessed bytes and is **not**
+substituted for the original-source hash. Global `High` parse confidence,
+nonempty AST, command exit zero, scanner absence of a COPY, and an empty
+`copybooksUsed` array cannot establish complete zero-COPY coverage.
+
+Relationships come from the hash-bound parser dependency export, not AI or a
+local scanner. Source scanning can only reject contradictions; it never supplies
+missing edges or makes coverage complete. Dynamic CALL operands and genuinely
+missing external definitions remain unresolved. The contradiction guard ignores
+dependency words inside literals and comments, while retaining actual quoted
+CALL/COPY operands, including fixed-format literal continuations. The legacy dependency-tree format
+cannot represent SQL/CICS/file-I/O relationships; positive source evidence for
+these kinds is explicitly blocked rather than silently omitted.
+
+Only the export root's direct dependencies become that source's relationships,
+COPY usage and callees. A called program's subtree is supporting evidence, not
+additional root edges: `A CALL B CALL C` does not imply `A CALL C`, and B's COPYs
+are not assigned to A. Hashes, diagnostics and unresolved inputs throughout that
+supporting subtree are still checked. The sidecar's `definitions` therefore
+retains both direct and supporting inputs without changing their source origin.
+
+Discovery also selects `.cpy` files, but the native producer parses programs,
+not copybooks as standalone programs. A selected copybook therefore needs no
+fabricated manifest: it is accepted only as an exact-path, current hash-bound COPY
+definition in a fully validated selected program's direct or supporting export.
+Unreferenced, stale, placeholder-backed or ambiguous definitions remain blocked.
+This does not assert standalone per-kind coverage, add a COPY self-edge, or create
+copybook program facts. Existing standalone copybook facts without a verified
+definition-context projection contract are rejected rather than injected into
+converter prompts.
+
+**Legacy or unsupported producer evidence remains a blocker.** Legacy REKT exports
+have no per-kind completeness declaration and cannot establish a verified empty
+inventory. Rebuilding the first parser with patch `0012` enables typed, hash-bound
+COPY/static CALL exports and supported-absence attestations from the actual
+parser tree. Clean supported programs can then satisfy the strict gate after
+their evidence is regenerated. Dynamic or ambiguous callees, missing definitions,
+and present unsupported SQL/CICS/file-I/O constructs still block; adding a partial
+sidecar diagnoses those gaps rather than completing their coverage. Do not
+hand-edit coverage, accept generated vendor subsets as authentic libraries, or
+invent constants/layouts to make this gate pass. A hash identifies bytes; it
+cannot establish a vendor layout's authenticity without grounded input provenance.
+
+These checks read **local REKT disk exports**. They do not query Neo4j, run a new
+parser, switch graph endpoints, or establish behavioral equivalence. Archived
+`.previous` and in-progress `.work` artifacts are not active facts/context.
+
+Missing copybooks are never synthesized, including when the legacy
+`REKT_NO_STUB_COPYBOOKS=false` setting is supplied. Supply genuine definitions;
+the scan names unresolved dependencies in `output/rekt/missing-copybooks.txt`
+and reports reduced coverage. The preprocessor removes only marked legacy
+placeholders from its generated `.preprocessed/` directory. Staging rejects
+marked placeholders in supplied source without modifying that source.
+Deterministic symbolic maps derived from genuine BMS source remain supported.
+
+The parser remains strict by default. `REKT_ALLOW_MISSING_COPYBOOKS=true` allows
+recovery only when every ERROR diagnostic is a missing copybook and a parse tree
+exists. `doctor.sh` opts in for analysis and requires nonempty AST and CFG JSON
+before recording structural success. All other ERROR diagnostics remain fatal;
+entries without a supported data layout fail explicitly rather than guessing
+`PIC X(1)`. Recovery may still fail when analysis requires an unavailable definition.
+
+Diagnostics are persisted as `parse-diagnostics.json` beside parser artifacts,
+including failed attempts. Recovered structural results are recorded as `Partial`,
+and missing-copybook warnings cap facts confidence at partial. Portal fidelity
+also honors persisted diagnostics rather than trusting a stale full-confidence
+cache entry. Diagnostics are not graph artifacts and are excluded from ingestion.
+
+Older reports may still contain invented placeholder fields. Expecting them in
+generated code produces gaps no conversion can close, so they are excluded.
+Detection requires the marker string rather than guessing from the `-STUB` suffix,
+which could drop real fields. Conversion and repair must preserve the unresolved
+dependency, not invent members or suppress errors to make output compile.
 
 Because their exclusion means field parity was measured against *incomplete* evidence, each affected program carries an `evidenceNotes` entry naming the stub copybooks. The score is not silently adjusted to compensate; the weakened evidence is stated instead.
 
@@ -89,7 +187,8 @@ An inferred value is never presented as a measured one.
 | No structural context, or provenance `None` | `NotEvaluated`, no score, reason names `./doctor.sh rekt-full` |
 | All four axes have no comparable symbols | `NotEvaluated`, axes still reported |
 | Generated file cannot be mapped back to a source program | `NotEvaluated`, never guessed |
-| Two or more source programs share a file name | `NotEvaluated`, reason names the count |
+| Legacy outputs identify multiple sources only by a shared basename | `NotEvaluated`, reason names the count |
+| Multiple source identities map to one overwritten output path | `NotEvaluated`; repair is refused |
 | Source program produced **no** generated file | **Evaluated, score 0**, explicit `file` gap |
 | File is a `ConversionOutputGuard` stub or a converter fallback | **Evaluated, score 0**, explicit `file` gap |
 
@@ -107,16 +206,27 @@ Running post-write rather than per-file is what makes the guard stub visible at 
 
 Each run writes `conversion-parity.json` beside the generated code and appends a section to the migration report.
 
+`CodeFile.OriginalSourcePath` is authoritative source identity; `CodeFile.FilePath` is the path returned by the writer. `generated-source-map.json` records source-relative identity, generated-relative path and source kind. A program and copybook sharing a stem, or programs sharing a basename in different directories, remain separate.
+
+### Bounded repair and final measurement
+
+For a failing source with available authoritative COBOL, the repair agent receives that source, its generated files and the measured gaps. It must return exactly those file keys, preserving identities and existing APIs. Related compiler context is read-only. Missing copybook definitions must not be invented to improve a score or satisfy compilation.
+
+Candidates are accepted only after deterministic revalidation shows increased code coverage without losing coverage on another axis. Comment-only name additions do not establish improvement. Rejected candidates leave the original files intact; interrupted writes restore the originals. The report records attempts, accepted repairs and rejection notes.
+
+After compiler repairs, parity is measured again from the files actually on disk. Repair history is retained, but the final score is never copied from the pre-build measurement. A successful compiler cannot turn a missing, diagnostic-only or conflicting conversion into a completed migration.
+
 ## Configuration
 
 | Variable | Default | Effect |
 |---|---|---|
 | `MIN_PROGRAM_SCORE` | `0.75` | Score below which a program is counted as below threshold. Clamped to `[0,1]`; an unparseable value logs a warning and falls back to the default. |
 | `ON_LOW_SCORE` | `warn` | `warn` reports only. `stop` additionally sets exit code `4`. |
+| `PARITY_REPAIR_MAX_ROUNDS` | `2` | Maximum repair attempts per source; `0` measures only. Invalid or negative repair limits are rejected. |
 
-Under `stop`, exit code `4` is also set when programs were found but none could be evaluated. Exiting `0` there would report "no parity failures" when the truth is that parity was never measured; under an explicit gate, absent evidence is not a pass.
+Under `stop`, the migration pipeline also rejects sources that could not be evaluated. Missing evidence is not a pass. Missing or diagnostic-only conversions fail completion even under `warn`; the policy controls structural-score acceptance, not whether source coverage may be silently omitted.
 
-Both are read from the environment, which takes precedence over `Config/ai-config.local.env`.
+These are read from the environment, which takes precedence over `Config/ai-config.local.env`.
 
 ```bash
 MIN_PROGRAM_SCORE=0.8 ON_LOW_SCORE=stop ./doctor.sh run
@@ -124,7 +234,7 @@ MIN_PROGRAM_SCORE=0.8 ON_LOW_SCORE=stop ./doctor.sh run
 
 `stop` cannot abort a migration, because parity runs after conversion has completed. It sets a non-zero exit code once both artefacts are written, which is the behaviour CI actually wants; a partially aborted migration is not.
 
-Exit code `4` is distinct from the existing conventions (`2` usage or not-found, `3` parse failure).
+Exit code `4` is distinct from the existing conventions (`2` usage or not-found, `3` parse failure). Enabled compile-gate failures use exit code `5`; final parity does not overwrite that build failure.
 
 > Making that work required a fix in `Program.cs`. An `int`-returning `Main` overrides `Environment.ExitCode` entirely, so the gate — and every existing `Cli/` command that reports failure the same way — exited `0` regardless. `Main` now returns the environment code when its own is zero.
 
@@ -166,7 +276,7 @@ Parity is an **identifier-retention check**. It answers "are the names the COBOL
 - Compact-form fallback matching can pair a short expected name with a longer identifier that contains it.
 - Parity needs the repository layout to resolve source programs and copybooks. Running from a published image without it, the post-pass logs that it is skipping rather than reporting a false pass.
 - Programs are identified by file name, not by path. Generated files record only the source basename, so `billing/CUSTOMER.cbl` and `claims/CUSTOMER.cbl` cannot be told apart from their output. Rather than merge them into one entry and drop the second from the report, the check reports the collision and measures neither. Renaming one of the two restores coverage.
-- Scan freshness is not verified. `ProgramFacts.SourceHash` covers the *staged, preprocessed* bytes rather than the working-tree source, so it cannot be recomputed from the repository alone; comparing against the raw file would report every program stale. A scan taken before the COBOL last changed is therefore scored as if current. Re-run `./doctor.sh rekt-full` after editing sources.
+- Standalone parity scoring does not independently verify every structural artifact's freshness. `ProgramFacts.SourceHash` covers staged/preprocessed bytes, not original bytes. Migration entrypoints separately require the source/export/definition-bound dependency evidence described above before invoking models; that gate is not proof of every AST fact or behavioral equivalence.
 
 ### Dimensions not validated
 

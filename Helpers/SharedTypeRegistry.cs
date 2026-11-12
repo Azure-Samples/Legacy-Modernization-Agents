@@ -15,6 +15,8 @@ public sealed class SharedTypeRegistry
 
     public void Scan(string sourceFolder)
     {
+        _copybookReferences.Clear();
+        _sharedNames.Clear();
         if (!Directory.Exists(sourceFolder)) return;
 
         var rxCopy = new Regex(@"^[^*]{0,6}[^*\n].*?\bCOPY\s+['""]?([A-Z][A-Z0-9_-]*)['""]?",
@@ -23,7 +25,7 @@ public sealed class SharedTypeRegistry
         foreach (var program in SourceTypeRegistry.EnumerateProgramFiles(sourceFolder))
         {
             string? text = null;
-            try { text = File.ReadAllText(program); } catch { continue; }
+            try { text = CobolSourceReader.Read(program); } catch (IOException) { continue; }
             var progName = Path.GetRelativePath(sourceFolder, program)
                 .Replace(Path.DirectorySeparatorChar, '/');
 

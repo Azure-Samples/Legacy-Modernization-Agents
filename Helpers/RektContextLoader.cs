@@ -1,6 +1,7 @@
 // Loads available REKT artifacts without failing when optional outputs are absent.
 
 using System.Text.Json;
+using CobolToQuarkusMigration.Agents.Infrastructure.Facts;
 
 namespace CobolToQuarkusMigration.Helpers;
 
@@ -16,14 +17,15 @@ public sealed class RektContextLoader
     public RektContextLoader(string repoRoot, string? rektDir = null)
     {
         _repoRoot = repoRoot;
-        _rektDir = rektDir ?? Path.Combine(repoRoot, "output", "rekt");
+        _rektDir = rektDir ?? ConversionEligibility.FactsDirectory(repoRoot);
         _targetArchPath = Path.Combine(_rektDir, "target-architecture.json");
     }
 
     public bool HasAnyRektOutput()
     {
         if (!Directory.Exists(_rektDir)) return false;
-        return Directory.EnumerateFiles(_rektDir, "*.json", SearchOption.AllDirectories).Any();
+        return Directory.EnumerateFiles(_rektDir, "*.json", SearchOption.AllDirectories)
+            .Any(path => ProgramFactsArtifactLocator.IsActiveArtifactPath(path, _rektDir));
     }
 
     public RektContext Load(string programFileName, string sourceFolder)
@@ -229,17 +231,24 @@ public sealed class RektContextLoader
                 case "CALL":
                 case "CALLSTATEMENT":
                 {
-                    var target = TryGetString(el, "target")
+                    var explicitTarget = TryGetString(el, "target");
+                    var target = explicitTarget
                                  ?? ExtractStatementTarget(statementText, "CALL")
                                  ?? NullIfEmpty(name);
+                    // Without a parser target, an unquoted operand (CALL LIT-X) names a data item, not a program.
+                    var operand = statementText.TrimStart();
+                    var unquotedOperand = explicitTarget is null && operand.StartsWith("CALL", StringComparison.OrdinalIgnoreCase)
+                        && operand[4..].TrimStart() is { Length: > 0 } rest && rest[0] is not ('\'' or '"');
                     target = target?.Trim('\'', '"');
+                    var isDynamic = TryGetBool(el, "dynamic") || unquotedOperand;
                     if (!string.IsNullOrEmpty(target)
-                        && !ctx.CallTargets.Any(c => string.Equals(c.TargetProgram, target, StringComparison.OrdinalIgnoreCase)))
+                        && !ctx.CallTargets.Any(c => c.IsDynamic == isDynamic
+                            && string.Equals(c.TargetProgram, target, StringComparison.OrdinalIgnoreCase)))
                     {
                         ctx.CallTargets.Add(new RektCallTarget
                         {
                             TargetProgram = target,
-                            IsDynamic = TryGetBool(el, "dynamic"),
+                            IsDynamic = isDynamic,
                             LineNumber = startLine,
                         });
                     }
@@ -366,8 +375,7 @@ public sealed class RektContextLoader
 
     private void TryLoadDeps(RektContext ctx, string programRelativePath, string basename, string stem)
     {
-        // Even when AST writer fails, deps export usually succeeds — feed it into CallTargets/CopybookUsage
-        // so the converter at least knows what the program depends on.
+        // Discovery of positive entries is separate from coverage/freshness validation at the conversion gate.
         string? path = null;
         foreach (var candidate in EnumerateDependencyCandidates(programRelativePath, basename, stem))
         {
@@ -376,29 +384,29 @@ public sealed class RektContextLoader
         if (path is null) return;
         try
         {
-            using var doc = JsonDocument.Parse(File.ReadAllText(path));
-            if (doc.RootElement.TryGetProperty("dependencies", out var deps) && deps.ValueKind == JsonValueKind.Array)
+            foreach (var (kind, name) in DependencyEvidenceGate.ReadDiscoveredEdges(path))
             {
-                foreach (var d in deps.EnumerateArray())
+                if (kind == "COPY")
                 {
-                    var name = TryGetString(d, "name") ?? "";
-                    if (string.IsNullOrEmpty(name)) continue;
-
-                    if (name.EndsWith(".cpy", StringComparison.OrdinalIgnoreCase))
-                    {
-                        if (!ctx.CopybookUsage.Contains(name, StringComparer.OrdinalIgnoreCase))
-                            ctx.CopybookUsage.Add(name);
-                    }
-                    else
-                    {
-                        if (!ctx.CallTargets.Any(c => string.Equals(c.TargetProgram, name, StringComparison.OrdinalIgnoreCase)))
-                            ctx.CallTargets.Add(new RektCallTarget { TargetProgram = name });
-                    }
+                    if (!ctx.CopybookUsage.Contains(name, StringComparer.OrdinalIgnoreCase))
+                        ctx.CopybookUsage.Add(name);
                 }
+                else if (!HasStaticCallTarget(ctx, name))
+                    ctx.CallTargets.Add(new RektCallTarget { TargetProgram = name });
             }
         }
         catch (Exception) { /* tolerated */ }
+        try
+        {
+            var projections = DependencyEvidenceGate.ReadPlatformProjectionNames(path, programRelativePath);
+            ctx.DataStructure.RemoveAll(item => projections.Contains(item.Name, StringComparer.OrdinalIgnoreCase));
+        }
+        catch (Exception) { /* tolerated: projections only filter data items */ }
     }
+
+    // A dynamic operand is a data name, so it must not hide a static CALL of the same spelling.
+    private static bool HasStaticCallTarget(RektContext ctx, string name) =>
+        ctx.CallTargets.Any(c => !c.IsDynamic && string.Equals(c.TargetProgram, name, StringComparison.OrdinalIgnoreCase));
 
     private RektTargetPlan? LookupTargetPlan(string programFileName)
     {
@@ -465,6 +473,7 @@ public sealed class RektContextLoader
 
     private string? FindRektFile(string programRelativePath, string basename, string stem, string prefix)
     {
+        var isCopybook = Path.GetExtension(basename).Equals(".cpy", StringComparison.OrdinalIgnoreCase);
         // A flat artifact is addressed by basename alone, so it cannot say which of two programs
         // sharing that basename it describes. When the caller names a directory it is asking
         // about one specific program, and answering from the flat layout gives billing/CUSTOMER
@@ -485,6 +494,7 @@ public sealed class RektContextLoader
                     $"{prefix}{stem}.cbl.json",
                     $"{prefix}{basename}.json",
                 }
+                .Where(candidate => !isCopybook || candidate == $"{prefix}{basename}.json")
                 .Select(candidate => Path.Join(_rektDir, candidate))
                 .FirstOrDefault(File.Exists);
 
@@ -525,6 +535,8 @@ public sealed class RektContextLoader
             };
             foreach (var sp in subPaths)
             {
+                if (isCopybook && !Path.GetFileName(sp).Contains(basename, StringComparison.OrdinalIgnoreCase))
+                    continue;
                 if (File.Exists(sp)) return sp;
             }
 
@@ -532,10 +544,11 @@ public sealed class RektContextLoader
             try
             {
                 var found = Directory.EnumerateFiles(rdir, "*", SearchOption.AllDirectories)
+                    .Where(path => ProgramFactsArtifactLocator.IsActiveArtifactPath(path, _rektDir))
                     .FirstOrDefault(f =>
                         Path.GetFileName(f).StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
                         && (Path.GetFileName(f).Contains(basename, StringComparison.OrdinalIgnoreCase)
-                            || Path.GetFileName(f).Contains(stem, StringComparison.OrdinalIgnoreCase)));
+                            || !isCopybook && Path.GetFileName(f).Contains(stem, StringComparison.OrdinalIgnoreCase)));
                 if (found != null) return found;
             }
             catch { /* access error — skip */ }
@@ -559,7 +572,10 @@ public sealed class RektContextLoader
             $"{stem}.CBL.report",
         }.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
-        foreach (var reportDir in named)
+        foreach (var reportDir in named.Where(name =>
+                     (!normalizedRelativePath.Contains('/') || name == normalizedRelativePath + ".report")
+                     && (!Path.GetExtension(basename).Equals(".cpy", StringComparison.OrdinalIgnoreCase)
+                         || name.EndsWith(basename + ".report", StringComparison.OrdinalIgnoreCase))))
         {
             yield return reportDir;
         }
@@ -579,6 +595,8 @@ public sealed class RektContextLoader
         var alreadyTried = new HashSet<string>(named, StringComparer.OrdinalIgnoreCase);
 
         foreach (var pattern in new[] { $"{basename}.report", $"{stem}.cbl.report", $"{stem}.report" }
+                     .Where(pattern => !Path.GetExtension(basename).Equals(".cpy", StringComparison.OrdinalIgnoreCase)
+                         || pattern == $"{basename}.report")
                      .Distinct(StringComparer.OrdinalIgnoreCase))
         {
             List<string> found;
@@ -586,6 +604,7 @@ public sealed class RektContextLoader
             {
                 found = Directory
                     .EnumerateDirectories(_rektDir, pattern, SearchOption.AllDirectories)
+                    .Where(path => ProgramFactsArtifactLocator.IsActiveArtifactPath(path, _rektDir))
                     .Take(2)
                     .ToList();
             }
@@ -608,6 +627,7 @@ public sealed class RektContextLoader
         string stem)
     {
         var normalizedRelativePath = SourcePathHelper.NormalizeRelativePath(programRelativePath);
+        var isCopybook = Path.GetExtension(basename).Equals(".cpy", StringComparison.OrdinalIgnoreCase);
         foreach (var candidate in new[]
                  {
                      Path.Combine(_rektDir, SourcePathHelper.ToOsRelativePath($"{normalizedRelativePath}-deps.json")),
@@ -616,6 +636,10 @@ public sealed class RektContextLoader
                      Path.Combine(_rektDir, $"{stem}.cbl-deps.json"),
                  })
         {
+            var exact = Path.Combine(_rektDir, SourcePathHelper.ToOsRelativePath($"{normalizedRelativePath}-deps.json"));
+            if (normalizedRelativePath.Contains('/') && candidate != exact) continue;
+            if (isCopybook && !Path.GetFileName(candidate).Equals($"{basename}-deps.json", StringComparison.OrdinalIgnoreCase))
+                continue;
             yield return candidate;
         }
 
@@ -629,6 +653,8 @@ public sealed class RektContextLoader
                          Path.Combine(reportRoot, $"{stem}.cbl-deps.json"),
                      })
             {
+                if (isCopybook && !Path.GetFileName(candidate).Equals($"{basename}-deps.json", StringComparison.OrdinalIgnoreCase))
+                    continue;
                 yield return candidate;
             }
         }
@@ -645,12 +671,12 @@ public sealed class RektContextLoader
     // name, and recording the variable as a callee would invent a dependency that does not exist.
     private static void HarvestLiteralCalls(string statementText, int startLine, RektContext ctx)
     {
-        // Seeded from the targets already recorded and mutated as each new one is accepted, so a
+        // Seeded from the static targets already recorded and mutated as each new one is accepted, so a
         // single set rejects both a target seen on an earlier statement and a repeat within this
         // one. That keeps the de-duplication the previous running Any() check provided while
         // making it a filter over the sequence, and turns an O(n) scan per match into a lookup.
         var seen = new HashSet<string>(
-            ctx.CallTargets.Select(c => c.TargetProgram),
+            ctx.CallTargets.Where(c => !c.IsDynamic).Select(c => c.TargetProgram),
             StringComparer.OrdinalIgnoreCase);
 
         foreach (var target in LiteralCallPattern.Matches(statementText)

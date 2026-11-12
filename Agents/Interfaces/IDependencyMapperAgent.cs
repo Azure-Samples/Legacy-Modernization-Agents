@@ -8,7 +8,8 @@ namespace CobolToQuarkusMigration.Agents.Interfaces;
 public interface IDependencyMapperAgent
 {
     /// <summary>
-    /// Analyzes dependencies between COBOL files and generates a dependency map.
+    /// Verifies source-relative local REKT dependency evidence before generating a map or AI commentary.
+    /// Missing, stale, incomplete or placeholder-backed evidence throws InvalidDataException.
     /// </summary>
     /// <param name="cobolFiles">The COBOL files to analyze.</param>
     /// <param name="analyses">The analysis results for the COBOL files.</param>
@@ -16,15 +17,15 @@ public interface IDependencyMapperAgent
     Task<DependencyMap> AnalyzeDependenciesAsync(List<CobolFile> cobolFiles, List<CobolAnalysis> analyses);
 
     /// <summary>
-    /// Generates a Mermaid flowchart for COBOL dependencies.
+    /// Renders the supplied dependency relationships deterministically, without a model call.
     /// </summary>
     /// <param name="dependencyMap">The dependency map to visualize.</param>
-    /// <param name="enableAiGeneration">Whether to call Azure OpenAI for the diagram (false skips to fallback).</param>
+    /// <param name="enableAiGeneration">Retained for caller compatibility; neither value enables AI generation.</param>
     /// <returns>A Mermaid diagram as a string.</returns>
     Task<string> GenerateMermaidDiagramAsync(DependencyMap dependencyMap, bool enableAiGeneration = true);
 
     /// <summary>
-    /// Analyzes copybook usage patterns across COBOL programs.
+    /// Reads copybook usage from verified REKT exports; never infers authoritative edges from text or AI.
     /// </summary>
     /// <param name="cobolFiles">The COBOL files to analyze.</param>
     /// <returns>A copybook usage matrix.</returns>

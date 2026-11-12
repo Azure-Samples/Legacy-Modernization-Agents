@@ -65,7 +65,8 @@ services:
   # smojol's COBOL toolkit (https://github.com/avishek-sen-gupta/cobol-rekt).
   # See tools/cobol-rekt/LICENSE and tools/cobol-rekt/NOTICE for attribution.
   cobol-rekt:
-    image: rekt-oss-mma:latest
+    # doctor.sh sets REKT_IMAGE to a digest of the Dockerfile and patches, forcing a rebuild when they change.
+    image: ${REKT_IMAGE:-rekt-oss-mma:latest}
     build:
       context: ./tools/cobol-rekt
       dockerfile: Dockerfile
@@ -74,6 +75,7 @@ services:
     volumes:
       - ./source:/source:ro
       - ./output/rekt:/output
+      - ./tools/cobol-rekt/contracts:${REKT_CONTRACTS_DIR:-/contracts}:ro
     entrypoint: ["tail", "-f", "/dev/null"]
 
   # Python graph populator — ingests rekt JSON + MMA metadata into Neo4j.

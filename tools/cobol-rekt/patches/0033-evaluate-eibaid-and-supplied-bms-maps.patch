@@ -1,0 +1,233 @@
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/BmsAttributeContract.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/BmsAttributeContract.java
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/BmsAttributeContract.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/BmsAttributeContract.java
+@@ -25,9 +25,15 @@
+             "https://www.ibm.com/docs/en/cics-tx/11.1.0?topic=constants-field-attributes-printer-control-characters");
+ 
+     static Map<String, String> symbols() {
+-        return new TreeMap<>(Map.of("DFHBMASK", "A:AUTOSKIP", "DFHBMPRF", "A:PROTECTED_MDT_SET",
++        Map<String, String> symbols = new TreeMap<>(Map.of("DFHBMASK", "A:AUTOSKIP", "DFHBMPRF", "A:PROTECTED_MDT_SET",
+                 "DFHBMFSE", "A:MDT_SET", "DFHNEUTR", "C:NEUTRAL", "DFHGREEN", "C:GREEN",
+                 "DFHUNDLN", "H:UNDERSCORE"));
++        symbols.putAll(Map.of("DFHBMUNP", "A:UNPROTECTED", "DFHBMPRO", "A:PROTECTED", "DFHBMBRY", "A:BRIGHT",
++                "DFHBMDAR", "A:DARK", "DFHBMASF", "A:AUTOSKIP_MDT_SET", "DFHBMASB", "A:AUTOSKIP_BRIGHT",
++                "DFHDFCOL", "C:DEFAULT", "DFHBLUE", "C:BLUE", "DFHRED", "C:RED", "DFHPINK", "C:PINK"));
++        symbols.putAll(Map.of("DFHTURQ", "C:TURQUOISE", "DFHYELLO", "C:YELLOW", "DFHBLINK", "H:BLINK",
++                "DFHREVRS", "H:REVERSE"));
++        return symbols;
+     }
+ 
+     static boolean validDefinition(JsonObject definition) {
+@@ -50,7 +56,7 @@
+             for (Path directory : directories) {
+                 if (!Files.isDirectory(directory)) continue;
+                 try (var files = Files.list(directory)) {
+-                    for (Path layout : files.filter(path -> path.toString().endsWith(".cpy.bms-layout.json")).toList()) {
++                    for (Path layout : files.filter(path -> path.toString().toLowerCase(Locale.ROOT).endsWith(".cpy.bms-layout.json")).toList()) {
+                         JsonObject proof = JsonParser.parseString(Files.readString(layout)).getAsJsonObject();
+                         Path output = Path.of(layout.toString().replaceFirst("\\.bms-layout\\.json$", ""));
+                         if (!"complete".equals(proof.get("status").getAsString())
+@@ -111,38 +117,59 @@
+             boolean symbolic = tokens.stream().anyMatch(symbols()::containsKey);
+             boolean destination = tokens.stream().anyMatch(name -> fields.containsKey(name) && index.hosts(name).size() == 1);
+             if (!symbolic && !destination) continue;
+-            if (tokens.size() != 4 || !tokens.get(0).equals("MOVE") || !tokens.get(2).equals("TO")
+-                    || !fields.containsKey(tokens.get(3)) || fields.get(tokens.get(3)).size() != 1
+-                    || index.hosts(tokens.get(3)).size() != 1) {
++            // MOVE value TO target [OF|IN group] [target [OF|IN group]]...
++            List<String[]> targets = new ArrayList<>();
++            boolean wellFormed = tokens.size() >= 4 && tokens.get(0).equals("MOVE") && tokens.get(2).equals("TO");
++            for (int i = 3; wellFormed && i < tokens.size(); ) {
++                String name = tokens.get(i++), group = null;
++                if (i < tokens.size() && Set.of("OF", "IN").contains(tokens.get(i))) {
++                    if (i + 1 >= tokens.size()) { wellFormed = false; break; }
++                    group = tokens.get(i + 1);
++                    i += 2;
++                }
++                targets.add(new String[]{name, group});
++            }
++            if (!wellFormed || targets.stream().anyMatch(target -> !fields.containsKey(target[0])
++                    || fields.get(target[0]).size() != 1 || index.hosts(target[0]).size() != 1)) {
+                 issues.add("platform-contract-unsupported-bms-move:" + move.getStart().getLine());
+                 continue;
+             }
+-            Map<String, Object> field = fields.get(tokens.get(3)).getFirst();
+-            String value = tokens.get(1), suffix = (String) field.get("suffix");
+-            boolean supported = symbols().containsKey(value) && symbols().get(value).startsWith(suffix + ":")
+-                    || Set.of("'A'", "\"A\"").contains(value) && suffix.equals("A")
+-                    || Set.of("HIGH-VALUE", "HIGH-VALUES").contains(value) && Set.of("C", "H").contains(suffix);
+-            ParserRuleContext declaration = index.hosts(tokens.get(3)).getFirst();
+-            String outputGroup = field.get("map") + "O";
+-            boolean inOutput = index.path(declaration).stream().anyMatch(entry ->
+-                    CicsDependencyAnalysis.nodes(entry).stream().anyMatch(part ->
+-                            part.getClass().getSimpleName().equals("EntryNameContext")
+-                                    && part.getText().equalsIgnoreCase(outputGroup)));
+-            if (!inOutput && suffix.equals("A")) {
+-                String inputGroup = field.get("map") + "I";
+-                boolean sharedInput = index.path(declaration).stream().anyMatch(entry ->
+-                        CicsDependencyAnalysis.nodes(entry).stream().anyMatch(part ->
+-                                part.getClass().getSimpleName().equals("EntryNameContext")
+-                                        && part.getText().equalsIgnoreCase(inputGroup)));
+-                List<String> groupTokens = CicsDependencyAnalysis.nodes(index.hosts(outputGroup).getFirst())
+-                        .stream().filter(part -> part instanceof TerminalNode)
+-                        .map(ParseTree::getText).map(token -> token.toUpperCase(Locale.ROOT)).toList();
+-                inOutput = sharedInput && groupTokens.contains("REDEFINES") && groupTokens.contains(inputGroup);
+-            }
+-            if (!supported || !inOutput) {
++            String value = tokens.get(1);
++            List<Map<String, Object>> bound = new ArrayList<>();
++            List<Map<String, Object>> declarations = new ArrayList<>();
++            boolean allSupported = true;
++            for (String[] target : targets) {
++                Map<String, Object> field = fields.get(target[0]).getFirst();
++                String suffix = (String) field.get("suffix");
++                boolean supported = symbols().containsKey(value) && symbols().get(value).startsWith(suffix + ":")
++                        || Set.of("'A'", "\"A\"").contains(value) && suffix.equals("A")
++                        || Set.of("HIGH-VALUE", "HIGH-VALUES").contains(value) && Set.of("C", "H").contains(suffix);
++                ParserRuleContext declaration = index.hosts(target[0]).getFirst();
++                boolean inOutput = inGroup(index, declaration, field.get("map") + "O");
++                if (!inOutput && suffix.equals("A")) {
++                    String inputGroup = field.get("map") + "I";
++                    List<String> groupTokens = index.hosts(field.get("map") + "O").size() != 1 ? List.of()
++                            : CicsDependencyAnalysis.nodes(index.hosts(field.get("map") + "O").getFirst())
++                            .stream().filter(part -> part instanceof TerminalNode)
++                            .map(ParseTree::getText).map(token -> token.toUpperCase(Locale.ROOT)).toList();
++                    inOutput = inGroup(index, declaration, inputGroup)
++                            && groupTokens.contains("REDEFINES") && groupTokens.contains(inputGroup);
++                }
++                if (target[1] != null && !(target[1].equals(field.get("map") + "O") || target[1].equals(field.get("map") + "I"))
++                        || target[1] != null && !inGroup(index, declaration, target[1]))
++                    inOutput = false;
++                if (!supported || !inOutput) {
++                    allSupported = false;
++                    break;
++                }
++                bound.add(field);
++                declarations.add(ParsePipeline.dialectSyntax(declaration));
++            }
++            if (!allSupported) {
+                 issues.add("platform-contract-unsupported-bms-value:" + value + ":" + move.getStart().getLine());
+                 continue;
+             }
++            boolean simple = targets.size() == 1 && targets.getFirst()[1] == null;
+             Map<String, Object> usage = new LinkedHashMap<>();
+             usage.put("grammarRule", "MoveStatementContext");
+             usage.put("sourceText", NodeText.originalText(move, NodeText::PASSTHROUGH));
+@@ -150,8 +177,13 @@
+             usage.put("line", move.getStart().getLine());
+             usage.put("column", move.getStart().getCharPositionInLine());
+             usage.put("coordinateSpace", "expanded-parser-input");
+-            usage.put("fieldBinding", field);
+-            usage.put("definitionSyntax", ParsePipeline.dialectSyntax(declaration));
++            if (simple) {
++                usage.put("fieldBinding", bound.getFirst());
++                usage.put("definitionSyntax", declarations.getFirst());
++            } else {
++                usage.put("fieldBindings", bound);
++                usage.put("definitionSyntaxes", declarations);
++            }
+             usage.put("valueKind", symbols().containsKey(value) ? "named-attribute"
+                     : value.startsWith("'") || value.startsWith("\"") ? "source-character-literal" : "figurative-constant");
+             usages.add(usage);
+@@ -161,6 +193,13 @@
+         diagnostics.addAll(issues);
+     }
+ 
++    private static boolean inGroup(CobolDeclarationIndex index, ParserRuleContext declaration, String group) {
++        return index.path(declaration).stream().anyMatch(entry ->
++                CicsDependencyAnalysis.nodes(entry).stream().anyMatch(part ->
++                        part.getClass().getSimpleName().equals("EntryNameContext")
++                                && part.getText().equalsIgnoreCase(group)));
++    }
++
+     private static ParserRuleContext ancestor(ParseTree node, String rule) {
+         for (ParseTree parent = node.getParent(); parent != null; parent = parent.getParent())
+             if (parent.getClass().getSimpleName().equals(rule)) return (ParserRuleContext) parent;
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
+@@ -270,8 +270,11 @@
+                 resolvedCopybooks.add(Map.of("name", path.getFileName().toString(),
+                         "path", path.toString(),
+                         "sha256", sha256(definitionBytes)));
+-                if (new String(definitionBytes, java.nio.charset.StandardCharsets.ISO_8859_1)
+-                        .contains("SYMBOLIC MAP GENERATED FROM BMS") && !bindBmsLayout(path, definitionBytes))
++                // Generated maps must bind; a supplied map binds when the preprocessor proved it against its BMS.
++                if ((new String(definitionBytes, java.nio.charset.StandardCharsets.ISO_8859_1)
++                        .contains("SYMBOLIC MAP GENERATED FROM BMS")
++                        || java.nio.file.Files.isRegularFile(Path.of(path + ".bms-layout.json")))
++                        && !bindBmsLayout(path, definitionBytes))
+                     dependencyDiagnostics.add("partial-derived-bms-layout:" + path.getFileName());
+             } catch (IOException | RuntimeException e) {
+                 dependencyDiagnostics.add("unreadable-copybook:" + definition.getKey() + ":" + e.getMessage());
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/PlatformCopybookContract.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/PlatformCopybookContract.java
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/PlatformCopybookContract.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/PlatformCopybookContract.java
+@@ -122,6 +122,8 @@
+                               Map<String, Integer> declarations, List<Map<String, Object>> usages,
+                               List<String> diagnostics) {
+         if (!visited.add(node)) return;
++        if (node instanceof CobolParser.EvaluateStatementContext evaluate && mentionsEvents(evaluate.evaluateSelect()))
++            evaluateEvents(evaluate, visited, usages, diagnostics);
+         if (node instanceof TerminalNode terminal) {
+             String name = node.getText().toUpperCase(Locale.ROOT);
+             if (!symbols().containsKey(name) && !"DFHAID".equals(name) && !"EIBAID".equals(name)) return;
+@@ -182,6 +184,58 @@
+             visit(node.getChild(i), visited, conditions, declarations, usages, diagnostics);
+     }
+ 
++    // EVALUATE EIBAID with WHEN <named event> phrases only: each WHEN is an equality of the
++    // subject with one named event. ALSO, THRU, ANY, NOT and application values stay blocked.
++    private static void evaluateEvents(CobolParser.EvaluateStatementContext evaluate, Set<ParseTree> visited,
++                                       List<Map<String, Object>> usages, List<String> diagnostics) {
++        List<String> subject = new ArrayList<>();
++        tokens(evaluate.evaluateSelect(), subject);
++        boolean valid = subject.equals(List.of("EIBAID")) && evaluate.evaluateAlsoSelect().isEmpty();
++        List<Map<String, Object>> found = new ArrayList<>();
++        List<ParseTree> bound = new ArrayList<>(List.of(evaluate.evaluateSelect()));
++        Map<String, Object> subjectUsage = new LinkedHashMap<>();
++        subjectUsage.put("grammarRule", "EvaluateSelectContext");
++        subjectUsage.put("conditionRole", "evaluate-subject");
++        subjectUsage.put("sourceText", NodeText.originalText(evaluate.evaluateSelect(), NodeText::PASSTHROUGH));
++        subjectUsage.put("syntax", ParsePipeline.dialectSyntax(evaluate.evaluateSelect()));
++        subjectUsage.put("line", evaluate.evaluateSelect().getStart().getLine());
++        subjectUsage.put("column", evaluate.evaluateSelect().getStart().getCharPositionInLine());
++        subjectUsage.put("coordinateSpace", "expanded-parser-input");
++        found.add(subjectUsage);
++        for (CobolParser.EvaluateWhenPhraseContext phrase : evaluate.evaluateWhenPhrase()) {
++            for (CobolParser.EvaluateWhenContext when : phrase.evaluateWhen()) {
++                List<String> parts = new ArrayList<>();
++                tokens(when.evaluateCondition(), parts);
++                if (!when.evaluateAlsoCondition().isEmpty() || parts.size() != 1
++                        || !symbols().containsKey(parts.getFirst())) {
++                    valid = false;
++                    continue;
++                }
++                Map<String, Object> usage = new LinkedHashMap<>();
++                usage.put("grammarRule", "EvaluateWhenContext");
++                usage.put("conditionRole", "evaluate-when");
++                usage.put("sourceText", NodeText.originalText(when, NodeText::PASSTHROUGH));
++                usage.put("syntax", ParsePipeline.dialectSyntax(when));
++                usage.put("line", when.getStart().getLine());
++                usage.put("column", when.getStart().getCharPositionInLine());
++                usage.put("coordinateSpace", "expanded-parser-input");
++                found.add(usage);
++                bound.add(when.evaluateCondition());
++            }
++        }
++        if (!valid || found.size() < 2) {
++            diagnostics.add("platform-contract-unsupported-evaluate:DFHAID:" + evaluate.getStart().getLine());
++            return;
++        }
++        usages.addAll(found);
++        for (ParseTree tree : bound) markVisited(tree, visited);
++    }
++
++    private static void markVisited(ParseTree node, Set<ParseTree> visited) {
++        visited.add(node);
++        for (int i = 0; i < node.getChildCount(); i++) markVisited(node.getChild(i), visited);
++    }
++
+     private static <T extends ParserRuleContext> T ancestor(ParseTree node, Class<T> type) {
+         for (ParseTree current = node.getParent(); current != null; current = current.getParent())
+             if (type.isInstance(current)) return type.cast(current);

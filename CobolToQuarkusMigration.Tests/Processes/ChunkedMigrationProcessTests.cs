@@ -38,13 +38,13 @@ public class ChunkedMigrationProcessTests
             isJava: false);
 
         diagnostics.Should().ContainSingle();
-        diagnostics[0].FileName.Should().Be("ACCOUNTS.chunk-2.failed.cs");
+        diagnostics[0].FileName.Should().Be("ACCOUNTS.chunk-2.arrival-1.rejected.txt");
         diagnostics[0].OriginalCobolFileName.Should().Be("ACCOUNTS.cbl");
         diagnostics[0].Content.Should().Contain("CHUNK CONVERSION DID NOT PRODUCE USABLE");
     }
 
     [Fact]
-    public void CreateFailedChunkDiagnosticFiles_IgnoresFailuresWithoutDiagnosticContent()
+    public void CreateFailedChunkDiagnosticFiles_RetainsFailuresWithoutSentinelOrContent()
     {
         var result = new ChunkedFileResult
         {
@@ -67,7 +67,9 @@ public class ChunkedMigrationProcessTests
             }
         };
 
-        ChunkedMigrationProcess.CreateFailedChunkDiagnosticFiles(result, isJava: true)
-            .Should().BeEmpty();
+        var diagnostic = ChunkedMigrationProcess.CreateFailedChunkDiagnosticFiles(result, isJava: true)
+            .Should().ContainSingle().Which;
+        diagnostic.Content.Should().BeEmpty();
+        diagnostic.FileName.Should().EndWith(".rejected.txt");
     }
 }

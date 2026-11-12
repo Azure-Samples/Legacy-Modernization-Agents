@@ -7,6 +7,7 @@ let _activeRunId = null;
 let _runPollInterval = null;
 let _reportsList = [];
 let _chatWithReport = null; // path of report being used as chat context
+let _startingRun = false;
 
 // HTML-escape to prevent XSS from API-supplied strings
 const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
@@ -130,6 +131,7 @@ function initMissionControl() {
 // ── Run Commands ─────────────────────────────────────────────────────────────
 
 async function startRunCommand(command) {
+  if (_startingRun) return;
   const providerSelect = document.getElementById('mc-provider-select');
   const modelSelect = document.getElementById('mc-model-select');
   const langSelect = document.getElementById('mc-language-select');
@@ -141,18 +143,42 @@ async function startRunCommand(command) {
   const targetLanguage = langSelect?.value || 'Java';
   const speedProfile = speedSelect?.value || 'balanced';
   const name = nameInput?.value || '';
+  const dependencyMode = document.getElementById('mc-dependency-mode')?.value || 'strict';
+  if (dependencyMode === 'draft' && !confirm('Partial draft — NOT VERIFIED. Only independently justified whole programs will be converted. Blocked programs generate no code; see draft-conversion-plan.json for exact evidence deficiencies. This starts paid model work for eligible programs. Continue?')) return;
 
-  // Disable all start buttons
+  const request = { command, name, targetLanguage, speedProfile, provider, modelId, dependencyMode };
+  _startingRun = true;
   document.querySelectorAll('[data-run-command]').forEach(b => b.disabled = true);
 
   try {
+    if (['migrate', 'run', 'full', 'convert-only', 'convert', 'reverse-engineer', 'reverse', 're'].includes(command)
+        && dependencyMode !== 'partial') {
+      const readiness = await window.ConversionReadiness.read(request);
+      let panel = document.getElementById('mc-dependency-readiness');
+      if (!panel) {
+        panel = document.createElement('div');
+        panel.id = 'mc-dependency-readiness';
+        document.getElementById('mc-run-log')?.before(panel);
+      }
+      panel.innerHTML = window.ConversionReadiness.details(readiness);
+      if (!window.ConversionReadiness.allows(readiness, dependencyMode))
+        throw new Error(readiness.blockedMessage || 'Conversion will not start: valid program dependency evidence is missing or rejected.');
+    }
+    if (!await window.ConversionReadiness.reviewPrompts(request)) return;
     const res = await fetch('/api/runs/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ command, name, targetLanguage, speedProfile, provider, modelId })
+      body: JSON.stringify(request)
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const run = await res.json();
+    if (!res.ok) {
+      if (run.runId) {
+        _activeRunId = run.runId;
+        await loadManagedRuns();
+        await refreshRunLog();
+      }
+      throw new Error(run.error || `HTTP ${res.status}`);
+    }
     _activeRunId = run.runId;
 
     // Immediate feedback — clear the "Waiting" placeholder
@@ -167,6 +193,7 @@ async function startRunCommand(command) {
     console.error('Failed to start run:', err);
     alert(`Failed to start: ${err.message}`);
   } finally {
+    _startingRun = false;
     document.querySelectorAll('[data-run-command]').forEach(b => b.disabled = false);
   }
 }
@@ -238,7 +265,7 @@ function updateRunControls(run) {
   const pauseBtn = document.getElementById('mc-pause-btn');
 
   if (statusEl) {
-    statusEl.textContent = `${statusIcon(run.status)} ${run.status.toUpperCase()}`;
+    statusEl.textContent = `${statusIcon(run.status)} ${run.status.toUpperCase()}${run.error ? ' · ' + run.error : ''}${run.historyWarning ? ' · ' + run.historyWarning : ''}`;
     statusEl.className = `mc-status mc-status-${run.status}`;
   }
   if (stopBtn) stopBtn.disabled = !['running', 'paused'].includes(run.status);
@@ -397,14 +424,20 @@ async function loadReports() {
 function renderReportDropdown() {
   const select = document.getElementById('mc-report-select');
   if (!select) return;
-  select.innerHTML = '<option value="">No reports</option>';
+  if (_reportsList.length === 0) {
+    select.innerHTML = '<option value="">No reports</option>';
+    return;
+  }
+  // "latest" is resolved on the server at question time, so a new RE run is picked up without reselecting.
+  select.innerHTML = '<option value="latest">Latest report</option>';
   for (const r of _reportsList) {
     const opt = document.createElement('option');
     opt.value = r.path;
     opt.textContent = `${r.name} (${new Date(r.lastModified).toLocaleDateString()})`;
     select.appendChild(opt);
   }
-  if (_reportsList.length > 0) select.value = _reportsList[0].path;
+  if (_chatWithReport && [...select.options].some(o => o.value === _chatWithReport)) select.value = _chatWithReport;
+  else select.value = 'latest';
 }
 
 function toggleReportChat() {
@@ -412,12 +445,19 @@ function toggleReportChat() {
   const select = document.getElementById('mc-report-select');
   const indicator = document.getElementById('mc-report-indicator');
 
+  const wasActive = !!_chatWithReport;
   if (toggle?.checked && select?.value) {
     _chatWithReport = select.value;
     if (indicator) { indicator.textContent = '📊 Chatting with report'; indicator.style.display = 'inline'; }
+    window.ChatHistory?.appendSystemNotice(
+      `Answering from the report "${getChatReportLabel()}". Questions are answered from the report only, not from the migration database.`,
+      'report');
   } else {
     _chatWithReport = null;
     if (indicator) indicator.style.display = 'none';
+    if (wasActive) {
+      window.ChatHistory?.appendSystemNotice('Answering from the migration database again.', 'database');
+    }
   }
 }
 
@@ -428,3 +468,9 @@ function selectReport() {
 
 // Export for chat integration
 window.getChatReportContext = function() { return _chatWithReport; };
+window.getChatReportLabel = function() {
+  if (!_chatWithReport) return null;
+  // "latest" is resolved again by the server for every question; the answer names the report used.
+  if (_chatWithReport === 'latest') return 'latest report';
+  return _chatWithReport.split('/').pop();
+};

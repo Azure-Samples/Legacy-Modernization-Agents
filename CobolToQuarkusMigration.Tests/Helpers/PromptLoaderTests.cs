@@ -63,6 +63,19 @@ public sealed class PromptLoaderTests
     }
 
     [Fact]
+    public void SpringProjectionUsesConstructorInjectionInsteadOfCdiMappings()
+    {
+        var prompt = JavaConverterProjection.BuildPromptBlock(CreateFacts(), "Spring");
+        prompt.Should().Contain("constructor-injected Spring services")
+            .And.NotContain("interface + @Inject field + method call")
+            .And.NotContain("each becomes an @Inject service interface")
+            .And.NotContain("Panache entity")
+            .And.NotContain("Quarkus extensions")
+            .And.Contain("IO — DB TABLES (each becomes a Spring Data")
+            .And.Contain("EXTERNAL EFFECTS (use to choose Spring Boot starters");
+    }
+
+    [Fact]
     public void RektProjection_UsesCommonPolicyAndTargetSpecificMappings()
     {
         var facts = CreateFacts();

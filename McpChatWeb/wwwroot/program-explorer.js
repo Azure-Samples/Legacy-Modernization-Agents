@@ -21,6 +21,9 @@ class ProgramExplorerView {
     this.loading = false;
     this.error = null;
     this.loaded = false;
+    this.readiness = null;
+    this.dependencyPlans = new Map();
+    this.readinessRevision = 0;
     // Open the sections a conversion decision actually rests on; flow and SQL detail are
     // reference material and stay collapsed until asked for.
     this.openSections = new Set(['summary', 'copybooks', 'dependencies', 'convert']);
@@ -31,7 +34,7 @@ class ProgramExplorerView {
   // Shared with the Convert Programs tab so a fidelity label means the same thing in both.
   get fidelityMap() {
     return (typeof window !== 'undefined' && window.PP_FIDELITY) || {
-      full: { label: 'Full', color: '#10b981', why: '' },
+      full: { label: 'Full', color: 'var(--cp-text-muted)', why: 'Recorded structural parse only; dependency evidence separately controls conversion readiness.' },
       partial: { label: 'Partial', color: '#f59e0b', why: '' },
       'deps-only': { label: 'Deps only', color: '#38bdf8', why: '' },
       failed: { label: 'Failed', color: '#ef4444', why: '' },
@@ -44,14 +47,28 @@ class ProgramExplorerView {
     this.render();
   }
 
-  async loadList() {
+  async loadList(refresh = false) {
+    const revision = ++this.readinessRevision;
+    this.readiness = null;
+    this.dependencyPlans.clear();
+    this.readinessWarning = 'Checking dependency evidence. Unknown does not authorise conversion.';
+    this.render();
     try {
-      const resp = await fetch('/api/modernization/programs');
+      const [resp, assessment] = await Promise.all([
+        fetch('/api/modernization/programs'),
+        window.ConversionReadiness.read(undefined, { refresh }).then(report => ({ report }), error => ({ error }))
+      ]);
+      if (revision !== this.readinessRevision) return;
+      this.readiness = assessment.report || null;
+      this.dependencyPlans = new Map((this.readiness?.programs || []).map(p => [p.program, p]));
+      this.readinessWarning = assessment.error ? `Dependency readiness unavailable: ${assessment.error.message}. Unknown does not authorise conversion.` : null;
       if (!resp.ok) { this.error = `Program list unavailable (HTTP ${resp.status}).`; return; }
       const payload = await resp.json();
+      if (revision !== this.readinessRevision) return;
       this.programs = payload.programs || [];
       this.note = payload.note || null;
     } catch (e) {
+      if (revision !== this.readinessRevision) return;
       console.error('Program Explorer: failed to load programs', e);
       this.error = 'The program list could not be loaded.';
     }
@@ -102,7 +119,7 @@ class ProgramExplorerView {
     }
 
     root.innerHTML = `
-      <div class="px-wrap">
+      <div class="px-wrap" data-portal-theme="dark">
         <div class="px-header">
           <div>
             <h3 class="px-title">Program Explorer</h3>
@@ -111,10 +128,12 @@ class ProgramExplorerView {
               enough to convert it.
             </div>
           </div>
+          <button type="button" id="px-refresh-readiness">Refresh readiness</button>
           <input class="px-filter" id="px-filter" placeholder="Filter by name or path…"
                  value="${this.esc(this.filter)}" />
         </div>
         ${this.note ? `<div class="px-note">${this.esc(this.note)}</div>` : ''}
+        ${this.readinessWarning ? `<p class="dep-readiness" role="alert">${this.esc(this.readinessWarning)}</p>` : ''}
         <div class="px-body">
           <div class="px-list-pane">
             <div class="px-list-head">${this.filtered().length} of ${this.programs.length} programs</div>
@@ -140,6 +159,10 @@ class ProgramExplorerView {
 
     this.bindRows();
     this.bindDetail();
+    document.getElementById('px-refresh-readiness')?.addEventListener('click', async () => {
+      await this.loadList(true);
+      this.render();
+    });
   }
 
   bindRows() {
@@ -200,7 +223,7 @@ class ProgramExplorerView {
         ? `<span class="px-warn" title="${p.missingCopybookCount} copybook(s) absent">⚠ ${p.missingCopybookCount}</span>`
         : '';
       return `
-        <div class="px-row${selected}" data-identity="${this.esc(p.relativePath)}">
+        <div class="px-row dep-row-${window.ConversionReadiness.state(this.dependencyPlans.get(p.relativePath))}${selected}" data-identity="${this.esc(p.relativePath)}">
           <div class="px-row-main">
             <span class="px-name">${this.esc(p.basename)}</span>
             <span class="px-path">${this.esc(p.relativePath)}</span>
@@ -208,7 +231,8 @@ class ProgramExplorerView {
           <div class="px-row-meta">
             <span class="px-loc">${(p.linesOfCode || 0).toLocaleString()} LOC</span>
             ${missing}
-            <span class="px-fid" style="color:${fid.color}">${this.esc(fid.label)}</span>
+            ${window.ConversionReadiness.badge(this.dependencyPlans.get(p.relativePath))}
+            <span class="px-fid" style="color:${fid.color}" title="Recorded structural parse only; dependency evidence separately controls conversion readiness.">Parse: ${this.esc(fid.label)}</span>
           </div>
         </div>`;
     }).join('');
@@ -238,6 +262,8 @@ class ProgramExplorerView {
 
     return [
       this.detailHeader(d),
+      window.ConversionReadiness.details(this.readiness && this.dependencyPlans.has(this.selected)
+        ? { ...this.readiness, programs: [this.dependencyPlans.get(this.selected)] } : null),
       this.sectionSummary(d),
       this.sectionCopybooks(d),
       this.sectionDependencies(d),
@@ -254,7 +280,7 @@ class ProgramExplorerView {
       <div class="px-detail-path">${this.esc(d.relativePath || d.identity)}</div>
       <div class="px-detail-stats">
         <span>${(d.linesOfCode || 0).toLocaleString()} lines</span>
-        <span style="color:${fid.color}">${this.esc(fid.label)} parse</span>
+        <span style="color:${fid.color}">Recorded parse: ${this.esc(fid.label)}</span>
         <span>${d.isCopybook ? 'Copybook' : 'Program'}</span>
       </div>`;
   }
@@ -315,9 +341,8 @@ class ProgramExplorerView {
     const body = `
       ${missing.length > 0 ? `
         <div class="px-callout px-callout-warn">
-          ${missing.length} of ${all.length} copybooks are not in the source drop. The parser
-          substituted a generated stub for each, so the fields behind them have no known layout
-          and a conversion will infer them.
+          ${missing.length} of ${all.length} copybooks are not in the source drop.
+          Their layouts are unknown. Supply the actual definitions; strict conversion must not invent them.
         </div>
         <div class="px-group-title">Missing</div>
         <div class="px-chips">${missing.map(c =>
@@ -439,34 +464,34 @@ class ProgramExplorerView {
   sectionConvert(d) {
     const language = (window.PP_LANGUAGE || 'Java');
     const identity = d.relativePath || d.identity;
-    const stem = (d.basename || '').replace(/\.[^.]+$/, '');
     const closure = (d.callClosure || []).length;
 
-    const cmd = `./doctor.sh convert-only --language ${language} --program ${stem}`
-      + (closure > 0 ? ' --include-callees' : '');
-
     const blocked = (d.missingCopybooks || []).length;
+    const identities = [identity, ...(d.callClosure || [])];
+    const evidencePassed = identities
+      .every(id => this.dependencyPlans.get(id)?.status === 'eligible');
+    const cmd = evidencePassed ? window.ConversionReadiness.command(this.readiness, identities, language) : '';
 
     const body = `
       ${blocked > 0 ? `
         <div class="px-callout px-callout-warn">
-          ${blocked} copybook(s) are still absent. Converting now produces code whose record
-          layouts are inferred rather than carried across. Supplying them first is the difference
-          between a conversion and a guess.
+          ${blocked} copybook(s) are still absent. Supply the actual layouts before strict conversion.
         </div>` : `
         <div class="px-callout px-callout-ok">
-          Every copybook this program uses was found. A conversion works from the real layouts.
+          No missing copybooks were reported here. That alone does not establish dependency readiness.
         </div>`}
       <div class="px-group-title">Convert this program</div>
-      <div class="px-cmd-row">
+      ${evidencePassed ? `<div class="px-cmd-row">
         <code class="px-cmd">${this.esc(cmd)}</code>
         <button class="px-copy" id="px-copy-cmd" data-cmd="${this.esc(cmd)}">Copy</button>
-      </div>
+      </div>` : '<p class="dep-state dep-state-missing">Conversion will not start: the program or its selected callees lack passing dependency evidence.</p>'}
       <div class="px-hint">
         ${closure > 0
-          ? `<code>--include-callees</code> is added because this program reaches ${closure} other program(s).`
-          : 'This program calls nothing, so it converts on its own.'}
+          ? `The exact ${closure} reported callee(s) are included in the command selection.`
+          : 'No callees were reported in this view; dependency evidence is still required.'}
         Run it from the repository root. Identity: <code>${this.esc(identity)}</code>.
+        Review each applicable agent's prompts in <code>Agents/Prompts</code> before running.
+        The doctor.sh command checks setup and connectivity, binds the assessed source and evidence folder, and rechecks dependencies.
       </div>`;
 
     return this.section('convert', 'Modernization', '', body);

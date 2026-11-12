@@ -281,7 +281,7 @@ public class ChunkingSettings
 │   ╔════════════════════════════════════════════════════════════════════════╗    │
 │   ║ PHASE 3: PARALLEL CONVERSION (Rate-limited via SemaphoreSlim)          ║    │
 │   ║                                                                        ║    │
-│   ║   MaxParallelChunks: 3 workers (conversion is heavier than analysis)  ║    │
+│   ║   Files in parallel; chunks of one file strictly in order             ║    │
 │   ║   Profile TokensPerMinute (Azure OpenAI TPM)                          ║    │
 │   ║   RateLimitSafetyFactor: 0.7 (use only 70% of budget)                ║    │
 │   ║   StaggerDelay: 1000ms between chunk starts                           ║    │
@@ -823,7 +823,7 @@ CREATE TABLE forward_references (
 1. **File Too Large → Uses Chunking Automatically**
    ```bash
    # SmartMigrationOrchestrator auto-detects and routes
-   dotnet run --source source
+   ./doctor.sh run --source source
    ```
 
 2. **Chunk Too Large Error**
@@ -882,7 +882,7 @@ CREATE TABLE forward_references (
 | Setting | Default | Purpose |
 |---------|---------|---------|
 | `MaxParallelAnalysis` | 6 | Workers for reverse engineering |
-| `MaxParallelChunks` | 3 | Workers for code conversion |
+| `MaxParallelChunks` | 3 | Legacy; chunks of one file are always converted sequentially (continuations need the previous chunk's output) |
 | `TokensPerMinute` (model profile) | 500,000 | Azure OpenAI TPM limit, shared by every agent |
 | `RateLimitSafetyFactor` | 0.7 | Use 70% of budget for safety margin |
 | `StaggerDelay` | 500-1000ms | Delay between parallel chunk starts |

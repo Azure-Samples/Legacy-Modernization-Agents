@@ -16,20 +16,23 @@ public static class JclFactsCommand
         var outputOption = new Option<string?>("--output-dir", "Where to write the facts. Defaults to <repo-root>/output/rekt.")
         { Arity = ArgumentArity.ZeroOrOne };
         cmd.AddOption(outputOption);
+        var allowEmptyOption = new Option<bool>("--allow-empty", "Allow an empty JCL refresh when scanning a COBOL-only estate.");
+        cmd.AddOption(allowEmptyOption);
 
-        cmd.SetHandler((string sourceDir, string? outputDir) =>
+        cmd.SetHandler((string sourceDir, string? outputDir, bool allowEmpty) =>
         {
-            if (!Directory.Exists(sourceDir))
-            {
-                Console.Error.WriteLine($"Source dir not found: {sourceDir}");
-                Environment.ExitCode = 2;
-                return;
-            }
-
             var output = outputDir ?? Path.Join(Directory.GetCurrentDirectory(), "output", "rekt");
-            var written = JclEstate.Write(sourceDir, output);
-            Console.Error.WriteLine($"jcl-facts: wrote {written} job fact file(s) and {JclEstate.LineageFileName} to {output}");
-        }, sourceArg, outputOption);
+            try
+            {
+                var written = JclEstate.Write(sourceDir, output, allowEmpty);
+                Console.Error.WriteLine($"jcl-facts: wrote {written} job fact file(s) and {JclEstate.LineageFileName} to {output}");
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
+            {
+                Console.Error.WriteLine($"jcl-facts failed: {ex.Message}");
+                Environment.ExitCode = 2;
+            }
+        }, sourceArg, outputOption, allowEmptyOption);
 
         return cmd;
     }

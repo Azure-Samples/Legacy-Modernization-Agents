@@ -1,0 +1,28 @@
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsDependencyAnalysis.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsDependencyAnalysis.java
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsDependencyAnalysis.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsDependencyAnalysis.java
+@@ -115,15 +115,19 @@
+             Matcher constant = Pattern.compile("01" + Pattern.quote(value.toUpperCase(Locale.ROOT))
+                     + "PIC(?:TURE)?(?:IS)?X\\(0*8\\)VALUE(?:IS)?(['\"])([A-Z0-9@$#_-]{1,8})\\1\\.",
+                     Pattern.CASE_INSENSITIVE).matcher(declaration.getText());
+-            boolean workingStorage = false;
+-            for (ParseTree ancestor = declaration.getParent(); ancestor != null; ancestor = ancestor.getParent())
+-                if (ancestor.getClass().getSimpleName().equals("WorkingStorageSectionContext")) workingStorage = true;
+-            if (!constant.matches() || !workingStorage || !immutable(tree, value, declaration)) {
++            String storageSection = null;
++            for (ParseTree ancestor = declaration.getParent(); ancestor != null; ancestor = ancestor.getParent()) {
++                String section = ancestor.getClass().getSimpleName();
++                if (Set.of("WorkingStorageSectionContext", "LocalStorageSectionContext").contains(section))
++                    storageSection = section;
++            }
++            if (!constant.matches() || storageSection == null || !immutable(tree, value, declaration)) {
+                 issues.add("dynamic-cics-program-binding-unresolved:" + value);
+                 return;
+             }
+             name = constant.group(2);
+-            resolution.put("kind", "immutable-working-storage-literal");
++            resolution.put("kind", "LocalStorageSectionContext".equals(storageSection)
++                    ? "immutable-local-storage-literal" : "immutable-working-storage-literal");
+             resolution.put("operand", value);
+             resolution.put("definitionSyntax", ParsePipeline.dialectSyntax(declaration));
+             resolution.put("usageProof", "single-native-program:all-symbol-references-are-cics-program-operands");

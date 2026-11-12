@@ -8,6 +8,7 @@ public enum RektParseOutcome
     NoDialect,
     StubBacked,
     Full,
+    Partial,
 }
 
 public enum RektScanConfidence

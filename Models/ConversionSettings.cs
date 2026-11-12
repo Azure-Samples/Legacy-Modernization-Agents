@@ -40,6 +40,11 @@ public enum NamingStrategy
 /// </summary>
 public class ConversionSettings
 {
+    public string JavaFramework { get; set; } = "Quarkus";
+
+    public string DependencyMode { get; set; } =
+        Environment.GetEnvironmentVariable("CONVERSION_DEPENDENCY_MODE") ?? "strict";
+
     /// <summary>
     /// The naming strategy to use for converting legacy names to modern names.
     /// Default: Hybrid (AI suggests once, then cached forever).

@@ -85,7 +85,7 @@ public class ResponsesApiClient : IDisposable
     private readonly ILogger? _logger;
     private readonly EnhancedLogger? _enhancedLogger;
     private readonly JsonSerializerOptions _jsonOptions;
-    
+
     // Auth state - Semaphore for thread-safe token acquisition
     private readonly SemaphoreSlim _authLock = new(1, 1);
     private bool _hasSwitchedToEntraId;
@@ -129,14 +129,15 @@ public class ResponsesApiClient : IDisposable
     /// <param name="apiVersion">API version (default: 2025-04-01-preview)</param>
     /// <param name="rateLimitSafetyFactor">Safety margin for rate limiting (0.5–0.99, default 0.90)</param>
     public ResponsesApiClient(
-        string endpoint, 
-        string apiKey, 
-        string deploymentName, 
+        string endpoint,
+        string apiKey,
+        string deploymentName,
         ILogger? logger = null,
         EnhancedLogger? enhancedLogger = null,
         ModelProfileSettings? profile = null,
         string apiVersion = "2025-04-01-preview",
-        double rateLimitSafetyFactor = 0.90)
+        double rateLimitSafetyFactor = 0.90,
+        HttpMessageHandler? transport = null)
     {
         if (string.IsNullOrEmpty(endpoint))
             throw new ArgumentNullException(nameof(endpoint));
@@ -157,7 +158,7 @@ public class ResponsesApiClient : IDisposable
         _rateLimiter = LlmRateLimiter.Shared(
             $"responses|{_endpoint}|{_deploymentName}", Profile, rateLimitSafetyFactor, logger);
 
-        _httpClient = new HttpClient();
+        _httpClient = transport is null ? new HttpClient() : new HttpClient(transport);
         if (!string.IsNullOrEmpty(_apiKey))
         {
             _httpClient.DefaultRequestHeaders.Add("api-key", _apiKey);
@@ -339,7 +340,7 @@ public class ResponsesApiClient : IDisposable
     /// MinOutputTokens floor is conditional — only applied for medium+ complexity or large inputs.
     /// </summary>
     public (int maxOutputTokens, string reasoningEffort) CalculateTokenSettings(
-        string systemPrompt, 
+        string systemPrompt,
         string userPrompt)
     {
         var inputTokens = EstimateTokens(systemPrompt) + EstimateTokens(userPrompt);
@@ -422,14 +423,14 @@ public class ResponsesApiClient : IDisposable
     {
         var estimatedInputTokens = EstimateTokens(systemPrompt) + EstimateTokens(userPrompt);
         var estimatedTotalTokens = estimatedInputTokens + maxOutputTokens;
-        
+
         // Wait for rate limit capacity (TPM + RPM)
         using var reservation = await _rateLimiter.AcquireAsync(estimatedTotalTokens, cancellationToken);
-        
+
         _logger?.LogInformation(
             "Responses API: ~{Input} input + {MaxOutput} max output = ~{Total} total tokens, reasoning='{Effort}'",
             estimatedInputTokens, maxOutputTokens, estimatedTotalTokens, reasoningEffort);
-        
+
         if (estimatedInputTokens > 50000)
         {
             _logger?.LogWarning(
@@ -458,14 +459,14 @@ public class ResponsesApiClient : IDisposable
         };
 
         var json = JsonSerializer.Serialize(requestBody, _jsonOptions);
-        
+
         var startTime = DateTime.UtcNow;
-        
+
         // Track API call start for statistics
         var apiCallId = _enhancedLogger?.LogApiCallStart(
-            "ResponsesAPI", 
-            "POST", 
-            uri, 
+            "ResponsesAPI",
+            "POST",
+            uri,
             _deploymentName,
             $"Input: {estimatedInputTokens} tokens, MaxOutput: {maxOutputTokens}, Reasoning: {reasoningEffort}") ?? 0;
 
@@ -476,7 +477,7 @@ public class ResponsesApiClient : IDisposable
         while (attempts < maxAttempts)
         {
             attempts++;
-            
+
             try
             {
                 using var requestMessage = new HttpRequestMessage(HttpMethod.Post, uri);
@@ -498,7 +499,7 @@ public class ResponsesApiClient : IDisposable
                         _httpClient.DefaultRequestHeaders.Remove("api-key");
                     }
                 }
-                
+
                 using var response = await _httpClient.SendAsync(requestMessage, cancellationToken);
                 var responseText = await response.Content.ReadAsStringAsync(cancellationToken);
 
@@ -511,7 +512,7 @@ public class ResponsesApiClient : IDisposable
                         if (responseText.Contains("AuthenticationTypeDisabled") || responseText.Contains("Key based authentication is disabled"))
                         {
                             _logger?.LogWarning("⚠️ Azure Resource has disabled API Key authentication. Automatically switching to Microsoft Entra ID (DefaultAzureCredential)...");
-                            
+
                             // Switch strategy and retry immediately
                             _hasSwitchedToEntraId = true;
                             _enhancedLogger?.LogBehindTheScenes("AUTH_SWITCH", "EntraID", "Switched to Entra ID auth due to 403", "System");
@@ -529,9 +530,9 @@ public class ResponsesApiClient : IDisposable
                         throw new RateLimitedException("azure-openai-responses", _deploymentName, retryAfter,
                             $"Responses API rate-limited (429){(retryAfter is { } ra ? $", retry after {ra.TotalSeconds:F0}s" : "")}: {responseText}");
                     }
-                    
+
                     // Check for Tenant Mismatch error
-                    if (response.StatusCode == System.Net.HttpStatusCode.BadRequest && 
+                    if (response.StatusCode == System.Net.HttpStatusCode.BadRequest &&
                         responseText.Contains("Tenant provided in token does not match resource token"))
                     {
                         var tenantMsg = "🛑 Tenant Mismatch Error: The authentication token is for the wrong Azure Tenant.\n" +
@@ -549,57 +550,57 @@ public class ResponsesApiClient : IDisposable
                 }
 
                 var parsed = JsonNode.Parse(responseText);
-                
+
                 // Extract actual token usage for rate limiting
                 var usage = parsed?["usage"];
                 var actualInputTokens = usage?["input_tokens"]?.GetValue<int>() ?? estimatedInputTokens;
                 var actualOutputTokens = usage?["output_tokens"]?.GetValue<int>() ?? 0;
                 var reasoningTokens = usage?["output_tokens_details"]?["reasoning_tokens"]?.GetValue<int>() ?? 0;
                 var actualTotalTokens = actualInputTokens + actualOutputTokens;
-                
+
                 // Record actual usage for rate limiting
                 reservation.Commit(actualTotalTokens);
-                
+
                 var elapsed = DateTime.UtcNow - startTime;
-                
+
                 // Track API call completion for statistics
                 _enhancedLogger?.LogApiCallEnd(
-                    apiCallId, 
-                    $"Output: {actualOutputTokens} tokens ({reasoningTokens} reasoning)", 
+                    apiCallId,
+                    $"Output: {actualOutputTokens} tokens ({reasoningTokens} reasoning)",
                     actualTotalTokens);
-                
+
                 _logger?.LogInformation(
                     "Responses API completed in {Elapsed:F1}s: {Input} input + {Output} output ({Reasoning} reasoning) = {Total} tokens",
                     elapsed.TotalSeconds, actualInputTokens, actualOutputTokens, reasoningTokens, actualTotalTokens);
-                
+
                 // Log reasoning_ratio — the single most diagnostic metric for threshold tuning
                 var reasoningRatio = (double)reasoningTokens / Math.Max(actualOutputTokens, 1);
                 _logger?.LogInformation(
                     "Reasoning ratio: {Ratio:F2} (reasoning={Reasoning}, output={Output})",
                     reasoningRatio, reasoningTokens, actualOutputTokens);
-                
+
                 // Check for incomplete status — throw TYPED exception for reasoning exhaustion
                 var status = parsed?["status"]?.GetValue<string>();
                 if (status == "incomplete")
                 {
                     var reason = parsed!["incomplete_details"]?["reason"]?.GetValue<string>();
-                    
+
                     if (reason == "max_output_tokens" && reasoningTokens >= actualOutputTokens * 0.9)
                     {
                         // TYPED exception — caught by AgentBase for retry with escalated tokens
                         throw new ReasoningExhaustionException(
                             maxOutputTokens, reasoningTokens, actualOutputTokens, reasoningEffort);
                     }
-                    
+
                     _logger?.LogWarning(
                         "Response incomplete: {Reason}. Output={Output}, Reasoning={Reasoning}",
                         reason, actualOutputTokens, reasoningTokens);
                 }
-                
+
                 // Parse the output
                 return ParseResponseOutput(parsed, responseText);
             }
-            catch (Exception ex) when (ex is not InvalidOperationException && 
+            catch (Exception ex) when (ex is not InvalidOperationException &&
                                         ex is not ReasoningExhaustionException &&
                                         !(ex is HttpRequestException && attempts < maxAttempts))
             {
@@ -608,7 +609,7 @@ public class ResponsesApiClient : IDisposable
                 throw;
             }
         }
-        
+
         throw new InvalidOperationException("Should not reach here");
     }
 
@@ -644,7 +645,7 @@ public class ResponsesApiClient : IDisposable
                     }
                 }
             }
-            
+
             var result = sb.ToString();
             if (!string.IsNullOrEmpty(result))
             {
@@ -670,10 +671,10 @@ public class ResponsesApiClient : IDisposable
             return;
         }
 
-        try 
+        try
         {
             await _authLock.WaitAsync(cancellationToken);
-            
+
             // Re-check after acquiring lock
             if (!string.IsNullOrEmpty(_cachedAccessToken) && DateTimeOffset.UtcNow < _accessTokenExpiresOn)
             {
@@ -690,7 +691,7 @@ public class ResponsesApiClient : IDisposable
             _cachedAccessToken = tokenResult.Token;
             // Expire 2 minutes early to be safe
             _accessTokenExpiresOn = tokenResult.ExpiresOn.AddMinutes(-2);
-            
+
             _logger?.LogInformation("Successfully acquired Entra ID access token (Expires: {Expires})", _accessTokenExpiresOn);
         }
         catch (Exception ex)

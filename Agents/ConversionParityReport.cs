@@ -84,6 +84,10 @@ public sealed record ProgramParityResult
     // re-deriving the verdict from the score, which cannot see total axis loss.
     [JsonPropertyName("failed")] public bool Failed { get; init; }
 
+    [JsonPropertyName("repairAttempts")] public int RepairAttempts { get; init; }
+    [JsonPropertyName("acceptedRepairs")] public int AcceptedRepairs { get; init; }
+    [JsonPropertyName("repairNote")] public string? RepairNote { get; init; }
+
     [JsonPropertyName("axes")] public IReadOnlyList<ParityAxisResult> Axes { get; init; }
         = Array.Empty<ParityAxisResult>();
 

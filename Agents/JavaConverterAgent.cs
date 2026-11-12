@@ -104,7 +104,7 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
         {
             // System prompt for Java conversion
             var systemPrompt = PromptLoader.LoadSectionValidated(
-                "JavaConverter", "System", new Dictionary<string, string>());
+                JavaGeneration.ConverterPrompt(Settings?.ConversionSettings), "System", new Dictionary<string, string>());
 
             // NOTE: Large files are handled by SmartMigrationOrchestrator which routes them
             // to ChunkedMigrationProcess. Files reaching this agent should fit within API limits.
@@ -119,8 +119,10 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
                     cobolFile.FileName, estimatedTokens);
             }
 
-            // Sanitize COBOL content for content filtering
-            string sanitizedContent = SanitizeCobolContent(contentToConvert);
+            // Partial selections must keep source names verbatim: RequireCandidate checks output against them.
+            string sanitizedContent = Settings?.ConversionSettings.DependencyMode == "partial"
+                ? contentToConvert
+                : SanitizeCobolContent(contentToConvert);
 
             // Inject business logic context from reverse engineering when available
             var businessLogic = BusinessLogicReuse.Find(_businessLogicExtracts, cobolFile.FileName, cobolFile.FilePath);
@@ -133,10 +135,13 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
 
             // REKT structural context + shared-types registry (opt-in via ENABLE_REKT_CONTEXT).
             var structuralContextBuilder = new StringBuilder();
-            await RektPromptInjector.InjectAsync(
-                structuralContextBuilder, "Java", cobolFile.FileName, AgentName, _runId, Logger);
+            if (Settings?.ConversionSettings.DependencyMode != "partial")
+                await RektPromptInjector.InjectAsync(
+                    structuralContextBuilder, "Java", SourcePathHelper.ForFile(cobolFile), AgentName, _runId, Logger, SourceDirectory, RepositoryRoot,
+                    verifiedDraftContext: Settings?.ConversionSettings.DependencyMode == "draft",
+                    javaFramework: JavaGeneration.Framework(Settings?.ConversionSettings));
 
-            var userPrompt = PromptLoader.LoadSectionValidated("JavaConverter", "User", new Dictionary<string, string>
+            var userPrompt = PromptLoader.LoadSectionValidated(JavaGeneration.ConverterPrompt(Settings?.ConversionSettings), "User", new Dictionary<string, string>
             {
                 ["CobolContent"] = sanitizedContent,
                 ["Analysis"] = cobolAnalysis.RawAnalysisData,
@@ -212,7 +217,7 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
 
             // Extract AI's semantic class name (based on domain/action/type pattern)
             string aiClassName = ExtractClassNameFromCode(javaCode);
-            string packageName = GetPackageName(javaCode);
+            string packageName = JavaSourceLexical.PackageName(javaCode) ?? AssignedNamespace(cobolFile, "Java");
 
             // Prefer AI-generated semantic name if it's not generic
             // Fall back to filename-derived name only if AI gave a generic name
@@ -233,7 +238,7 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
                 // Update the code to use the new class name
                 if (aiClassName != finalClassName)
                 {
-                    javaCode = NamingHelper.ReplaceGenericClassName(javaCode, aiClassName, finalClassName);
+                    javaCode = JavaSourceLexical.RenameIdentifier(javaCode, aiClassName, finalClassName);
                 }
             }
 
@@ -244,7 +249,8 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
                 Content = javaCode,
                 ClassName = finalClassName,
                 PackageName = packageName,
-                OriginalCobolFileName = cobolFile.FileName
+                OriginalCobolFileName = cobolFile.FileName,
+                OriginalSourcePath = SourcePathHelper.ForFile(cobolFile)
             };
 
             Logger.LogInformation("Completed conversion of COBOL file to Java: {FileName}", cobolFile.FileName);
@@ -362,7 +368,7 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
     private JavaFile CreateFallbackJavaFile(CobolFile cobolFile, CobolAnalysis cobolAnalysis, string reason)
     {
         var className = NamingHelper.GetFallbackClassName(cobolFile.FileName);
-        var packageName = "com.example.cobol";
+        var packageName = AssignedNamespace(cobolFile, "Java");
         var sanitizedReason = reason.Replace("\"", "'");
 
         var javaCode = $$"""
@@ -386,52 +392,25 @@ public class {{className}} {
             PackageName = packageName,
             ClassName = className,
             Content = javaCode,
-            OriginalCobolFileName = cobolFile.FileName
+            OriginalCobolFileName = cobolFile.FileName,
+            OriginalSourcePath = SourcePathHelper.ForFile(cobolFile)
         };
     }
 
     private string ExtractJavaCode(string input)
     {
-        input = ConversionOutputGuard.ExtractFencedCode(input, "```java");
-
-        // Prefer a balanced class body when a truncated response restarts from scratch.
-        var firstPkg = input.IndexOf("package ", StringComparison.Ordinal);
-        if (firstPkg >= 0)
-        {
-            var afterFirstPkg = input.IndexOf('\n', firstPkg) + 1;
-            if (afterFirstPkg > 0)
-            {
-                var secondPkg = input.IndexOf("package ", afterFirstPkg, StringComparison.Ordinal);
-                if (secondPkg > 0)
-                {
-                    var firstBody = input.Substring(firstPkg, secondPkg - firstPkg);
-                    var secondBody = input.Substring(secondPkg);
-                    bool firstBalanced = firstBody.Count(c => c == '{') == firstBody.Count(c => c == '}');
-                    bool secondBalanced = secondBody.Count(c => c == '{') == secondBody.Count(c => c == '}');
-                    string keep;
-                    if (firstBalanced && !secondBalanced) keep = firstBody;
-                    else if (!firstBalanced && secondBalanced) keep = secondBody;
-                    else keep = secondBody.Length >= firstBody.Length ? secondBody : firstBody;
-                    Logger.LogWarning(
-                        "[JavaConverterAgent] Duplicate 'package …;' detected in LLM output (first={FirstLen}c balanced={FirstBal}, second={SecondLen}c balanced={SecondBal}) — keeping the {Pick}.",
-                        firstBody.Length, firstBalanced, secondBody.Length, secondBalanced,
-                        keep == firstBody ? "first" : "second");
-                    input = keep.TrimEnd();
-                }
-            }
-        }
-
-        return input;
+        return JavaSourceLexical.ExtractResponse(input);
     }
 
     private string ValidateJavaCode(string input)
     {
         // Fail loud on unusable output. A silent 0-byte "success" is worse than a
         // file that explains what went wrong, so write a self-documenting stub.
-        var hasPkgFinal = input.Contains("package ", StringComparison.Ordinal);
-        var hasClassFinal = ConversionOutputGuard.DeclaresType(input);
-        var opensFinal = input.Count(c => c == '{');
-        var closesFinal = input.Count(c => c == '}');
+        var lexicalCode = JavaSourceLexical.MaskNonCode(input);
+        var hasPkgFinal = JavaSourceLexical.PackageName(input) is not null;
+        var hasClassFinal = JavaSourceLexical.ClassName(input) is not null;
+        var opensFinal = lexicalCode.Count(c => c == '{');
+        var closesFinal = lexicalCode.Count(c => c == '}');
         if (!hasPkgFinal || !hasClassFinal || opensFinal != closesFinal)
         {
             Logger.LogWarning(
@@ -471,46 +450,7 @@ public class {{className}} {
     /// </summary>
     private string ExtractClassNameFromCode(string javaCode)
     {
-        try
-        {
-            var lines = javaCode.Split('\n');
-            foreach (var line in lines)
-            {
-                var trimmedLine = line.Trim();
-                if (trimmedLine.StartsWith("public class ") || trimmedLine.StartsWith("class "))
-                {
-                    var classIndex = trimmedLine.IndexOf("class ", StringComparison.Ordinal);
-                    if (classIndex >= 0)
-                    {
-                        var afterClass = trimmedLine.Substring(classIndex + "class ".Length);
-                        var className = afterClass.Split('{', ' ', '\t', '\r', '\n', ':')[0].Trim();
-                        if (NamingHelper.IsValidIdentifier(className)) return className;
-                    }
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            Logger.LogWarning(ex, "Error extracting class name from Java code");
-        }
-        return "ConvertedCobolProgram";
-    }
-
-    private string GetPackageName(string javaCode)
-    {
-        var packageIndex = javaCode.IndexOf("package ");
-        if (packageIndex >= 0)
-        {
-            var start = packageIndex + "package ".Length;
-            var end = javaCode.IndexOf(";", start);
-
-            if (end >= 0)
-            {
-                return javaCode.Substring(start, end - start).Trim();
-            }
-        }
-
-        return "com.example.cobol";
+        return JavaSourceLexical.ClassName(javaCode) ?? "ConvertedCobolProgram";
     }
 
     /// <summary>

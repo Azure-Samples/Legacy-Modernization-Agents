@@ -1,0 +1,199 @@
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CobolDeclarationIndex.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CobolDeclarationIndex.java
+@@ -13,6 +13,8 @@
+ final class CobolDeclarationIndex {
+     private final Map<String, List<ParserRuleContext>> hosts = new LinkedHashMap<>();
+     private final Map<String, List<ParserRuleContext>> labels = new LinkedHashMap<>();
++    private final Map<ParserRuleContext, List<ParserRuleContext>> paths = new LinkedHashMap<>();
++    private final List<ParserRuleContext> ancestors = new ArrayList<>();
+     private int programs;
+ 
+     CobolDeclarationIndex(ParseTree tree) {
+@@ -27,16 +29,39 @@
+         return hosts.getOrDefault(name.toUpperCase(Locale.ROOT), List.of());
+     }
+ 
++    List<ParserRuleContext> hosts(List<String> names) {
++        if (names.isEmpty() || names.contains("FILLER")) return List.of();
++        return hosts(names.getFirst()).stream().filter(entry -> {
++            List<ParserRuleContext> path = paths.get(entry);
++            int position = path.size() - 2;
++            for (String qualifier : names.subList(1, names.size())) {
++                while (position >= 0 && !entryName(path.get(position)).equalsIgnoreCase(qualifier)) position--;
++                if (position < 0) return false;
++                position--;
++            }
++            return true;
++        }).toList();
++    }
++
++    List<ParserRuleContext> path(ParserRuleContext entry) {
++        return paths.getOrDefault(entry, List.of());
++    }
++
+     List<ParserRuleContext> labels(String name) {
+         return labels.getOrDefault(name.toUpperCase(Locale.ROOT), List.of());
+     }
+ 
+     private void collect(ParseTree node) {
++        if (node instanceof CobolParser.ProgramUnitContext
++                || node instanceof CobolParser.WorkingStorageSectionContext
++                || node instanceof CobolParser.LocalStorageSectionContext
++                || node instanceof CobolParser.LinkageSectionContext
++                || node instanceof CobolParser.FileDescriptionEntryContext) ancestors.clear();
+         if (node instanceof CobolParser.ProgramUnitContext) programs++;
+-        if (node instanceof CobolParser.DataDescriptionEntryFormat1Context entry && entry.entryName() != null)
+-            host(entry.entryName().getText(), entry);
+-        else if (node instanceof CobolParser.DataDescriptionEntryFormat1Level77Context entry && entry.entryName() != null)
+-            host(entry.entryName().getText(), entry);
++        if (node instanceof CobolParser.DataDescriptionEntryFormat1Context entry)
++            host(entry.entryName() == null ? "FILLER" : entry.entryName().getText(), entry);
++        else if (node instanceof CobolParser.DataDescriptionEntryFormat1Level77Context entry)
++            host(entry.entryName() == null ? "FILLER" : entry.entryName().getText(), entry);
+         if (node instanceof CobolParser.ParagraphDefinitionNameContext
+                 || node instanceof CobolParser.SectionNameContext
+                 && node.getParent() instanceof CobolParser.ProcedureSectionHeaderContext) {
+@@ -47,7 +72,23 @@
+     }
+ 
+     private void host(String name, ParserRuleContext declaration) {
++        int level = Integer.parseInt(declaration.getStart().getText());
++        if (level == 77) ancestors.clear();
++        while (!ancestors.isEmpty()
++                && Integer.parseInt(ancestors.getLast().getStart().getText()) >= level)
++            ancestors.removeLast();
++        List<ParserRuleContext> path = new ArrayList<>(ancestors);
++        path.add(declaration);
++        paths.put(declaration, path);
++        if (level != 77) ancestors.add(declaration);
+         if (!"FILLER".equalsIgnoreCase(name))
+             hosts.computeIfAbsent(name.toUpperCase(Locale.ROOT), ignored -> new ArrayList<>()).add(declaration);
+     }
++
++    private static String entryName(ParserRuleContext entry) {
++        if (entry instanceof CobolParser.DataDescriptionEntryFormat1Context field)
++            return field.entryName() == null ? "FILLER" : field.entryName().getText();
++        var field = (CobolParser.DataDescriptionEntryFormat1Level77Context) entry;
++        return field.entryName() == null ? "FILLER" : field.entryName().getText();
++    }
+ }
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsDependencyAnalysis.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsDependencyAnalysis.java
+@@ -25,9 +25,11 @@
+     private final List<Statement> statements = new ArrayList<>();
+     private static final Set<String> INTRINSICS = Set.of("Cics_assignContext", "Cics_abendContext",
+             "Cics_syncpointContext", "Cics_asktimeContext", "Cics_formattimeContext");
++    private static final Set<String> LOCKS = Set.of("Cics_enqContext", "Cics_deqContext");
+ 
+     void record(ParserRuleContext context, Map<String, Object> export) {
+         if (INTRINSICS.contains(context.getClass().getSimpleName())
++                || LOCKS.contains(context.getClass().getSimpleName())
+                 || context instanceof CICSParser.Cics_handleContext
+                 || context instanceof CICSParser.Cics_linkContext)
+             statements.add(new Statement(context, export));
+@@ -41,6 +43,10 @@
+             List<Map<String, String>> references = new ArrayList<>();
+             String rule = statement.syntax().getClass().getSimpleName();
+             if (!declarations.singleProgram()) issues.add("cics-nested-program-scope-unverified");
++            if (LOCKS.contains(rule) && nodes(statement.syntax()).stream()
++                    .filter(node -> node instanceof TerminalNode && "RESOURCE".equalsIgnoreCase(node.getText()))
++                    .count() != 1)
++                issues.add("cics-lock-resource-required");
+             if (statement.syntax() instanceof CICSParser.Cics_handleContext
+                     && (nodes(statement.syntax()).stream().noneMatch(node ->
+                     node.getClass().getSimpleName().equals("Cics_handle_abendContext"))
+@@ -53,8 +59,14 @@
+                     String name = variable.getText().toUpperCase(Locale.ROOT);
+                     if (programOperand(statement.syntax()) != null
+                             && contains(programOperand(statement.syntax()), variable)) continue;
+-                    reference("CICS_DATA", name, variable, declarations.hosts(name),
++                    List<String> names = referenceNames(variable);
++                    List<ParserRuleContext> candidates = declarations.hosts(names);
++                    reference("CICS_DATA", name, variable, candidates,
+                             references, bindings, issues);
++                    if (names.size() > 1 && candidates.size() == 1) {
++                        bindings.getLast().put("qualificationPath", declarations.path(candidates.getFirst())
++                                .stream().map(ParsePipeline::dialectSyntax).toList());
++                    }
+                 } else if (node instanceof CICSParser.ParagraphNameUsageContext label) {
+                     String name = label.getText().toUpperCase(Locale.ROOT);
+                     reference("CICS_LABEL", name, label, declarations.labels(name),
+@@ -70,7 +82,7 @@
+             }
+             statement.export().put("resourceReferences", references);
+             statement.export().put("resourceBindings", bindings);
+-            statement.export().put("bindingBasis", INTRINSICS.contains(rule)
++            statement.export().put("bindingBasis", LOCKS.contains(rule) ? "parsed-cics-lock-operation" : INTRINSICS.contains(rule)
+                     ? "parsed-current-task-operation" : "parsed-cics-control-binding");
+             statement.export().put("bindingStatus", issues.isEmpty() ? "complete" : "unresolved");
+             if (!issues.isEmpty()) statement.export().put("bindingDiagnostics", issues.stream().distinct().toList());
+@@ -85,10 +97,22 @@
+             issues.add("cics-declaration-" + (candidates.isEmpty() ? "not-found:" : "ambiguous:") + kind + ":" + name);
+             return;
+         }
+-        bindings.add(Map.of("kind", kind, "name", name, "definitionScope", "expanded-parser-input",
+-                "definitionSyntax", ParsePipeline.dialectSyntax(candidates.getFirst())));
++        bindings.add(new LinkedHashMap<>(Map.of("kind", kind, "name", name, "definitionScope", "expanded-parser-input",
++                "definitionSyntax", ParsePipeline.dialectSyntax(candidates.getFirst()))));
+     }
+ 
++    private static List<String> referenceNames(ParseTree reference) {
++        List<String> tokens = nodes(reference).stream().filter(node -> node instanceof TerminalNode)
++                .map(node -> node.getText().toUpperCase(Locale.ROOT)).toList();
++        if (tokens.size() % 2 == 0) return List.of();
++        for (int i = 0; i < tokens.size(); i++)
++            if (i % 2 == 0 ? !tokens.get(i).matches("[A-Z][A-Z0-9_-]*")
++                    : !Set.of("OF", "IN").contains(tokens.get(i))) return List.of();
++        List<String> names = new ArrayList<>();
++        for (int i = 0; i < tokens.size(); i += 2) names.add(tokens.get(i));
++        return names;
++    }
++
+     private void bindProgram(Statement statement, ParseTree tree, CobolDeclarationIndex declarations,
+                              Path directory, List<CallTarget> targets,
+                              List<Map<String, Object>> bindings, List<String> issues) throws IOException {
+@@ -102,8 +126,8 @@
+         String value = operand.name().getText();
+         String name;
+         Map<String, Object> resolution = new LinkedHashMap<>();
+-        if (value.matches("(['\"])[A-Za-z0-9@$#_-]{1,8}\\1")) {
+-            name = value.substring(1, value.length() - 1);
++        if (value.matches("(['\"])[A-Za-z0-9@$#_-]{1,8} *\\1") && value.length() <= 10) {
++            name = value.substring(1, value.length() - 1).replaceFirst(" +$", "");
+             resolution.put("kind", "literal");
+         } else {
+             List<ParserRuleContext> candidates = declarations.hosts(value);
+@@ -113,7 +137,7 @@
+             }
+             ParserRuleContext declaration = candidates.getFirst();
+             Matcher constant = Pattern.compile("01" + Pattern.quote(value.toUpperCase(Locale.ROOT))
+-                    + "PIC(?:TURE)?(?:IS)?X\\(0*8\\)VALUE(?:IS)?(['\"])([A-Z0-9@$#_-]{1,8})\\1\\.",
++                    + "PIC(?:TURE)?(?:IS)?X\\(0*8\\)VALUE(?:IS)?(['\"])([A-Z0-9@$#_-]{1,8})( *)\\1\\.",
+                     Pattern.CASE_INSENSITIVE).matcher(declaration.getText());
+             String storageSection = null;
+             for (ParseTree ancestor = declaration.getParent(); ancestor != null; ancestor = ancestor.getParent()) {
+@@ -121,7 +145,8 @@
+                 if (Set.of("WorkingStorageSectionContext", "LocalStorageSectionContext").contains(section))
+                     storageSection = section;
+             }
+-            if (!constant.matches() || storageSection == null || !immutable(tree, value, declaration)) {
++            if (!constant.matches() || constant.group(2).length() + constant.group(3).length() > 8
++                    || storageSection == null || !immutable(tree, value, declaration)) {
+                 issues.add("dynamic-cics-program-binding-unresolved:" + value);
+                 return;
+             }
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
+@@ -308,8 +308,10 @@
+     private void recordDialectStatement(ParserRuleContext context, String kind) {
+         boolean bareReturn = context instanceof CICSParser.Cics_returnContext statement
+                 && statement.RETURN() != null && statement.getChildCount() == 1;
+-        boolean normalResponse = context instanceof CICSParser.CicsDfhRespLiteralContext
+-                && "DFHRESP(NORMAL)".equalsIgnoreCase(context.getText());
++        boolean normalResponse = context instanceof CICSParser.CicsDfhRespLiteralContext response
++                && response.getChildCount() == 4
++                && Set.of("NORMAL", "INVREQ", "MAPFAIL", "NOTFINISHED", "NOTFND")
++                .contains(response.getChild(2).getText().toUpperCase(java.util.Locale.ROOT));
+         Map<String, Object> statement = new LinkedHashMap<>();
+         statement.put("kind", kind);
+         statement.put("operation", context.getStart().getText().toUpperCase(java.util.Locale.ROOT));

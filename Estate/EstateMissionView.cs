@@ -119,8 +119,14 @@ public static class EstateMissionView
         bool IsProgram(EstateNode n) => n.Kind == EstateNodeKind.Program && n.InSource;
 
         // ---- estate per node: the top folder of its file, else the one estate all its neighbours share.
+        // A folder without programs (e.g. source/jcl beside source/cbl) is not an estate, so its jobs
+        // and other nodes join the estate of the programs they touch.
         var estateOf = new Dictionary<string, string?>(StringComparer.Ordinal);
         foreach (var n in graph.Nodes) estateOf[n.Id] = EstateOfFile(n.File);
+        var programEstates = graph.Nodes.Where(IsProgram).Select(n => estateOf[n.Id]).OfType<string>()
+            .ToHashSet(StringComparer.Ordinal);
+        foreach (var n in graph.Nodes.Where(n => !IsProgram(n) && estateOf[n.Id] is { } e && !programEstates.Contains(e)))
+            estateOf[n.Id] = null;
         foreach (var n in graph.Nodes.Where(n => estateOf[n.Id] is null))
         {
             var near = Out(n.Id).Select(e => e.To).Concat(In(n.Id).Select(e => e.From))

@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "profileName": "bank-of-z-spring-h2",
+  "profileKind": "target-port",
+  "sqlDefaultSchema": "STTESTER",
+  "runtimeContracts": {
+    "CEEGMT": {
+      "kind": "documented-platform-service",
+      "platform": "IBM z/OS Language Environment",
+      "documentation": ["https://www.ibm.com/docs/en/zos/3.1.0?topic=services-ceegmtget-current-greenwich-mean-time"],
+      "parameters": [
+        {"name": "output_GMT_Lilian", "passing": "BY REFERENCE", "direction": "out", "representation": "signed 32-bit binary integer", "meaning": "GMT days since 14 October 1582"},
+        {"name": "output_GMT_seconds", "passing": "BY REFERENCE", "direction": "out", "representation": "64-bit floating point", "meaning": "GMT seconds since midnight 14 October 1582, excluding leap seconds"},
+        {"name": "fc", "passing": "BY REFERENCE", "direction": "out", "representation": "12-byte Language Environment feedback token"}
+      ],
+      "semantics": {
+        "timeZone": "UTC",
+        "successCondition": "CEE000",
+        "unavailableCondition": "CEE2E6",
+        "failureOutputs": "Both numeric outputs are zero when GMT is unavailable.",
+        "feedback": "Preserve the documented feedback condition; do not invent a zero-filled successful token."
+      }
+    },
+    "CEEDATM": {
+      "kind": "documented-platform-service",
+      "platform": "IBM z/OS Language Environment",
+      "documentation": ["https://www.ibm.com/docs/en/zos/3.1.0?topic=services-ceedatmconvert-seconds-character-timestamp"],
+      "parameters": [
+        {"name": "input_seconds", "passing": "BY REFERENCE", "direction": "in", "representation": "64-bit floating point", "meaning": "Seconds since midnight 14 October 1582, excluding leap seconds"},
+        {"name": "picture_string", "passing": "BY REFERENCE", "direction": "in", "representation": "VSTRING: halfword binary length followed by picture characters"},
+        {"name": "output_timestamp", "passing": "BY REFERENCE", "direction": "out", "representation": "80-character fixed-width output"},
+        {"name": "fc", "passing": "BY REFERENCE", "direction": "out", "representation": "12-byte Language Environment feedback token"}
+      ],
+      "semantics": {
+        "minimumSeconds": 86400,
+        "maximumSeconds": 265621679999.999,
+        "successCondition": "CEE000",
+        "invalidSecondsCondition": "CEE2E9",
+        "invalidPictureCondition": "CEE2EM",
+        "truncationCondition": "CEE2EV",
+        "blankPicture": "Uses the Language Environment COUNTRY runtime option; no locale is inferred by this profile.",
+        "failureOutput": "Invalid input produces blank output and non-CEE000 feedback.",
+        "picture": "Implement the documented picture language. The caller's supplied picture is authoritative."
+      }
+    }
+  }
+}

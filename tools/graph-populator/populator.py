@@ -85,6 +85,10 @@ def _run_batch_create(tx: ManagedTransaction, cypher: str, batch: list[dict]) ->
     tx.run(cypher, batch=batch)
 
 
+def _run_batch_relationships(tx: ManagedTransaction, cypher: str, batch: list[dict]) -> int:
+    return tx.run(cypher, batch=batch).single(strict=True)["matched"]
+
+
 def batch_merge_nodes(
     driver, label: str, props_list: list[dict], merge_key: str = "id"
 ) -> int:
@@ -127,13 +131,19 @@ def batch_merge_relationships(
         f"MATCH (a:{from_label} {{{from_key}: row.from_id}}) "
         f"MATCH (b:{to_label} {{{to_key}: row.to_id}}) "
         f"MERGE (a)-[r:{rel_type}]->(b) "
-        f"{prop_set}"
+        f"{prop_set} "
+        "RETURN count(r) AS matched"
     )
     total = 0
     with driver.session() as session:
         for batch in _batch_list(rels):
-            session.execute_write(_run_batch_create, cypher, batch)
-            total += len(batch)
+            matched = session.execute_write(_run_batch_relationships, cypher, batch)
+            total += matched
+            if matched < len(batch):
+                console.print(
+                    f"[yellow]Skipped {len(batch) - matched} {rel_type} relationship "
+                    "rows with missing endpoints[/yellow]"
+                )
     return total
 
 
@@ -145,14 +155,20 @@ def _make_uid(*parts) -> str:
 
 
 def ingest_rekt_ast(driver, program: str, ast_json: dict, run_id: int) -> int:
-    """Ingest a rekt FLOW_AST JSON export into Neo4j as ASTNode tree."""
+    """Ingest FLOW_AST nodes, preferring native originalText over legacy text."""
     nodes: list[dict] = []
     edges: list[dict] = []
 
     def _walk(node: dict, parent_id: str | None = None):
+        original_text = node.get("originalText")
+        # Empty native text is authoritative; only absent/null values fall back.
+        if original_text is None:
+            original_text = node.get("text")
+        if original_text is None:
+            original_text = ""
         upstream_id = node.get("id") or _make_uid(
             node.get("type", ""),
-            node.get("text", ""),
+            original_text,
             len(nodes),
         )
         node_uid = scoped_graph_id(run_id, program, upstream_id)
@@ -163,7 +179,7 @@ def ingest_rekt_ast(driver, program: str, ast_json: dict, run_id: int) -> int:
             "runId": run_id,
             "nodeType": node.get("type", "UNKNOWN"),
             "label": node.get("label", node.get("type", "")),
-            "originalText": node.get("text", ""),
+            "originalText": original_text,
             "startLine": node.get("span", {}).get("start", -1),
             "endLine": node.get("span", {}).get("end", -1),
         }
@@ -540,11 +556,61 @@ def migrate_sqlite(driver, db_path: str) -> dict[str, int]:
 
 # Full Ingestion Pipeline
 
+def begin_rekt_scan(driver, run_id: int, name: str, source_dir: str, output_dir: str,
+                    manifest_path: str | None = None) -> None:
+    name = name.strip()
+    if not name:
+        raise ValueError("A named REKT scan requires a nonempty name.")
+    if not Path(source_dir).is_dir() or not Path(output_dir).is_dir():
+        raise ValueError("A named REKT scan requires existing source and artifact directories.")
+    if manifest_path is not None:
+        if not Path(manifest_path).is_file():
+            raise ValueError("The named REKT scan manifest does not exist.")
+        manifest = Path(manifest_path).resolve()
+    else:
+        # Named scans keep scan.json beside their artifacts directory (output/rekt-scans/<name>/).
+        candidate = Path(output_dir).resolve().parent / "scan.json"
+        manifest = candidate if candidate.is_file() else None
+
+    def create(tx):
+        occupied = tx.run(
+            "RETURN EXISTS { MATCH (:CobolFile {runId: $runId}) } "
+            "OR EXISTS { MATCH (:RektScan {id: $runId}) } "
+            "OR EXISTS { MATCH (:Run {id: $runId}) } "
+            "OR EXISTS { MATCH (:JclNode {runId: $runId}) } AS occupied",
+            runId=run_id,
+        ).single()["occupied"]
+        if occupied:
+            raise ValueError(f"Run ID {run_id} already contains data; choose a fresh ID to preserve it.")
+        tx.run(
+            "CREATE (s:RektScan {id: $runId, name: $name, sourceDirectory: $source, "
+            "outputDirectory: $output, manifestPath: $manifest, createdAt: datetime(), ingestionStatus: 'ingesting', "
+            "evidenceNote: 'Structural parser evidence only; source is the ingested snapshot and may be normalized. Missing inputs or unsupported dependency coverage may remain; this is not verified conversion.'})",
+            runId=run_id, name=name, source=str(Path(source_dir).resolve()),
+            output=str(Path(output_dir).resolve()),
+            manifest=str(manifest) if manifest is not None else None,
+        ).consume()
+
+    with driver.session() as session:
+        session.execute_write(create)
+
+
+def finish_rekt_scan(driver, run_id: int, status: str) -> None:
+    with driver.session() as session:
+        session.run(
+            "MATCH (s:RektScan {id: $runId}) "
+            "SET s.ingestionStatus = $status, s.updatedAt = datetime()",
+            runId=run_id, status=status,
+        ).consume()
+
+
 def ingest_rekt_outputs(driver, rekt_output_dir: str, source_dir: str, run_id: int) -> dict[str, int]:
     """Scan rekt JSON output directory and ingest all exports into Neo4j."""
     output_path = Path(rekt_output_dir)
     source_path = Path(source_dir)
     counts: dict[str, int] = {}
+    if (output_path / ".jcl-scan-failed").exists():
+        raise ValueError("JCL refresh did not complete; rerun jcl-facts before ingestion.")
 
     if not output_path.exists():
         console.print(f"[yellow]Rekt output dir not found: {rekt_output_dir}[/yellow]")
@@ -573,6 +639,12 @@ def ingest_rekt_outputs(driver, rekt_output_dir: str, source_dir: str, run_id: i
     for f in cobol_files + copybooks:
         content = f.read_text(encoding="utf-8", errors="replace")
         source_identity = source_relative_path(str(f), str(source_path))
+        evidence_path = output_path / f"{source_identity}.report" / "dependency-evidence.json"
+        dependency_diagnostics = []
+        if evidence_path.is_file():
+            dependency_diagnostics = json.loads(evidence_path.read_text(encoding="utf-8")).get("unresolvedDiagnostics", [])
+            if not isinstance(dependency_diagnostics, list) or any(not isinstance(item, str) for item in dependency_diagnostics):
+                raise ValueError(f"Invalid dependency diagnostics in {evidence_path}")
         file_nodes.append(
             {
                 "uid": _make_uid(run_id, source_identity),
@@ -583,6 +655,8 @@ def ingest_rekt_outputs(driver, rekt_output_dir: str, source_dir: str, run_id: i
                 "isCopybook": f.suffix.lower() in (".cpy",),
                 "content": content,
                 "lineCount": content.count("\n") + 1,
+                "dependencyEvidenceAvailable": evidence_path.is_file(),
+                "dependencyDiagnostics": dependency_diagnostics,
             }
         )
     counts["CobolFile"] = batch_merge_nodes(driver, "CobolFile", file_nodes, merge_key="uid")
@@ -595,9 +669,18 @@ def ingest_rekt_outputs(driver, rekt_output_dir: str, source_dir: str, run_id: i
     ds_total = 0
     source_files = [node["fileName"] for node in file_nodes]
 
-    for json_file in sorted(output_path.rglob("*.json")):
-        # Program facts are read by the migration, not ingested into the graph.
-        if is_jcl_artifact(json_file.name) or json_file.name.lower().endswith(".facts.json"):
+    # Native cfg/ sorts before flow_ast/; load AST endpoints before CFG relationships.
+    artifacts = sorted(
+        output_path.rglob("*.json"),
+        key=lambda path: ("ast" not in path.name.lower(), path),
+    )
+    for json_file in artifacts:
+        if any(part in {".previous", ".work"} for part in json_file.relative_to(output_path).parts):
+            continue
+        # Facts and diagnostics describe evidence; they are not structural graph artifacts.
+        if (is_jcl_artifact(json_file.name)
+                or json_file.name.lower().endswith(".facts.json")
+                or json_file.name.lower() in {"parse-diagnostics.json", "dependency-evidence.json"}):
             continue
         rel_path = json_file.relative_to(output_path)
         program_name = artifact_source_path(
@@ -642,6 +725,8 @@ def ingest_rekt_outputs(driver, rekt_output_dir: str, source_dir: str, run_id: i
 
 def ingest_jcl_outputs(driver, output_path: Path, source_path: Path, run_id: int) -> int:
     """Ingest the job facts jcl-facts wrote as JclNode graphs, one per job, with the JCL as SourceBlocks."""
+    if (output_path / ".jcl-scan-failed").exists():
+        raise ValueError("JCL refresh did not complete; rerun jcl-facts before ingestion.")
     lineage_file = output_path / LINEAGE_FILE
     lineage = None
     if lineage_file.exists():
@@ -652,6 +737,8 @@ def ingest_jcl_outputs(driver, output_path: Path, source_path: Path, run_id: int
 
     total = 0
     for facts_file in sorted(output_path.rglob(f"*{FACTS_SUFFIX}")):
+        if any(part in {".previous", ".work"} for part in facts_file.relative_to(output_path).parts):
+            continue
         rel_path = facts_file.relative_to(output_path)
         try:
             facts = json.loads(facts_file.read_text(encoding="utf-8"))
@@ -676,7 +763,8 @@ def ingest_jcl_outputs(driver, output_path: Path, source_path: Path, run_id: int
 
         # The AST Explorer falls back to SourceBlocks when the source file is not on the portal's disk.
         program = facts["job"].get("file")
-        source_file = source_path / program if program else None
+        jcl_root = Path(facts.get("sourceRoot") or source_path)
+        source_file = jcl_root / program if program else None
         if source_file is None or not source_file.is_file():
             continue
         create_source_blocks(driver, program, source_file.read_text(encoding="utf-8", errors="replace"), run_id)
@@ -706,12 +794,22 @@ def schema():
 @click.option("--rekt-output", default="/output", help="Rekt JSON output directory")
 @click.option("--run-id", default=1, type=int, help="Migration run ID")
 @click.option("--sqlite-db", default=None, help="Optional SQLite DB to migrate from")
-def ingest(source_dir: str, rekt_output: str, run_id: int, sqlite_db: str | None):
+@click.option("--scan-name", default=None, help="Name a fresh REKT scan without replacing an existing run")
+@click.option("--scan-manifest", default=None,
+              help="Named scan's scan.json (default: scan.json beside the --rekt-output directory)")
+def ingest(source_dir: str, rekt_output: str, run_id: int, sqlite_db: str | None, scan_name: str | None = None,
+           scan_manifest: str | None = None):
     """Full ingestion: rekt JSON exports + optional SQLite migration."""
+    if (Path(rekt_output) / ".jcl-scan-failed").exists():
+        raise ValueError("JCL refresh did not complete; rerun jcl-facts before ingestion.")
     driver = get_driver()
+    scan_started = False
     try:
         console.print("[bold blue]Applying schema...[/bold blue]")
         apply_schema(driver)
+        if scan_name is not None:
+            begin_rekt_scan(driver, run_id, scan_name, source_dir, rekt_output, scan_manifest)
+            scan_started = True
 
         if sqlite_db:
             console.print(f"[bold blue]Migrating SQLite: {sqlite_db}[/bold blue]")
@@ -723,16 +821,26 @@ def ingest(source_dir: str, rekt_output: str, run_id: int, sqlite_db: str | None
         rekt_counts = ingest_rekt_outputs(driver, rekt_output, source_dir, run_id)
         for label, count in rekt_counts.items():
             console.print(f"  {label}: {count}")
+        if scan_started:
+            if not rekt_counts.get("ASTNode", 0) and not rekt_counts.get("JclNode", 0):
+                raise ValueError("The named scan contains no ingested AST or JCL nodes; partial data was retained.")
+            finish_rekt_scan(driver, run_id, "complete")
 
         with driver.session() as session:
             result = session.run(
-                "MATCH (n) RETURN count(n) AS nodes, "
-                "size([(a)-[r]->(b) | r]) AS rels"
+                "CALL { MATCH (n) RETURN count(n) AS nodes } "
+                "CALL { MATCH ()-[r]->() RETURN count(r) AS rels } "
+                "RETURN nodes, rels"
             )
             rec = result.single()
             console.print(
                 f"\n[bold green]Done. Total: {rec['nodes']} nodes, {rec['rels']} relationships[/bold green]"
             )
+    except Exception:
+        if scan_started:
+            finish_rekt_scan(driver, run_id, "failed")
+            console.print("[red]Named scan ingestion failed; partial data has been retained.[/red]")
+        raise
     finally:
         driver.close()
 

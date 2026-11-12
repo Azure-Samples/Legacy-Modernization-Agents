@@ -1,0 +1,202 @@
+diff --git a/smojol-core/src/main/java/org/smojol/common/program/CobolProgram.java b/smojol-core/src/main/java/org/smojol/common/program/CobolProgram.java
+index 7f83828..872e51f 100644
+--- a/smojol-core/src/main/java/org/smojol/common/program/CobolProgram.java
++++ b/smojol-core/src/main/java/org/smojol/common/program/CobolProgram.java
+@@ -28,6 +28,13 @@ public class CobolProgram extends SimpleTreeNode {
+     @Expose @Getter @Setter private String sourceSha256;
+     @Expose @Getter @Setter private String dependencyKind = "CALL";
+     @Expose @Getter @Setter private boolean dependencyAnalysisComplete;
++    @Expose @Getter @Setter private boolean runtimeContractBindingComplete;
++    @Expose @Getter @Setter private Map<String, Object> runtimeContract;
++
++    public boolean isDependencyBindingComplete() {
++        return dependencyAnalysisComplete || "EXTERNAL_RUNTIME".equals(dependencyKind)
++                && runtimeContractBindingComplete && runtimeContract != null;
++    }
+ 
+     public CobolProgram(CallTarget callTarget) {
+         super(callTarget.getName());
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/DependencyAnalysisProfile.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/DependencyAnalysisProfile.java
+new file mode 100644
+index 0000000..d40be86
+--- /dev/null
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/DependencyAnalysisProfile.java
+@@ -0,0 +1,97 @@
++package org.smojol.toolkit.analysis.pipeline;
++
++import com.google.common.hash.Hashing;
++import org.yaml.snakeyaml.LoaderOptions;
++import org.yaml.snakeyaml.Yaml;
++import org.yaml.snakeyaml.constructor.SafeConstructor;
++
++import java.io.IOException;
++import java.io.UncheckedIOException;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.LinkedHashMap;
++import java.util.List;
++import java.util.Map;
++import java.util.Set;
++
++public final class DependencyAnalysisProfile {
++    private final Map<?, ?> document;
++    private final String path;
++    private final String hash;
++
++    private DependencyAnalysisProfile(Map<?, ?> document, String path, String hash) {
++        this.document = document;
++        this.path = path;
++        this.hash = hash;
++    }
++
++    public static DependencyAnalysisProfile load() {
++        String configured = System.getenv("REKT_DEPENDENCY_PROFILE");
++        if (configured == null || configured.isBlank())
++            return new DependencyAnalysisProfile(Map.of(), null, null);
++        try {
++            Path path = Path.of(configured).toRealPath();
++            byte[] bytes = Files.readAllBytes(path);
++            LoaderOptions options = new LoaderOptions();
++            options.setAllowDuplicateKeys(false);
++            options.setMaxAliasesForCollections(0);
++            options.setCodePointLimit(1024 * 1024);
++            Object loaded = new Yaml(new SafeConstructor(options)).load(new String(bytes, StandardCharsets.UTF_8));
++            if (!(loaded instanceof Map<?, ?> document)
++                    || !Integer.valueOf(1).equals(document.get("schemaVersion"))
++                    || !"target-port".equals(document.get("profileKind"))
++                    || !(document.get("profileName") instanceof String name) || name.isBlank()
++                    || !Set.of("schemaVersion", "profileName", "profileKind", "sqlDefaultSchema", "runtimeContracts")
++                        .containsAll(document.keySet()))
++                throw new IllegalArgumentException("Invalid dependency profile identity/schema: " + path);
++            Object schema = document.get("sqlDefaultSchema");
++            if (schema != null && (!(schema instanceof String value) || !value.matches("[A-Z][A-Z0-9_]*")))
++                throw new IllegalArgumentException("Unsupported configured SQL schema: " + schema);
++            if (!(document.get("runtimeContracts") instanceof Map<?, ?> contracts))
++                throw new IllegalArgumentException("runtimeContracts must be an explicit object");
++            for (Map.Entry<?, ?> entry : contracts.entrySet()) {
++                int count = "CEEGMT".equals(entry.getKey()) ? 3 : "CEEDATM".equals(entry.getKey()) ? 4 : -1;
++                String topic = "CEEGMT".equals(entry.getKey())
++                        ? "ceegmtget-current-greenwich-mean-time" : "ceedatmconvert-seconds-character-timestamp";
++                if (count < 0 || !(entry.getValue() instanceof Map<?, ?> contract)
++                        || !"documented-platform-service".equals(contract.get("kind"))
++                        || !"IBM z/OS Language Environment".equals(contract.get("platform"))
++                        || !(contract.get("parameters") instanceof List<?> parameters) || parameters.size() != count
++                        || !(contract.get("documentation") instanceof List<?> references)
++                        || !references.contains("https://www.ibm.com/docs/en/zos/3.1.0?topic=services-" + topic)
++                        || !(contract.get("semantics") instanceof Map<?, ?>))
++                    throw new IllegalArgumentException("Unsupported or incomplete documented runtime contract: " + entry.getKey());
++            }
++            return new DependencyAnalysisProfile(document, path.toString(), Hashing.sha256().hashBytes(bytes).toString());
++        } catch (IOException exception) {
++            throw new UncheckedIOException("Cannot read configured dependency profile: " + configured, exception);
++        }
++    }
++
++    public String defaultSchema() {
++        return (String) document.get("sqlDefaultSchema");
++    }
++
++    private Map<String, Object> provenance() {
++        return new LinkedHashMap<>(Map.of("profileName", document.get("profileName"),
++                "profileKind", document.get("profileKind"), "sourcePath", path, "sourceSha256", hash));
++    }
++
++    public Map<String, Object> qualification() {
++        Map<String, Object> result = provenance();
++        result.put("schema", defaultSchema());
++        return result;
++    }
++
++    public Map<String, Object> runtimeContract(String name) {
++        Object configured = document.get("runtimeContracts");
++        if (!(configured instanceof Map<?, ?> contracts) || !contracts.containsKey(name)) return null;
++        Map<String, Object> result = provenance();
++        result.put("name", name);
++        result.put("definition", contracts.get(name));
++        result.put("runtimeMapping", "unverified");
++        result.put("resolutionKind", "documented-platform-contract");
++        return result;
++    }
++}
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/SqlDependencyAnalysis.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/SqlDependencyAnalysis.java
+index 6d8a997..841059a 100644
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/SqlDependencyAnalysis.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/SqlDependencyAnalysis.java
+@@ -39,6 +39,7 @@ final class SqlDependencyAnalysis {
+     }
+ 
+     void bind(ParseTree program) {
++        DependencyAnalysisProfile profile = DependencyAnalysisProfile.load();
+         Map<String, List<ParserRuleContext>> definitions = new LinkedHashMap<>();
+         collectHostDeclarations(program, definitions);
+         for (Statement statement : statements) {
+@@ -59,14 +60,23 @@ final class SqlDependencyAnalysis {
+             for (Reference reference : statement.references()) {
+                 if (reference.declaration()) continue;
+                 List<ParserRuleContext> candidates = definitions.getOrDefault(key(reference.kind(), reference.name()), List.of());
++                boolean qualified = false;
++                if (candidates.isEmpty() && "SQL_RELATION".equals(reference.kind())
++                        && reference.name().matches("[A-Z][A-Z0-9_]*") && profile.defaultSchema() != null) {
++                    candidates = definitions.getOrDefault(
++                            key(reference.kind(), profile.defaultSchema() + "." + reference.name()), List.of());
++                    qualified = true;
++                }
+                 if (candidates.size() != 1) {
+                     issues.add("sql-" + (candidates.isEmpty() ? "declaration-not-found:" : "declaration-ambiguous:")
+                             + reference.kind() + ":" + reference.name());
+                     continue;
+                 }
+-                bindings.add(Map.of("kind", reference.kind(), "name", reference.name(),
++                Map<String, Object> binding = new LinkedHashMap<>(Map.of("kind", reference.kind(), "name", reference.name(),
+                         "definitionScope", "expanded-parser-input",
+                         "definitionSyntax", ParsePipeline.dialectSyntax(candidates.get(0))));
++                if (qualified) binding.put("qualification", profile.qualification());
++                bindings.add(binding);
+             }
+             statement.export().put("resourceBindings", bindings);
+             statement.export().put("bindingStatus", issues.isEmpty() ? "complete" : "unresolved");
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/AnalyseProgramDependenciesTask.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/AnalyseProgramDependenciesTask.java
+index 4063bf3..b6975bd 100644
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/AnalyseProgramDependenciesTask.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/AnalyseProgramDependenciesTask.java
+@@ -9,6 +9,7 @@ import org.smojol.common.program.CobolProgram;
+ import org.smojol.common.program.StaticCallTarget;
+ import org.smojol.common.ast.ProgramReferenceType;
+ import org.smojol.toolkit.analysis.pipeline.ParsePipeline;
++import org.smojol.toolkit.analysis.pipeline.DependencyAnalysisProfile;
+ import org.smojol.common.flowchart.ConsoleColors;
+ import org.smojol.common.flowchart.FlowchartOutputFormat;
+ import org.smojol.common.id.UUIDProvider;
+@@ -62,6 +63,13 @@ public class AnalyseProgramDependenciesTask {
+             }
+         }
+         if (searchResult == ProgramSearch.NO_PATH) {
++            Map<String, Object> contract = DependencyAnalysisProfile.load().runtimeContract(program.getName());
++            if (contract != null && "CALL".equals(program.getDependencyKind())) {
++                program.setDependencyKind("EXTERNAL_RUNTIME");
++                program.setRuntimeContract(contract);
++                program.setRuntimeContractBindingComplete(true);
++                return;
++            }
+             program.getDependencyDiagnostics().add("source-not-found:" + program.getName());
+             return;
+         }
+@@ -130,7 +138,7 @@ public class AnalyseProgramDependenciesTask {
+             for (CobolProgram childDependency : program.staticDependencies())
+                 recurse(childDependency, copyBookPaths);
+             for (CobolProgram child : program.getDependencies()) {
+-                if ("COPY".equals(child.getDependencyKind()) || child.isDependencyAnalysisComplete()) continue;
++                if ("COPY".equals(child.getDependencyKind()) || child.isDependencyBindingComplete()) continue;
+                 program.getDependencyDiagnostics().add("incomplete-callee:" + child.getName());
+                 child.getDependencyDiagnostics().forEach(issue ->
+                         program.getDependencyDiagnostics().add("callee:" + child.getName() + ":" + issue));
+@@ -148,7 +156,7 @@ public class AnalyseProgramDependenciesTask {
+                     && program.getDependencyDiagnostics().isEmpty()
+                     && program.getDependencyCoverage().values().stream().allMatch("complete"::equals)
+                     && program.getDependencies().stream().filter(child -> !"COPY".equals(child.getDependencyKind()))
+-                    .allMatch(CobolProgram::isDependencyAnalysisComplete));
++                    .allMatch(CobolProgram::isDependencyBindingComplete));
+         } catch (IOException | RuntimeException e) {
+             program.getDependencyDiagnostics().add("dependency-analysis-failed:" + e.getMessage());
+             LOGGER.severe(ConsoleColors.red("Error, terminating recursion down this path. Error: " + ExceptionUtils.getStackTrace(e)));

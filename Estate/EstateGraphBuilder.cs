@@ -113,7 +113,7 @@ public static class EstateGraphBuilder
         foreach (var rel in files)
         {
             string text;
-            try { text = File.ReadAllText(Path.Join(sourceRoot, rel)); }
+            try { text = CobolSourceReader.Read(Path.Join(sourceRoot, rel)); }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 g.Diagnostics.Add($"{rel} could not be read: {ex.Message}");

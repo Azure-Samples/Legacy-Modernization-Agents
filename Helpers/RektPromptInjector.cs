@@ -17,18 +17,25 @@ public static class RektPromptInjector
         string fileName,
         string agentName,
         int? runId,
-        ILogger? logger = null)
+        ILogger? logger = null,
+        string? sourceDirectory = null,
+        string? repositoryRoot = null,
+        bool verifiedDraftContext = false,
+        string javaFramework = "Quarkus")
     {
-        var repoRoot = AppContext.BaseDirectory;
+        var repoRoot = repositoryRoot ?? AppContext.BaseDirectory;
         var d = new DirectoryInfo(repoRoot);
-        while (d != null && !File.Exists(Path.Combine(d.FullName, "doctor.sh"))) d = d.Parent;
+        if (repositoryRoot is null)
+            while (d != null && !File.Exists(Path.Combine(d.FullName, "doctor.sh"))) d = d.Parent;
         if (d == null)
         {
+            if (verifiedDraftContext)
+                throw new InvalidDataException("Required draft COPY context cannot be loaded without a verified repository root.");
             logger?.LogWarning("[RektPromptInjector] Could not find repo root (doctor.sh) walking up from {Base}", repoRoot);
             return;
         }
 
-        var srcFolder = Environment.GetEnvironmentVariable("COBOL_SOURCE_FOLDER") ?? "source";
+        var srcFolder = sourceDirectory ?? Environment.GetEnvironmentVariable("COBOL_SOURCE_FOLDER") ?? "source";
 
         // On by default. Measured on a 36-program estate with reverse engineering held constant
         // and only this varying: mean parity rose from 0.859 to 0.957, 28 of 32 scored programs
@@ -40,6 +47,22 @@ public static class RektPromptInjector
         // comparing against a previous run that had no REKT data.
         var enabled = IsEnabled(Environment.GetEnvironmentVariable("ENABLE_REKT_CONTEXT"));
 
+        var runtimeProgram = ResolveSourceRelativePath(d.FullName, srcFolder, fileName);
+        if (runtimeProgram is not null && SourceTypeRegistry.IsCobolProgram(Path.GetFileName(runtimeProgram)))
+        {
+            var sourceRoot = Path.IsPathRooted(srcFolder) ? srcFolder : Path.Combine(d.FullName, srcFolder);
+            sb.Append(VerifiedRuntimeContext.Build(ConversionEligibility.FactsDirectory(d.FullName), sourceRoot, runtimeProgram));
+            if (!verifiedDraftContext)
+                sb.Append(VerifiedCopybookContext.BuildUnconverted(ConversionEligibility.FactsDirectory(d.FullName), sourceRoot, runtimeProgram));
+        }
+
+        var policy = TargetRuntimePolicy.Block(Environment.GetEnvironmentVariable(TargetRuntimePolicy.EnvironmentVariable), d.FullName);
+        if (policy.Length > 0)
+        {
+            sb.Append(policy);
+            logger?.LogInformation("[RektPromptInjector] Injected target runtime policy for {File}", fileName);
+        }
+
         try
         {
             logger?.LogInformation("[RektPromptInjector] Repo root: {Root}, source: {Src}, file: {File}",
@@ -49,13 +72,23 @@ public static class RektPromptInjector
             // needs a namespace when REKT is switched off, and leaving the choice to the model
             // scattered one estate across five unrelated roots.
             var relativePath = ResolveSourceRelativePath(d.FullName, srcFolder, fileName);
+            fileName = relativePath ?? fileName;
             sb.AppendLine();
             sb.AppendLine(PromptLoader.LoadSectionValidated(
                 "RektContext", "NamespacePolicy", new Dictionary<string, string>
                 {
-                    ["ProgramNamespace"] = ConversionNamespacePolicy.ForProgram(targetLanguage, relativePath),
+                    // A copybook's types are what programs import from the shared namespace.
+                    ["ProgramNamespace"] = SourceTypeRegistry.IsCopybook(Path.GetFileName(fileName))
+                        ? ConversionNamespacePolicy.ForSharedTypes(targetLanguage)
+                        : ConversionNamespacePolicy.ForProgram(targetLanguage, relativePath),
                     ["SharedNamespace"] = ConversionNamespacePolicy.ForSharedTypes(targetLanguage),
                 }));
+            if (verifiedDraftContext)
+            {
+                var sourceRoot = Path.IsPathRooted(srcFolder) ? srcFolder : Path.Combine(d.FullName, srcFolder);
+                sb.Append(VerifiedCopybookContext.Build(ConversionEligibility.FactsDirectory(d.FullName), sourceRoot, fileName));
+                return;
+            }
 
             if (enabled)
             {
@@ -67,7 +100,7 @@ public static class RektPromptInjector
                 bool factsInjected = false;
                 if (JavaConverterProjection.IsEnabled())
                 {
-                    var factsDir = Path.Combine(d.FullName, "output", "rekt");
+                    var factsDir = ConversionEligibility.FactsDirectory(d.FullName);
                     ProgramFacts? facts;
                     Func<string>? builder = null;
                     if (string.Equals(targetLanguage, "C#", StringComparison.OrdinalIgnoreCase)
@@ -86,7 +119,7 @@ public static class RektPromptInjector
                         if (facts is not null)
                         {
                             var capturedFacts = facts;
-                            builder = () => JavaConverterProjection.BuildPromptBlock(capturedFacts);
+                            builder = () => JavaConverterProjection.BuildPromptBlock(capturedFacts, javaFramework);
                         }
                     }
 
@@ -94,7 +127,9 @@ public static class RektPromptInjector
                     {
                         ProgramFacts nonNullFacts = facts;
                         var (projectionBlock, _, projectionHash, wasCacheHit) =
-                            ProjectionCache.GetOrBuild(targetLanguage, nonNullFacts, builder, runId, logger);
+                            ProjectionCache.GetOrBuild(
+                                javaFramework == "Spring" && targetLanguage == "Java" ? "Java-Spring" : targetLanguage,
+                                nonNullFacts, builder, runId, logger);
                         var projectionTokens = TokenHelper.EstimateTokens(projectionBlock);
                         sb.AppendLine();
                         sb.AppendLine(projectionBlock);
@@ -109,6 +144,7 @@ public static class RektPromptInjector
                         {
                             Agent = agentName,
                             Event = "projection_metrics",
+                            ContextId = AiLoopEvents.PreparedContext(agentName, fileName, "projection", projectionBlock),
                             File = fileName,
                             TargetLanguage = targetLanguage,
                             ProjectionMode = "projection",
@@ -151,7 +187,9 @@ public static class RektPromptInjector
                                     ["SourceMetadata"] = string.Empty
                                 }));
                             rektBuilder.AppendLine(PromptLoader.LoadSectionValidated(
-                                "RektContext", "RawTargetPolicy", new Dictionary<string, string>()));
+                                javaFramework == "Spring" && targetLanguage == "Java" ? "JavaSpringConverter" : "RektContext",
+                                javaFramework == "Spring" && targetLanguage == "Java" ? "StructuralPolicy" : "RawTargetPolicy",
+                                new Dictionary<string, string>()));
                             rektBuilder.Append(SyntheticLayoutNotice.Build(
                                 StubWarningsFor(sc.Context.CopybookUsage, d.FullName, srcFolder)));
                             rektBuilder.AppendLine(RektContextFormatter.ToPromptBlock(sc));
@@ -167,6 +205,7 @@ public static class RektPromptInjector
                             {
                                 Agent = agentName,
                                 Event = "projection_metrics",
+                                ContextId = AiLoopEvents.PreparedContext(agentName, fileName, "raw-rekt", rektBlock),
                                 File = fileName,
                                 TargetLanguage = targetLanguage,
                                 ProjectionMode = "raw-rekt",
@@ -187,6 +226,7 @@ public static class RektPromptInjector
                             {
                                 Agent = agentName,
                                 Event = "projection_metrics",
+                                ContextId = AiLoopEvents.PreparedContext(agentName, fileName, "none"),
                                 File = fileName,
                                 TargetLanguage = targetLanguage,
                                 ProjectionMode = "none",
@@ -274,7 +314,7 @@ public static class RektPromptInjector
                 }
             }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (!verifiedDraftContext)
         {
             // Deliberately broad, and the outermost of three. Everything this method does is
             // additive context for a prompt: a conversion without it is weaker, a conversion that
@@ -292,14 +332,7 @@ public static class RektPromptInjector
         string.IsNullOrWhiteSpace(configured)
         || !string.Equals(configured.Trim(), "false", StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>
-    /// The program's path relative to the source folder, which is what names its service.
-    /// </summary>
-    /// <remarks>
-    /// Callers pass a bare file name, so the path is recovered from the source tree. A basename
-    /// shared by two programs cannot be resolved this way; the first match is used, and both
-    /// land in the same namespace only if they really do sit in the same folder.
-    /// </remarks>
+    // Basenames shared by multiple programs require explicit source-path metadata.
     private static string? ResolveSourceRelativePath(string repoRoot, string sourceFolder, string fileName)
     {
         // An absolute COBOL_SOURCE_FOLDER is meant to win outright rather than be appended to the
@@ -307,16 +340,19 @@ public static class RektPromptInjector
         // argument-dropping makes the intent readable and the behaviour identical.
         var root = Path.IsPathRooted(sourceFolder) ? sourceFolder : Path.Join(repoRoot, sourceFolder);
         if (!Directory.Exists(root)) return null;
+        if (Path.IsPathRooted(fileName) || fileName.Replace('\\', '/').Contains('/'))
+            return SourcePathHelper.RelativeToSource(fileName, root);
 
         var bare = Path.GetFileName(fileName);
         if (string.IsNullOrEmpty(bare)) return null;
 
         try
         {
-            var match = Directory
+            var matches = Directory
                 .EnumerateFiles(root, bare, SearchOption.AllDirectories)
-                .FirstOrDefault(p => !p.Contains(".rekt-staging", StringComparison.OrdinalIgnoreCase)
-                                  && !p.Contains(".preprocessed", StringComparison.OrdinalIgnoreCase));
+                .Where(p => !SourceTypeRegistry.IsScratchPath(Path.GetRelativePath(root, p)))
+                .Take(2).ToList();
+            var match = matches.Count == 1 ? matches[0] : null;
 
             return match is null
                 ? null

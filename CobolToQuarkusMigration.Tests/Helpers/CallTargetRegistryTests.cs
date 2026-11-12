@@ -209,6 +209,36 @@ public sealed class CallTargetRegistryTests : IDisposable
     }
 
     [Fact]
+    public void AStemAmbiguousAcrossEstatesOnlyFailsWhenTheSelectedScopeContainsIt()
+    {
+        var root = Path.Join(AppContext.BaseDirectory, "test-artifacts", "call-targets-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            foreach (var estate in new[] { "east", "west" })
+            {
+                Directory.CreateDirectory(Path.Join(root, estate));
+                File.WriteAllText(Path.Join(root, estate, "PRICING.cbl"), "       PROGRAM-ID. PRICING.\n");
+            }
+            File.WriteAllText(Path.Join(root, "SOLO.cbl"),
+                "       PROGRAM-ID. SOLO.\n           CALL 'EXT' USING WS-PARM\n");
+
+            CallTargetRegistry.Build(root).ToPromptBlock("SOLO.cbl", "C#").Should().Contain("IExtService");
+
+            ConversionSourceScope.Set(new[] { "east", "west" }.Select(estate => new CobolToQuarkusMigration.Models.CobolFile
+            {
+                FileName = "PRICING.cbl", FilePath = Path.Join(root, estate, "PRICING.cbl")
+            }));
+            var scoped = () => CallTargetRegistry.Build(root);
+            scoped.Should().Throw<InvalidOperationException>().WithMessage("Ambiguous source stem 'PRICING'*");
+        }
+        finally
+        {
+            ConversionSourceScope.Clear();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public void ACopybookDoesNotDeclareAnInterfaceForTheProgramItSharesANameWith()
     {
         Program("CALLER", "EXT");

@@ -6,20 +6,48 @@ namespace CobolToQuarkusMigration.Tests.Agents.Infrastructure.Facts;
 
 public sealed class ProgramFactsArtifactLocatorTests : IDisposable
 {
+    [Theory]
+    [InlineData(".previous", false)]
+    [InlineData(".previous", true)]
+    [InlineData(".work", false)]
+    [InlineData(".work", true)]
+    public void TryLoad_DoesNotRecoverArchivedOrInProgressFacts(string reservedDirectory, bool useInventory)
+    {
+        var root = Path.Combine(_root, "facts");
+        var path = Path.Combine(root, reservedDirectory, "old", "billing", "MAIN.cbl.facts.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, CreateFactsJson("billing/MAIN.cbl", "MAIN.cbl"));
+        var inventory = useInventory ? new[] { path } : null;
+        ProgramFactsArtifactLocator.TryLoad(root, "MAIN.cbl", inventory).Should().BeNull();
+        ProgramFactsArtifactLocator.TryLoad(root, "billing/MAIN.cbl", inventory).Should().BeNull();
+    }
+    [Fact]
+    public void TryLoad_CopybookCannotUseStemOnlyProgramFacts()
+    {
+        var factsDir = Path.Combine(_root, "facts");
+        Directory.CreateDirectory(factsDir);
+        File.WriteAllText(Path.Combine(factsDir, "SHARED.facts.json"),
+            CreateFactsJson("SHARED.cbl", "SHARED.cbl"));
+        ProgramFactsArtifactLocator.TryLoad(factsDir, "SHARED.cpy").Should().BeNull();
+    }
+
     private readonly string _root = Path.Combine(
         AppContext.BaseDirectory,
         "test-artifacts",
         $"program-facts-artifacts-{Guid.NewGuid():N}");
 
-    [Fact]
-    public void TryLoad_FindsUniqueNestedArtifactByBasename()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void TryLoad_FindsUniqueNestedArtifactByBasename(bool useInventory)
     {
         var factsDir = Path.Combine(_root, "facts");
         var factsPath = Path.Combine(factsDir, "finance", "ACCOUNTS.cbl.facts.json");
         Directory.CreateDirectory(Path.GetDirectoryName(factsPath)!);
         File.WriteAllText(factsPath, CreateFactsJson("finance/ACCOUNTS.cbl", "ACCOUNTS.cbl"));
 
-        var facts = ProgramFactsArtifactLocator.TryLoad(factsDir, "ACCOUNTS.cbl");
+        var facts = ProgramFactsArtifactLocator.TryLoad(
+            factsDir, "ACCOUNTS.cbl", useInventory ? new[] { factsPath } : null);
 
         facts.Should().NotBeNull();
         facts!.RelativePath.Should().Be("finance/ACCOUNTS.cbl");
@@ -64,8 +92,10 @@ public sealed class ProgramFactsArtifactLocatorTests : IDisposable
         facts.Should().BeNull();
     }
 
-    [Fact]
-    public void TryLoad_DoesNotGuessAcrossAmbiguousBasenames()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void TryLoad_DoesNotGuessAcrossAmbiguousBasenames(bool useInventory)
     {
         var factsDir = Path.Combine(_root, "facts");
         var firstPath = Path.Combine(factsDir, "finance", "ACCOUNTS.cbl.facts.json");
@@ -75,7 +105,8 @@ public sealed class ProgramFactsArtifactLocatorTests : IDisposable
         File.WriteAllText(firstPath, CreateFactsJson("finance/ACCOUNTS.cbl", "ACCOUNTS.cbl"));
         File.WriteAllText(secondPath, CreateFactsJson("archive/ACCOUNTS.cbl", "ACCOUNTS.cbl"));
 
-        var facts = ProgramFactsArtifactLocator.TryLoad(factsDir, "ACCOUNTS.cbl");
+        var facts = ProgramFactsArtifactLocator.TryLoad(
+            factsDir, "ACCOUNTS.cbl", useInventory ? new[] { firstPath, secondPath } : null);
 
         facts.Should().BeNull();
     }

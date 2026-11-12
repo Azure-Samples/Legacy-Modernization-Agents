@@ -23,6 +23,7 @@ RUN set -e; for p in /build/patches/*.patch; do \
     done
 
 # Build (skip tests + checkstyle for faster image)
+ARG MAVEN_OPTS="-Xmx512m -XX:MaxMetaspaceSize=192m"
 RUN mvn clean verify -Dmaven.test.skip=true -Dcheckstyle.skip=true -q
 
 # ── Runtime stage ────────────────────────────────────────────────────

@@ -18,7 +18,7 @@ to the source root. Exits 1 when any finding blocks staging.
 Blocking kinds:
   copybook-collision              copies differ and a COPY or INCLUDE names them
   copybook-collision-users        follows copybook-collision; files that name it
-  preprocessed-program-collision  duplicate program basename that the preprocessor rewrote
+  preprocessed-program-collision  duplicate program basename with an ambiguous legacy flat rewrite
 
 Informational kinds:
   program-duplicate               same program basename in more than one directory
@@ -63,11 +63,95 @@ def code_lines(text):
 
 def referenced_names(text):
     names = set()
-    for line in code_lines(text):
+    for line in dependency_guard_text(text).splitlines():
         for pattern in REFERENCE_PATTERNS:
             for match in pattern.finditer(line):
                 names.add(match.group(1).upper())
     return names
+
+
+_IDENTIFICATION = re.compile(r"\s*(?:IDENTIFICATION|ID)\s+DIVISION\b", re.IGNORECASE)
+_LATER_DIVISION = re.compile(r"\s*(?:ENVIRONMENT|DATA|PROCEDURE)\s+DIVISION\b", re.IGNORECASE)
+_COMMENT_ENTRY = re.compile(r"\s*(?:AUTHOR|INSTALLATION|DATE-WRITTEN|DATE-COMPILED|SECURITY|REMARKS)\s*\.",
+                            re.IGNORECASE)
+_PARAGRAPH = re.compile(r"\s*(?:PROGRAM-ID|AUTHOR|INSTALLATION|DATE-WRITTEN|DATE-COMPILED|SECURITY|REMARKS)\b",
+                        re.IGNORECASE)
+
+
+def program_text_lines(text):
+    """Blank sequence areas and IDENTIFICATION comment-entries, keeping line and column positions."""
+    free = re.search(r">>\s*SOURCE\s+(?:FORMAT\s+)?(?:IS\s+)?FREE\b", text, re.IGNORECASE) is not None
+    identification = documentary = False
+    for raw in text.splitlines():
+        fixed = (not free and len(raw) > 6 and raw[6] in " -*/Dd"
+                 and all(c == " " or c.isascii() and c.isdigit() for c in raw[:6]))
+        line = "      " + raw[6:72] if fixed else raw
+        area = line[7:] if fixed else line
+        # Comment records never change division state; dependency_guard_text drops them later.
+        if (fixed and line[6] in "*/") or area.lstrip().startswith("*>"):
+            yield line
+            continue
+        if _IDENTIFICATION.match(area):
+            identification = True
+        elif _LATER_DIVISION.match(area):
+            identification = documentary = False
+        elif documentary and (_PARAGRAPH.match(area) or (fixed and area[:4].strip())):
+            documentary = False
+        # Comment-entries are free text, so an apostrophe there must not open a literal.
+        if identification and (entry := _COMMENT_ENTRY.match(area)):
+            documentary = True
+            yield line[:len(line) - len(area) + entry.end()]
+        else:
+            yield "" if documentary else line
+
+
+_SQL_BOUNDARY = re.compile(r"(?:(EXEC\s+SQL)|END-EXEC)(?![A-Za-z0-9-])", re.IGNORECASE)
+
+
+def dependency_guard_text(text):
+    """Mask literals/comments for contradiction checks, retaining quoted dependency operands."""
+    result, quote, operand, sql = [], None, False, False
+    for line in program_text_lines(text):
+        if (len(line) > 6 and line[6] in "*/") or line.lstrip().startswith("*>"):
+            continue
+        row, index = [], 0
+        continuation_quote = None
+        if quote and len(line) > 6 and line[6] == "-":
+            start = 7
+            while start < len(line) and line[start].isspace():
+                start += 1
+            if start < len(line) and line[start] == quote:
+                continuation_quote = start
+        while index < len(line):
+            char = line[index]
+            if index == continuation_quote:
+                row.append(" ")
+            elif quote:
+                row.append(char if operand else " ")
+                if char == quote:
+                    if index + 1 < len(line) and line[index + 1] == quote:
+                        row.append(char if operand else " ")
+                        index += 1
+                    else:
+                        quote, operand = None, False
+            elif line[index:index + 2] == "*>" or (sql and line[index:index + 2] == "--"):
+                break
+            elif (index == 0 or not (line[index - 1].isalnum() or line[index - 1] == "-")) and (
+                    keyword := _SQL_BOUNDARY.match(line, index)):
+                sql = keyword.group(1) is not None
+                row.append(line[index:keyword.end()])
+                index = keyword.end()
+                continue
+            elif char in "'\"":
+                prefix = "\n".join(result[-1:]) + "".join(row)
+                operand = re.search(r"\b(?:COPY|CALL|INCLUDE)\s*$", prefix, re.IGNORECASE) is not None
+                quote = char
+                row.append(char if operand else " ")
+            else:
+                row.append(char)
+            index += 1
+        result.append("".join(row))
+    return "\n".join(result)
 
 
 def normalised(text):
@@ -89,7 +173,10 @@ def is_used(copybook_stem, references):
 def scan(source_root, shadowed=frozenset()):
     programs, copybooks, references = {}, {}, {}
     for root, dirs, files in os.walk(source_root):
-        dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".convert-")]
+        if os.environ.get("REKT_SOURCE_TOP_LEVEL_ONLY") == "true":
+            dirs[:] = []
+        else:
+            dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".convert-")]
         for name in files:
             path = os.path.join(root, name)
             rel = os.path.relpath(path, source_root).replace(os.sep, "/")
@@ -117,11 +204,11 @@ def users_of(copybook_stem, references):
 def check(source_root, preproc_dir, shadowed=frozenset()):
     programs, copybooks, references = scan(source_root, shadowed)
 
-    preprocessed = set()
+    preprocessed = {}
     if os.path.isdir(preproc_dir):
         for name in os.listdir(preproc_dir):
             if os.path.isfile(os.path.join(preproc_dir, name)):
-                preprocessed.add(name.lower())
+                preprocessed[name.lower()] = os.path.join(preproc_dir, name)
 
     findings, errors = [], []
     for basename, paths in sorted(copybooks.items()):
@@ -144,7 +231,11 @@ def check(source_root, preproc_dir, shadowed=frozenset()):
             paths = sorted(paths)
             findings.append(("program-duplicate", basename, paths))
             if basename in preprocessed:
-                errors.append(("preprocessed-program-collision", basename, paths))
+                from rekt_dependency_evidence import current_transform
+                root_program = next((path for path in paths if "/" not in path), None)
+                if root_program is None or current_transform(
+                        preprocessed[basename], os.path.join(source_root, root_program)) is None:
+                    errors.append(("preprocessed-program-collision", basename, paths))
 
     return findings, errors
 

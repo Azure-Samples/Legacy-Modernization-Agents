@@ -1,0 +1,69 @@
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
+@@ -86,6 +86,7 @@
+     @Getter private List<ParseTree> subroutineCalls;
+     @Getter private List<SyntaxError> diagnostics = List.of();
+     @Getter private final List<Map<String, String>> resolvedCopybooks = new ArrayList<>();
++    @Getter private final List<Map<String, String>> dependencyDerivedInputs = new ArrayList<>();
+     @Getter private final List<String> dependencyDiagnostics = new ArrayList<>();
+     @Getter private final List<Map<String, String>> dependencyControlTransfers = new ArrayList<>();
+     @Getter private final List<Map<String, Object>> dependencyDialectStatements = new ArrayList<>();
+@@ -259,7 +260,7 @@
+                         "path", path.toString(),
+                         "sha256", sha256(definitionBytes)));
+                 if (new String(definitionBytes, java.nio.charset.StandardCharsets.ISO_8859_1)
+-                        .contains("SYMBOLIC MAP GENERATED FROM BMS"))
++                        .contains("SYMBOLIC MAP GENERATED FROM BMS") && !bindBmsLayout(path, definitionBytes))
+                     dependencyDiagnostics.add("partial-derived-bms-layout:" + path.getFileName());
+             } catch (IOException | RuntimeException e) {
+                 dependencyDiagnostics.add("unreadable-copybook:" + definition.getKey() + ":" + e.getMessage());
+@@ -268,6 +269,29 @@
+         diagnostics.forEach(error -> dependencyDiagnostics.add("parser-diagnostic:"
+                 + (error.getErrorCode() == null ? "" : error.getErrorCode().getLabel())
+                 + ":" + error.getSuggestion()));
++    }
++
++    private boolean bindBmsLayout(Path copybook, byte[] output) throws IOException {
++        Path layout = Path.of(copybook + ".bms-layout.json");
++        Path source = Path.of(copybook + ".bms-source");
++        if (!java.nio.file.Files.isRegularFile(layout) || !java.nio.file.Files.isRegularFile(source)) return false;
++        byte[] layoutBytes = java.nio.file.Files.readAllBytes(layout);
++        byte[] sourceBytes = java.nio.file.Files.readAllBytes(source);
++        JsonObject proof = JsonParser.parseString(
++                new String(layoutBytes, java.nio.charset.StandardCharsets.UTF_8)).getAsJsonObject();
++        if (!proof.has("schemaVersion") || proof.get("schemaVersion").getAsInt() != 1
++                || !proof.has("producer") || !"bms-symbolic-map/layout-v1".equals(proof.get("producer").getAsString())
++                || !proof.has("status") || !"complete".equals(proof.get("status").getAsString())
++                || !proof.has("sourceSha256") || !sha256(sourceBytes).equals(proof.get("sourceSha256").getAsString())
++                || !proof.has("outputSha256") || !sha256(output).equals(proof.get("outputSha256").getAsString())
++                || !proof.has("maps") || !proof.get("maps").isJsonArray() || proof.getAsJsonArray("maps").size() == 0)
++            return false;
++        dependencyDerivedInputs.add(Map.of(
++                "kind", "BMS_LAYOUT", "name", copybook.getFileName().toString(),
++                "sourcePath", source.toString(), "sourceSha256", sha256(sourceBytes),
++                "layoutPath", layout.toString(), "layoutSha256", sha256(layoutBytes),
++                "outputPath", copybook.toString(), "outputSha256", sha256(output)));
++        return true;
+     }
+ 
+     private void collectParserCalls(ParseTree node) {
+--- a/smojol-core/src/main/java/org/smojol/common/program/CobolProgram.java
++++ b/smojol-core/src/main/java/org/smojol/common/program/CobolProgram.java
+@@ -22,6 +22,7 @@
+     @Expose @Getter private final List<String> dependencyDiagnostics = new ArrayList<>();
+     @Expose @Getter private final List<Map<String, String>> dependencyControlTransfers = new ArrayList<>();
+     @Expose @Getter private final List<Map<String, Object>> dependencyDialectStatements = new ArrayList<>();
++    @Expose @Getter private final List<Map<String, String>> dependencyDerivedInputs = new ArrayList<>();
+     @Expose @Getter private final Map<String, String> dependencyPresenceEvidence = new LinkedHashMap<>();
+     @Expose @Getter private final Map<String, String> dependencyAbsenceEvidence = new LinkedHashMap<>();
+     @Expose @Getter @Setter private String sourcePath;
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/AnalyseProgramDependenciesTask.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/AnalyseProgramDependenciesTask.java
+@@ -97,6 +97,7 @@
+                     program.getDependencyDiagnostics().addAll(pipeline.getDependencyDiagnostics());
+                     program.getDependencyControlTransfers().addAll(pipeline.getDependencyControlTransfers());
+                     program.getDependencyDialectStatements().addAll(pipeline.getDependencyDialectStatements());
++                    program.getDependencyDerivedInputs().addAll(pipeline.getDependencyDerivedInputs());
+                     program.getDependencyPresenceEvidence().putAll(pipeline.getDependencyPresenceEvidence());
+                     program.getDependencyCoverage().put("COPY",
+                             pipeline.isDependencyParseComplete() ? "complete" : "partial");

@@ -1,0 +1,12 @@
+--- a/smojol-core/src/main/java/org/smojol/common/vm/structure/Format1DataStructure.java
++++ b/smojol-core/src/main/java/org/smojol/common/vm/structure/Format1DataStructure.java
+@@ -156,6 +156,8 @@
+     public List<CobolDataStructure> matches(String recordID) {
+ //        boolean selfMatch = dataDescription != null && dataDescription.entryName().dataName().getText().equals(recordID);
+-        boolean selfMatch = dataDescription != null && dataDescription.entryName().getText().equals(recordID);
++        boolean selfMatch = dataDescription != null
++                && dataDescription.entryName() != null
++                && dataDescription.entryName().getText().equals(recordID);
+         Optional<ConditionalDataStructure> condition = condition(recordID);
+         List<CobolDataStructure> matches = new ArrayList<>();
+         matches.addAll(selfMatch ? ImmutableList.of(this) : ImmutableList.of());

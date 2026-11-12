@@ -77,8 +77,8 @@ public sealed class CallTargetRegistry
         // containing a CALL becomes a converted file that would otherwise invent its own
         // interface for the callee, which is where most of the duplicate service interfaces in
         // the measured output came from.
-        var programs = Read(SourceTypeRegistry.EnumerateProgramFiles(sourceFolder), registry);
-        var copybooks = Read(SourceTypeRegistry.EnumerateCopybookFiles(sourceFolder), registry);
+        var programs = Read(ConversionSourceScope.Filter(SourceTypeRegistry.EnumerateProgramFiles(sourceFolder)), registry);
+        var copybooks = Read(ConversionSourceScope.Filter(SourceTypeRegistry.EnumerateCopybookFiles(sourceFolder)), registry);
         registry._programStems.UnionWith(programs.Keys);
         registry._copybookStems.UnionWith(copybooks.Keys);
 
@@ -353,11 +353,11 @@ public sealed class CallTargetRegistry
         IEnumerable<string> paths, CallTargetRegistry registry)
     {
         var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var path in paths)
+        foreach (var path in CobolSourceReader.RequireUniqueStems(paths))
         {
             try
             {
-                map[Stem(path)] = File.ReadAllText(path);
+                map[Stem(path)] = CobolSourceReader.Read(path);
             }
             catch (IOException)
             {
@@ -424,11 +424,12 @@ public static class CallTargetRegistryHolder
         // An absolute source folder replaces the repository root rather than being appended to
         // it. Written as a test so the cache key cannot quietly become a path that exists
         // nowhere — a miss here is silent, which is the worst place for an implicit rule.
-        var key = Path.IsPathRooted(sourceFolder) ? sourceFolder : Path.Join(repoRoot, sourceFolder);
+        var folder = Path.IsPathRooted(sourceFolder) ? sourceFolder : Path.Join(repoRoot, sourceFolder);
+        var key = folder + "#" + ConversionSourceScope.Key;
         lock (Lock)
         {
             if (Cache.TryGetValue(key, out var existing)) return existing;
-            return Cache[key] = CallTargetRegistry.Build(key);
+            return Cache[key] = CallTargetRegistry.Build(folder);
         }
     }
 }

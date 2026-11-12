@@ -1,0 +1,96 @@
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/PlatformCopybookContract.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/PlatformCopybookContract.java
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/PlatformCopybookContract.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/PlatformCopybookContract.java
+@@ -142,8 +142,27 @@
+                 diagnostics.add("UNRESOLVED_CICS_AID_SEMANTIC:DFHAID:" + condition.getStart().getLine());
+                 return;
+             }
+-            Set<String> allowed = new LinkedHashSet<>(symbols().keySet());
+-            allowed.addAll(Set.of("EIBAID", "=", "NOT", "AND", "OR", "IS", "EQUAL", "TO", "(", ")"));
++            if (!tokens.stream().allMatch(allowed()::contains)
++                    && condition instanceof CobolParser.ConditionContext mixed) {
++                List<CobolParser.SimpleConditionContext> events = applicationConjunctEvents(mixed);
++                if (events == null) {
++                    diagnostics.add("platform-contract-unsupported-condition:DFHAID:" + condition.getStart().getLine());
++                    return;
++                }
++                for (CobolParser.SimpleConditionContext event : events) {
++                    Map<String, Object> usage = new LinkedHashMap<>();
++                    usage.put("grammarRule", "SimpleConditionContext");
++                    usage.put("conditionRole", "application-and-conjunct");
++                    usage.put("sourceText", NodeText.originalText(event, NodeText::PASSTHROUGH));
++                    usage.put("syntax", ParsePipeline.dialectSyntax(event));
++                    usage.put("line", event.getStart().getLine());
++                    usage.put("column", event.getStart().getCharPositionInLine());
++                    usage.put("coordinateSpace", "expanded-parser-input");
++                    usages.add(usage);
++                }
++                return;
++            }
++            Set<String> allowed = allowed();
+             if (!tokens.stream().allMatch(allowed::contains) || !tokens.contains("EIBAID")
+                     || !(tokens.contains("=") || tokens.contains("EQUAL"))
+                     || tokens.stream().noneMatch(symbols()::containsKey) || !supportedCondition(condition)) {
+@@ -181,6 +200,62 @@
+         else for (int i = 0; i < node.getChildCount(); i++) tokens(node.getChild(i), tokens);
+     }
+ 
++    private static Set<String> allowed() {
++        Set<String> allowed = new LinkedHashSet<>(symbols().keySet());
++        allowed.addAll(Set.of("EIBAID", "=", "NOT", "AND", "OR", "IS", "EQUAL", "TO", "(", ")"));
++        return allowed;
++    }
++
++    // Named-event equalities joined by AND to complete application relations; the
++    // application operands are preserved by the source and are not interpreted here.
++    private static List<CobolParser.SimpleConditionContext> applicationConjunctEvents(
++            CobolParser.ConditionContext condition) {
++        if (!condition.dialectNodeFiller().isEmpty()) return null;
++        List<ParserRuleContext> operands = new ArrayList<>();
++        operands.add(condition.simpleCondition() != null ? condition.simpleCondition() : condition.nestedCondition());
++        if (operands.getFirst() == null || condition.NOT() != null && mentionsEvents(operands.getFirst())) return null;
++        for (CobolParser.AdditionalConditionContext additional : condition.additionalCondition()) {
++            ParserRuleContext operand = additional.simpleCondition() != null
++                    ? additional.simpleCondition() : additional.nestedCondition();
++            if (additional.AND() == null || operand == null || additional.relationCombinedComparison() != null
++                    || !additional.dialectNodeFiller().isEmpty()
++                    || additional.NOT() != null && mentionsEvents(operand)) return null;
++            operands.add(operand);
++        }
++        List<CobolParser.SimpleConditionContext> events = new ArrayList<>();
++        boolean application = false;
++        for (ParserRuleContext operand : operands) {
++            if (!mentionsEvents(operand)) {
++                if (operand instanceof CobolParser.SimpleConditionContext simple
++                        && simple.relationCombinedComparison() == null && simple.fixedComparison() == null)
++                    return null;
++                application = true;
++            } else if (operand instanceof CobolParser.SimpleConditionContext simple && completeEventEquality(simple)) {
++                events.add(simple);
++            } else {
++                return null;
++            }
++        }
++        return application && !events.isEmpty() ? events : null;
++    }
++
++    private static boolean mentionsEvents(ParseTree node) {
++        List<String> parts = new ArrayList<>();
++        tokens(node, parts);
++        return parts.stream().anyMatch(part -> "EIBAID".equals(part) || "DFHAID".equals(part)
++                || symbols().containsKey(part));
++    }
++
++    private static boolean completeEventEquality(CobolParser.SimpleConditionContext simple) {
++        List<String> parts = new ArrayList<>();
++        tokens(simple, parts);
++        return simple.relationCombinedComparison() != null && parts.size() >= 3
++                && "EIBAID".equals(parts.getFirst()) && symbols().containsKey(parts.getLast())
++                && parts.stream().filter(symbols()::containsKey).count() == 1
++                && (parts.contains("=") || parts.contains("EQUAL"))
++                && parts.stream().allMatch(allowed()::contains);
++    }
++
+     private static boolean supportedCondition(ParseTree node) {
+         if (node instanceof CobolParser.SimpleConditionContext simple) {
+             List<String> parts = new ArrayList<>();

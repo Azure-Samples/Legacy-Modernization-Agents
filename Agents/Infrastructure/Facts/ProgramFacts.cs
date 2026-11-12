@@ -31,6 +31,9 @@ public sealed record ProgramFacts
     [JsonPropertyName("confidence")]
     public required FactConfidence Confidence { get; init; }
 
+    [JsonPropertyName("dependencyEvidence")]
+    public DependencyEvidence? DependencyEvidence { get; init; }
+
     [JsonPropertyName("warnings")]
     public IReadOnlyList<string> Warnings { get; init; } = Array.Empty<string>();
 

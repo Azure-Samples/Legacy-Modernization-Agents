@@ -1,4 +1,23 @@
+## SECTION: System
+
+Process the COBOL codebase: 123 programs, 262 copybooks, 187.181 lines.
+
+Detected features: ARITHMETIC, CALL_PROGRAM, CICS_SCREEN, COPYBOOK_REF, EXEC_CICS, EXEC_SQL, FILE_IO, IMS_DB, SORT_MERGE, STRING_HANDLING, TABLE_HANDLING.
+
+Provide a comprehensive analysis and conversion-ready assessment of this codebase.
+
+## SECTION: User
+
+Process the following COBOL source code.
+
+```cobol
+{{CobolContent}}
+```
+
+Provide comprehensive analysis and output.
+
 ## SECTION: CommonPolicy
+
 
 ---
 REKT STRUCTURAL CONTEXT (authoritative — use this as the conversion blueprint):
@@ -13,6 +32,7 @@ FACT-LOCKING RULES — read these BEFORE looking at the structural context:
   • If the structural context shows zero items for a category (e.g. no CALL targets), do NOT generate any.
 
 ## SECTION: RawTargetPolicy
+
 
 DATA STRUCTURE → DTO RULES:
   • For EVERY 01-level data group in the DATA STRUCTURE section below, generate a
@@ -36,6 +56,7 @@ CALL TARGET → SERVICE INJECTION RULES:
 
 ## SECTION: JavaTargetPolicy
 
+
 DATA STRUCTURE → DTO RULES:
   • For EVERY 01-level data group below, generate a COMPLETE DTO class with ALL fields.
   • Map PIC X→String, PIC S9V9→BigDecimal, PIC 9 COMP-3→BigDecimal, PIC 9 COMP→int/long.
@@ -47,6 +68,7 @@ CALL TARGET → SERVICE INJECTION RULES:
   • Do NOT inline the called program's logic.
 
 ## SECTION: CSharpTargetPolicy
+
 
 DATA STRUCTURE → DTO RULES:
   • For EVERY 01-level data group below, generate a COMPLETE DTO class with ALL fields.
@@ -60,25 +82,27 @@ CALL TARGET → SERVICE INJECTION RULES:
 
 ## SECTION: WarningsHeader
 
+
 WARNINGS (preserved from REKT extraction — surface in the generated code as TODOs where relevant):
 
 ## SECTION: SyntheticLayoutPolicy
 
+
 SYNTHETIC LAYOUTS — THESE COPYBOOKS WERE NOT FOUND IN THE SOURCE DROP:
 {{StubCopybooks}}
-  The parser needed a definition to resolve the COPY directive, so a placeholder holding a
-  single filler field was generated. That placeholder is a tooling artefact. It is NOT the
+  Older parser runs may have generated a placeholder to resolve the COPY directive.
+  Current preprocessing does not generate these layouts. A legacy placeholder is NOT the
   customer's layout, and the real field names, types, sizes and REDEFINES are unknown here.
 
   For the copybooks named above, and ONLY for those, the completeness rules above do not apply:
   • Do NOT invent fields, types or sizes to make the structure look plausible.
   • Do NOT carry the generated `-STUB` / `-VAL` filler into the output as if it were real.
-  • Emit the type with no invented members, and mark it:
+  • Report the unresolved dependency explicitly:
     `TODO: layout unknown — <COPYBOOK> was missing from the source drop; supply the copybook
      and regenerate before relying on this type.`
   • In comments and documentation, do not describe what these fields mean or what the
     structure is for. Nothing in the available evidence supports such a description.
-  • Keep any reference to the structure compiling, but leave the shape unresolved.
+  • Do not invent members or suppress errors to keep references compiling.
 
   Every other data group in this context came from a real parse and must still be generated
   completely, exactly as the rules above require.
@@ -86,49 +110,61 @@ SYNTHETIC LAYOUTS — THESE COPYBOOKS WERE NOT FOUND IN THE SOURCE DROP:
 
 ## SECTION: PreprocessHeader
 
+
 PREPROCESSOR TRANSFORMS APPLIED (the source you see has been rewritten — preserve original semantics):
 
 ## SECTION: JavaDataGroupsHeader
+
 
 DATA GROUPS (01-level — one DTO/record class per entry):
 
 ## SECTION: CSharpDataGroupsHeader
 
+
 DATA GROUPS (01-level — one DTO/record class per entry, PascalCase property names):
 
 ## SECTION: JavaDbTablesHeader
+
 
 IO — DB TABLES (each becomes a Panache entity / repository method):
 
 ## SECTION: CSharpDbTablesHeader
 
+
 IO — DB TABLES (each becomes an EF Core entity / repository method):
 
 ## SECTION: FilesHeader
+
 
 IO — FILES (heuristic-extracted from PROCEDURE DIVISION; treat as file-IO ports):
 
 ## SECTION: JavaCallTargetsHeader
 
+
 CALL TARGETS (each becomes an @Inject service interface):
 
 ## SECTION: CSharpCallTargetsHeader
+
 
 CALL TARGETS (each becomes a service interface + constructor-injected field):
 
 ## SECTION: CalledByHeader
 
+
 CALLED BY (informational — these programs depend on this one):
 
 ## SECTION: JavaExternalEffectsHeader
+
 
 EXTERNAL EFFECTS (use to choose Quarkus extensions / annotations):
 
 ## SECTION: CSharpExternalEffectsHeader
 
+
 EXTERNAL EFFECTS (use to choose .NET libraries / DI registrations):
 
 ## SECTION: SharedTypes
+
 
 ---
 SHARED COPYBOOK TYPES:
@@ -148,6 +184,7 @@ and are the same type for every program that uses them.
   • Use exactly the expected type name given above so the reference resolves.
 
 ## SECTION: CopybookOwnership
+
 
 ---
 COPYBOOK TYPE OWNERSHIP (assigned — exactly one file declares each type):
@@ -186,6 +223,7 @@ REFERENCE these and do NOT declare them — another file owns them:
 
 ## SECTION: CopybookScope
 
+
   • THIS FILE IS A COPYBOOK. Its output is the types listed under DECLARE, plus any
     interface assigned to it under CALL TARGET CONTRACTS, and its own statements if it has
     any. Nothing else: no services, interfaces, DbContexts or DI registrations for the
@@ -193,6 +231,7 @@ REFERENCE these and do NOT declare them — another file owns them:
     A copybook of a few lines produces a file of a few types.
 
 ## SECTION: CallTargetContracts
+
 
 ---
 CALL TARGET CONTRACTS (assigned — do not invent interface names or methods):
@@ -224,6 +263,7 @@ REFERENCE these and do NOT declare them (another program declares them):
 
 ## SECTION: NamespacePolicy
 
+
 ---
 TARGET NAMESPACE (assigned — do not invent one):
 
@@ -238,19 +278,23 @@ TARGET NAMESPACE (assigned — do not invent one):
 
 ## SECTION: DataStructureGuidance
 
+
   Each top-level group (01-level) should become a separate class/record.
   Use the field names and PIC clauses below to derive the correct types.
   If a group comes from a COPY (copybook), name the class after the copybook.
 
 ## SECTION: DataStructureHeader
 
+
 DATA STRUCTURE ({{Count}} groups — generate a DTO/record class for each):
 
 ## SECTION: TruncatedDataStructure
 
+
     … {{Count}} fields total — generate ALL in the DTO using the COBOL source for complete field list
 
 ## SECTION: CSharpBatchProgram
+
 
 ---
 BATCH PROGRAM CONTRACT (this program is run by JCL — the generated job calls it through this):
@@ -279,6 +323,7 @@ already generated in {{JobsNamespace}}. Do NOT declare it, or BatchStepContext, 
     as an abend.
 
 ## SECTION: JavaBatchProgram
+
 
 ---
 BATCH PROGRAM CONTRACT (this program is run by JCL — the generated job calls it through this):

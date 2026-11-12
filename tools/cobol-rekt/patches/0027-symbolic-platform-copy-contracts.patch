@@ -1,0 +1,262 @@
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/PlatformCopybookContract.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/PlatformCopybookContract.java
+new file mode 100644
+--- /dev/null
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/PlatformCopybookContract.java
+@@ -0,0 +1,178 @@
++package org.smojol.toolkit.analysis.pipeline;
++
++import com.google.gson.JsonObject;
++import com.google.gson.JsonParser;
++import org.antlr.v4.runtime.ParserRuleContext;
++import org.antlr.v4.runtime.tree.ParseTree;
++import org.antlr.v4.runtime.tree.TerminalNode;
++import org.eclipse.lsp.cobol.core.CobolParser;
++import org.smojol.common.ast.NodeText;
++
++import java.io.IOException;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.ArrayList;
++import java.util.Arrays;
++import java.util.Collections;
++import java.util.IdentityHashMap;
++import java.util.LinkedHashMap;
++import java.util.LinkedHashSet;
++import java.util.List;
++import java.util.Locale;
++import java.util.Map;
++import java.util.Set;
++import java.util.TreeMap;
++
++final class PlatformCopybookContract {
++    static final String MARKER = "ANALYSIS-ONLY PLATFORM EVENT CONTRACT; NOT A VENDOR COPYBOOK";
++    static final String DOCUMENTATION =
++            "https://www.ibm.com/docs/en/cics-ts/6.x";
++
++    static Map<String, String> symbols() {
++        Map<String, String> result = new TreeMap<>();
++        result.put("DFHENTER", "ENTER");
++        result.put("DFHCLEAR", "CLEAR");
++        for (int i = 1; i <= 3; i++) result.put("DFHPA" + i, "PA" + i);
++        for (int i = 1; i <= 24; i++) result.put("DFHPF" + i, "PF" + i);
++        return result;
++    }
++
++    static byte[] projection() {
++        StringBuilder text = new StringBuilder("      * " + MARKER + "\n"
++                + "      * No VALUE clauses: these names are symbolic, not blank data.\n"
++                + "       01 DFHAID.\n");
++        symbols().keySet().forEach(name -> text.append("          02 ").append(name).append(" PIC X.\n"));
++        return text.toString().getBytes(StandardCharsets.US_ASCII);
++    }
++
++    static Map<String, Object> bind(Path input, byte[] bytes) throws IOException {
++        String configured = System.getenv("REKT_PLATFORM_CONTRACTS");
++        if (configured == null || configured.isBlank())
++            throw new IllegalArgumentException("platform replacement requires explicit REKT_PLATFORM_CONTRACTS");
++        Path path = Path.of(configured);
++        if (!path.isAbsolute()) throw new IllegalArgumentException("platform contract path must be absolute");
++        byte[] source = Files.readAllBytes(path);
++        JsonObject profile = JsonParser.parseString(new String(source, StandardCharsets.UTF_8)).getAsJsonObject();
++        if (!profile.keySet().equals(Set.of("schemaVersion", "profileKind", "profileName", "copybooks"))
++                || profile.get("schemaVersion").getAsInt() != 1
++                || !"platform-replacement".equals(profile.get("profileKind").getAsString())
++                || profile.get("profileName").getAsString().isBlank()
++                || !profile.getAsJsonObject("copybooks").keySet().equals(Set.of("DFHAID")))
++            throw new IllegalArgumentException("unsupported platform replacement profile");
++        JsonObject definition = profile.getAsJsonObject("copybooks").getAsJsonObject("DFHAID");
++        JsonObject expectedSymbols = new JsonObject();
++        symbols().forEach(expectedSymbols::addProperty);
++        if (!definition.keySet().equals(Set.of("recipe", "selector", "symbols", "documentation", "targetSemantics"))
++                || !"symbolic-terminal-events-v1".equals(definition.get("recipe").getAsString())
++                || !"EIBAID".equals(definition.get("selector").getAsString())
++                || !expectedSymbols.equals(definition.get("symbols"))
++                || definition.getAsJsonArray("documentation").size() != 1
++                || !DOCUMENTATION.equals(definition.getAsJsonArray("documentation").get(0).getAsString())
++                || !"named-events-preserve-source-branches".equals(definition.get("targetSemantics").getAsString())
++                || !"DFHAID.cpy".equalsIgnoreCase(input.getFileName().toString())
++                || !Arrays.equals(projection(), bytes))
++            throw new IllegalArgumentException("unsupported or modified platform event projection");
++        Map<String, Object> result = new LinkedHashMap<>();
++        result.put("name", "DFHAID");
++        result.put("profileName", profile.get("profileName").getAsString());
++        result.put("profileKind", "platform-replacement");
++        result.put("sourcePath", path.toString());
++        result.put("sourceSha256", ParsePipeline.sha256(source));
++        result.put("outputPath", input.toString());
++        result.put("outputSha256", ParsePipeline.sha256(bytes));
++        result.put("definition", new com.google.gson.Gson().fromJson(definition, Map.class));
++        result.put("resolutionKind", "symbolic-platform-replacement");
++        result.put("runtimeMapping", "implementation-required");
++        result.put("sourceValues", "not-supplied");
++        result.put("usages", new ArrayList<Map<String, Object>>());
++        return result;
++    }
++
++    static void validateUses(ParseTree tree, Map<String, Object> binding, List<String> diagnostics) {
++        Set<ParserRuleContext> conditions = Collections.newSetFromMap(new IdentityHashMap<>());
++        Set<ParseTree> visited = Collections.newSetFromMap(new IdentityHashMap<>());
++        Map<String, Integer> declarations = new LinkedHashMap<>();
++        List<Map<String, Object>> usages = new ArrayList<>();
++        visit(tree, visited, conditions, declarations, usages, diagnostics);
++        for (String name : symbols().keySet())
++            if (declarations.getOrDefault(name, 0) != 1)
++                diagnostics.add("platform-contract-ambiguous-declaration:DFHAID:" + name);
++        binding.put("usages", usages);
++        binding.put("bindingStatus", diagnostics.stream().anyMatch(issue -> issue.startsWith("platform-contract-"))
++                ? "unresolved" : "complete");
++    }
++
++    private static void visit(ParseTree node, Set<ParseTree> visited, Set<ParserRuleContext> conditions,
++                              Map<String, Integer> declarations, List<Map<String, Object>> usages,
++                              List<String> diagnostics) {
++        if (!visited.add(node)) return;
++        if (node instanceof TerminalNode terminal) {
++            String name = node.getText().toUpperCase(Locale.ROOT);
++            if (!symbols().containsKey(name) && !"DFHAID".equals(name) && !"EIBAID".equals(name)) return;
++            if (ancestor(node, CobolParser.DataDivisionContext.class) != null) {
++                if (ancestor(node, CobolParser.DataNameContext.class) != null && symbols().containsKey(name))
++                    declarations.merge(name, 1, Integer::sum);
++                return;
++            }
++            ParserRuleContext condition = outerCondition(node);
++            if (condition == null || "DFHAID".equals(name)) {
++                diagnostics.add("platform-contract-unsupported-use:DFHAID:" + name + ":" + terminal.getSymbol().getLine());
++                return;
++            }
++            if (!conditions.add(condition)) return;
++            List<String> tokens = new ArrayList<>();
++            tokens(condition, tokens);
++            Set<String> allowed = new LinkedHashSet<>(symbols().keySet());
++            allowed.addAll(Set.of("EIBAID", "=", "NOT", "AND", "OR", "IS", "EQUAL", "TO", "(", ")"));
++            if (!tokens.stream().allMatch(allowed::contains) || !tokens.contains("EIBAID")
++                    || !(tokens.contains("=") || tokens.contains("EQUAL"))
++                    || tokens.stream().noneMatch(symbols()::containsKey) || !supportedCondition(condition)) {
++                diagnostics.add("platform-contract-unsupported-condition:DFHAID:" + condition.getStart().getLine());
++                return;
++            }
++            Map<String, Object> usage = new LinkedHashMap<>();
++            usage.put("grammarRule", "ConditionContext");
++            usage.put("sourceText", NodeText.originalText(condition, NodeText::PASSTHROUGH));
++            usage.put("syntax", ParsePipeline.dialectSyntax(condition));
++            usage.put("line", condition.getStart().getLine());
++            usage.put("column", condition.getStart().getCharPositionInLine());
++            usage.put("coordinateSpace", "expanded-parser-input");
++            usages.add(usage);
++        }
++        for (int i = 0; i < node.getChildCount(); i++)
++            visit(node.getChild(i), visited, conditions, declarations, usages, diagnostics);
++    }
++
++    private static <T extends ParserRuleContext> T ancestor(ParseTree node, Class<T> type) {
++        for (ParseTree current = node.getParent(); current != null; current = current.getParent())
++            if (type.isInstance(current)) return type.cast(current);
++        return null;
++    }
++
++    private static ParserRuleContext outerCondition(ParseTree node) {
++        ParserRuleContext result = null;
++        for (ParseTree current = node.getParent(); current != null; current = current.getParent())
++            if (current instanceof CobolParser.ConditionContext condition) result = condition;
++        return result;
++    }
++
++    private static void tokens(ParseTree node, List<String> tokens) {
++        if (node instanceof TerminalNode) tokens.add(node.getText().toUpperCase(Locale.ROOT));
++        else for (int i = 0; i < node.getChildCount(); i++) tokens(node.getChild(i), tokens);
++    }
++
++    private static boolean supportedCondition(ParseTree node) {
++        if (node instanceof CobolParser.SimpleConditionContext simple) {
++            List<String> parts = new ArrayList<>();
++            tokens(simple, parts);
++            if (parts.size() == 1) return symbols().containsKey(parts.getFirst())
++                    && simple.getParent() instanceof CobolParser.AdditionalConditionContext;
++            if (parts.size() < 3 || !"EIBAID".equals(parts.getFirst())
++                    || !symbols().containsKey(parts.getLast())) return false;
++        }
++        for (int i = 0; i < node.getChildCount(); i++)
++            if (!supportedCondition(node.getChild(i))) return false;
++        return true;
++    }
++}
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
+@@ -86,6 +86,7 @@
+     @Getter private List<ParseTree> subroutineCalls;
+     @Getter private List<SyntaxError> diagnostics = List.of();
+     @Getter private final List<Map<String, String>> resolvedCopybooks = new ArrayList<>();
++    @Getter private final List<Map<String, Object>> platformCopybooks = new ArrayList<>();
+     @Getter private final List<Map<String, String>> dependencyDerivedInputs = new ArrayList<>();
+     @Getter private final List<String> dependencyDiagnostics = new ArrayList<>();
+     @Getter private final List<Map<String, String>> dependencyControlTransfers = new ArrayList<>();
+@@ -230,6 +231,7 @@
+         LOGGER.info(gson.toJson(timingResult));
+         sqlDependencies.bind(tree);
+         cicsDependencies.bind(tree, Path.of(parsedSourcePath).getParent(), parserCicsCallTargets, parserCicsRunTargets);
++        platformCopybooks.forEach(binding -> PlatformCopybookContract.validateUses(tree, binding, dependencyDiagnostics));
+         dependencyParseComplete = diagnostics.isEmpty() && dependencyDiagnostics.isEmpty();
+         attestSupportedAbsence();
+         return navigator;
+@@ -257,6 +259,11 @@
+             try {
+                 Path path = Paths.get(URI.create(definition.getValue())).toAbsolutePath().normalize();
+                 byte[] definitionBytes = ops.getResourceOperations().readAllBytes(path);
++                if (new String(definitionBytes, java.nio.charset.StandardCharsets.US_ASCII)
++                        .contains(PlatformCopybookContract.MARKER)) {
++                    platformCopybooks.add(PlatformCopybookContract.bind(path, definitionBytes));
++                    continue;
++                }
+                 resolvedCopybooks.add(Map.of("name", path.getFileName().toString(),
+                         "path", path.toString(),
+                         "sha256", sha256(definitionBytes)));
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/AnalyseProgramDependenciesTask.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/AnalyseProgramDependenciesTask.java
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/AnalyseProgramDependenciesTask.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/AnalyseProgramDependenciesTask.java
+@@ -103,6 +103,13 @@
+                             pipeline.isDependencyParseComplete() ? "complete" : "partial");
+                     program.getDependencyCoverage().putAll(pipeline.getDependencyAbsenceCoverage());
+                     program.getDependencyAbsenceEvidence().putAll(pipeline.getDependencyAbsenceEvidence());
++                    for (Map<String, Object> binding : pipeline.getPlatformCopybooks()) {
++                        CobolProgram child = new CobolProgram(new StaticCallTarget((String) binding.get("name")));
++                        child.setDependencyKind("PLATFORM_COPY");
++                        child.setRuntimeContract(binding);
++                        child.setRuntimeContractBindingComplete("complete".equals(binding.get("bindingStatus")));
++                        program.addAll(List.of(child));
++                    }
+                     for (Map<String, String> copybook : pipeline.getResolvedCopybooks()) {
+                         CobolProgram child = new CobolProgram(new StaticCallTarget(copybook.get("name")));
+                         child.setDependencyKind("COPY");
+@@ -152,7 +159,8 @@
+             for (CobolProgram childDependency : program.staticDependencies())
+                 recurse(childDependency, copyBookPaths);
+             for (CobolProgram child : program.getDependencies()) {
+-                if ("COPY".equals(child.getDependencyKind()) || child.isDependencyBindingComplete()) continue;
++                if ("COPY".equals(child.getDependencyKind()) || "PLATFORM_COPY".equals(child.getDependencyKind())
++                        || child.isDependencyBindingComplete()) continue;
+                 program.getDependencyDiagnostics().add("incomplete-callee:" + child.getName());
+                 child.getDependencyDiagnostics().forEach(issue ->
+                         program.getDependencyDiagnostics().add("callee:" + child.getName() + ":" + issue));
+diff --git a/smojol-core/src/main/java/org/smojol/common/program/CobolProgram.java b/smojol-core/src/main/java/org/smojol/common/program/CobolProgram.java
+--- a/smojol-core/src/main/java/org/smojol/common/program/CobolProgram.java
++++ b/smojol-core/src/main/java/org/smojol/common/program/CobolProgram.java
+@@ -33,7 +33,7 @@
+     @Expose @Getter @Setter private Map<String, Object> runtimeContract;
+ 
+     public boolean isDependencyBindingComplete() {
+-        return dependencyAnalysisComplete || "EXTERNAL_RUNTIME".equals(dependencyKind)
++        return dependencyAnalysisComplete || ("EXTERNAL_RUNTIME".equals(dependencyKind) || "PLATFORM_COPY".equals(dependencyKind))
+                 && runtimeContractBindingComplete && runtimeContract != null;
+     }
+ 
+@@ -48,7 +48,7 @@
+ 
+     public List<CobolProgram> staticDependencies() {
+         return dependencies.stream().filter(CobolProgram::isStatic)
+-                .filter(program -> !"COPY".equals(program.dependencyKind)).toList();
++                .filter(program -> !"COPY".equals(program.dependencyKind) && !"PLATFORM_COPY".equals(program.dependencyKind)).toList();
+     }
+ 
+     @Override

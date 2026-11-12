@@ -2,6 +2,14 @@ namespace CobolToQuarkusMigration.Helpers;
 
 public static class SourcePathHelper
 {
+    public static string ForFile(CobolToQuarkusMigration.Models.CobolFile file) =>
+        string.IsNullOrWhiteSpace(file.FilePath) ? file.FileName : Path.GetFullPath(file.FilePath);
+
+    public static string RelativeToSource(string path, string sourceRoot) =>
+        Path.IsPathRooted(path)
+            ? NormalizeRelativePath(Path.GetRelativePath(sourceRoot, path))
+            : NormalizeRelativePath(path);
+
     public static string NormalizeRelativePath(string path)
     {
         if (string.IsNullOrWhiteSpace(path)) return string.Empty;

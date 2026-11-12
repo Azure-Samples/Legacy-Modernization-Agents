@@ -22,19 +22,44 @@ public static class ConversionParityPostPass
         string outputFolder,
         string targetLanguage,
         ILogger? logger = null,
-        IEnumerable<string>? sourcePrograms = null)
+        IEnumerable<string>? sourcePrograms = null,
+        string? repositoryRoot = null,
+        Func<ParityRepairRequest, Task<IReadOnlyDictionary<string, string>?>>? repair = null,
+        string? sourceDirectory = null,
+        bool applyGate = true,
+        bool preserveRepairHistory = false,
+        CancellationToken cancellationToken = default)
     {
+        var repoRoot = repositoryRoot ?? FindRepoRoot();
+        if (repoRoot is null)
+        {
+            logger?.LogWarning("[ConversionParity] Repo root (doctor.sh) not found; parity check skipped.");
+            return string.Empty;
+        }
+        var sourceFolder = sourceDirectory ?? Environment.GetEnvironmentVariable("COBOL_SOURCE_FOLDER") ?? "source";
+        var sourceRoot = Path.GetFullPath(Path.Combine(repoRoot, sourceFolder));
+        string Identity(string path) => SourcePathHelper.RelativeToSource(path, sourceRoot);
+        string FileIdentity(CodeFile file) => Identity(
+            string.IsNullOrWhiteSpace(file.OriginalSourcePath) ? file.OriginalCobolFileName : file.OriginalSourcePath);
         var files = generatedFiles
             .Where(f => !string.IsNullOrWhiteSpace(f.FilePath))
             .ToList();
+        Directory.CreateDirectory(outputFolder);
+        await File.WriteAllTextAsync(Path.Combine(outputFolder, "generated-source-map.json"),
+            JsonSerializer.Serialize(files.Select(file => new
+            {
+                source = FileIdentity(file),
+                generated = Path.GetRelativePath(outputFolder, file.FilePath).Replace('\\', '/'),
+                kind = Path.GetExtension(FileIdentity(file)).Equals(".cpy", StringComparison.OrdinalIgnoreCase)
+                    ? "copybook" : "program"
+            }), new JsonSerializerOptions { WriteIndented = true }), cancellationToken);
 
         var namedPrograms = (sourcePrograms ?? Enumerable.Empty<string>())
             .Where(p => !string.IsNullOrWhiteSpace(p))
+            .Select(Identity)
             .ToList();
 
-        // Generated files carry only the source basename, so two programs of the same name in
-        // different folders are indistinguishable here. Counting before the dedup below is the
-        // only place the collision is still visible.
+        // Legacy outputs without path metadata must not silently merge ambiguous basenames.
         var ambiguousPrograms = namedPrograms
             .GroupBy(p => p, StringComparer.OrdinalIgnoreCase)
             .Where(g => g.Count() > 1)
@@ -46,17 +71,9 @@ public static class ConversionParityPostPass
 
         if (files.Count == 0 && expectedPrograms.Count == 0) return string.Empty;
 
-        var repoRoot = FindRepoRoot();
-        if (repoRoot is null)
-        {
-            logger?.LogWarning("[ConversionParity] Repo root (doctor.sh) not found; parity check skipped.");
-            return string.Empty;
-        }
-
         var threshold = ReadThreshold(logger);
         var gate = ReadGate(logger);
-        var sourceFolder = Environment.GetEnvironmentVariable("COBOL_SOURCE_FOLDER") ?? "source";
-        var factsDir = Path.Join(repoRoot, "output", "rekt");
+        var factsDir = ConversionEligibility.FactsDirectory(repoRoot);
 
         var provider = new StructuralContextProvider(repoRoot, sourceFolder, fallbackToAi: false);
         var stubCopybooks = StubCopybookCatalog.Load(repoRoot, sourceFolder);
@@ -69,7 +86,10 @@ public static class ConversionParityPostPass
         }
         var results = new List<ProgramParityResult>();
 
-        var unmapped = files.Where(f => string.IsNullOrWhiteSpace(f.OriginalCobolFileName)).ToList();
+        var unmapped = files.Where(f => string.IsNullOrWhiteSpace(FileIdentity(f))).ToList();
+        var conflictingOutputs = files.GroupBy(file => Path.GetFullPath(file.FilePath))
+            .Where(group => group.Select(FileIdentity).Distinct(StringComparer.OrdinalIgnoreCase).Count() > 1)
+            .Select(group => group.Key).ToHashSet(StringComparer.Ordinal);
         foreach (var file in unmapped)
         {
             results.Add(NotEvaluated(
@@ -81,8 +101,8 @@ public static class ConversionParityPostPass
         // Chunked assembly emits one file per generated class, all carrying the same source
         // program. Scoring them individually would report a correct split as several failures.
         var byProgram = files
-            .Where(f => !string.IsNullOrWhiteSpace(f.OriginalCobolFileName))
-            .GroupBy(f => f.OriginalCobolFileName!, StringComparer.OrdinalIgnoreCase);
+            .Where(f => !string.IsNullOrWhiteSpace(FileIdentity(f)))
+            .GroupBy(FileIdentity, StringComparer.OrdinalIgnoreCase);
 
         var converted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -90,6 +110,15 @@ public static class ConversionParityPostPass
         {
             var program = group.Key;
             converted.Add(program);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (group.Any(file => conflictingOutputs.Contains(Path.GetFullPath(file.FilePath))))
+            {
+                var reason = "The same generated output path is assigned to multiple source identities; " +
+                    "the overwritten output cannot be attributed or repaired safely.";
+                logger?.LogError("Parity not evaluated for {Program}: {Reason}", program, reason);
+                results.Add(NotEvaluated(program, DescribeFiles(group), reason));
+                continue;
+            }
 
             if (ambiguousPrograms.TryGetValue(program, out var shareCount))
             {
@@ -137,8 +166,24 @@ public static class ConversionParityPostPass
 
             var facts = ProgramFactsArtifactLocator.TryLoad(factsDir, program);
             var code = string.Join("\n", parts);
-            results.Add(ConversionParityValidator.Evaluate(
-                program, generatedFile, code, context, facts, stubCopybooks));
+            var result = ConversionParityValidator.Evaluate(
+                program, generatedFile, code, context, facts, stubCopybooks);
+            if (repair is not null && readFailures.Count == 0 && Fails(result, threshold))
+            {
+                var sourcePath = Path.GetFullPath(Path.Combine(sourceRoot, SourcePathHelper.ToOsRelativePath(program)));
+                if (File.Exists(sourcePath))
+                {
+                    var source = await File.ReadAllTextAsync(sourcePath, cancellationToken);
+                    var current = group.ToDictionary(f => f.FilePath, f => File.ReadAllText(f.FilePath));
+                    result = await RepairAsync(result, source, current, targetLanguage, threshold,
+                        repair, candidate => ConversionParityValidator.Evaluate(
+                            program, generatedFile, string.Join("\n", candidate.Values), context, facts, stubCopybooks),
+                        logger, cancellationToken);
+                    foreach (var file in group) file.Content = await File.ReadAllTextAsync(file.FilePath, cancellationToken);
+                }
+                else logger?.LogWarning("Parity repair skipped: authoritative source not found for {Program}", program);
+            }
+            results.Add(result);
         }
 
         // A source that produced no output at all is the worst parity failure there is, and it
@@ -148,24 +193,33 @@ public static class ConversionParityPostPass
             results.Add(NoOutput(program, ambiguousPrograms.TryGetValue(program, out var n) ? n : 1));
         }
 
+        if (preserveRepairHistory)
+        {
+            var previous = JsonSerializer.Deserialize<ConversionParityReport>(
+                await File.ReadAllTextAsync(Path.Combine(outputFolder, ArtifactName), cancellationToken))
+                ?? throw new InvalidOperationException("Cannot revalidate a missing parity report.");
+            var history = previous.Programs.ToDictionary(program => program.Program, StringComparer.OrdinalIgnoreCase);
+            results = results.Select(result => history.TryGetValue(result.Program, out var old)
+                ? result with { RepairAttempts = old.RepairAttempts, AcceptedRepairs = old.AcceptedRepairs, RepairNote = old.RepairNote }
+                : result).ToList();
+        }
         var report = BuildReport(results, targetLanguage, threshold, gate);
         await WriteArtifactAsync(report, outputFolder, logger);
 
-        if (gate == ParityGate.Stop && report.BelowThresholdCount > 0)
+        if (applyGate && gate == ParityGate.Stop && report.BelowThresholdCount > 0)
         {
-            Environment.ExitCode = LowScoreExitCode;
+            if (Environment.ExitCode == 0) Environment.ExitCode = LowScoreExitCode;
             logger?.LogError(
-                "[ConversionParity] {Count} program(s) failed parity (MIN_PROGRAM_SCORE={Threshold}); ON_LOW_SCORE=stop set exit code {Code}.",
-                report.BelowThresholdCount, threshold, LowScoreExitCode);
+                "[ConversionParity] {Count} program(s) failed parity (MIN_PROGRAM_SCORE={Threshold}); ON_LOW_SCORE=stop failed with process exit code {Code}.",
+                report.BelowThresholdCount, threshold, Environment.ExitCode);
         }
-        else if (gate == ParityGate.Stop && results.Count > 0 && report.EvaluatedCount == 0)
+        else if (applyGate && gate == ParityGate.Stop && report.NotEvaluatedCount > 0)
         {
-            // Exiting 0 here would report "no parity failures" when the truth is that parity was
-            // never measured. Under an explicit gate, absent evidence is not a pass.
-            Environment.ExitCode = LowScoreExitCode;
+            // Measured neighbors cannot turn a source with missing evidence into a strict pass.
+            if (Environment.ExitCode == 0) Environment.ExitCode = LowScoreExitCode;
             logger?.LogError(
-                "[ConversionParity] No program could be evaluated ({Count} attempted); ON_LOW_SCORE=stop set exit code {Code}.",
-                results.Count, LowScoreExitCode);
+                "[ConversionParity] {Count} program(s) could not be evaluated; ON_LOW_SCORE=stop failed with process exit code {Code}.",
+                report.NotEvaluatedCount, Environment.ExitCode);
         }
 
         return BuildMarkdown(report);
@@ -175,6 +229,76 @@ public static class ConversionParityPostPass
     {
         var names = group.Select(f => Path.GetFileName(f.FilePath!)).OrderBy(n => n).ToList();
         return names.Count == 1 ? names[0] : $"{names[0]} (+{names.Count - 1} more)";
+    }
+
+    internal static async Task<ProgramParityResult> RepairAsync(
+        ProgramParityResult result, string source, Dictionary<string, string> current,
+        string language, double threshold,
+        Func<ParityRepairRequest, Task<IReadOnlyDictionary<string, string>?>> repair,
+        Func<IReadOnlyDictionary<string, string>, ProgramParityResult> evaluate,
+        ILogger? logger = null, CancellationToken cancellationToken = default)
+    {
+        var raw = Environment.GetEnvironmentVariable("PARITY_REPAIR_MAX_ROUNDS");
+        var rounds = 2;
+        if (!string.IsNullOrWhiteSpace(raw) && (!int.TryParse(raw, out rounds) || rounds < 0))
+            throw new InvalidOperationException("PARITY_REPAIR_MAX_ROUNDS must be a non-negative integer.");
+        var attempts = 0;
+        var accepted = 0;
+        string? note = null;
+        while (attempts < rounds && Fails(result, threshold))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            attempts++;
+            IReadOnlyDictionary<string, string>? candidate;
+            try { candidate = await repair(new(result.Program, language, source, current, result)).WaitAsync(cancellationToken); }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger?.LogWarning(ex, "Parity repair failed for {Program}; retaining original output.", result.Program);
+                note = "Repair failed; original output retained.";
+                break;
+            }
+            if (candidate is null)
+            {
+                note = "Repair produced no usable candidate.";
+                break;
+            }
+            if (!current.Keys.ToHashSet(StringComparer.Ordinal).SetEquals(candidate.Keys)
+                || candidate.Any(pair => string.IsNullOrWhiteSpace(pair.Value)
+                    || (language.Equals("Java", StringComparison.OrdinalIgnoreCase)
+                        ? JavaCompileGate.RejectCandidate(current[pair.Key], pair.Value, preserveAllTypes: true)
+                        : CompileRepairAgent.Reject(current[pair.Key], pair.Value, new HashSet<string>())) is not null))
+            {
+                note = "Repair rejected: file identities, public APIs or type declarations were lost.";
+                logger?.LogWarning("{Note} Program: {Program}", note, result.Program);
+                continue;
+            }
+            var measured = evaluate(candidate);
+            if (measured.Outcome != ParityOutcome.Evaluated || measured.IsDiagnosticStub
+                || measured.Score < result.Score
+                || measured.Axes.Any(axis => result.Axes.Any(old =>
+                    old.Name == axis.Name && axis.MatchedInCode < old.MatchedInCode))
+                || !measured.Axes.Any(axis => result.Axes.Any(old =>
+                    old.Name == axis.Name && axis.MatchedInCode > old.MatchedInCode)))
+            {
+                note = "Repair rejected: revalidation found no code-coverage improvement or a regression.";
+                logger?.LogWarning("{Note} Program: {Program}", note, result.Program);
+                continue;
+            }
+            try
+            {
+                foreach (var pair in candidate) await File.WriteAllTextAsync(pair.Key, pair.Value, cancellationToken);
+            }
+            catch
+            {
+                foreach (var pair in current) await File.WriteAllTextAsync(pair.Key, pair.Value, CancellationToken.None);
+                throw;
+            }
+            current = candidate.ToDictionary(pair => pair.Key, pair => pair.Value);
+            result = measured;
+            accepted++;
+            note = null;
+        }
+        return result with { RepairAttempts = attempts, AcceptedRepairs = accepted, RepairNote = note };
     }
 
     internal static ConversionParityReport BuildReport(
@@ -211,7 +335,8 @@ public static class ConversionParityPostPass
         }
         catch (Exception ex)
         {
-            logger?.LogWarning(ex, "[ConversionParity] Could not write {Artifact}", ArtifactName);
+            logger?.LogError(ex, "[ConversionParity] Could not persist {Artifact}; validation cannot be accepted.", ArtifactName);
+            throw;
         }
     }
 
@@ -220,6 +345,17 @@ public static class ConversionParityPostPass
         var sb = new StringBuilder();
         sb.AppendLine("## 🔍 Conversion Parity (preview)");
         sb.AppendLine();
+        var attemptedRepairs = report.Programs.Where(program => program.RepairAttempts > 0).ToList();
+        if (attemptedRepairs.Count > 0)
+        {
+            sb.AppendLine("### Bounded parity repairs");
+            sb.AppendLine();
+            sb.AppendLine("| Source | Attempts | Accepted | Remaining issue |");
+            sb.AppendLine("|---|---|---|---|");
+            foreach (var program in attemptedRepairs)
+                sb.AppendLine($"| {program.Program} | {program.RepairAttempts} | {program.AcceptedRepairs} | {program.RepairNote ?? (program.Failed ? "Parity gaps remain." : "-")} |");
+            sb.AppendLine();
+        }
 
         if (report.EvaluatedCount == 0)
         {
@@ -239,8 +375,8 @@ public static class ConversionParityPostPass
         {
             sb.AppendLine(FormattableString.Invariant(
                 $"- Scored against reduced evidence: **{report.ReducedEvidenceCount}** of {report.EvaluatedCount}"));
-            sb.AppendLine("  (a copybook these programs COPY was not in the source, so its fields "
-                + "could not be verified and were excluded from the score)");
+            sb.AppendLine("  (see each program's evidence notes: unavailable copybook fields are excluded, "
+                + "and directly declared copybook members do not establish nested COPY or storage-layout equivalence)");
         }
         sb.AppendLine($"- Failing parity: **{report.BelowThresholdCount}**");
         sb.AppendLine();

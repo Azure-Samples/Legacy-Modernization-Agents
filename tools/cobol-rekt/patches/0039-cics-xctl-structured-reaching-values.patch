@@ -1,0 +1,545 @@
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsConstantResolution.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsConstantResolution.java
+index a82072c..20b2528 100644
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsConstantResolution.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsConstantResolution.java
+@@ -46,8 +46,13 @@ final class CicsConstantResolution {
+     static Resolved resolve(ParseTree tree, ParseTree operand, CobolDeclarationIndex declarations,
+                             List<ParseTree> readOnlyOperands, int minimum, int maximum) {
+         String text = operand.getText();
+-        if (!text.matches("\\([A-Za-z][A-Za-z0-9-]*\\)") || !declarations.singleProgram()) return null;
+-        String name = text.substring(1, text.length() - 1);
++        if (!text.matches("\\([A-Za-z][A-Za-z0-9-]*\\)")) return null;
++        return resolveName(tree, text.substring(1, text.length() - 1), declarations, readOnlyOperands, minimum, maximum);
++    }
++
++    static Resolved resolveName(ParseTree tree, String name, CobolDeclarationIndex declarations,
++                                List<ParseTree> readOnlyOperands, int minimum, int maximum) {
++        if (!declarations.singleProgram()) return null;
+         List<ParserRuleContext> candidates = declarations.hosts(name);
+         if (candidates.size() != 1) return null;
+         ParserRuleContext declaration = candidates.getFirst();
+@@ -193,7 +198,7 @@ final class CicsConstantResolution {
+         return new TableResolved(values, proof);
+     }
+ 
+-    private static boolean plainGroups(List<ParserRuleContext> groups) {
++    static boolean plainGroups(List<ParserRuleContext> groups) {
+         int previous = 0;
+         for (ParserRuleContext group : groups) {
+             Matcher shape = Pattern.compile(LEVEL + NAME + "\\.").matcher(group.getText());
+@@ -205,7 +210,7 @@ final class CicsConstantResolution {
+         return !groups.isEmpty();
+     }
+ 
+-    private static String storageSection(ParserRuleContext declaration) {
++    static String storageSection(ParserRuleContext declaration) {
+         for (ParseTree ancestor = declaration.getParent(); ancestor != null; ancestor = ancestor.getParent()) {
+             if (ancestor instanceof CobolParser.WorkingStorageSectionContext) return "WorkingStorageSectionContext";
+             if (ancestor instanceof CobolParser.LocalStorageSectionContext) return "LocalStorageSectionContext";
+@@ -255,7 +260,7 @@ final class CicsConstantResolution {
+         return false;
+     }
+ 
+-    private static boolean readPosition(ParseTree node) {
++    static boolean readPosition(ParseTree node) {
+         for (ParseTree ancestor = node.getParent(); ancestor != null; ancestor = ancestor.getParent()) {
+             if (ancestor instanceof CobolParser.MoveToSendingAreaContext
+                     || ancestor instanceof CobolParser.DisplayOperandContext
+@@ -266,7 +271,7 @@ final class CicsConstantResolution {
+         return false;
+     }
+ 
+-    private static String entryName(ParserRuleContext entry) {
++    static String entryName(ParserRuleContext entry) {
+         if (entry instanceof CobolParser.DataDescriptionEntryFormat1Context field && field.entryName() != null)
+             return field.entryName().getText().toUpperCase(Locale.ROOT);
+         if (entry instanceof CobolParser.DataDescriptionEntryFormat1Level77Context field && field.entryName() != null)
+@@ -274,7 +279,7 @@ final class CicsConstantResolution {
+         return "FILLER";
+     }
+ 
+-    private static boolean contains(ParseTree root, ParseTree node) {
++    static boolean contains(ParseTree root, ParseTree node) {
+         for (ParseTree ancestor = node; ancestor != null; ancestor = ancestor.getParent())
+             if (ancestor == root) return true;
+         return false;
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsDependencyAnalysis.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsDependencyAnalysis.java
+index 4043b98..41ac8ef 100644
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsDependencyAnalysis.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsDependencyAnalysis.java
+@@ -301,12 +301,18 @@ final class CicsDependencyAnalysis {
+         } else {
+             CicsConstantResolution.TableResolved table = CicsConstantResolution.resolveTable(
+                     tree, operand, declarations, readOnly, 1, 8);
+-            if (table == null) {
++            CicsReachingValues.Reaching reaching = table != null || !"transfer-control".equals(effect) ? null
++                    : CicsReachingValues.resolve(tree, operand, declarations, readOnly, 1, 8);
++            if (table != null) {
++                names = table.values();
++                proof = table.proof();
++            } else if (reaching != null) {
++                names = reaching.names();
++                proof = reaching.proof();
++            } else {
+                 issues.add("dynamic-cics-program-binding-unresolved:" + ((CICSParser.Cics_nameContext) operand).name().getText());
+                 return;
+             }
+-            names = table.values();
+-            proof = table.proof();
+         }
+         List<Map<String, Object>> programs = new ArrayList<>();
+         for (String name : names) {
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsReachingValues.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsReachingValues.java
+new file mode 100644
+index 0000000..d2c5ce3
+--- /dev/null
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsReachingValues.java
+@@ -0,0 +1,448 @@
++package org.smojol.toolkit.analysis.pipeline;
++
++import org.antlr.v4.runtime.ParserRuleContext;
++import org.antlr.v4.runtime.tree.ParseTree;
++import org.antlr.v4.runtime.tree.TerminalNode;
++import org.eclipse.lsp.cobol.core.CobolParser;
++import org.eclipse.lsp.cobol.implicitDialects.cics.CICSParser;
++import org.eclipse.lsp.cobol.implicitDialects.sql.Db2SqlParser;
++
++import java.util.ArrayDeque;
++import java.util.ArrayList;
++import java.util.Comparator;
++import java.util.Deque;
++import java.util.HashMap;
++import java.util.HashSet;
++import java.util.LinkedHashMap;
++import java.util.LinkedHashSet;
++import java.util.List;
++import java.util.Locale;
++import java.util.Map;
++import java.util.Objects;
++import java.util.Set;
++import java.util.function.UnaryOperator;
++import java.util.regex.Matcher;
++import java.util.regex.Pattern;
++
++import static org.smojol.toolkit.analysis.pipeline.CicsConstantResolution.contains;
++import static org.smojol.toolkit.analysis.pipeline.CicsDependencyAnalysis.nodes;
++
++/*
++ * Values an elementary PIC X item can hold when one XCTL PROGRAM(item) executes, computed by a forward walk of
++ * the structured procedure division (sentences, IF, EVALUATE, PERFORM paragraph/section, inline PERFORM loops).
++ * Only MOVE literal / figurative / proved constant to the item and plain INITIALIZE or figurative MOVE to the
++ * item or an enclosing group are modelled; any other write to that storage reaching the XCTL rejects the proof.
++ * GO TO, ALTER, PERFORM THRU, NEXT SENTENCE, EXIT PARAGRAPH/SECTION, DECLARATIVES, CICS HANDLE, pointers and
++ * SQL host use are unsupported. A value that is not a program name (initial undefined storage, SPACES,
++ * LOW-VALUES) is recorded as null: CICS cannot transfer to it.
++ */
++final class CicsReachingValues {
++    static final String USAGE_PROOF = "single-native-program:structured-reaching-definitions";
++    private static final String LEVEL = "(0?[1-9]|[1-4][0-9]|77)";
++
++    record Reaching(List<String> values, Map<String, Object> proof) {
++        List<String> names() {
++            return values.stream().filter(Objects::nonNull).distinct().toList();
++        }
++    }
++
++    private record Fact(String value, ParserRuleContext origin, Map<String, Object> sourceProof, boolean top) {}
++
++    private static final Fact TOP = new Fact(null, null, null, true);
++
++    private static final class Unsupported extends RuntimeException {
++        Unsupported() {
++            super(null, null, false, false);
++        }
++    }
++
++    private record Unit(String name, String section, List<CobolParser.SentenceContext> sentences) {}
++
++    private final ParseTree tree;
++    private final CobolDeclarationIndex declarations;
++    private final List<ParseTree> readOnly;
++    private final int minimum;
++    private final int maximum;
++    private final String field;
++    private final Set<String> names = new HashSet<>();
++    private final Map<ParserRuleContext, Fact> effects = new HashMap<>();
++    private final Map<ParserRuleContext, Set<Fact>> sinks = new HashMap<>();
++    private final List<Unit> units = new ArrayList<>();
++    private final Map<String, Integer> paragraphs = new HashMap<>();
++    private final Map<String, List<Integer>> sections = new HashMap<>();
++    private final Deque<String> stack = new ArrayDeque<>();
++    private final Map<List<Object>, Set<Fact>> memo = new HashMap<>();
++
++    private CicsReachingValues(ParseTree tree, CobolDeclarationIndex declarations, List<ParseTree> readOnly,
++                               int minimum, int maximum, String field) {
++        this.tree = tree;
++        this.declarations = declarations;
++        this.readOnly = readOnly;
++        this.minimum = minimum;
++        this.maximum = maximum;
++        this.field = field;
++    }
++
++    static Reaching resolve(ParseTree tree, ParseTree operand, CobolDeclarationIndex declarations,
++                            List<ParseTree> readOnly, int minimum, int maximum) {
++        Matcher text = Pattern.compile("\\(([A-Za-z][A-Za-z0-9-]*)\\)").matcher(operand.getText());
++        ParseTree xctl = operand;
++        while (xctl != null && !(xctl instanceof CICSParser.Cics_xctlContext)) xctl = xctl.getParent();
++        if (!text.matches() || xctl == null || !declarations.singleProgram()) return null;
++        String name = text.group(1).toUpperCase(Locale.ROOT);
++        List<ParserRuleContext> candidates = declarations.hosts(name);
++        if (candidates.size() != 1) return null;
++        ParserRuleContext definition = candidates.getFirst();
++        Matcher shape = Pattern.compile(LEVEL + Pattern.quote(text.group(1)) + "PIC(?:TURE)?(?:IS)?X\\(0*([1-9][0-9]{0,3})\\)"
++                + "(?:VALUE(?:IS)?(['\"])([^'\"]*)\\3)?\\.", Pattern.CASE_INSENSITIVE).matcher(definition.getText());
++        List<ParserRuleContext> path = declarations.path(definition);
++        List<ParserRuleContext> ancestors = path.subList(0, path.size() - 1);
++        if (!shape.matches() || CicsConstantResolution.storageSection(definition) == null
++                || !declarations.children(definition).isEmpty()
++                || (Set.of("1", "01", "77").contains(shape.group(1)) ? !ancestors.isEmpty()
++                : !CicsConstantResolution.plainGroups(ancestors)
++                || Integer.parseInt(shape.group(1)) <= levelOf(ancestors.getLast())))
++            return null;
++        CicsReachingValues analysis = new CicsReachingValues(tree, declarations, readOnly, minimum, maximum, name);
++        for (ParserRuleContext entry : path) analysis.names.add(CicsConstantResolution.entryName(entry));
++        Fact initial = new Fact(shape.group(4) == null ? null : analysis.programName(shape.group(4)), null, null, false);
++        try {
++            analysis.classify(path);
++            analysis.structure();
++            Set<Fact> state = Set.of(initial);
++            for (int index = 0; index < analysis.units.size(); index++)
++                state = analysis.unit(index, state);
++        } catch (Unsupported unsupported) {
++            return null;
++        }
++        Set<Fact> facts = analysis.sinks.get((ParserRuleContext) xctl);
++        if (facts == null || facts.isEmpty() || facts.contains(TOP)) return null;
++        List<Fact> assignments = facts.stream().filter(fact -> fact.origin() != null)
++                .sorted(Comparator.comparingInt(fact -> fact.origin().getStart().getTokenIndex())).toList();
++        List<String> values = new ArrayList<>();
++        List<Map<String, Object>> assignmentProof = new ArrayList<>();
++        for (Fact fact : assignments) {
++            values.add(fact.value());
++            Map<String, Object> item = new LinkedHashMap<>();
++            item.put("syntax", ParsePipeline.dialectSyntax(fact.origin()));
++            if (fact.sourceProof() != null) item.put("sourceResolution", fact.sourceProof());
++            assignmentProof.add(item);
++        }
++        boolean initialReaches = facts.stream().anyMatch(fact -> fact.origin() == null);
++        if (initialReaches) values.add(initial.value());
++        List<String> distinct = new ArrayList<>(new LinkedHashSet<>(values));
++        if (distinct.stream().allMatch(Objects::isNull)) return null;
++        Map<String, Object> proof = new LinkedHashMap<>();
++        proof.put("kind", "structured-reaching-assignments");
++        proof.put("operand", text.group(1));
++        proof.put("definitionSyntax", ParsePipeline.dialectSyntax(definition));
++        proof.put("ancestorSyntax", ancestors.stream().map(ParsePipeline::dialectSyntax).toList());
++        proof.put("assignments", assignmentProof);
++        proof.put("initialReaches", initialReaches);
++        proof.put("reachingValues", distinct);
++        proof.put("usageProof", USAGE_PROOF);
++        return new Reaching(distinct, proof);
++    }
++
++    private static int levelOf(ParserRuleContext entry) {
++        Matcher level = Pattern.compile(LEVEL + ".*", Pattern.DOTALL).matcher(entry.getText());
++        return level.matches() ? Integer.parseInt(level.group(1)) : Integer.MAX_VALUE;
++    }
++
++    private String programName(String literal) {
++        String value = literal.replaceFirst(" +$", "");
++        if (value.isEmpty()) return null;
++        if (!value.matches("[A-Za-z0-9@$#]+") || value.length() < minimum || value.length() > maximum)
++            throw new Unsupported();
++        return value;
++    }
++
++    /* Record the effect of every procedure statement that mentions the item or an enclosing group. */
++    private void classify(List<ParserRuleContext> path) {
++        ParserRuleContext owner = null;
++        for (ParseTree node : nodes(tree)) {
++            if (node instanceof CobolParser.ProcedureDeclarativesContext
++                    || node instanceof CobolParser.DataDescriptionEntryFormat2Context
++                    || node instanceof CobolParser.NextSentenceContext
++                    || node instanceof CobolParser.AlterStatementContext
++                    || node instanceof CobolParser.GoToStatementContext
++                    || node instanceof CobolParser.AlteredGoToContext
++                    || node instanceof CICSParser.Cics_handleContext
++                    || node instanceof CobolParser.DialectIfStatmentContext)
++                throw new Unsupported();
++            if (node instanceof CobolParser.DataDescriptionEntryFormat1Context
++                    || node instanceof CobolParser.DataDescriptionEntryFormat1Level77Context)
++                owner = (ParserRuleContext) node;
++            if (node instanceof CobolParser.DataDescriptionEntryFormat3Context && path.contains(owner))
++                throw new Unsupported();
++            if (node instanceof CobolParser.DataRedefinesClauseContext redefines
++                    && names.contains(redefines.getText().replaceFirst("(?i)^REDEFINES", "").toUpperCase(Locale.ROOT)))
++                throw new Unsupported();
++            if (node instanceof Db2SqlParser.SqlCodeContext sql
++                    && sql.getCustomData().get("REKT_SQL_SEMANTIC_TREE") instanceof ParseTree semantic
++                    && nodes(semantic).stream().anyMatch(reference ->
++                    reference.getClass().getSimpleName().startsWith("Dbs_host_")
++                            && names.contains(reference.getText().replaceFirst("^:", "").toUpperCase(Locale.ROOT))))
++                throw new Unsupported();
++            if (!(node instanceof TerminalNode)) continue;
++            String token = node.getText().toUpperCase(Locale.ROOT);
++            if ("ADDRESS".equals(token)) throw new Unsupported();
++            if (!names.contains(token) || within(node, CobolParser.DataDivisionContext.class)) continue;
++            ParserRuleContext command = cicsCommand(node);
++            if (command != null) {
++                if ((command instanceof CICSParser.Cics_xctlContext || command instanceof CICSParser.Cics_returnContext)
++                        && (CicsTerminalBindings.operands(command, "COMMAREA").stream().anyMatch(root -> contains(root, node))
++                        || CicsTerminalBindings.operands(command, "LENGTH").stream().anyMatch(root -> contains(root, node))))
++                    continue;
++                if (command instanceof CICSParser.Cics_xctlContext
++                        && CicsTerminalBindings.operands(command, "PROGRAM").stream().anyMatch(root -> contains(root, node)
++                        && root.getText().equalsIgnoreCase("(" + field + ")")))
++                    continue;
++                effects.put(command, TOP);
++                continue;
++            }
++            CobolParser.QualifiedDataNameContext qualified = ancestor(node, CobolParser.QualifiedDataNameContext.class);
++            if (qualified != null && within(node, CobolParser.InDataContext.class)
++                    && !names.contains(qualified.variableUsageName().getText().toUpperCase(Locale.ROOT)))
++                continue;
++            if (CicsConstantResolution.readPosition(node) || within(node, CobolParser.EvaluateSelectContext.class)
++                    || within(node, CobolParser.EvaluateConditionContext.class))
++                continue;
++            ParserRuleContext statement = null;
++            for (ParseTree up = node; up != null; up = up.getParent())
++                if (up.getParent() instanceof CobolParser.StatementContext) {
++                    statement = (ParserRuleContext) up;
++                    break;
++                }
++            if (statement == null) throw new Unsupported();
++            Fact fact = effect(statement);
++            effects.merge(statement, fact, (left, right) -> left.equals(right) ? left : TOP);
++        }
++    }
++
++    private Fact effect(ParserRuleContext statement) {
++        if (statement instanceof CobolParser.InitializeStatementContext initialize
++                && initialize.getChildCount() == 2 && head(initialize.generalIdentifier(0)) != null)
++            return new Fact(null, statement, null, false);
++        if (!(statement instanceof CobolParser.MoveStatementContext move) || move.ALL() != null
++                || move.moveToStatement() == null || move.moveToStatement().generalIdentifier().size() != 1)
++            return TOP;
++        String receiver = head(move.moveToStatement().generalIdentifier(0));
++        CobolParser.MoveToSendingAreaContext sending = move.moveToStatement().moveToSendingArea();
++        if (receiver == null) return TOP;
++        CobolParser.LiteralContext literal = sending.literal();
++        if (literal != null && literal.figurativeConstant() != null)
++            return Set.of("SPACE", "SPACES", "LOW-VALUE", "LOW-VALUES")
++                    .contains(literal.getText().toUpperCase(Locale.ROOT)) ? new Fact(null, statement, null, false) : TOP;
++        if (!receiver.equals(field)) return TOP;
++        if (literal != null) {
++            String text = literal.getText();
++            if (literal.NONNUMERICLITERAL() == null || !text.matches("(['\"])[^'\"]*\\1")) return TOP;
++            try {
++                return new Fact(programName(text.substring(1, text.length() - 1)), statement, null, false);
++            } catch (Unsupported invalid) {
++                return TOP;
++            }
++        }
++        String source = sending.getText();
++        if (!source.matches("[A-Za-z][A-Za-z0-9-]*")) return TOP;
++        CicsConstantResolution.Resolved constant = CicsConstantResolution.resolveName(
++                tree, source, declarations, readOnly, minimum, maximum);
++        return constant == null ? TOP : new Fact(constant.value(), statement, constant.proof(), false);
++    }
++
++    /* Name of an unsubscripted, unmodified data reference on the item's own path, else null. */
++    private String head(CobolParser.GeneralIdentifierContext identifier) {
++        CobolParser.QualifiedDataNameContext qualified = identifier.qualifiedDataName();
++        if (qualified == null || qualified.tableCall() != null || qualified.referenceModifier() != null
++                || qualified.inData().stream().anyMatch(in -> in.tableCall() != null || in.referenceModifier() != null
++                || !names.contains(in.variableUsageName().getText().toUpperCase(Locale.ROOT))))
++            return null;
++        String name = qualified.variableUsageName().getText().toUpperCase(Locale.ROOT);
++        return names.contains(name) ? name : null;
++    }
++
++    private void structure() {
++        CobolParser.ProcedureDivisionBodyContext body = nodes(tree).stream()
++                .filter(node -> node instanceof CobolParser.ProcedureDivisionBodyContext)
++                .map(node -> (CobolParser.ProcedureDivisionBodyContext) node).findFirst()
++                .orElseThrow(Unsupported::new);
++        add(body.paragraphs(), null);
++        for (CobolParser.ProcedureSectionContext section : body.procedureSection()) {
++            String name = section.procedureSectionHeader().getChild(0).getText().toUpperCase(Locale.ROOT);
++            if (sections.containsKey(name)) throw new Unsupported();
++            sections.put(name, new ArrayList<>());
++            add(section.paragraphs(), name);
++        }
++    }
++
++    private void add(CobolParser.ParagraphsContext block, String section) {
++        List<CobolParser.SentenceContext> leading = new ArrayList<>();
++        for (ParseTree child : block.children == null ? List.<ParseTree>of() : block.children) {
++            if (child instanceof CobolParser.SentenceContext sentence) {
++                leading.add(sentence);
++            } else if (child instanceof CobolParser.ParagraphContext paragraph) {
++                if (!leading.isEmpty() || section != null && sections.get(section).isEmpty())
++                    unit(null, section, leading);
++                leading = new ArrayList<>();
++                if (paragraph.alteredGoTo() != null) throw new Unsupported();
++                String name = paragraph.paragraphDefinitionName().getText().toUpperCase(Locale.ROOT);
++                if (paragraphs.containsKey(name)) throw new Unsupported();
++                paragraphs.put(name, units.size());
++                unit(name, section, paragraph.sentence());
++            }
++        }
++        if (!leading.isEmpty()) unit(null, section, leading);
++    }
++
++    private void unit(String name, String section, List<CobolParser.SentenceContext> sentences) {
++        if (section != null) sections.get(section).add(units.size());
++        units.add(new Unit(name, section, sentences));
++    }
++
++    private Set<Fact> unit(int index, Set<Fact> state) {
++        if (state.isEmpty()) return state;
++        List<Object> key = List.of(index, state);
++        Set<Fact> cached = memo.get(key);
++        if (cached != null) return cached;
++        String name = "#" + index;
++        if (stack.contains(name)) throw new Unsupported();
++        stack.push(name);
++        Set<Fact> result = sequence(units.get(index).sentences(), state);
++        stack.pop();
++        memo.put(key, result);
++        return result;
++    }
++
++    private Set<Fact> perform(String name, Set<Fact> state) {
++        if (paragraphs.containsKey(name)) return unit(paragraphs.get(name), state);
++        List<Integer> section = sections.get(name);
++        if (section == null) throw new Unsupported();
++        for (int index : section) state = unit(index, state);
++        return state;
++    }
++
++    private Set<Fact> sequence(List<? extends ParseTree> items, Set<Fact> state) {
++        for (ParseTree item : items) {
++            if (state.isEmpty()) return state;
++            state = execute(item, state);
++        }
++        return state;
++    }
++
++    private Set<Fact> execute(ParseTree node, Set<Fact> state) {
++        if (state.isEmpty() || node instanceof TerminalNode) return state;
++        if (node instanceof CobolParser.StatementContext || node instanceof CobolParser.SentenceContext
++                || node instanceof CobolParser.ConditionalStatementCallContext
++                || node instanceof CobolParser.DialectStatementContext)
++            return sequence(children(node), state);
++        if (node instanceof CobolParser.DialectNodeFillerContext) {
++            for (ParseTree command : nodes(node))
++                if (command instanceof CICSParser.AllCicsRuleContext rule && rule.getChildCount() > 0)
++                    state = cics((ParserRuleContext) rule.getChild(0), state);
++            return state;
++        }
++        Fact effect = effects.get(node);
++        if (effect != null) state = Set.of(effect);
++        if (node instanceof CobolParser.IfStatementContext branch) {
++            if (branch.condition() == null) throw new Unsupported();
++            Set<Fact> result = new HashSet<>(sequence(branch.ifThen().conditionalStatementCall(), state));
++            result.addAll(branch.ifElse() == null ? state : sequence(branch.ifElse().conditionalStatementCall(), state));
++            return result;
++        }
++        if (node instanceof CobolParser.EvaluateStatementContext evaluate) {
++            Set<Fact> result = new HashSet<>();
++            for (CobolParser.EvaluateWhenPhraseContext phrase : evaluate.evaluateWhenPhrase())
++                result.addAll(sequence(phrase.conditionalStatementCall(), state));
++            result.addAll(evaluate.evaluateWhenOther() == null ? state
++                    : sequence(evaluate.evaluateWhenOther().conditionalStatementCall(), state));
++            return result;
++        }
++        if (node instanceof CobolParser.PerformStatementContext perform) {
++            CobolParser.PerformProcedureStatementContext procedure = perform.performProcedureStatement();
++            CobolParser.PerformInlineStatementContext inline = perform.performInlineStatement();
++            UnaryOperator<Set<Fact>> body;
++            CobolParser.PerformTypeContext type;
++            if (procedure != null) {
++                if (procedure.through() != null || procedure.procedureName().inSection() != null) throw new Unsupported();
++                String target = procedure.procedureName().paragraphName().getText().toUpperCase(Locale.ROOT);
++                body = in -> perform(target, in);
++                type = procedure.performType();
++            } else {
++                if (inline.EXIT() != null) throw new Unsupported();
++                body = in -> sequence(inline.conditionalStatementCall(), in);
++                type = inline.performType();
++            }
++            if (type == null) return body.apply(state);
++            Set<Fact> reached = new HashSet<>(state);
++            while (true) {
++                Set<Fact> next = new HashSet<>(reached);
++                next.addAll(body.apply(Set.copyOf(reached)));
++                if (next.equals(reached)) return reached;
++                reached = next;
++            }
++        }
++        if (node instanceof CobolParser.ExitStatementContext exit) {
++            if (exit.getChildCount() == 1) return state;
++            if (exit.PROGRAM() != null) return Set.of();
++            throw new Unsupported();
++        }
++        if (node instanceof CobolParser.GobackStatementContext || node instanceof CobolParser.StopStatementContext)
++            return Set.of();
++        // Conditional phrases (AT END, INVALID KEY, ON SIZE ERROR, ...) each run at most once from the same state.
++        Map<ParseTree, List<ParseTree>> phrases = new LinkedHashMap<>();
++        collectPhrases(node, phrases);
++        Set<Fact> result = new HashSet<>(state);
++        for (List<ParseTree> phrase : phrases.values()) result.addAll(sequence(phrase, state));
++        return result;
++    }
++
++    private static void collectPhrases(ParseTree node, Map<ParseTree, List<ParseTree>> phrases) {
++        for (int index = 0; index < node.getChildCount(); index++) {
++            ParseTree child = node.getChild(index);
++            if (child instanceof CobolParser.StatementContext || child instanceof CobolParser.ConditionalStatementCallContext
++                    || child instanceof CobolParser.DialectStatementContext)
++                phrases.computeIfAbsent(node, key -> new ArrayList<>()).add(child);
++            else
++                collectPhrases(child, phrases);
++        }
++    }
++
++    private Set<Fact> cics(ParserRuleContext command, Set<Fact> state) {
++        if (state.isEmpty()) return state;
++        if (effects.containsKey(command)) state = Set.of(effects.get(command));
++        boolean handled = nodes(command).stream().anyMatch(node -> node instanceof TerminalNode
++                && Set.of("RESP", "RESP2", "NOHANDLE").contains(node.getText().toUpperCase(Locale.ROOT)));
++        if (command instanceof CICSParser.Cics_xctlContext) {
++            List<ParseTree> program = CicsTerminalBindings.operands(command, "PROGRAM");
++            if (program.size() == 1 && program.getFirst().getText().equalsIgnoreCase("(" + field + ")"))
++                sinks.computeIfAbsent(command, key -> new HashSet<>()).addAll(state);
++            return handled ? state : Set.of();
++        }
++        if (command instanceof CICSParser.Cics_returnContext) return handled ? state : Set.of();
++        if (command instanceof CICSParser.Cics_abendContext) return Set.of();
++        return state;
++    }
++
++    private static List<ParseTree> children(ParseTree node) {
++        List<ParseTree> result = new ArrayList<>();
++        for (int index = 0; index < node.getChildCount(); index++) result.add(node.getChild(index));
++        return result;
++    }
++
++    private static ParserRuleContext cicsCommand(ParseTree node) {
++        for (ParseTree up = node; up != null; up = up.getParent())
++            if (up.getParent() instanceof CICSParser.AllCicsRuleContext) return (ParserRuleContext) up;
++        return null;
++    }
++
++    private static <T> T ancestor(ParseTree node, Class<T> type) {
++        for (ParseTree up = node.getParent(); up != null; up = up.getParent())
++            if (type.isInstance(up)) return type.cast(up);
++        return null;
++    }
++
++    private static boolean within(ParseTree node, Class<?> type) {
++        return ancestor(node, type) != null;
++    }
++}

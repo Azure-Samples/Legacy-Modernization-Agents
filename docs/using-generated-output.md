@@ -1,6 +1,6 @@
 # Working with generated output
 
-**Last updated**: 2026-09-29
+**Last updated**: 2026-10-22
 
 The conversion agents write their output to a dated run folder under the target language:
 
@@ -24,7 +24,7 @@ These are routinely conflated. The first two are answered automatically; the las
 | Question | How it is answered today |
 |---|---|
 | **1. Does the conversion tool work?** | `dotnet test` on the toolchain and portal suites |
-| **2. Does the generated code compile?** | The compile gate builds every C# run and writes `compile-status.json`. The measured run below compiles |
+| **2. Does the generated code compile?** | Enabled gates build C# with `dotnet build` and Java with Maven, writing `compile-status.json` or `java-compile-status.json`. The historical C# measurement below compiles |
 | **3. Does the generated application run?** | Not measured. Compiling says nothing about behaviour |
 | **4. Is it equivalent to the COBOL?** | **Unverified.** No compatible original runtime and no captured legacy inputs/outputs are available in this repository |
 
@@ -38,6 +38,38 @@ When `CompileGate.Enabled` is set (the default), a C# run ends with `dotnet buil
 Errors are repaired file by file and the build is repeated, for at most `MaxRepairRounds` rounds.
 The result goes to `compile-status.json` and the migration report. All limits live in the
 `CompileGate` section of `Config/appsettings.json`.
+
+Both direct and chunked Java migrations also receive a Maven scaffold, including ordinary conversions with no JCL. The compiler target remains Java 17. The ordinary build adds only detected compile dependencies, not a new application framework or a batch runtime. Existing JCL-generated Spring Batch builds remain intact. Hand-written POMs are preserved; remove the generated-file marker before customizing a generated POM.
+
+The Java gate runs `mvn -B -q -Dstyle.color=never -DskipTests compile` and trusts its actual exit status, not the absence of parsed diagnostics. Missing Maven/POM, dependency-resolution failure, timeout and cancellation are non-success. Source-backed compiler repair is bounded by `CompileGate.MaxRepairRounds`; non-improving rounds restore the originals. Repair cannot modify files without a unique generated-path/source-path mapping, and does not synthesize missing business contracts.
+
+Java compiler repairs use the parity repair agent with Java/framework-specific
+instructions, the original COBOL, actual compiler diagnostics, peer declarations
+and the project's actual read-only `pom.xml`. This path serves both ordinary and
+chunk-aware migrations; the C#-specific `CompileRepairAgent` is not used for Java.
+
+Hash-verified native CICS/SQL statements are implementation requirements, not a
+demand that target adapters already exist before conversion. Generation receives
+their command syntax, supplied resource bindings and supporting-callee records.
+Missing definitions, stale hashes and unresolved dependencies still fail the
+source-evidence gate. `runtime-implementation-requirements.json` preserves these
+requirements with `behaviorVerified: false`; a successful build does not change
+that status. Persistence, SQL results, status/error paths, transactions and control
+transfers require separate runtime acceptance.
+
+`java-compile-status.json` includes measurement state, actual exit code, failure reason, diagnostics and per-round outcomes. `java-build.log` is the latest output; `java-build.round-N.log` preserves each attempted build, including rolled-back diagnostics. The migration report shows the final measured result. Enabled build failures mark the persisted migration run failed and return exit code `5`.
+
+Both pipelines run [structural parity validation](conversion-parity-validation.md) after their final build/repair. Compilation is not evidence of source completeness or behavioral equivalence. An omitted source, diagnostic stub or conflicting output prevents successful completion even if the project compiles.
+
+### Isolated execution and acceptance
+
+`MigrationProcess` and `ChunkedMigrationProcess` accept a supplied `IChatClient`, repository and optional `MigrationExecutionOptions`. Set `RepositoryRoot`, `LogDirectory` and (for a controlled subprocess) `MavenExecutable`; configure `MigrationDatabasePath` to a fixture-owned database initialized by `SqliteMigrationRepository.InitializeAsync`. Set `REPO_ROOT` to that fixture root for metrics, and restore process environment/static prompt state afterwards. The shared `GeneratedOutputValidator.RunAsync` is also callable without creating an AI client.
+
+Use controlled transports and fixture source trees, not developer prompts, output, credentials, databases or Neo4j. The Java entrypoint tests verify failed-run persistence and source-backed compiler-repair retries for direct execution and the chunk-aware small-file route; they do not establish multi-chunk assembly correctness or application equivalence. Real Maven acceptance must separately verify class files and persisted compiler/parity artifacts. No web host or live provider is needed.
+
+Explicit CLI `--source` and `--java-output` paths take precedence over environment/configuration paths, so context and validation follow the source tree actually selected.
+
+### Existing C# repair behavior
 
 The compiler reports errors in phases: syntax errors hide declaration errors, and declaration
 errors hide method bodies. A lower error count is therefore only better within the same phase. A

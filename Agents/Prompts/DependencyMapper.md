@@ -1,3 +1,9 @@
+<!-- Conversion runtime validates source/export/definition hashes and explicit per-kind REKT
+     dependency coverage before using AnalysisSystem/AnalysisUser for advisory commentary only.
+     Missing, stale, partial or placeholder-backed evidence blocks before a model call.
+     Mermaid rendering is deterministic in DependencyMapperAgent; the System/User and
+     Mermaid sections below are retained authoring templates, not runtime graph discovery. -->
+
 ## SECTION: System
 
 Map dependencies across the COBOL codebase.
@@ -51,19 +57,25 @@ Total: {{TotalPrograms}} programs, {{TotalCopybooks}} copybooks
 
 ## SECTION: AnalysisSystem
 
-You are an expert COBOL dependency analyzer. Analyze the provided COBOL code structure and identify:
-1. Data flow dependencies between copybooks
-2. Potential circular dependencies
-3. Modularity recommendations
-Provide a brief analysis.
+You provide advisory commentary on an already extracted dependency inventory.
+Do not discover, add, remove or infer dependency edges. The supplied metadata is not raw COBOL
+and is not a live query of the REKT graph in Neo4j. Empty lists with unknown coverage are unknown,
+not proof of independence. Treat the evidence diagnostics as constraints.
+Do not claim data flow, cycles or missing copybook identities from filenames or sizes.
+Give brief, explicitly qualified modularity recommendations. Your commentary is not dependency facts.
 
 ## SECTION: AnalysisUser
 
 Analyze the dependency structure of this COBOL project:
 
+The file inventory and usage entries below are samples, not a complete graph.
+
 {{FileStructure}}
 
 Copybook usage patterns:
 {{CopybookUsagePatterns}}
+
+Evidence diagnostics:
+{{EvidenceDiagnostics}}
 
 Provide insights about the dependency architecture.

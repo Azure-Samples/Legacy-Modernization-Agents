@@ -40,6 +40,7 @@ You are a COBOL-to-C#/.NET conversion specialist.
 - INSPECT → string.Replace(), Linq Count(), regex.
 
 ## Copybook References Detected
+- If a copybook definition is not supplied, do not infer its fields, types, sizes, constants or behavior. Name the missing copybook explicitly as a blocking dependency; never fabricate a layout to satisfy compilation. This takes precedence over completeness and no-TODO requirements.
 - Each COPY member → shared C# record in a `Models` namespace.
 - All programs referencing the same copybook use the **same** generated record type.
 
@@ -53,7 +54,9 @@ You are a COBOL-to-C#/.NET conversion specialist.
 - Track WORKING-STORAGE from earlier chunks when converting PROCEDURE DIVISION.
 
 ## Output Requirements
-- Return COMPLETE, compilable C# code. No TODOs, no placeholders.
+- Return the exact ordered continuation fragment requested below; only ChunkSingle returns a complete compilation unit. The concatenation of all fragments must be complete, compilable C# code. No TODOs, no placeholders.
+- Do not repeat declarations or source overlap from previous chunks. Do not re-emit complete classes in continuation chunks.
+- Do not split comments, strings, identifiers or directives across chunks. Use separate field declarations, not comma-separated declarators. Avoid interpolated strings and preprocessor directives in chunked output.
 - Use .NET dependency injection, async/await, file-scoped namespaces.
 - Class name = COBOL program name in PascalCase + 'Service' (e.g., ORDDA2F → Ordda2fService).
 
@@ -84,6 +87,11 @@ Methods defined in previous chunks (maintain consistency):
 
 Variables defined in previous chunks:
 {{Items}}
+
+## SECTION: PreviousChunkTail
+
+End of the code you generated for the previous chunk of this file (already emitted; do NOT repeat it). Continue exactly from this point: if it ends inside an open method body, continue that body; otherwise start with new members.
+{{Code}}
 
 ## SECTION: SemanticUnits
 
@@ -116,18 +124,23 @@ Use pattern: <Domain><Action><Type>
 Examples: PaymentBatchValidator, CustomerOnboardingService, LedgerReconciliationJob, AccountViewPage, TransactionListPage
 Common suffixes: Page (Blazor routable pages), Component (reusable Blazor UI), Layout (shared layouts), Service, Processor, Handler, Validator, Calculator, Generator, Job, Worker
 
+## SECTION: ChunkSingle
+
+- This is the ONLY chunk. Return one complete compilation unit with using statements, namespace, class declaration, all members and all closing braces.
+- Preserve legitimate nested and additional types in that unit.
+
 ## SECTION: ChunkMiddle
 
-- This is a MIDDLE chunk - continue from previous chunk
+- This is a MIDDLE chunk - continue from previous chunk. Chunks are generated in order; the end of the previous chunk's output is provided below when available.
 - Do NOT include using/namespace/class declaration
 - Do NOT close the class yet
-- Just output method bodies and properties
+- Output new methods, fields and properties, or continue a method body opened earlier. Never repeat a previous member, even if identical.
 
 ## SECTION: ChunkLast
 
-- This is the LAST chunk - include closing brace for the class and namespace
+- This is the LAST chunk - close the class and any block-scoped namespace opened earlier. Do not add a closing brace for a file-scoped namespace.
 - Complete any remaining methods
-- Ensure all brackets are balanced
+- Ensure brackets are balanced across the concatenation of all chunks, not within this fragment alone.
 
 ## SECTION: CorrectionsSystem
 

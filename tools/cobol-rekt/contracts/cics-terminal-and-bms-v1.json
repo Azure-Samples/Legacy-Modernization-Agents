@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "profileKind": "platform-replacement",
+  "profileName": "cics-terminal-and-bms-v1",
+  "copybooks": {
+    "DFHAID": {
+      "recipe": "symbolic-terminal-events-v1",
+      "selector": "EIBAID",
+      "symbols": {
+        "DFHENTER": "ENTER",
+        "DFHCLEAR": "CLEAR",
+        "DFHPA1": "PA1",
+        "DFHPA2": "PA2",
+        "DFHPA3": "PA3",
+        "DFHPF1": "PF1",
+        "DFHPF2": "PF2",
+        "DFHPF3": "PF3",
+        "DFHPF4": "PF4",
+        "DFHPF5": "PF5",
+        "DFHPF6": "PF6",
+        "DFHPF7": "PF7",
+        "DFHPF8": "PF8",
+        "DFHPF9": "PF9",
+        "DFHPF10": "PF10",
+        "DFHPF11": "PF11",
+        "DFHPF12": "PF12",
+        "DFHPF13": "PF13",
+        "DFHPF14": "PF14",
+        "DFHPF15": "PF15",
+        "DFHPF16": "PF16",
+        "DFHPF17": "PF17",
+        "DFHPF18": "PF18",
+        "DFHPF19": "PF19",
+        "DFHPF20": "PF20",
+        "DFHPF21": "PF21",
+        "DFHPF22": "PF22",
+        "DFHPF23": "PF23",
+        "DFHPF24": "PF24"
+      },
+      "documentation": [
+        "https://www.ibm.com/docs/en/cics-ts/6.x"
+      ],
+      "targetSemantics": "named-events-preserve-source-branches"
+    },
+    "DFHBMSCA": {
+      "recipe": "symbolic-bms-attributes-v1",
+      "selector": "bms-output-field",
+      "symbols": {
+        "DFHBMASK": "A:AUTOSKIP",
+        "DFHBMPRF": "A:PROTECTED_MDT_SET",
+        "DFHBMFSE": "A:MDT_SET",
+        "DFHNEUTR": "C:NEUTRAL",
+        "DFHGREEN": "C:GREEN",
+        "DFHUNDLN": "H:UNDERSCORE",
+        "DFHBMUNP": "A:UNPROTECTED",
+        "DFHBMPRO": "A:PROTECTED",
+        "DFHBMBRY": "A:BRIGHT",
+        "DFHBMDAR": "A:DARK",
+        "DFHBMASF": "A:AUTOSKIP_MDT_SET",
+        "DFHBMASB": "A:AUTOSKIP_BRIGHT",
+        "DFHDFCOL": "C:DEFAULT",
+        "DFHBLUE": "C:BLUE",
+        "DFHRED": "C:RED",
+        "DFHPINK": "C:PINK",
+        "DFHTURQ": "C:TURQUOISE",
+        "DFHYELLO": "C:YELLOW",
+        "DFHBLINK": "H:BLINK",
+        "DFHREVRS": "H:REVERSE"
+      },
+      "documentation": [
+        "https://www.ibm.com/docs/en/cics-ts/6.x?topic=characteristics-attribute-value-definitions-dfhbmsca",
+        "https://www.ibm.com/docs/en/cics-ts/6.x?topic=output-setting-display-characteristics",
+        "https://www.ibm.com/docs/en/cics-tx/11.1.0?topic=constants-field-attributes-printer-control-characters"
+      ],
+      "targetSemantics": "preserve-field-attribute-assignments"
+    }
+  }
+}

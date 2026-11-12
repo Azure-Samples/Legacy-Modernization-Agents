@@ -76,11 +76,13 @@ public static class CompileRepairPlanner
         IReadOnlyDictionary<string, string> sources,
         string sharedNamespace,
         CompileGateSettings limits,
-        IReadOnlyDictionary<string, string>? cobolByName = null)
+        IReadOnlyDictionary<string, string>? cobolByName = null,
+        IReadOnlySet<string>? ambiguousCobolNames = null)
     {
-        var cobol = (cobolByName ?? new Dictionary<string, string>())
-            .GroupBy(c => Key(c.Key))
-            .ToDictionary(g => g.Key, g => g.First().Value, StringComparer.Ordinal);
+        var groupedCobol = (cobolByName ?? new Dictionary<string, string>()).GroupBy(c => Key(c.Key)).ToArray();
+        if (groupedCobol.Any(group => group.Count() > 1))
+            throw new InvalidOperationException("Ambiguous COBOL member names cannot be assigned to compile repair.");
+        var cobol = groupedCobol.ToDictionary(group => group.Key, group => group.Single().Value, StringComparer.Ordinal);
         var work = new SortedDictionary<string, Builder>(StringComparer.Ordinal);
         Builder For(string file) => work.TryGetValue(file, out var b) ? b : work[file] = new Builder(limits);
 
@@ -183,6 +185,10 @@ public static class CompileRepairPlanner
                     $"public members of `{impl.Type}` that the uses below need. Do not change `{impl.Type}`." +
                     Environment.NewLine + uses);
             }
+            else if (ambiguousCobolNames?.Contains(Key(name)) == true)
+            {
+                throw new InvalidOperationException($"Ambiguous COBOL source for missing type '{name}'; compile repair cannot choose a layout.");
+            }
             else if (cobol.TryGetValue(Key(name), out var layout))
             {
                 // The COBOL was converted, but its own type was left out. It is declared from the
@@ -248,6 +254,18 @@ public static class CompileRepairPlanner
                 w.Value.Declarations.Values.ToList(), w.Value.MayRemove))
             .ToList();
     }
+
+    public static IReadOnlyList<CompileRepairTask> PlanWithSourceIdentity(
+        IReadOnlyList<CompilerDiagnostic> errors,
+        GeneratedTypeIndex index,
+        IReadOnlyDictionary<string, string> sources,
+        string sharedNamespace,
+        CompileGateSettings limits,
+        CompileRepairSourceIndex sourceIndex) =>
+        Plan(errors, index, sources, sharedNamespace, limits, sourceIndex.UniqueLayouts, sourceIndex.AmbiguousNames)
+            .Where(task => !task.File.EndsWith(".g.cs", StringComparison.OrdinalIgnoreCase))
+            .Select(sourceIndex.WithOriginalSource)
+            .ToArray();
 
     // These name the arguments' types, never the method's owner, so the callee is found from the call itself.
     private static readonly HashSet<string> ArgumentErrors = new(StringComparer.Ordinal)

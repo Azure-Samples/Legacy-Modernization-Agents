@@ -1,4 +1,4 @@
-**Last updated**: 2026-09-30
+**Last updated**: 2026-10-23
 
 # Dependency Health and Semantic Flow Explorer
 
@@ -10,17 +10,88 @@ It is a **preview feature**, like the REKT scan it reads from. Five subviews are
 
 ---
 
-## Why fidelity gates conversion
+## Dependency eligibility: strict versus explicit draft
 
-A program whose copybooks are missing does not parse into a usable AST. Converting it produces a stub that compiles but silently loses the record layouts, and the loss is not visible until runtime. The estate therefore splits into five states, and only the top two are safe to convert unattended.
+Fidelity and AST presence are inspection signals, **not conversion authorization**.
+The default strict local gate still rejects any incomplete dependency domain, diagnostic,
+missing/stale hash, invalid artifact or placeholder contamination for the selected batch.
+
+Explicit `--dependency-mode draft` (or `CONVERSION_DEPENDENCY_MODE=draft`, or
+`ConversionSettings.DependencyMode: "draft"`) isolates independently justified **whole programs**.
+It does not relax any program's strict evidence requirements. One blocked program no longer
+prevents an unrelated fully evidenced program from converting. A selected blocked callee also
+blocks its callers. Copybooks remain definition inputs, never standalone draft implementations.
+Missing COPY may affect shared fields and control flow; no safe routine, fabricated layout or
+affected-routine count is inferred. Finer isolation requires deterministic usage/control-flow
+evidence not currently available in this contract.
+
+Draft mode skips reverse engineering/reused context and JCL entry-point generation. It requires
+a fresh empty output folder, writes `draft-conversion-plan.json` and `DRAFT-NOT-VERIFIED.txt`
+**before model conversion**, and keeps successful subset runs `Partial`, never verified.
+The plan identifies each source-relative program, exact missing evidence/input, blocker category
+(`artifact-blocker` vs assessable `coverage-gap`), reason and corrective action.
+Each gate-derived blocker also preserves its exact `raw` diagnostic. Descriptions distinguish
+an unresolved named COPY, a missing callee, an unreadable SQLCA caused by an unavailable
+provider, unsupported CICS/file-I/O contexts, domain-specific partial coverage, source/hash
+mismatches and missing artifacts; each requires its own corrective action rather than a
+generic instruction to supply inputs.
+Routine/location are null unless measured; this planner establishes no routine-level impact.
+No eligible programs means a persisted blocked plan and zero model conversion calls.
+Unsupported SQL/CICS/file-I/O coverage never becomes ready merely by choosing draft.
+
+Portal launch requests (`/api/runs/start`, `/api/estate/slice/convert`) accept
+`dependencyMode: "strict" | "draft"`; Mission Control's policy selector supplies explicit opt-in.
+`GET /api/estate/draft-plan` without a scan ID remains a read-only assessment of the **configured local source and
+`output/rekt` evidence**, explicitly not a historical graph snapshot. It makes no model calls,
+parser executions or graph mutations. Graph diagnostics alone cannot establish either strict
+or draft eligibility; current source/export/definition hashes and coverage must be validated locally.
+AST Explorer keeps evidence and diagnostic text collapsed behind **Evidence & diagnostics**
+by default, leaving the graph and source visible. Expand it to inspect blockers or run the
+read-only assessment; no diagnostic information is removed.
+
+The AST assessment button always supplies the selected file's `scanRunId`. The server resolves
+that named graph scan's completed ingestion record to its recorded native manifest, verifies
+that its prepared-source/artifact paths match ingestion, and assesses the manifest's frozen
+original sources and artifacts, restricted to the manifest's exact program list (frozen COPY
+search inputs can contain additional programs outside that scan). Paths must stay in the named local evidence folder; linked
+paths and caller-supplied filesystem paths are not accepted. The response identifies the scan
+and manifest, and the UI shows the selected program's blockers rather than another scan's plan.
+Missing, unavailable or mismatched bindings return **409 `snapshot-evidence-binding-unavailable`**
+with `missingEvidence`, `reason` and `action`; there is no default-directory substitution.
+This is a read-only assessment of snapshot inputs, not authorization to convert newer disk bytes.
+Changing eligibility does not authorize paid model use: starting a conversion remains a separate
+user decision. No model conversions were performed to validate this policy.
+
+Eligible draft programs receive their exact hash-bound `COPY` definitions through
+`VerifiedCopybookContext`, called by the shared prompt injector for direct/chunked Java and
+C# converters. Definitions remain context/required model declarations, not standalone
+conversion units. This mandatory draft context is independent of `ENABLE_REKT_CONTEXT`,
+revalidates hashes, excludes unrelated copybooks and bypasses estate-wide ownership/context
+inference. A missing or changed required definition fails closed rather than silently omitting
+its layout.
+
+Offline planning without AI credentials:
+
+```bash
+dotnet run -- dependency-plan --source source --facts output/rekt --output output/new-draft-plan
+```
+
+For a frozen named snapshot, explicitly select its `inputs/source` and `artifacts` directories
+and write the plan to a separate new directory. No source, evidence or graph data is changed.
+
+## Why fidelity does not gate conversion alone
+
+A program with missing copybooks may still have useful AST structure, while its field layouts
+and control flow remain unverified. Never fill that gap with compiling stubs. These legacy
+fidelity buckets describe structure, not dependency readiness or behavioral equivalence:
 
 | Fidelity | Meaning | Safe to convert |
 |---|---|---|
-| `full` | Complete AST, all copybooks resolved | Yes |
-| `partial` | AST built, some data definitions unresolved | Review the gaps first |
+| `full` | Recorded full structural fidelity | Requires local dependency/hash validation |
+| `partial` | AST built, some evidence unresolved | Inspect gaps; no routine isolation inferred |
 | `deps-only` | Dependencies extracted, no usable AST | No — resolve copybooks, re-scan |
 | `failed` | Parser could not process the file | No — dialect or format problem |
-| `not-parsed` | Never included in a scan | No — unknown |
+| `not-parsed` | No recorded parse evidence | No — produce parser/export evidence for the exact source |
 
 `ReadinessScore` weights these as `full × 1.0 + partial × 0.5 + deps-only × 0.25`, over non-copybook programs only. `CoveragePct` is the stricter `full ÷ total`. Copybooks are excluded from both because they are includes, not conversion units, and counting them inflates readiness with work that does not exist.
 
@@ -103,6 +174,26 @@ Filters narrow by job or by program, and combine: requesting a program inside a 
 Per-program procedural detail: paragraphs, sections, PERFORM targets and SQL statements, from the AST the parser produced.
 
 Where an artifact is absent this is reported plainly rather than rendered as an empty flow, because an empty diagram and a program with no artifacts look identical to a reader but mean very different things.
+
+The graph-backed AST explorer counts only native `SECTION` and `PARAGRAPH` nodes.
+`PARAGRAPHS` containers may group unsectioned paragraphs but are not sections;
+`PARAGRAPH_NAME` children are names, not additional paragraphs. The overview and
+status bar use the same deduplicated inventory. The structure API does not measure
+statement counts: its count fields are `null`, with `statementCountsAvailable: false`,
+and the UI displays **Unavailable**, not zero. The paragraph inspector follows only
+`CONTAINS` edges and labels its descendant inventory **AST detail nodes**, not
+statements; dialect wrappers and other parser nodes are not executable-statement evidence.
+Generic `DIALECT` and `DIALECT_CONTAINER` types are labelled **Embedded** and
+**Embedded container**, not SQL: the same native types also contain CICS statements.
+
+The source summary excludes `.preprocessed`, `.rekt-staging`, and `.convert-*`
+directory segments, using the same scratch-path rule as the program picker.
+These derived parser/conversion copies are not additional estate members.
+
+Graph ingestion loads native AST nodes before CFG relationships, regardless of
+artifact directory ordering. Relationship totals count matched endpoints, not
+attempted rows; native CFG edges whose endpoints are absent from the AST are
+reported explicitly and are not fabricated or counted as loaded.
 
 ---
 

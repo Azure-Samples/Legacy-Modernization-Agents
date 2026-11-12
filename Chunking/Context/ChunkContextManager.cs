@@ -247,6 +247,8 @@ ORDER BY chunk_index;";
             {
                 history.ChunkResults.Add(new ChunkConversionResult
                 {
+                    ChunkIndex = reader.GetInt32(0),
+                    SourceFile = sourceFile,
                     Success = reader.GetString(1) == "Completed",
                     ConvertedCode = reader.IsDBNull(2) ? string.Empty : reader.GetString(2),
                     TokensUsed = reader.IsDBNull(3) ? 0 : reader.GetInt32(3),

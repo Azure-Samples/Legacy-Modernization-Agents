@@ -4,7 +4,14 @@
 set -euo pipefail
 
 SOURCE_DIR="${1:?Usage: preprocess-for-rekt.sh <source-dir>}"
+SOURCE_DIR="$(cd -- "$SOURCE_DIR" && pwd)"
 PREPROC_DIR="${SOURCE_DIR}/.preprocessed"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Each estate (a top-level folder of source/) is preprocessed into its own .preprocessed/, so
+# one estate's copybooks never shadow or rewrite another's. Loose files at the source/ root
+# form their own estate and set REKT_SOURCE_TOP_LEVEL_ONLY=true to leave the folders alone.
+FIND_DEPTH=()
+[[ "${REKT_SOURCE_TOP_LEVEL_ONLY:-false}" == "true" ]] && FIND_DEPTH=(-maxdepth 1)
 
 mkdir -p "$PREPROC_DIR"
 
@@ -23,11 +30,19 @@ if [[ -z "$PYTHON" ]]; then
     exit 1
 fi
 
+# Old shadows cannot override changed originals, including files no longer needing a rewrite.
+# Preserve them for diagnosis, and generate this run's outputs only from current inputs.
+"$PYTHON" "$SCRIPT_DIR/rekt_dependency_evidence.py" reset-preprocessed --output-root "$PREPROC_DIR"
+
 # Preprocess copybooks before programs.
 cpy_count=0
 # Recursive find so nested layouts (source/lib/cpy/, etc.) are picked up.
 # -print0 / read -d '' avoids issues with paths containing whitespace.
 while IFS= read -r -d '' cpy; do
+    if ! "$PYTHON" "$SCRIPT_DIR/rekt_dependency_evidence.py" validate-definition --source "$cpy"; then
+        echo "  Ignoring placeholder or unverified definition; genuine source required: $cpy"
+        continue
+    fi
     # doctor.sh lists generated copybooks that a real one of the same name replaces.
     if [[ -n "${REKT_SHADOWED_COPYBOOKS_FILE:-}" && -f "$REKT_SHADOWED_COPYBOOKS_FILE" ]] \
         && grep -qxF "$cpy" "$REKT_SHADOWED_COPYBOOKS_FILE"; then
@@ -102,11 +117,6 @@ content = re.sub(
     content,
     flags=re.MULTILINE
 )
-
-# Replace standalone COMP-2/COMP-1 (no PIC) with PIC-based equivalent
-# COMP-2 = 8-byte double float, COMP-1 = 4-byte single float
-content = re.sub(r'\bCOMP-2\b', 'PIC X(8)', content)
-content = re.sub(r'\bCOMP-1\b', 'PIC X(4)', content)
 
 # Truncate identification-area metadata; compress whitespace only for actual overflow code.
 def enforce_col72(text):
@@ -211,14 +221,32 @@ content = ''.join(result_lines)
 # Some COBOL programs use comma as decimal separator (Danish/German convention).
 content = re.sub(r'(\b\d+),(\d+\b)', r'\1.\2', content)
 
+# Rewrites that add characters push space-padded lines past column 80, which the parser
+# rejects. Only the identification area of such lines is dropped; columns 1-72 are kept.
+def fit_fixed_format(text):
+    out = []
+    for line in text.split('\n'):
+        if len(line) > 80:
+            if line[72:].strip() == '':
+                line = line[:72]
+            elif len(line) > 6 and line[6] in '*/':
+                line = line[:80]
+        out.append(line)
+    return '\n'.join(out)
+
 if content != original:
+    content = fit_fixed_format(content)
     with open(os.path.join(preproc_dir, fname), 'w', encoding='latin-1') as f:
         f.write(content)
     sys.exit(0)
 else:
     sys.exit(1)
-" "$cpy" "$PREPROC_DIR" 2>/dev/null && cpy_count=$((cpy_count + 1))
-done < <(find "$SOURCE_DIR" \
+" "$cpy" "$PREPROC_DIR" 2>/dev/null && {
+    "$PYTHON" "$SCRIPT_DIR/rekt_dependency_evidence.py" provenance \
+        --source "$cpy" --target "$PREPROC_DIR/$(basename "$cpy")"
+    cpy_count=$((cpy_count + 1))
+}
+done < <(find "$SOURCE_DIR" ${FIND_DEPTH[@]+"${FIND_DEPTH[@]}"} \
     \( -name "*.cpy" -o -name "*.CPY" \) \
     -type f \
     ! -path "*/.rekt-staging/*" \
@@ -418,10 +446,6 @@ content = re.sub(
     flags=re.MULTILINE
 )
 
-# 8. Replace standalone COMP-2/COMP-1 (no PIC) with byte-equivalent PIC
-content = re.sub(r'\bCOMP-2\b', 'PIC X(8)', content)
-content = re.sub(r'\bCOMP-1\b', 'PIC X(4)', content)
-
 # 8b. Best-effort normalize compiler-specific copy-with-prefix lines so the parser
 #     can keep scanning the file instead of aborting recursion on these directives.
 def comment_copy_with_prefix(line):
@@ -439,7 +463,9 @@ content = '\n'.join(comment_copy_with_prefix(line) for line in content.split('\n
 def normalize_all_punct(line):
     if len(line) > 6 and line[6] == '*':
         return line
-    return re.sub(r'\bALL\s+\'([^\']+)\'', lambda m: \"'\" + m.group(1) + \"'\", line)
+    return re.sub(r'(\bMOVE\s+)\bALL\s+\'([^\']+)\'',
+                  lambda m: m.group(1) + \"'\" + m.group(2) + \"'\", line,
+                  flags=re.IGNORECASE)
 
 content = '\n'.join(normalize_all_punct(line) for line in content.split('\n'))
 
@@ -496,38 +522,8 @@ content = re.sub(
     flags=re.MULTILINE
 )
 
-# 11. Comment out EXEC SQL DECLARE ... CURSOR FOR ... END-EXEC blocks
-#     (cursor declarations in DATA DIVISION confuse the cobol-ls preprocessor)
-content = re.sub(
-    r'([ ]{6,})EXEC\s+SQL\s+DECLARE\s+\S+\s+CURSOR\b.*?END-EXEC\.?',
-    lambda m: re.sub(r'^(.{6})', r'\g<1>*SQL>', m.group(0), flags=re.MULTILINE),
-    content,
-    flags=re.DOTALL | re.IGNORECASE
-)
-
-# 12. Comment out EXEC CICS INQUIRE ASSOCIATION ... END-EXEC blocks
-content = re.sub(
-    r'([ ]{6,})EXEC\s+CICS\s+INQUIRE\s+ASSOCIATION\b.*?END-EXEC\.?',
-    lambda m: re.sub(r'^(.{6})', r'\g<1>*CIC>', m.group(0), flags=re.MULTILINE),
-    content,
-    flags=re.DOTALL | re.IGNORECASE
-)
-
-# 13. Comment out EXEC CICS RUN TRANSID ... END-EXEC blocks
-content = re.sub(
-    r'([ ]{6,})EXEC\s+CICS\s+RUN\s+TRANSID\b.*?END-EXEC\.?',
-    lambda m: re.sub(r'^(.{6})', r'\g<1>*CIC>', m.group(0), flags=re.MULTILINE),
-    content,
-    flags=re.DOTALL | re.IGNORECASE
-)
-
-# 14. Comment out EXEC CICS FETCH ANY ... END-EXEC blocks
-content = re.sub(
-    r'([ ]{6,})EXEC\s+CICS\s+FETCH\s+ANY\b.*?END-EXEC\.?',
-    lambda m: re.sub(r'^(.{6})', r'\g<1>*CIC>', m.group(0), flags=re.MULTILINE),
-    content,
-    flags=re.DOTALL | re.IGNORECASE
-)
+# Cursor declarations are supported by the native DB2 grammar. Retain their
+# queries and host variables instead of hiding dependencies in comments.
 
 # 15. Normalize lowercase figurative constants to uppercase
 #     (smojol FigurativeConstantMap only handles uppercase)
@@ -576,30 +572,6 @@ content = re.sub(
     content,
     flags=re.MULTILINE
 )
-
-# Comment out unsupported CICS DELAY FOR SECONDS blocks.
-content = re.sub(
-    r'([ ]{6,})EXEC\s+CICS\s+DELAY\s+FOR\s+SECONDS\b.*?END-EXEC\.?',
-    lambda m: re.sub(r'^(.{6})', r'\g<1>*CIC>', m.group(0), flags=re.MULTILINE),
-    content,
-    flags=re.DOTALL | re.IGNORECASE
-)
-
-# Comment out CICS container blocks whose FLENGTH option breaks the dialect parser.
-def comment_out_cics_block(m):
-    block = m.group(0)
-    return re.sub(r'^(.{6})', r'\g<1>*CIC>', block, flags=re.MULTILINE)
-
-content = re.sub(
-    r'[ ]{6,}EXEC\s+CICS\s+(?:GET|PUT)\s+CONTAINER\b(?:(?!END-EXEC).)*FLENGTH(?:(?!END-EXEC).)*END-EXEC\.?',
-    comment_out_cics_block,
-    content,
-    flags=re.DOTALL | re.IGNORECASE
-)
-
-# 22. Fix CRECUST: DATESEP('.') — period inside quotes causes null parse tree child
-#     in buildDialectNodeRepository. Strip the explicit argument to use the default.
-content = re.sub(r'\bDATESEP\s*\([^)]*\)', 'DATESEP', content)
 
 # Comment out orphaned CICS IF bodies through their matching END-IF.
 def fix_orphaned_if_bodies(text):
@@ -657,64 +629,8 @@ def fix_display_exec_cics(text):
 
 content = fix_display_exec_cics(content)
 
-# Replace LENGTH OF expressions that produce invalid dialect nodes.
-def fix_length_of(text):
-    result = []
-    for ln in text.split('\n'):
-        is_comment = len(ln) >= 7 and ln[6] == '*'
-        if not is_comment:
-            ln = re.sub(r'\bLENGTH\s+OF\s+\w+(?:-\w+)*(?:\s+(?:OF|IN)\s+\w+(?:-\w+)*)*\b', '0', ln, flags=re.IGNORECASE)
-        result.append(ln)
-    return '\n'.join(result)
-
-content = fix_length_of(content)
-
-# Replace DFHVALUE compile-time constants with 0 for static analysis.
-def fix_dfhvalue(text):
-    result = []
-    for ln in text.split('\n'):
-        is_comment = len(ln) >= 7 and ln[6] == '*'
-        if not is_comment:
-            ln = re.sub(r'\bDFHVALUE\s*\(\s*\w+(?:-\w+)*\s*\)', '0', ln, flags=re.IGNORECASE)
-        result.append(ln)
-    return '\n'.join(result)
-
-content = fix_dfhvalue(content)
-
-# Drop unsupported bare condition-name clauses and promote the following AND to IF.
-def fix_bare_condname_and(text):
-    import re
-    lines = text.split('\n')
-    result = []
-    i = 0
-    while i < len(lines):
-        ln = lines[i]
-        is_comment = len(ln) >= 7 and ln[6] == '*'
-        if not is_comment:
-            # Match: IF <identifier> (only, no operator, no parens, no comparison)
-            m = re.match(
-                r'^(\s{6,}IF\s+)(NOT\s+)?([A-Z][A-Z0-9-]*)(\s*)$',
-                ln, re.IGNORECASE)
-            if m and i + 1 < len(lines):
-                next_ln = lines[i + 1]
-                is_next_comment = len(next_ln) >= 7 and next_ln[6] == '*'
-                # Next active line must start with AND
-                if (not is_next_comment and
-                        re.match(r'^\s+AND\s+', next_ln, re.IGNORECASE)):
-                    # Replace: comment out the IF condition-name line,
-                    # change the AND line to IF (preserving indentation)
-                    result.append(re.sub(r'^(\s{6})', r'\g<1>*', ln)
-                                  if len(ln) >= 6 else '*' + ln)
-                    next_fixed = re.sub(
-                        r'^(\s+)AND\s+', r'\1IF  ', next_ln, flags=re.IGNORECASE)
-                    result.append(next_fixed)
-                    i += 2
-                    continue
-        result.append(ln)
-        i += 1
-    return '\n'.join(result)
-
-content = fix_bare_condname_and(content)
+# LENGTH OF is left intact: the native parser accepts it in procedure statements and EXEC CICS
+# operands, and replacing it with 0 changed reference-modification offsets and CICS lengths.
 
 # Replace unsupported arithmetic/comparison on IN-qualified names with an opaque
 # condition while preserving the original source as comments.
@@ -853,14 +769,34 @@ def _strip_audit_stamps(text):
 
 content = _strip_audit_stamps(content)
 
+# Rewrites that add characters push space-padded lines past column 80, which the parser
+# rejects. Only the identification area of such lines is dropped; columns 1-72 are kept.
+def fit_fixed_format(text):
+    out = []
+    for line in text.split('\n'):
+        if len(line) > 80:
+            if line[72:].strip() == '':
+                line = line[:72]
+            elif len(line) > 6 and line[6] in '*/':
+                line = line[:80]
+        out.append(line)
+    return '\n'.join(out)
+
 if content != original:
-    with open(os.path.join(preproc_dir, fname), 'w', encoding='latin-1') as f:
+    content = fit_fixed_format(content)
+    output = os.path.join(preproc_dir, os.path.relpath(source_path, source_dir))
+    os.makedirs(os.path.dirname(output), exist_ok=True)
+    with open(output, 'w', encoding='latin-1') as f:
         f.write(content)
     sys.exit(0)
 else:
     sys.exit(1)
-" "$cbl" "$SOURCE_DIR" "$PREPROC_DIR" 2>/dev/null && cbl_count=$((cbl_count + 1))
-done < <(find "$SOURCE_DIR" \
+" "$cbl" "$SOURCE_DIR" "$PREPROC_DIR" 2>/dev/null && {
+    "$PYTHON" "$SCRIPT_DIR/rekt_dependency_evidence.py" provenance \
+        --source "$cbl" --target "$PREPROC_DIR/${cbl#"$SOURCE_DIR/"}"
+    cbl_count=$((cbl_count + 1))
+}
+done < <(find "$SOURCE_DIR" ${FIND_DEPTH[@]+"${FIND_DEPTH[@]}"} \
     \( -name "*.cbl" -o -name "*.CBL" -o -name "*.cob" -o -name "*.COB" \) \
     -type f \
     ! -path "*/.rekt-staging/*" \
@@ -881,6 +817,9 @@ fi
 ALIAS_DIR="$PREPROC_DIR/aliases"
 while IFS= read -r -d '' cpy; do
     fname=$(basename "$cpy")
+    if ! "$PYTHON" "$SCRIPT_DIR/rekt_dependency_evidence.py" validate-definition --source "$cpy"; then
+        continue
+    fi
     base="${fname%.*}"
     ext="${fname##*.}"
     if [[ ${#base} -gt 8 ]]; then
@@ -889,10 +828,11 @@ while IFS= read -r -d '' cpy; do
         if [[ ! -e "$target" && ! -e "$SOURCE_DIR/${short}.${ext}" ]]; then
             mkdir -p "$ALIAS_DIR"
             cp "$cpy" "$target"
+            "$PYTHON" "$SCRIPT_DIR/rekt_dependency_evidence.py" provenance --source "$cpy" --target "$target"
             echo "  Created 8-char alias: ${short}.${ext} → $fname"
         fi
     fi
-done < <(find "$SOURCE_DIR" \
+done < <(find "$SOURCE_DIR" ${FIND_DEPTH[@]+"${FIND_DEPTH[@]}"} \
     \( -name "*.cpy" -o -name "*.CPY" \) \
     -type f \
     ! -path "*/.rekt-staging/*" \
@@ -909,17 +849,25 @@ if [[ -d "$SYS_CPY_DIR" ]]; then
         sys_name=$(basename "$sys_cpy")
         sys_base=$(echo "$sys_name" | sed 's/\.[^.]*$//' | tr '[:lower:]' '[:upper:]')
         # If user has a real copybook of the same name in source/, prefer theirs
-        user_match=$(find "$SOURCE_DIR" \
+        user_match=""
+        while IFS= read -r -d '' candidate; do
+            if "$PYTHON" "$SCRIPT_DIR/rekt_dependency_evidence.py" validate-definition --source "$candidate"; then
+                user_match="$candidate"
+                break
+            fi
+        done < <(find "$SOURCE_DIR" ${FIND_DEPTH[@]+"${FIND_DEPTH[@]}"} \
             \( -iname "${sys_base}.cpy" -o -iname "${sys_base}.CPY" -o -iname "${sys_base}.cpb" \) \
             -type f \
             ! -path "*/.rekt-staging/*" \
             ! -path "*/.preprocessed/*" \
             ! -path "*/.convert-*/*" \
-            | head -1)
+            -print0)
         if [[ -n "$user_match" ]]; then continue; fi
         # Don't clobber an already-preprocessed version
         if [[ -f "$PREPROC_DIR/$sys_name" ]]; then continue; fi
         cp "$sys_cpy" "$PREPROC_DIR/$sys_name"
+        "$PYTHON" "$SCRIPT_DIR/rekt_dependency_evidence.py" provenance \
+            --source "$sys_cpy" --target "$PREPROC_DIR/$sys_name"
         sys_count=$((sys_count + 1))
     done < <(find "$SYS_CPY_DIR" -maxdepth 1 -type f \( -name "*.cpy" -o -name "*.CPY" \) -print0)
 fi
@@ -927,88 +875,19 @@ if [[ "$sys_count" -gt 0 ]]; then
     echo "  Shipped $sys_count bundled system copybook(s) (e.g. SQLCA) → $PREPROC_DIR/"
 fi
 
+# Bind this estate to a snapshot of the configured platform contract. Later edits to the shared
+# profile then affect an estate only when that estate is preprocessed and parsed again.
+if [[ -n "${REKT_PLATFORM_CONTRACTS:-}" ]]; then
+    cp "$REKT_PLATFORM_CONTRACTS" "$PREPROC_DIR/platform-contracts.json"
+    REKT_PLATFORM_CONTRACTS="$PREPROC_DIR/platform-contracts.json" \
+        "$PYTHON" "$SCRIPT_DIR/platform_copybook_contracts.py" "$SOURCE_DIR" "$PREPROC_DIR"
+fi
+
 # Generate COBOL symbolic maps from BMS mapsets (z/OS builds produce these; repos ship only
 # the .bms). Runs before stubbing so a COPY of a mapset gets its real fields, not an empty stub.
 # Set REKT_NO_BMS_MAPS=true to disable.
 if [[ "${REKT_NO_BMS_MAPS:-false}" != "true" ]]; then
     if ! $PYTHON "$SCRIPT_DIR/bms_symbolic_map.py" "$SOURCE_DIR" "$PREPROC_DIR"; then
-        echo "  ⚠️  BMS symbolic map generation failed; affected COPY targets will be stubbed"
-    fi
-fi
-
-# Generate minimal stubs for unresolved COPY targets; set REKT_NO_STUB_COPYBOOKS=true to disable.
-if [[ "${REKT_NO_STUB_COPYBOOKS:-false}" != "true" ]]; then
-    # Never stub system copybooks because doing so would hide their required field layouts.
-    system_copybooks_pattern="^(SQLCA|SQLDA|SQLD2|DFHCOMMAREA|DFHEIB|DFHBMSCA|EIBAID|EIBCALEN|DSNHLI|DSNTIAR)$"
-    # Collect all COPY targets referenced anywhere in the source tree
-    # (case-insensitive; strip surrounding quotes; uppercase for matching).
-    referenced=$($PYTHON - "$SOURCE_DIR" <<'PYEOF'
-import os, re, sys
-src = sys.argv[1]
-# Use a character class for optional COPY-name quotes to keep the heredoc parser stable.
-rx_copy = re.compile(
-    r"^\s*COPY\s+[\"']?([A-Z0-9$@#\-_]+)[\"']?",
-    re.IGNORECASE | re.MULTILINE)
-names = set()
-for root, dirs, files in os.walk(src):
-    # Skip transient directories
-    if "/.rekt-staging" in root or "/.preprocessed" in root or "/.convert-" in root:
-        continue
-    for f in files:
-        if not f.lower().endswith((".cbl", ".cob", ".cpy")): continue
-        try:
-            with open(os.path.join(root, f), "r", encoding="utf-8", errors="ignore") as fp:
-                for m in rx_copy.finditer(fp.read()):
-                    names.add(m.group(1).upper())
-        except: pass
-print("\n".join(sorted(names)))
-PYEOF
-)
-
-    # Build the set of already-satisfied copybook basenames (uppercase, no ext)
-    satisfied=$(find "$SOURCE_DIR" \
-        \( -name "*.cpy" -o -name "*.CPY" -o -name "*.cpb" \) \
-        -type f \
-        ! -path "*/.rekt-staging/*" \
-        ! -path "*/.preprocessed/*" \
-    ! -path "*/.convert-*/*" \
-        ! -path "*/.convert-*/*" \
-        -exec basename {} \; \
-        | sed 's/\.[^.]*$//' \
-        | tr '[:lower:]' '[:upper:]' \
-        | sort -u)
-
-    stub_count=0
-    while IFS= read -r name; do
-        [[ -z "$name" ]] && continue
-        # Skip if a real copybook exists
-        if echo "$satisfied" | grep -qFx "$name"; then continue; fi
-        # Skip system copybooks (smojol/runtime provides them; our stub
-        # would override and break programs that read SQLCODE etc.)
-        if [[ "$name" =~ $system_copybooks_pattern ]]; then continue; fi
-        # Skip if a stub already exists from a previous run
-        stub_path="$PREPROC_DIR/${name}.cpy"
-        if [[ -f "$stub_path" ]]; then continue; fi
-
-        # Generate a minimal stub. The marker comment is recognisable so
-        # downstream tooling can flag programs that depend on stubs.
-        cat > "$stub_path" <<EOF
-      *>───────────────────────────────────────────────────────────────
-      *> AUTO-GENERATED STUB COPYBOOK for ${name}
-      *> Real copybook was not found in source/.
-      *> This stub satisfies the COPY directive so smojol can produce
-      *> full-fidelity AST instead of falling into deps-only mode.
-      *> Field semantics are unknown — the converter should derive them
-      *> from source context (paragraph names, MOVE statements).
-      *>───────────────────────────────────────────────────────────────
-       01  ${name:0:25}-STUB.
-           05  ${name:0:23}-VAL PIC X(1).
-EOF
-        stub_count=$((stub_count + 1))
-    done <<< "$referenced"
-
-    if [[ "$stub_count" -gt 0 ]]; then
-        echo "  Generated $stub_count stub copybook(s) for unresolved COPY targets → $PREPROC_DIR/"
-        echo "  (Set REKT_NO_STUB_COPYBOOKS=true to opt out)"
+        echo "  ⚠️  BMS symbolic map generation failed; affected COPY targets remain unresolved"
     fi
 fi

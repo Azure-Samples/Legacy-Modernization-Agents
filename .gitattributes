@@ -4,7 +4,8 @@
 # checkout with core.autocrlf=true; CRLF makes bash fail with "$'\r': command not found" and
 # breaks `git apply` of the cobol-rekt patches.
 *.sh text eol=lf
-*.patch text eol=lf
+# Blank unified-diff context lines contain a significant space.
+*.patch text eol=lf whitespace=-blank-at-eol
 *.py text eol=lf
 Dockerfile text eol=lf
 *.env.example text eol=lf

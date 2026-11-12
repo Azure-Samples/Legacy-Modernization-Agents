@@ -58,6 +58,9 @@
     constructor(rootId) {
       this.root = document.getElementById(rootId);
       this.data = null; this.cy = null; this.selected = null;
+      this.readiness = null; this.dependencyPlans = new Map();
+      this.readinessRevision = 0;
+      this.readinessLoading = false;
       this.f = {
         estate: 'all', group: 'domain', mode: 'explore', search: '',
         types: new Set(Object.keys(TYPES).filter(t => t !== 'copybook' && t !== 'dataset')), kinds: new Set(KINDS), techs: new Set(), status: 'all', flagged: false,
@@ -65,23 +68,74 @@
     }
 
     async loadAndRender(force) {
-      if (this.data && !force) { this.cy?.resize(); setTimeout(() => this.cy?.resize(), 350); return; }
+      if (this.data && !force) {
+        this.cy?.resize();
+        setTimeout(() => this.cy?.resize(), 350);
+        await this.refreshReadiness();
+        return;
+      }
+      const revision = ++this.readinessRevision;
+      this.readiness = null; this.dependencyPlans.clear();
+      this.readinessLoading = true;
+      this.readinessWarning = 'Checking dependency evidence… Program rings remain not checked until the current assessment completes.';
       this.root.innerHTML = `<div style="padding:20px;${muted}">Loading estate graph…</div>`;
       if (!window.cytoscape) {
         this.root.innerHTML = `<div style="padding:20px;color:#ef4444">Graph library not loaded (lib/cytoscape/cytoscape.min.js).</div>`;
         return;
       }
       try {
+        const assessment = window.ConversionReadiness.read().then(report => ({ report }), error => ({ error }));
         const r = await fetch('/api/estate/mission');
+        if (revision !== this.readinessRevision) return;
         if (r.status === 404) { this.renderEmpty(); return; }
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        this.data = await r.json();
+        const data = await r.json();
+        if (revision !== this.readinessRevision) return;
+        this.data = data;
         this.index();
         this.renderShell();
         this.draw();
+        this.applyReadiness(await assessment, revision);
       } catch (e) {
+        if (revision !== this.readinessRevision) return;
         this.root.innerHTML = `<div style="padding:20px;color:#ef4444">${esc(e.message)}</div>`;
       }
+    }
+
+    applyReadiness(assessment, revision) {
+      if (revision !== this.readinessRevision) return;
+      this.readinessLoading = false;
+      this.readiness = assessment.report || null;
+      this.dependencyPlans = new Map((this.readiness?.programs || []).map(p => [p.program, p]));
+      this.readinessWarning = assessment.error
+        ? `Dependency readiness unavailable: ${assessment.error.message}. Unknown does not authorise conversion.` : null;
+      this.updateReadinessView();
+    }
+
+    updateReadinessView() {
+      this.renderLegend();
+      const shell = this.root.querySelector('.emc-shell');
+      if (this.cy) this.cy.batch(() => this.cy.nodes().forEach(element => {
+        const node = this.nodes.get(element.id());
+        if (node?.type === 'program')
+          element.data('ring', window.ConversionReadiness.graphColor(this.dependencyPlans.get(node.file), shell));
+      }));
+      const refresh = this.root.querySelector('#emc-readiness-refresh');
+      if (refresh) refresh.disabled = this.readinessLoading;
+      if (this.selected && this.nodes.has(this.selected)) this.renderNode(this.nodes.get(this.selected));
+      else if (this.f.mode === 'carve') this.renderWavePlan();
+      else this.renderOverview();
+    }
+
+    async refreshReadiness(refresh = false) {
+      if (this.readinessLoading) return;
+      const revision = ++this.readinessRevision;
+      this.readinessLoading = true;
+      this.readiness = null; this.dependencyPlans.clear();
+      this.readinessWarning = 'Checking dependency evidence… Program rings remain not checked until the current assessment completes.';
+      this.updateReadinessView();
+      const assessment = await window.ConversionReadiness.read(undefined, { refresh }).then(report => ({ report }), error => ({ error }));
+      this.applyReadiness(assessment, revision);
     }
 
     renderEmpty() {
@@ -121,7 +175,7 @@
       const estates = (d.estates || []).filter(e => e.programs && e.id !== '(root)');
       const chip = (group, val, on, label, color) => `<button data-chip="${group}" data-val="${esc(val)}" style="border:1px solid ${on ? (color || '#38bdf8') : '#334155'};background:${on ? (color || '#38bdf8') + '22' : 'transparent'};color:${on ? '#e2e8f0' : '#64748b'};border-radius:999px;padding:2px 9px;font-size:11px;cursor:pointer">${label}</button>`;
       this.root.innerHTML = `
-        <div style="display:flex;flex-direction:column;height:100%;color:#e2e8f0;font-family:Inter,system-ui,sans-serif">
+        <div class="emc-shell" data-portal-theme="dark" style="display:flex;flex-direction:column;height:100%;color:#e2e8f0">
           <div style="display:flex;gap:8px;padding:10px 12px 6px;flex-wrap:wrap;align-items:stretch">
             <div style="${card}padding:8px 12px;min-width:170px;border-color:#0e7490"><div style="font-size:15px;font-weight:700">🛰 Estate Mission Control</div><div style="${muted}font-size:10px">${esc(estates.map(e => e.id).join(' · '))}<br>built ${esc(String(d.generatedAtUtc || '').replace('T', ' ').slice(0, 16))} UTC</div></div>
             ${kpi('Programs', fmt(K.programs), `${fmt(K.lines)} lines`)}
@@ -145,6 +199,7 @@
             <span>${chip('mode', 'explore', f.mode === 'explore', '🔭 Explore')} ${chip('mode', 'carve', f.mode === 'carve', '✂️ Carve-out plan', '#a78bfa')}</span>
             <input id="emc-search" placeholder="Search program, transaction, table…" value="${esc(f.search)}" style="flex:1;min-width:180px;background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:4px 8px">
             <button id="emc-fit" title="Fit to screen" style="${btn}">⤢ Fit</button>
+            <button id="emc-readiness-refresh" type="button" ${this.readinessLoading ? 'disabled' : ''}>Refresh readiness</button>
             <button id="emc-relayout" title="Re-run layout" style="${btn}">↻ Layout</button>
             <button id="emc-rebuild" title="Re-scan source and rebuild the graph" style="background:#0e7490;color:#fff;border:0;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:11px">⟳ Rebuild graph</button>
           </div>
@@ -161,7 +216,7 @@
           <div style="flex:1;display:flex;min-height:0">
             <div style="flex:1;position:relative;min-width:0">
               <div id="emc-graph" style="position:absolute;inset:0;background:radial-gradient(circle at 50% 40%,#0f1b2d 0%,#060a14 75%)"></div>
-              <div id="emc-legend" style="position:absolute;left:10px;bottom:10px;${card}padding:8px 10px;font-size:10px;opacity:.93;max-width:600px"></div>
+              <div id="emc-legend" class="emc-dependency-legend"></div>
               <div id="emc-count" style="position:absolute;right:10px;top:8px;${muted}font-size:11px"></div>
             </div>
             <div id="emc-side" style="width:380px;border-left:1px solid #1f2937;overflow:auto;padding:12px;background:#0a0e1a"></div>
@@ -181,7 +236,8 @@
       let t;
       $('#emc-search').oninput = (e) => { clearTimeout(t); t = setTimeout(() => { this.f.search = e.target.value.trim().toUpperCase(); this.highlightSearch(); }, 250); };
       $('#emc-fit').onclick = () => this.cy?.fit(undefined, 30);
-      $('#emc-relayout').onclick = () => this.layout();
+      $('#emc-readiness-refresh').onclick = () => this.refreshReadiness(true);
+      $('#emc-relayout').onclick = () => this.layout(true);
       $('#emc-rebuild').onclick = () => this.rebuild();
       this.root.querySelectorAll('[data-chip]').forEach(el => el.onclick = () => {
         const g = el.dataset.chip, v = el.dataset.val, f = this.f;
@@ -244,7 +300,10 @@
           position: { x: g0.x + p0.x, y: g0.y + p0.y },
           data: {
             id, label: n.type === 'dataset' ? String(n.label).split('.').slice(-2).join('.') : n.label, type: n.type, parent: parent || undefined,
-            color: T.color, shape: T.shape, size, ring: STATUS[statusOf(n)][0], ringW: n.type === 'program' ? 4 : 1.5,
+            color: T.color, shape: T.shape, size,
+            ring: n.type === 'program' ? window.ConversionReadiness.graphColor(this.dependencyPlans.get(n.file),
+              this.root.querySelector('.emc-shell')) : STATUS[statusOf(n)][0],
+            ringW: n.type === 'program' ? 4 : 1.5,
             hub: n.hub ? 1 : 0, warn: flags.includes('unreferenced') || n.reachable === false ? 1 : 0,
           },
         });
@@ -268,9 +327,13 @@
     draw() {
       const container = this.root.querySelector('#emc-graph');
       if (!container) return;
+      this.renderLegend();
       if (this.cy) this.cy.destroy();
       const els = this.buildElements();
       const nNodes = els.filter(e => e.group === 'nodes' && !e.data.isGroup).length;
+      const theme = getComputedStyle(this.root.querySelector('.emc-shell'));
+      const highlight = theme.getPropertyValue('--cp-accent').trim();
+      const shared = theme.getPropertyValue('--cp-danger').trim();
       this.root.querySelector('#emc-count').textContent = `${nNodes} nodes · ${els.filter(e => e.group === 'edges').length} edges`;
       this.cy = window.cytoscape({
         container, elements: els, wheelSensitivity: 0.25, minZoom: 0.08, maxZoom: 4,
@@ -291,9 +354,9 @@
           { selector: 'edge[type = "copies"]', style: { 'line-style': 'dotted', opacity: 0.25 } },
           { selector: '.dim', style: { opacity: 0.08 } },
           { selector: 'edge.hl', style: { opacity: 1, width: 3, 'z-index': 9 } },
-          { selector: 'node.hl', style: { 'border-color': '#fde047', 'border-width': 5 } },
-          { selector: 'node.sel', style: { 'border-color': '#ffffff', 'border-width': 6, 'overlay-color': '#fde047', 'overlay-opacity': 0.15, 'overlay-padding': 6 } },
-          { selector: 'node.shared', style: { 'border-color': '#f87171', 'border-width': 6 } },
+          { selector: 'node.hl', style: { 'overlay-color': highlight, 'overlay-opacity': 0.15, 'overlay-padding': 6 } },
+          { selector: 'node.sel', style: { 'overlay-color': highlight, 'overlay-opacity': 0.25, 'overlay-padding': 8 } },
+          { selector: 'node.shared', style: { 'overlay-color': shared, 'overlay-opacity': 0.2, 'overlay-padding': 8 } },
         ],
       });
       this.cy.on('tap', 'node', (ev) => {
@@ -310,13 +373,13 @@
       else this.renderOverview();
     }
 
-    layout() {
+    layout(refine = false) {
       if (!this.cy) return;
       if (window.cytoscapeFcose && !window.__emcFcose) { window.cytoscape.use(window.cytoscapeFcose); window.__emcFcose = true; }
       const opts = window.__emcFcose
-        ? { name: 'fcose', quality: 'proof', randomize: true, animate: false, fit: true, padding: 30, nodeSeparation: 60,
+        ? { name: 'fcose', quality: refine ? 'proof' : 'default', randomize: true, animate: false, fit: true, padding: 30, nodeSeparation: 60,
             idealEdgeLength: () => 55, nodeRepulsion: () => 6000, edgeElasticity: () => 0.45, nestingFactor: 0.1, gravity: 0.3,
-            gravityCompound: 1.2, gravityRangeCompound: 1.5, tile: true, tilingPaddingVertical: 12, tilingPaddingHorizontal: 12, packComponents: true, numIter: 2500 }
+            gravityCompound: 1.2, gravityRangeCompound: 1.5, tile: true, tilingPaddingVertical: 12, tilingPaddingHorizontal: 12, packComponents: true, numIter: refine ? 2500 : 800 }
         : { name: 'cose', animate: false, randomize: true, fit: true, padding: 30, componentSpacing: 40, nodeRepulsion: () => 4000, gravity: 1 };
       this.cy.layout(opts).run();
     }
@@ -392,8 +455,9 @@
         const hit = (v.programs || []).find(p => p.relativePath === file) ? file : v.resolveIdentity?.(file.split('/').pop());
         if (hit) await v.select(hit);
       });
-      s.querySelectorAll('[data-stage]').forEach(el => el.onclick = (ev) => { ev.preventDefault(); this.stage(el.dataset.stage, false); });
-      s.querySelectorAll('[data-stage-run]').forEach(el => el.onclick = (ev) => { ev.preventDefault(); this.stage(el.dataset.stageRun, true); });
+      s.querySelectorAll('[data-stage]').forEach(el => el.onclick = (ev) => { ev.preventDefault(); return this.stage(el.dataset.stage, false); });
+      s.querySelectorAll('[data-stage-run]').forEach(el => el.onclick = (ev) => { ev.preventDefault(); return this.stage(el.dataset.stageRun, true); });
+      this.setStageBusy(!!this.staging);
       const back = s.querySelector('#emc-back');
       if (back) back.onclick = (ev) => { ev.preventDefault(); this.clearSelection(); };
     }
@@ -401,10 +465,21 @@
     renderLegend() {
       const lg = this.root.querySelector('#emc-legend');
       if (!lg) return;
-      const ring = (c, t) => `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:9px"><span style="width:9px;height:9px;border-radius:50%;border:2px solid ${c}"></span>${esc(t)}</span>`;
-      lg.innerHTML = `<div style="margin-bottom:3px"><b style="color:#cbd5e1">Program ring</b> ${Object.entries(STATUS).filter(([k]) => k !== 'other').map(([, [c, t]]) => ring(c, t)).join('')}</div>
-        <div><b style="color:#cbd5e1">Edges</b> ${Object.entries(EDGES).map(([t, c]) => `<span style="margin-right:7px"><span style="display:inline-block;width:12px;height:2px;background:${c};vertical-align:middle"></span> ${t}</span>`).join('')}</div>
-        <div style="color:#64748b;margin-top:3px">size = lines of code · double ring = shared hub · dashed = unreferenced/unreachable · click a group title to zoom, a cluster title for its carve-out card</div>`;
+      const programs = (this.data?.nodes || []).filter(n => n.type === 'program' && n.file && this.visible(n));
+      const parsed = programs.filter(n => n.status?.rekt === true).length;
+      const counts = { missing: 0, blocked: 0, eligible: 0, unknown: 0 };
+      for (const program of programs)
+        counts[window.ConversionReadiness.state(this.dependencyPlans.get(program.file))]++;
+      const labels = { missing: 'Missing evidence', blocked: 'Dependency follow-up', eligible: 'Check passed', unknown: 'Not checked' };
+      lg.innerHTML = `<strong>Program rings · dependency check</strong>
+        <p><strong>AST available: ${parsed}/${programs.length} source programs shown</strong></p>
+        <div class="emc-dependency-key">${Object.keys(window.ConversionReadiness.states).map(key =>
+          `<span class="dep-state dep-state-${key}"><span class="emc-key-ring" aria-hidden="true"></span>${esc(labels[key])} (${counts[key]})</span>`).join('')}</div>
+        <p>Yellow blocks strict conversion, not necessarily parsing. Click a program for blockers. Passed does not mean converted.</p>
+        <details class="emc-edge-key"><summary>Edges and graph key</summary>
+          <div>${Object.entries(EDGES).map(([t, c]) => `<span style="margin-right:7px"><span style="display:inline-block;width:12px;height:2px;background:${c};vertical-align:middle"></span> ${t}</span>`).join('')}</div>
+          <p>Size = lines of code · double ring = shared hub · dashed = unreferenced/unreachable. Halo = selection/search; red halo = shared data.</p>
+        </details>`;
     }
 
     sourcesCard() {
@@ -413,7 +488,7 @@
         const row = (what) => `<div style="font-size:11px;margin:4px 0;line-height:1.5;color:#cbd5e1">• ${esc(what)}</div>`;
         return `<div style="${card}margin-bottom:10px"><div style="${muted}font-size:11px;margin-bottom:6px">WHERE THIS DATA COMES FROM</div>
           ${row('Nodes, edges, clusters, hubs and waves: deterministic scan of COBOL, copybooks, JCL, BMS, CSD, CICS yaml, DDL and API yaml.')}
-          ${row('Status ring: Cobol-REKT parse fidelity per program.')}
+          ${row('Program ring: the strict dependency evidence check, separate from parse fidelity and conversion results.')}
           ${row('Converted: programs whose latest run has an evaluated conversion-parity report.')}
         </div>`;
       }
@@ -421,7 +496,7 @@
       const row = (id, what) => id ? `<div style="font-size:11px;margin:4px 0;line-height:1.5">${P.prov(id)} <span style="color:#cbd5e1">${esc(what)}</span></div>` : '';
       return `<div style="${card}margin-bottom:10px"><div style="${muted}font-size:11px;margin-bottom:6px">WHERE THIS DATA COMES FROM</div>
         ${row('portal-scan', 'Nodes, edges, clusters, hubs and waves: pattern scan of COBOL, copybooks, JCL, BMS, CSD, DDL and API yaml (no AST).')}
-        ${row('rekt', 'Status ring (parsed / partial / failed) and program AST in the side panel.')}
+        ${row('rekt', 'Program AST and parse status in the side panel; program rings show the separate dependency evidence check.')}
         ${row(eng, 'AST Compare and Findings side panels (second engine outline).')}
         ${row('ai', 'Conversion status per target (C#, Java, Spring) from the agentic AI loop.')}
         ${row('verify', 'Build and parity results that colour conversion status.')}
@@ -430,6 +505,10 @@
 
     renderOverview() {
       const d = this.data;
+      const identities = new Set(d.nodes.filter(n => n.type === 'program'
+        && (this.f.estate === 'all' || n.estate === this.f.estate)).map(n => n.file));
+      const readiness = this.readiness ? { ...this.readiness,
+        programs: this.readiness.programs.filter(program => identities.has(program.program)) } : null;
       const doms = (d.domains || []).filter(x => x.name);
       const max = Math.max(1, ...doms.map(x => x.lines || 0));
       const ATTN = ['unreferenced', 'not-in-source'];
@@ -441,6 +520,12 @@
         <div style="${muted}margin-bottom:10px">Every node and edge comes from the deterministic builder with file:line evidence. Click anything in the graph to inspect it.</div>
         ${d.warning ? `<div style="${card}border-color:#f59e0b;color:#fbbf24;font-size:12px;margin-bottom:10px">${esc(d.warning)}</div>` : ''}
         ${this.sourcesCard()}
+        ${this.readinessWarning ? `<p class="dep-readiness" role="alert">${esc(this.readinessWarning)}</p>` : ''}
+        <div class="dep-readiness"><strong>Dependency checks (current source)</strong>
+          <p>${(readiness?.programs || []).filter(p => p.status === 'eligible').length}/${readiness?.programs?.length || 0} programs passed individually.
+          Selected programs are checked together again before launch. Missing evidence is not the same as a verified program with zero dependencies.</p>
+        </div>
+        ${window.ConversionReadiness.overview(readiness)}
         <div style="${card}margin-bottom:10px"><div style="${muted}font-size:11px;margin-bottom:6px">BUSINESS FUNCTIONS (by lines of code)</div>
           ${doms.map(x => `<div style="display:flex;align-items:center;gap:6px;margin:3px 0;font-size:12px"><span style="width:10px;height:10px;border-radius:2px;background:${this.domainColor[x.name]}"></span><span style="flex:1">${esc(x.name)}</span><span style="${muted}">${x.programs} pgm</span><div style="width:80px;height:6px;background:#1f2937;border-radius:3px"><div style="width:${(100 * (x.lines || 0) / max).toFixed(0)}%;height:100%;background:${this.domainColor[x.name]};border-radius:3px"></div></div></div>`).join('')}
         </div>
@@ -486,6 +571,9 @@
           ${n.reachable === false ? tag('unreachable from any entry point', '#ef444422', '#f87171') : ''}
         </div>
         ${n.type === 'program' ? `
+          ${window.ConversionReadiness.badge(this.dependencyPlans.get(n.file))}
+          ${window.ConversionReadiness.details(this.readiness && this.dependencyPlans.has(n.file)
+            ? { ...this.readiness, programs: [this.dependencyPlans.get(n.file)] } : null)}
           <div style="font-size:12px;margin-bottom:6px"><span style="color:${STATUS[st][0]}">●</span> ${esc(STATUS[st][1])}${s.fidelity ? ` <span style="${muted}">· REKT ${esc(s.fidelity)}</span>` : ''}</div>
           <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px;margin-bottom:8px">
             ${metric('lines', m.lines)}${metric('paragraphs', m.paragraphs)}${metric('complexity', m.complexity)}${metric('GO TO', m.goto)}
@@ -515,17 +603,29 @@
           ${[['wave', c.wave], ['tier', c.tier || '—'], ['programs', c.programs], ['lines', c.lines], ['cohesion', pct(c.cohesion)], ['carve score', pct(c.carveScore)], ['entry points', (c.entryPoints || []).length], ['owned data', (c.ownedData || []).length], ['shared data', (c.sharedData || []).length], ['missing', (c.missing || []).length]]
             .map(([k, v]) => `<div style="${card}padding:6px;text-align:center"><div style="font-size:14px;font-weight:700">${typeof v === 'number' ? fmt(v) : esc(v)}</div><div style="${muted}font-size:10px">${k}</div></div>`).join('')}
         </div>
-        ${c.sliceId ? `<div style="display:flex;gap:6px;margin-bottom:6px;align-items:center">
+        ${c.sliceId ? `<aside class="mc-prompt-reminder" aria-label="Conversion prompt reminder">
+          <strong>Review your conversion prompts</strong>
+          Before launching, review and customize converter/target-specific prompts under <code>Agents/Prompts</code>
+          for your intended target architecture, frameworks, output behavior and coding requirements.
+          Prompts do not replace source evidence, supply missing code or guarantee behavioral equivalence.
+        </aside><div style="display:flex;gap:6px;margin-bottom:6px;align-items:center;flex-wrap:wrap">
           <button data-stage="${esc(c.sliceId)}" style="${btn}padding:4px 10px">📦 Stage slice</button>
           <label style="${muted}font-size:11px"><input type="checkbox" id="emc-needs" checked> include what it calls</label>
+          <label style="${muted}font-size:11px">Target
+            <select id="emc-language" style="${sel}" aria-label="Slice target language">
+              <option value="Java">Java (Quarkus)</option>
+              <option value="CSharp" ${document.getElementById('mc-language-select')?.value === 'CSharp' ? 'selected' : ''}>C# (.NET)</option>
+            </select>
+          </label>
           <button data-stage-run="${esc(c.sliceId)}" style="border-radius:6px;padding:4px 10px;cursor:pointer;font-size:11px;background:#7c3aed;color:#fff;border:0">🔁 Send to AI loop</button>
-        </div><div id="emc-stage-out" style="font-size:11px;margin-bottom:8px"></div>` : ''}
-        ${(c.missing || []).length ? `<div style="${muted}font-size:11px">NOT IN SOURCE (${c.missing.length}) · converts as stubs</div><div style="margin:4px 0 8px;font-size:11px;color:#f87171">${c.missing.map(esc).join(', ')}</div>` : ''}
+        </div><div style="${muted}font-size:11px;margin-bottom:6px">Uses the provider, model and speed selected in Mission Control. Starting a run calls the configured model.</div>
+        <div id="emc-stage-out" role="status" aria-live="polite" aria-atomic="true" style="font-size:11px;margin-bottom:8px"></div>` : ''}
+        ${(c.missing || []).length ? `<div style="${muted}font-size:11px">NOT IN SOURCE (${c.missing.length}) · unresolved dependencies</div><div style="margin:4px 0 8px;font-size:11px;color:#f87171">${c.missing.map(esc).join(', ')}</div>` : ''}
         <div style="${muted}font-size:11px">MEMBERS</div>
-        <div style="margin:4px 0 8px">${c.members.map(m => `<a href="#" data-node="${esc(m)}" style="display:inline-block;margin:2px;padding:1px 6px;border-radius:4px;border:1px solid ${STATUS[statusOf(this.nodes.get(m))][0]}88;color:#e2e8f0;font-size:11px;text-decoration:none">${esc(name(m))}</a>`).join('')}</div>
+        <div style="margin:4px 0 8px">${c.members.map(m => `<div class="dep-row-${window.ConversionReadiness.state(this.dependencyPlans.get(this.nodes.get(m)?.file))}"><a href="#" data-node="${esc(m)}">${esc(name(m))}</a> ${window.ConversionReadiness.badge(this.dependencyPlans.get(this.nodes.get(m)?.file))}</div>`).join('')}</div>
         ${(c.entryPoints || []).length ? `<div style="${muted}font-size:11px">ENTRY POINTS (${c.entryPoints.length}) · become the cluster's front door</div><div style="margin:4px 0 8px;font-size:11px">${c.entryPoints.map(x => { const n = this.nodes.get(x); return `<a href="#" data-node="${esc(x)}" style="color:${TYPES[n?.type]?.color || '#e2e8f0'};margin-right:6px">${esc(name(x))}</a>`; }).join('')}</div>` : ''}
         ${(c.ownedData || []).length ? `<div style="${muted}font-size:11px">OWNED DATA (moves with the cluster)</div><div style="margin:4px 0 8px;font-size:11px">${c.ownedData.map(x => `<a href="#" data-node="${esc(x.id || x)}" style="color:#34d399;margin-right:6px">${esc(name(x.id || x))}</a>`).join('')}</div>` : ''}
-        ${(c.sharedData || []).length ? `<div style="${muted}font-size:11px">SHARED DATA (needs a data-access API or sync · red ring)</div><div style="margin:4px 0 8px;font-size:11px">${c.sharedData.map(x => `<a href="#" data-node="${esc(x.id)}" style="color:#f87171;margin-right:6px">${esc(name(x.id))}</a><span style="${muted}font-size:10px">with ${(x.clusters || []).filter(y => y !== c.id).map(y => esc(this.clusters.get(y)?.label || y)).join(', ')}</span><br>`).join('')}</div>` : ''}
+        ${(c.sharedData || []).length ? `<div style="${muted}font-size:11px">SHARED DATA (needs a data-access API or sync · red halo)</div><div style="margin:4px 0 8px;font-size:11px">${c.sharedData.map(x => `<a href="#" data-node="${esc(x.id)}" style="color:#f87171;margin-right:6px">${esc(name(x.id))}</a><span style="${muted}font-size:10px">with ${(x.clusters || []).filter(y => y !== c.id).map(y => esc(this.clusters.get(y)?.label || y)).join(', ')}</span><br>`).join('')}</div>` : ''}
         ${(c.apiSurface || []).length ? `<div style="${muted}font-size:11px">INBOUND CALLS → become service APIs (${c.apiSurface.length})</div><div style="margin:4px 0 8px;font-size:11px">${c.apiSurface.slice(0, 25).map(x => `${esc(name(x.from))} → <b>${esc(name(x.to))}</b>`).join('<br>')}</div>` : ''}
         ${(c.dependsOn || []).length ? `<div style="${muted}font-size:11px">OUTBOUND DEPENDENCIES (${c.dependsOn.length})</div><div style="margin:4px 0 8px;font-size:11px">${[...new Set(c.dependsOn.map(x => name(x.to)))].map(esc).join(', ')}</div>` : ''}
         ${(c.usedByClusters || []).length ? `<div style="${muted}font-size:11px">USED BY</div><div style="margin:4px 0 8px;font-size:11px">${c.usedByClusters.map(y => `<a href="#" data-cluster="${esc(y)}" style="color:${this.clusterColor[y]};margin-right:6px">${esc(this.clusters.get(y)?.label || y)}</a>`).join('')}</div>` : ''}`);
@@ -551,10 +651,32 @@
             </div>`).join('')}</div>`).join('')}`);
     }
 
+    setStageBusy(busy) {
+      this.root.querySelectorAll('[data-stage], [data-stage-run], #emc-needs, #emc-language').forEach(el => { el.disabled = busy; });
+    }
+
+    async openManagedRun(runId) {
+      if (typeof window.switchDashboard !== 'function') throw new Error('AI Loop navigation is unavailable.');
+      window.switchDashboard('ailoop');
+      if (typeof window.aiLoopView?.selectManagedRun !== 'function') throw new Error('AI Loop run selection is unavailable.');
+      await window.aiLoopView.selectManagedRun(runId);
+    }
+
     async stage(cid, run) {
+      if (this.staging) return;
+      this.staging = true;
+      this.setStageBusy(true);
       const out = this.root.querySelector('#emc-stage-out');
-      const say = (h) => { if (out) out.innerHTML = h; };
+      const say = (h) => { if (out && this.root.querySelector('#emc-stage-out') === out) out.innerHTML = h; };
       const needs = this.root.querySelector('#emc-needs')?.checked !== false;
+      const body = {
+        clusterId: cid, includeNeeds: needs,
+        targetLanguage: this.root.querySelector('#emc-language')?.value || document.getElementById('mc-language-select')?.value || 'Java',
+        speedProfile: document.getElementById('mc-speed-select')?.value || 'balanced',
+        dependencyMode: document.getElementById('mc-dependency-mode')?.value || 'strict',
+        provider: document.getElementById('mc-provider-select')?.value || undefined,
+        modelId: document.getElementById('mc-model-select')?.value || null,
+      };
       const strip = (id) => String(id).replace(/^[a-z-]+:/, '');
       say(`<span style="${muted}">Staging cluster…</span>`);
       try {
@@ -563,29 +685,47 @@
         if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
         const s = d.slice || {};
         const list = (t, xs, c) => xs?.length ? `<div style="margin-top:4px"><span style="${muted}">${t} (${xs.length})</span> <span style="color:${c}">${xs.map(x => esc(strip(x))).join(', ')}</span></div>` : '';
-        say(`✅ ${(d.selectors || []).length} program(s) to convert
+        const ready = window.ConversionReadiness.allows(d.readiness, body.dependencyMode);
+        const command = ready && d.command ? window.ConversionReadiness.command(
+          d.readiness, d.selectors || [], body.targetLanguage, body.dependencyMode) : '';
+        say(`${(d.selectors || []).length} program(s) staged (not converted)
+          ${window.ConversionReadiness.details(d.readiness)}
           ${list('Programs', s.programs, '#e2e8f0')}${list('Also needs', s.needs, '#94a3b8')}${list('Missing', s.missing, '#f87171')}${list('Jobs that run end to end', s.jobs, '#a78bfa')}
-          ${d.command ? `<div style="margin-top:6px;display:flex;gap:6px;align-items:center"><code style="flex:1;background:#0f172a;padding:4px 6px;border-radius:4px;word-break:break-all">${esc(d.command)}</code><button id="emc-copy" style="${btn}">Copy</button></div>` : ''}`);
+          ${command ? `<div style="margin-top:6px;display:flex;gap:6px;align-items:center"><code style="flex:1;background:#0f172a;padding:4px 6px;border-radius:4px;word-break:break-all">${esc(command)}</code><button id="emc-copy" style="${btn}">Copy</button></div>` : ''}`);
         const cp = this.root.querySelector('#emc-copy');
-        if (cp) cp.onclick = () => navigator.clipboard?.writeText(d.command);
+        if (cp) cp.onclick = () => navigator.clipboard?.writeText(command);
         if (!run) return;
         if (!(d.selectors || []).length) { say('<span style="color:#f59e0b">The slice has no programs to convert.</span>'); return; }
-        const lang = prompt('Target language for the AI loop (Java or CSharp):', document.getElementById('mc-language-select')?.value || 'Java');
-        if (!lang) return;
-        if (!confirm(`Convert ${d.selectors.length} program(s) from ${cid} to ${lang}? This starts a model run.`)) return;
-        const body = {
-          clusterId: cid, includeNeeds: needs, targetLanguage: lang,
-          speedProfile: document.getElementById('mc-speed-select')?.value || 'balanced',
-          provider: document.getElementById('mc-provider-select')?.value || undefined,
-          modelId: document.getElementById('mc-model-select')?.value || null,
-        };
+        if (!ready) {
+          say(`<p class="dep-state dep-state-missing" role="alert">Conversion will not start: valid dependency evidence is missing, rejected or not checked.</p>${window.ConversionReadiness.details(d.readiness)}`);
+          return;
+        }
+        if (!confirm(`Convert ${d.selectors.length} program(s) from ${cid} to ${body.targetLanguage}? Dependency policy: ${body.dependencyMode === 'draft' ? 'PARTIAL DRAFT — NOT VERIFIED; blocked programs produce no code' : 'strict'}. This starts a model run using the provider, model and speed selected in Mission Control.`)) return;
+        if (!await window.ConversionReadiness.reviewPrompts(body)) return;
+        say(`<span style="${muted}">Starting conversion for ${esc(cid)}…</span>`);
         const sr = await fetch('/api/estate/slice/convert', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
         const p = await sr.json().catch(() => ({}));
-        if (!sr.ok) throw new Error(p.error || p.title || `HTTP ${sr.status}`);
-        say(`🔁 AI run <b>${esc(p.runId)}</b> (${esc(p.name)}) started over ${(p.programs || []).length} program(s). <a href="#" id="emc-goloop" style="color:#a78bfa">Open AI Loop →</a>`);
-        this.root.querySelector('#emc-goloop').onclick = (ev) => { ev.preventDefault(); window.switchDashboard?.('ailoop'); };
+        if (!sr.ok && !p.runId) throw new Error(p.error || p.title || `HTTP ${sr.status}`);
+        if (typeof p.runId !== 'string' || !p.runId.trim()) throw new Error('The launch response did not include a managed run ID. Check managed runs before retrying.');
+        const notice = `🔁 Managed run <b>${esc(p.runId)}</b> (${esc(p.name)}) — ${esc(p.status || (sr.ok ? 'accepted' : 'failed'))}, ${(p.programs || []).length} program(s).
+          ${p.error ? `<span style="color:#ef4444">${esc(p.error)}</span>` : ''}`;
+        const showRun = (message = '') => {
+          say(`${notice} <a href="#" id="emc-goloop" style="color:#a78bfa">Open AI Loop →</a>${message}`);
+          const link = out?.querySelector('#emc-goloop');
+          if (link) link.onclick = async (ev) => {
+            ev.preventDefault();
+            try { await this.openManagedRun(p.runId); }
+            catch (e) { showRun(` <span style="color:#f59e0b">Run created; tracking could not open: ${esc(e.message)}</span>`); }
+          };
+        };
+        showRun();
+        try { await this.openManagedRun(p.runId); }
+        catch (e) { showRun(` <span style="color:#f59e0b">Run created; tracking could not open: ${esc(e.message)}</span>`); }
       } catch (e) {
-        say(`<span style="color:#ef4444">${esc(e.message)}</span>`);
+        say(`<span style="color:#ef4444">Could not launch/stage slice: ${esc(e.message)}</span>`);
+      } finally {
+        this.staging = false;
+        this.setStageBusy(false);
       }
     }
 

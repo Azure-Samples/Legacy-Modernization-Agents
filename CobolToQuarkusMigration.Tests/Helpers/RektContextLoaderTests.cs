@@ -6,8 +6,130 @@ namespace CobolToQuarkusMigration.Tests.Helpers;
 
 public sealed class RektContextLoaderTests : IDisposable
 {
+    [Fact]
+    public void Load_CopybookDoesNotReadSameStemProgramArtifacts()
+    {
+        var report = Path.Combine(_root, "output", "rekt", "nested", "SHARED.cbl.report", "flow_ast");
+        Directory.CreateDirectory(report);
+        File.WriteAllText(Path.Combine(report, "flow-ast-SHARED.cbl.json"),
+            """{"type":"PARAGRAPH","name":"PROGRAM-ONLY"}""");
+        var loader = new RektContextLoader(_root);
+        loader.Load("SHARED.cpy", "source").Sections.Should().BeEmpty();
+        loader.Load("nested/SHARED.cpy", "source").Sections.Should().BeEmpty();
+        loader.Load("nested/SHARED.cbl", "source").Sections
+            .SelectMany(s => s.Paragraphs).Select(p => p.Name).Should().Equal("PROGRAM-ONLY");
+    }
+
+    [Fact]
+    public void Load_DependenciesPreservePathAndSourceKind()
+    {
+        var rekt = Path.Combine(_root, "output", "rekt");
+        Directory.CreateDirectory(rekt);
+        File.WriteAllText(Path.Combine(rekt, "SHARED.cbl-deps.json"),
+            """{"dependencies":[{"name":"PROGRAM-ONLY"}]}""");
+        var loader = new RektContextLoader(_root);
+        loader.Load("SHARED.cpy", "source").CallTargets.Should().BeEmpty();
+        loader.Load("nested/SHARED.cbl", "source").CallTargets.Should().BeEmpty();
+        loader.Load("SHARED.cbl", "source").CallTargets.Select(target => target.TargetProgram)
+            .Should().Equal("PROGRAM-ONLY");
+    }
+
     private readonly string _root =
-        Path.Combine(Path.GetTempPath(), $"rekt-loader-{Guid.NewGuid():N}");
+        Path.GetFullPath(Path.Combine(".test-artifacts", $"rekt-loader-{Guid.NewGuid():N}"));
+
+    [Fact]
+    public void Load_ArchivedOrInProgressReportsAreNotActiveEvidence()
+    {
+        foreach (var reserved in new[] { ".previous", ".work" })
+        {
+            var path = Path.Combine(_root, "output", "rekt", reserved, "old", "MAIN.cbl.report", "flow_ast");
+            Directory.CreateDirectory(path);
+            File.WriteAllText(Path.Combine(path, "flow-ast-MAIN.cbl.json"),
+                """{"type":"PARAGRAPH","name":"HISTORICAL"}""");
+        }
+        var loader = new RektContextLoader(_root);
+        loader.HasAnyRektOutput().Should().BeFalse();
+        loader.Load("MAIN.cbl", "source").Sections.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Load_DependencyExportPreservesOnlyRootCopyAndCallEntries()
+    {
+        var rekt = Path.Combine(_root, "output", "rekt", "billing");
+        Directory.CreateDirectory(rekt);
+        File.WriteAllText(Path.Combine(rekt, "MAIN.cbl-deps.json"), """
+            {"callTarget":{"name":"MAIN.cbl"},"dependencies":[
+              {"callTarget":{"name":"BOOK.cpy"},"dependencies":[{"name":"NESTED.cpy"}]},
+              {"callTarget":{"name":"TARGET.cbl","programReferenceType":"STATIC"},"dependencies":[]}]}
+            """);
+        var context = new RektContextLoader(_root).Load("billing/MAIN.cbl", "source");
+        context.CopybookUsage.Should().Equal("BOOK.cpy");
+        context.CallTargets.Select(target => target.TargetProgram).Should().Equal("TARGET.cbl");
+    }
+
+    [Fact]
+    public void Load_NativeExternalControlIsNotInventedAsCallDependency()
+    {
+        var rekt = Path.Combine(_root, "output", "rekt");
+        Directory.CreateDirectory(rekt);
+        File.WriteAllText(Path.Combine(rekt, "MAIN.cbl-deps.json"), """
+            {"callTarget":{"name":"MAIN.cbl"},"dependencyExportSchemaVersion":1,"dependencies":[
+              {"dependencyKind":"COPY","callTarget":{"name":"BOOK.cpy"},"dependencies":[]},
+              {"dependencyKind":"EXTERNAL_CONTROL","callTarget":{"name":"CICS-TARGET"},"dependencies":[]},
+              {"dependencyKind":"CALL","callTarget":{"name":"STATIC-TARGET","programReferenceType":"STATIC"},"dependencies":[]}]}
+            """);
+        var context = new RektContextLoader(_root).Load("MAIN.cbl", "source");
+        context.CopybookUsage.Should().Equal("BOOK.cpy");
+        context.CallTargets.Select(target => target.TargetProgram).Should().Equal("STATIC-TARGET");
+    }
+
+    [Fact]
+    public void Load_UnrelatedDependencyDiagnosticDoesNotDropResolvedEdges()
+    {
+        var rekt = Path.Combine(_root, "output", "rekt");
+        Directory.CreateDirectory(rekt);
+        File.WriteAllText(Path.Combine(rekt, "MAIN.cbl-deps.json"), """
+            {"callTarget":{"name":"MAIN.cbl"},"dependencyDiagnostics":["EXEC CICS LINK target unresolved"],"dependencies":[
+              {"dependencyKind":"COPY","callTarget":{"name":"REAL.cpy"},"dependencies":[]},
+              {"dependencyKind":"CALL","callTarget":{"name":"TARGET","programReferenceType":"STATIC"},"dependencies":[]}]}
+            """);
+        var context = new RektContextLoader(_root).Load("MAIN.cbl", "source");
+        context.CopybookUsage.Should().Equal("REAL.cpy");
+        context.CallTargets.Select(target => target.TargetProgram).Should().Equal("TARGET");
+    }
+
+    [Fact]
+    public void Load_ADynamicOperandDoesNotHideALaterStaticCallOfTheSameName()
+    {
+        var rekt = Path.Combine(_root, "rekt");
+        Directory.CreateDirectory(rekt);
+        File.WriteAllText(Path.Combine(rekt, "flow-ast-PROG.cbl.json"), """
+            {"type":"PROCEDURE_DIVISION_BODY","name":"body","children":[
+              {"type":"PARAGRAPH","name":"MAIN","children":[
+                {"type":"CALL","name":"CALLWS-PGM","originalText":"CALL WS-PGM"},
+                {"type":"CALL","name":"CALL'WS-PGM'","originalText":"CALL 'WS-PGM'"},
+                {"type":"GENERIC_STATEMENT","name":"IFX","originalText":"IF X CALL WS-OTHER END-IF"},
+                {"type":"CALL","name":"CALLWS-OTHER","originalText":"CALL WS-OTHER"},
+                {"type":"GENERIC_STATEMENT","name":"IFY","originalText":"IF Y CALL 'WS-OTHER' END-IF"}]}]}
+            """);
+        File.WriteAllText(Path.Combine(rekt, "PROG.cbl-deps.json"), """
+            {"callTarget":{"name":"PROG.cbl"},"dependencies":[]}
+            """);
+        var dependencyFirst = Path.Combine(rekt, "flow-ast-DEPS.cbl.json");
+        File.WriteAllText(dependencyFirst, """
+            {"type":"CALL","name":"CALLWS-DEP","originalText":"CALL WS-DEP"}
+            """);
+        File.WriteAllText(Path.Combine(rekt, "DEPS.cbl-deps.json"), """
+            {"callTarget":{"name":"DEPS.cbl"},"dependencies":[
+              {"dependencyKind":"CALL","callTarget":{"name":"WS-DEP","programReferenceType":"STATIC"},"dependencies":[]}]}
+            """);
+        var loader = new RektContextLoader(_root, rekt);
+
+        loader.Load("PROG.cbl", "source").CallTargets.Where(c => !c.IsDynamic).Select(c => c.TargetProgram)
+            .Should().Equal("WS-PGM", "WS-OTHER");
+        loader.Load("DEPS.cbl", "source").CallTargets.Where(c => !c.IsDynamic).Select(c => c.TargetProgram)
+            .Should().Equal("WS-DEP");
+    }
 
     [Fact]
     public void HasAnyRektOutput_UsesCustomRektDirectory()
@@ -151,6 +273,26 @@ public sealed class RektContextLoaderTests : IDisposable
         """);
 
         ctx.CallTargets.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Load_MarksCallNodeThroughVariableAsDynamicRatherThanAProgram()
+    {
+        var ctx = LoadAst("""
+        {
+          "type": "PROCEDURE_DIVISION_BODY", "name": "body", "children": [
+            { "type": "PARAGRAPH", "name": "MAIN-LOGIC", "children": [
+              { "type": "CALL", "name": "CALLLIT-DSNTIAC",
+                "originalText": "CALL LIT-DSNTIAC USING SQLCA" },
+              { "type": "CALL", "name": "CALL'SUBPROG",
+                "originalText": "CALL 'SUBPROG' USING SQLCA" }
+            ]}
+          ]
+        }
+        """);
+
+        ctx.CallTargets.Select(c => (c.TargetProgram, c.IsDynamic))
+            .Should().BeEquivalentTo(new[] { ("LIT-DSNTIAC", true), ("SUBPROG", false) });
     }
 
     [Fact]

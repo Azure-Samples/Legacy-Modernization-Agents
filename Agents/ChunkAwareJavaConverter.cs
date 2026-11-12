@@ -127,6 +127,7 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
             };
         }
 
+        var rawResponse = "";
         try
         {
             var systemPrompt = BuildChunkAwareSystemPrompt(chunk, context);
@@ -138,6 +139,7 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
 
             var (javaCode, usedFallback, fallbackReason) = await ExecuteWithFallbackAsync(
                 systemPrompt, userPrompt, $"{chunk.SourceFile} chunk {chunk.ChunkIndex}");
+            rawResponse = javaCode;
 
             stopwatch.Stop();
 
@@ -149,6 +151,7 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
                     SourceFile = chunk.SourceFile,
                     Success = false,
                     ErrorMessage = fallbackReason ?? "Fallback triggered",
+                    ConvertedCode = rawResponse,
                     ProcessingTimeMs = stopwatch.ElapsedMilliseconds
                 };
             }
@@ -163,16 +166,7 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
                     requireStructure: chunk.ChunkIndex == 0,
                     out var reason))
             {
-                var diagnosticStub = ConversionOutputGuard.BuildChunkDiagnosticStub(
-                    "JAVA",
-                    chunk.SourceFile,
-                    chunk.ChunkIndex,
-                    context.TotalChunks,
-                    chunk.StartLine,
-                    chunk.EndLine,
-                    reason);
-
-                Logger.LogWarning("[ChunkAwareJavaConverter] Empty/unusable chunk output for {File} chunk {Idx} — writing diagnostic stub",
+                Logger.LogWarning("[ChunkAwareJavaConverter] Empty/unusable chunk output for {File} chunk {Idx} — retaining raw response",
                     chunk.SourceFile, chunk.ChunkIndex);
 
                 return new ChunkConversionResult
@@ -181,7 +175,7 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
                     SourceFile = chunk.SourceFile,
                     Success = false,
                     ErrorMessage = reason,
-                    ConvertedCode = diagnosticStub,
+                    ConvertedCode = rawResponse,
                     ProcessingTimeMs = stopwatch.ElapsedMilliseconds
                 };
             }
@@ -209,6 +203,7 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
                 SourceFile = chunk.SourceFile,
                 Success = false,
                 ErrorMessage = ex.Message,
+                ConvertedCode = rawResponse,
                 ProcessingTimeMs = stopwatch.ElapsedMilliseconds
             };
         }
@@ -231,6 +226,8 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
             {
                 ["Corrections"] = string.Join("\n", corrections.Select((c, i) => $"{i + 1}. {c}"))
             });
+            if (JavaGeneration.Framework(_conversionSettings) == "Spring")
+                systemPrompt += "\n" + PromptLoader.LoadSection("JavaSpringConverter", "StructuralPolicy");
 
             var userPrompt = PromptLoader.LoadSection("ChunkAwareJavaConverter", "CorrectionsUser", new Dictionary<string, string>
             {
@@ -288,7 +285,7 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
         var chunk = new ChunkResult
         {
             ChunkIndex = 0,
-            SourceFile = cobolFile.FileName,
+            SourceFile = SourcePathHelper.ForFile(cobolFile),
             Content = cobolFile.Content,
             StartLine = 1,
             EndLine = cobolFile.Content.Split('\n').Length
@@ -303,7 +300,8 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
             FileName = NamingHelper.GetOutputFileName(cobolFile.FileName, FileExtension),
             Content = result.ConvertedCode ?? string.Empty,
             ClassName = NamingHelper.DeriveClassNameFromCobolFile(cobolFile.FileName),
-            OriginalCobolFileName = cobolFile.FileName
+            OriginalCobolFileName = cobolFile.FileName,
+            OriginalSourcePath = SourcePathHelper.ForFile(cobolFile)
         };
     }
 
@@ -386,13 +384,14 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
     {
         var sb = new StringBuilder();
 
-        sb.Append(PromptLoader.LoadSectionValidated("ChunkAwareJavaConverter", "System", new Dictionary<string, string>
+        sb.Append(PromptLoader.LoadSectionValidated(JavaGeneration.ConverterPrompt(_conversionSettings, chunked: true), "System", new Dictionary<string, string>
         {
             ["ChunkNumber"] = (chunk.ChunkIndex + 1).ToString(),
             ["TotalChunks"] = context.TotalChunks.ToString()
         }));
 
-        var chunkSection = chunk.ChunkIndex == 0 ? "ChunkFirst"
+        var chunkSection = context.TotalChunks <= 1 ? "ChunkSingle"
+            : chunk.ChunkIndex == 0 ? "ChunkFirst"
             : chunk.ChunkIndex == context.TotalChunks - 1 ? "ChunkLast"
             : "ChunkMiddle";
         sb.AppendLine(PromptLoader.LoadSectionValidated(
@@ -409,6 +408,16 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
                 "ChunkAwareJavaConverter", "PreviousSignatures", new Dictionary<string, string>
                 {
                     ["Items"] = items
+                }));
+        }
+
+        if (!string.IsNullOrWhiteSpace(context.PreviousChunkTail))
+        {
+            sb.AppendLine();
+            sb.AppendLine(PromptLoader.LoadSectionValidated(
+                "ChunkAwareJavaConverter", "PreviousChunkTail", new Dictionary<string, string>
+                {
+                    ["Code"] = context.PreviousChunkTail
                 }));
         }
 
@@ -462,7 +471,9 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
         var structuralContextBuilder = new StringBuilder();
         await RektPromptInjector.InjectAsync(
             structuralContextBuilder, "Java", chunk.SourceFile ?? "(unknown)",
-            "ChunkAwareJavaConverter", _runId, Logger);
+            "ChunkAwareJavaConverter", _runId, Logger, SourceDirectory, RepositoryRoot,
+            verifiedDraftContext: Settings?.ConversionSettings.DependencyMode == "draft",
+            javaFramework: JavaGeneration.Framework(_conversionSettings));
 
         return PromptLoader.LoadSectionValidated("ChunkAwareJavaConverter", "User", new Dictionary<string, string>
         {
@@ -478,45 +489,7 @@ public class ChunkAwareJavaConverter : AgentBase, IChunkAwareConverter
 
     private string ExtractJavaCode(string input)
     {
-        if (string.IsNullOrWhiteSpace(input))
-            return input;
-
-        if (input.Contains("```java"))
-        {
-            var startMarker = "```java";
-            int startIndex = input.IndexOf(startMarker);
-            if (startIndex >= 0)
-            {
-                startIndex += startMarker.Length;
-                int endIndex = input.IndexOf("```", startIndex);
-                if (endIndex >= 0)
-                {
-                    return input.Substring(startIndex, endIndex - startIndex).Trim();
-                }
-            }
-        }
-
-        if (input.StartsWith("```"))
-        {
-            var lines = input.Split('\n');
-            var codeLines = new List<string>();
-            var inCodeBlock = false;
-
-            foreach (var line in lines)
-            {
-                if (line.TrimStart().StartsWith("```"))
-                {
-                    inCodeBlock = !inCodeBlock;
-                    continue;
-                }
-                if (inCodeBlock) codeLines.Add(line);
-            }
-
-            if (codeLines.Any())
-                return string.Join("\n", codeLines).Trim();
-        }
-
-        return input.Trim();
+        return ChunkOutputProtocol.ReadResponse(input, "java");
     }
 
     private List<MethodSignature> ExtractDefinedMethods(string javaCode)

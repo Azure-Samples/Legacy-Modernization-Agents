@@ -1,0 +1,391 @@
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/PlatformCopybookContract.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/PlatformCopybookContract.java
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/PlatformCopybookContract.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/PlatformCopybookContract.java
+@@ -39,10 +39,15 @@
+     }
+ 
+     static byte[] projection() {
++        return projection("DFHAID");
++    }
++
++    static byte[] projection(String name) {
+         StringBuilder text = new StringBuilder("      * " + MARKER + "\n"
+                 + "      * No VALUE clauses: these names are symbolic, not blank data.\n"
+-                + "       01 DFHAID.\n");
+-        symbols().keySet().forEach(name -> text.append("          02 ").append(name).append(" PIC X.\n"));
++                + "       01 " + name + ".\n");
++        Map<String, String> selected = name.equals("DFHBMSCA") ? BmsAttributeContract.symbols() : symbols();
++        selected.keySet().forEach(symbol -> text.append("          02 ").append(symbol).append(" PIC X.\n"));
+         return text.toString().getBytes(StandardCharsets.US_ASCII);
+     }
+ 
+@@ -58,23 +63,28 @@
+                 || profile.get("schemaVersion").getAsInt() != 1
+                 || !"platform-replacement".equals(profile.get("profileKind").getAsString())
+                 || profile.get("profileName").getAsString().isBlank()
+-                || !profile.getAsJsonObject("copybooks").keySet().equals(Set.of("DFHAID")))
++                || profile.getAsJsonObject("copybooks").size() == 0
++                || !Set.of("DFHAID", "DFHBMSCA").containsAll(profile.getAsJsonObject("copybooks").keySet()))
+             throw new IllegalArgumentException("unsupported platform replacement profile");
+-        JsonObject definition = profile.getAsJsonObject("copybooks").getAsJsonObject("DFHAID");
++        String name = input.getFileName().toString().replaceFirst("(?i)\\.cpy$", "").toUpperCase(Locale.ROOT);
++        if (!Set.of("DFHAID", "DFHBMSCA").contains(name)
++                || !profile.getAsJsonObject("copybooks").has(name))
++            throw new IllegalArgumentException("unselected platform replacement copybook");
++        JsonObject definition = profile.getAsJsonObject("copybooks").getAsJsonObject(name);
+         JsonObject expectedSymbols = new JsonObject();
+         symbols().forEach(expectedSymbols::addProperty);
+-        if (!definition.keySet().equals(Set.of("recipe", "selector", "symbols", "documentation", "targetSemantics"))
+-                || !"symbolic-terminal-events-v1".equals(definition.get("recipe").getAsString())
+-                || !"EIBAID".equals(definition.get("selector").getAsString())
+-                || !expectedSymbols.equals(definition.get("symbols"))
+-                || definition.getAsJsonArray("documentation").size() != 1
+-                || !DOCUMENTATION.equals(definition.getAsJsonArray("documentation").get(0).getAsString())
+-                || !"named-events-preserve-source-branches".equals(definition.get("targetSemantics").getAsString())
+-                || !"DFHAID.cpy".equalsIgnoreCase(input.getFileName().toString())
+-                || !Arrays.equals(projection(), bytes))
++        boolean valid = name.equals("DFHBMSCA") ? BmsAttributeContract.validDefinition(definition)
++                : definition.keySet().equals(Set.of("recipe", "selector", "symbols", "documentation", "targetSemantics"))
++                && "symbolic-terminal-events-v1".equals(definition.get("recipe").getAsString())
++                && "EIBAID".equals(definition.get("selector").getAsString())
++                && expectedSymbols.equals(definition.get("symbols"))
++                && definition.getAsJsonArray("documentation").size() == 1
++                && DOCUMENTATION.equals(definition.getAsJsonArray("documentation").get(0).getAsString())
++                && "named-events-preserve-source-branches".equals(definition.get("targetSemantics").getAsString());
++        if (!valid || !Arrays.equals(projection(name), bytes))
+             throw new IllegalArgumentException("unsupported or modified platform event projection");
+         Map<String, Object> result = new LinkedHashMap<>();
+-        result.put("name", "DFHAID");
++        result.put("name", name);
+         result.put("profileName", profile.get("profileName").getAsString());
+         result.put("profileKind", "platform-replacement");
+         result.put("sourcePath", path.toString());
+@@ -89,18 +99,23 @@
+         return result;
+     }
+ 
+-    static void validateUses(ParseTree tree, Map<String, Object> binding, List<String> diagnostics) {
++    static void validateUses(ParseTree tree, Map<String, Object> binding, List<Path> directories, List<String> diagnostics) {
++        if ("DFHBMSCA".equals(binding.get("name"))) {
++            BmsAttributeContract.validateUses(tree, binding, directories, diagnostics);
++            return;
++        }
++        List<String> issues = new ArrayList<>();
+         Set<ParserRuleContext> conditions = Collections.newSetFromMap(new IdentityHashMap<>());
+         Set<ParseTree> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+         Map<String, Integer> declarations = new LinkedHashMap<>();
+         List<Map<String, Object>> usages = new ArrayList<>();
+-        visit(tree, visited, conditions, declarations, usages, diagnostics);
++        visit(tree, visited, conditions, declarations, usages, issues);
+         for (String name : symbols().keySet())
+             if (declarations.getOrDefault(name, 0) != 1)
+-                diagnostics.add("platform-contract-ambiguous-declaration:DFHAID:" + name);
++                issues.add("platform-contract-ambiguous-declaration:DFHAID:" + name);
+         binding.put("usages", usages);
+-        binding.put("bindingStatus", diagnostics.stream().anyMatch(issue -> issue.startsWith("platform-contract-"))
+-                ? "unresolved" : "complete");
++        binding.put("bindingStatus", issues.isEmpty() ? "complete" : "unresolved");
++        diagnostics.addAll(issues);
+     }
+ 
+     private static void visit(ParseTree node, Set<ParseTree> visited, Set<ParserRuleContext> conditions,
+@@ -116,13 +131,17 @@
+                 return;
+             }
+             ParserRuleContext condition = outerCondition(node);
+-            if (condition == null || "DFHAID".equals(name)) {
++            if (condition == null) {
+                 diagnostics.add("platform-contract-unsupported-use:DFHAID:" + name + ":" + terminal.getSymbol().getLine());
+                 return;
+             }
+             if (!conditions.add(condition)) return;
+             List<String> tokens = new ArrayList<>();
+             tokens(condition, tokens);
++            if (tokens.contains("DFHAID")) {
++                diagnostics.add("UNRESOLVED_CICS_AID_SEMANTIC:DFHAID:" + condition.getStart().getLine());
++                return;
++            }
+             Set<String> allowed = new LinkedHashSet<>(symbols().keySet());
+             allowed.addAll(Set.of("EIBAID", "=", "NOT", "AND", "OR", "IS", "EQUAL", "TO", "(", ")"));
+             if (!tokens.stream().allMatch(allowed::contains) || !tokens.contains("EIBAID")
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/BmsAttributeContract.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/BmsAttributeContract.java
+new file mode 100644
+--- /dev/null
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/BmsAttributeContract.java
+@@ -0,0 +1,169 @@
++package org.smojol.toolkit.analysis.pipeline;
++
++import com.google.gson.JsonObject;
++import com.google.gson.JsonParser;
++import org.antlr.v4.runtime.ParserRuleContext;
++import org.antlr.v4.runtime.tree.ParseTree;
++import org.antlr.v4.runtime.tree.TerminalNode;
++import org.smojol.common.ast.NodeText;
++
++import java.io.IOException;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.ArrayList;
++import java.util.LinkedHashMap;
++import java.util.List;
++import java.util.Map;
++import java.util.Locale;
++import java.util.Set;
++import java.util.TreeMap;
++
++final class BmsAttributeContract {
++    static final List<String> DOCUMENTATION = List.of(
++            "https://www.ibm.com/docs/en/cics-ts/6.x?topic=characteristics-attribute-value-definitions-dfhbmsca",
++            "https://www.ibm.com/docs/en/cics-ts/6.x?topic=output-setting-display-characteristics",
++            "https://www.ibm.com/docs/en/cics-tx/11.1.0?topic=constants-field-attributes-printer-control-characters");
++
++    static Map<String, String> symbols() {
++        return new TreeMap<>(Map.of("DFHBMASK", "A:AUTOSKIP", "DFHBMPRF", "A:PROTECTED_MDT_SET",
++                "DFHBMFSE", "A:MDT_SET", "DFHNEUTR", "C:NEUTRAL", "DFHGREEN", "C:GREEN",
++                "DFHUNDLN", "H:UNDERSCORE"));
++    }
++
++    static boolean validDefinition(JsonObject definition) {
++        JsonObject expected = new JsonObject();
++        expected.addProperty("recipe", "symbolic-bms-attributes-v1");
++        expected.addProperty("selector", "bms-output-field");
++        expected.add("symbols", new com.google.gson.Gson().toJsonTree(symbols()));
++        expected.add("documentation", new com.google.gson.Gson().toJsonTree(DOCUMENTATION));
++        expected.addProperty("targetSemantics", "preserve-field-attribute-assignments");
++        return expected.equals(definition);
++    }
++
++    static void validateUses(ParseTree tree, Map<String, Object> binding, List<Path> directories,
++                             List<String> diagnostics) {
++        List<String> issues = new ArrayList<>();
++        List<Map<String, Object>> usages = new ArrayList<>();
++        CobolDeclarationIndex index = new CobolDeclarationIndex(tree);
++        Map<String, List<Map<String, Object>>> fields = new LinkedHashMap<>();
++        try {
++            for (Path directory : directories) {
++                if (!Files.isDirectory(directory)) continue;
++                try (var files = Files.list(directory)) {
++                    for (Path layout : files.filter(path -> path.toString().endsWith(".cpy.bms-layout.json")).toList()) {
++                        JsonObject proof = JsonParser.parseString(Files.readString(layout)).getAsJsonObject();
++                        Path output = Path.of(layout.toString().replaceFirst("\\.bms-layout\\.json$", ""));
++                        if (!"complete".equals(proof.get("status").getAsString())
++                                || !"bms-symbolic-map/layout-v1".equals(proof.get("producer").getAsString())
++                                || !proof.get("outputSha256").getAsString().equals(ParsePipeline.sha256(Files.readAllBytes(output))))
++                            continue;
++                        for (var screenElement : proof.getAsJsonArray("maps")) {
++                            JsonObject screen = screenElement.getAsJsonObject();
++                            if (!Set.of("OUT", "INOUT").contains(screen.get("mode").getAsString())) continue;
++                            if (index.hosts(screen.get("name").getAsString() + "O").size() != 1) continue;
++                            for (var fieldElement : screen.getAsJsonArray("fields")) {
++                                JsonObject field = fieldElement.getAsJsonObject();
++                                if (field.get("occurs").getAsInt() != 1) continue;
++                                for (String suffix : List.of("A", "C", "H")) {
++                                    if (!suffix.equals("A") && !java.util.stream.StreamSupport.stream(
++                                            screen.getAsJsonArray("extendedAttributes").spliterator(), false)
++                                            .anyMatch(value -> value.getAsString().equals(suffix.equals("C") ? "COLOR" : "HILIGHT")))
++                                        continue;
++                                    String name = field.get("name").getAsString() + suffix;
++                                    Map<String, Object> reference = new LinkedHashMap<>();
++                                    reference.put("name", name);
++                                    reference.put("map", screen.get("name").getAsString());
++                                    reference.put("mapset", screen.get("mapset").getAsString());
++                                    reference.put("field", field.get("name").getAsString());
++                                    reference.put("suffix", suffix);
++                                    reference.put("layoutPath", layout.toString());
++                                    reference.put("layoutSha256", ParsePipeline.sha256(Files.readAllBytes(layout)));
++                                    reference.put("outputPath", output.toString());
++                                    reference.put("outputSha256", proof.get("outputSha256").getAsString());
++                                    fields.computeIfAbsent(name, ignored -> new ArrayList<>()).add(reference);
++                                }
++                            }
++                        }
++                    }
++                }
++            }
++        } catch (IOException | IllegalArgumentException | IllegalStateException error) {
++            issues.add("platform-contract-bms-layout-invalid:" + error.getMessage());
++        }
++        for (String symbol : symbols().keySet())
++            if (index.hosts(symbol).size() != 1) issues.add("platform-contract-ambiguous-declaration:DFHBMSCA:" + symbol);
++        for (ParseTree node : CicsDependencyAnalysis.nodes(tree)) {
++            if (!(node instanceof TerminalNode terminal)
++                    || !symbols().containsKey(node.getText().toUpperCase(Locale.ROOT))
++                    && !"DFHBMSCA".equalsIgnoreCase(node.getText())
++                    && !fields.containsKey(node.getText().toUpperCase(Locale.ROOT)))
++                continue;
++            if (ancestor(node, "DataDivisionContext") != null) continue;
++            if (ancestor(node, "MoveStatementContext") == null || "DFHBMSCA".equalsIgnoreCase(node.getText()))
++                issues.add("platform-contract-unsupported-use:DFHBMSCA:" + node.getText() + ":" + terminal.getSymbol().getLine());
++        }
++        for (ParseTree node : CicsDependencyAnalysis.nodes(tree)) {
++            if (!(node instanceof ParserRuleContext move) || !node.getClass().getSimpleName().equals("MoveStatementContext"))
++                continue;
++            List<String> tokens = CicsDependencyAnalysis.nodes(move).stream()
++                    .filter(child -> child instanceof TerminalNode).map(ParseTree::getText)
++                    .map(value -> value.startsWith("'") || value.startsWith("\"") ? value : value.toUpperCase(Locale.ROOT)).toList();
++            boolean symbolic = tokens.stream().anyMatch(symbols()::containsKey);
++            boolean destination = tokens.stream().anyMatch(name -> fields.containsKey(name) && index.hosts(name).size() == 1);
++            if (!symbolic && !destination) continue;
++            if (tokens.size() != 4 || !tokens.get(0).equals("MOVE") || !tokens.get(2).equals("TO")
++                    || !fields.containsKey(tokens.get(3)) || fields.get(tokens.get(3)).size() != 1
++                    || index.hosts(tokens.get(3)).size() != 1) {
++                issues.add("platform-contract-unsupported-bms-move:" + move.getStart().getLine());
++                continue;
++            }
++            Map<String, Object> field = fields.get(tokens.get(3)).getFirst();
++            String value = tokens.get(1), suffix = (String) field.get("suffix");
++            boolean supported = symbols().containsKey(value) && symbols().get(value).startsWith(suffix + ":")
++                    || Set.of("'A'", "\"A\"").contains(value) && suffix.equals("A")
++                    || Set.of("HIGH-VALUE", "HIGH-VALUES").contains(value) && Set.of("C", "H").contains(suffix);
++            ParserRuleContext declaration = index.hosts(tokens.get(3)).getFirst();
++            String outputGroup = field.get("map") + "O";
++            boolean inOutput = index.path(declaration).stream().anyMatch(entry ->
++                    CicsDependencyAnalysis.nodes(entry).stream().anyMatch(part ->
++                            part.getClass().getSimpleName().equals("EntryNameContext")
++                                    && part.getText().equalsIgnoreCase(outputGroup)));
++            if (!inOutput && suffix.equals("A")) {
++                String inputGroup = field.get("map") + "I";
++                boolean sharedInput = index.path(declaration).stream().anyMatch(entry ->
++                        CicsDependencyAnalysis.nodes(entry).stream().anyMatch(part ->
++                                part.getClass().getSimpleName().equals("EntryNameContext")
++                                        && part.getText().equalsIgnoreCase(inputGroup)));
++                List<String> groupTokens = CicsDependencyAnalysis.nodes(index.hosts(outputGroup).getFirst())
++                        .stream().filter(part -> part instanceof TerminalNode)
++                        .map(ParseTree::getText).map(token -> token.toUpperCase(Locale.ROOT)).toList();
++                inOutput = sharedInput && groupTokens.contains("REDEFINES") && groupTokens.contains(inputGroup);
++            }
++            if (!supported || !inOutput) {
++                issues.add("platform-contract-unsupported-bms-value:" + value + ":" + move.getStart().getLine());
++                continue;
++            }
++            Map<String, Object> usage = new LinkedHashMap<>();
++            usage.put("grammarRule", "MoveStatementContext");
++            usage.put("sourceText", NodeText.originalText(move, NodeText::PASSTHROUGH));
++            usage.put("syntax", ParsePipeline.dialectSyntax(move));
++            usage.put("line", move.getStart().getLine());
++            usage.put("column", move.getStart().getCharPositionInLine());
++            usage.put("coordinateSpace", "expanded-parser-input");
++            usage.put("fieldBinding", field);
++            usage.put("definitionSyntax", ParsePipeline.dialectSyntax(declaration));
++            usage.put("valueKind", symbols().containsKey(value) ? "named-attribute"
++                    : value.startsWith("'") || value.startsWith("\"") ? "source-character-literal" : "figurative-constant");
++            usages.add(usage);
++        }
++        binding.put("usages", usages);
++        binding.put("bindingStatus", issues.isEmpty() ? "complete" : "unresolved");
++        diagnostics.addAll(issues);
++    }
++
++    private static ParserRuleContext ancestor(ParseTree node, String rule) {
++        for (ParseTree parent = node.getParent(); parent != null; parent = parent.getParent())
++            if (parent.getClass().getSimpleName().equals(rule)) return (ParserRuleContext) parent;
++        return null;
++    }
++}
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsTerminalBindings.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsTerminalBindings.java
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsTerminalBindings.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsTerminalBindings.java
+@@ -34,7 +34,9 @@
+                     && operands(syntax, "INPARTN").isEmpty();
+             case "Cics_returnContext" -> !rules.contains("Cics_return_inputmsgContext")
+                     && tokens(syntax).stream().noneMatch(Set.of("CHANNEL", "ENDACTIVITY")::contains);
+-            case "Cics_inquireContext" -> rules.contains("Cics_inquire_terminalContext");
++            case "Cics_inquireContext" -> rules.contains("Cics_inquire_terminalContext")
++                    || rules.contains("Cics_inquire_associationContext")
++                    && operands(syntax, "ASSOCIATION").size() == 1;
+             case "Cics_set_terminalContext" -> true;
+             case "Cics_bifContext" -> rules.contains("Cics_bif_deeditContext")
+                     && operands(syntax, "FIELD").size() == 1;
+@@ -42,7 +44,8 @@
+         };
+         if (!supported) issues.add("cics-terminal-variant-unsupported:" + syntax.getClass().getSimpleName());
+         for (String option : List.of("TRANSID", "MAP", "MAPSET", "TERMINAL", "UCTRANST",
+-                "COMMAREA", "LENGTH", "FROM", "INTO", "FIELD", "RESP", "RESP2"))
++                "COMMAREA", "LENGTH", "FROM", "INTO", "FIELD", "RESP", "RESP2",
++                "ASSOCIATION", "ODAPPLID", "ODUSERID", "ODFACILNAME", "ODNETWORKID", "ODFACILTYPE"))
+             if (operands(syntax, option).size() > 1)
+                 issues.add("cics-option-ambiguous:" + option);
+     }
+@@ -56,10 +59,20 @@
+     }
+ 
+     static boolean terminalContext(ParseTree syntax, ParseTree variable) {
+-        if (!"EIBTRMID".equalsIgnoreCase(variable.getText())
+-                || !Set.of("Cics_inquireContext", "Cics_set_terminalContext")
+-                .contains(syntax.getClass().getSimpleName())) return false;
+-        return operands(syntax, "TERMINAL").stream().anyMatch(operand -> nodes(operand).contains(variable));
++        String option = contextRole(syntax, variable);
++        return option != null;
++    }
++
++    static String contextRole(ParseTree syntax, ParseTree variable) {
++        String rule = syntax.getClass().getSimpleName();
++        if ("EIBTRMID".equalsIgnoreCase(variable.getText())
++                && Set.of("Cics_inquireContext", "Cics_set_terminalContext").contains(rule)
++                && operands(syntax, "TERMINAL").stream().anyMatch(operand -> nodes(operand).contains(variable)))
++            return "terminal-id";
++        if ("EIBTASKN".equalsIgnoreCase(variable.getText()) && "Cics_inquireContext".equals(rule)
++                && operands(syntax, "ASSOCIATION").stream().anyMatch(operand -> nodes(operand).contains(variable)))
++            return "task-number";
++        return null;
+     }
+ 
+     static List<ParseTree> operands(ParseTree syntax, String option) {
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsDependencyAnalysis.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsDependencyAnalysis.java
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsDependencyAnalysis.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/CicsDependencyAnalysis.java
+@@ -73,7 +73,8 @@
+                         references.add(Map.of("kind", "CICS_CONTEXT", "name", name,
+                                 "grammarRule", variable.getClass().getSimpleName()));
+                         bindings.add(new LinkedHashMap<>(Map.of("kind", "CICS_CONTEXT", "name", name,
+-                                "definitionScope", "cics-execution-interface", "role", "terminal-id")));
++                                "definitionScope", "cics-execution-interface", "role",
++                                CicsTerminalBindings.contextRole(statement.syntax(), variable))));
+                         continue;
+                     }
+                     if (programOperand(statement.syntax()) != null
+diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
+--- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
++++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/pipeline/ParsePipeline.java
+@@ -233,7 +233,8 @@
+         cicsDependencies.bind(tree, Path.of(parsedSourcePath).getParent(),
+                 cpyPaths == null ? List.of() : cpyPaths.stream().map(File::toPath).toList(),
+                 parserCicsCallTargets, parserCicsRunTargets);
+-        platformCopybooks.forEach(binding -> PlatformCopybookContract.validateUses(tree, binding, dependencyDiagnostics));
++        platformCopybooks.forEach(binding -> PlatformCopybookContract.validateUses(tree, binding,
++                cpyPaths == null ? List.of() : cpyPaths.stream().map(File::toPath).toList(), dependencyDiagnostics));
+         dependencyParseComplete = diagnostics.isEmpty() && dependencyDiagnostics.isEmpty();
+         attestSupportedAbsence();
+         return navigator;
+diff --git a/che-che4z-lsp-for-cobol-integration/server/engine/src/main/antlr4/org/eclipse/lsp/cobol/implicitDialects/cics/CICSLexer.g4 b/che-che4z-lsp-for-cobol-integration/server/engine/src/main/antlr4/org/eclipse/lsp/cobol/implicitDialects/cics/CICSLexer.g4
+--- a/che-che4z-lsp-for-cobol-integration/server/engine/src/main/antlr4/org/eclipse/lsp/cobol/implicitDialects/cics/CICSLexer.g4
++++ b/che-che4z-lsp-for-cobol-integration/server/engine/src/main/antlr4/org/eclipse/lsp/cobol/implicitDialects/cics/CICSLexer.g4
+@@ -58,6 +58,12 @@
+ ASA : A S A;
+ ASIS : A S I S;
+ ASKTIME : A S K T I M E;
++ASSOCIATION : A S S O C I A T I O N;
++ODAPPLID : O D A P P L I D;
++ODUSERID : O D U S E R I D;
++ODFACILNAME : O D F A C I L N A M E;
++ODNETWORKID : O D N E T W O R K I D;
++ODFACILTYPE : O D F A C I L T Y P E;
+ ASRAINTRPT : A S R A I N T R P T;
+ ASRAKEY : A S R A K E Y;
+ ASRAPSW : A S R A P S W;
+diff --git a/che-che4z-lsp-for-cobol-integration/server/engine/src/main/antlr4/org/eclipse/lsp/cobol/implicitDialects/cics/CICSParser.g4 b/che-che4z-lsp-for-cobol-integration/server/engine/src/main/antlr4/org/eclipse/lsp/cobol/implicitDialects/cics/CICSParser.g4
+--- a/che-che4z-lsp-for-cobol-integration/server/engine/src/main/antlr4/org/eclipse/lsp/cobol/implicitDialects/cics/CICSParser.g4
++++ b/che-che4z-lsp-for-cobol-integration/server/engine/src/main/antlr4/org/eclipse/lsp/cobol/implicitDialects/cics/CICSParser.g4
+@@ -500,7 +500,11 @@
+ 
+ /** INQUIRE ACTIVITYID / CONTAINER / EVENT / PROCESS / TIMER */
+ cics_inquire: INQUIRE (cics_inquire_activityid | cics_inquire_container | cics_inquire_event | cics_inquire_process |
+-              cics_inquire_timer | cics_inquire_urimap | cics_inquire_terminal);
++              cics_inquire_timer | cics_inquire_urimap | cics_inquire_terminal | cics_inquire_association);
++cics_inquire_association: ASSOCIATION cics_data_value
++                          (ODAPPLID cics_data_area | ODUSERID cics_data_area |
++                           ODFACILNAME cics_data_area | ODNETWORKID cics_data_area |
++                           ODFACILTYPE cics_data_area | cics_handle_response)+;
+ cics_inquire_terminal: TERMINAL cics_name
+                        (UCTRANST cics_data_area | cics_handle_response)+;
+ cics_set_terminal: SET TERMINAL cics_name

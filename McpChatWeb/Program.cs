@@ -359,6 +359,12 @@ app.MapGet("/api/resources/read", async (string uri, IMcpClient client, Cancella
 	}
 });
 
+app.MapGet("/api/chat/settings", () =>
+{
+	var options = PortalChatOptions.Load(McpChatWeb.Services.RepositoryRoot.PathTo(null, "Config", "appsettings.json"), out _);
+	return Results.Ok(new { options.MaxHistoryMessages, options.MaxSavedConversations });
+});
+
 app.MapPost("/api/chat", async (ChatRequest request, IMcpClient client, CancellationToken cancellationToken) =>
 {
 	if (string.IsNullOrWhiteSpace(request.Prompt))
@@ -366,42 +372,41 @@ app.MapPost("/api/chat", async (ChatRequest request, IMcpClient client, Cancella
 		return Results.BadRequest("Prompt cannot be empty.");
 	}
 
-	// If the user toggled "Chat with Report", load the report content and prepend as context
-	var effectivePrompt = request.Prompt;
+	// Report mode answers from the selected report and returns here, so none of the run, file or
+	// database context below can turn a specific question into a summary of the latest run.
+	var chatRepoRoot = McpChatWeb.Services.RepositoryRoot.Resolve();
+	var reportOptions = PortalChatOptions.Load(Path.Join(chatRepoRoot, "Config", "appsettings.json"), out var reportOptionsWarning);
+	if (reportOptionsWarning is not null) Console.WriteLine($"⚠️ {reportOptionsWarning}");
+
 	if (!string.IsNullOrWhiteSpace(request.ReportContext))
 	{
+
+		// The path comes from the browser; ResolveInside rejects anything outside the repository.
+		var reportPath = ReportCatalog.Resolve(chatRepoRoot, request.ReportContext);
+		if (reportPath is null || !File.Exists(reportPath))
+		{
+			return Results.NotFound(new
+			{
+				error = $"Report '{request.ReportContext}' was not found. Pick a report in Chat Context, or run reverse engineering to create one."
+			});
+		}
+
 		try
 		{
-			var currentDir = Directory.GetCurrentDirectory();
-			var repoRoot = currentDir;
-			if (!Directory.Exists(Path.Combine(repoRoot, "output")))
-			{
-				var parent = Directory.GetParent(currentDir)?.FullName;
-				if (parent != null && Directory.Exists(Path.Combine(parent, "output")))
-					repoRoot = parent;
-				else
-					repoRoot = Path.GetFullPath("..");
-			}
-
-			// The path comes from the browser. Containment has to be tested on a directory
-			// boundary: a plain prefix test lets "<repo>-notes" satisfy "<repo>", so a sibling
-			// directory reads as inside the repository.
-			var reportPath = RepositoryPath.ResolveInside(repoRoot, request.ReportContext);
-
-			if (reportPath is not null && File.Exists(reportPath))
-			{
-				var reportContent = await File.ReadAllTextAsync(reportPath, cancellationToken);
-				// Truncate if very large (keep first 50K chars)
-				if (reportContent.Length > 50000)
-					reportContent = reportContent[..50000] + "\n\n[... report truncated for context ...]";
-
-				effectivePrompt = $"CONTEXT: The following reverse engineering report is available for reference:\n\n{reportContent}\n\n---\n\nUSER QUESTION: {request.Prompt}";
-				Console.WriteLine($"📊 Chat with report context: {Path.GetFileName(reportPath)} ({reportContent.Length} chars)");
-			}
+			var reportContent = await File.ReadAllTextAsync(reportPath, cancellationToken);
+			var reportPrompt = ReportChat.BuildPrompt(Path.GetFileName(reportPath), reportContent, request.Prompt, request.History, reportOptions);
+			Console.WriteLine($"📊 Chat with report: {Path.GetFileName(reportPath)} ({reportContent.Length:N0} chars, prompt {reportPrompt.Length:N0} chars)");
+			var reportAnswer = await client.SendChatAsync(reportPrompt, new ChatSendOptions(ReportChat.McpContext, reportOptions.MaxAnswerTokens), cancellationToken);
+			return Results.Ok(new ChatResponse(reportAnswer, null, ReportCatalog.RelativePath(chatRepoRoot, reportPath)));
 		}
+		catch (OperationCanceledException) { throw; }
 		catch (Exception ex)
 		{
-			Console.WriteLine($"⚠️ Failed to load report context: {ex.Message}");
+			Console.WriteLine($"⚠️ Chat with report failed: {ex.Message}");
+			return Results.Problem(
+				detail: $"Could not answer from report '{Path.GetFileName(reportPath)}': {ex.Message}",
+				title: "Report chat failed",
+				statusCode: 502);
 		}
 	}
 
@@ -996,11 +1001,11 @@ You can still access the data directly:
 		var augmentedPrompt = request.Prompt;
 		if (!string.IsNullOrEmpty(contextData))
 		{
-			augmentedPrompt = $"CONTEXT FROM DATABASE:\n{contextData}\n\nUSER QUESTION: {request.Prompt}";
+			augmentedPrompt = $"CONTEXT FROM DATABASE (reference only):\n{contextData}\n\n{ReportChat.AnswerOnlyRule}\n\n{ReportChat.FormatHistory(request.History, reportOptions)}USER QUESTION: {request.Prompt}";
 			Console.WriteLine($"💡 Augmented prompt with SQLite context ({contextData.Length} chars)");
 		}
 
-		var normalResponse = await client.SendChatAsync(augmentedPrompt, cancellationToken);
+		var normalResponse = await client.SendChatAsync(augmentedPrompt, new ChatSendOptions(MaxOutputTokens: reportOptions.MaxAnswerTokens), cancellationToken);
 		return Results.Ok(new ChatResponse(normalResponse, null));
 	}
 	catch (Exception ex)
@@ -1009,7 +1014,7 @@ You can still access the data directly:
 		// Fallback to MCP only
 		try
 		{
-			var normalResponse = await client.SendChatAsync(request.Prompt, cancellationToken);
+			var normalResponse = await client.SendChatAsync(request.Prompt, new ChatSendOptions(MaxOutputTokens: reportOptions.MaxAnswerTokens), cancellationToken);
 			return Results.Ok(new ChatResponse(normalResponse, null));
 		}
 		catch (Exception innerEx)
@@ -4772,7 +4777,7 @@ app.MapPost("/api/models/save-config", async (McpChatWeb.Models.SaveModelConfigR
 // Serves the COBOL behind a selected AST node so the explorer can show the
 // statements a paragraph actually contains, falling back to SourceBlock nodes in
 // the graph when the file is not on disk.
-app.MapGet("/api/source/content", async (string file, int? startLine, int? endLine) =>
+app.MapGet("/api/source/content", async (string file, int? startLine, int? endLine, long? scanRunId) =>
 {
 	try
 	{
@@ -4817,7 +4822,7 @@ app.MapGet("/api/source/content", async (string file, int? startLine, int? endLi
 			.Where(p => p.StartsWith(estateRoot, StringComparison.Ordinal))
 			.FirstOrDefault(System.IO.File.Exists);
 
-		if (foundPath != null)
+		if (foundPath != null && !scanRunId.HasValue)
 		{
 			// Already proven inside the estate by the loop above, which rejects a candidate
 			// before touching the file system rather than after choosing one.
@@ -4855,16 +4860,19 @@ app.MapGet("/api/source/content", async (string file, int? startLine, int? endLi
 			foreach (var nameCandidate in nameCandidates)
 			{
 				var blockResult = await session.RunAsync(@"
-					MATCH (sb:SourceBlock)
-					WHERE sb.program = $name OR sb.program CONTAINS $name
+					MATCH (candidate:SourceBlock {program: $name})
+					WITH coalesce($scanRunId, max(coalesce(candidate.runId, 0))) AS selectedRun
+					MATCH (sb:SourceBlock {program: $name})
+					WHERE coalesce(sb.runId, 0) = selectedRun
 					RETURN sb.content AS content, sb.startLine AS startLine, sb.endLine AS endLine
 					ORDER BY sb.blockIndex",
-					new { name = nameCandidate });
+					new { name = nameCandidate, scanRunId });
 
 				await blockResult.ForEachAsync(r =>
 				{
 					var content = r["content"].As<string?>() ?? "";
-					allContent.AppendLine(content);
+					if (allContent.Length > 0) allContent.Append('\n');
+					allContent.Append(content);
 					var eLine = r["endLine"].As<int>();
 					if (eLine > totalLineCount) totalLineCount = eLine;
 				});
@@ -4953,6 +4961,7 @@ app.MapGet("/api/source/files", () =>
 			{ ".cbl", ".cob", ".cpy", ".pco", ".sqb", ".copy" };
 
 		var files = Directory.GetFiles(sourceDir, "*", SearchOption.AllDirectories)
+			.Where(f => !CobolToQuarkusMigration.Helpers.SourceTypeRegistry.IsScratchPath(Path.GetRelativePath(sourceDir, f)))
 			.Where(f => cobolExtensions.Contains(Path.GetExtension(f)))
 			.Select(f =>
 			{
@@ -6237,6 +6246,7 @@ app.MapGet("/api/source/analyze", () =>
 			{ ".cbl", ".cob", ".cpy", ".pco", ".sqb", ".copy" };
 
 		var files = Directory.GetFiles(sourceDir, "*", SearchOption.AllDirectories)
+            .Where(f => !CobolToQuarkusMigration.Helpers.SourceTypeRegistry.IsScratchPath(Path.GetRelativePath(sourceDir, f)))
 			.Where(f => cobolExtensions.Contains(Path.GetExtension(f)))
 			.Select(f =>
 			{
@@ -6323,14 +6333,72 @@ app.MapGet("/api/source/analyze", () =>
 // RUN MANAGEMENT — Start/Stop/Pause migration runs from the portal
 // ═══════════════════════════════════════════════════════════════════════════════
 
-app.MapPost("/api/runs/start", (McpChatWeb.Models.StartRunRequest request, McpChatWeb.Services.ProcessManager pm) =>
+app.MapGet("/api/runs/readiness", async Task<IResult> (
+    string? sourceFolder, bool? refresh, HttpResponse response, McpChatWeb.Services.ProcessManager pm,
+    McpChatWeb.Services.RektEstateReader reader, CancellationToken ct) =>
 {
-	if (string.IsNullOrWhiteSpace(request.Command))
-		return Results.BadRequest("Command is required (migrate, reverse-engineer, convert-only, resume)");
+    try
+    {
+        response.Headers.CacheControl = "no-store";
+        return Results.Ok(await pm.GetEstateReadinessAsync(sourceFolder ?? reader.SourceFolderName, ct, refresh == true));
+    }
+    catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
+    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+    {
+        app.Logger.LogWarning(ex, "Cannot assess conversion dependency readiness");
+        return Results.Problem($"Dependency assessment unavailable: {ex.Message}", statusCode: 503);
+    }
+});
 
+app.MapPost("/api/runs/readiness", async Task<IResult> (
+    McpChatWeb.Models.StartRunRequest request, HttpResponse response,
+    McpChatWeb.Services.ProcessManager pm, CancellationToken ct) =>
+{
+    try
+    {
+        response.Headers.CacheControl = "no-store";
+        CobolToQuarkusMigration.Helpers.ConversionEligibility.ValidateMode(request.DependencyMode);
+        return Results.Ok(await pm.AssessDependenciesAsync(
+            request.SourceFolder, request.RektFactsFolder, request.Programs ?? [], ct));
+    }
+    catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
+    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+    {
+        app.Logger.LogWarning(ex, "Cannot assess selected conversion inputs");
+        return Results.Problem($"Dependency assessment unavailable: {ex.Message}", statusCode: 503);
+    }
+});
+
+app.MapPost("/api/runs/start", async Task<IResult> (
+    McpChatWeb.Models.StartRunRequest request, McpChatWeb.Services.ProcessManager pm, CancellationToken ct) =>
+{
 	McpChatWeb.Services.ManagedRun run;
 	try
 	{
+        McpChatWeb.Services.ProcessManager.ValidateLaunchSettings(request.Command,
+            request.TargetLanguage, request.SpeedProfile, request.Provider, request.Programs);
+        if (request.JavaFramework is { } requestedFramework)
+            CobolToQuarkusMigration.Helpers.JavaGeneration.ValidateFramework(requestedFramework);
+        var dependencyMode = CobolToQuarkusMigration.Helpers.ConversionEligibility.ValidateMode(request.DependencyMode);
+        if (McpChatWeb.Services.ProcessManager.RequiresDependencyEvidence(request.Command) && dependencyMode != "partial")
+        {
+            var readiness = await pm.AssessDependenciesAsync(
+                request.SourceFolder, request.RektFactsFolder, request.Programs ?? [], ct);
+            if (!readiness.Allows(dependencyMode))
+            {
+                var rejected = pm.RecordRejectedLaunch(request.Name ?? "Dependency preflight",
+                    readiness.BlockedMessage, request.TargetLanguage, request.SpeedProfile);
+                return Results.Conflict(new { error = readiness.BlockedMessage, runId = rejected.RunId, readiness });
+            }
+        }
+        var environment = new Dictionary<string, string>
+        {
+            [CobolToQuarkusMigration.Helpers.ConversionEligibility.EnvironmentVariable] = dependencyMode
+        };
+        if (request.JavaFramework is { } framework)
+            environment["JAVA_FRAMEWORK"] = CobolToQuarkusMigration.Helpers.JavaGeneration.ValidateFramework(framework);
+        if (request.RektFactsFolder is { } factsFolder)
+            environment["REKT_FACTS_FOLDER"] = factsFolder;
 		run = pm.StartRun(
 			request.Command,
 			request.Name ?? "",
@@ -6339,16 +6407,25 @@ app.MapPost("/api/runs/start", (McpChatWeb.Models.StartRunRequest request, McpCh
 			request.SourceFolder,
 			request.Provider,
 			request.ModelId,
+            extraEnv: environment,
 			programs: request.Programs);
 	}
 	catch (ArgumentException ex)
 	{
-		return Results.BadRequest(ex.Message);
+        var rejected = (ex as ManagedRunValidationException)?.Run
+            ?? pm.RecordRejectedLaunch(request.Name ?? "Launch validation", ex.Message, request.TargetLanguage, request.SpeedProfile);
+        return Results.BadRequest(new { error = ex.Message, runId = rejected.RunId });
+    }
+    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+    {
+        app.Logger.LogWarning(ex, "Conversion dependency preflight failed");
+        return Results.Problem($"Dependency assessment unavailable; no run started: {ex.Message}", statusCode: 503);
 	}
 
 	return Results.Ok(new McpChatWeb.Models.RunStatusDto(
 		run.RunId, run.Name, run.Command, run.TargetLanguage, run.SpeedProfile,
-		run.Status, run.StartedAt, run.CompletedAt, run.ExitCode, run.ProcessId));
+		run.Status, run.StartedAt, run.CompletedAt, run.ExitCode, run.ProcessId,
+		run.Error, run.OutputFolder, $"/api/runs/managed/{run.RunId}/log", run.HistoryWarning));
 });
 
 app.MapPost("/api/runs/stop", (McpChatWeb.Models.StopRunRequest request, McpChatWeb.Services.ProcessManager pm) =>
@@ -6362,7 +6439,8 @@ app.MapPost("/api/runs/stop", (McpChatWeb.Models.StopRunRequest request, McpChat
 
 	return Results.Ok(new McpChatWeb.Models.RunStatusDto(
 		run.RunId, run.Name, run.Command, run.TargetLanguage, run.SpeedProfile,
-		run.Status, run.StartedAt, run.CompletedAt, run.ExitCode, run.ProcessId));
+		run.Status, run.StartedAt, run.CompletedAt, run.ExitCode, run.ProcessId,
+		run.Error, run.OutputFolder, $"/api/runs/managed/{run.RunId}/log", run.HistoryWarning));
 });
 
 app.MapPost("/api/runs/pause/{runId}", (string runId, McpChatWeb.Services.ProcessManager pm) =>
@@ -6382,14 +6460,16 @@ app.MapPost("/api/runs/pause/{runId}", (string runId, McpChatWeb.Services.Proces
 	run = pm.GetRun(runId)!;
 	return Results.Ok(new McpChatWeb.Models.RunStatusDto(
 		run.RunId, run.Name, run.Command, run.TargetLanguage, run.SpeedProfile,
-		run.Status, run.StartedAt, run.CompletedAt, run.ExitCode, run.ProcessId));
+		run.Status, run.StartedAt, run.CompletedAt, run.ExitCode, run.ProcessId,
+		run.Error, run.OutputFolder, $"/api/runs/managed/{run.RunId}/log", run.HistoryWarning));
 });
 
 app.MapGet("/api/runs/managed", (McpChatWeb.Services.ProcessManager pm) =>
 {
 	var runs = pm.GetAllRuns().Select(r => new McpChatWeb.Models.RunStatusDto(
 		r.RunId, r.Name, r.Command, r.TargetLanguage, r.SpeedProfile,
-		r.Status, r.StartedAt, r.CompletedAt, r.ExitCode, r.ProcessId));
+		r.Status, r.StartedAt, r.CompletedAt, r.ExitCode, r.ProcessId,
+		r.Error, r.OutputFolder, $"/api/runs/managed/{r.RunId}/log", r.HistoryWarning));
 	return Results.Ok(runs);
 });
 
@@ -6402,7 +6482,8 @@ app.MapGet("/api/runs/managed/{runId}", (string runId, McpChatWeb.Services.Proce
 	{
 		info = new McpChatWeb.Models.RunStatusDto(
 			run.RunId, run.Name, run.Command, run.TargetLanguage, run.SpeedProfile,
-			run.Status, run.StartedAt, run.CompletedAt, run.ExitCode, run.ProcessId),
+			run.Status, run.StartedAt, run.CompletedAt, run.ExitCode, run.ProcessId,
+			run.Error, run.OutputFolder, $"/api/runs/managed/{run.RunId}/log", run.HistoryWarning),
 		log = run.GetLogLines(200)
 	});
 });
@@ -6411,7 +6492,8 @@ app.MapGet("/api/runs/managed/{runId}/log", (string runId, int? lines, McpChatWe
 {
 	var run = pm.GetRun(runId);
 	if (run == null) return Results.NotFound("Run not found");
-	return Results.Ok(new { lines = run.GetLogLines(lines ?? 100) });
+	return Results.Ok(new { lines = run.GetLogLines(Math.Clamp(lines ?? 100, 1, 2000)),
+		available = run.LogPath is not null, warning = run.LogPath is null ? "No durable process log was recorded for this attempt." : null });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -6611,59 +6693,11 @@ app.MapGet("/api/reports/available", () =>
 {
 	try
 	{
-		var currentDir = Directory.GetCurrentDirectory();
-		var repoRoot = currentDir;
-		if (!Directory.Exists(Path.Combine(repoRoot, "output")))
-		{
-			var parent = Directory.GetParent(currentDir)?.FullName;
-			if (parent != null && Directory.Exists(Path.Combine(parent, "output")))
-				repoRoot = parent;
-			else
-				repoRoot = Path.GetFullPath("..");
-		}
-
-		var outputDir = Path.Combine(repoRoot, "output");
-		var reports = new List<object>();
-
-		// Search for RE reports in output directory
-		if (Directory.Exists(outputDir))
-		{
-			var reportFiles = Directory.GetFiles(outputDir, "*.md", SearchOption.AllDirectories)
-				.Where(f => f.Contains("reverse-engineering", StringComparison.OrdinalIgnoreCase)
-				         || f.Contains("re-report", StringComparison.OrdinalIgnoreCase)
-				         || f.Contains("migration-report", StringComparison.OrdinalIgnoreCase)
-				         || f.Contains("analysis", StringComparison.OrdinalIgnoreCase))
-				.OrderByDescending(f => File.GetLastWriteTimeUtc(f))
-				.ToList();
-
-			foreach (var reportFile in reportFiles)
-			{
-				var fi = new FileInfo(reportFile);
-				reports.Add(new
-				{
-					name = fi.Name,
-					path = Path.GetRelativePath(repoRoot, reportFile),
-					sizeBytes = fi.Length,
-					lastModified = fi.LastWriteTimeUtc
-				});
-			}
-		}
-
-		// Also check for the standard RE report location
-		var standardReport = Path.Combine(outputDir, "reverse-engineering-details.md");
-		if (File.Exists(standardReport) && !reports.Any(r => ((dynamic)r).name == "reverse-engineering-details.md"))
-		{
-			var fi = new FileInfo(standardReport);
-			reports.Insert(0, new
-			{
-				name = fi.Name,
-				path = Path.GetRelativePath(repoRoot, standardReport),
-				sizeBytes = fi.Length,
-				lastModified = fi.LastWriteTimeUtc
-			});
-		}
-
-		return Results.Ok(new { reports, totalReports = reports.Count });
+		var found = ReportCatalog.List(McpChatWeb.Services.RepositoryRoot.Resolve());
+		var reports = found
+			.Select(r => new { name = r.Name, path = r.Path, sizeBytes = r.SizeBytes, lastModified = r.LastModified })
+			.ToList();
+		return Results.Ok(new { reports, totalReports = reports.Count, latestPath = ReportCatalog.Latest(found)?.Path });
 	}
 	catch (Exception ex)
 	{
@@ -6675,6 +6709,21 @@ app.MapModernizationEndpoints();
 app.MapEstateEndpoints();
 app.MapAiLoopEndpoints();
 app.MapRektGraphEndpoints();
+
+// Warm the estate graph and readiness cache so Estate Mission Control opens with coloured rings.
+app.Lifetime.ApplicationStarted.Register(() =>
+{
+	var services = app.Services;
+	async Task Warm(string what, Func<Task> load)
+	{
+		try { await load(); }
+		catch (Exception ex) { app.Logger.LogInformation("{What} warm-up skipped: {Message}", what, ex.Message); }
+	}
+	_ = Task.Run(() => Warm("Readiness", () => services.GetRequiredService<McpChatWeb.Services.ProcessManager>()
+		.GetEstateReadinessAsync(services.GetRequiredService<McpChatWeb.Services.RektEstateReader>().SourceFolderName)));
+	_ = Task.Run(() => Warm("Estate graph", () => services.GetRequiredService<McpChatWeb.Services.EstateGraphService>()
+		.GetMissionAsync()));
+});
 
 app.Lifetime.ApplicationStopping.Register(() =>
 	McpChatWeb.Services.RektNeo4j.DisposeAsync().AsTask().GetAwaiter().GetResult());
