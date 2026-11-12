@@ -126,7 +126,8 @@ class JclCommandFixture(unittest.TestCase):
 
     def run_command(self, *args):
         return subprocess.run([BASH, (self.root / "doctor.sh").as_posix(), *args],
-                              cwd=self.root, env=self.env, capture_output=True, text=True, timeout=90)
+                              cwd=self.root, env=self.env, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=90)
 
     def calls(self, kind):
         log = self.root / "calls.jsonl"
