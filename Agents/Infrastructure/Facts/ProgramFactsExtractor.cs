@@ -56,7 +56,7 @@ public sealed class ProgramFactsExtractor
 
         // Pre-compute an inverse callees → callers map by scanning every
         // deps.json once. Avoids O(N²) per-extraction work.
-        var callersByCallee = BuildCallersMap(targets, catalog, loader, _stagingDir);
+        var callersByCallee = BuildCallersMap(targets, catalog, loader, _stagingDir, _rektDir);
 
         var written = 0;
         foreach (var programRelativePath in targets)
@@ -164,10 +164,12 @@ public sealed class ProgramFactsExtractor
                 Redefines: !string.IsNullOrEmpty(d.Redefines)))
             .ToList();
 
+        var callEvidence = TryLoadEvidence(_rektDir, programRelativePath);
         // A dynamic operand is a data name; only resolved targets (bound via the export) are callees.
         var calleesList = ctx.CallTargets
             .Where(c => !c.IsDynamic)
-            .Select(c => catalog.ResolveCallTarget(c.TargetProgram) ?? c.TargetProgram)
+            .Select(c => DependencyEvidenceGate.ResolveCallTarget(
+                c.TargetProgram, callEvidence, _stagingDir, catalog))
             .Where(n => !string.IsNullOrEmpty(n))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
@@ -305,18 +307,20 @@ public sealed class ProgramFactsExtractor
         IReadOnlyList<string> programRelativePaths,
         ProgramSourceCatalog catalog,
         RektContextLoader loader,
-        string sourceFolder)
+        string sourceFolder,
+        string rektDir)
     {
         var map = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
         foreach (var caller in programRelativePaths)
         {
             var ctx = loader.Load(caller, sourceFolder);
+            var evidence = TryLoadEvidence(rektDir, caller);
             foreach (var callee in ctx.CallTargets.Where(c => !c.IsDynamic))
             {
                 var rawTarget = callee.TargetProgram;
                 if (string.IsNullOrEmpty(rawTarget)) continue;
 
-                var key = catalog.ResolveCallTarget(rawTarget) ?? rawTarget;
+                var key = DependencyEvidenceGate.ResolveCallTarget(rawTarget, evidence, sourceFolder, catalog);
 
                 if (!map.TryGetValue(key, out var list))
                 {
@@ -333,6 +337,16 @@ public sealed class ProgramFactsExtractor
                 .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
                 .ToList(),
             StringComparer.OrdinalIgnoreCase);
+    }
+
+    // Discovery only: the conversion gate rejects evidence this projection could not trust.
+    private static DependencyEvidence? TryLoadEvidence(string rektDir, string programRelativePath)
+    {
+        try { return DependencyEvidenceGate.LoadEvidence(rektDir, programRelativePath); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
+        {
+            return null;
+        }
     }
 
     private static string ExtractProgramId(string content)

@@ -21,14 +21,18 @@ public static class CobolSourceReader
         catch (DecoderFallbackException) { return Encoding.Latin1.GetString(source); }
     }
 
-    // Stem-only registries cannot describe ambiguous owners; reject before reading rather than merge them.
+    // Stem-only registries cannot describe ambiguous owners. A selected scope must be unambiguous; an
+    // unscoped folder may hold several estates, so its ambiguous stems are left unresolved for every file.
     internal static string[] RequireUniqueStems(IEnumerable<string> paths)
     {
         var ordered = paths.OrderBy(Path.GetFullPath, StringComparer.Ordinal).ToArray();
-        var conflict = ordered.GroupBy(Path.GetFileNameWithoutExtension, StringComparer.OrdinalIgnoreCase)
-            .FirstOrDefault(group => group.Count() > 1);
-        if (conflict is not null)
-            throw new InvalidOperationException($"Ambiguous source stem '{conflict.Key}': {string.Join(", ", conflict)}");
-        return ordered;
+        var conflicts = ordered.GroupBy(Path.GetFileNameWithoutExtension, StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Count() > 1).ToArray();
+        if (conflicts.Length == 0) return ordered;
+        if (ConversionSourceScope.IsSet)
+            throw new InvalidOperationException(
+                $"Ambiguous source stem '{conflicts[0].Key}': {string.Join(", ", conflicts[0])}");
+        var ambiguous = conflicts.Select(group => group.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return ordered.Where(path => !ambiguous.Contains(Path.GetFileNameWithoutExtension(path))).ToArray();
     }
 }

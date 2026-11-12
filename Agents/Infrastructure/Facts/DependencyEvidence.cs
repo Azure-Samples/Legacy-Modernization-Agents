@@ -133,7 +133,8 @@ public sealed partial class DependencyEvidenceGate(string factsDirectory)
                 ValidateTransactions(identity, evidence, tree, sourceRoot, issues);
                 ValidateCicsTerminalEvidence(identity, evidence, tree.RuntimeRequirements, sourceRoot, issues);
                 ValidateBmsLayouts(identity, evidence, tree.DerivedInputs, sourceRoot, issues);
-                ValidateFacts(identity, evidence, export, catalog, issues);
+                ValidateFacts(identity, evidence, export, sourceRoot, catalog, issues);
+                ValidateCommareaClosures(identity, evidence, evidence.ExportPath, sourceRoot, issues);
                 var copies = export.Where(edge => edge.Kind == "COPY").Select(edge => edge.Name)
                     .Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToList();
                 foreach (var copy in tree.Supporting.Where(edge => edge.Kind == "COPY").Select(edge => edge.Name))
@@ -165,7 +166,7 @@ public sealed partial class DependencyEvidenceGate(string factsDirectory)
                 foreach (var edge in export)
                 {
                     var target = edge.Kind == "CALL"
-                        ? catalog.ResolveCallTarget(edge.Name) ?? edge.Name
+                        ? ResolveCallTarget(edge.Name, evidence, sourceRoot, catalog)
                         : edge.Name;
                     map.Dependencies.Add(new DependencyRelationship
                     {
@@ -287,7 +288,7 @@ public sealed partial class DependencyEvidenceGate(string factsDirectory)
 
     private void ValidateFacts(
         string identity, DependencyEvidence evidence, IReadOnlyList<(string Kind, string Name)> export,
-        ProgramSourceCatalog catalog, List<string> issues)
+        string sourceRoot, ProgramSourceCatalog catalog, List<string> issues)
     {
         var facts = ProgramFactsArtifactLocator.TryLoad(factsDirectory, identity, () => factsFiles.Value);
         if (facts is null) return; // A verified disk dependency export does not require a facts projection.
@@ -302,13 +303,28 @@ public sealed partial class DependencyEvidenceGate(string factsDirectory)
             issues.Add($"{identity}: existing program facts are stale or lack matching dependency evidence; regenerate facts from the current verified inputs.");
         var copies = export.Where(edge => edge.Kind == "COPY").Select(edge => edge.Name);
         var calls = export.Where(edge => edge.Kind == "CALL")
-            .Select(edge => catalog.ResolveCallTarget(edge.Name) ?? edge.Name);
+            .Select(edge => ResolveCallTarget(edge.Name, evidence, sourceRoot, catalog));
         if (!Values(copies).SequenceEqual(Values(facts.Data.CopybooksUsed), StringComparer.OrdinalIgnoreCase)
             || !Values(calls).SequenceEqual(Values(facts.Callees), StringComparer.OrdinalIgnoreCase))
             issues.Add($"{identity}: existing program facts dependency entries differ from the bound parser export.");
         if (facts.Warnings.Any(warning => warning.StartsWith("generated-copybook-stub:", StringComparison.OrdinalIgnoreCase)
                 || warning.StartsWith("missing-copybook:", StringComparison.OrdinalIgnoreCase)))
             issues.Add($"{identity}: existing program facts contain unresolved/placeholder dependency warnings.");
+    }
+
+    // A hash-bound definition names the exact callee; a same-named catalog file it did not bind is another program.
+    internal static string ResolveCallTarget(
+        string name, DependencyEvidence? evidence, string sourceRoot, ProgramSourceCatalog catalog)
+    {
+        var bound = evidence?.Definitions.Where(definition => definition.Kind is "CALL" or "RUNTIME_CONTRACT"
+            && SameTarget(definition.Name, name)).ToList() ?? [];
+        if (bound.Count == 0) return catalog.ResolveCallTarget(name) ?? name;
+        var local = bound.Where(definition => definition.Kind == "CALL"
+                && Path.IsPathFullyQualified(definition.Path) && IsWithin(definition.Path, sourceRoot))
+            .Select(definition => SourcePathHelper.NormalizeRelativePath(
+                Path.GetRelativePath(Path.GetFullPath(sourceRoot), Path.GetFullPath(definition.Path))))
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        return local.Count == 1 && bound.All(definition => definition.Kind == "CALL") ? local[0] : name;
     }
 
     private static IEnumerable<string> Values(IEnumerable<string> values) =>
@@ -541,9 +557,31 @@ public sealed partial class DependencyEvidenceGate(string factsDirectory)
         return tokens;
     }
 
-    internal static IReadOnlyList<(string Kind, string Name)> ReadExport(
-        string path, string identity, bool requireIdentity = false) =>
-        ReadExportTree(path, identity, requireIdentity).Direct;
+    // Discovery reads positive root edges only; RequireVerified still rejects diagnostics and incomplete coverage.
+    internal static IReadOnlyList<(string Kind, string Name)> ReadDiscoveredEdges(string path)
+    {
+        using var document = JsonDocument.Parse(File.ReadAllText(path));
+        var edges = new List<(string Kind, string Name)>();
+        if (document.RootElement.ValueKind != JsonValueKind.Object
+            || !document.RootElement.TryGetProperty("dependencies", out var dependencies)
+            || dependencies.ValueKind != JsonValueKind.Array)
+            return edges;
+        foreach (var node in dependencies.EnumerateArray().Where(node => node.ValueKind == JsonValueKind.Object))
+        {
+            var target = node.TryGetProperty("callTarget", out var callTarget) ? callTarget : node;
+            if (Text(target, "name") is not { Length: > 0 } name) continue;
+            var kind = node.TryGetProperty("dependencyKind", out var kindNode)
+                ? kindNode.ValueKind == JsonValueKind.String ? kindNode.GetString() : null
+                : Path.GetExtension(name).ToLowerInvariant() is ".cpy" or ".cpb" ? "COPY" : "CALL";
+            if (kind is "EXTERNAL_RUNTIME" or "CICS_LINK" or "CICS_RUN") kind = "CALL";
+            if (kind is not ("COPY" or "CALL")
+                || kind == "CALL" && target.TryGetProperty("programReferenceType", out var referenceType)
+                && referenceType.ToString().Contains("DYNAMIC", StringComparison.OrdinalIgnoreCase))
+                continue;
+            edges.Add((kind, name));
+        }
+        return edges.Distinct().ToList();
+    }
 
     private sealed record ExportTree(
         IReadOnlyList<(string Kind, string Name)> Direct,

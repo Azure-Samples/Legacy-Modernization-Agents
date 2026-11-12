@@ -240,13 +240,15 @@ public sealed class RektContextLoader
                     var unquotedOperand = explicitTarget is null && operand.StartsWith("CALL", StringComparison.OrdinalIgnoreCase)
                         && operand[4..].TrimStart() is { Length: > 0 } rest && rest[0] is not ('\'' or '"');
                     target = target?.Trim('\'', '"');
+                    var isDynamic = TryGetBool(el, "dynamic") || unquotedOperand;
                     if (!string.IsNullOrEmpty(target)
-                        && !ctx.CallTargets.Any(c => string.Equals(c.TargetProgram, target, StringComparison.OrdinalIgnoreCase)))
+                        && !ctx.CallTargets.Any(c => c.IsDynamic == isDynamic
+                            && string.Equals(c.TargetProgram, target, StringComparison.OrdinalIgnoreCase)))
                     {
                         ctx.CallTargets.Add(new RektCallTarget
                         {
                             TargetProgram = target,
-                            IsDynamic = TryGetBool(el, "dynamic") || unquotedOperand,
+                            IsDynamic = isDynamic,
                             LineNumber = startLine,
                         });
                     }
@@ -382,21 +384,29 @@ public sealed class RektContextLoader
         if (path is null) return;
         try
         {
-            var projections = DependencyEvidenceGate.ReadPlatformProjectionNames(path, programRelativePath);
-            ctx.DataStructure.RemoveAll(item => projections.Contains(item.Name, StringComparer.OrdinalIgnoreCase));
-            foreach (var (kind, name) in DependencyEvidenceGate.ReadExport(path, programRelativePath))
+            foreach (var (kind, name) in DependencyEvidenceGate.ReadDiscoveredEdges(path))
             {
                 if (kind == "COPY")
                 {
                     if (!ctx.CopybookUsage.Contains(name, StringComparer.OrdinalIgnoreCase))
                         ctx.CopybookUsage.Add(name);
                 }
-                else if (!ctx.CallTargets.Any(c => string.Equals(c.TargetProgram, name, StringComparison.OrdinalIgnoreCase)))
+                else if (!HasStaticCallTarget(ctx, name))
                     ctx.CallTargets.Add(new RektCallTarget { TargetProgram = name });
             }
         }
         catch (Exception) { /* tolerated */ }
+        try
+        {
+            var projections = DependencyEvidenceGate.ReadPlatformProjectionNames(path, programRelativePath);
+            ctx.DataStructure.RemoveAll(item => projections.Contains(item.Name, StringComparer.OrdinalIgnoreCase));
+        }
+        catch (Exception) { /* tolerated: projections only filter data items */ }
     }
+
+    // A dynamic operand is a data name, so it must not hide a static CALL of the same spelling.
+    private static bool HasStaticCallTarget(RektContext ctx, string name) =>
+        ctx.CallTargets.Any(c => !c.IsDynamic && string.Equals(c.TargetProgram, name, StringComparison.OrdinalIgnoreCase));
 
     private RektTargetPlan? LookupTargetPlan(string programFileName)
     {
@@ -661,12 +671,12 @@ public sealed class RektContextLoader
     // name, and recording the variable as a callee would invent a dependency that does not exist.
     private static void HarvestLiteralCalls(string statementText, int startLine, RektContext ctx)
     {
-        // Seeded from the targets already recorded and mutated as each new one is accepted, so a
+        // Seeded from the static targets already recorded and mutated as each new one is accepted, so a
         // single set rejects both a target seen on an earlier statement and a repeat within this
         // one. That keeps the de-duplication the previous running Any() check provided while
         // making it a filter over the sequence, and turns an O(n) scan per match into a lookup.
         var seen = new HashSet<string>(
-            ctx.CallTargets.Select(c => c.TargetProgram),
+            ctx.CallTargets.Where(c => !c.IsDynamic).Select(c => c.TargetProgram),
             StringComparer.OrdinalIgnoreCase);
 
         foreach (var target in LiteralCallPattern.Matches(statementText)

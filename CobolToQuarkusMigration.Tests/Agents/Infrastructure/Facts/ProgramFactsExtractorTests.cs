@@ -220,17 +220,43 @@ public sealed class ProgramFactsExtractorTests : IDisposable
 
         written.Should().Be(1);
         var facts = ProgramFactsArtifactLocator.TryLoad(factsRoot, "finance/SENDER.cbl")!;
-        facts.Callees.Should().Equal(ambiguousCallee ? "RECEIVER" : "shared/RECEIVER.cbl");
+        facts.Callees.Should().Equal("shared/RECEIVER.cbl");
         ProgramFactsArtifactLocator.TryLoad(factsRoot, "shared/RECEIVER.cbl").Should().BeNull();
-        if (!ambiguousCallee)
+        var caller = new CobolFile
         {
-            var caller = new CobolFile
-            {
-                FileName = "SENDER.cbl", FilePath = callerPath, Content = callerContent
-            };
-            new DependencyEvidenceGate(factsRoot).RequireVerified([caller], staging)
-                .Dependencies.Should().ContainSingle().Which.TargetFile.Should().Be("shared/RECEIVER.cbl");
-        }
+            FileName = "SENDER.cbl", FilePath = callerPath, Content = callerContent
+        };
+        new DependencyEvidenceGate(factsRoot).RequireVerified([caller], staging)
+            .Dependencies.Should().ContainSingle().Which.TargetFile.Should().Be("shared/RECEIVER.cbl");
+    }
+
+    [Fact]
+    public async Task ExtractAllAsync_AnUnboundRootProgramDoesNotShadowTheHashBoundCallee()
+    {
+        var staging = Path.Combine(_root, "staging");
+        Directory.CreateDirectory(Path.Combine(staging, "shared"));
+        var callerContent = "           CALL 'B'.";
+        var callerPath = Path.Combine(staging, "A.cbl");
+        File.WriteAllText(callerPath, callerContent);
+        var boundPath = Path.Combine(staging, "shared", "B.cbl");
+        File.WriteAllText(boundPath, "           STOP RUN.");
+        DependencyEvidenceFixture.Write(_root, staging, "A.cbl", new DependencyDefinition
+        {
+            Kind = "CALL", Name = "B.cbl", Path = boundPath, Sha256 = DependencyEvidenceFixture.Hash(boundPath)
+        });
+        DependencyEvidenceFixture.Write(_root, staging, "shared/B.cbl");
+        File.WriteAllText(Path.Combine(staging, "B.cbl"), "           STOP RUN.");
+        var factsRoot = Path.Combine(_root, "output", "rekt");
+
+        await new ProgramFactsExtractor(_root, staging)
+            .ExtractAllAsync(["A.cbl", "shared/B.cbl", "B.cbl"], factsRoot);
+
+        ProgramFactsArtifactLocator.TryLoad(factsRoot, "A.cbl")!.Callees.Should().Equal("shared/B.cbl");
+        ProgramFactsArtifactLocator.TryLoad(factsRoot, "shared/B.cbl")!.Callers.Should().Equal("A.cbl");
+        ProgramFactsArtifactLocator.TryLoad(factsRoot, "B.cbl")!.Callers.Should().BeEmpty();
+        var caller = new CobolFile { FileName = "A.cbl", FilePath = callerPath, Content = callerContent };
+        new DependencyEvidenceGate(factsRoot).RequireVerified([caller], staging)
+            .Dependencies.Should().ContainSingle().Which.TargetFile.Should().Be("shared/B.cbl");
     }
 
     [Fact]
@@ -363,6 +389,69 @@ public sealed class ProgramFactsExtractorTests : IDisposable
 
         new DependencyEvidenceGate(Path.Combine(_root, "output", "rekt")).RequireVerified([file], staging)
             .Dependencies.Should().ContainSingle().Which.TargetFile.Should().Be("DSNTIAC");
+    }
+
+    [Theory]
+    [InlineData("none")]
+    [InlineData("added-participant")]
+    [InlineData("changed-participant")]
+    [InlineData("changed-inventory")]
+    public void RequireVerified_RevalidatesTheCommareaClosureAgainstCurrentEstateParticipants(string mutation)
+    {
+        var staging = Path.Combine(_root, "staging");
+        var factsRoot = Path.Combine(_root, "output", "rekt");
+        Directory.CreateDirectory(Path.Combine(staging, "est"));
+        var content = "           STOP RUN.";
+        var aPath = Path.Combine(staging, "est", "A.cbl");
+        var bPath = Path.Combine(staging, "est", "B.cbl");
+        File.WriteAllText(aPath, content);
+        File.WriteAllText(bPath, content);
+        // Python json.dumps(inventory, sort_keys=True) hashes to InventorySha; the gate must reproduce it.
+        const string Inventory = """
+            {"schema":1,"records":[{"name":"WS-COMM","loaded":true,"layout":["01WS-COMMPIC X(8)"],
+              "slots":{"WS-PGM":{"values":["PGMA",null],"copies":[],"entry":false,"unsupported":false}},"issues":[]}],
+             "carriers":[],"sends":[{"kind":"record","record":"WS-COMM","command":"LINK","line":12}]}
+            """;
+        const string InventorySha = "4729fe5620e7386aabdea25c3e5a826de1173c22d3424a4cd8f81d73a8ddef1c";
+        var bEvidence = DependencyEvidenceFixture.Write(_root, staging, "est/B.cbl");
+        DependencyEvidenceFixture.BindExport(_root, bEvidence,
+            $$"""{"callTarget":{"name":"B.cbl"},"dependencies":[],"commareaInventory":{{Inventory}}}""");
+        var closurePath = Path.Combine(factsRoot, "est", ".commarea-closure.json");
+        File.WriteAllText(closurePath, System.Text.Json.JsonSerializer.Serialize(new
+        {
+            schema = 1, estate = "est", errors = Array.Empty<string>(),
+            participants = new object[]
+            {
+                new { relativePath = "est/A.cbl", sourceSha256 = DependencyEvidenceFixture.Hash(aPath).ToLowerInvariant(), mode = "lexical" },
+                new
+                {
+                    relativePath = "est/B.cbl", sourceSha256 = DependencyEvidenceFixture.Hash(bPath).ToLowerInvariant(),
+                    mode = "inventory", inventorySha256 = InventorySha
+                }
+            },
+            programs = new { }
+        }));
+        var evidence = DependencyEvidenceFixture.Write(_root, staging, "est/A.cbl", new DependencyDefinition
+        {
+            Kind = "COMMAREA_CLOSURE", Name = "est", Path = closurePath, Sha256 = DependencyEvidenceFixture.Hash(closurePath)
+        });
+        DependencyEvidenceFixture.BindExport(_root, evidence, """{"callTarget":{"name":"A.cbl"},"dependencies":[]}""");
+        switch (mutation)
+        {
+            case "added-participant": File.WriteAllText(Path.Combine(staging, "est", "C.cbl"), content); break;
+            case "changed-participant": File.WriteAllText(bPath, content + "\n           GOBACK."); break;
+            case "changed-inventory":
+                File.WriteAllText(bEvidence.ExportPath, """{"callTarget":{"name":"B.cbl"},"dependencies":[],"commareaInventory":{"schema":1,"records":[],"carriers":[],"sends":[]}}""");
+                break;
+        }
+        var file = new CobolFile { FileName = "A.cbl", FilePath = aPath, Content = content };
+
+        var act = () => new DependencyEvidenceGate(factsRoot).RequireVerified([file], staging);
+
+        if (mutation == "none")
+            act.Should().NotThrow();
+        else
+            act.Should().Throw<InvalidDataException>().WithMessage("*est/A.cbl: COMMAREA closure is stale*");
     }
 
     [Theory]
