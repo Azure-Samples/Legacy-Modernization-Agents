@@ -180,17 +180,23 @@ public sealed class SourceOutputSafetyTests : IDisposable
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             File.WriteAllText(path, "       COPY DATA.\n       CALL 'TARGET'.");
         }
+        // Without a selected scope, ambiguous stems stay unresolved rather than being assigned.
+        CopybookOwnershipRegistry.Build(_root).Ownerships.Should().BeEmpty();
+        CallTargetRegistry.Build(_root);
+
         Action calls = () => CallTargetRegistry.Build(_root);
         Action copies = () => CopybookOwnershipRegistry.Build(_root);
-        calls.Should().Throw<InvalidOperationException>().WithMessage("*Ambiguous source stem*");
-        copies.Should().Throw<InvalidOperationException>().WithMessage("*Ambiguous source stem*");
-
-        // A run that selected one estate reads only its files, so the other estate's copies of
-        // the same stems no longer make the registries throw.
-        ConversionSourceScope.Set(new[] { "a/SAME.cbl", "a/DATA.cpy" }
-            .Select(relative => new CobolFile { FileName = Path.GetFileName(relative), FilePath = Path.Combine(_root, relative) }));
         try
         {
+            // A selection that contains both copies of a stem is refused outright.
+            ConversionSourceScope.Set(paths
+                .Select(relative => new CobolFile { FileName = Path.GetFileName(relative), FilePath = Path.Combine(_root, relative) }));
+            calls.Should().Throw<InvalidOperationException>().WithMessage("*Ambiguous source stem*");
+            copies.Should().Throw<InvalidOperationException>().WithMessage("*Ambiguous source stem*");
+
+            // A run that selected one estate reads only its files.
+            ConversionSourceScope.Set(new[] { "a/SAME.cbl", "a/DATA.cpy" }
+                .Select(relative => new CobolFile { FileName = Path.GetFileName(relative), FilePath = Path.Combine(_root, relative) }));
             CopybookOwnershipRegistry.Build(_root).Ownerships.Should().ContainSingle();
             CallTargetRegistry.Build(_root);
         }
