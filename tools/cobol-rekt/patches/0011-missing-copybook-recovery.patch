@@ -43,7 +43,7 @@ diff --git a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analy
 index f32e5f0..772f043 100644
 --- a/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/CodeTaskRunner.java
 +++ b/smojol-toolkit/src/main/java/org/smojol/toolkit/analysis/task/analysis/CodeTaskRunner.java
-@@ -152,9 +152,26 @@ public class CodeTaskRunner {
+@@ -152,9 +152,29 @@ public class CodeTaskRunner {
                  graphBuildConfig, dataStructuresOutputConfig, unifiedModelOutputConfig, similarityOutputConfig,
                  mermaidOutputConfig, transpilerModelOutputConfig,
                  llmOutputConfig, idProvider, resourceOperations, new Neo4JDriverBuilder());
@@ -66,6 +66,9 @@ index f32e5f0..772f043 100644
 +                }).toList();
 +                java.nio.file.Files.writeString(diagnosticPath,
 +                    new com.google.gson.GsonBuilder().setPrettyPrinting().create().toJson(diagnostics));
++            } else {
++                // The report directory is reused, so a clean rerun must not keep an earlier run's errors.
++                java.nio.file.Files.deleteIfExists(Paths.get(reportRootDir, programReportDir, "parse-diagnostics.json"));
 +            }
 +        }
  //        return pipelineTasks.run(Stream.concat(Stream.of(CommandLineAnalysisTask.BUILD_BASE_ANALYSIS), tasks.stream()).toList());

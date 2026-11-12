@@ -87,6 +87,10 @@ def program_text_lines(text):
                  and all(c == " " or c.isascii() and c.isdigit() for c in raw[:6]))
         line = "      " + raw[6:72] if fixed else raw
         area = line[7:] if fixed else line
+        # Comment records never change division state; dependency_guard_text drops them later.
+        if (fixed and line[6] in "*/") or area.lstrip().startswith("*>"):
+            yield line
+            continue
         if _IDENTIFICATION.match(area):
             identification = True
         elif _LATER_DIVISION.match(area):
@@ -101,9 +105,12 @@ def program_text_lines(text):
             yield "" if documentary else line
 
 
+_SQL_BOUNDARY = re.compile(r"(?:(EXEC\s+SQL)|END-EXEC)(?![A-Za-z0-9-])", re.IGNORECASE)
+
+
 def dependency_guard_text(text):
     """Mask literals/comments for contradiction checks, retaining quoted dependency operands."""
-    result, quote, operand = [], None, False
+    result, quote, operand, sql = [], None, False, False
     for line in program_text_lines(text):
         if (len(line) > 6 and line[6] in "*/") or line.lstrip().startswith("*>"):
             continue
@@ -127,8 +134,14 @@ def dependency_guard_text(text):
                         index += 1
                     else:
                         quote, operand = None, False
-            elif line[index:index + 2] == "*>":
+            elif line[index:index + 2] == "*>" or (sql and line[index:index + 2] == "--"):
                 break
+            elif (index == 0 or not (line[index - 1].isalnum() or line[index - 1] == "-")) and (
+                    keyword := _SQL_BOUNDARY.match(line, index)):
+                sql = keyword.group(1) is not None
+                row.append(line[index:keyword.end()])
+                index = keyword.end()
+                continue
             elif char in "'\"":
                 prefix = "\n".join(result[-1:]) + "".join(row)
                 operand = re.search(r"\b(?:COPY|CALL|INCLUDE)\s*$", prefix, re.IGNORECASE) is not None

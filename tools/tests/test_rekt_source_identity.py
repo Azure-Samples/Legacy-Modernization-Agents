@@ -113,6 +113,36 @@ class RektSourceIdentityTests(unittest.TestCase):
         self.assertEqual("copybook-collision", rows[0][0])
         self.assertEqual(["one/AUTHORED.cbl", "two/SEQUENCED.cbl"], sorted(rows[1][2:]))
 
+    def test_comment_lines_and_sql_comments_do_not_hide_a_later_copy(self):
+        self.write("one/SHARED.cpy", "       01 WS-A PIC X.\n")
+        self.write("two/SHARED.cpy", "       01 WS-B PIC 9.\n")
+        self.write(
+            "one/COMMENTED.cbl",
+            "       IDENTIFICATION DIVISION.\n"
+            "       PROGRAM-ID. COMMENTED.\n"
+            "      * DATA DIVISION.\n"
+            "       AUTHOR. O'CONNOR.\n"
+            "       DATA DIVISION.\n"
+            "       WORKING-STORAGE SECTION.\n"
+            "           COPY SHARED.\n",
+        )
+        self.write(
+            "two/SQLNOTE.cbl",
+            "       IDENTIFICATION DIVISION.\n"
+            "       PROGRAM-ID. SQLNOTE.\n"
+            "       PROCEDURE DIVISION.\n"
+            "           EXEC SQL\n"
+            "             COMMIT -- don't hold locks\n"
+            "           END-EXEC.\n"
+            "           COPY SHARED.\n",
+        )
+
+        code, rows = self.run_check()
+
+        self.assertEqual(1, code)
+        self.assertEqual("copybook-collision", rows[0][0])
+        self.assertEqual(["one/COMMENTED.cbl", "two/SQLNOTE.cbl"], sorted(rows[1][2:]))
+
     def test_use_through_the_eight_character_alias_counts(self):
         self.write("one/INPUT-AREA_request_0.cpy", "       01 WS-A PIC X.\n")
         self.write("two/INPUT-AREA_request_0.cpy", "       01 WS-B PIC 9.\n")
