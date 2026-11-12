@@ -108,20 +108,25 @@ public static class AiLoopEvents
             Model = model,
             Context = context,
         });
-        // Preparation is not a handoff: only an exact block in the dispatched prompt is proof.
-        if (MetricsSink.CurrentAttemptId is not null
-            && PreparedContexts.Value?.TryGetValue((agent, context), out var prepared) == true
-            && (systemPrompt.Contains(prepared.Block, StringComparison.Ordinal)
-                || userPrompt.Contains(prepared.Block, StringComparison.Ordinal)))
+        // Preparation is not a handoff: only an exact block in the dispatched prompt is proof. The
+        // block, not the request label (a basename or chunk label), binds dispatch to its source.
+        if (MetricsSink.CurrentAttemptId is null || PreparedContexts.Value is not { } contexts) return requestId;
+        foreach (var ((preparedAgent, file), prepared) in contexts)
+        {
+            if (preparedAgent != agent
+                || !systemPrompt.Contains(prepared.Block, StringComparison.Ordinal)
+                && !userPrompt.Contains(prepared.Block, StringComparison.Ordinal))
+                continue;
             MetricsSink.EmitAmbient(new
             {
                 Event = "context_dispatched",
                 RequestId = requestId,
                 ContextId = prepared.Id,
                 Agent = agent,
-                File = context,
+                File = file,
                 ProjectionMode = prepared.Mode,
             });
+        }
         return requestId;
     }
 

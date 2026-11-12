@@ -119,8 +119,10 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
                     cobolFile.FileName, estimatedTokens);
             }
 
-            // Sanitize COBOL content for content filtering
-            string sanitizedContent = SanitizeCobolContent(contentToConvert);
+            // Partial selections must keep source names verbatim: RequireCandidate checks output against them.
+            string sanitizedContent = Settings?.ConversionSettings.DependencyMode == "partial"
+                ? contentToConvert
+                : SanitizeCobolContent(contentToConvert);
 
             // Inject business logic context from reverse engineering when available
             var businessLogic = BusinessLogicReuse.Find(_businessLogicExtracts, cobolFile.FileName, cobolFile.FilePath);

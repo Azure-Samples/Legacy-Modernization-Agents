@@ -201,6 +201,20 @@ public sealed class SourceOutputSafetyTests : IDisposable
     }
 
     [Fact]
+    public async Task SourceDeclaredCopybookKeepsConditionAndRenamesLevels()
+    {
+        Directory.CreateDirectory(Path.Combine(_root, "source"));
+        File.WriteAllText(Path.Combine(_root, "source", "LEVELS.cpy"),
+            "       01 REC.\n          05 STATUS-CODE PIC X.\n             88 STATUS-OK VALUE 'Y'.\n" +
+            "          05 AMOUNT PIC 9(5).\n       66 ALIAS-AMOUNT RENAMES AMOUNT.");
+
+        var context = await new StructuralContextProvider(_root, "source", fallbackToAi: false).GetAsync("LEVELS.cpy");
+
+        context.Context!.DataStructure.Select(item => (item.Name, item.Level)).Should().Equal(
+            ("REC", 1), ("STATUS-CODE", 5), ("STATUS-OK", 88), ("AMOUNT", 5), ("ALIAS-AMOUNT", 66));
+    }
+
+    [Fact]
     public void ProgramAndCopybookSharingStemRemainDifferentRegistryOwners()
     {
         Directory.CreateDirectory(_root);

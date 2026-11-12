@@ -62,7 +62,7 @@ public sealed class StructuralContextProvider
                     DataStructure = members.Select(m => new RektDataItem
                     {
                         Name = m.CobolName,
-                        Level = 5
+                        Level = m.Level
                     }).ToList()
                 },
                 Notes = "Direct copybook members only; nested COPY expansion and storage-layout equivalence are not measured."

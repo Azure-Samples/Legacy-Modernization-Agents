@@ -145,9 +145,11 @@ public sealed class ChunkConverterProtocolTests : IDisposable
         var file = await agent.ConvertToJavaAsync(new CobolFile
         {
             FileName = "ACCOUNTS.cbl", FilePath = Path.Join(_root, "ACCOUNTS.cbl"),
-            Content = "       PROGRAM-ID. ACCOUNTS.\n       PROCEDURE DIVISION.\n           GOBACK."
+            Content = "       PROGRAM-ID. ACCOUNTS.\n       PROCEDURE DIVISION.\n           MOVE 0 TO FEJL-RESET.\n           GOBACK."
         }, new CobolAnalysis());
         file.Content.Should().Contain("class AccountService");
+        if (dependencyMode == "partial")
+            messages.Where(m => m.Role == ChatRole.User).Single().Text.Should().Contain("FEJL-RESET");
         messages.Where(m => m.Role == ChatRole.System).Single().Text.Should()
             .Contain(dependencyMode == "partial" ? "source-isolated COBOL routines" : "COBOL-to-Java Spring Boot conversion specialist")
             .And.NotContain("Java/Quarkus conversion specialist");

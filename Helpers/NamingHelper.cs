@@ -254,10 +254,153 @@ public static class NamingHelper
         if (genericName == uniqueName)
             return code;
             
-        // Rename identifier tokens, not prefixes or mentions in comments and literals.
-        var pattern = """//[^\r\n]*|/\*[\s\S]*?\*/|""" + "\"\"\"[\\s\\S]*?\"\"\"|\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*'|"
-            + $@"(?<identifier>\b{System.Text.RegularExpressions.Regex.Escape(genericName)}\b)";
-        return System.Text.RegularExpressions.Regex.Replace(code, pattern,
-            match => match.Groups["identifier"].Success ? uniqueName : match.Value);
+        // Rename identifier tokens, not prefixes or mentions in comments and literals. Interpolation
+        // holes are code, so their identifiers are renamed too.
+        var output = new System.Text.StringBuilder(code.Length);
+        var index = 0;
+        RenameCode(code, ref index, output, genericName, uniqueName, inHole: false);
+        return output.ToString();
+    }
+
+    private static void RenameCode(string code, ref int i, System.Text.StringBuilder output,
+        string genericName, string uniqueName, bool inHole)
+    {
+        var depth = 0;
+        while (i < code.Length)
+        {
+            var c = code[i];
+            if (c == '/' && At(code, i + 1, '/'))
+            {
+                var end = code.IndexOf('\n', i);
+                Copy(code, ref i, end < 0 ? code.Length : end, output);
+            }
+            else if (c == '/' && At(code, i + 1, '*'))
+            {
+                var end = code.IndexOf("*/", i + 2, StringComparison.Ordinal);
+                Copy(code, ref i, end < 0 ? code.Length : end + 2, output);
+            }
+            else if (c == '\'')
+            {
+                var end = i + 1;
+                while (end < code.Length && code[end] != '\'' && code[end] != '\n')
+                    end += code[end] == '\\' ? 2 : 1;
+                Copy(code, ref i, Math.Min(end + 1, code.Length), output);
+            }
+            else if (StringPrefix(code, i) is { } prefix)
+                RenameString(code, ref i, prefix, output, genericName, uniqueName);
+            else if (char.IsLetter(c) || c == '_')
+            {
+                var end = i;
+                while (end < code.Length && (char.IsLetterOrDigit(code[end]) || code[end] == '_')) end++;
+                var word = code[i..end];
+                output.Append(word == genericName ? uniqueName : word);
+                i = end;
+            }
+            else if (inHole && depth == 0 && (c == '}' || c == ':'))
+                return;
+            else
+            {
+                if (c is '{' or '(' or '[') depth++;
+                else if (c is '}' or ')' or ']') depth--;
+                output.Append(c);
+                i++;
+            }
+        }
+    }
+
+    // Returns (dollars, verbatim, prefix length) when a string literal starts at i.
+    private static (int Dollars, bool Verbatim, int Length)? StringPrefix(string code, int i)
+    {
+        var start = i;
+        var dollars = 0;
+        var verbatim = false;
+        while (i < code.Length && (code[i] == '$' || code[i] == '@'))
+        {
+            if (code[i] == '$') dollars++; else verbatim = true;
+            i++;
+        }
+        if (!At(code, i, '"') || start > 0 && (char.IsLetterOrDigit(code[start - 1]) || code[start - 1] == '_'))
+            return null;
+        return (dollars, verbatim, i - start);
+    }
+
+    private static void RenameString(string code, ref int i, (int Dollars, bool Verbatim, int Length) prefix,
+        System.Text.StringBuilder output, string genericName, string uniqueName)
+    {
+        Copy(code, ref i, i + prefix.Length, output);
+        var quotes = 0;
+        while (At(code, i + quotes, '"')) quotes++;
+        var raw = quotes >= 3 && !prefix.Verbatim;
+        if (!raw) quotes = 1;
+        if (!raw && quotes == 1 && At(code, i + 1, '"') && !At(code, i + 2, '"'))
+        {
+            Copy(code, ref i, i + 2, output); // empty string ""
+            return;
+        }
+        Copy(code, ref i, i + quotes, output);
+        var holeBraces = raw ? prefix.Dollars : Math.Min(prefix.Dollars, 1);
+        while (i < code.Length)
+        {
+            var c = code[i];
+            if (raw && c == '"' && string.CompareOrdinal(code, i, new string('"', quotes), 0, quotes) == 0)
+            {
+                Copy(code, ref i, i + quotes, output);
+                return;
+            }
+            if (!raw && c == '"')
+            {
+                if (prefix.Verbatim && At(code, i + 1, '"'))
+                {
+                    Copy(code, ref i, i + 2, output);
+                    continue;
+                }
+                Copy(code, ref i, i + 1, output);
+                return;
+            }
+            if (!raw && !prefix.Verbatim && c == '\\')
+            {
+                Copy(code, ref i, Math.Min(i + 2, code.Length), output);
+                continue;
+            }
+            if (holeBraces > 0 && c == '{')
+            {
+                var run = 0;
+                while (At(code, i + run, '{')) run++;
+                if (!raw && run >= 2)
+                {
+                    Copy(code, ref i, i + 2, output); // escaped {{
+                    continue;
+                }
+                if (run < holeBraces)
+                {
+                    Copy(code, ref i, i + run, output);
+                    continue;
+                }
+                Copy(code, ref i, i + run, output);
+                RenameCode(code, ref i, output, genericName, uniqueName, inHole: true);
+                if (At(code, i, ':'))
+                {
+                    var end = code.IndexOf('}', i);
+                    Copy(code, ref i, end < 0 ? code.Length : end, output);
+                }
+                var closing = 0;
+                while (closing < holeBraces && At(code, i, '}'))
+                {
+                    output.Append('}');
+                    i++;
+                    closing++;
+                }
+                continue;
+            }
+            Copy(code, ref i, i + 1, output);
+        }
+    }
+
+    private static bool At(string code, int index, char expected) => index < code.Length && code[index] == expected;
+
+    private static void Copy(string code, ref int i, int end, System.Text.StringBuilder output)
+    {
+        output.Append(code, i, end - i);
+        i = end;
     }
 }

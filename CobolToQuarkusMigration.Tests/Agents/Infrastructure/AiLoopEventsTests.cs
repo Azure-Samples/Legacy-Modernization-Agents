@@ -463,6 +463,20 @@ public sealed class AiLoopEventsTests : IDisposable
     }
 
     [Fact]
+    public void DispatchIsBoundToThePreparedSourceNotTheRequestLabel()
+    {
+        AiLoopEvents.Started(424290, "standard", "Java", Path.Combine(_root, "output", "java"));
+        var id = AiLoopEvents.PreparedContext("Probe", "bank/nested/A.cbl", "projection", "context block");
+        AiLoopEvents.RequestStarted("Probe", "fake", "model", "A.cbl (chunk 2/3)", "system", "prefix context block suffix");
+        AiLoopEvents.RequestStarted("Other", "fake", "model", "A.cbl", "system", "context block");
+
+        var dispatched = Events(424290).Where(e => e.GetProperty("event").GetString() == "context_dispatched")
+            .Should().ContainSingle().Subject;
+        dispatched.GetProperty("contextId").GetString().Should().Be(id);
+        dispatched.GetProperty("file").GetString().Should().Be("bank/nested/A.cbl");
+    }
+
+    [Fact]
     public async Task ARequestBecomesInFlightOnlyAfterTheLimiterAllowsActualDispatch()
     {
         MetricsSink.CurrentRunId = 424252;
