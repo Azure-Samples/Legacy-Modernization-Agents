@@ -181,16 +181,15 @@ not update an already-running process. Do not overwrite its runtime directory. A
 maintenance point, deploy the validated build/static assets together, preserve the repository
 root/configuration, and start the replacement using the normal operator service procedure.
 No scan, JVM, graph mutation or model call is needed to activate or inspect existing history.
-The isolated validation build is under the session's
-`files/unified-activity-validation/bin/McpChatWeb/debug/`; it is not the live
-`ast-gap-live-runtime` directory. An operator-approved replacement can use that directory
-without overwriting the old runtime. From the repository root, with the existing service's
-environment preserved and **only after the operator releases the existing listener**:
+To validate a build without touching the running service, publish it to a separate
+directory first. From the repository root, with the existing service's environment
+preserved and **only after the operator releases the existing listener**:
 
 ```bash
-# Set VALIDATED to the absolute isolated .../unified-activity-validation directory.
 # Do not run against an occupied port or treat this as permission to stop the existing service.
-dotnet "$VALIDATED/bin/McpChatWeb/debug/McpChatWeb.dll" \
+VALIDATED="$(mktemp -d)/mcpchatweb"
+dotnet publish McpChatWeb/McpChatWeb.csproj -c Release -o "$VALIDATED"
+dotnet "$VALIDATED/McpChatWeb.dll" \
   --contentRoot "$PWD/McpChatWeb" --urls http://localhost:5028
 ```
 

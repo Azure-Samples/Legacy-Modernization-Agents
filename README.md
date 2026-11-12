@@ -43,7 +43,7 @@ The portal (`./doctor.sh portal`, http://localhost:5028) shows your estate, what
 >
 > - **Structure view:** expand a section and click a paragraph. The source jumps to it, and the Inspector shows its statement mix (MOVE, IF, PERFORM and so on).
 > - **Raw AST view:** the parser's own nodes. Hover a node for its type, name and parser ID. Click a statement to see the exact COBOL the parser captured, or a paragraph to open its source range.
-> - **Why it matters:** check for parse gaps before you convert. If a statement is not in the AST, the agents never saw it.
+> - **Why it matters:** check for parse gaps before you convert. A statement missing from the AST was not parsed, so structure-based evidence (call graphs, readiness checks, structural context) cannot account for it. The conversion prompt still carries the source text, so a gap is a verification risk rather than proof the model never saw the line.
 >
 > See [AST Explorer](#ast-explorer).
 
@@ -502,7 +502,7 @@ cat output/rekt/missing-copybooks.txt # add these to source/ and run rekt-full a
 > ```bash
 > ./doctor.sh rekt-full --parallel 4            # parse 4 programs at once, then ingest
 > ./doctor.sh rekt-parse --parallel 4           # parse only
-> REKT_PARSE_JOBS=4 ./doctor.sh rekt-full       # same, via environment (or put it in Config/ai-config.local.env)
+> REKT_PARSE_JOBS=4 ./doctor.sh rekt-full       # same, via a shell environment variable
 > ```
 >
 > | Setting | Meaning |
@@ -536,7 +536,7 @@ for provenance, licensing and the distinction from a customer's installed SDK.
 
 CICS screen layouts can be derived from real definitions rather than guessed: if `source/` holds the BMS mapsets (`*.bms`), the parse generates symbolic map copybooks (`<map>I` / `<map>O`) from them. The copybook takes the `.bms` file name, and a real copybook of that name always wins. These generated layouts still require validation; they do not establish complete program parsing or conversion by themselves. Set `REKT_NO_BMS_MAPS=true` to turn this off.
 
-The same BMS parser also writes `source/.preprocessed/bms-screen-definitions.json`: source paths and hashes, map dimensions, field positions, initial text, protection/numeric attributes, and unnamed labels and zero-length attribute boundaries. Named symbolic-copybook fields remain separate from visual fields. Invalid lengths or coordinates produce explicit warnings rather than invented one-byte fields. This manifest can drive a web adapter; having a rendered layout does **not** prove that its COBOL screen program, CICS SEND/RECEIVE operations, transaction navigation, or missing vendor copybooks have been converted.
+The same BMS parser also writes `bms-screen-definitions.json` into each estate's `.preprocessed/` folder (`source/.preprocessed/` for loose root files, `source/<estate>/.preprocessed/` for an estate folder): source paths and hashes, map dimensions, field positions, initial text, protection/numeric attributes, and unnamed labels and zero-length attribute boundaries. Named symbolic-copybook fields remain separate from visual fields. Invalid lengths or coordinates produce explicit warnings rather than invented one-byte fields. This manifest can drive a web adapter; having a rendered layout does **not** prove that its COBOL screen program, CICS SEND/RECEIVE operations, transaction navigation, or missing vendor copybooks have been converted.
 
 Then convert, either everything or a selection:
 
@@ -1201,7 +1201,7 @@ sequenceDiagram
 Large COBOL files (>3,000 lines or >150K characters) are automatically split at semantic boundaries (DIVISION → SECTION → paragraph) and processed with content-aware reasoning effort. A three-tier complexity scoring system analyzes each file's COBOL patterns (EXEC SQL, CICS, REDEFINES, etc.) to dynamically allocate reasoning effort and output tokens — simple files get fast processing while complex files get thorough analysis.
 
 > [!NOTE]
-> **Chunking is fully automatic. You do not choose chunks, sizes or boundaries.** Each file is measured and planned before any model call, so every request stays inside the model's context window.
+> **Chunking is fully automatic. You do not choose chunks, sizes or boundaries.** Each file is measured and planned before any model call to keep requests within the configured line and token budgets. Token counts are estimates, so treat this as a target rather than a hard size guarantee.
 >
 > | Step | What the framework does automatically | Default (`Config/appsettings.json` → `ChunkingSettings`) |
 > |---|---|---|
