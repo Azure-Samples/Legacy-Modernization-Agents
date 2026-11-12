@@ -96,19 +96,16 @@
     return appendMessage('system', text, { kind: kind || 'info' });
   }
 
-  function updateLastAssistantMessage(content, extra = {}) {
-    const conv = getCurrent();
+  // Completes the exact pending message, wherever it lives: the user may switch or start chats
+  // while the request is in flight. A deleted conversation simply drops the answer.
+  function completeMessage(msg, content, extra = {}) {
+    const conv = state.conversations.find(c => (c.messages || []).includes(msg));
     if (!conv) return;
-    for (let i = conv.messages.length - 1; i >= 0; i--) {
-      if (conv.messages[i].role === 'assistant') {
-        conv.messages[i].content = content;
-        Object.assign(conv.messages[i], extra);
-        conv.updatedAt = Date.now();
-        save();
-        renderList(); renderTranscript();
-        return;
-      }
-    }
+    msg.content = content;
+    Object.assign(msg, extra);
+    conv.updatedAt = Date.now();
+    save();
+    renderList(); renderTranscript();
   }
 
   // Earlier answered turns, for follow-up questions. Notices, errors and the pending turn are
@@ -117,6 +114,7 @@
     const conv = getCurrent();
     if (!conv) return [];
     const n = Number.isFinite(limit) ? limit : settings.maxHistoryMessages;
+    if (!(n > 0)) return [];
     return conv.messages
       .filter(m => (m.role === 'user' || m.role === 'assistant') && !m.pending && !m.error && m.content)
       .slice(-n)
@@ -156,7 +154,7 @@
         const preview = ((c.messages || []).find(m => m.role === 'assistant' && !m.pending)?.content || '').slice(0, 80);
         html += `<div class="ch-item${active}" data-id="${esc(c.id)}" title="${esc(c.title)}">
           <div class="ch-item-row">
-            <span class="ch-item-title">${esc(c.title)}</span>
+            <button type="button" class="ch-item-title">${esc(c.title)}</button>
             <button class="ch-item-del" data-del="${esc(c.id)}" title="Delete">✕</button>
           </div>
           ${preview ? `<div class="ch-item-preview">${esc(preview)}</div>` : ''}
@@ -297,7 +295,7 @@
 
   window.ChatHistory = {
     getCurrent, newConversation, selectConversation, deleteConversation,
-    appendMessage, appendSystemNotice, updateLastAssistantMessage, getRecentMessages,
+    appendMessage, appendSystemNotice, completeMessage, getRecentMessages,
     renderTranscript, renderList,
   };
 })();

@@ -175,6 +175,50 @@ public class ReportChatTests : IDisposable
     }
 
     [Fact]
+    public void Only_listed_reports_resolve_and_linked_reports_are_refused()
+    {
+        var report = Path.Combine(_root, "output", "reverse-engineering-details.md");
+        Directory.CreateDirectory(Path.GetDirectoryName(report)!);
+        File.WriteAllText(report, "# re");
+        File.WriteAllText(Path.Combine(_root, "appsettings.json"), "{ \"secret\": 1 }");
+        File.WriteAllText(Path.Combine(_root, "output", "notes.md"), "# not a report");
+        var outside = Path.Combine(Path.GetTempPath(), "lma-outside-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outside);
+        try
+        {
+            File.WriteAllText(Path.Combine(outside, "reverse-engineering-x.md"), "# outside");
+            Directory.CreateSymbolicLink(Path.Combine(_root, "output", "linked"), outside);
+
+            Assert.Equal(Path.GetFullPath(report), ReportCatalog.Resolve(_root, "output/reverse-engineering-details.md"));
+            Assert.Null(ReportCatalog.Resolve(_root, "appsettings.json"));
+            Assert.Null(ReportCatalog.Resolve(_root, "output/notes.md"));
+            Assert.Null(ReportCatalog.Resolve(_root, "output/linked/reverse-engineering-x.md"));
+        }
+        finally
+        {
+            Directory.Delete(outside, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Latest_refuses_a_standard_report_that_is_a_link()
+    {
+        var outside = Path.Combine(Path.GetTempPath(), "lma-outside-" + Guid.NewGuid().ToString("N") + ".md");
+        File.WriteAllText(outside, "# outside");
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(_root, "output"));
+            File.CreateSymbolicLink(Path.Combine(_root, "output", "reverse-engineering-details.md"), outside);
+
+            Assert.Null(ReportCatalog.Resolve(_root, "latest"));
+        }
+        finally
+        {
+            File.Delete(outside);
+        }
+    }
+
+    [Fact]
     public void Paths_outside_the_repository_are_refused()
     {
         Assert.Null(ReportCatalog.Resolve(_root, "../outside.md"));

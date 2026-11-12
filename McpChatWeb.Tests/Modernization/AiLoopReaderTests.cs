@@ -98,6 +98,26 @@ public sealed class AiLoopReaderTests : IDisposable
     }
 
     [Fact]
+    public async Task NativeActivityBoundKeepsTheNewestManifests()
+    {
+        // Twice the bound, so an unordered bound drops some of the newest whatever the directory order.
+        for (var i = 0; i < 1024; i++)
+        {
+            var at = T0.AddMinutes(i);
+            var path = NativeManifest($"scan-{i:D4}", new
+            {
+                schemaVersion = 1, activityKind = "native-rekt", name = $"scan-{i:D4}", startedAt = at,
+                status = "completed", finishedAt = at.AddSeconds(30), logPath = "native.log", programs = Array.Empty<object>()
+            });
+            File.SetLastWriteTimeUtc(path, at);
+        }
+
+        var runs = await Reader().ListRunsAsync(limit: 50);
+
+        Assert.Equal(Enumerable.Range(974, 50).Reverse().Select(i => $"native:scan-{i:D4}"), runs.Select(run => run.ActivityId));
+    }
+
+    [Fact]
     public async Task NativeLogRejectsMalformedManifestTypesWithoutServingCachedSuccess()
     {
         var path = NativeManifest("changed-types", new

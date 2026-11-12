@@ -27,7 +27,7 @@ public sealed class DependencyReadinessCache : IDisposable
             var key = sourceRoot + "\n" + factsRoot;
             if (!_entries.TryGetValue(key, out var entry))
             {
-                entry = Entry.TryCreate(new[] { sourceRoot, factsRoot }.Concat(_extraRoots));
+                entry = Entry.TryCreate([sourceRoot, factsRoot], _extraRoots);
                 if (entry is null) return assess(ct);
                 _entries[key] = entry;
             }
@@ -52,12 +52,15 @@ public sealed class DependencyReadinessCache : IDisposable
         private long _generation;
         private (Task<DependencyReadiness> Task, long Generation, DateTime StartedAt)? _current;
 
-        public static Entry? TryCreate(IEnumerable<string> roots)
+        // Every required root must be watchable: one created later (output/rekt after a first scan)
+        // raises no event on its parent's watchers, so caching without it could serve stale readiness.
+        public static Entry? TryCreate(IReadOnlyList<string> requiredRoots, IEnumerable<string> optionalRoots)
         {
+            if (requiredRoots.Any(root => !Directory.Exists(root))) return null;
             var entry = new Entry();
             try
             {
-                foreach (var root in roots.Select(Path.GetFullPath).Distinct(StringComparer.Ordinal))
+                foreach (var root in requiredRoots.Concat(optionalRoots).Select(Path.GetFullPath).Distinct(StringComparer.Ordinal))
                 {
                     if (!Directory.Exists(root)) continue;
                     var watcher = new FileSystemWatcher(root)
@@ -81,11 +84,8 @@ public sealed class DependencyReadinessCache : IDisposable
                 entry.Dispose();
                 return null;
             }
-            // The source and facts roots must be watched, or a change there could go unnoticed.
-            return entry._watchers.Count >= 2 ? entry : Disposed(entry);
+            return entry;
         }
-
-        private static Entry? Disposed(Entry entry) { entry.Dispose(); return null; }
 
         private void Invalidate(object sender, FileSystemEventArgs e) => Interlocked.Increment(ref _generation);
 

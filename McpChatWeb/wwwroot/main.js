@@ -226,9 +226,10 @@ async function handleChatSubmit(event) {
     : null;
   // History is the conversation before this question; read it before the question is appended.
   const history = window.ChatHistory ? window.ChatHistory.getRecentMessages() : [];
+  let pendingAnswer = null;
   if (window.ChatHistory) {
     window.ChatHistory.appendMessage('user', prompt, { scope, scopeLabel });
-    window.ChatHistory.appendMessage('assistant', '', { pending: true, scope, scopeLabel });
+    pendingAnswer = window.ChatHistory.appendMessage('assistant', '', { pending: true, scope, scopeLabel });
     promptInput.value = '';
   }
 
@@ -278,7 +279,7 @@ async function handleChatSubmit(event) {
     renderMcpVisual(payload.model, payload.isMcpCall);
 
     if (window.ChatHistory) {
-      window.ChatHistory.updateLastAssistantMessage(payload.response ?? 'No content returned.', {
+      window.ChatHistory.completeMessage(pendingAnswer, payload.response ?? 'No content returned.', {
         pending: false, model: payload.model, runId: payload.runId, scope, scopeLabel
       });
     } else {
@@ -297,7 +298,7 @@ async function handleChatSubmit(event) {
     }
   } catch (err) {
     if (window.ChatHistory) {
-      window.ChatHistory.updateLastAssistantMessage(`❌ ${err.message}`, { pending: false, error: true });
+      window.ChatHistory.completeMessage(pendingAnswer, `❌ ${err.message}`, { pending: false, error: true });
     } else {
       responseBody.textContent = `❌ Chat Error\n\n${err.message}`;
       responseCard.hidden = false;

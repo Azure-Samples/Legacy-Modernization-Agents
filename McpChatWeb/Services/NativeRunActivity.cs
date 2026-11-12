@@ -92,7 +92,14 @@ public sealed partial class AiLoopReader
             var result = new List<AiLoopRunDetail>();
             var seen = new HashSet<string>();
             long bytesRead = 0;
-            foreach (var directory in Directory.EnumerateDirectories(root).Take(512))
+            // Bound the newest manifests, so a scan started after many older ones is never dropped.
+            var newest = Directory.EnumerateDirectories(root)
+                .Select(directory => (Directory: directory, Write: File.GetLastWriteTimeUtc(Path.Join(directory, "scan.json"))))
+                .OrderByDescending(candidate => candidate.Write)
+                .ThenBy(candidate => candidate.Directory, StringComparer.Ordinal)
+                .Take(512)
+                .Select(candidate => candidate.Directory);
+            foreach (var directory in newest)
             {
                 var path = Path.Join(directory, "scan.json");
                 seen.Add(path);

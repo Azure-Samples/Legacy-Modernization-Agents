@@ -306,6 +306,12 @@ class ProgramPickerView {
 
   // Expanding the closure needs each selected program's reachable set, which only the
   // detail endpoint carries. Fetched on demand so the list view stays one request.
+  // A selection assessment covers only the requested programs; keep every other program's plan.
+  mergeAssessment(assessment) {
+    for (const plan of assessment.programs || []) this.dependencyPlans.set(plan.program, plan);
+    this.readiness = { ...assessment, programs: [...this.dependencyPlans.values()] };
+  }
+
   async resolveSelection() {
     const revision = this.readinessRevision;
     const chosen = Array.from(this.selected);
@@ -447,9 +453,9 @@ class ProgramPickerView {
           targetLanguage: this.language === 'java' ? 'Java' : 'CSharp', dependencyMode: 'strict',
           sourceFolder: this.readiness?.sourceFolder
         };
-        this.readiness = await window.ConversionReadiness.read(request);
-        this.dependencyPlans = new Map(this.readiness.programs.map(p => [p.program, p]));
-        if (window.ConversionReadiness.allows(this.readiness)
+        const assessment = await window.ConversionReadiness.read(request);
+        this.mergeAssessment(assessment);
+        if (window.ConversionReadiness.allows(assessment)
             && !await window.ConversionReadiness.reviewPrompts(request)) return;
         await this.renderCommand();
       } catch (error) {

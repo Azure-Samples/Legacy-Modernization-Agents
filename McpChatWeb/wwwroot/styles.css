@@ -8385,6 +8385,7 @@ main.three-panel-layout {
 .ch-item-active:hover { background: rgba(59, 130, 246, 0.22); }
 .ch-item-row { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
 .ch-item-title {
+  background: none; border: 0; padding: 0; text-align: left; cursor: pointer; font-family: inherit;
   color: #e2e8f0; font-size: 12px; font-weight: 500;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1;
 }

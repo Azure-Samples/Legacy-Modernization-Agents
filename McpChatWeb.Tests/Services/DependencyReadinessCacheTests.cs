@@ -70,4 +70,17 @@ public sealed class DependencyReadinessCacheTests : IDisposable
 
         Assert.Equal(2, _assessments);
     }
+
+    [Fact]
+    public async Task An_extra_watched_root_does_not_stand_in_for_a_missing_facts_root()
+    {
+        var tools = Directory.CreateDirectory(Path.Combine(_root, "tools")).FullName;
+        using var cache = new DependencyReadinessCache([tools]);
+        var missing = Path.Combine(_root, "absent");
+        await cache.GetAsync(_source, missing, Assess);
+        Directory.CreateDirectory(missing);
+        await cache.GetAsync(_source, missing, Assess);
+
+        Assert.Equal(2, _assessments);
+    }
 }

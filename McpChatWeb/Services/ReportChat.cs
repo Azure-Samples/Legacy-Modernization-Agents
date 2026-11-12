@@ -94,15 +94,37 @@ public static class ReportCatalog
         ?? reports.FirstOrDefault();
 
     // The requested report, or the latest one when the caller asks for "latest" (issue #29's default).
+    // Only a listed report qualifies, so a browser-supplied path cannot send configuration or other
+    // repository files to the model, and no component may be a link that leaves the repository.
     public static string? Resolve(string repoRoot, string? requested)
     {
         if (string.IsNullOrWhiteSpace(requested)) return null;
+        var reports = List(repoRoot);
+        ReportFileInfo? report;
         if (string.Equals(requested.Trim(), LatestSentinel, StringComparison.OrdinalIgnoreCase))
+            report = Latest(reports);
+        else
         {
-            var latest = Latest(List(repoRoot));
-            return latest is null ? null : Path.GetFullPath(Path.Combine(repoRoot, latest.Path));
+            var path = RepositoryPath.ResolveInside(repoRoot, requested);
+            if (path is null) return null;
+            var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+            report = reports.FirstOrDefault(r => string.Equals(
+                Path.GetFullPath(Path.Combine(repoRoot, r.Path)), path, comparison));
         }
-        return RepositoryPath.ResolveInside(repoRoot, requested);
+        if (report is null) return null;
+        var full = Path.GetFullPath(Path.Combine(repoRoot, report.Path));
+        return HasLinkedComponent(repoRoot, full) ? null : full;
+    }
+
+    private static bool HasLinkedComponent(string repoRoot, string fullPath)
+    {
+        var root = Path.GetFullPath(repoRoot);
+        for (var current = fullPath; current.Length > root.Length; current = Path.GetDirectoryName(current)!)
+        {
+            FileSystemInfo info = File.Exists(current) ? new FileInfo(current) : new DirectoryInfo(current);
+            if (info.LinkTarget is not null) return true;
+        }
+        return false;
     }
 }
 

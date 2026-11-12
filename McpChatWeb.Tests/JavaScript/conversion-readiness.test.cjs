@@ -220,6 +220,19 @@ for (const [file, className, loadMethod, rowMethod] of [
   });
 }
 
+test('ProgramPickerView keeps unselected programs\' readiness after assessing a selection', () => {
+  const f = fixture();
+  vm.runInContext(readFileSync(join(__dirname, '../../McpChatWeb/wwwroot/program-picker.js'), 'utf8'), f.context);
+  const view = new f.window.ProgramPickerView('root');
+  view.dependencyPlans.set('A.cbl', { program: 'A.cbl', status: 'eligible' });
+  view.dependencyPlans.set('B.cbl', { program: 'B.cbl', status: 'eligible' });
+  view.mergeAssessment({ sourceFolder: '/src', programs: [{ program: 'A.cbl', status: 'blocked' }] });
+  assert.equal(view.dependencyPlans.get('A.cbl').status, 'blocked');
+  assert.equal(view.dependencyPlans.get('B.cbl').status, 'eligible');
+  assert.equal(view.readiness.sourceFolder, '/src');
+  assert.equal(view.readiness.programs.length, 2);
+});
+
 test('Mission Control blocks missing evidence, honours prompt cancellation and prevents duplicate launch while reviewing', async () => {
   for (const mode of ['blocked', 'cancel', 'continue']) {
     const f = fixture(url => reply(url === '/api/runs/readiness'
