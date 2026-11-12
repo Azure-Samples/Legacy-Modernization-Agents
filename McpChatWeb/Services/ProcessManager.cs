@@ -394,13 +394,16 @@ public class ProcessManager : IDisposable
                 throw new ArgumentException("Source folder must not contain path traversal sequences.");
             if (!SafePathPattern.IsMatch(sourceFolder))
                 throw new ArgumentException("Source folder contains disallowed characters. Only alphanumeric, dash, underscore, dot, and forward slash are permitted.");
-            var resolvedPath = Path.GetFullPath(Path.Combine(_repoRoot, sourceFolder));
-            if (!resolvedPath.StartsWith(_repoRoot + Path.DirectorySeparatorChar) && resolvedPath != _repoRoot)
-                throw new ArgumentException("Source folder must resolve to a path within the repository root.");
         }
-        if (!Directory.Exists(Path.Combine(_repoRoot, sourceFolder ?? "source")))
+        // Return the exact path that passed the containment check, never a recomputed one.
+        var resolvedPath = Path.GetFullPath(Path.Combine(_repoRoot, sourceFolder ?? "source"));
+        if (resolvedPath == _repoRoot)
+            return _repoRoot;
+        if (!resolvedPath.StartsWith(_repoRoot + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+            throw new ArgumentException("Source folder must resolve to a path within the repository root.");
+        if (!Directory.Exists(resolvedPath))
             throw new ArgumentException("Source folder does not exist.");
-        return Path.GetFullPath(Path.Combine(_repoRoot, sourceFolder ?? "source"));
+        return resolvedPath;
     }
 
     private string ResolveFactsRoot(string? factsFolder)
