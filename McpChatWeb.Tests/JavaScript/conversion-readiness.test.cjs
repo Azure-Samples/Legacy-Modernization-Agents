@@ -74,7 +74,7 @@ test('blocker rendering escapes diagnostics and does not equate parsing or evide
   assert.match(html, /dep-check-location/);
   assert.match(html, /Parsed structure is not dependency readiness/);
   assert.match(html, /not proof of equivalent/);
-  assert.doesNotMatch(html, /<img>|<script>/);
+  assert.doesNotMatch(html, /<img>|<script>/i);
 });
 
 test('selected assessment sends exact paths and artifact binding without caching; errors cannot authorise launch', async () => {

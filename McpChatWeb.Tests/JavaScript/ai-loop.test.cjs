@@ -113,7 +113,7 @@ test('native log fetch is expansion/visibility gated and late responses cannot c
       await f.view.refreshNativeLog();
       const initial = f.view.renderNativeLogBody('native-test');
       assert.match(initial, /&lt;script&gt;compiler&lt;\/script&gt;/);
-      assert.doesNotMatch(initial, /\x1b|<script>/);
+      assert.doesNotMatch(initial, /\x1b|<script>/i);
       assert.match(initial, /truncated tail/);
       failed = true;
       await f.view.refreshNativeLog();
