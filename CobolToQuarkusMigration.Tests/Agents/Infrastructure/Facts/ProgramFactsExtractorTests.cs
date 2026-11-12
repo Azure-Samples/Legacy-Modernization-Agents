@@ -276,6 +276,113 @@ public sealed class ProgramFactsExtractorTests : IDisposable
         cFacts.Callers.Should().Equal("B.cbl");
     }
 
+    [Fact]
+    public async Task ExtractAllAsync_DoesNotRecordADynamicCallOperandAsACaller()
+    {
+        var staging = Path.Combine(_root, "staging");
+        var rektDir = Path.Combine(_root, "rekt");
+        Directory.CreateDirectory(staging);
+        Directory.CreateDirectory(rektDir);
+        File.WriteAllText(Path.Combine(staging, "A.cbl"), "           CALL WS-PGM.");
+        File.WriteAllText(Path.Combine(staging, "WS-PGM.cbl"), "           STOP RUN.");
+        File.WriteAllText(Path.Combine(rektDir, "flow-ast-A.cbl.json"), """
+            {"type":"PROCEDURE_DIVISION_BODY","name":"body","children":[
+              {"type":"PARAGRAPH","name":"MAIN","children":[
+                {"type":"CALL","name":"CALLWS-PGM","originalText":"CALL WS-PGM"}]}]}
+            """);
+        var output = Path.Combine(_root, "facts");
+        await new ProgramFactsExtractor(_root, staging, rektDir).ExtractAllAsync(["A.cbl", "WS-PGM.cbl"], output);
+
+        ProgramFactsArtifactLocator.TryLoad(output, "A.cbl")!.Callees.Should().BeEmpty();
+        ProgramFactsArtifactLocator.TryLoad(output, "WS-PGM.cbl")!.Callers.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void RequireVerified_MatchesAResolvedDynamicCallByItsProvedTarget()
+    {
+        var staging = Path.Combine(_root, "staging");
+        Directory.CreateDirectory(staging);
+        var content = "           CALL LIT-DSNTIAC USING SQLCA.";
+        var path = Path.Combine(staging, "A.cbl");
+        File.WriteAllText(path, content);
+        object Entry(params string[] tokens) => new
+        {
+            rule = "DataDescriptionEntryFormat1Context", children = tokens.Select(token => new { token }).ToArray()
+        };
+        var parameters = new[] { "eib", "commarea", "sqlca", "message", "lrecl" }
+            .Select(name => new { name, passing = "BY REFERENCE", direction = "in", representation = name }).ToArray();
+        var definition = new
+        {
+            kind = "documented-platform-service", platform = "IBM Db2 for z/OS", parameters,
+            documentation = new[] { "https://www.ibm.com/docs/en/db2-for-zos/13.0.0?topic=statements-handling-sql-error-codes-in-cobol-applications" }
+        };
+        var profilePath = Path.Combine(_root, "profile.json");
+        File.WriteAllText(profilePath, System.Text.Json.JsonSerializer.Serialize(new
+        {
+            schemaVersion = 1, profileKind = "target-port", profileName = "test-v1",
+            runtimeContracts = new { DSNTIAC = definition }
+        }));
+        var profileHash = DependencyEvidenceFixture.Hash(profilePath);
+        var evidence = DependencyEvidenceFixture.Write(_root, staging, "A.cbl", new DependencyDefinition
+        {
+            Kind = "RUNTIME_CONTRACT", Name = "DSNTIAC", Path = profilePath, Sha256 = profileHash
+        });
+        var runtime = new
+        {
+            dependencyKind = "EXTERNAL_RUNTIME", runtimeContractBindingComplete = true, dependencyAnalysisComplete = false,
+            sourcePath = (string?)null, sourceSha256 = (string?)null, dependencies = Array.Empty<object>(),
+            callTarget = new { name = "DSNTIAC", programReferenceType = "STATIC" },
+            runtimeContract = new
+            {
+                profileName = "test-v1", profileKind = "target-port", sourcePath = profilePath, sourceSha256 = profileHash,
+                name = "DSNTIAC", resolutionKind = "documented-platform-contract", runtimeMapping = "unverified",
+                definition,
+                targetResolution = new
+                {
+                    operand = "LIT-DSNTIAC",
+                    targetResolution = new
+                    {
+                        kind = "immutable-working-storage-literal", operand = "LIT-DSNTIAC",
+                        definitionSyntax = Entry("05", "LIT-DSNTIAC", "PIC", "X(7)", "VALUE", "'DSNTIAC'", "."),
+                        ancestorSyntax = new[] { Entry("01", "WS-LITERALS", ".") },
+                        usageProof = "single-native-program:read-only-constant-references"
+                    },
+                    callSyntax = new
+                    {
+                        rule = "CallStatementContext",
+                        children = new[] { "CALL", "LIT-DSNTIAC", "USING", "SQLCA" }.Select(token => new { token }).ToArray()
+                    }
+                }
+            }
+        };
+        DependencyEvidenceFixture.BindExport(_root, evidence, System.Text.Json.JsonSerializer.Serialize(new
+        {
+            callTarget = new { name = "A.cbl" }, dependencies = new[] { runtime }
+        }));
+        var file = new CobolFile { FileName = "A.cbl", FilePath = path, Content = content };
+
+        new DependencyEvidenceGate(Path.Combine(_root, "output", "rekt")).RequireVerified([file], staging)
+            .Dependencies.Should().ContainSingle().Which.TargetFile.Should().Be("DSNTIAC");
+    }
+
+    [Theory]
+    [InlineData("""{"callTarget":{"name":"A.cbl"},"dependencies":[{"dependencyKind":"CALL","callTarget":"B"}]}""")]
+    [InlineData("""{"callTarget":{"name":"A.cbl"},"dependencies":[{"dependencyKind":"CALL"}]}""")]
+    [InlineData("""{"callTarget":{"name":"A.cbl"},"dependencies":[{"dependencyKind":7,"callTarget":{"name":"B"}}]}""")]
+    public void RequireVerified_ReportsAMalformedExportAsAProgramIssue(string export)
+    {
+        var staging = Path.Combine(_root, "staging");
+        Directory.CreateDirectory(staging);
+        var path = Path.Combine(staging, "A.cbl");
+        File.WriteAllText(path, "           STOP RUN.");
+        DependencyEvidenceFixture.BindExport(_root, DependencyEvidenceFixture.Write(_root, staging, "A.cbl"), export);
+        var file = new CobolFile { FileName = "A.cbl", FilePath = path, Content = "           STOP RUN." };
+
+        var act = () => new DependencyEvidenceGate(Path.Combine(_root, "output", "rekt")).RequireVerified([file], staging);
+
+        act.Should().Throw<InvalidDataException>().WithMessage("*A.cbl: dependency evidence unreadable or invalid*");
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_root))

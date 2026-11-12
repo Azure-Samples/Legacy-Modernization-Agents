@@ -311,7 +311,7 @@ public sealed class ProgramFactsExtractor
         foreach (var caller in programRelativePaths)
         {
             var ctx = loader.Load(caller, sourceFolder);
-            foreach (var callee in ctx.CallTargets)
+            foreach (var callee in ctx.CallTargets.Where(c => !c.IsDynamic))
             {
                 var rawTarget = callee.TargetProgram;
                 if (string.IsNullOrEmpty(rawTarget)) continue;

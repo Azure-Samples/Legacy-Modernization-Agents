@@ -177,7 +177,8 @@ public sealed partial class DependencyEvidenceGate(string factsDirectory)
                 }
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException
-                                      or InvalidDataException or ArgumentException or NullReferenceException)
+                                      or InvalidDataException or ArgumentException or NullReferenceException
+                                      or KeyNotFoundException or InvalidOperationException or FormatException)
             {
                 issues.Add($"{identity}: dependency evidence unreadable or invalid: {ex.Message}");
             }
@@ -412,12 +413,16 @@ public sealed partial class DependencyEvidenceGate(string factsDirectory)
             }
             else if (keyword == "CALL")
             {
-                // A dynamic operand passes only with a verified constant proof on an exported runtime leaf.
-                if (!operand.IsLiteral && !runtimeRequirements.Any(requirement => requirement.Kind == "EXTERNAL_RUNTIME"
+                // A dynamic operand passes only with a verified constant proof on an exported runtime leaf,
+                // and the export must then carry the resolved program, not the data name.
+                var resolved = operand.IsLiteral ? operand.Text : runtimeRequirements.FirstOrDefault(requirement =>
+                        requirement.Kind == "EXTERNAL_RUNTIME"
                         && requirement.Evidence.TryGetProperty("targetResolution", out var resolution)
-                        && string.Equals(Text(resolution, "operand"), operand.Text, StringComparison.OrdinalIgnoreCase)))
+                        && string.Equals(Text(resolution, "operand"), operand.Text, StringComparison.OrdinalIgnoreCase))
+                    ?.Operation;
+                if (resolved is null)
                     issues.Add($"{identity}: dynamic CALL target remains unresolved; no target was invented.");
-                else if (!export.Any(edge => edge.Kind == "CALL" && SameTarget(edge.Name, operand.Text)))
+                else if (!export.Any(edge => edge.Kind == "CALL" && SameTarget(edge.Name, resolved)))
                     issues.Add($"{identity}: source CALL {operand.Text} contradicts the dependency export; no scanner edge substituted.");
             }
 
