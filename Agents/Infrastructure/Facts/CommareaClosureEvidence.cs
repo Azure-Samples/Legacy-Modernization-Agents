@@ -47,13 +47,21 @@ public sealed partial class DependencyEvidenceGate
             || participants.ValueKind != JsonValueKind.Array)
             return "closure is malformed or records errors";
 
-        var estateRoot = Path.Combine(Path.GetFullPath(sourceRoot), estate);
+        // The estate comes from evidence, so it must be one ordinary folder name inside the source root.
+        var root = Path.GetFullPath(sourceRoot);
+        var segment = Path.GetFileName(estate);
+        if (string.IsNullOrEmpty(segment) || segment != estate || segment is "." or ".."
+            || segment.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            return "closure estate is not a single source folder name";
+        var estateRoot = Path.GetFullPath(Path.Combine(root, segment));
+        if (!estateRoot.StartsWith(Path.TrimEndingDirectorySeparator(root) + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+            return "closure estate is outside the source root";
         var current = Directory.Exists(estateRoot)
             ? Directory.EnumerateFiles(estateRoot, "*", SearchOption.AllDirectories)
                 .Where(path => Path.GetExtension(path).ToLowerInvariant() is ".cbl" or ".cob"
                     && !Path.GetRelativePath(estateRoot, path).Split('/', '\\').Any(part => part.StartsWith('.')))
                 .ToDictionary(path => SourcePathHelper.NormalizeRelativePath(
-                    Path.GetRelativePath(Path.GetFullPath(sourceRoot), path)), path => path, StringComparer.Ordinal)
+                    Path.GetRelativePath(root, path)), path => path, StringComparer.Ordinal)
             : new Dictionary<string, string>(StringComparer.Ordinal);
         var recorded = participants.EnumerateArray().Select(participant => Text(participant, "relativePath")).ToList();
         if (recorded.Any(path => path is null) || recorded.Count != current.Count
