@@ -57,8 +57,8 @@ empty JCL subset. Direct `jcl-facts` calls reject zero jobs unless that option i
 explicitly supplied; configured JCL libraries must contain a job.
 
 JCL evidence is retained across failed extraction instead of broadly deleting
-`output/rekt/`. `.jcl-scan-failed` marks incomplete refreshes; both `rekt-ingest` and
-the Python ingestion consumer refuse them before writing graph data. Fix the input
+`output/rekt/`. `.jcl-scan-failed` marks incomplete refreshes; `rekt-ingest` (the .NET
+`graph-ingest` command) refuses them before writing graph data. Fix the input
 and rerun `rekt-parse`/`rekt-full` (or `jcl-facts`) to refresh successfully. Do not
 remove the marker to present old evidence as current. Other retained artifacts are
 not removed by the JCL-only path; COBOL full scans retain their existing COBOL cleanup.

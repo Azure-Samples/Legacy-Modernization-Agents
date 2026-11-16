@@ -35,7 +35,7 @@ Change an expected value only when the intended contract changed or the old expe
 - Before starting a web test host, replace storage paths, AI/client creation, subprocess launching, and startup maintenance with isolated or controlled dependencies. Replacing only `IMcpClient` is insufficient. Do not run the existing `McpChatWeb.Tests` host against a configured checkout until these boundaries are isolated.
 - Use unique temporary directories/databases owned by each test and clean up only those resources. Do not use fixed repository-relative fixture directories or broad process-name cleanup.
 - Exercise persistence against temporary stores initialized with production schema code where possible. Do not maintain independent SQL copies that can drift or introduce obsolete tables.
-- Restore environment variables, static state, and Python module substitutions after each case. Scope fakes to fixtures; do not install process-global fake modules at import time.
+- Restore environment variables and static state after each case. Scope fakes to fixtures; do not install process-global fakes in static initializers.
 - Prefer injected clocks, explicit completion signals, and controlled response ordering over sleeps or real rate-limit waits. Bound asynchronous work and dispose processes, watchers, and clients.
 - Keep tests parallel-safe. If unavoidable shared state requires serialization, scope it narrowly and explain why.
 - Keep live-provider/database/container tests explicitly opt-in, separately configured, and excluded from normal isolated runs. Do not hide ordinary regressions behind opt-in markers.

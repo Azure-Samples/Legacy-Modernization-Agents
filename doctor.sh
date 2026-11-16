@@ -111,36 +111,6 @@ detect_dotnet_cli() {
 }
 
 DOTNET_CMD="$(detect_dotnet_cli)"
-# Accept a Python only if it runs. On Windows, `python`/`python3` on PATH can be the
-# WindowsApps "App execution alias" stub, which prints a Microsoft Store prompt instead of
-# running anything and would silently corrupt every parse that assumes real Python ran.
-verify_python_candidate() {
-    local candidate="$1"
-    command -v "$candidate" >/dev/null 2>&1 || return 1
-    [[ "$("$candidate" -c 'import sys; sys.stdout.write("ok")' 2>/dev/null)" == "ok" ]]
-}
-
-detect_python() {
-    if verify_python_candidate python3; then
-        echo python3
-        return
-    fi
-
-    if verify_python_candidate python; then
-        echo python
-        return
-    fi
-
-    echo ""
-}
-
-PYTHON_CMD="$(detect_python)"
-
-# Windows Python defaults to the ANSI code page for files and pipes, which fails on the
-# non-ASCII text in COBOL comments and in our own output.
-case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) export PYTHONUTF8=1 ;;
-esac
 
 # The Copilot SDK package downloads its own Copilot CLI from the npm registry on the first
 # build. Where a proxy, firewall or VPN blocks the registry, every build fails with MSB3923
@@ -2808,6 +2778,24 @@ lma_cli() {
     "${DOTNET_CMD:-dotnet}" "$_LMA_CLI_ASSEMBLY" "$@"
 }
 
+# Random version-4 UUID as 32 lowercase hex digits. Git Bash for Windows may lack
+# both /proc/sys/kernel/random/uuid and uuidgen, so /dev/urandom is the fallback.
+new_run_identity() {
+    local id=""
+    if [[ -r /proc/sys/kernel/random/uuid ]]; then
+        id=$(cat /proc/sys/kernel/random/uuid 2>/dev/null)
+    elif command -v uuidgen >/dev/null 2>&1; then
+        id=$(uuidgen 2>/dev/null)
+    fi
+    id=$(printf '%s' "$id" | tr -d '-' | tr 'A-F' 'a-f')
+    if [[ ! "$id" =~ ^[0-9a-f]{32}$ ]]; then
+        id=$(od -An -tx1 -N16 /dev/urandom 2>/dev/null | tr -d ' \n')
+        [[ "$id" =~ ^[0-9a-f]{32}$ ]] || return 1
+        id="${id:0:12}4${id:13:3}$(printf '%x' $(( (16#${id:16:1} & 3) | 8 )))${id:17}"
+    fi
+    printf '%s\n' "$id"
+}
+
 ensure_rekt_containers() {
     detect_docker_api_version
     echo -e "${BLUE}🔧 Ensuring rekt containers are running...${NC}"
@@ -3252,70 +3240,7 @@ run_rekt_parse_impl() {
     if [[ -n "${_REKT_PROGRAM_FILTER:-}" ]]; then
         rekt_filter_active=true
         local filter_resolution_output=""
-        if ! filter_resolution_output=$("$PYTHON_CMD" - "$rekt_programs_file" "$_REKT_PROGRAM_FILTER" <<'PYEOF'
-import os, sys
-from collections import defaultdict
-
-with open(sys.argv[1], encoding='utf-8') as handle:
-    programs = [line.strip() for line in handle if line.strip()]
-selectors = sys.argv[2]
-
-exact = {p.lower(): p for p in programs}
-by_basename = defaultdict(list)
-by_stem = defaultdict(list)
-for rel in programs:
-    basename = os.path.basename(rel)
-    by_basename[basename.lower()].append(rel)
-    by_stem[os.path.splitext(basename)[0].lower()].append(rel)
-
-resolved = []
-for raw in selectors.split(','):
-    selector = raw.strip()
-    if not selector:
-        continue
-    normalized = selector.replace('\\', '/').lstrip('./').lstrip('/')
-    match = exact.get(normalized.lower())
-    if match:
-        if match not in resolved:
-            resolved.append(match)
-        continue
-
-    basename_matches = by_basename.get(os.path.basename(normalized).lower(), [])
-    if len(basename_matches) == 1:
-        match = basename_matches[0]
-        if match not in resolved:
-            resolved.append(match)
-        continue
-    if len(basename_matches) > 1:
-        print(
-            "Program selector '%s' matched multiple programs by basename: %s. Use a source-relative path."
-            % (selector, ", ".join(sorted(basename_matches)))
-        )
-        sys.exit(1)
-
-    stem_matches = by_stem.get(os.path.splitext(os.path.basename(normalized))[0].lower(), [])
-    if len(stem_matches) == 1:
-        match = stem_matches[0]
-        if match not in resolved:
-            resolved.append(match)
-        continue
-    if len(stem_matches) > 1:
-        print(
-            "Program selector '%s' matched multiple programs by stem: %s. Use a source-relative path."
-            % (selector, ", ".join(sorted(stem_matches)))
-        )
-        sys.exit(1)
-
-    print("Program selector '%s' did not match any program." % selector)
-    sys.exit(1)
-
-if not resolved:
-    print("Program filter did not resolve to any programs.")
-    sys.exit(1)
-
-print("\n".join(resolved))
-PYEOF
-); then
+        if ! filter_resolution_output=$(printf '%s' "$_REKT_PROGRAM_FILTER" | lma_cli doctor-report program-filter "$rekt_programs_file"); then
             echo -e "${RED}❌ Invalid _REKT_PROGRAM_FILTER.${NC}"
             while IFS= read -r line; do
                 [[ -z "$line" ]] && continue
@@ -3349,19 +3274,7 @@ PYEOF
 
     # The scan cache is keyed by basename, so duplicates are checked across all estates.
     local program_duplicates_output
-    program_duplicates_output=$("$PYTHON_CMD" - "$rekt_programs_file" <<'PYEOF'
-import os, sys
-from collections import defaultdict
-paths = defaultdict(list)
-for line in open(sys.argv[1], encoding='utf-8'):
-    rel = line.strip()
-    if rel:
-        paths[os.path.basename(rel).lower()].append(rel)
-for name, rels in sorted(paths.items()):
-    if len(rels) > 1:
-        print("\t".join(["program-duplicate", name] + rels))
-PYEOF
-)
+    program_duplicates_output=$(lma_cli doctor-report program-duplicates "$rekt_programs_file")
     local duplicate_program_basenames=""
     while IFS=$'\t' read -r issue basename _paths; do
         if [[ "$issue" == "program-duplicate" ]]; then
@@ -3385,7 +3298,7 @@ PYEOF
     fi
     mkdir -p "$staging_base"
     local parser_run_identity
-    parser_run_identity=$("$PYTHON_CMD" -c 'import uuid; print(uuid.uuid4().hex)') || return 1
+    parser_run_identity=$(new_run_identity) || return 1
 
     local estate estate_dir estate_staging preprocessed_dir estate_top_only
     local -a estate_find=()
@@ -3584,93 +3497,12 @@ PYEOF
     # Report missing copybooks before parsing so reduced coverage is explicit.
     local missing_report="$REPO_ROOT/output/rekt/missing-copybooks.txt"
     mkdir -p "$REPO_ROOT/output/rekt"
-    "$PYTHON_CMD" - "$staging_base" "$missing_report" >/dev/null 2>&1 <<'PYEOF' || true
-import os, re, sys
-from collections import defaultdict
-
-staging_base = sys.argv[1]
-report_path = sys.argv[2]
-
-# Match COPY / -COPY directives in non-comment lines.
-# Handles: COPY NAME., COPY 'NAME'., COPY NAME REPLACING ...
-copy_pat = re.compile(
-    r"^[^*]{0,6}[^*\n].*?\bCOPY\s+['\"]?([A-Z][A-Z0-9_-]*)['\"]?",
-    re.IGNORECASE,
-)
-
-referenced_by = defaultdict(set)  # copybook_name → set(referencing_files)
-# COPY resolves only within the program's own estate staging directory.
-for estate in sorted(os.listdir(staging_base)):
-    staging_dir = os.path.join(staging_base, estate)
-    if not os.path.isdir(staging_dir):
-        continue
-    # Names that exist in staging only because a placeholder was synthesised for them would
-    # otherwise be reported as present precisely because they were missing.
-    stubs_path = os.path.join(staging_dir, '.generated-stubs')
-    synthesised = set()
-    if os.path.exists(stubs_path):
-        with open(stubs_path, encoding='utf-8') as handle:
-            synthesised = {line.strip().upper() for line in handle if line.strip()}
-    available = set()
-    staged_sources = []
-    for root, _, files in os.walk(staging_dir):
-        for name in files:
-            stem, ext = os.path.splitext(name)
-            if ext.lower() == '.cpy':
-                available.add(stem.upper())
-            if name.lower().endswith(('.cbl', '.cob', '.cpy')):
-                path = os.path.join(root, name)
-                rel = os.path.relpath(path, staging_dir).replace(os.sep, '/')
-                staged_sources.append((rel, path))
-    available -= synthesised
-
-    for rel_name, path in sorted(staged_sources):
-        try:
-            with open(path, 'r', encoding='latin-1') as f:
-                for line in f:
-                    # Skip comments (col 7 = '*') and lines too short
-                    if len(line) > 6 and line[6] == '*':
-                        continue
-                    m = copy_pat.match(line.rstrip())
-                    if m:
-                        cpy = m.group(1).upper()
-                        if cpy not in available:
-                            referenced_by[cpy].add(rel_name)
-        except OSError:
-            continue
-
-if not referenced_by:
-    # Truncate the report so stale entries don't linger.
-    open(report_path, 'w').close()
-    sys.exit(0)
-
-with open(report_path, 'w', encoding='utf-8') as out:
-    out.write('# Missing copybooks referenced by staged sources\n')
-    out.write('# These COPY targets were not found in source/. The parser will\n')
-    out.write('# still attempt the file but may emit MISSING_COPYBOOK errors and\n')
-    out.write('# produce reduced AST/data coverage for affected programs.\n\n')
-    for cpy in sorted(referenced_by):
-        refs = ', '.join(sorted(referenced_by[cpy]))
-        out.write(f'{cpy}\treferenced by: {refs}\n')
-
-# Stdout: short, colorized-friendly summary (no ANSI here; caller decorates)
-total = len(referenced_by)
-unique_files = set()
-for refs in referenced_by.values():
-    unique_files.update(refs)
-print(f'{total}|{len(unique_files)}')
-for cpy in sorted(referenced_by):
-    print(f'  {cpy} ← {", ".join(sorted(referenced_by[cpy]))}')
-PYEOF
+    lma_cli doctor-report missing-copybook-report "$staging_base" "$missing_report" >/dev/null 2>&1 || true
 
     if [[ -s "$missing_report" ]]; then
         local miss_summary
-        miss_summary=$("$PYTHON_CMD" -c "
-import sys
-with open(sys.argv[1]) as f:
-    lines = [l.rstrip() for l in f if l.strip() and not l.startswith('#')]
-print(len(lines))
-" "$missing_report" 2>/dev/null || echo 0)
+        # Counts non-comment lines with any non-whitespace character, as str.strip() would.
+        miss_summary=$(awk '!/^#/ && /[^ \t\v\f\r\034\035\036\037]/ { n++ } END { print n + 0 }' "$missing_report" 2>/dev/null || echo 0)
         if [[ "$miss_summary" -gt 0 ]]; then
             echo -e "  ${YELLOW}⚠️  Missing copybooks: ${miss_summary} unresolved COPY target(s)${NC}"
             # Show the first few inline for quick scanning
@@ -3842,31 +3674,7 @@ print(len(lines))
         fi
         local stub_warnings=""
         if [[ -s "$generated_stubs_file" ]]; then
-            stub_warnings=$("$PYTHON_CMD" - "$cbl_file" "$generated_stubs_file" <<'PYEOF'
-import re
-import sys
-
-source_path, stubs_path = sys.argv[1:3]
-with open(stubs_path, encoding="utf-8") as handle:
-    stubs = {line.strip().upper() for line in handle if line.strip()}
-
-copy_pattern = re.compile(
-    r"\bCOPY\s+['\"]?([A-Z][A-Z0-9_-]*)['\"]?",
-    re.IGNORECASE,
-)
-used = set()
-with open(source_path, encoding="latin-1") as handle:
-    for line in handle:
-        stripped = line.lstrip()
-        if stripped.startswith("*>") or (len(line) > 6 and line[6] in ("*", "/")):
-            continue
-        match = copy_pattern.search(line)
-        if match and match.group(1).upper() in stubs:
-            used.add(match.group(1).upper())
-
-print("|".join(f"generated-copybook-stub:{name}" for name in sorted(used)))
-PYEOF
-)
+            stub_warnings=$(lma_cli doctor-report stub-warnings "$cbl_file" "$generated_stubs_file")
         fi
 
         # Attempt 1: Standard dialect (handles CICS, SQL, standard COBOL)
@@ -3924,12 +3732,7 @@ PYEOF
             fi
         fi
         local dependency_warnings
-        dependency_warnings=$("$PYTHON_CMD" - "$REPO_ROOT/output/rekt/${rel_program}.report/dependency-evidence.json" <<'PYEOF'
-import json, sys
-evidence = json.load(open(sys.argv[1], encoding="utf-8"))
-print("|".join(str(item).replace("|", "/").replace("\n", " ") for item in evidence["unresolvedDiagnostics"]))
-PYEOF
-) || return 1
+        dependency_warnings=$(lma_cli doctor-report dependency-warnings "$REPO_ROOT/output/rekt/${rel_program}.report/dependency-evidence.json") || return 1
         if [[ -n "$dependency_warnings" ]]; then
             stub_warnings="${stub_warnings:+$stub_warnings|}$dependency_warnings"
         fi
@@ -4065,25 +3868,7 @@ PYEOF
             exit "$rc"
         ) &
         closure_pids+=("$!")
-    done < <("$PYTHON_CMD" - "$parse_results" "$REPO_ROOT/output/rekt" <<'PYEOF'
-import hashlib, json, sys
-from pathlib import Path
-results, output = Path(sys.argv[1]), Path(sys.argv[2])
-for status in sorted(results.glob("*.status")):
-    program = status.read_text(encoding="utf-8").rstrip("\n").split("\t")[1]
-    try:
-        evidence = json.loads((output / (program + ".report") / "dependency-evidence.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError, IndexError):
-        continue
-    closure = output / program.split("/")[0] / ".commarea-closure.json"
-    pending = any(str(item).removeprefix("native:").startswith("cics-commarea-closure-") for item in evidence.get("unresolvedDiagnostics", []))
-    stale = any(item.get("kind") == "COMMAREA_CLOSURE" and (not closure.is_file()
-                or item.get("sha256") != hashlib.sha256(closure.read_bytes()).hexdigest())
-                for item in evidence.get("definitions", []))
-    if pending or stale:
-        print(f"{str(status)[:-len('.status')]}\t{program}")
-PYEOF
-)
+    done < <(lma_cli doctor-report commarea-pending "$parse_results" "$REPO_ROOT/output/rekt")
     for parse_pid in ${closure_pids[@]+"${closure_pids[@]}"}; do
         wait "$parse_pid" || true
     done

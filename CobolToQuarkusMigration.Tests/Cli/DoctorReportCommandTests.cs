@@ -97,7 +97,107 @@ public sealed class DoctorReportCommandTests : IDisposable
         Run("program-list", "not json").ExitCode.Should().Be(2);
     }
 
-    private (int ExitCode, string StdOut) Run(string subcommand, string stdin)
+    [Fact]
+    public void ProgramFilter_ResolvesPathsBasenamesAndStemsAndExitsOneWhenAmbiguous()
+    {
+        var programs = Write("programs.txt", "est/PAY.cbl\nother/PAY.cbl\nest/LEDGER.cob\n\n");
+
+        Run("program-filter", " ./est/pay.CBL , ledger,LEDGER.cob,", programs).Should().Be((0, "est/PAY.cbl\nest/LEDGER.cob\n"));
+        Run("program-filter", "@pay", programs).Should().Be((1,
+            "Program selector '@pay' did not match any program.\n"));
+        Run("program-filter", "PAY", programs).Should().Be((1,
+            "Program selector 'PAY' matched multiple programs by stem: est/PAY.cbl, other/PAY.cbl. Use a source-relative path.\n"));
+        Run("program-filter", " , ", programs).Should().Be((1, "Program filter did not resolve to any programs.\n"));
+    }
+
+    [Fact]
+    public void ProgramDuplicates_ListsCaseInsensitiveBasenameClashesInOrder()
+    {
+        var programs = Write("programs.txt", "b/ZED.cbl\na/pay.cbl\nb/PAY.cbl\na/ZED.cbl\nc/ONLY.cbl\n");
+
+        Run("program-duplicates", "", programs).Should().Be((0,
+            "program-duplicate\tpay.cbl\ta/pay.cbl\tb/PAY.cbl\nprogram-duplicate\tzed.cbl\tb/ZED.cbl\ta/ZED.cbl\n"));
+    }
+
+    [Fact]
+    public void MissingCopybookReport_IgnoresPlaceholdersCommentsAndOtherEstates()
+    {
+        var staging = Path.Join(_root, "staging");
+        Write("staging/one/PAY.cbl", "       COPY CUSTREC.\n      * COPY COMMENTED.\n           COPY 'stubbed'.\n       COPY PRESENT.\n");
+        Write("staging/one/sub/AUX.cbl", "       copy custrec.\n");
+        Write("staging/one/PRESENT.cpy", "");
+        Write("staging/one/STUBBED.cpy", "");
+        Write("staging/one/.generated-stubs", "stubbed\n");
+        Write("staging/two/OTHER.cbl", "       COPY PRESENT.\n");
+        var report = Path.Join(_root, "missing copybooks.txt");
+
+        Run("missing-copybook-report", "", staging, report).Should().Be((0,
+            "3|3\n  CUSTREC ← PAY.cbl, sub/AUX.cbl\n  PRESENT ← OTHER.cbl\n  STUBBED ← PAY.cbl\n"));
+        File.ReadAllText(report).Should().EndWith(
+            "CUSTREC\treferenced by: PAY.cbl, sub/AUX.cbl\nPRESENT\treferenced by: OTHER.cbl\nSTUBBED\treferenced by: PAY.cbl\n");
+
+        File.Delete(Path.Join(staging, "two", "OTHER.cbl"));
+        File.Delete(Path.Join(staging, "one", ".generated-stubs"));
+        File.WriteAllText(Path.Join(staging, "one", "CUSTREC.cpy"), "");
+        Run("missing-copybook-report", "", staging, report).Should().Be((0, ""));
+        File.ReadAllText(report).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void StubWarnings_ListsPlaceholdersTheProgramCopiesOutsideComments()
+    {
+        var program = Write("PAY.cbl", "       COPY ZETA.\n      *COPY ALPHA.\n      *> COPY BETA.\n       COPY \"alpha\".\n       COPY REAL.\n");
+        var stubs = Write(".generated-stubs", "ZETA\nalpha\nBETA\n");
+
+        Run("stub-warnings", "", program, stubs).Should().Be((0, "generated-copybook-stub:ALPHA|generated-copybook-stub:ZETA\n"));
+    }
+
+    [Fact]
+    public void DependencyWarnings_JoinsDiagnosticsAndFailsWithoutTheField()
+    {
+        var evidence = Write("dependency-evidence.json", """{"unresolvedDiagnostics":["missing a|b","two\nlines",3,null,true]}""");
+        Run("dependency-warnings", "", evidence).Should().Be((0, "missing a/b|two lines|3|None|True\n"));
+
+        File.WriteAllText(evidence, """{"definitions":[]}""");
+        Run("dependency-warnings", "", evidence).ExitCode.Should().NotBe(0);
+        Run("dependency-warnings", "", Path.Join(_root, "absent.json")).ExitCode.Should().NotBe(0);
+    }
+
+    [Fact]
+    public void CommareaPending_ListsPendingAndStaleClosuresAndSkipsUnreadableEvidence()
+    {
+        var output = Path.Join(_root, "rekt");
+        var results = Path.Join(_root, "results");
+        Write("rekt/est/.commarea-closure.json", "{}");
+        var digest = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(Path.Join(output, "est", ".commarea-closure.json"))));
+        Write("rekt/est/PEND.cbl.report/dependency-evidence.json", """{"unresolvedDiagnostics":["native:cics-commarea-closure-missing"]}""");
+        Write("rekt/est/OLD.cbl.report/dependency-evidence.json", """{"definitions":[{"kind":"COMMAREA_CLOSURE","sha256":"old"}]}""");
+        Write("rekt/est/CURRENT.cbl.report/dependency-evidence.json",
+            $$"""{"definitions":[{"kind":"COMMAREA_CLOSURE","sha256":"{{digest}}"}],"unresolvedDiagnostics":[]}""");
+        Write("rekt/est/BAD.cbl.report/dependency-evidence.json", "not json");
+        Write("results/1.status", "0\test/PEND.cbl\n");
+        Write("results/2.status", "0\test/OLD.cbl\n");
+        Write("results/3.status", "0\test/CURRENT.cbl\n");
+        Write("results/4.status", "0\test/BAD.cbl\n");
+        Write("results/5.status", "0\test/NOEVIDENCE.cbl\n");
+
+        Run("commarea-pending", "", results, output).Should().Be((0,
+            $"{Path.Join(results, "1")}\test/PEND.cbl\n{Path.Join(results, "2")}\test/OLD.cbl\n"));
+        Run("commarea-pending", "", Path.Join(_root, "absent"), output).Should().Be((0, ""));
+
+        Write("results/0.status", "no program field\n");
+        Run("commarea-pending", "", results, output).ExitCode.Should().NotBe(0);
+    }
+
+    private string Write(string relative, string content)
+    {
+        var path = Path.Join(_root, relative);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, content);
+        return path;
+    }
+
+    private (int ExitCode, string StdOut) Run(string subcommand, string stdin, params string[] arguments)
     {
         var psi = new ProcessStartInfo("dotnet")
         {
@@ -109,6 +209,7 @@ public sealed class DoctorReportCommandTests : IDisposable
         psi.ArgumentList.Add(Path.Join(AppContext.BaseDirectory, "CobolToQuarkusMigration.dll"));
         psi.ArgumentList.Add("doctor-report");
         psi.ArgumentList.Add(subcommand);
+        foreach (var argument in arguments) psi.ArgumentList.Add(argument);
 
         using var process = Process.Start(psi)!;
         process.StandardInput.Write(stdin);

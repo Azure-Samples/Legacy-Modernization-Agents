@@ -258,7 +258,7 @@ requirements; no numeric response codes are manufactured.
 The versioned `contracts/bank-of-z-spring-h2-v2.json` profile adds CEEDAYS and
 CEELOCT using IBM's documented parameter and feedback contracts. It preserves
 the original profile file so existing hash-bound evidence remains verifiable.
-The native parser, Python evidence producer and .NET gate recognize these service
+The native parser, .NET evidence producer (`rekt-evidence`) and conversion gate recognize these service
 contracts together. The original runtime time zone, century window and compiler
 date options are not guessed. Target adapters still need implementation and
 behavioral verification.
@@ -280,7 +280,7 @@ hash-bound `SQL_DECLARATION` inputs; merely finding a file is not a binding.
 Generated symbolic COPY definitions can bind a supported
 `bms-symbolic-map/layout-v1` manifest and original BMS snapshot. The native
 export retains their hashes alongside the actual parsed COPY hash in
-`dependencyDerivedInputs`. The Python producer independently regenerates the
+`dependencyDerivedInputs`. The `rekt-evidence` producer independently regenerates the
 supported recipe from the original BMS; cache checks use persistent inputs,
 not deleted staging snapshots. The conversion gate requires matching
 `BMS`, `BMS_LAYOUT`, COPY and native derivation bindings.

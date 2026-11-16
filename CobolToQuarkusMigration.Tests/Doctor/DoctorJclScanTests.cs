@@ -227,4 +227,19 @@ public sealed class DoctorJclScanTests : IDisposable
         FirstJclFacts().Should().Contain("--allow-empty");
         File.Exists(Path.Join(Root, "ingested.json")).Should().BeTrue();
     }
+
+    [Fact]
+    public void FilteredCobolParse_ResolvesAndReportsThroughDoctorReport()
+    {
+        _doctor.Job("source/PROGRAM.cbl", "       IDENTIFICATION DIVISION.\n       PROGRAM-ID. PROGRAM.\n       COPY ABSENT.\n");
+        _doctor.Job("source/OTHER.cbl", "       IDENTIFICATION DIVISION.\n       PROGRAM-ID. OTHER.\n");
+        _doctor.Env["_REKT_PROGRAM_FILTER"] = "program";
+
+        var result = _doctor.Run("rekt-parse");
+
+        result.ShouldSucceed();
+        result.StdOut.Should().Contain("Missing copybooks: 1 unresolved COPY target(s)");
+        var reports = _doctor.Calls("dotnet").Where(args => args.Contains("doctor-report")).Select(args => args.SkipWhile(arg => arg != "doctor-report").ElementAt(1));
+        reports.Should().Contain(["program-filter", "program-duplicates", "missing-copybook-report", "commarea-pending"]);
+    }
 }

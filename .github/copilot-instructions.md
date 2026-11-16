@@ -4,4 +4,3 @@ Tech Stack:
 - FluentAssertions
 - Moq
 - ASP.NET
-- Python tests under `tools/`
