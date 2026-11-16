@@ -31,10 +31,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "10.0.x"
@@ -59,5 +55,12 @@ jobs:
           dotnet test CobolToQuarkusMigration.Tests -p:CopilotSkipCliDownload=true --nologo
           --filter "FullyQualifiedName~CobolToQuarkusMigration.Tests.Doctor.DoctorJclScanTests|FullyQualifiedName~CobolToQuarkusMigration.Tests.Doctor.DoctorJclCliIngestTests"
 
+      - name: REKT preprocessing and dependency export scripts
+        run: >-
+          dotnet test CobolToQuarkusMigration.Tests -p:CopilotSkipCliDownload=true --nologo
+          --filter "FullyQualifiedName~CobolToQuarkusMigration.Tests.Rekt.PreprocessForRektScriptTests|FullyQualifiedName~CobolToQuarkusMigration.Tests.Doctor.DoctorRektDependencyExportTests"
+
       - name: Portal process control
-        run: dotnet test McpChatWeb.Tests --filter "FullyQualifiedName~ProcessTreeSuspender" --blame-hang-timeout 120s
+        run: >-
+          dotnet test McpChatWeb.Tests --nologo --blame-hang-timeout 120s
+          --filter "FullyQualifiedName~ProcessTreeSuspender|FullyQualifiedName~McpProcessClientCancellationTests"

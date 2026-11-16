@@ -59,11 +59,7 @@ public sealed class DoctorFixture : IDisposable
         Bin = Path.Join(Root, "controlled-bin");
         Directory.CreateDirectory(Bin);
         foreach (var relative in CheckoutFiles)
-        {
-            var target = Path.Join(Root, relative);
-            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-            File.Copy(Path.Join(RepoRoot, relative), target);
-        }
+            AddCheckoutFile(relative);
         Directory.CreateDirectory(Path.Join(Root, "source"));
         Directory.CreateDirectory(Path.Join(Root, "Config"));
         File.WriteAllText(Path.Join(Root, "CobolToQuarkusMigration.csproj"), "<Project/>");
@@ -83,6 +79,8 @@ public sealed class DoctorFixture : IDisposable
         Env["LMA_REAL_DOTNET"] = Posix(RealDotnet);
         WriteExecutable("docker", $"#!/bin/bash\nkind=docker\n{BoundaryScript}");
         WriteExecutable("dotnet", $"#!/bin/bash\nkind=dotnet\n{BoundaryScript}");
+        // The concurrent-run guard would otherwise see CLI processes started by tests running in parallel.
+        WriteExecutable("pgrep", "#!/bin/bash\nexit 1\n");
     }
 
     public void Dispose()
@@ -97,6 +95,20 @@ public sealed class DoctorFixture : IDisposable
     {
         Env["JCL_REAL_DLL"] = CliAssembly;
         Env["JCL_REAL_DOTNET"] = Posix(RealDotnet);
+    }
+
+    public void AddCheckoutFile(string relative)
+    {
+        var target = Path.Join(Root, relative);
+        Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+        File.Copy(Path.Join(RepoRoot, relative), target);
+    }
+
+    // docker exec calls are handed to this script (arguments after "exec") instead of the canned answers.
+    public void UseParserContainer(string script)
+    {
+        WriteExecutable("parser-container", script);
+        Env["LMA_TEST_PARSER"] = Posix(Path.Join(Bin, "parser-container"));
     }
 
     public void WriteExecutable(string name, string script)
@@ -203,6 +215,20 @@ public sealed class DoctorFixture : IDisposable
 
     public static string Posix(string path) => path.Replace('\\', '/');
 
+    // The CLI records resolved source paths; macOS temp folders sit behind the /var -> /private/var link.
+    public static string RealPath(string path)
+    {
+        var full = Path.GetFullPath(path);
+        var current = Path.GetPathRoot(full)!;
+        foreach (var part in full[current.Length..].Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
+        {
+            current = Path.Join(current, part);
+            if (new FileInfo(current).LinkTarget is not null)
+                current = new FileInfo(current).ResolveLinkTarget(returnFinalTarget: true)!.FullName;
+        }
+        return current;
+    }
+
     private static string NormalizePath(string path)
     {
         if (OperatingSystem.IsWindows())
@@ -283,6 +309,7 @@ public sealed class DoctorFixture : IDisposable
             if [[ "${1:-}" == version ]]; then
                 echo "1.45"
             elif [[ "${1:-}" == exec ]]; then
+                [[ -n "${LMA_TEST_PARSER:-}" ]] && exec "$LMA_TEST_PARSER" "${args[@]:1}"
                 if [[ -n "${JCL_TEST_AUTH_FAIL:-}" ]] && has "RETURN 1"; then exit 3; fi
                 if has run && has java; then
                     report="$root/output/rekt/$(after run).report"

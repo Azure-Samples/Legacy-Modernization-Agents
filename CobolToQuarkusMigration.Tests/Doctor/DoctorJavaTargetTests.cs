@@ -95,7 +95,6 @@ public sealed class DoctorConversionCommandTests : IDisposable
 
             """);
         _doctor.Env["MCP_AUTO_LAUNCH"] = "0";
-        _doctor.WriteExecutable("pgrep", "#!/bin/bash\nexit 1\n");
         _selectedSource = Path.Join(_doctor.Root, "selected source's");
         _doctor.Job(Path.Join("selected source's", Program),
             "       IDENTIFICATION DIVISION.\n       PROGRAM-ID. PAYONE.\n");

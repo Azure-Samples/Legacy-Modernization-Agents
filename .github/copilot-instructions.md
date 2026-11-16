@@ -4,3 +4,4 @@ Tech Stack:
 - FluentAssertions
 - Moq
 - ASP.NET
+- Bash smoke tests under `tools/tests/`

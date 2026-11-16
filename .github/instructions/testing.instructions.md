@@ -55,7 +55,7 @@ Change an expected value only when the intended contract changed or the old expe
 
 ## Tools and execution
 
-- Reuse the existing toolchain: .NET 10; xUnit, FluentAssertions, and Moq in `CobolToQuarkusMigration.Tests`; xUnit and ASP.NET test hosting in `McpChatWeb.Tests`; existing Python tests under `tools/`.
+- Reuse the existing toolchain: .NET 10; xUnit, FluentAssertions, and Moq in `CobolToQuarkusMigration.Tests`; xUnit and ASP.NET test hosting in `McpChatWeb.Tests`; script-level tests drive `doctor.sh` and `tools/*.sh` from xUnit through `Doctor/DoctorFixture.cs`.
 - Match each project's installed assertion/mocking libraries. Do not add a library or a frontend test framework merely for coverage or stylistic consistency.
 - Inspect the selected tests for side effects before running them. Start with the smallest relevant project/filter, combine related selectors, and confirm that the filter matched tests.
 - With dependencies already restored, a local isolated example is:
