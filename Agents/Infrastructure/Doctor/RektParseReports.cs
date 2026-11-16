@@ -9,11 +9,12 @@ namespace CobolToQuarkusMigration.Agents.Infrastructure.Doctor;
 // are the ones the shell already relies on, so a crash part-way still leaves the lines printed before it.
 public static class RektParseReports
 {
+    // COBOL names contain hyphens, so `\b` would read REQUEST-MSG-COPY REPLACING as a COPY of REPLACING.
     private static readonly Regex MissingCopyDirective = PyRegex.Compile(
-        @"^[^*]{0,6}[^*\n].*?\bCOPY\s+['""]?([A-Z][A-Z0-9_-]*)['""]?", RegexOptions.IgnoreCase);
+        @"^[^*]{0,6}[^*\n].*?(?<![A-Z0-9_-])COPY\s+['""]?([A-Z][A-Z0-9_-]*)['""]?", RegexOptions.IgnoreCase);
 
     private static readonly Regex CopyDirective = PyRegex.Compile(
-        @"\bCOPY\s+['""]?([A-Z][A-Z0-9_-]*)['""]?", RegexOptions.IgnoreCase);
+        @"(?<![A-Z0-9_-])COPY\s+['""]?([A-Z][A-Z0-9_-]*)['""]?", RegexOptions.IgnoreCase);
 
     // Lines of a UTF-8 text file as Python iterates them: universal newlines, terminators kept.
     public static List<string> ReadLines(string path, Encoding? encoding = null)

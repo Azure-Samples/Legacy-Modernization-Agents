@@ -10,7 +10,7 @@ public sealed class ProgramFactsExtractor
 {
     private const string CompatibleScanCacheIdentityScheme = "v1-basename";
     private static readonly Regex CopyPattern = new(
-        @"\bCOPY\s+['""]?([A-Z][A-Z0-9_-]*)['""]?",
+        @"(?<![A-Z0-9_-])COPY\s+['""]?([A-Z][A-Z0-9_-]*)['""]?",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static readonly JsonSerializerOptions JsonOptions = new()

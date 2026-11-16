@@ -7,7 +7,7 @@ public sealed class RektCopybookGraph
 {
     // Accept quoted COPY names; fixed-format comment lines are filtered separately.
     private static readonly Regex CopyDirectiveRegex = new(
-        @"\bCOPY\s+['""]?([A-Za-z][A-Za-z0-9_\-]*)['""]?",
+        @"(?<![A-Za-z0-9_-])COPY\s+['""]?([A-Za-z][A-Za-z0-9_\-]*)['""]?",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     // basename → set of direct copybook basenames referenced (upper-cased, no extension).

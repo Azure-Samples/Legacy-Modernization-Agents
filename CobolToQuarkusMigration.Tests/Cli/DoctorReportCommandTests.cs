@@ -123,7 +123,7 @@ public sealed class DoctorReportCommandTests : IDisposable
     public void MissingCopybookReport_IgnoresPlaceholdersCommentsAndOtherEstates()
     {
         var staging = Path.Join(_root, "staging");
-        Write("staging/one/PAY.cbl", "       COPY CUSTREC.\n      * COPY COMMENTED.\n           COPY 'stubbed'.\n       COPY PRESENT.\n");
+        Write("staging/one/PAY.cbl", "       COPY CUSTREC.\n           INITIALIZE MSG-COPY  REPLACING NUMERIC BY ZEROES.\n      * COPY COMMENTED.\n           COPY 'stubbed'.\n       COPY PRESENT.\n");
         Write("staging/one/sub/AUX.cbl", "       copy custrec.\n");
         Write("staging/one/PRESENT.cpy", "");
         Write("staging/one/STUBBED.cpy", "");
@@ -146,7 +146,7 @@ public sealed class DoctorReportCommandTests : IDisposable
     [Fact]
     public void StubWarnings_ListsPlaceholdersTheProgramCopiesOutsideComments()
     {
-        var program = Write("PAY.cbl", "       COPY ZETA.\n      *COPY ALPHA.\n      *> COPY BETA.\n       COPY \"alpha\".\n       COPY REAL.\n");
+        var program = Write("PAY.cbl", "       COPY ZETA.\n           INITIALIZE WS-COPY BETA.\n      *COPY ALPHA.\n      *> COPY BETA.\n       COPY \"alpha\".\n       COPY REAL.\n");
         var stubs = Write(".generated-stubs", "ZETA\nalpha\nBETA\n");
 
         Run("stub-warnings", "", program, stubs).Should().Be((0, "generated-copybook-stub:ALPHA|generated-copybook-stub:ZETA\n"));
