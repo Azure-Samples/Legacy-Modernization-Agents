@@ -352,93 +352,16 @@ show_usage() {
 
 # Resolve the migration database path (absolute) from config or environment
 get_migration_db_path() {
-    local base_dir="$REPO_ROOT"
-
-    if [[ -n "$MIGRATION_DB_PATH" ]]; then
-        if [[ -z "$PYTHON_CMD" ]]; then
-            echo "$MIGRATION_DB_PATH"
-            return
-        fi
-
-        PY_BASE="$base_dir" PY_DB_PATH="$MIGRATION_DB_PATH" "$PYTHON_CMD" - <<'PY'
-import os
-base = os.environ["PY_BASE"]
-path = os.environ["PY_DB_PATH"]
-if not os.path.isabs(path):
-    path = os.path.abspath(os.path.join(base, path))
-else:
-    path = os.path.abspath(path)
-print(path)
-PY
-        return
-    fi
-
-    if [[ -z "$PYTHON_CMD" ]]; then
-        if [[ -f "$base_dir/Data/migration.db" ]]; then
-            echo "$base_dir/Data/migration.db"
-        else
-            echo ""
-        fi
-        return
-    fi
-
-    PY_BASE="$base_dir" "$PYTHON_CMD" - <<'PY'
-import json
-import os
-
-base = os.environ["PY_BASE"]
-config_path = os.path.join(base, "Config", "appsettings.json")
-fallback = "Data/migration.db"
-try:
-    with open(config_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-        path = data.get("ApplicationSettings", {}).get("MigrationDatabasePath") or fallback
-except FileNotFoundError:
-    path = fallback
-
-if not os.path.isabs(path):
-    path = os.path.abspath(os.path.join(base, path))
-else:
-    path = os.path.abspath(path)
-
-print(path)
-PY
+    ensure_lma_cli || return 1
+    lma_cli doctor-report db-path --repo-root "$REPO_ROOT"
 }
 
 # Fetch the latest migration run summary from SQLite (if available)
 get_latest_run_summary() {
     local db_path="$1"
-    if [[ -z "$db_path" || ! -f "$db_path" ]]; then
-        return 1
-    fi
-
-    if [[ -z "$PYTHON_CMD" ]]; then
-        return 1
-    fi
-
-    PY_DB_PATH="$db_path" "$PYTHON_CMD" - <<'PY'
-import os
-import sqlite3
-
-db_path = os.environ["PY_DB_PATH"]
-if not os.path.exists(db_path):
-    raise SystemExit
-
-query = """
-SELECT id, status, coalesce(completed_at, started_at)
-FROM runs
-ORDER BY started_at DESC
-LIMIT 1
-"""
-
-with sqlite3.connect(db_path) as conn:
-    row = conn.execute(query).fetchone()
-
-if row:
-    run_id, status, completed_at = row
-    completed_at = completed_at or ""
-    print(f"{run_id}|{status}|{completed_at}")
-PY
+    [[ -n "$db_path" && -f "$db_path" ]] || return 1
+    ensure_lma_cli || return 1
+    lma_cli doctor-report latest-run "$db_path"
 }
 
 open_url_in_browser() {
@@ -3119,16 +3042,8 @@ rekt_vsam_definitions_for() {
 }
 
 rekt_source_programs() {
-    "$PYTHON_CMD" - "$REPO_ROOT/source" <<'PYEOF'
-import os, sys
-root = sys.argv[1]
-for base, dirs, files in os.walk(root):
-    dirs[:] = sorted(d for d in dirs
-                     if d not in (".rekt-staging", ".preprocessed") and not d.startswith(".convert-"))
-    for name in sorted(files):
-        if name.lower().endswith((".cbl", ".cob")):
-            print(os.path.relpath(os.path.join(base, name), root).replace(os.sep, "/"))
-PYEOF
+    ensure_lma_cli || return 1
+    lma_cli doctor-report source-programs "$REPO_ROOT/source"
 }
 
 rekt_programs_in_estate() {
@@ -4592,6 +4507,7 @@ require_portal_for_selection() {
 # Expands the selection to every program reachable by CALL. Without this a converted
 # program can call something that was never converted.
 expand_callees() {
+    ensure_lma_cli || return 1
     local expanded_file
     expanded_file="$(mktemp)"
     printf '%s\n' "${SELECTED_PROGRAMS[@]}" > "$expanded_file"
@@ -4599,15 +4515,7 @@ expand_callees() {
     local identity
     for identity in "${SELECTED_PROGRAMS[@]}"; do
         curl -s --max-time 10 "$(portal_base)/api/modernization/program/${identity}" \
-            | "$PYTHON_CMD" -c "
-import json,sys
-try:
-    d = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
-for p in d.get('callClosure') or []:
-    print(p)
-" >> "$expanded_file" 2>/dev/null
+            | lma_cli doctor-report call-closure >> "$expanded_file" 2>/dev/null
     done
 
     local before=${#SELECTED_PROGRAMS[@]}
@@ -4696,11 +4604,8 @@ run_estate_graph() {
     }
     echo "$slice"
     local selectors
-    if [[ -z "$PYTHON_CMD" ]]; then
-        echo -e "${YELLOW}⚠️  Python is required to list the slice selectors.${NC}"
-        return 0
-    fi
-    selectors="$(printf '%s' "$slice" | "$PYTHON_CMD" -c 'import json,sys; s=json.load(sys.stdin); print(",".join(s["programSelectors"]+s["needSelectors"]))')"
+    ensure_lma_cli || return 1
+    selectors="$(printf '%s' "$slice" | lma_cli doctor-report slice-selectors)" || return 1
     echo ""
     echo -e "  Convert this slice:  ${CYAN}./doctor.sh convert-only --program ${selectors}${NC}"
 }
@@ -4809,44 +4714,8 @@ resolve_job_selection() {
 print_jcl_job_summary() {
     local manifest="${1:-}/jobs-manifest.json"
     [[ -n "${1:-}" && -f "$manifest" ]] || return 0
-    "$PYTHON_CMD" - "$manifest" "$(IFS=','; echo "${SELECTED_JOBS[*]}")" <<'PYEOF'
-import json, os, re, sys
-
-entries = json.load(open(sys.argv[1]))
-typed = {n.strip().lower(): n.strip() for n in sys.argv[2].split(",") if n.strip()}
-wanted = set(typed)
-
-def names(e):
-    # A repeated job name runs as NAME_2; the member name is what the source folder shows.
-    job = e["job"].lower()
-    return {job, re.sub(r"_\d+$", "", job), os.path.splitext(os.path.basename(e["file"]))[0].lower()}
-
-if wanted:
-    for name in sorted(wanted - set().union(*(names(e) for e in entries))):
-        print(f"⚠️  No JCL job is named {typed[name]}.")
-    entries = [e for e in entries if names(e) & wanted]
-
-ready = 0
-print()
-print(f"🧾 JCL jobs ({len(entries)}): see {sys.argv[1]}")
-for e in entries:
-    missing, blocked = e.get("programsMissing") or [], e.get("stepsNotRunnable") or []
-    if not missing and not blocked:
-        ready += 1
-        count = len(e.get("programs") or [])
-        print(f"  ✅ {e['job']:<10} " + (f"all {count} program(s) converted" if count else "runs utilities only, every step runnable"))
-        continue
-    programs = e.get("programs") or []
-    print(f"  ⚠️  {e['job']:<10} " + "; ".join(filter(None, [
-        (f"{len(e.get('programsImplemented') or [])}/{len(programs)} program(s) converted"
-         + (f", not yet: {', '.join(missing)}" if missing else "")) if programs else "no resolved estate programs",
-        f"{len(blocked)} step(s) cannot run (missing procedure, unsupported utility or unreadable condition)" if blocked else "",
-    ])))
-print(f"  {ready} of {len(entries)} job(s) have every program and step they need.")
-if ready < len(entries):
-    print("  A missing procedure or INCLUDE member is named in the manifest's diagnostics: add it to the source.")
-print("  Utilities other than IEFBR14 and IDCAMS (a sort, a Db2 unload) stop the job until implemented: docs/jcl-jobs.md")
-PYEOF
+    ensure_lma_cli || return 0
+    lma_cli doctor-report jcl-jobs "$manifest" --jobs "$(IFS=','; echo "${SELECTED_JOBS[*]}")"
 }
 
 # Jobs from the JCL alone: parse, generate, and for C# build, without a model. The jobs run the
@@ -4962,20 +4831,8 @@ run_program_list() {
 
     echo -e "${BOLD}Convertible programs${NC}"
     echo ""
-    curl -s --max-time 15 "$(portal_base)/api/modernization/programs" | "$PYTHON_CMD" -c "
-import json,sys
-d = json.load(sys.stdin)
-progs = d.get('programs') or []
-print(f\"{'PROGRAM':<24}{'LINES':>8}  {'PARSE':<10}{'CALLS':>6}{'CALLED BY':>11}  PATH\")
-print('-' * 96)
-for p in progs:
-    warn = '  ⚠ %d missing cpy' % p['missingCopybookCount'] if p.get('missingCopybookCount') else ''
-    print(f\"{p['basename']:<24}{p['linesOfCode']:>8}  {p['parseFidelity']:<10}\"
-          f\"{p['callClosureCount']:>6}{p['calledByCount']:>11}  {p['relativePath']}{warn}\")
-print()
-print(f\"{d.get('totalPrograms',0)} programs, {d.get('totalCopybooks',0)} copybooks.\")
-print('Copybooks are always included in a conversion and are not selected directly.')
-" 2>/dev/null || {
+    ensure_lma_cli || return 1
+    curl -s --max-time 15 "$(portal_base)/api/modernization/programs" | lma_cli doctor-report program-list 2>/dev/null || {
         echo -e "${RED}❌ Could not read the program list from the portal.${NC}"
         return 1
     }

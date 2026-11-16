@@ -15,6 +15,7 @@ public class RequiresAiSettingsTests
     [InlineData("estate-graph")]
     [InlineData("rekt-diagnostics")]
     [InlineData("ai-loop-check")]
+    [InlineData("doctor-report")]
     [InlineData("dependency-plan")]
     [InlineData("graph-ingest")]
     public void FileOnlyCommands_DoNotRequireAiSettings(string command)

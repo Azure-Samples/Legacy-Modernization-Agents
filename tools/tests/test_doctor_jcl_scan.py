@@ -54,9 +54,10 @@ elif kind == "dotnet":
         print("Microsoft.NETCore.App 10.0.0")
     elif "-getProperty:TargetPath" in args:
         print(os.environ["LMA_TEST_DLL"])
-    elif "rekt-diagnostics" in args:
+    elif "rekt-diagnostics" in args or "doctor-report" in args:
+        command = "rekt-diagnostics" if "rekt-diagnostics" in args else "doctor-report"
         sys.exit(subprocess.call([os.environ["LMA_REAL_DOTNET"], os.environ["LMA_TEST_DLL"],
-                                  *args[args.index("rekt-diagnostics"):]]))
+                                  *args[args.index(command):]]))
     elif "jcl-facts" in args:
         if os.environ.get("JCL_TEST_FAIL"):
             sys.exit(7)
