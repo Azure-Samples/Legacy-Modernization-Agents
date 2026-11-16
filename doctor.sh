@@ -1676,7 +1676,6 @@ EOF
         echo -e "   Config file: ${BLUE}$LOCAL_CONFIG${NC}"
         echo ""
         ensure_neo4j_image || return 1
-        ensure_graph_populator_environment || return 1
         echo ""
         echo -e "${BLUE}Next steps:${NC}"
         echo "1. Run: ./doctor.sh test"
@@ -1748,7 +1747,6 @@ EOF
     echo -e "${GREEN}✅ Configuration completed!${NC}"
     echo ""
     ensure_neo4j_image || return 1
-    ensure_graph_populator_environment || return 1
     echo ""
     echo -e "${BLUE}🔍 Testing configuration...${NC}"
     
@@ -2666,7 +2664,6 @@ NEO4J_CONTAINER="$(resolve_runtime_setting NEO4J_CONTAINER cobol-migration-neo4j
 NEO4J_HTTP_PORT="$(resolve_runtime_setting NEO4J_HTTP_PORT 7474)"
 NEO4J_BOLT_PORT="$(resolve_runtime_setting NEO4J_BOLT_PORT 7687)"
 REKT_CONTAINER="$(resolve_runtime_setting REKT_CONTAINER cobol-rekt)"
-REKT_POPULATOR_CONTAINER="$(resolve_runtime_setting REKT_POPULATOR_CONTAINER cobol-graph-populator)"
 PORTAL_CONTAINER="$(resolve_runtime_setting PORTAL_CONTAINER cobol-migration-portal)"
 REKT_GENERATED_COPYBOOK_DIRS="$(resolve_runtime_setting REKT_GENERATED_COPYBOOK_DIRS copy-generated)"
 # The parser image tag is a digest of everything the Dockerfile builds from, so adding or
@@ -2685,7 +2682,7 @@ rekt_image_digest() {
 REKT_IMAGE="$(resolve_runtime_setting REKT_IMAGE "rekt-oss-mma:$(rekt_image_digest)")"
 # Contract profiles are bound into evidence by host path, so the parser sees them at that path.
 REKT_CONTRACTS_DIR="$REPO_ROOT/tools/cobol-rekt/contracts"
-export NEO4J_CONTAINER NEO4J_HTTP_PORT NEO4J_BOLT_PORT REKT_CONTAINER REKT_POPULATOR_CONTAINER PORTAL_CONTAINER \
+export NEO4J_CONTAINER NEO4J_HTTP_PORT NEO4J_BOLT_PORT REKT_CONTAINER PORTAL_CONTAINER \
     REKT_GENERATED_COPYBOOK_DIRS REKT_IMAGE REKT_CONTRACTS_DIR
 # Optional dependency inputs preserve an explicitly empty shell override.
 if [[ "${REKT_CICS_RESOURCE_DEFINITIONS+x}" != x ]]; then
@@ -2862,63 +2859,6 @@ ensure_neo4j_image() {
     echo -e "${GREEN}✅ Neo4j image downloaded: $NEO4J_IMAGE${NC}"
 }
 
-# Interpreter inside the graph populator venv: bin/python on Linux/macOS, Scripts/python.exe on Windows.
-graph_populator_python() {
-    local venv="$REPO_ROOT/tools/graph-populator/.venv"
-    if [[ -x "$venv/Scripts/python.exe" ]]; then
-        echo "$venv/Scripts/python.exe"
-    elif [[ -x "$venv/bin/python" ]]; then
-        echo "$venv/bin/python"
-    else
-        case "$(uname -s)" in
-            MINGW*|MSYS*|CYGWIN*) echo "$venv/Scripts/python.exe" ;;
-            *) echo "$venv/bin/python" ;;
-        esac
-    fi
-}
-
-ensure_graph_populator_environment() {
-    local populator_dir="$REPO_ROOT/tools/graph-populator"
-    local requirements_file="$populator_dir/requirements.txt"
-    local venv_python
-    venv_python="$(graph_populator_python)"
-
-    if [[ ! -f "$populator_dir/populator.py" || ! -f "$requirements_file" ]]; then
-        echo -e "${RED}❌ Graph populator sources are incomplete: $populator_dir${NC}"
-        return 1
-    fi
-
-    if [[ -z "$PYTHON_CMD" ]]; then
-        echo -e "${RED}❌ Python is required for the REKT graph populator.${NC}"
-        return 1
-    fi
-
-    if [[ ! -x "$venv_python" ]]; then
-        echo -e "${BLUE}🐍 Creating graph populator virtual environment...${NC}"
-        local venv_output
-        if ! venv_output=$("$PYTHON_CMD" -m venv "$populator_dir/.venv" 2>&1); then
-            echo -e "${RED}❌ Failed to create graph populator virtual environment:${NC}"
-            printf '%s\n' "$venv_output" | sed 's/^/  /'
-            return 1
-        fi
-    fi
-
-    if ! "$venv_python" -c 'import click, neo4j, networkx, orjson, rich' >/dev/null 2>&1; then
-        echo -e "${BLUE}📦 Installing graph populator dependencies...${NC}"
-        local install_output
-        if ! install_output=$("$venv_python" -m pip install -r "$requirements_file" 2>&1); then
-            echo -e "${RED}❌ Failed to install graph populator dependencies:${NC}"
-            printf '%s\n' "$install_output" | sed 's/^/  /'
-            echo ""
-            echo -e "${YELLOW}Retry with:${NC}"
-            echo "  $venv_python -m pip install -r $requirements_file"
-            return 1
-        fi
-    fi
-
-    echo -e "${GREEN}✅ Graph populator environment is ready${NC}"
-}
-
 # Resolves the CLI assembly once so per-program checks launch it directly: dotnet run
 # re-evaluates the project on every call, which a large estate multiplies.
 ensure_lma_cli() {
@@ -3034,7 +2974,7 @@ ensure_rekt_containers() {
     echo -e " ${GREEN}✅${NC}"
 
     # The loop above authenticates inside the container, which always agrees with itself.
-    # The populator connects from the host, so verify that credential separately: Neo4j keeps
+    # graph-ingest connects from the host, so verify that credential separately: Neo4j keeps
     # the password in its data volume, so a reused volume silently outranks NEO4J_AUTH.
     if ! container_exec "$NEO4J_CONTAINER" \
         cypher-shell -u neo4j -p "$NEO4J_PASSWORD" "RETURN 1" >/dev/null 2>&1; then
@@ -4420,7 +4360,7 @@ run_rekt_ingest() {
 
 run_rekt_ingest_impl() {
     echo -e "${CYAN}╔══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}║   Graph Populator: Ingest into Neo4j                        ║${NC}"
+    echo -e "${CYAN}║   Graph Ingest: Load into Neo4j                             ║${NC}"
     echo -e "${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
 
     if [[ -f "$REPO_ROOT/output/rekt/.jcl-scan-failed" ]]; then
@@ -4445,11 +4385,8 @@ run_rekt_ingest_impl() {
 
     echo -e "${BLUE}  Ingesting into $NEO4J_CONTAINER (bolt://localhost:$NEO4J_BOLT_PORT)${NC}"
 
-    # Use the local Python environment so ingestion does not depend on a
-    # separately running graph-populator container.
-    local populator_dir="$REPO_ROOT/tools/graph-populator"
-    ensure_graph_populator_environment || return 1
-    if ! (cd "$populator_dir" && "$(graph_populator_python)" populator.py ingest \
+    ensure_lma_cli || return 1
+    if ! (cd "$REPO_ROOT" && lma_cli graph-ingest \
         --source-dir "$REPO_ROOT/source" \
         --rekt-output "$REPO_ROOT/output/rekt" \
         --run-id "$run_id" \
@@ -4458,7 +4395,7 @@ run_rekt_ingest_impl() {
         return 1
     fi
 
-    # A populator that exits clean having written nothing is indistinguishable from success
+    # An ingest that exits clean having written nothing is indistinguishable from success
     # at the console, and the portal then reports an empty estate as a finding.
     local ingested
     ingested=$(container_exec "$NEO4J_CONTAINER" cypher-shell -u neo4j \
@@ -4521,7 +4458,7 @@ run_rekt_status() {
     echo -e "${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
 
     # Check containers
-    local containers=("$NEO4J_CONTAINER" "$REKT_CONTAINER" "$REKT_POPULATOR_CONTAINER")
+    local containers=("$NEO4J_CONTAINER" "$REKT_CONTAINER")
     for c in "${containers[@]}"; do
         local state
         state=$(docker inspect --format='{{.State.Status}}' "$c" 2>/dev/null || echo "not found")

@@ -69,15 +69,12 @@ elif kind == "dotnet":
         print("jcl-facts: wrote 1 job fact file(s)")
     elif "jcl-jobs" in args:
         sys.exit(subprocess.call([os.environ["JCL_REAL_DOTNET"], os.environ["JCL_REAL_DLL"], *args[args.index("jcl-jobs"):]]))
-elif kind == "populator":
-    if args[:1] == ["-c"]:
-        sys.exit(0)
-    if args[:2] != ["populator.py", "ingest"]:
-        sys.exit(91)
-    if (root / "output/rekt/.jcl-scan-failed").exists():
-        sys.exit(92)
-    files = sorted(str(p.relative_to(root / "output/rekt")) for p in (root / "output/rekt").rglob("*.job.json"))
-    (root / "ingested.json").write_text(json.dumps(files))
+    elif "graph-ingest" in args:
+        output = Path(args[args.index("--rekt-output") + 1])
+        if (output / ".jcl-scan-failed").exists():
+            sys.exit(92)
+        files = sorted(str(p.relative_to(output)) for p in output.rglob("*.job.json"))
+        (root / "ingested.json").write_text(json.dumps(files))
 else:
     sys.exit(93)
 '''
@@ -115,11 +112,6 @@ class JclCommandFixture(unittest.TestCase):
         self.env.update(LMA_TEST_DLL=str(dll), LMA_REAL_DOTNET=shutil.which("dotnet"))
         for name in ("docker", "dotnet"):
             self.executable(self.bin / name, name)
-        populator = self.root / "tools/graph-populator"
-        populator.mkdir(parents=True)
-        (populator / "populator.py").write_text("")
-        (populator / "requirements.txt").write_text("")
-        self.executable(populator / ".venv/bin/python", "populator")
 
     def executable(self, path, kind):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -141,6 +133,9 @@ class JclCommandFixture(unittest.TestCase):
     def calls(self, kind):
         log = self.root / "calls.jsonl"
         return [args for name, args in map(json.loads, log.read_text().splitlines()) if name == kind] if log.exists() else []
+
+    def ingests(self):
+        return [args for args in self.calls("dotnet") if "graph-ingest" in args]
 
     def assert_success(self, result):
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
@@ -165,7 +160,11 @@ class DoctorJclScanTests(JclCommandFixture):
         facts = next(args for args in calls if "jcl-facts" in args)
         self.assertEqual(self.root / "source", Path(facts[facts.index("jcl-facts") + 1]))
         self.assertEqual(self.root / "output/rekt", Path(facts[facts.index("--output-dir") + 1]))
-        self.assertFalse(any("jcl-jobs" in args or "build" in args for args in calls))
+        # Resolving the CLI assembly builds the main project; a scaffolded job project is never built.
+        self.assertFalse(any("jcl-jobs" in args or ("build" in args and "CobolToQuarkusMigration.csproj" not in args)
+                             for args in calls))
+        ingest = self.ingests()[-1]
+        self.assertEqual(str(self.root / "output/rekt"), ingest[ingest.index("--rekt-output") + 1])
         self.assertEqual(["SAMPLE.JCL.job.json"], json.loads((self.root / "ingested.json").read_text()))
         self.assertEqual("retained", evidence.read_text())
         self.assertFalse(any("java" in args for args in self.calls("docker")))
@@ -179,7 +178,7 @@ class DoctorJclScanTests(JclCommandFixture):
                 self.assert_success(self.run_command("rekt-parse"))
                 facts = [args for args in self.calls("dotnet") if "jcl-facts" in args][-1]
                 self.assertEqual(self.root / "custom jobs", Path(facts[facts.index("jcl-facts") + 1]))
-                self.assertFalse(self.calls("populator"))
+                self.assertFalse(self.ingests())
                 self.assertFalse(self.calls("docker"))
 
     def test_windows_drive_and_unc_roots_are_not_prefixed_with_checkout(self):
@@ -189,7 +188,7 @@ class DoctorJclScanTests(JclCommandFixture):
                 result = self.run_command("rekt-parse")
                 self.assertNotEqual(0, result.returncode)
                 self.assertNotIn(str(self.root) + "/" + configured.replace("\\", "/"), result.stdout)
-                self.assertFalse(self.calls("populator"))
+                self.assertFalse(self.ingests())
 
     def test_local_config_root_is_used_without_ai_configuration(self):
         self.job("configured jobs/SAMPLE.jcl")
@@ -224,7 +223,7 @@ class DoctorJclScanTests(JclCommandFixture):
                     self.env["JCL_TEST_AUTH_FAIL"] = "1"
                 result = self.run_command("rekt-full")
                 self.assertNotEqual(0, result.returncode)
-                self.assertFalse(self.calls("populator"))
+                self.assertFalse(self.ingests())
                 if setting == "absent":
                     self.assertIn("configuration is missing", result.stdout)
                 elif setting == "empty":
@@ -240,7 +239,7 @@ class DoctorJclScanTests(JclCommandFixture):
                 self.env["JCL_SOURCE_FOLDER"] = configured
                 self.assertNotEqual(0, self.run_command("rekt-full").returncode)
                 self.assertEqual("retained", evidence.read_text())
-                self.assertFalse(self.calls("populator"))
+                self.assertFalse(self.ingests())
                 self.assertFalse(self.calls("docker"))
 
     def test_filter_refusal_preserves_evidence_and_never_extracts_or_ingests(self):
@@ -252,7 +251,7 @@ class DoctorJclScanTests(JclCommandFixture):
         self.assertIn("program filter", result.stdout)
         self.assertEqual("retained", evidence.read_text())
         self.assertFalse(any("jcl-facts" in args for args in self.calls("dotnet")))
-        self.assertFalse(self.calls("populator"))
+        self.assertFalse(self.ingests())
 
     def test_extraction_failure_stops_full_pipeline_and_preserves_evidence(self):
         self.job()
@@ -263,11 +262,11 @@ class DoctorJclScanTests(JclCommandFixture):
         self.assertIn("JCL scan failed", result.stdout)
         self.assertEqual("retained", evidence.read_text())
         self.assertTrue((self.root / "output/rekt/.jcl-scan-failed").exists())
-        self.assertFalse(self.calls("populator"))
+        self.assertFalse(self.ingests())
 
     def test_no_sources_is_not_success(self):
         self.assertNotEqual(0, self.run_command("rekt-full").returncode)
-        self.assertFalse(self.calls("populator"))
+        self.assertFalse(self.ingests())
 
     def test_documented_cobol_root_limit_is_preserved(self):
         self.job()

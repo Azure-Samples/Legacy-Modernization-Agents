@@ -15,6 +15,7 @@ public class RequiresAiSettingsTests
     [InlineData("estate-graph")]
     [InlineData("rekt-diagnostics")]
     [InlineData("dependency-plan")]
+    [InlineData("graph-ingest")]
     public void FileOnlyCommands_DoNotRequireAiSettings(string command)
     {
         Program.RequiresAiSettings([command]).Should().BeFalse();

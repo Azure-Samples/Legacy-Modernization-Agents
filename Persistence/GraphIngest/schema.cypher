@@ -1,5 +1,5 @@
 // Neo4j schema for the unified Cobol-REKT and migration graph.
-// Applied once by the Python graph-populator on first run.
+// Applied by graph-ingest before every ingest; every statement is idempotent.
 
 // Uniqueness constraints
 CREATE CONSTRAINT run_id          IF NOT EXISTS FOR (n:Run)           REQUIRE n.id IS UNIQUE;

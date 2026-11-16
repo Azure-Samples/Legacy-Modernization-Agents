@@ -1,5 +1,5 @@
 #!/bin/bash
-# Smoke-tests the platform helpers in doctor.sh (port lookup, Python detection, venv paths).
+# Smoke-tests the platform helpers in doctor.sh (port lookup, Python detection, setup config merge).
 # Runs on Linux, macOS and Git Bash on Windows; CI runs it on each.
 
 set -uo pipefail
@@ -14,7 +14,6 @@ fail() { echo "FAIL - $1"; failures=$((failures + 1)); }
 eval "$(sed -n \
     -e '/^verify_python_candidate()/,/^}/p' \
     -e '/^detect_python()/,/^}/p' \
-    -e '/^graph_populator_python()/,/^}/p' \
     -e '/^read_local_config_value()/,/^}/p' \
     -e '/^SETUP_OWNED_KEYS=/p' \
     -e '/^restore_unowned_config_keys()/,/^}/p' \
@@ -22,7 +21,7 @@ eval "$(sed -n \
 # shellcheck source=../lib/ports.sh
 source "$REPO_ROOT/tools/lib/ports.sh"
 
-for fn in verify_python_candidate detect_python port_listen_pids kill_port_listeners port_in_use graph_populator_python \
+for fn in verify_python_candidate detect_python port_listen_pids kill_port_listeners port_in_use \
     read_local_config_value restore_unowned_config_keys; do
     declare -F "$fn" >/dev/null || fail "doctor.sh or tools/lib/ports.sh defines $fn"
 done
@@ -51,18 +50,6 @@ if [[ -n "$PYTHON_CMD" ]] && verify_python_candidate "$PYTHON_CMD"; then
     pass "detect_python found a working interpreter ($PYTHON_CMD)"
 else
     fail "detect_python found a working interpreter"
-fi
-
-# Venv interpreter path follows the platform layout.
-venv_python="$(graph_populator_python)"
-case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) expected="Scripts/python.exe" ;;
-    *) expected="bin/python" ;;
-esac
-if [[ "$venv_python" == *"/tools/graph-populator/.venv/$expected" ]]; then
-    pass "graph_populator_python uses .venv/$expected"
-else
-    fail "graph_populator_python uses .venv/$expected (got $venv_python)"
 fi
 
 # Port lookup and cleanup work with lsof or, on Git Bash, netstat/taskkill.

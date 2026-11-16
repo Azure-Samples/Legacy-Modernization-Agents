@@ -1,43 +1,14 @@
-import importlib.util
 import json
 import os
 import shutil
-import sys
-import types
+import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, patch
 
 from test_doctor_jcl_scan import JclCommandFixture, REPO
 
 
-def load_isolated_populator():
-    def decorator(*args, **kwargs):
-        return lambda function: function
-
-    def group(*args, **kwargs):
-        def decorate(function):
-            function.command = decorator
-            return function
-        return decorate
-
-    click = types.ModuleType("click")
-    click.group, click.command, click.option = group, decorator, decorator
-    neo4j = types.ModuleType("neo4j")
-    neo4j.GraphDatabase = Mock()
-    neo4j.GraphDatabase.driver.side_effect = AssertionError("No database is allowed in this test")
-    neo4j.ManagedTransaction = object
-    console = types.ModuleType("rich.console")
-    console.Console = Mock
-    progress = types.ModuleType("rich.progress")
-    for name in ("Progress", "SpinnerColumn", "BarColumn", "TextColumn"):
-        setattr(progress, name, Mock)
-    dependencies = {"click": click, "neo4j": neo4j, "rich": types.ModuleType("rich"),
-                    "rich.console": console, "rich.progress": progress}
-    spec = importlib.util.spec_from_file_location("isolated_jcl_populator", REPO / "tools/graph-populator/populator.py")
-    module = importlib.util.module_from_spec(spec)
-    with patch.dict(sys.modules, dependencies), patch.object(sys, "path", [str(REPO / "tools/graph-populator"), *sys.path]):
-        spec.loader.exec_module(module)
-    return module
+class GraphIngestRefused(Exception):
+    pass
 
 
 class JclCliIngestTests(JclCommandFixture):
@@ -46,23 +17,19 @@ class JclCliIngestTests(JclCommandFixture):
         dll = Path(os.environ.get("JCL_TEST_DLL", REPO / "bin/Debug/net10.0/CobolToQuarkusMigration.dll"))
         self.assertTrue(dll.is_file(), "Build CobolToQuarkusMigration.csproj before running the genuine CLI tests")
         self.env.update(JCL_REAL_DLL=str(dll), JCL_REAL_DOTNET=shutil.which("dotnet"))
-        self.populator = load_isolated_populator()
 
     def consume(self):
-        self.nodes, self.blocks = [], []
-
-        def nodes(driver, label, rows, **kwargs):
-            self.nodes.extend((label, row) for row in rows)
-            return len(rows)
-
-        def blocks(driver, program, text, run_id):
-            self.blocks.append((program, text, run_id))
-
-        with patch.object(self.populator, "batch_merge_nodes", side_effect=nodes), \
-                patch.object(self.populator, "batch_merge_relationships"), \
-                patch.object(self.populator, "create_source_blocks", side_effect=blocks):
-            return self.populator.ingest_rekt_outputs(
-                MagicMock(), str(self.root / "output/rekt"), str(self.root / "source"), 42)
+        # The genuine graph-ingest plans what it would write, so no database is involved.
+        result = subprocess.run([self.env["JCL_REAL_DOTNET"], self.env["JCL_REAL_DLL"], "graph-ingest",
+                                 "--rekt-output", str(self.root / "output/rekt"), "--source-dir", str(self.root / "source"),
+                                 "--run-id", "42", "--dry-run"],
+                                cwd=self.root, env=self.env, capture_output=True, text=True, encoding="utf-8", timeout=90)
+        if result.returncode != 0:
+            raise GraphIngestRefused(result.stderr)
+        plan = json.loads(result.stdout)
+        self.nodes = [(node["label"], node["properties"]) for node in plan["nodes"]]
+        self.blocks = [(row["program"], row["content"], row["runId"]) for label, row in self.nodes if label == "SourceBlock"]
+        return {"JclNode": sum(label == "JclNode" for label, _ in self.nodes)}
 
     def test_external_nested_uppercase_job_roundtrips_exact_source_not_local_same_name(self):
         self.job(text="//WRONG JOB\n//S1 EXEC PGM=IEFBR14\n")
@@ -109,10 +76,8 @@ class JclCliIngestTests(JclCommandFixture):
         self.assertNotEqual(0, result.returncode)
         self.assertEqual(retained, facts_file.read_bytes())
         self.assertFalse((self.root / "ingested.json").exists())
-        with self.assertRaisesRegex(ValueError, "JCL refresh did not complete"):
+        with self.assertRaisesRegex(GraphIngestRefused, "JCL refresh did not complete"):
             self.consume()
-        self.assertEqual([], self.nodes)
-        self.assertEqual([], self.blocks)
         self.assertNotEqual(0, self.run_command("rekt-ingest").returncode)
 
     def test_procedure_or_garbage_extension_is_not_a_successful_job_scan(self):

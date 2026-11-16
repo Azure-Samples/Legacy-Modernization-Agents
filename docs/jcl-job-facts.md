@@ -1,4 +1,4 @@
-**Last updated**: 2026-10-22
+**Last updated**: 2026-11-16
 
 # JCL job facts
 
@@ -151,8 +151,8 @@ The inferred order comes from data only. A scheduler may enforce more, and it ca
 | `READS`, `CREATES`, `APPENDS`, `OPENS_EXCLUSIVE`, `DELETES` | Step → dataset, from the lineage above |
 | `FEEDS` | Job → job, labelled with the datasets that connect them |
 
-A fact file written by a newer schema than the populator knows is skipped with a warning rather than loaded wrongly.
-For external libraries the populator reads source blocks from the fact's `sourceRoot`,
+A fact file written by a newer schema than `graph-ingest` knows is skipped with a warning rather than loaded wrongly.
+For external libraries `graph-ingest` reads source blocks from the fact's `sourceRoot`,
 not an unrelated same-relative-name file under `source/`. Older facts without this
 field retain the `--source-dir` fallback; regenerate them when moving JCL externally.
 
