@@ -67,9 +67,10 @@ public static class RektPreprocessor
         content = PyRegex.Sub(content, @"EXEC\s+SQL\s+INCLUDE\s+(\w+)\s*END-EXEC\.?", "COPY ${1}.", I);
         content = PyRegex.Sub(content, @"([ ]{6,})EXEC\s+SQL\s+GET\s+DIAGNOSTICS\b.*?END-EXEC\.?",
             match => PyRegex.Sub(match.Value, "^(.{6})", "${1}*DB2>", M), RegexOptions.Singleline | I);
-        content = PyRegex.Sub(content, @"COPY\s+'([A-Z0-9]+)'", "COPY ${1}");
+        // COBOL names contain hyphens; REQ-COPY 'A' or MSG-COPY REPLACING is a data name, not a COPY.
+        content = PyRegex.Sub(content, @"(?<![A-Za-z0-9_-])COPY\s+'([A-Z0-9]+)'", "COPY ${1}");
         // The parser limits COPY names to eight characters; shorten only when that alias exists.
-        content = PyRegex.Sub(content, @"(COPY\s+)([A-Z][A-Z0-9_-]{8,})([\s.])", match =>
+        content = PyRegex.Sub(content, @"(?<![A-Za-z0-9_-])(COPY\s+)([A-Z][A-Z0-9_-]{8,})([\s.])", match =>
         {
             var copyName = match.Groups[2].Value;
             var alias = Path.Combine(sourceDir, copyName[..8] + ".cpy");
@@ -198,10 +199,12 @@ public static class RektPreprocessor
     }
 
     // Copy-with-prefix directives would otherwise stop the parser's copybook recursion.
+    // The directive is `-COPY NAME -PRE X-.`; a data name such as REQ-COPY beside WS-PREV is not one.
+    private static readonly Regex CopyWithPrefix = new(@"(?<![A-Za-z0-9_-])-COPY\s.*\s-PRE\b", RegexOptions.IgnoreCase);
+
     private static string CommentCopyWithPrefix(string line)
     {
-        var upper = line.ToUpperInvariant();
-        if (!upper.Contains("-COPY", StringComparison.Ordinal) || !upper.Contains("-PRE", StringComparison.Ordinal) || IsComment(line))
+        if (IsComment(line) || !CopyWithPrefix.IsMatch(line))
             return line;
         return line.Length >= 7 ? line[..6] + "*" + line[7..] : line.PadRight(6)[..6] + "*" + line[Math.Min(6, line.Length)..];
     }

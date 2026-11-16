@@ -37,7 +37,7 @@ public sealed record CopybookOwnership(
 public sealed class CopybookOwnershipRegistry
 {
     private static readonly Regex CopyDirective = new(
-        @"\bCOPY\s+[""']?([A-Za-z][A-Za-z0-9_-]*)",
+        @"(?<![A-Za-z0-9_-])COPY\s+[""']?([A-Za-z][A-Za-z0-9_-]*)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private readonly Dictionary<string, CopybookOwnership> _byCopybook =

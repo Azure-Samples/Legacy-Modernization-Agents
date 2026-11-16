@@ -19,7 +19,7 @@ public sealed class SharedTypeRegistry
         _sharedNames.Clear();
         if (!Directory.Exists(sourceFolder)) return;
 
-        var rxCopy = new Regex(@"^[^*]{0,6}[^*\n].*?\bCOPY\s+['""]?([A-Z][A-Z0-9_-]*)['""]?",
+        var rxCopy = new Regex(@"^[^*]{0,6}[^*\n].*?(?<![A-Z0-9_-])COPY\s+['""]?([A-Z][A-Z0-9_-]*)['""]?",
             RegexOptions.IgnoreCase | RegexOptions.Multiline);
 
         foreach (var program in SourceTypeRegistry.EnumerateProgramFiles(sourceFolder))

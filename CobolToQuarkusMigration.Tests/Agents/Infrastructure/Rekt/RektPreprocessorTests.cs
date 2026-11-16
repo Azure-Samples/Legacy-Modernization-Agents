@@ -85,6 +85,21 @@ public sealed class RektPreprocessorTests : IDisposable
     }
 
     [Fact]
+    public void DataNamesEndingInCopy_AreNotTreatedAsCopyDirectives()
+    {
+        File.WriteAllText(Path.Join(_work, "REPLACIN.cpy"), "");
+        var source = "           INITIALIZE MSG-COPY  REPLACING NUMERIC BY ZEROES.\n"
+            + "           MOVE WS-PREV TO REQ-COPY.\n"
+            + "           -COPY T41J  -PRE T41J-.\n";
+
+        var result = RektPreprocessor.Program(source, _work, []);
+
+        result.Should().Contain("           INITIALIZE MSG-COPY  REPLACING NUMERIC BY ZEROES.\n")
+            .And.Contain("           MOVE WS-PREV TO REQ-COPY.\n")
+            .And.Contain("      *    -COPY T41J  -PRE T41J-.\n");
+    }
+
+    [Fact]
     public void CopybookCli_WritesOnlyRewrittenFiles_AndReadsCrlfAsUnchanged()
     {
         var unchanged = Write("PLAIN.cpy", "       01 WS-A PIC X.\r\n       01 WS-B PIC 9.\r\n");

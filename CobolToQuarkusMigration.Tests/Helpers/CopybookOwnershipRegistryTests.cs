@@ -125,7 +125,7 @@ public sealed class CopybookOwnershipRegistryTests : IDisposable
     public void ACommentedOutCopyDoesNotCreateAUser()
     {
         File.WriteAllText(Path.Join(_root, "QUIET.cbl"),
-            "       IDENTIFICATION DIVISION.\n      * COPY GHOST.\n");
+            "       IDENTIFICATION DIVISION.\n      * COPY GHOST.\n           INITIALIZE WS-COPY GHOST.\n");
         Copybook("GHOST");
 
         Build().Ownerships.Should().BeEmpty();
