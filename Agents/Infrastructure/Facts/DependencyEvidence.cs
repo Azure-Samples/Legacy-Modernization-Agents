@@ -1,8 +1,10 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using CobolToQuarkusMigration.Agents.Infrastructure.Rekt;
 using CobolToQuarkusMigration.Helpers;
 using CobolToQuarkusMigration.Models;
 
@@ -777,32 +779,6 @@ public sealed partial class DependencyEvidenceGate(string factsDirectory)
         }
     }
 
-    private const string LanguageEnvironment = "IBM z/OS Language Environment";
-    private const string LeServices = "https://www.ibm.com/docs/en/zos/3.1.0?topic=services-";
-
-    // Name -> (platform, required documentation reference, declared parameter count).
-    private static readonly Dictionary<string, (string Platform, string Reference, int Count)> RuntimeDocumentation = new()
-    {
-        ["CEEGMT"] = (LanguageEnvironment, LeServices + "ceegmtget-current-greenwich-mean-time", 3),
-        ["CEEDATM"] = (LanguageEnvironment, LeServices + "ceedatmconvert-seconds-character-timestamp", 4),
-        ["CEEDAYS"] = (LanguageEnvironment, LeServices + "ceedaysconvert-date-lilian-format", 4),
-        ["CEELOCT"] = (LanguageEnvironment, LeServices + "ceeloctget-current-local-date-time", 4),
-        ["CEE3ABD"] = (LanguageEnvironment, LeServices + "cee3abdterminate-enclave-abend", 2),
-        ["CBLTDLI"] = ("IBM IMS", "https://www.ibm.com/docs/en/SSEPH2_15.4.0/com.ibm.ims154.doc.apg/ims_imsdbcobolapp.htm", 4),
-        ["DSNTIAC"] = ("IBM Db2 for z/OS", "https://www.ibm.com/docs/en/db2-for-zos/13.0.0?topic=statements-handling-sql-error-codes-in-cobol-applications", 5),
-    };
-
-    private static readonly Dictionary<string, string> AssemblerServices = new()
-    {
-        ["STIMER"] = "https://www.ibm.com/docs/en/SSLTBW_3.1.0/com.ibm.zos.v3r1.ieaa900/stimer.htm",
-    };
-
-    private static readonly HashSet<string> HlasmOperations =
-    [
-        "START", "CSECT", "DSECT", "USING", "DROP", "EQU", "DS", "DC", "LTORG", "END", "COPY", "MACRO", "MEND",
-        "STM", "LM", "L", "ST", "LA", "LR", "SR", "BR", "B", "BE", "BNE", "MVI", "MVC", "CLI", "CLC",
-    ];
-
     private static bool ValidParameters(JsonElement definition) =>
         definition.TryGetProperty("parameters", out var parameters) && parameters.ValueKind == JsonValueKind.Array
         && parameters.EnumerateArray().All(parameter => parameter.ValueKind == JsonValueKind.Object
@@ -817,11 +793,13 @@ public sealed partial class DependencyEvidenceGate(string factsDirectory)
             || Text(binding, "resolutionKind") != "documented-platform-contract"
             || Text(binding, "runtimeMapping") != "unverified"
             || !binding.TryGetProperty("definition", out var definition) || definition.ValueKind != JsonValueKind.Object
-            || binding.TryGetProperty("targetResolution", out var resolution) && !ValidDynamicCallResolution(resolution, name))
+            || binding.TryGetProperty("targetResolution", out var resolution)
+                && !RektEvidence.DynamicCallResolutionBound(JsonNode.Parse(resolution.GetRawText()), name))
             return false;
         if (Text(definition, "kind") == "estate-assembler-routine")
-            return !RuntimeDocumentation.ContainsKey(name) && AssemblerRoutineProblem(name, definition, null, null) is null;
-        return RuntimeDocumentation.TryGetValue(name, out var expected)
+            return !RektEvidence.RuntimeDocumentation.ContainsKey(name)
+                && AssemblerRoutineProblem(name, definition, null, null) is null;
+        return RektEvidence.RuntimeDocumentation.TryGetValue(name, out var expected)
             && Text(definition, "kind") == "documented-platform-service"
             && Text(definition, "platform") == expected.Platform
             && definition.TryGetProperty("documentation", out var documentation)
@@ -832,105 +810,8 @@ public sealed partial class DependencyEvidenceGate(string factsDirectory)
             && definition.GetProperty("parameters").GetArrayLength() == expected.Count;
     }
 
-    private static readonly HashSet<string> CallOperandFollowers =
-        ["USING", "RETURNING", "ON", "NOT", "EXCEPTION", "OVERFLOW", "END-CALL", "."];
-
-    /// <summary>CALL identifier proved by the native parser to hold one never-modified program-name constant.</summary>
-    private static bool ValidDynamicCallResolution(JsonElement resolution, string name)
-    {
-        if (resolution.ValueKind != JsonValueKind.Object
-            || resolution.EnumerateObject().Select(property => property.Name).Order(StringComparer.Ordinal)
-                .SequenceEqual(new[] { "callSyntax", "operand", "targetResolution" }) is false
-            || Text(resolution, "operand") is not { } operand || !Regex.IsMatch(operand, "^[A-Z][A-Z0-9-]*$")
-            || resolution.GetProperty("callSyntax") is var syntax && (syntax.ValueKind != JsonValueKind.Object
-                || Text(syntax, "rule") != "CallStatementContext"))
-            return false;
-        var tokens = CicsNodes(syntax).Where(node => node.TryGetProperty("token", out _))
-            .Select(node => node.GetProperty("token").GetString()!.ToUpperInvariant()).ToList();
-        if (tokens.Count < 2 || tokens[0] != "CALL" || tokens[1] != operand
-            || tokens.Count > 2 && !CallOperandFollowers.Contains(tokens[2]))
-            return false;
-        using var synthetic = JsonDocument.Parse(JsonSerializer.Serialize(new
-        {
-            rule = "Cics_nameContext",
-            children = new object[] { new { token = "(" }, new { token = operand }, new { token = ")" } }
-        }));
-        return CicsConstantOperand(synthetic.RootElement, resolution.GetProperty("targetResolution"), 1, 8)
-            is { } value && value.ToUpperInvariant() == name;
-    }
-
-    private static IEnumerable<string[]> AssemblerStatements(string text)
-    {
-        foreach (var raw in text.Split('\n'))
-        {
-            var line = (raw.Length > 71 ? raw[..71] : raw).TrimEnd('\r', ' ');
-            if (line.Trim().Length == 0 || line.StartsWith('*') || line.StartsWith(".*")) continue;
-            var fields = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            yield return line[0] == ' ' ? ["", .. fields] : fields;
-        }
-    }
-
-    /// <summary>Why an estate assembler routine is not a closed, hash-bound leaf; null when it is.</summary>
-    private static string? AssemblerRoutineProblem(string name, JsonElement definition, string? sourceRoot, string? estate)
-    {
-        if (Text(definition, "language") != "IBM High Level Assembler" || Text(definition, "entry") != name
-            || !definition.TryGetProperty("includes", out var includes) || includes.ValueKind != JsonValueKind.Array
-            || !definition.TryGetProperty("systemServices", out var services) || services.ValueKind != JsonValueKind.Array
-            || !ValidParameters(definition) || definition.GetProperty("parameters").GetArrayLength() == 0
-            || !definition.TryGetProperty("semantics", out var semantics) || semantics.ValueKind != JsonValueKind.Object
-            || !semantics.EnumerateObject().Any()
-            || includes.EnumerateArray().Any(item => item.ValueKind != JsonValueKind.Object
-                || Text(item, "kind") is not ("macro" or "copy") || string.IsNullOrEmpty(Text(item, "name")))
-            || includes.EnumerateArray().Select(item => Text(item, "name")).Distinct().Count() != includes.GetArrayLength()
-            || services.EnumerateArray().Any(item => item.ValueKind != JsonValueKind.Object
-                || !AssemblerServices.TryGetValue(Text(item, "name") ?? "", out var reference)
-                || !item.TryGetProperty("documentation", out var docs) || docs.ValueKind != JsonValueKind.Array
-                || docs.GetArrayLength() != 1 || docs[0].GetString() != reference))
-            return "assembler routine contract is malformed";
-        var files = new[] { definition }.Concat(includes.EnumerateArray())
-            .Select(item => (Relative: Text(item, "source"), Sha: Text(item, "sourceSha256"))).ToArray();
-        foreach (var (relative, sha) in files)
-            if (string.IsNullOrEmpty(relative) || Path.IsPathRooted(relative) || relative.Split('/').Contains("..")
-                || sha is null || !System.Text.RegularExpressions.Regex.IsMatch(sha, "^[0-9a-f]{64}$")
-                || estate is not null && relative.Split('/')[0] != estate)
-                return $"assembler source {relative} is not an estate-relative hash-bound path";
-        if (sourceRoot is null) return null;
-        var texts = new List<string>();
-        foreach (var (relative, sha) in files)
-        {
-            var path = Path.GetFullPath(Path.Combine(sourceRoot, relative!));
-            if (!IsWithin(path, sourceRoot) || !File.Exists(path)
-                || Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path)))
-                    .ToLowerInvariant() != sha)
-                return $"assembler source {relative} differs from its contract hash";
-            texts.Add(File.ReadAllText(path, System.Text.Encoding.Latin1));
-        }
-        var statements = AssemblerStatements(texts[0]).ToList();
-        if (!statements.Any(fields => fields[0] == name && fields.Length > 1 && fields[1] is "START" or "CSECT"))
-            return $"assembler source does not define entry {name}";
-        var used = statements.Where(fields => fields.Length > 1).Select(fields => fields[1]).ToHashSet();
-        var index = 1;
-        foreach (var item in includes.EnumerateArray())
-        {
-            var body = AssemblerStatements(texts[index++]).ToList();
-            if (Text(item, "kind") == "macro")
-            {
-                if (body.Count < 3 || body[0] is not ["", "MACRO"] || body[1].Length < 2 || body[1][1] != Text(item, "name")
-                    || body[^1].Length < 2 || body[^1][1] != "MEND")
-                    return $"macro {Text(item, "name")} does not define its prototype";
-                body = body[2..^1];
-            }
-            used.UnionWith(body.Where(fields => fields.Length > 1).Select(fields => fields[1]));
-            statements.AddRange(body);
-        }
-        var copies = statements.Where(fields => fields.Length > 2 && fields[1] == "COPY").Select(fields => fields[2]).ToHashSet();
-        if (!copies.SetEquals(includes.EnumerateArray().Where(item => Text(item, "kind") == "copy").Select(item => Text(item, "name")!)))
-            return "assembler COPY members differ from the declared includes";
-        var declared = includes.EnumerateArray().Where(item => Text(item, "kind") == "macro").Select(item => Text(item, "name")!)
-            .Concat(services.EnumerateArray().Select(item => Text(item, "name")!)).ToHashSet();
-        return used.Except(HlasmOperations).ToHashSet().SetEquals(declared)
-            ? null : "assembler operations outside the closed contract";
-    }
+    private static string? AssemblerRoutineProblem(string name, JsonElement definition, string? sourceRoot, string? estate) =>
+        RektEvidence.AssemblerRoutineProblem(name, JsonNode.Parse(definition.GetRawText()), sourceRoot, estate);
 
     private static void ValidateTransactions(string identity, DependencyEvidence evidence,
         ExportTree tree, string sourceRoot, List<string> issues)

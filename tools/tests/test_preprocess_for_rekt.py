@@ -10,6 +10,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = REPO_ROOT / "tools" / "preprocess-for-rekt.sh"
 WORK_ROOT = REPO_ROOT / "tools" / "tests" / "_work"
+# The script runs the migration CLI; reuse the built assembly instead of building it per test.
+CLI_ASSEMBLY = Path(os.environ.get("MIGRATION_CLI_ASSEMBLY") or REPO_ROOT / "bin/Debug/net10.0/CobolToQuarkusMigration.dll")
 # Mirrors StubCopybookCatalog.Marker and REKT_STUB_MARKER in doctor.sh.
 MARKER = "AUTO-GENERATED STUB COPYBOOK"
 
@@ -36,6 +38,8 @@ class PreprocessForRektTests(unittest.TestCase):
         if shadowed is not None:
             env["REKT_SHADOWED_COPYBOOKS_FILE"] = str(shadowed)
         env["REKT_NO_STUB_COPYBOOKS"] = "false" if stubs else "true"
+        if CLI_ASSEMBLY.is_file():
+            env["MIGRATION_CLI_ASSEMBLY"] = str(CLI_ASSEMBLY)
         # Never pick up a developer's local estate rules from Config/.
         env["REKT_PREPROCESS_RULES"] = str(rules) if rules else str(self.work_dir / "no-rules.json")
         return subprocess.run(
@@ -144,7 +148,7 @@ class PreprocessForRektTests(unittest.TestCase):
                              provenance["originalSourcePath"])
         self.assertFalse((self.source_dir / ".preprocessed/SAMPLE.cbl").exists())
         checked = subprocess.run(
-            [os.sys.executable, str(REPO_ROOT / "tools/rekt_source_identity.py"),
+            ["dotnet", str(CLI_ASSEMBLY), "rekt-source-identity",
              str(self.source_dir), str(self.source_dir / ".preprocessed")],
             capture_output=True, text=True)
         self.assertEqual(0, checked.returncode, checked.stdout + checked.stderr)

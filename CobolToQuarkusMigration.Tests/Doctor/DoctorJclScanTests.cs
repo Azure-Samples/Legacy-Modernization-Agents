@@ -20,6 +20,8 @@ public sealed class DoctorJclScanTests : IDisposable
     {
         _doctor.Job();
         var assembly = Path.Join(Root, "isolated output/Migration.dll");
+        Directory.CreateDirectory(Path.GetDirectoryName(assembly)!);
+        File.WriteAllText(assembly, "");
         _doctor.Env["MIGRATION_CLI_ASSEMBLY"] = assembly;
 
         _doctor.Run("rekt-parse").ShouldSucceed();

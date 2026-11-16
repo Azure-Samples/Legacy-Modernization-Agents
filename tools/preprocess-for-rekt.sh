@@ -15,31 +15,35 @@ FIND_DEPTH=()
 
 mkdir -p "$PREPROC_DIR"
 
-# Detect python that actually runs; on Windows python/python3 may be the Microsoft Store stub.
-PYTHON=""
-for candidate in python3 python; do
-    if command -v "$candidate" >/dev/null 2>&1 \
-        && [[ "$("$candidate" -c 'import sys; sys.stdout.write("ok")' 2>/dev/null)" == "ok" ]]; then
-        PYTHON="$candidate"
-        break
+# Preprocessing, evidence, platform contracts and BMS maps run in the migration CLI. doctor.sh exports the assembly it
+# already built; run standalone, the script builds it quietly once.
+LMA_CLI_ASSEMBLY="${_LMA_CLI_ASSEMBLY:-${MIGRATION_CLI_ASSEMBLY:-}}"
+if [[ -z "$LMA_CLI_ASSEMBLY" ]]; then
+    REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+    if ! (cd "$REPO_ROOT" && "${DOTNET_CMD:-dotnet}" build CobolToQuarkusMigration.csproj -v q -nologo >/dev/null 2>&1); then
+        echo "  ⚠️  Build failed. Run: dotnet build CobolToQuarkusMigration.csproj" >&2
+        exit 1
     fi
-done
-
-if [[ -z "$PYTHON" ]]; then
-    echo "  ⚠️  Python not found — preprocessor needs python3"
+    LMA_CLI_ASSEMBLY="$(cd "$REPO_ROOT" && "${DOTNET_CMD:-dotnet}" build CobolToQuarkusMigration.csproj -nologo -getProperty:TargetPath 2>/dev/null | tr -d '\r')"
+fi
+if [[ ! -f "$LMA_CLI_ASSEMBLY" ]]; then
+    echo "  ⚠️  Migration CLI assembly not found: ${LMA_CLI_ASSEMBLY:-unresolved}" >&2
     exit 1
 fi
+lma_cli() {
+    "${DOTNET_CMD:-dotnet}" "$LMA_CLI_ASSEMBLY" "$@"
+}
 
 # Old shadows cannot override changed originals, including files no longer needing a rewrite.
 # Preserve them for diagnosis, and generate this run's outputs only from current inputs.
-"$PYTHON" "$SCRIPT_DIR/rekt_dependency_evidence.py" reset-preprocessed --output-root "$PREPROC_DIR"
+lma_cli rekt-evidence reset-preprocessed --output-root "$PREPROC_DIR"
 
 # Preprocess copybooks before programs.
 cpy_count=0
 # Recursive find so nested layouts (source/lib/cpy/, etc.) are picked up.
 # -print0 / read -d '' avoids issues with paths containing whitespace.
 while IFS= read -r -d '' cpy; do
-    if ! "$PYTHON" "$SCRIPT_DIR/rekt_dependency_evidence.py" validate-definition --source "$cpy"; then
+    if ! lma_cli rekt-evidence validate-definition --source "$cpy"; then
         echo "  Ignoring placeholder or unverified definition; genuine source required: $cpy"
         continue
     fi
@@ -48,204 +52,11 @@ while IFS= read -r -d '' cpy; do
         && grep -qxF "$cpy" "$REKT_SHADOWED_COPYBOOKS_FILE"; then
         continue
     fi
-    "$PYTHON" -c "
-import os, re, sys
-
-source_path = sys.argv[1]
-preproc_dir = sys.argv[2]
-fname = os.path.basename(source_path)
-
-with open(source_path, 'r', encoding='latin-1') as f:
-    content = f.read()
-
-original = content
-
-# Strip sequence numbers that leaked from columns 73-80 into source text.
-def strip_trailing_seq(text):
-    out = []
-    for line in text.split('\n'):
-        raw = line.rstrip()
-        # Skip comment lines
-        if len(raw) > 6 and raw[6] == '*':
-            out.append(line)
-            continue
-        # Columns 73-80 are the identification area, which the compiler ignores. Unless a token
-        # straddles column 72, drop it here, before later steps shift text left into code.
-        if len(raw) > 72 and (raw[71] == ' ' or raw[72] == ' '):
-            out.append(raw[:72].rstrip())
-            continue
-        # Pattern 1: trailing seq separated by whitespace on long fixed-format lines
-        m = re.match(r'^(.+?)\s+(\d{8})$', raw) if len(raw) > 72 else None
-        if m:
-            out.append(m.group(1))
-            continue
-        # Pattern 2: trailing seq concatenated after period
-        m = re.match(r'^(.+\.)(\d{8})$', raw)
-        if m:
-            out.append(m.group(1))
-            continue
-        out.append(line)
-    return '\n'.join(out)
-
-content = strip_trailing_seq(content)
-
-# Replace :TOKEN: with XTOKEN (valid COBOL identifier)
-content = re.sub(r\":\'([A-Z][A-Z0-9_-]+)\':\", lambda m: \"'X\" + m.group(1).replace('-','') + \"'\", content)
-content = re.sub(r':([A-Z][A-Z0-9_-]+):', lambda m: 'X' + m.group(1).replace('-',''), content)
-
-def insert_filler(m):
-    prefix = m.group(1)   # seq + leading whitespace
-    level = m.group(2)    # level number
-    gap = m.group(3)      # whitespace between level and PIC/REDEFINES
-    kw = m.group(4)       # PIC or REDEFINES
-    # Shrink gap to make room for 'FILLER ' (7 chars) — keep at least 1 space
-    new_gap_len = max(1, len(gap) - 7)
-    return prefix + level + ' ' * new_gap_len + 'FILLER ' + kw
-
-# Add FILLER to anonymous data entries, with or without sequence numbers.
-content = re.sub(
-    r'^(\d{6}\s+|\s+)(\d{1,2})(\s{1,})(PIC\b)',
-    insert_filler,
-    content,
-    flags=re.MULTILINE
-)
-
-# Add FILLER to anonymous REDEFINES: '  NN  REDEFINES' → '  NN FILLER REDEFINES'
-content = re.sub(
-    r'^(\d{6}\s+|\s+)(\d{1,2})(\s{1,})(REDEFINES\b)',
-    insert_filler,
-    content,
-    flags=re.MULTILINE
-)
-
-# Truncate identification-area metadata; compress whitespace only for actual overflow code.
-def enforce_col72(text):
-    out_lines = []
-    # Anything in cols 73+ that's only digits/dots/dashes/slashes/colons/spaces
-    # is treated as an audit stamp and dropped.
-    stamp_rx = _re_module.compile(r'^[0-9.\-:/ ]+\s*$')
-    for line in text.split('\n'):
-        raw = line.rstrip()
-        if len(raw) > 72 and not raw.lstrip().startswith('*'):
-            tail = raw[72:]
-            if stamp_rx.match(tail):
-                # Case A — drop the audit stamp
-                out_lines.append(raw[:72].rstrip())
-                continue
-            # Case B — overflow is real code, try to compress whitespace
-            compressed = _re_module.sub(r'(\S)(  +)(\S)', lambda m: m.group(1) + ' ' * max(1, len(m.group(2)) - (len(raw) - 72)) + m.group(3), raw)
-            if len(compressed) > 72:
-                # More aggressive: shrink ALL multi-space runs
-                while len(compressed) > 72:
-                    compressed = _re_module.sub(r'(  +)', lambda m: ' ' * max(1, len(m.group(1)) - 1), compressed, count=1)
-                    if '  ' not in compressed:
-                        break
-            out_lines.append(compressed)
-        else:
-            out_lines.append(line)
-    return '\n'.join(out_lines)
-
-# Import re once at module scope for enforce_col72
-import re as _re_module
-content = enforce_col72(content)
-
-# Remove Endevor date/time audit stamps that the parser mistakes for COBOL tokens.
-content = _re_module.sub(
-    r'(\.)\s+(\d{1,4}[.\-/]\d{1,2}[.\-/]\d{1,4})\s*$',
-    r'\1', content, flags=_re_module.MULTILINE)
-# Also remove audit stamps without a preceding period.
-content = _re_module.sub(
-    r'\s{2,}(\d{1,4}[.\-/]\d{1,2}[.\-/]\d{1,4})\s*$',
-    '', content, flags=_re_module.MULTILINE)
-
-# Rename consecutive FILLER REDEFINES of the same field to unique names.
-# smojol parser chokes on >10 consecutive FILLER REDEFINES of one field.
-counter = [0]
-def unique_redefines(m):
-    counter[0] += 1
-    prefix = m.group(1)  # leading whitespace + seq number
-    level = m.group(2)   # level number (05)
-    mid = m.group(3)     # whitespace before REDEFINES keyword
-    rest = m.group(4)    # 'REDEFINES PARM-DATE' etc.
-    unique_name = f'FIL-R{counter[0]:03d}'
-    # Shrink mid whitespace to compensate for longer name
-    filler_len = len('FILLER')
-    name_len = len(unique_name)
-    adjust = name_len - filler_len
-    new_mid = mid[:-(adjust)] if adjust > 0 and len(mid) > adjust else mid
-    return prefix + level + ' ' + unique_name + new_mid + rest
-
-content = re.sub(
-    r'^(\s*\d{0,6}\s+)(\d{2})\s+FILLER(\s+)(REDEFINES\s+\S+)',
-    unique_redefines,
-    content,
-    flags=re.MULTILINE
-)
-
-# Comment out section labels that become invalid when SAMPLE copybooks are included inline.
-bname = fname.upper()
-if bname.startswith('SAMPLE') and not bname.endswith('I.CPY'):
-    content = re.sub(
-        r'^(\s*\d{0,6})( )([A-Z][A-Z0-9-]+\s+SECTION\s*\.\s*)$',
-        r'\1*\3',
-        content,
-        flags=re.MULTILINE | re.IGNORECASE
-    )
-
-# Replace unsupported MOVE CORR/CORRESPONDING statements, including multiline forms.
-lines = content.splitlines(keepends=True)
-result_lines = []
-skip_to_line = False
-for line in lines:
-    if skip_to_line:
-        # This continuation line has the TO clause — suppress it
-        m_seq = re.match(r'^(\d{6})', line)
-        if m_seq:
-            result_lines.append(m_seq.group(1) + '*COR>' + line[6:])
-        else:
-            result_lines.append(re.sub(r'^(.{6})', r'\1*COR>', line))
-        skip_to_line = False
-        continue
-    if re.search(r'\bMOVE\s+CORR(ESPONDING)?\b', line, re.IGNORECASE):
-        # Replace with CONTINUE, preserving indentation
-        m_indent = re.match(r'^(\s*\d{0,6}\s+)', line)
-        indent = m_indent.group(1) if m_indent else '           '
-        result_lines.append(indent + 'CONTINUE\n')
-        if not re.search(r'\bTO\b', line, re.IGNORECASE):
-            skip_to_line = True  # next line has the TO clause
-    else:
-        result_lines.append(line)
-content = ''.join(result_lines)
-
-# Replace European decimal comma in numeric literals: '2415020,5' → '2415020.5'
-# Some COBOL programs use comma as decimal separator (Danish/German convention).
-content = re.sub(r'(\b\d+),(\d+\b)', r'\1.\2', content)
-
-# Rewrites that add characters push space-padded lines past column 80, which the parser
-# rejects. Only the identification area of such lines is dropped; columns 1-72 are kept.
-def fit_fixed_format(text):
-    out = []
-    for line in text.split('\n'):
-        if len(line) > 80:
-            if line[72:].strip() == '':
-                line = line[:72]
-            elif len(line) > 6 and line[6] in '*/':
-                line = line[:80]
-        out.append(line)
-    return '\n'.join(out)
-
-if content != original:
-    content = fit_fixed_format(content)
-    with open(os.path.join(preproc_dir, fname), 'w', encoding='latin-1') as f:
-        f.write(content)
-    sys.exit(0)
-else:
-    sys.exit(1)
-" "$cpy" "$PREPROC_DIR" 2>/dev/null && {
-    "$PYTHON" "$SCRIPT_DIR/rekt_dependency_evidence.py" provenance \
-        --source "$cpy" --target "$PREPROC_DIR/$(basename "$cpy")"
-    cpy_count=$((cpy_count + 1))
-}
+    if lma_cli rekt-preprocess copybook --source "$cpy" --output-root "$PREPROC_DIR" 2>/dev/null; then
+        lma_cli rekt-evidence provenance \
+            --source "$cpy" --target "$PREPROC_DIR/$(basename "$cpy")"
+        cpy_count=$((cpy_count + 1))
+    fi
 done < <(find "$SOURCE_DIR" ${FIND_DEPTH[@]+"${FIND_DEPTH[@]}"} \
     \( -name "*.cpy" -o -name "*.CPY" \) \
     -type f \
@@ -260,7 +71,7 @@ done < <(find "$SOURCE_DIR" ${FIND_DEPTH[@]+"${FIND_DEPTH[@]}"} \
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REKT_PREPROCESS_RULES="${REKT_PREPROCESS_RULES:-$SCRIPT_DIR/../Config/rekt-preprocess.local.json}"
 if [[ -f "$REKT_PREPROCESS_RULES" ]]; then
-    if "$PYTHON" -c 'import json, sys; json.load(open(sys.argv[1], encoding="utf-8"))["programRewrites"]' "$REKT_PREPROCESS_RULES" 2>/dev/null; then
+    if lma_cli rekt-preprocess check-rules --rules "$REKT_PREPROCESS_RULES" 2>/dev/null; then
         echo "  Using local preprocess rules: $REKT_PREPROCESS_RULES"
         export REKT_PREPROCESS_RULES
     else
@@ -274,528 +85,12 @@ fi
 # Preprocess COBOL programs.
 cbl_count=0
 while IFS= read -r -d '' cbl; do
-    "$PYTHON" -c "
-import os, re, sys
-
-source_path = sys.argv[1]
-source_dir = sys.argv[2]
-preproc_dir = sys.argv[3]
-fname = os.path.basename(source_path)
-
-with open(source_path, 'r', encoding='latin-1') as f:
-    content = f.read()
-
-original = content
-
-# Estate-specific rewrites live in a git-ignored rules file so that names from a
-# customer's source never land in this script. See docs/keeping-estate-data-private.md.
-import json
-_local_rules = []
-_rules_path = os.environ.get('REKT_PREPROCESS_RULES', '')
-if _rules_path and os.path.isfile(_rules_path):
-    with open(_rules_path, 'r', encoding='utf-8') as fh:
-        _local_rules = json.load(fh).get('programRewrites', [])
-
-def apply_local_rules(text, stage):
-    for rule in _local_rules:
-        if rule.get('stage', 'early') != stage:
-            continue
-        if rule.get('literal'):
-            text = text.replace(rule['find'], rule['replace'])
-        else:
-            flags = 0
-            for name in rule.get('flags', []):
-                flags |= getattr(re, name)
-            text = re.sub(rule['find'], rule['replace'], text, flags=flags)
-    return text
-
-# 0. Strip trailing sequence numbers embedded in content area
-def strip_trailing_seq(text):
-    out = []
-    for line in text.split('\n'):
-        raw = line.rstrip()
-        # Skip comment lines
-        if len(raw) > 6 and raw[6] == '*':
-            out.append(line)
-            continue
-        # Columns 73-80 are the identification area, which the compiler ignores. Unless a token
-        # straddles column 72, drop it here, before later steps shift text left into code.
-        if len(raw) > 72 and (raw[71] == ' ' or raw[72] == ' '):
-            out.append(raw[:72].rstrip())
-            continue
-        m = re.match(r'^(.+?)\s+(\d{8})$', raw) if len(raw) > 72 else None
-        if m:
-            out.append(m.group(1))
-            continue
-        m = re.match(r'^(.+\.)(\d{8})$', raw)
-        if m:
-            out.append(m.group(1))
-            continue
-        out.append(line)
-    return '\n'.join(out)
-
-content = strip_trailing_seq(content)
-
-# Replace European decimal commas in numeric literals.
-content = re.sub(r'(\b\d+),(\d+\b)', r'\1.\2', content)
-
-# 1. Comment out EXEC DLI ... END-EXEC blocks (IMS/DL/I calls)
-content = re.sub(
-    r'([ ]{6,})EXEC\s+DLI\b.*?END-EXEC\.?',
-    lambda m: re.sub(r'^(.{6})', r'\g<1>*IMS>', m.group(0), flags=re.MULTILINE),
-    content,
-    flags=re.DOTALL | re.IGNORECASE
-)
-
-# 2. EXEC SQL INCLUDE name END-EXEC → COPY name.
-content = re.sub(
-    r'EXEC\s+SQL\s+INCLUDE\s+(\w+)\s*END-EXEC\.?',
-    r'COPY \1.',
-    content,
-    flags=re.IGNORECASE
-)
-
-# 3. Comment out EXEC SQL GET DIAGNOSTICS ... END-EXEC blocks
-content = re.sub(
-    r'([ ]{6,})EXEC\s+SQL\s+GET\s+DIAGNOSTICS\b.*?END-EXEC\.?',
-    lambda m: re.sub(r'^(.{6})', r'\g<1>*DB2>', m.group(0), flags=re.MULTILINE),
-    content,
-    flags=re.DOTALL | re.IGNORECASE
-)
-
-# 4. Strip quoted COPY names: COPY 'NAME' → COPY NAME
-content = re.sub(r\"COPY\s+'([A-Z0-9]+)'\", r'COPY \1', content)
-
-# 4b. Truncate COPY names >8 chars to 8 chars (smojol limit)
-import os
-def truncate_copy(m):
-    prefix = m.group(1)
-    name = m.group(2)
-    suffix = m.group(3)
-    if len(name) > 8:
-        short = name[:8]
-        # Only truncate if an 8-char alias copybook exists
-        alias = os.path.join(source_dir, short + '.cpy')
-        if os.path.exists(alias):
-            return prefix + short + suffix
-    return m.group(0)
-
-content = re.sub(
-    r'(COPY\s+)([A-Z][A-Z0-9_-]{8,})([\s.])',
-    truncate_copy,
-    content,
-    flags=re.IGNORECASE
-)
-
-# 5. Resolve pseudo-text tokens :TOKEN: → XTOKEN
-content = re.sub(r\":\'([A-Z][A-Z0-9_-]+)\':\", lambda m: \"'X\" + m.group(1).replace('-','') + \"'\", content)
-content = re.sub(r':([A-Z][A-Z0-9_-]+):', lambda m: 'X' + m.group(1).replace('-',''), content)
-
-# 5b. Replace MOVE CORR/CORRESPONDING with comment (smojol NPE bug)
-# Place '*' in column 7 for proper COBOL comment
-def comment_move_corr(m):
-    full = m.group(0)
-    # Ensure column 7 has '*'
-    if len(full) >= 7:
-        return full[:6] + '*' + full[7:]
-    return full
-
-content = re.sub(
-    r'^.{0,6}[ ]+MOVE\s+CORR(?:ESPONDING)?\s.*$',
-    comment_move_corr,
-    content,
-    flags=re.MULTILINE | re.IGNORECASE
-)
-
-# 5c. Simplify reference modification with arithmetic expressions
-# (TALLY + 1:WS-LGT) → (1:WS-LGT) - smojol can't parse arithmetic in ref-mod
-content = re.sub(
-    r'\(([A-Z][A-Z0-9_-]*\s*[+\-]\s*\d+):',
-    r'(1:',
-    content,
-    flags=re.IGNORECASE
-)
-
-# 5d. Normalize numeric MOVE literals written as 0(1) / 1(1) so the parser sees
-#     a plain numeric literal instead of unsupported parenthesized syntax.
-content = content.replace('MOVE 0(1) TO', 'MOVE 0 TO')
-content = content.replace('MOVE 1(1) TO', 'MOVE 1 TO')
-
-def insert_filler(m):
-    prefix = m.group(1)
-    level = m.group(2)
-    gap = m.group(3)
-    kw = m.group(4)
-    new_gap_len = max(1, len(gap) - 7)
-    return prefix + level + ' ' * new_gap_len + 'FILLER ' + kw
-
-# 6. Add FILLER to anonymous data entries (shrink whitespace to stay within col 72)
-# Pattern handles both lines with 6-digit sequence numbers and plain indented lines.
-content = re.sub(
-    r'^(\d{6}\s+|\s+)(\d{1,2})(\s{1,})(PIC\b)',
-    insert_filler,
-    content,
-    flags=re.MULTILINE
-)
-
-# 7. Add FILLER to anonymous REDEFINES
-content = re.sub(
-    r'^(\d{6}\s+|\s+)(\d{1,2})(\s{1,})(REDEFINES\b)',
-    insert_filler,
-    content,
-    flags=re.MULTILINE
-)
-
-# 8b. Best-effort normalize compiler-specific copy-with-prefix lines so the parser
-#     can keep scanning the file instead of aborting recursion on these directives.
-def comment_copy_with_prefix(line):
-    upper = line.upper()
-    if '-COPY' in upper and '-PRE' in upper and not (len(line) > 6 and line[6] == '*'):
-        if len(line) >= 7:
-            return line[:6] + '*' + line[7:]
-        return (line[:6].ljust(6)) + '*' + line[6:]
-    return line
-
-content = '\n'.join(comment_copy_with_prefix(line) for line in content.split('\n'))
-
-# 8c. Best-effort rewrite unsupported figurative constants using punctuation so the
-#     parser sees a safe literal rather than failing on ALL '%'.
-def normalize_all_punct(line):
-    if len(line) > 6 and line[6] == '*':
-        return line
-    return re.sub(r'(\bMOVE\s+)\bALL\s+\'([^\']+)\'',
-                  lambda m: m.group(1) + \"'\" + m.group(2) + \"'\", line,
-                  flags=re.IGNORECASE)
-
-content = '\n'.join(normalize_all_punct(line) for line in content.split('\n'))
-
-# 9. Enforce column 72 limit
-def enforce_col72(text):
-    out_lines = []
-    for line in text.split('\n'):
-        raw = line.rstrip()
-        if len(raw) > 72 and not raw.lstrip().startswith('*'):
-            import re as _re
-            compressed = _re.sub(r'(\S)(  +)(\S)', lambda m: m.group(1) + ' ' * max(1, len(m.group(2)) - (len(raw) - 72)) + m.group(3), raw)
-            if len(compressed) > 72:
-                while len(compressed) > 72:
-                    compressed = _re.sub(r'(  +)', lambda m: ' ' * max(1, len(m.group(1)) - 1), compressed, count=1)
-                    if '  ' not in compressed:
-                        break
-            out_lines.append(compressed)
-        else:
-            out_lines.append(line)
-    return '\n'.join(out_lines)
-
-content = apply_local_rules(content, 'early')
-
-content = enforce_col72(content)
-
-# 10a. Fix AUTHOR paragraph: apostrophes in author names confuse the IBM COBOL preprocessor
-#      e.g. AUTHOR. James O'Grady. -> AUTHOR. UNKNOWN.
-content = re.sub(
-    r'^(\s*AUTHOR\s*\.\s*)([^\n]*)$',
-    lambda m: m.group(1) + 'UNKNOWN.' if \"'\" in m.group(2) else m.group(0),
-    content,
-    flags=re.MULTILINE
-)
-
-# 10. Rename consecutive FILLER REDEFINES to unique names (smojol limit)
-counter = [0]
-def unique_redefines(m):
-    counter[0] += 1
-    prefix = m.group(1)
-    level = m.group(2)
-    mid = m.group(3)
-    rest = m.group(4)
-    unique_name = f'FIL-R{counter[0]:03d}'
-    filler_len = len('FILLER')
-    name_len = len(unique_name)
-    adjust = name_len - filler_len
-    new_mid = mid[:-(adjust)] if adjust > 0 and len(mid) > adjust else mid
-    return prefix + level + ' ' + unique_name + new_mid + rest
-
-content = re.sub(
-    r'^(\s*\d{0,6}\s+)(\d{2})\s+FILLER(\s+)(REDEFINES\s+\S+)',
-    unique_redefines,
-    content,
-    flags=re.MULTILINE
-)
-
-# Cursor declarations are supported by the native DB2 grammar. Retain their
-# queries and host variables instead of hiding dependencies in comments.
-
-# 15. Normalize lowercase figurative constants to uppercase
-#     (smojol FigurativeConstantMap only handles uppercase)
-import re as _re2
-def normalize_figuratives(text):
-    # Only replace in non-comment, non-string-literal contexts
-    result = []
-    for line in text.split('\n'):
-        if len(line) > 6 and line[6] == '*':
-            result.append(line)
-            continue
-        # Replace standalone zero/spaces/space outside of string literals
-        parts = _re2.split(r\"((?:'[^']*')+)\", line)
-        new_parts = []
-        for i, part in enumerate(parts):
-            if i % 2 == 0:  # not inside string literal
-                part = _re2.sub(r'\bzero\b', 'ZERO', part)
-                part = _re2.sub(r'\bspaces\b', 'SPACES', part)
-                part = _re2.sub(r'\bspace\b', 'SPACE', part)
-            new_parts.append(part)
-        result.append(''.join(new_parts))
-    return '\n'.join(result)
-
-content = normalize_figuratives(content)
-
-# Normalize the malformed INTRTI-PIC X(4) data name and its references.
-content = content.replace('INTRTI-PIC X(4) USAGE', 'INTRTI-PICX4')
-content = content.replace('INTRTI-PIC X(4)', 'INTRTI-PICX4')
-content = content.replace('INTRTI-PICX4 USAGE', 'INTRTI-PICX4')
-
-content = apply_local_rules(content, 'late')
-
-# 18. An IF whose THEN branch holds only comments before ELSE is rejected by the parser
-#     (extraneous ELSE). CONTINUE is a no-op, so inserting it keeps the semantics.
-content = re.sub(
-    r'(^(?:\d{6})?[ \t]*IF\s[^\n]*[^.\s][ \t]*)((?:\n[ \t]{0,6}\*[^\n]*|\n[ \t]*(?=\n))*)(\n[ \t]+ELSE\b)',
-    r'\1\n           CONTINUE\2\3',
-    content,
-    flags=re.MULTILINE | re.IGNORECASE
-)
-
-# Treat fixed-format debug lines as comments for static analysis.
-content = re.sub(
-    r'^(      )D(.*)$',
-    r'\1*DBG\2',
-    content,
-    flags=re.MULTILINE
-)
-
-# Comment out orphaned CICS IF bodies through their matching END-IF.
-def fix_orphaned_if_bodies(text):
-    result = []
-    in_orphan = False
-    for ln in text.split('\n'):
-        if re.match(r'^.{6}\*.*\bIF\b.*\bDFHRESP\b', ln, re.IGNORECASE):
-            in_orphan = True
-            result.append(ln)
-        elif in_orphan:
-            if re.match(r'^.{6}\*', ln):
-                result.append(ln)
-            elif re.match(r'^\s*END-IF\b', ln, re.IGNORECASE):
-                commented = (ln[:6] + '*' + ln[7:]) if len(ln) >= 7 else ln
-                result.append(commented)
-                in_orphan = False
-            elif ln.strip() == '':
-                result.append(ln)
-            elif re.match(r'^\s{7,8}\S.*\.\s*$', ln):
-                in_orphan = False
-                result.append(ln)
-            else:
-                commented = (ln[:6] + '*' + ln[7:]) if len(ln) >= 7 else ln
-                result.append(commented)
-        else:
-            result.append(ln)
-    return '\n'.join(result)
-
-content = fix_orphaned_if_bodies(content)
-
-# Comment out DISPLAY strings that trigger false EXEC CICS dialect nodes.
-def fix_display_exec_cics(text):
-    result = []
-    display_indent = None
-    for ln in text.split('\n'):
-        is_comment = len(ln) >= 7 and ln[6] == '*'
-        if display_indent is None:
-            m = re.match(r'^(\s+)DISPLAY\s', ln, re.IGNORECASE)
-            if not is_comment and m and re.search(r\"'[^']*EXEC\s+CICS[^']*'\", ln, re.IGNORECASE):
-                display_indent = len(m.group(1))
-                commented = (ln[:6] + '*' + ln[7:]) if len(ln) >= 7 else ln
-                result.append(commented)
-            else:
-                result.append(ln)
-        else:
-            if ln.strip() == '':
-                result.append(ln)
-            elif len(ln) - len(ln.lstrip()) > display_indent:
-                commented = (ln[:6] + '*' + ln[7:]) if len(ln) >= 7 else ln
-                result.append(commented)
-            else:
-                display_indent = None
-                result.append(ln)
-    return '\n'.join(result)
-
-content = fix_display_exec_cics(content)
-
-# LENGTH OF is left intact: the native parser accepts it in procedure statements and EXEC CICS
-# operands, and replacing it with 0 changed reference-modification offsets and CICS lengths.
-
-# Replace unsupported arithmetic/comparison on IN-qualified names with an opaque
-# condition while preserving the original source as comments.
-def fix_in_arithmetic_condition(text):
-    import re
-    def to_cobol_comment(line):
-        if len(line) >= 7:
-            return line[:6] + '*' + line[7:]
-        return '*' + line
-    _STMT_KW = re.compile(
-        r'^(IF\b|ELSE\b|END-IF\b|MOVE\b|COMPUTE\b|PERFORM\b|CONTINUE\b|'
-        r'ADD\b|SUBTRACT\b|MULTIPLY\b|DIVIDE\b|SET\b|DISPLAY\b|'
-        r'STRING\b|UNSTRING\b|EVALUATE\b|WHEN\b|STOP\b|GO\s+TO\b|'
-        r'INITIALIZE\b|INSPECT\b|READ\b|WRITE\b|REWRITE\b|DELETE\b|'
-        r'OPEN\b|CLOSE\b|ACCEPT\b|CALL\b|EXEC\b)',
-        re.IGNORECASE)
-    _COND_CONT = re.compile(r'^(AND|OR)\b', re.IGNORECASE)
-
-    lines = text.split('\n')
-    result = []
-    i = 0
-    while i < len(lines):
-        ln = lines[i]
-        is_comment = len(ln) >= 7 and ln[6] == '*'
-        if not is_comment:
-            m_if = re.match(r'^(\s{6,})(IF\s+)', ln, re.IGNORECASE)
-            if m_if:
-                after_if = ln[len(m_if.group(0)):]
-                has_in_arith = bool(re.search(
-                    r'\b\w+(?:-\w+)*\s+IN\s+\w+(?:-\w+)*\s*[-+*/]',
-                    after_if, re.IGNORECASE))
-                has_in_compare = bool(re.search(
-                    r'\b\w+(?:-\w+)*\s+IN\s+\w+(?:-\w+)*\s*'
-                    r'(?:>|<|NOT\s*=|=\s*(?!>)|>=|<=)',
-                    after_if, re.IGNORECASE))
-                if has_in_arith or has_in_compare:
-                    indent = m_if.group(1) + m_if.group(2)
-                    preserved = [to_cobol_comment(ln)]
-                    # Comment out all continuation condition lines
-                    i += 1
-                    while i < len(lines):
-                        cont = lines[i]
-                        is_cont_comment = len(cont) >= 7 and cont[6] == '*'
-                        if is_cont_comment:
-                            preserved.append(cont)
-                            i += 1
-                            continue
-                        stripped = cont.strip()
-                        # AND/OR always continues the condition
-                        if _COND_CONT.match(stripped):
-                            preserved.append(to_cobol_comment(cont))
-                            i += 1
-                            continue
-                        # Non-empty, non-statement → condition continuation
-                        if stripped and not _STMT_KW.match(stripped):
-                            preserved.append(to_cobol_comment(cont))
-                            i += 1
-                            continue
-                        break
-                    result.extend(preserved)
-                    result.append(indent + 'REKT-OPAQUE-IN-CONDITION')
-                    continue
-        result.append(ln)
-        i += 1
-    return '\n'.join(result)
-
-content = fix_in_arithmetic_condition(content)
-
-# Add END-STRING before END-IF or ELSE when explicit scope termination is missing.
-def fix_string_no_end_string(text):
-    import re
-    _DELIM_INTO = re.compile(r'DELIMITED\s+BY\s+(?:SIZE|\S+)\s+INTO\s+\S', re.IGNORECASE)
-    _END_STRING = re.compile(r'^\s*END-STRING\s*$', re.IGNORECASE)
-    # Excludes WHEN: STRING cannot span EVALUATE WHEN boundaries; including WHEN would corrupt EVALUATE.
-    _SCOPE_CLOSE = re.compile(r'^\s*(END-IF|ELSE)\b', re.IGNORECASE)
-
-    lines = text.split('\n')
-    result = []
-    i = 0
-    in_string_stmt = False
-
-    while i < len(lines):
-        ln = lines[i]
-        stripped = ln.strip()
-        is_comment = len(ln) >= 7 and ln[6] == '*'
-
-        if not is_comment:
-            if re.match(r'STRING\s', stripped, re.IGNORECASE):
-                in_string_stmt = True
-            elif _END_STRING.match(ln):
-                in_string_stmt = False
-            elif in_string_stmt and _DELIM_INTO.search(ln):
-                # This line ends the STRING body; peek ahead for END-IF/ELSE without END-STRING
-                result.append(ln)
-                i += 1
-                buffered = []
-                found_end_string = False
-                while i < len(lines):
-                    nxt = lines[i]
-                    nxt_stripped = nxt.strip()
-                    nxt_comment = len(nxt) >= 7 and nxt[6] == '*'
-                    if not nxt_stripped or nxt_comment:
-                        buffered.append(nxt)
-                        i += 1
-                        continue
-                    if _END_STRING.match(nxt):
-                        found_end_string = True
-                    elif _SCOPE_CLOSE.match(nxt) and not found_end_string:
-                        # Insert END-STRING before END-IF/ELSE
-                        indent = re.match(r'^(\s*)', nxt).group(1)
-                        result.extend(buffered)
-                        result.append(indent + 'END-STRING')
-                        buffered = []
-                    in_string_stmt = False
-                    break
-                result.extend(buffered)
-                continue
-
-        result.append(ln)
-        i += 1
-    return '\n'.join(result)
-
-content = fix_string_no_end_string(content)
-
-# Remove strict DD.MM.YY audit stamps while preserving comment lines and COBOL numerics.
-# Dollar signs are escaped because this Python block is embedded in a Bash heredoc.
-import re as _r_stamp
-_audit_rx = _r_stamp.compile(r'\s+\d{2}\.\d{2}\.\d{2}\s*\$')
-def _strip_audit_stamps(text):
-    out = []
-    for line in text.split('\n'):
-        if len(line) >= 7 and line[6] == '*':
-            out.append(line); continue
-        out.append(_audit_rx.sub('', line))
-    return '\n'.join(out)
-
-content = _strip_audit_stamps(content)
-
-# Rewrites that add characters push space-padded lines past column 80, which the parser
-# rejects. Only the identification area of such lines is dropped; columns 1-72 are kept.
-def fit_fixed_format(text):
-    out = []
-    for line in text.split('\n'):
-        if len(line) > 80:
-            if line[72:].strip() == '':
-                line = line[:72]
-            elif len(line) > 6 and line[6] in '*/':
-                line = line[:80]
-        out.append(line)
-    return '\n'.join(out)
-
-if content != original:
-    content = fit_fixed_format(content)
-    output = os.path.join(preproc_dir, os.path.relpath(source_path, source_dir))
-    os.makedirs(os.path.dirname(output), exist_ok=True)
-    with open(output, 'w', encoding='latin-1') as f:
-        f.write(content)
-    sys.exit(0)
-else:
-    sys.exit(1)
-" "$cbl" "$SOURCE_DIR" "$PREPROC_DIR" 2>/dev/null && {
-    "$PYTHON" "$SCRIPT_DIR/rekt_dependency_evidence.py" provenance \
-        --source "$cbl" --target "$PREPROC_DIR/${cbl#"$SOURCE_DIR/"}"
-    cbl_count=$((cbl_count + 1))
-}
+    if lma_cli rekt-preprocess program --source "$cbl" --source-root "$SOURCE_DIR" --output-root "$PREPROC_DIR" \
+        ${REKT_PREPROCESS_RULES:+--rules "$REKT_PREPROCESS_RULES"} 2>/dev/null; then
+        lma_cli rekt-evidence provenance \
+            --source "$cbl" --target "$PREPROC_DIR/${cbl#"$SOURCE_DIR/"}"
+        cbl_count=$((cbl_count + 1))
+    fi
 done < <(find "$SOURCE_DIR" ${FIND_DEPTH[@]+"${FIND_DEPTH[@]}"} \
     \( -name "*.cbl" -o -name "*.CBL" -o -name "*.cob" -o -name "*.COB" \) \
     -type f \
@@ -817,7 +112,7 @@ fi
 ALIAS_DIR="$PREPROC_DIR/aliases"
 while IFS= read -r -d '' cpy; do
     fname=$(basename "$cpy")
-    if ! "$PYTHON" "$SCRIPT_DIR/rekt_dependency_evidence.py" validate-definition --source "$cpy"; then
+    if ! lma_cli rekt-evidence validate-definition --source "$cpy"; then
         continue
     fi
     base="${fname%.*}"
@@ -828,7 +123,7 @@ while IFS= read -r -d '' cpy; do
         if [[ ! -e "$target" && ! -e "$SOURCE_DIR/${short}.${ext}" ]]; then
             mkdir -p "$ALIAS_DIR"
             cp "$cpy" "$target"
-            "$PYTHON" "$SCRIPT_DIR/rekt_dependency_evidence.py" provenance --source "$cpy" --target "$target"
+            lma_cli rekt-evidence provenance --source "$cpy" --target "$target"
             echo "  Created 8-char alias: ${short}.${ext} → $fname"
         fi
     fi
@@ -851,7 +146,7 @@ if [[ -d "$SYS_CPY_DIR" ]]; then
         # If user has a real copybook of the same name in source/, prefer theirs
         user_match=""
         while IFS= read -r -d '' candidate; do
-            if "$PYTHON" "$SCRIPT_DIR/rekt_dependency_evidence.py" validate-definition --source "$candidate"; then
+            if lma_cli rekt-evidence validate-definition --source "$candidate"; then
                 user_match="$candidate"
                 break
             fi
@@ -866,7 +161,7 @@ if [[ -d "$SYS_CPY_DIR" ]]; then
         # Don't clobber an already-preprocessed version
         if [[ -f "$PREPROC_DIR/$sys_name" ]]; then continue; fi
         cp "$sys_cpy" "$PREPROC_DIR/$sys_name"
-        "$PYTHON" "$SCRIPT_DIR/rekt_dependency_evidence.py" provenance \
+        lma_cli rekt-evidence provenance \
             --source "$sys_cpy" --target "$PREPROC_DIR/$sys_name"
         sys_count=$((sys_count + 1))
     done < <(find "$SYS_CPY_DIR" -maxdepth 1 -type f \( -name "*.cpy" -o -name "*.CPY" \) -print0)
@@ -880,14 +175,14 @@ fi
 if [[ -n "${REKT_PLATFORM_CONTRACTS:-}" ]]; then
     cp "$REKT_PLATFORM_CONTRACTS" "$PREPROC_DIR/platform-contracts.json"
     REKT_PLATFORM_CONTRACTS="$PREPROC_DIR/platform-contracts.json" \
-        "$PYTHON" "$SCRIPT_DIR/platform_copybook_contracts.py" "$SOURCE_DIR" "$PREPROC_DIR"
+        lma_cli rekt-platform-contracts "$SOURCE_DIR" "$PREPROC_DIR"
 fi
 
 # Generate COBOL symbolic maps from BMS mapsets (z/OS builds produce these; repos ship only
 # the .bms). Runs before stubbing so a COPY of a mapset gets its real fields, not an empty stub.
 # Set REKT_NO_BMS_MAPS=true to disable.
 if [[ "${REKT_NO_BMS_MAPS:-false}" != "true" ]]; then
-    if ! $PYTHON "$SCRIPT_DIR/bms_symbolic_map.py" "$SOURCE_DIR" "$PREPROC_DIR"; then
+    if ! lma_cli rekt-bms-map "$SOURCE_DIR" "$PREPROC_DIR"; then
         echo "  ⚠️  BMS symbolic map generation failed; affected COPY targets remain unresolved"
     fi
 fi

@@ -22,9 +22,6 @@ public sealed class DoctorFixture : IDisposable
     [
         "doctor.sh",
         "tools/lib/ports.sh",
-        "tools/rekt_source_identity.py",
-        "tools/rekt_dependency_evidence.py",
-        "tools/native_run_activity.py",
     ];
 
     private static readonly string[] ScrubbedPrefixes =
@@ -270,6 +267,7 @@ public sealed class DoctorFixture : IDisposable
         printf '%s\036' "$record" >> "$root/calls.log"
 
         has() { local a; for a in "${args[@]}"; do [[ "$a" == "$1" ]] && return 0; done; return 1; }
+        first_of() { local name; for name in "$@"; do has "$name" && { printf '%s' "$name"; return 0; }; done; return 1; }
         index_of() { local i; for i in "${!args[@]}"; do [[ "${args[$i]}" == "$1" ]] && { printf '%s' "$i"; return 0; }; done; return 1; }
         after() { local i; i="$(index_of "$1")" || return 1; printf '%s' "${args[$((i + 1))]}"; }
         forward_from() {
@@ -307,10 +305,8 @@ public sealed class DoctorFixture : IDisposable
                 echo "Microsoft.NETCore.App 10.0.0"
             elif has -getProperty:TargetPath; then
                 printf '%s\n' "$LMA_TEST_DLL"
-            elif has rekt-diagnostics; then
-                forward_from rekt-diagnostics "$LMA_REAL_DOTNET" "$LMA_TEST_DLL"
-            elif has doctor-report; then
-                forward_from doctor-report "$LMA_REAL_DOTNET" "$LMA_TEST_DLL"
+            elif offline="$(first_of rekt-diagnostics doctor-report rekt-evidence rekt-activity rekt-source-identity rekt-bms-map rekt-platform-contracts rekt-preprocess)"; then
+                forward_from "$offline" "$LMA_REAL_DOTNET" "$LMA_TEST_DLL"
             elif has jcl-facts; then
                 [[ -n "${JCL_TEST_FAIL:-}" ]] && exit 7
                 [[ -n "${JCL_REAL_DLL:-}" ]] && forward_from jcl-facts "${JCL_REAL_DOTNET:-}" "$JCL_REAL_DLL"

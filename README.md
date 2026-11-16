@@ -154,7 +154,7 @@ flowchart LR
         DOCTOR["doctor.sh"]
         CLI["Migration CLI (.NET)<br/>agents · estate-graph · graph-ingest<br/>jcl-facts · jcl-jobs<br/>compile gate: dotnet build"]
         WEB["Portal · McpChatWeb<br/>localhost:5028<br/>+ MCP server child process"]
-        PRE["Preprocess<br/>(bash, Python)"]
+        PRE["Preprocess<br/>(bash, .NET)"]
         FILES[("source/ · output/<br/>Data/migration.db")]
         DOCTOR --> PRE
         DOCTOR --> CLI

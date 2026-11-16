@@ -27,14 +27,15 @@ internal static class Program
     {
         // Start live log capture for portal's Live Run Log panel
         var logsDirectory = Path.Combine(Directory.GetCurrentDirectory(), "Logs");
-        Directory.CreateDirectory(logsDirectory);
 
         // Only enable live logging for migration runs (not MCP server or conversation modes)
-        var isMigrationRun = !args.Contains("mcp") && !args.Contains("conversation") && !args.Contains("estate-graph") && !args.Contains("dependency-plan") && !args.Contains("rekt-diagnostics") && !args.Contains("graph-ingest") && !args.Contains("ai-loop-check") && !args.Contains("doctor-report");
+        var isMigrationRun = !args.Contains("mcp") && !args.Contains("conversation") && !args.Contains("estate-graph") && !args.Contains("dependency-plan") && !args.Contains("rekt-diagnostics") && !args.Contains("graph-ingest") && !args.Contains("ai-loop-check") && !args.Contains("doctor-report") && !args.Contains("rekt-evidence") && !args.Contains("rekt-activity") && !args.Contains("rekt-source-identity") && !args.Contains("rekt-bms-map") && !args.Contains("rekt-platform-contracts") && !args.Contains("rekt-preprocess");
         LiveLogWriter? liveLogWriter = null;
 
         if (isMigrationRun)
         {
+            // Offline helpers run from arbitrary directories and must not leave a Logs folder behind.
+            Directory.CreateDirectory(logsDirectory);
             liveLogWriter = LiveLogWriter.Start(logsDirectory);
         }
 
@@ -178,6 +179,12 @@ internal static class Program
         rootCommand.AddCommand(CobolToQuarkusMigration.Cli.GraphIngestCommand.Build());
         rootCommand.AddCommand(CobolToQuarkusMigration.Cli.AiLoopCheckCommand.Build());
         rootCommand.AddCommand(CobolToQuarkusMigration.Cli.DoctorReportCommand.Build());
+        rootCommand.AddCommand(CobolToQuarkusMigration.Cli.RektEvidenceCommand.Build());
+        rootCommand.AddCommand(CobolToQuarkusMigration.Cli.RektActivityCommand.Build());
+        rootCommand.AddCommand(CobolToQuarkusMigration.Cli.RektSourceIdentityCommand.Build());
+        rootCommand.AddCommand(CobolToQuarkusMigration.Cli.RektBmsMapCommand.Build());
+        rootCommand.AddCommand(CobolToQuarkusMigration.Cli.RektPreprocessCommand.Build());
+        rootCommand.AddCommand(CobolToQuarkusMigration.Cli.RektPlatformContractsCommand.Build());
 
         rootCommand.SetHandler(async (context) =>
         {
@@ -1419,7 +1426,8 @@ internal static class Program
         // config file has been written; its handler talks to the Copilot SDK, not Azure.
         return command is not
             ("program-facts" or "dependency-plan" or "rekt-scan-cache" or "conversation" or "list-models" or "estate-graph"
-                or "jcl-facts" or "jcl-jobs" or "jcl-programs" or "rekt-diagnostics" or "graph-ingest" or "ai-loop-check" or "doctor-report");
+                or "jcl-facts" or "jcl-jobs" or "jcl-programs" or "rekt-diagnostics" or "graph-ingest" or "ai-loop-check" or "doctor-report"
+                or "rekt-evidence" or "rekt-activity" or "rekt-source-identity" or "rekt-bms-map" or "rekt-platform-contracts" or "rekt-preprocess");
     }
 
     // Matched against the literals shipped in ai-config.env.example. An unedited placeholder that

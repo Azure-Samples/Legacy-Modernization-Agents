@@ -372,8 +372,9 @@ After building an isolated image tag, run the native opt-in checks from the
 repository root, setting `REKT_TEST_IMAGE` to that tag:
 
 ```bash
-REKT_TEST_IMAGE=rekt-oss-mma:latest python3 -m unittest \
-  tools.tests.test_rekt_dependency_evidence.NativeDependencyExportTests
+REKT_TEST_IMAGE=rekt-oss-mma:latest dotnet test \
+  CobolToQuarkusMigration.Tests/CobolToQuarkusMigration.Tests.csproj \
+  --filter FullyQualifiedName~RektNativeDependencyExportTests
 ```
 
 The checks create declared synthetic inputs, mount them read-only in disposable

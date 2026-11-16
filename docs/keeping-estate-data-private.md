@@ -1,6 +1,6 @@
 # Keeping estate data private
 
-**Last updated**: 2026-10-06
+**Last updated**: 2026-11-16
 
 The repository is public. The code you convert, and everything derived from it, is not.
 Three mechanisms keep the two apart.
@@ -61,7 +61,12 @@ that only makes sense for one estate's programs goes in
 ```
 
 - `stage`: `early` runs before column-72 enforcement, `late` near the end of the program pass.
-- `literal: true` is a plain text replacement; otherwise `find` is a Python regular expression
-  and `flags` names `re` flags.
+- `literal: true` is a plain text replacement; otherwise `find` is a .NET regular expression,
+  compatible with the Python syntax previously documented: `(?P<name>...)`, `(?P=name)` and `\Z`
+  are accepted, `replace` uses `\1` and `\g<name>` group references (a literal `$` needs no
+  escaping), and `flags` names Python `re` flags (`IGNORECASE`, `MULTILINE`, `DOTALL`, `VERBOSE`,
+  `UNICODE`, or their one-letter forms).
 - The file is validated once per run. A malformed file is reported and ignored, so
-  preprocessing still runs.
+  preprocessing still runs. A single rule that cannot be applied with its Python meaning (for
+  example the `ASCII` or `LOCALE` flag, octal escapes, or a reference to a missing group) is
+  reported and skipped; the other rules still apply.

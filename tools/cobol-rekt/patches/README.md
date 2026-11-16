@@ -301,7 +301,8 @@ run the opt-in dependency integration tests against an isolated image before
 trusting native coverage metadata:
 
 ```bash
-REKT_TEST_IMAGE=<isolated-image-tag> python3 -m unittest tools.tests.test_rekt_dependency_evidence.NativeDependencyExportTests
+REKT_TEST_IMAGE=<isolated-image-tag> dotnet test CobolToQuarkusMigration.Tests/CobolToQuarkusMigration.Tests.csproj \
+  --filter FullyQualifiedName~RektNativeDependencyExportTests
 ```
 
 These tests use declared synthetic COPY/static CALL, dynamic CALL, missing COPY,

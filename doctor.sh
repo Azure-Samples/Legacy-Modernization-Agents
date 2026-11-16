@@ -3084,7 +3084,7 @@ export_rekt_dependencies() {
     if [[ "${REKT_SQL_DECLARATIONS+x}" == x ]]; then
         resource_environment+=(-e "REKT_SQL_DECLARATIONS=$REKT_SQL_DECLARATIONS")
     fi
-    if "$PYTHON_CMD" "$REPO_ROOT/tools/rekt_dependency_evidence.py" dependency-search-view \
+    if lma_cli rekt-evidence dependency-search-view \
         --staging-root "$estate_staging" --relative-path "$rel_program" 2>>"$err_log"; then
         echo "  Exporting dependencies: $rel_program"
         run_rekt_logged "$err_log" container_exec "${resource_environment[@]}" -w "$work_dir" "$REKT_CONTAINER" java -jar /app/smojol-cli.jar dependency "$(basename "$rel_program")" \
@@ -3101,7 +3101,8 @@ export_rekt_dependencies() {
     if [[ -n "$dependency_profile" ]]; then
         host_platform_environment=(env ${host_platform_environment[@]+"${host_platform_environment[@]:1}"} "REKT_DEPENDENCY_PROFILE=$dependency_profile")
     fi
-    ${host_platform_environment[@]+"${host_platform_environment[@]}"} "$PYTHON_CMD" "$REPO_ROOT/tools/rekt_dependency_evidence.py" write \
+    # env cannot run the lma_cli shell function, so the assembly is invoked directly.
+    ${host_platform_environment[@]+"${host_platform_environment[@]}"} "${DOTNET_CMD:-dotnet}" "$_LMA_CLI_ASSEMBLY" rekt-evidence write \
         --source-root "$REPO_ROOT/source" --relative-path "$rel_program" \
         --staging-root "$estate_staging" --output-root "$REPO_ROOT/output/rekt" \
         --export-exit-code "$export_status" || return 1
@@ -3110,24 +3111,27 @@ export_rekt_dependencies() {
 
 native_activity_program() {
     [[ -n "${_REKT_ACTIVITY_PATH:-}" ]] || return 0
-    "$PYTHON_CMD" "$REPO_ROOT/tools/native_run_activity.py" program "$_REKT_ACTIVITY_PATH" \
+    ensure_lma_cli || return 1
+    lma_cli rekt-activity program "$_REKT_ACTIVITY_PATH" \
         --program "$1" --status "$2" --source-root "$REPO_ROOT/source" \
         --output-root "$REPO_ROOT/output/rekt" || echo "Warning: native program journal update failed" >&2
 }
 
 native_activity_stage() {
     [[ -n "${_REKT_ACTIVITY_PATH:-}" ]] || return 0
-    "$PYTHON_CMD" "$REPO_ROOT/tools/native_run_activity.py" stage "$_REKT_ACTIVITY_PATH" --stage "$1"
+    ensure_lma_cli || return 1
+    lma_cli rekt-activity stage "$_REKT_ACTIVITY_PATH" --stage "$1"
 }
 
 run_native_activity() (
     # Subshell confines signal/exit traps and journal identity to this invocation.
     local operation="$1" stage="$2" implementation="$3"
-    _REKT_ACTIVITY_PATH=$("$PYTHON_CMD" "$REPO_ROOT/tools/native_run_activity.py" start \
+    ensure_lma_cli || return 1
+    _REKT_ACTIVITY_PATH=$(lma_cli rekt-activity start \
         "$REPO_ROOT/output/rekt-scans" --command "$operation" --stage "$stage") || return 1
     trap 'exit 130' INT
     trap 'exit 143' TERM
-    trap 'rc=$?; "$PYTHON_CMD" "$REPO_ROOT/tools/native_run_activity.py" finish "$_REKT_ACTIVITY_PATH" --exit-code "$rc"' EXIT
+    trap 'rc=$?; lma_cli rekt-activity finish "$_REKT_ACTIVITY_PATH" --exit-code "$rc"' EXIT
     local native_log
     native_log="$(dirname "$_REKT_ACTIVITY_PATH")/native.log"
     # Both streams go to the log, but stderr stays stderr for callers.
@@ -3179,7 +3183,7 @@ run_rekt_parse_impl() {
 
     echo -e "${BLUE}  Found: ${cobol_count} programs, ${copy_count} copybooks${NC}"
     if [[ -n "${_REKT_ACTIVITY_PATH:-}" && -z "${_REKT_PROGRAM_FILTER:-}" ]]; then
-        "$PYTHON_CMD" "$REPO_ROOT/tools/native_run_activity.py" stage "$_REKT_ACTIVITY_PATH" \
+        lma_cli rekt-activity stage "$_REKT_ACTIVITY_PATH" \
             --stage "Native parsing" --expected-programs "$cobol_count" || return 1
     fi
 
@@ -3209,15 +3213,7 @@ run_rekt_parse_impl() {
     local shadowed_copybooks_file
     mkdir -p "$REPO_ROOT/output/rekt/.work"
     shadowed_copybooks_file="$REPO_ROOT/output/rekt/.work/shadowed-copybooks-$$.txt"
-    "$PYTHON_CMD" - "$REPO_ROOT/source" "$REPO_ROOT/tools" > "$shadowed_copybooks_file" <<'PYEOF'
-import os, sys
-sys.path.insert(0, sys.argv[2])
-from rekt_dependency_evidence import original_files, definition_problem
-
-for path in original_files(sys.argv[1]):
-    if path.suffix.lower() in ('.cpy', '.cpb') and definition_problem(path):
-        print(path)
-PYEOF
+    lma_cli rekt-evidence shadowed-copybooks --source-root "$REPO_ROOT/source" > "$shadowed_copybooks_file" || return 1
     export REKT_SHADOWED_COPYBOOKS_FILE="$shadowed_copybooks_file"
     if [[ -s "$shadowed_copybooks_file" ]]; then
         echo -e "  ${YELLOW}Excluded placeholder/unverified definitions (genuine input still required):${NC}"
@@ -3333,7 +3329,7 @@ PYEOF
         if [[ -n "${_REKT_ACTIVITY_PATH:-}" ]]; then
             local selected_count
             selected_count=$(wc -l < "$rekt_filter_file" | tr -d '[:space:]')
-            "$PYTHON_CMD" "$REPO_ROOT/tools/native_run_activity.py" stage "$_REKT_ACTIVITY_PATH" \
+            lma_cli rekt-activity stage "$_REKT_ACTIVITY_PATH" \
                 --stage "Native parsing" --expected-programs "$selected_count" || return 1
         fi
     fi
@@ -3399,7 +3395,7 @@ PYEOF
         local file_name
         file_name="$(basename "$src_file")"
         local target="$estate_staging/$file_name"
-        "$PYTHON_CMD" "$REPO_ROOT/tools/rekt_dependency_evidence.py" stage \
+        lma_cli rekt-evidence stage \
             --source "$src_file" --target "$target" --transformed "$preprocessed_dir/$file_name" || true
     }
 
@@ -3412,7 +3408,7 @@ PYEOF
         local transformed="$preprocessed_dir/${src_file#"$estate_dir/"}"
         [[ -f "$transformed" ]] || transformed="$preprocessed_dir/$file_name"
         mkdir -p "$(dirname "$target")"
-        "$PYTHON_CMD" "$REPO_ROOT/tools/rekt_dependency_evidence.py" stage \
+        lma_cli rekt-evidence stage \
             --source "$src_file" --target "$target" --transformed "$transformed" || return 1
     }
 
@@ -3451,8 +3447,7 @@ PYEOF
         fi
 
         local estate_identity=""
-        if ! estate_identity=$(REKT_SOURCE_TOP_LEVEL_ONLY="$estate_top_only" "$PYTHON_CMD" \
-            "$REPO_ROOT/tools/rekt_source_identity.py" \
+        if ! estate_identity=$(REKT_SOURCE_TOP_LEVEL_ONLY="$estate_top_only" lma_cli rekt-source-identity \
             "$estate_dir" "$preprocessed_dir" "$shadowed_copybooks_file"); then
             echo -e "${RED}❌ Source identity collisions in estate '$estate' prevent safe REKT staging.${NC}"
             local -a _fields
@@ -3509,7 +3504,7 @@ PYEOF
                 alias_name="$(basename "$alias_cpy")"
                 local alias_target="$estate_staging/$alias_name"
                 if [[ ! -f "$alias_target" ]]; then
-                    "$PYTHON_CMD" "$REPO_ROOT/tools/rekt_dependency_evidence.py" stage --derived \
+                    lma_cli rekt-evidence stage --derived \
                         --source "$alias_cpy" --target "$alias_target" || true
                 fi
             done < <(find "$preprocessed_dir/aliases" -maxdepth 1 \( -name "*.cpy" -o -name "*.CPY" \) -type f 2>/dev/null)
@@ -3529,7 +3524,7 @@ PYEOF
                 local stub_target="$estate_staging/$stub_name"
                 # Don't overwrite a real copybook that was already staged
                 if [[ ! -f "$stub_target" ]]; then
-                    "$PYTHON_CMD" "$REPO_ROOT/tools/rekt_dependency_evidence.py" stage --derived \
+                    lma_cli rekt-evidence stage --derived \
                         --source "$stub_cpy" --target "$stub_target" || true
                 fi
             done < <(find "$preprocessed_dir" -maxdepth 1 \( -name "*.cpy" -o -name "*.CPY" \) -type f 2>/dev/null)
@@ -3827,7 +3822,7 @@ print(len(lines))
         native_activity_program "$rel_program" running
         local rel_output_dir="$REPO_ROOT/output/rekt/$(dirname "$rel_program")"
         mkdir -p "$rel_output_dir"
-        "$PYTHON_CMD" "$REPO_ROOT/tools/rekt_dependency_evidence.py" quarantine \
+        lma_cli rekt-evidence quarantine \
             --output-root "$REPO_ROOT/output/rekt" --relative-path "$rel_program" || return 1
         local report_work_rel=".work/reports/$parser_run_identity/$rel_program"
         mkdir -p "$REPO_ROOT/output/rekt/$report_work_rel"
@@ -4000,7 +3995,7 @@ PYEOF
 
         # Honor the incremental planner's skip decision.
         if [[ "$rekt_inc" == "true" ]] && [[ " $rekt_skip_set " == *" $fname "* ]] \
-            && "$PYTHON_CMD" "$REPO_ROOT/tools/rekt_dependency_evidence.py" validate \
+            && lma_cli rekt-evidence validate \
                 --source-root "$REPO_ROOT/source" --relative-path "$rel_program" --output-root "$REPO_ROOT/output/rekt"; then
             echo -e "  Skipping $rel_program ${GREEN}(cached)${NC}"
             succeeded=$((succeeded + 1))
@@ -4046,7 +4041,7 @@ PYEOF
     local estate closure_result closure_program closure_file
     local -a closure_pids=()
     for estate in "${rekt_estates[@]}"; do
-        "$PYTHON_CMD" "$REPO_ROOT/tools/rekt_dependency_evidence.py" commarea-closure \
+        lma_cli rekt-evidence commarea-closure \
             --source-root "$REPO_ROOT/source" --output-root "$REPO_ROOT/output/rekt" --estate "$estate" 2>/dev/null || return 1
     done
     rekt_commarea_pass=true
