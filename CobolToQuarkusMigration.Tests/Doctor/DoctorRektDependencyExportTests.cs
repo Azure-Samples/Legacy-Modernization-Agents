@@ -26,6 +26,8 @@ public sealed class DoctorRektDependencyExportTests : IDisposable
             """);
     }
 
+    private string _lastStdOut = "";
+
     public void Dispose() => _doctor.Dispose();
 
     private string Root => _doctor.Root;
@@ -153,6 +155,8 @@ public sealed class DoctorRektDependencyExportTests : IDisposable
 
         current["unresolvedDiagnostics"]!.AsArray().Should().BeEmpty();
         Coverage(current).Should().Equal(Kinds.ToDictionary(kind => kind, _ => "complete"));
+        // The fixture leaves a parse log and a .previous backup; neither is a degraded parse.
+        _lastStdOut.Should().NotContain("reduced fidelity");
     }
 
     [Fact]
@@ -162,6 +166,7 @@ public sealed class DoctorRektDependencyExportTests : IDisposable
 
         current["exportExitCode"]!.GetValue<int>().Should().Be(0);
         calls.Count(call => call.Contains("run")).Should().Be(3);
+        _lastStdOut.Should().Contain("1 program(s) parsed with reduced fidelity").And.Contain(Relative + "(DepsOnly)");
     }
 
     [Fact]
@@ -250,6 +255,7 @@ public sealed class DoctorRektDependencyExportTests : IDisposable
         }
 
         var result = _doctor.Run("rekt-parse");
+        _lastStdOut = result.StdOut;
 
         result.ShouldSucceed();
         var calls = _doctor.Calls("docker").Where(call => call.Count > 0 && call[0] == "exec")

@@ -3525,6 +3525,8 @@ run_rekt_parse_impl() {
     local skipped=0
     local filtered_out=0
     local failed_files=""
+    local degraded=0
+    local degraded_files=""
 
     # Incremental scanning is opt-in to preserve full-scan behavior by default.
     local rekt_inc=false
@@ -3888,6 +3890,12 @@ run_rekt_parse_impl() {
         else
             succeeded=$((succeeded + 1))
         fi
+        case "$parse_status_outcome" in
+            Partial|DepsOnly|RawAst)
+                degraded=$((degraded + 1))
+                degraded_files="${degraded_files} ${parse_status_program}(${parse_status_outcome})"
+                ;;
+        esac
         if [[ -n "$rekt_manifest" && -f "$result.manifest" ]]; then
             cat "$result.manifest" >> "${rekt_manifest%.txt}-$(rekt_estate_of "$parse_status_program").txt"
         fi
@@ -3982,13 +3990,12 @@ run_rekt_parse_impl() {
     if [[ "$rekt_filter_active" == "true" && "$filtered_out" -gt 0 ]]; then
         echo -e "  ${BLUE}Filter active: $filtered_out program(s) outside _REKT_PROGRAM_FILTER were skipped.${NC}"
     fi
-    # Count degraded outputs (succeeded with warnings — deps-only or raw-AST fallbacks).
-    local degraded
-    degraded=$(find "$REPO_ROOT/output/rekt" -name '*.parse.log' 2>/dev/null | wc -l | tr -d ' ')
+    # Every program writes a parse log, so count this run's outcomes rather than log files.
     if [[ "$degraded" -gt 0 ]]; then
-        echo -e "${YELLOW}  ⚠️  ${degraded} program(s) parsed with reduced fidelity (partial / dependencies-only / raw AST).${NC}"
+        echo -e "${YELLOW}  ⚠️  ${degraded} program(s) parsed with reduced fidelity (partial / dependencies-only / raw AST):${NC}"
+        echo -e "${YELLOW}     ${degraded_files}${NC}"
         echo -e "${YELLOW}      These usually mean missing copybooks or smojol parser limitations.${NC}"
-        echo -e "${YELLOW}      Inspect: output/rekt/**/*.parse.log${NC}"
+        echo -e "${YELLOW}      Inspect: output/rekt/<program>.parse.log${NC}"
     fi
     if [[ -s "$missing_report" ]]; then
         local miss_count

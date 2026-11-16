@@ -522,7 +522,8 @@ Read the summary at the end before converting:
 
 ```
   Parsed: 117 succeeded (0 from cache), 0 failed
-  ⚠️  5 program(s) parsed with reduced fidelity (deps-only / raw-AST fallback).
+  ⚠️  2 program(s) parsed with reduced fidelity (partial / dependencies-only / raw AST):
+      cbl/ACCT01.cbl(DepsOnly) cbl/RPT07.cbl(Partial)
   ⚠️  38 missing copybook(s) — see output/rekt/missing-copybooks.txt
 ```
 
