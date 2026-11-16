@@ -52,6 +52,10 @@ services:
       - graph_data:/data
       - graph_logs:/logs
       - graph_import:/var/lib/neo4j/import
+    # The PID file lives in the container layer; after a stop (or a Docker restart) a
+    # stale one makes Neo4j exit with "already running" and the container restart-loops.
+    tmpfs:
+      - /var/lib/neo4j/run
     healthcheck:
       test: ["CMD-SHELL", "cypher-shell -u neo4j -p \"$$HEALTHCHECK_PASSWORD\" 'RETURN 1' || exit 1"]
       interval: 10s
