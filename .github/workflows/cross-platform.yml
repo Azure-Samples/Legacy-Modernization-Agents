@@ -55,9 +55,9 @@ jobs:
         run: tools/tests/doctor-helpers-smoke.sh
 
       - name: JCL discovery and isolated CLI ingestion
-        run: |
-          dotnet build CobolToQuarkusMigration.csproj -p:CopilotSkipCliDownload=true --nologo -v quiet
-          python -m unittest discover -s tools/tests -p 'test_*jcl*.py' -v
+        run: >-
+          dotnet test CobolToQuarkusMigration.Tests -p:CopilotSkipCliDownload=true --nologo
+          --filter "FullyQualifiedName~CobolToQuarkusMigration.Tests.Doctor.DoctorJclScanTests|FullyQualifiedName~CobolToQuarkusMigration.Tests.Doctor.DoctorJclCliIngestTests"
 
       - name: Portal process control
         run: dotnet test McpChatWeb.Tests --filter "FullyQualifiedName~ProcessTreeSuspender" --blame-hang-timeout 120s
