@@ -316,7 +316,8 @@ and remove patches whose fixes are already available upstream.
 After rebuilding the parser image, run the opt-in integration regression:
 
 ```bash
-REKT_TEST_IMAGE=rekt-oss-mma:latest python3 -m unittest tools.tests.test_rekt_terminal_parser tools.tests.test_rekt_missing_copybook_parser
+REKT_TEST_IMAGE=rekt-oss-mma:latest dotnet test CobolToQuarkusMigration.Tests -p:CopilotSkipCliDownload=true \
+  --filter "FullyQualifiedName~RektParserImageTests"
 ```
 
 It starts disposable containers over synthetic fixtures only; it does not use a
