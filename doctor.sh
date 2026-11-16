@@ -2919,6 +2919,30 @@ ensure_graph_populator_environment() {
     echo -e "${GREEN}✅ Graph populator environment is ready${NC}"
 }
 
+# Resolves the CLI assembly once so per-program checks launch it directly: dotnet run
+# re-evaluates the project on every call, which a large estate multiplies.
+ensure_lma_cli() {
+    [[ -n "${_LMA_CLI_ASSEMBLY:-}" ]] && return 0
+    local assembly="${MIGRATION_CLI_ASSEMBLY:-}"
+    # An explicit prebuilt assembly is used as is; building from source would replace it.
+    if [[ -z "$assembly" ]]; then
+        if ! (cd "$REPO_ROOT" && "$DOTNET_CMD" build CobolToQuarkusMigration.csproj -v q -nologo >/dev/null 2>&1); then
+            echo -e "${RED}❌ Build failed. Run: dotnet build CobolToQuarkusMigration.csproj${NC}" >&2
+            return 1
+        fi
+        assembly="$(cd "$REPO_ROOT" && "$DOTNET_CMD" build CobolToQuarkusMigration.csproj -nologo -getProperty:TargetPath 2>/dev/null)"
+    fi
+    if [[ ! -f "$assembly" ]]; then
+        echo -e "${RED}❌ Migration CLI assembly not found: ${assembly:-unresolved}${NC}" >&2
+        return 1
+    fi
+    export _LMA_CLI_ASSEMBLY="$assembly"
+}
+
+lma_cli() {
+    "${DOTNET_CMD:-dotnet}" "$_LMA_CLI_ASSEMBLY" "$@"
+}
+
 ensure_rekt_containers() {
     detect_docker_api_version
     echo -e "${BLUE}🔧 Ensuring rekt containers are running...${NC}"
@@ -3321,6 +3345,7 @@ run_rekt_parse_impl() {
     validate_rekt_jcl_source || return 1
     detect_docker_api_version
     ensure_rekt_containers || return 1
+    ensure_lma_cli || return 1
 
     # Use the same exclusion policy for preprocessing, identity checks and staging.
     # Unproven generated definitions remain missing, even when no genuine replacement exists.
@@ -3923,7 +3948,7 @@ print(len(lines))
     # would report a program as fully parsed when consumers will find no structure for it.
     rekt_structure_written() {
         local report="$REPO_ROOT/output/rekt/${1}.report"
-        "$PYTHON_CMD" "$REPO_ROOT/tools/rekt_parse_diagnostics.py" --structure "$report"
+        lma_cli rekt-diagnostics structure "$report"
     }
 
     # One program: parse, dependency export and evidence. It records its outcome in
@@ -4060,7 +4085,7 @@ PYEOF
         local diagnostic_path="$REPO_ROOT/output/rekt/${rel_program}.report/parse-diagnostics.json"
         if [[ -f "$diagnostic_path" ]]; then
             local missing_warnings
-            missing_warnings=$("$PYTHON_CMD" "$REPO_ROOT/tools/rekt_parse_diagnostics.py" "$diagnostic_path") || return 1
+            missing_warnings=$(lma_cli rekt-diagnostics missing-copybooks "$diagnostic_path") || return 1
             if [[ -n "$missing_warnings" ]]; then
                 stub_warnings="${stub_warnings:+$stub_warnings|}$missing_warnings"
                 if [[ "$parse_outcome" == "Full" || "$parse_outcome" == "NoDialect" ]]; then

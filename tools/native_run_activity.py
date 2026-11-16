@@ -63,9 +63,21 @@ def journal_lock(path):
             _unlock(handle)
 
 
+def has_structure(report, directories):
+    for directory in directories:
+        artifacts = list((Path(report) / directory).glob("*.json"))
+        if not artifacts:
+            return False
+        for artifact in artifacts:
+            with artifact.open(encoding="utf-8") as handle:
+                value = json.load(handle)
+            if not isinstance(value, (dict, list)) or not value:
+                return False
+    return True
+
+
 def measurements(source_root, output_root, relative_path):
     from rekt_dependency_evidence import KINDS, PRODUCER, digest, evidence_current
-    from rekt_parse_diagnostics import has_structure
 
     report = output_root / (relative_path + ".report")
     evidence_path = report / "dependency-evidence.json"

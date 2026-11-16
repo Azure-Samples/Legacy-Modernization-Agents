@@ -52,6 +52,11 @@ elif kind == "dotnet":
         }))
     if args == ["--list-runtimes"]:
         print("Microsoft.NETCore.App 10.0.0")
+    elif "-getProperty:TargetPath" in args:
+        print(os.environ["LMA_TEST_DLL"])
+    elif "rekt-diagnostics" in args:
+        sys.exit(subprocess.call([os.environ["LMA_REAL_DOTNET"], os.environ["LMA_TEST_DLL"],
+                                  *args[args.index("rekt-diagnostics"):]]))
     elif "jcl-facts" in args:
         if os.environ.get("JCL_TEST_FAIL"):
             sys.exit(7)
@@ -104,6 +109,10 @@ class JclCommandFixture(unittest.TestCase):
                         JCL_TEST_ROOT=str(self.root), CopilotSkipCliDownload="true",
                         NEO4J_PASSWORD="isolated-test-only", TMPDIR=self.root.as_posix(),
                         TEMP=self.root.as_posix(), TMP=self.root.as_posix())
+        # Parser artifacts are judged by the genuine CLI even though builds and runs are faked.
+        dll = Path(os.environ.get("JCL_TEST_DLL", REPO / "bin/Debug/net10.0/CobolToQuarkusMigration.dll"))
+        self.assertTrue(dll.is_file(), "Build CobolToQuarkusMigration.csproj before running the doctor tests")
+        self.env.update(LMA_TEST_DLL=str(dll), LMA_REAL_DOTNET=shutil.which("dotnet"))
         for name in ("docker", "dotnet"):
             self.executable(self.bin / name, name)
         populator = self.root / "tools/graph-populator"

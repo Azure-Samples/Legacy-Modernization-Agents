@@ -28,7 +28,7 @@ class NativeRunActivityTests(unittest.TestCase):
     def copy_helpers(self, root):
         (root / "tools").mkdir(parents=True)
         for name in ("native_run_activity.py", "rekt_dependency_evidence.py",
-                     "rekt_parse_diagnostics.py", "rekt_source_identity.py"):
+                     "rekt_source_identity.py"):
             shutil.copyfile(ROOT / "tools" / name, root / "tools" / name)
 
     def test_completion_measures_checked_artifacts_and_actual_failed_export(self):

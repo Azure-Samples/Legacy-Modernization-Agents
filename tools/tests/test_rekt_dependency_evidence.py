@@ -898,7 +898,7 @@ class DoctorDependencyExportTests(DependencyFixture):
                    cics_definitions=None, facts_cli=None, other_estate=True, expected_estate="estate"):
         (self.work / "tools").mkdir()
         for helper in ("rekt_dependency_evidence.py", "rekt_source_identity.py",
-                       "rekt_parse_diagnostics.py", "preprocess-for-rekt.sh", "bms_symbolic_map.py",
+                       "preprocess-for-rekt.sh", "bms_symbolic_map.py",
                        "native_run_activity.py"):
             shutil.copy2(REPO / "tools" / helper, self.work / "tools" / helper)
         # Doctor uses output/rekt; keep all writes inside this test's fixture.
@@ -917,7 +917,8 @@ class DoctorDependencyExportTests(DependencyFixture):
             if duplicate_callee:
                 self.write(duplicate_callee, "           DISPLAY 'NOT THE CALLEE'.\n")
         script = (REPO / "doctor.sh").read_text()
-        functions = script[script.index("run_rekt_logged() {"):script.index("\nvalidate_rekt_jcl_source() {")]
+        functions = (script[script.index("ensure_lma_cli() {"):script.index("ensure_rekt_containers() {")]
+                     + script[script.index("run_rekt_logged() {"):script.index("\nvalidate_rekt_jcl_source() {")])
         mock = self.work / "mock_parser.py"
         mock.write_text(r'''
 import json, os, sys
@@ -996,7 +997,11 @@ scan_rekt_jcl() { return 0; }
 run_compose() { echo "Unexpected container restart" >&2; return 1; }
 container_exec() { "$PYTHON_CMD" "$REPO_ROOT/mock_parser.py" "$@"; }
 ''' + functions + "\nrun_rekt_parse\n"
+        cli = Path(os.environ.get("JCL_TEST_DLL", REPO / "bin/Debug/net10.0/CobolToQuarkusMigration.dll"))
+        self.assertTrue(cli.is_file(), "Build CobolToQuarkusMigration.csproj before running the doctor tests")
+        # The genuine CLI judges parser artifacts; only the parser and fact extraction are mocked.
         env = dict(os.environ, REPO_ROOT=str(self.work), PYTHON_CMD=sys.executable,
+                   _LMA_CLI_ASSEMBLY=str(cli), DOTNET_CMD=shutil.which("dotnet"),
                    REKT_CONTAINER="mock-parser", REKT_SERVICE="mock-service",
                    REKT_STUB_MARKER="AUTO-GENERATED STUB COPYBOOK",
                    REKT_GENERATED_COPYBOOK_DIRS="copy-generated",

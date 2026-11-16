@@ -30,7 +30,7 @@ internal static class Program
         Directory.CreateDirectory(logsDirectory);
 
         // Only enable live logging for migration runs (not MCP server or conversation modes)
-        var isMigrationRun = !args.Contains("mcp") && !args.Contains("conversation") && !args.Contains("estate-graph") && !args.Contains("dependency-plan");
+        var isMigrationRun = !args.Contains("mcp") && !args.Contains("conversation") && !args.Contains("estate-graph") && !args.Contains("dependency-plan") && !args.Contains("rekt-diagnostics");
         LiveLogWriter? liveLogWriter = null;
 
         if (isMigrationRun)
@@ -174,6 +174,7 @@ internal static class Program
 
         // Deterministic estate graph: clusters, carve scores and migration waves.
         rootCommand.AddCommand(CobolToQuarkusMigration.Cli.EstateGraphCommand.Build());
+        rootCommand.AddCommand(CobolToQuarkusMigration.Cli.RektDiagnosticsCommand.Build());
 
         rootCommand.SetHandler(async (context) =>
         {
@@ -1010,7 +1011,8 @@ internal static class Program
         }
     }
 
-    private static void LoadEnvironmentVariables()
+    // Offline commands skip the hint: doctor.sh captures their stdout as data.
+    private static void LoadEnvironmentVariables(bool hintWhenMissing = true)
     {
         try
         {
@@ -1022,7 +1024,7 @@ internal static class Program
             {
                 LoadEnvFile(localConfigFile);
             }
-            else
+            else if (hintWhenMissing)
             {
                 Console.WriteLine("💡 Consider creating Config/ai-config.local.env for your personal settings");
                 Console.WriteLine("   You can copy from Config/ai-config.env.example");
@@ -1414,7 +1416,7 @@ internal static class Program
         // config file has been written; its handler talks to the Copilot SDK, not Azure.
         return command is not
             ("program-facts" or "dependency-plan" or "rekt-scan-cache" or "conversation" or "list-models" or "estate-graph"
-                or "jcl-facts" or "jcl-jobs" or "jcl-programs");
+                or "jcl-facts" or "jcl-jobs" or "jcl-programs" or "rekt-diagnostics");
     }
 
     // Matched against the literals shipped in ai-config.env.example. An unedited placeholder that
@@ -1429,7 +1431,7 @@ internal static class Program
     {
         try
         {
-            LoadEnvironmentVariables();
+            LoadEnvironmentVariables(hintWhenMissing: requireAiSettings);
 
             if (!requireAiSettings)
             {

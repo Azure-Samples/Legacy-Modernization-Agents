@@ -2,38 +2,8 @@ import json
 import os
 import subprocess
 import tempfile
-import sys
 import unittest
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from rekt_parse_diagnostics import has_structure, missing_copybook_warnings
-
-
-class DiagnosticTests(unittest.TestCase):
-    def test_empty_or_missing_artifacts_are_not_structural_success(self):
-        with tempfile.TemporaryDirectory(prefix="rekt-artifacts-") as directory:
-            root = Path(directory)
-            self.assertFalse(has_structure(root))
-            for name in ("flow_ast", "cfg"):
-                (root / name).mkdir()
-            for payload in ("{}", "[]", "null", '""', "42"):
-                with self.subTest(payload=payload):
-                    for name in ("flow_ast", "cfg"):
-                        (root / name / "artifact.json").write_text(payload)
-                    self.assertFalse(has_structure(root))
-            for name in ("flow_ast", "cfg"):
-                (root / name / "artifact.json").write_text('{"nodes":[{"id":"known"}]}')
-            self.assertTrue(has_structure(root))
-            (root / "cfg" / "artifact.json").write_text("broken")
-            with self.assertRaises(json.JSONDecodeError):
-                has_structure(root)
-
-    def test_missing_dependencies_are_explicit_and_deduplicated(self):
-        diagnostic = {"code": "missing copybook", "message": "ABSENT: Copybook not found"}
-        self.assertEqual(["missing-copybook:ABSENT: Copybook not found"],
-                         missing_copybook_warnings([diagnostic, diagnostic,
-                                                   {"code": None, "message": "Warning"}]))
 
 
 @unittest.skipUnless(os.environ.get("REKT_TEST_IMAGE"), "Set REKT_TEST_IMAGE for parser integration")
@@ -80,7 +50,8 @@ class MissingCopybookParserTests(unittest.TestCase):
             result, report, source = self.run_fixture(Path(directory))
             self.assertEqual(0, result.returncode, result.stdout + result.stderr)
             diagnostics = json.loads((report / "parse-diagnostics.json").read_text())
-            self.assertTrue(any("ABSENTCB" in warning for warning in missing_copybook_warnings(diagnostics)))
+            self.assertTrue(any(d.get("code") == "missing copybook" and "ABSENTCB" in d["message"]
+                                for d in diagnostics))
             artifacts = list(report.rglob("flow-ast-*.json"))
             self.assertEqual(1, len(artifacts))
             ast = artifacts[0].read_text()
