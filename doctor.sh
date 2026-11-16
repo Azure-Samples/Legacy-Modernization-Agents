@@ -310,6 +310,8 @@ show_usage() {
     echo -e "  ${GREEN}rekt-full${NC}       Run parse then ingest"
     echo -e "                  ${CYAN}--parallel N${NC} parses N programs at once (1-16, default 1 or REKT_PARSE_JOBS)"
     echo -e "  ${GREEN}rekt-status${NC}     Show REKT container, graph, and export status"
+    echo -e "  ${GREEN}verify-ai-loop${NC}  Check the running portal's AI Loop catalogues native scans:"
+    echo -e "                  ${CYAN}--scan <name>${NC} (repeatable, under output/rekt-scans) ${CYAN}[--model-run <id>]${NC}"
     echo
     echo -e "${BOLD}Examples:${NC}"
     echo -e "  $0                   ${CYAN}# Run configuration doctor${NC}"
@@ -4651,6 +4653,12 @@ validate_selection() {
 
 # Clusters and waves from the source alone; with a cluster id, that cluster's slice and the command
 # that converts it.
+# Read-only acceptance of the running portal's AI Loop; see docs/estate-mission-control.md.
+run_verify_ai_loop() {
+    ensure_lma_cli || return 1
+    lma_cli ai-loop-check --url "http://localhost:${DEFAULT_MCP_PORT}" --repo-root "$REPO_ROOT" "$@"
+}
+
 run_estate_graph() {
     local cluster="${1:-}"
     local src
@@ -5183,6 +5191,9 @@ main() {
             ;;
         "rekt-status")
             run_rekt_status
+            ;;
+        "verify-ai-loop")
+            run_verify_ai_loop "${@:2}"
             ;;
         "help"|"-h"|"--help")
             show_usage

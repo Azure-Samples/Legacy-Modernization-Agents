@@ -30,7 +30,7 @@ internal static class Program
         Directory.CreateDirectory(logsDirectory);
 
         // Only enable live logging for migration runs (not MCP server or conversation modes)
-        var isMigrationRun = !args.Contains("mcp") && !args.Contains("conversation") && !args.Contains("estate-graph") && !args.Contains("dependency-plan") && !args.Contains("rekt-diagnostics") && !args.Contains("graph-ingest");
+        var isMigrationRun = !args.Contains("mcp") && !args.Contains("conversation") && !args.Contains("estate-graph") && !args.Contains("dependency-plan") && !args.Contains("rekt-diagnostics") && !args.Contains("graph-ingest") && !args.Contains("ai-loop-check");
         LiveLogWriter? liveLogWriter = null;
 
         if (isMigrationRun)
@@ -176,6 +176,7 @@ internal static class Program
         rootCommand.AddCommand(CobolToQuarkusMigration.Cli.EstateGraphCommand.Build());
         rootCommand.AddCommand(CobolToQuarkusMigration.Cli.RektDiagnosticsCommand.Build());
         rootCommand.AddCommand(CobolToQuarkusMigration.Cli.GraphIngestCommand.Build());
+        rootCommand.AddCommand(CobolToQuarkusMigration.Cli.AiLoopCheckCommand.Build());
 
         rootCommand.SetHandler(async (context) =>
         {
@@ -1417,7 +1418,7 @@ internal static class Program
         // config file has been written; its handler talks to the Copilot SDK, not Azure.
         return command is not
             ("program-facts" or "dependency-plan" or "rekt-scan-cache" or "conversation" or "list-models" or "estate-graph"
-                or "jcl-facts" or "jcl-jobs" or "jcl-programs" or "rekt-diagnostics" or "graph-ingest");
+                or "jcl-facts" or "jcl-jobs" or "jcl-programs" or "rekt-diagnostics" or "graph-ingest" or "ai-loop-check");
     }
 
     // Matched against the literals shipped in ai-config.env.example. An unedited placeholder that

@@ -1,4 +1,4 @@
-**Last updated**: 2026-11-11
+**Last updated**: 2026-11-16
 
 # Estate Mission Control and the AI Loop
 
@@ -196,8 +196,9 @@ dotnet "$VALIDATED/McpChatWeb.dll" \
 After activation:
 
 ```bash
-# --scan names directories under output/rekt-scans; --model-run is optional.
-python3 tools/check_ai_loop_activity.py --url http://localhost:5028 --scan <scan-name> --model-run <run-id>
+# --scan names directories under output/rekt-scans (repeatable); --model-run is optional.
+# Read-only: exits 1 with FAIL: <reason> when a scan's catalogue entry disagrees with its manifest.
+./doctor.sh verify-ai-loop --scan <scan-name> --model-run <run-id>
 curl --fail --silent 'http://localhost:5028/api/ai-loop/runs?offset=0'
 # In AI Loop: Follow newest; select each Native REKT entry, inspect failure filters and paths;
 # then explicitly pin the model run and verify its recorded model times/counts remain unchanged.
