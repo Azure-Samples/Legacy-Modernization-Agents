@@ -67,6 +67,7 @@ services:
   cobol-rekt:
     # doctor.sh sets REKT_IMAGE to a digest of the Dockerfile and patches, forcing a rebuild when they change.
     image: ${REKT_IMAGE:-rekt-oss-mma:latest}
+    user: "${REKT_UID:-1000}:${REKT_GID:-1000}"
     build:
       context: ./tools/cobol-rekt
       dockerfile: Dockerfile

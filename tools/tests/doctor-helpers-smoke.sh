@@ -18,6 +18,7 @@ eval "$(sed -n \
     -e '/^read_local_config_value()/,/^}/p' \
     -e '/^SETUP_OWNED_KEYS=/p' \
     -e '/^restore_unowned_config_keys()/,/^}/p' \
+    -e '/^ensure_rekt_containers()/,/^}/p' \
     "$REPO_ROOT/doctor.sh")"
 # shellcheck source=../lib/ports.sh
 source "$REPO_ROOT/tools/lib/ports.sh"
@@ -135,6 +136,52 @@ else
     fail "setup merge writes each key once"
 fi
 rm -rf "$config_dir"
+
+mount_dir="$(mktemp -d)"
+if (
+    REPO_ROOT="$mount_dir"
+    NEO4J_PASSWORD="test-only"
+    NEO4J_CONTAINER="test-neo4j"
+    REKT_CONTAINER="test-rekt"
+    NEO4J_SERVICE="neo4j"
+    REKT_SERVICE="cobol-rekt"
+    RED="" GREEN="" YELLOW="" BLUE="" NC=""
+    detect_docker_api_version() { :; }
+    ensure_neo4j_image() { :; }
+    container_exec() { return 0; }
+    run_compose() {
+        [[ "$*" == "up -d neo4j cobol-rekt" ]] || return 1
+        [[ -d "$REPO_ROOT/source" ]] || return 1
+        printf 'host-owned output\n' >"$REPO_ROOT/output/rekt/compose-write"
+    }
+    ensure_rekt_containers >"$mount_dir/startup.log" 2>&1 &&
+        [[ "$(cat "$mount_dir/output/rekt/compose-write")" == "host-owned output" ]]
+); then
+    pass "REKT startup prepares writable bind sources before Compose"
+else
+    fail "REKT startup prepares writable bind sources before Compose"
+fi
+
+if (
+    REPO_ROOT="$mount_dir/blocked"
+    mkdir -p "$REPO_ROOT"
+    printf 'not a directory\n' >"$REPO_ROOT/output"
+    NEO4J_PASSWORD="test-only"
+    RED="" BLUE="" NC=""
+    detect_docker_api_version() { :; }
+    ensure_neo4j_image() { :; }
+    run_compose() { touch "$mount_dir/unexpected-compose"; }
+    if ensure_rekt_containers >"$mount_dir/blocked.log" 2>&1; then
+        exit 1
+    fi
+    [[ ! -e "$mount_dir/unexpected-compose" ]] &&
+        [[ "$(cat "$REPO_ROOT/output")" == "not a directory" ]]
+); then
+    pass "REKT startup rejects invalid bind sources before starting containers"
+else
+    fail "REKT startup rejects invalid bind sources before starting containers"
+fi
+rm -rf "$mount_dir"
 
 echo ""
 if [[ $failures -gt 0 ]]; then

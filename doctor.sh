@@ -2810,6 +2810,9 @@ container_exec() {
 }
 
 run_compose() {
+    # Bind-mounted reports must be owned by the host user for relocation and cleanup.
+    local REKT_UID="${REKT_UID:-$(id -u)}" REKT_GID="${REKT_GID:-$(id -g)}"
+    export REKT_UID REKT_GID
     if docker compose version >/dev/null 2>&1; then
         docker compose -f "$REPO_ROOT/docker-compose.yml" "$@"
     else
@@ -2950,6 +2953,19 @@ ensure_rekt_containers() {
 
     ensure_neo4j_image || return 1
 
+    # Docker creates missing bind sources as root, even when the container uses the host UID.
+    if ! mkdir -p "$REPO_ROOT/source" "$REPO_ROOT/output/rekt"; then
+        echo -e "${RED}❌ Cannot prepare the REKT bind-mount directories.${NC}"
+        return 1
+    fi
+    if [[ ! -w "$REPO_ROOT/output/rekt" ]]; then
+        echo -e "${RED}❌ REKT output directory is not writable by the host user.${NC}"
+        ls -ldn "$REPO_ROOT/output/rekt"
+        echo "Repair ownership, then retry:"
+        printf '  sudo chown -R %s:%s %q\n' "$(id -u)" "$(id -g)" "$REPO_ROOT/output/rekt"
+        return 1
+    fi
+
     # Start only the rekt services (leave existing neo4j untouched).
     local compose_output
     local services=("$NEO4J_SERVICE" "$REKT_SERVICE")
@@ -3038,16 +3054,17 @@ ensure_rekt_containers() {
         echo -e "  ${YELLOW}⚠️  Cobol-REKT CLI not responding (container may still be building)${NC}"
     fi
 
-    # Verify /output bind mount is writable — rm -rf on the host changes the inode and breaks it.
-    # Restart the container to re-establish the mount if needed.
+    # Replacing a bind source on the host leaves the container attached to the old inode.
     if ! container_exec "$REKT_CONTAINER" bash -c \
         "touch /output/.write_probe && rm -f /output/.write_probe" >/dev/null 2>&1; then
-        echo -e "  ${YELLOW}⚠️  /output bind mount stale — restarting $REKT_CONTAINER...${NC}"
-        docker restart "$REKT_CONTAINER" >/dev/null
+        echo -e "  ${YELLOW}⚠️  /output write failed — restarting $REKT_CONTAINER to refresh the mount...${NC}"
+        docker restart "$REKT_CONTAINER" >/dev/null || return 1
         sleep 3
         if ! container_exec "$REKT_CONTAINER" bash -c \
             "touch /output/.write_probe && rm -f /output/.write_probe" >/dev/null 2>&1; then
-            echo -e "  ${RED}❌ /output still not writable after restart. Check Docker volume mount.${NC}"
+            echo -e "  ${RED}❌ /output still not writable; check mount ownership and container UID/GID.${NC}"
+            ls -ldn "$REPO_ROOT/output/rekt"
+            container_exec "$REKT_CONTAINER" sh -c 'id; ls -ldn /output' >&2
             return 1
         fi
         echo -e "  ${GREEN}✅ Bind mount restored${NC}"
