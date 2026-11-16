@@ -93,6 +93,7 @@ public sealed class RektCommareaClosureTests : RektEvidenceFixture
     [InlineData("unsupported-write")]
     [InlineData("foreign-to-loader")]
     [InlineData("carrier-issue")]
+    [InlineData("carrier-without-record")]
     [InlineData("unparsed-sender")]
     public void Closure_RefusesAnOpenWorld(string name)
     {
@@ -110,6 +111,10 @@ public sealed class RektCommareaClosureTests : RektEvidenceFixture
             case "carrier-issue":
                 Participant("CARRIER", [Record([null], false)], [Send("carrier", """{"carrier": "WS-COMMAREA"}""")],
                     [O("""{"name": "WS-COMMAREA", "record": "CARDDEMO-COMMAREA", "issues": ["carrier-write:Other"]}""")]);
+                break;
+            case "carrier-without-record":
+                Participant("CARRIER", [Record([null], false)], [Send("carrier", """{"carrier": "COMMUNICATION-AREA"}""")],
+                    [O("""{"name": "COMMUNICATION-AREA", "issues": ["carrier-shape", "carrier-sources:0"]}""")]);
                 break;
             default:
                 Participant("LOST", null, source: "       PROCEDURE DIVISION.\n           EXEC CICS XCTL COMMAREA(X) END-EXEC.\n");

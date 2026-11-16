@@ -117,7 +117,10 @@ public static partial class RektEvidence
                     if (!LinkedToInert(send)) sent.Add((stem, PyJson.Str(Subscript(send, "record"))!));
                 }
                 else if (StrEquals(kind, "carrier") && PyJson.Str(Subscript(send, "carrier")) is { } carrierName && carriers.ContainsKey(carrierName))
-                    sent.Add((stem, PyJson.Str(Subscript(carriers[carrierName], "record"))!));
+                {
+                    // An unsupported carrier may have no record; it is already reported above, which fails the closure closed.
+                    if (PyJson.Str(Get(carriers[carrierName], "record")) is { } carrierRecord) sent.Add((stem, carrierRecord));
+                }
                 else if (StrEquals(kind, "foreign"))
                 {
                     var targets = PyJson.Truthy(Get(send, "targets")) ? (JsonArray)Get(send, "targets")! : [];
