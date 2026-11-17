@@ -16,6 +16,7 @@ eval "$(sed -n \
     -e '/^SETUP_OWNED_KEYS=/p' \
     -e '/^restore_unowned_config_keys()/,/^}/p' \
     -e '/^ensure_rekt_containers()/,/^}/p' \
+    -e '/^prepare_bind_directories()/,/^}/p' \
     "$REPO_ROOT/doctor.sh")"
 # shellcheck source=../lib/ports.sh
 source "$REPO_ROOT/tools/lib/ports.sh"
@@ -148,6 +149,52 @@ if (
     pass "REKT startup rejects invalid bind sources before starting containers"
 else
     fail "REKT startup rejects invalid bind sources before starting containers"
+fi
+
+if (
+    REPO_ROOT="$mount_dir/root-container"
+    mkdir -p "$REPO_ROOT/source"
+    NEO4J_PASSWORD="test-only"
+    NEO4J_CONTAINER="test-neo4j"
+    REKT_CONTAINER="test-rekt"
+    NEO4J_SERVICE="neo4j"
+    REKT_SERVICE="cobol-rekt"
+    REKT_IMAGE="rekt-test:1"
+    REKT_UID=4242 REKT_GID=4343
+    RED="" GREEN="" YELLOW="" BLUE="" NC=""
+    detect_docker_api_version() { :; }
+    ensure_neo4j_image() { :; }
+    container_exec() { return 0; }
+    docker() {
+        case "$*" in
+            *State.Running*) echo true ;;
+            *Config.Image*) echo "$REKT_IMAGE" ;;
+            *Config.User*) echo "" ;;
+        esac
+    }
+    run_compose() { printf '%s\n' "$*" >>"$mount_dir/compose-calls"; }
+    ensure_rekt_containers >"$mount_dir/root-container.log" 2>&1
+    [[ "$(head -1 "$mount_dir/compose-calls")" == "up -d cobol-rekt" ]] &&
+        grep -q "uses 'root'; switching to host user 4242:4343" "$mount_dir/root-container.log"
+); then
+    pass "REKT startup recreates a running parser container whose user is not the host user"
+else
+    fail "REKT startup recreates a running parser container whose user is not the host user"
+fi
+
+if (
+    REPO_ROOT="$mount_dir/setup"
+    mkdir -p "$REPO_ROOT"/{Data,Config,tools/cobol-rekt/contracts}
+    prepare_bind_directories >"$mount_dir/setup-missing.log" 2>&1 && exit 1
+    grep -q "Repository-provided bind directory is missing: $REPO_ROOT/source" "$mount_dir/setup-missing.log" &&
+        [[ ! -e "$REPO_ROOT/source" ]] || exit 1
+    mkdir "$REPO_ROOT/source"
+    prepare_bind_directories >"$mount_dir/setup.log" 2>&1 &&
+        [[ -d "$REPO_ROOT/Logs" && -d "$REPO_ROOT/output/rekt" ]]
+); then
+    pass "setup creates runtime bind directories but never replaces repository-provided ones"
+else
+    fail "setup creates runtime bind directories but never replaces repository-provided ones"
 fi
 rm -rf "$mount_dir"
 
