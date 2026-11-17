@@ -554,7 +554,7 @@ Read the summary at the end before converting:
   ⚠️  38 missing copybook(s) — see output/rekt/missing-copybooks.txt
 ```
 
-A missing copybook remains an unresolved dependency: its fields and layout must not be inferred or fabricated. Missing-copybook-only parser recovery can retain partial evidence with diagnostics; it does not establish a complete AST or make conversion ready. Add the real copybooks and parse again. Details of each program are in `output/rekt/**/*.parse.log`.
+A missing copybook remains an unresolved dependency: its fields and layout must not be inferred or fabricated. Missing-copybook-only parser recovery can retain partial evidence with diagnostics; it does not establish a complete AST or make conversion ready. Add the real copybooks and parse again. Parser output for each program goes to `output/rekt/**/*.parse.log`, not the terminal; a failed program prints its last errors and the log path. Set `REKT_VERBOSE=true` to stream the parser output as well.
 
 The parser bundles declared SQLCA and SQLDA reference inputs when no accepted
 source definition exists. See [bundled system copybooks](docs/bundled-system-copybooks.md)

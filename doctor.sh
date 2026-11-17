@@ -2939,6 +2939,16 @@ ensure_rekt_containers() {
 run_rekt_logged() {
     local log="$1"
     shift
+    if ! : >> "$log"; then
+        echo "Native parser log could not be persisted: $log" >&2
+        return 1
+    fi
+    # The parser logs every flow node (~40k lines per large program), so the terminal
+    # shows outcomes only; REKT_VERBOSE=true streams it as well.
+    if [[ "${REKT_VERBOSE:-false}" != "true" ]]; then
+        "$@" >> "$log" 2>&1
+        return
+    fi
     "$@" 2>&1 | tee -a "$log"
     local statuses=("${PIPESTATUS[@]}")
     if [[ "${statuses[1]}" -ne 0 ]]; then
@@ -2946,6 +2956,12 @@ run_rekt_logged() {
         return 1
     fi
     return "${statuses[0]}"
+}
+
+rekt_log_excerpt() {
+    local log="$1"
+    grep -aiE 'SEVERE|ERROR|Exception' "$log" 2>/dev/null | tail -n 8 | cut -c1-200 | sed 's/^/      /'
+    echo -e "      ${BLUE}Full log: ${log#"$REPO_ROOT"/}${NC}"
 }
 
 # Each top-level folder of source/ is an independent estate; loose files at the source/
@@ -3752,6 +3768,7 @@ run_rekt_parse_impl() {
                 parse_outcome="DepsOnly"
             else
                 echo -e " ${RED}❌${NC}"
+                rekt_log_excerpt "$err_log"
             fi
         fi
         local dependency_warnings
