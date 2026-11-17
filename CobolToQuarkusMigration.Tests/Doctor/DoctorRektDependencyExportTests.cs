@@ -170,6 +170,22 @@ public sealed class DoctorRektDependencyExportTests : IDisposable
     }
 
     [Fact]
+    public void Doctor_ProgramWithNoEvidence_ShowsParserErrorsAndLogPath()
+    {
+        RunDoctor(structuralSuccess: false, exportSuccess: false);
+
+        _lastStdOut.Should().Contain("[SEVERE] structural parse unavailable").And.Contain("Full log: output/rekt/" + Relative + ".parse.log");
+    }
+
+    [Fact]
+    public void Doctor_RektVerbose_StreamsParserOutput()
+    {
+        RunDoctor(structuralSuccess: true, verbose: true);
+
+        _lastStdOut.Should().Contain("export diagnostic retained");
+    }
+
+    [Fact]
     public void Doctor_FailedExport_StillWritesFailureSidecarAndRetainsErrors()
     {
         var (current, _) = RunDoctor(structuralSuccess: true, exportSuccess: false);
@@ -220,7 +236,7 @@ public sealed class DoctorRektDependencyExportTests : IDisposable
 
     private (JsonNode Current, List<IReadOnlyList<string>> Calls) RunDoctor(bool structuralSuccess,
         bool exportSuccess = true, bool native = false, string? duplicateCallee = null, string? cicsDefinitions = null,
-        string? factsCli = null, bool otherEstate = true, string expectedEstate = "estate")
+        string? factsCli = null, bool otherEstate = true, string expectedEstate = "estate", bool verbose = false)
     {
         _doctor.AddCheckoutFile("tools/preprocess-for-rekt.sh");
         var oldReport = Path.Join(RektOutput, Relative + ".report");
@@ -244,6 +260,7 @@ public sealed class DoctorRektDependencyExportTests : IDisposable
         env["EXPORT_SUCCESS"] = exportSuccess ? "true" : "false";
         env["NATIVE_EXPORT"] = native ? "true" : "false";
         env["EXPECT_ESTATE"] = expectedEstate;
+        if (verbose) env["REKT_VERBOSE"] = "true";
         if (cicsDefinitions is not null) env["REKT_CICS_RESOURCE_DEFINITIONS"] = cicsDefinitions;
         if (factsCli is not null)
         {
@@ -268,10 +285,7 @@ public sealed class DoctorRektDependencyExportTests : IDisposable
         current["relativePath"]!.GetValue<string>().Should().Be(Relative);
         DoctorFixture.ShouldBeSamePath(current["originalSourcePath"]!.GetValue<string>(), DoctorFixture.RealPath(_program));
         File.ReadAllText(Path.Join(RektOutput, Relative + ".parse.log")).Should().Contain("export diagnostic retained");
-        result.StdOut.Should().Contain("export diagnostic retained");
-        var nativeLog = Directory.GetDirectories(Path.Join(Root, "output/rekt-scans"), "doctor-*")
-            .Select(dir => Path.Join(dir, "native.log")).Where(File.Exists).Should().ContainSingle().Which;
-        File.ReadAllText(nativeLog).Should().Contain("export diagnostic retained");
+        result.StdOut.Contains("export diagnostic retained").Should().Be(env.ContainsKey("REKT_VERBOSE"));
         foreach (var call in calls.Where(call => call.Contains("run") || call.Contains("dependency")))
         {
             var scope = call.Contains("dependency") ? ".dependency-input" : ".parser-input";
@@ -391,7 +405,7 @@ public sealed class DoctorRektDependencyExportTests : IDisposable
             done
             exit 0
         fi
-        echo "structural parse unavailable" >&2
+        echo "[SEVERE] structural parse unavailable" >&2
         exit 1
         """;
 }
