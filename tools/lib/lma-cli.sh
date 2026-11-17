@@ -1,6 +1,6 @@
 #!/bin/bash
 # Migration CLI helper runner shared by doctor.sh and tools/preprocess-for-rekt.sh. Source this
-# file; it defines functions only. Works with bash 3.2 (macOS) and Git Bash on Windows.
+# file; it defines functions and detects Git Bash. Works with bash 3.2 (macOS) and Git Bash on Windows.
 
 # Runs one offline helper: lma_cli_run <assembly> <command> [args...]. Callers may treat a
 # non-zero exit as an answer, so only a crash is reported here - but always, in logs that no
@@ -12,17 +12,42 @@ lma_cli_run() {
         lma_cli_report_crash 127 /dev/null "$@"
         return 127
     fi
+    local -a args=()
+    local arg
+    for arg in "$@"; do
+        args+=("$(lma_cli_native_arg "$arg")")
+    done
     local err_file rc=0
     err_file="$(mktemp "${TMPDIR:-/tmp}/lma-cli.XXXXXX" 2>/dev/null)" || err_file=/dev/null
     # stdout passes through untouched; stderr stays live and is also kept for the report.
     # The && / || pair reads the helper's own status without tripping set -e or pipefail.
-    { "${DOTNET_CMD:-dotnet}" "$assembly" "$@" 2>&1 1>&3 3>&- | tee "$err_file" >&2 \
+    { "${DOTNET_CMD:-dotnet}" "$assembly" ${args[@]+"${args[@]}"} 2>&1 1>&3 3>&- | tee "$err_file" >&2 \
         && rc=${PIPESTATUS[0]} || rc=${PIPESTATUS[0]}; } 3>&1
     if (( rc != 0 )) && lma_cli_is_crash "$rc" "$err_file"; then
         lma_cli_report_crash "$rc" "$err_file" "$@"
     fi
     [[ "$err_file" == /dev/null ]] || rm -f "$err_file"
     return "$rc"
+}
+
+case "${OSTYPE:-}" in
+    msys*|cygwin*) _LMA_CLI_CYGPATH="$(command -v cygpath 2>/dev/null || true)" ;;
+    *) _LMA_CLI_CYGPATH="" ;;
+esac
+
+# Git Bash converts /c/... arguments for Windows programs, but skips any argument containing
+# ' * ? [ ] or `; .NET cannot open such a path, so every POSIX path is converted here.
+lma_cli_native_arg() {
+    if [[ -z "$_LMA_CLI_CYGPATH" ]]; then
+        printf '%s' "$1"
+        return
+    fi
+    case "$1" in
+        //*) printf '%s' "$1" ;;
+        /*) "$_LMA_CLI_CYGPATH" -w -- "$1" | tr -d '\r\n' ;;
+        --*=/*) printf '%s=' "${1%%=*}"; "$_LMA_CLI_CYGPATH" -w -- "${1#*=}" | tr -d '\r\n' ;;
+        *) printf '%s' "$1" ;;
+    esac
 }
 
 # A crash is an unhandled .NET exception (System.CommandLine and the runtime both print

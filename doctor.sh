@@ -3087,18 +3087,19 @@ export_rekt_dependencies() {
     else
         export_status=24
     fi
-    local -a host_platform_environment=()
-    if [[ "${REKT_PLATFORM_CONTRACTS+x}" == x ]]; then
-        host_platform_environment=(env "REKT_PLATFORM_CONTRACTS=$(rekt_platform_contracts_for "$estate" host)")
-    fi
-    if [[ -n "$dependency_profile" ]]; then
-        host_platform_environment=(env ${host_platform_environment[@]+"${host_platform_environment[@]:1}"} "REKT_DEPENDENCY_PROFILE=$dependency_profile")
-    fi
-    # env cannot run the lma_cli shell function, so the assembly is invoked directly.
-    ${host_platform_environment[@]+"${host_platform_environment[@]}"} "${DOTNET_CMD:-dotnet}" "$_LMA_CLI_ASSEMBLY" rekt-evidence write \
-        --source-root "$REPO_ROOT/source" --relative-path "$rel_program" \
-        --staging-root "$estate_staging" --output-root "$REPO_ROOT/output/rekt" \
-        --export-exit-code "$export_status" || return 1
+    # The subshell scopes the host-side contract and profile to this one helper call.
+    (
+        if [[ "${REKT_PLATFORM_CONTRACTS+x}" == x ]]; then
+            export REKT_PLATFORM_CONTRACTS="$(rekt_platform_contracts_for "$estate" host)"
+        fi
+        if [[ -n "$dependency_profile" ]]; then
+            export REKT_DEPENDENCY_PROFILE="$dependency_profile"
+        fi
+        lma_cli_run "$_LMA_CLI_ASSEMBLY" rekt-evidence write \
+            --source-root "$REPO_ROOT/source" --relative-path "$rel_program" \
+            --staging-root "$estate_staging" --output-root "$REPO_ROOT/output/rekt" \
+            --export-exit-code "$export_status"
+    ) || return 1
     return "$export_status"
 }
 

@@ -19,7 +19,12 @@ public sealed class DoctorHelperCrashTests : IDisposable
               crash) echo partial; echo "Unhandled exception: System.NullReferenceException: boom" >&2; exit 1 ;;
               answer) echo "doctor-report: selector did not resolve" >&2; exit 2 ;;
               rekt-activity) [[ "$2" == start ]] && echo "$SCAN_DIR/scan.json"; exit 0 ;;
+              args) printf '<%s>' "$@"; exit 0 ;;
             esac
+            """);
+        _doctor.WriteExecutable("cygpath", """
+            #!/bin/bash
+            printf 'W:%s\r\n' "$3"
             """);
         Directory.CreateDirectory(ScanDir);
         _doctor.Env["SCAN_DIR"] = DoctorFixture.Posix(ScanDir);
@@ -65,8 +70,23 @@ public sealed class DoctorHelperCrashTests : IDisposable
         File.ReadAllText(Path.Join(ScanDir, "native.log")).Should().Contain("internal helper crash");
     }
 
+    [Fact]
+    public void GitBash_PassesEveryPosixPathAsAWindowsPath_IncludingOnesGitBashWouldSkip()
+    {
+        var run = Bash("OSTYPE=msys; source \"$LMA_LIB\"\n"
+            + "lma_cli_run asm args --source \"/c/est/it's [x].cpy\" --root=/c/out //server/share plain");
+
+        run.StdOut.Should().Be("<args><--source><W:/c/est/it's [x].cpy><--root=W:/c/out><//server/share><plain>");
+    }
+
+    [Fact]
+    public void OtherPlatforms_PassArgumentsUnchanged()
+    {
+        Bash("lma_cli_run asm args --source \"/c/est/it's.cpy\"").StdOut.Should().Be("<args><--source></c/est/it's.cpy>");
+    }
+
     private DoctorRun Bash(string script) => DoctorFixture.RunProcess(DoctorFixture.Bash,
-        ["-c", $"source '{DoctorFixture.Posix(Path.Join(_doctor.Root, "tools/lib/lma-cli.sh"))}'\n{script}"], _doctor.Root, _doctor.Env, TimeSpan.FromSeconds(30));
+        ["-c", $"LMA_LIB='{DoctorFixture.Posix(Path.Join(_doctor.Root, "tools/lib/lma-cli.sh"))}'; OSTYPE=linux-gnu; source \"$LMA_LIB\"\n{script}"], _doctor.Root, _doctor.Env, TimeSpan.FromSeconds(30));
 
     private static string Between(string start, string end)
     {
