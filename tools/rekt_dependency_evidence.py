@@ -2496,7 +2496,9 @@ def commarea_closure(source_root, output_root, estate):
                 if not linked_to_inert(send):
                     sent.append((stem, send["record"]))
             elif send["kind"] == "carrier" and send["carrier"] in carriers:
-                sent.append((stem, carriers[send["carrier"]]["record"]))
+                # An unsupported carrier may have no record; it is already reported above, which fails the closure closed.
+                if "record" in carriers[send["carrier"]]:
+                    sent.append((stem, carriers[send["carrier"]]["record"]))
             elif send["kind"] == "foreign":
                 targets = send.get("targets") or []
                 if (not targets or any(target not in inventories or any(
