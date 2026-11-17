@@ -330,7 +330,7 @@ public static partial class RektEvidence
                     var relative = PathArg(Subscript(Subscript(searchRecord, "programs"), Path.GetFileName(programPath)));
                     var canonical = PyCompat.Resolve(Path.Join(stagingRoot, relative));
                     if (IsAbsolute(relative) || !IsRelativeTo(canonical, PyCompat.Resolve(stagingRoot))
-                        || Parent(programPath) != PyCompat.Resolve(searchView!)
+                        || Parent(programPath) != Norm(PyCompat.Resolve(searchView!))
                         || !PyJson.PyEquals(record, ReadJson(canonical + ".rekt-source.json"))
                         || original != PyCompat.Resolve(Path.Join(scope.SourceRoot, relative))
                         || DigestMismatch(Subscript(record, "stagedSha256"), programPath)
@@ -449,7 +449,7 @@ public static partial class RektEvidence
                     var stagedRelative = PathArg(Subscript(Subscript(searchRecord, "programs"), Path.GetFileName(path)));
                     var canonical = PyCompat.Resolve(Path.Join(stagingRoot, stagedRelative));
                     if (IsAbsolute(stagedRelative) || !IsRelativeTo(canonical, PyCompat.Resolve(stagingRoot))
-                        || Parent(path) != PyCompat.Resolve(searchView)
+                        || Parent(path) != Norm(PyCompat.Resolve(searchView))
                         || !PyJson.PyEquals(record, ReadJson(canonical + ".rekt-source.json"))
                         || PyCompat.Digest(canonical) != PyCompat.Digest(path)
                         || PyCompat.Resolve(original) != PyCompat.Resolve(Path.Join(scope.SourceRoot, stagedRelative)))
