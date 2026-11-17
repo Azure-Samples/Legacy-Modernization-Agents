@@ -422,6 +422,20 @@ az login                 #    or: copilot login (GitHub Copilot SDK)
 ./doctor.sh run          # 4. migrate, then open the portal
 ```
 
+The setup menu offers complete setup, Docker bind-directory preparation only, or
+AI configuration only. Directory preparation creates missing runtime folders
+(`Logs`, `output`, and `output/rekt`). Repository-provided folders (`Data`, `Config`,
+`source`, and `tools/cobol-rekt/contracts`) must already exist; missing folders
+must be restored from the repository rather than replaced with empty directories.
+Setup asks before repairing existing directory ownership or access, using `sudo`
+only when ownership must change. Existing files are not changed recursively, and
+symlinked bind paths require manual preparation.
+
+When local AI configuration already exists, setup asks whether to rerun AI
+configuration/authentication. The default keeps it unchanged and skips that
+step; complete setup still prepares the remaining local-service prerequisites.
+Reusing configuration does not revalidate authentication.
+
 <details>
 <summary>Manual setup without the setup wizard</summary>
 

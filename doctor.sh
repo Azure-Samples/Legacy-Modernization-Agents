@@ -1314,24 +1314,113 @@ SQL
     echo -e "${CYAN}📄 Location: $report_file${NC}"
 }
 
-# Function for interactive setup
+prepare_bind_directories() {
+    local uid gid relative path ancestor reply
+    uid="$(id -u)" || return 1
+    gid="$(id -g)" || return 1
+
+    for relative in Data Logs Config source output output/rekt tools/cobol-rekt/contracts; do
+        path="$REPO_ROOT/$relative"
+        ancestor="$path"
+        # Privileged repairs must not follow bind paths outside this checkout.
+        while [[ "$ancestor" != "$REPO_ROOT" ]]; do
+            if [[ -L "$ancestor" ]]; then
+                echo "Cannot prepare a symlinked bind path: $ancestor. Prepare it manually." >&2
+                return 1
+            fi
+            ancestor="${ancestor%/*}"
+        done
+
+        case "$relative" in
+            Data|Config|source|tools/cobol-rekt/contracts)
+                if [[ ! -d "$path" ]]; then
+                    echo "Repository-provided bind directory is missing: $path. Restore it from the repository; setup will not create an empty replacement." >&2
+                    return 1
+                fi
+                ;;
+            *)
+                if ! mkdir -p "$path"; then
+                    echo "Cannot create bind directory: $path. Check its parent directory permissions." >&2
+                    return 1
+                fi
+                ;;
+        esac
+
+        if [[ ! -O "$path" || ! -r "$path" || ! -w "$path" || ! -x "$path" ]]; then
+            echo "Directory needs ownership or access repair: $path"
+            echo "Only this directory will change; existing files and subdirectories are left untouched."
+            if ! read -r -p "Repair for host user $uid:$gid? [y/N]: " reply ||
+                [[ ! "$reply" =~ ^[Yy]$ ]]; then
+                echo "Directory preparation stopped without repairing: $path" >&2
+                return 1
+            fi
+            if [[ ! -O "$path" ]]; then
+                if ! command -v sudo >/dev/null 2>&1; then
+                    echo "sudo is required to change ownership of: $path" >&2
+                    return 1
+                fi
+                if ! sudo chown "$uid:$gid" "$path"; then
+                    echo "Cannot change bind directory ownership: $path" >&2
+                    return 1
+                fi
+            fi
+            if ! chmod u+rwx "$path"; then
+                echo "Cannot grant host-user access to bind directory: $path" >&2
+                return 1
+            fi
+        fi
+
+        if [[ ! -O "$path" || ! -r "$path" || ! -w "$path" || ! -x "$path" ]]; then
+            echo "Bind directory is still not accessible to host user $uid:$gid: $path" >&2
+            return 1
+        fi
+        echo "Bind directory ready: $path"
+    done
+    echo "Bind directories prepared. Existing file permissions were not changed."
+}
+
 run_setup() {
     echo -e "${CYAN}🚀 COBOL to Java Migration Tool - Setup${NC}"
     echo "========================================"
     echo ""
 
-    # Check if local config already exists
+    local setup_choice
+    echo "1) Complete setup: Docker bind directories and AI configuration (default)"
+    echo "2) Prepare or repair Docker bind directories only"
+    echo "3) AI configuration only"
+    if ! read -r -p "Choice [1]: " setup_choice; then
+        echo "Setup selection could not be read." >&2
+        return 1
+    fi
+    case "${setup_choice:-1}" in
+        1) prepare_bind_directories || return 1 ;;
+        2) prepare_bind_directories; return $? ;;
+        3) ;;
+        *) echo "Invalid setup choice: $setup_choice" >&2; return 1 ;;
+    esac
+
     LOCAL_CONFIG="$REPO_ROOT/Config/ai-config.local.env"
     if [ -f "$LOCAL_CONFIG" ]; then
-        echo -e "${YELLOW}⚠️  Local configuration already exists:${NC} $LOCAL_CONFIG"
+        echo "Existing AI configuration found: $LOCAL_CONFIG"
+        echo "You can keep it and skip AI configuration/authentication."
         echo ""
-        read -p "Do you want to overwrite it? (y/N): " -r
+        local reconfigure_ai
+        if ! read -r -p "Rerun AI configuration/authentication? [y/N]: " reconfigure_ai; then
+            echo "AI setup selection could not be read." >&2
+            return 1
+        fi
         echo ""
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            echo -e "${BLUE}ℹ️  Setup cancelled. Your existing configuration is preserved.${NC}"
+        if [[ ! "$reconfigure_ai" =~ ^[Yy]$ ]]; then
+            echo "Reusing existing AI configuration without changing it. Authentication has not been revalidated."
+            [[ "${setup_choice:-1}" == "3" ]] && return 0
+            ensure_neo4j_image || return 1
+            ensure_graph_populator_environment || return 1
+            echo "Remaining setup completed. Run ./doctor.sh test to validate your configuration."
             return 0
         fi
     fi
+
+    ensure_copilot_cli_for_build
 
     # Create local config from template
     echo -e "${BLUE}📁 Creating local configuration file...${NC}"
@@ -2810,6 +2899,17 @@ container_exec() {
 }
 
 run_compose() {
+    local HOST_UID HOST_GID
+    HOST_UID="$(id -u)" || return 1
+    HOST_GID="$(id -g)" || return 1
+    export HOST_UID HOST_GID
+
+    # Docker creates missing bind sources as root regardless of the container's user.
+    if ! mkdir -p "$REPO_ROOT/output/rekt"; then
+        echo "Cannot prepare REKT output directory. Check ownership and permissions: $REPO_ROOT/output/rekt" >&2
+        return 1
+    fi
+
     if docker compose version >/dev/null 2>&1; then
         docker compose -f "$REPO_ROOT/docker-compose.yml" "$@"
     else
@@ -2969,6 +3069,16 @@ ensure_rekt_containers() {
         echo "  Parser container $REKT_CONTAINER runs $rekt_image; switching to $REKT_IMAGE (built from tools/cobol-rekt patches, first build takes several minutes)."
         services=("$REKT_SERVICE")
         already_running=false
+    fi
+    if [[ "$already_running" == true && "${1:-}" != "neo4j-only" ]]; then
+        local expected_user rekt_user
+        expected_user="$(id -u):$(id -g)"
+        rekt_user="$(docker inspect --format '{{.Config.User}}' "$REKT_CONTAINER")" || return 1
+        if [[ "$rekt_user" != "$expected_user" ]]; then
+            echo "  Parser container $REKT_CONTAINER uses '${rekt_user:-root}'; switching to host user $expected_user."
+            services=("$REKT_SERVICE")
+            already_running=false
+        fi
     fi
     if [[ "$already_running" == true ]]; then
         echo "  Reusing running named services; checking health, credentials and output access."
@@ -5031,9 +5141,10 @@ show_dry_run() {
 
 # Main command routing
 main() {
-    # Create required directories if they don't exist
-    mkdir -p "$REPO_ROOT/source" "$REPO_ROOT/output" "$REPO_ROOT/Logs"
-    ensure_copilot_cli_for_build
+    if [[ "${1:-doctor}" != "setup" ]]; then
+        mkdir -p "$REPO_ROOT/source" "$REPO_ROOT/output" "$REPO_ROOT/Logs"
+        ensure_copilot_cli_for_build
+    fi
 
     # Selector flags are pre-parsed so they may appear in any position. Repeating
     # --program selects more programs; the flags are removed before command routing.
