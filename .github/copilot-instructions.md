@@ -4,4 +4,4 @@ Tech Stack:
 - FluentAssertions
 - Moq
 - ASP.NET
-- Python tests under `tools/`
+- Bash smoke tests under `tools/tests/`

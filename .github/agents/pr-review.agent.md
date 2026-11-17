@@ -254,7 +254,6 @@ After observations are processed, run the project's build and test suite to veri
   - Java/Maven: `mvn clean verify` (or `./mvnw clean verify`)
   - Java/Gradle: `gradle build` (or `./gradlew build`)
   - Node.js: `npm test` or `npm run build` (check `package.json` scripts)
-  - Python: `pytest` or equivalent from config
   - .NET: `dotnet build && dotnet test`
   - If multiple projects exist (e.g., `backend/` + `frontend/`), run builds for each.
 - **If no build/test command can be determined**, ask the reviewer: "What command should I run to build and test?"

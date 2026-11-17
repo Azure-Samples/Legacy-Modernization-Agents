@@ -28,6 +28,7 @@
     <Compile Remove="McpChatWeb.Tests\**\*.cs" />
     <Compile Remove="CobolToQuarkusMigration.Tests\**\*.cs" />
     <EmbeddedResource Include="Jcl\Generation\Templates\*.txt" LogicalName="Jcl.Templates.%(Filename)%(Extension)" WithCulture="false" />
+    <EmbeddedResource Include="Persistence\GraphIngest\schema.cypher" LogicalName="GraphIngest.schema.cypher" WithCulture="false" />
     <EmbeddedResource Remove="McpChatWeb\**\*" />
     <EmbeddedResource Remove="McpChatWeb.Tests\**\*" />
     <EmbeddedResource Remove="CobolToQuarkusMigration.Tests\**\*" />

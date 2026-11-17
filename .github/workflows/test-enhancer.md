@@ -24,7 +24,7 @@ safe-outputs:
     labels: [testing, automated]
     close-older-issues: true
     max: 1
-  missing-tool:
+  report-missing-tool:
     create-issue: true
 
 network:

@@ -30,7 +30,7 @@ public class Neo4jMigrationRepository
             .WithMaxConnectionLifetime(TimeSpan.FromHours(1)));
     }
 
-    // The populator's schema.cypher declares the same constraints under the same names, so
+    // graph-ingest's schema.cypher declares the same constraints under the same names, so
     // whichever writer reaches an empty graph first creates them and the other is a no-op.
     // Each one also backs the MERGE on that key with an index.
     internal static readonly string[] SchemaStatements =
@@ -88,7 +88,7 @@ public class Neo4jMigrationRepository
                                    dependencyMap.ReverseDependencies.ContainsKey(fileName);
 
                     // Keyed by run: merging on fileName alone made each run take over the
-                    // previous run's nodes. lineCount is kept when the populator set it.
+                    // previous run's nodes. lineCount is kept when graph-ingest set it.
                     await tx.RunAsync(@"
                         MERGE (f:CobolFile {uid: $uid})
                         SET f.fileName = $fileName,

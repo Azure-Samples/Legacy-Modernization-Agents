@@ -122,7 +122,7 @@ public static class ProgramSelection
     }
 
     private static readonly System.Text.RegularExpressions.Regex CopyDirective = new(
-        @"\bCOPY\s+[""']?([A-Za-z][A-Za-z0-9_-]*)",
+        @"(?<![A-Za-z0-9_-])COPY\s+[""']?([A-Za-z][A-Za-z0-9_-]*)",
         System.Text.RegularExpressions.RegexOptions.IgnoreCase
         | System.Text.RegularExpressions.RegexOptions.Compiled);
 

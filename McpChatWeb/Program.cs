@@ -5312,7 +5312,7 @@ app.MapPost("/api/prompts/generate-all", () =>
 			    System.Text.RegularExpressions.Regex.IsMatch(text, @"\bFD\s+\w+|SELECT\s+\w+\s+ASSIGN", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("FILE_IO");
 			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"PERFORM\s+\w+\s+UNTIL", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("BATCH_LOOP");
 			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"COMPUTE|MULTIPLY|DIVIDE|ADD\s+\w+\s+TO", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("ARITHMETIC");
-			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\bCOPY\s+\w+", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("COPYBOOK_REF");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"(?<![\w-])COPY\s+\w+", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("COPYBOOK_REF");
 			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"STRING\s+\w+|UNSTRING\s+\w+|INSPECT\s+\w+", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("STRING_HANDLING");
 			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"SORT\s+\w+|MERGE\s+\w+", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("SORT_MERGE");
 			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"OCCURS\s+\d+", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("TABLE_HANDLING");
@@ -5526,7 +5526,7 @@ app.MapPost("/api/prompts/enhance-all", async () =>
 			    System.Text.RegularExpressions.Regex.IsMatch(text, @"\bFD\s+\w+|SELECT\s+\w+\s+ASSIGN", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("FILE_IO");
 			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"PERFORM\s+\w+\s+UNTIL", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("BATCH_LOOP");
 			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"COMPUTE|MULTIPLY|DIVIDE|ADD\s+\w+\s+TO", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("ARITHMETIC");
-			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\bCOPY\s+\w+", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("COPYBOOK_REF");
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"(?<![\w-])COPY\s+\w+", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("COPYBOOK_REF");
 			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"STRING\s+\w+|UNSTRING\s+\w+|INSPECT\s+\w+", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("STRING_HANDLING");
 			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"SORT\s+\w+|MERGE\s+\w+", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("SORT_MERGE");
 			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"OCCURS\s+\d+", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) globalFeatures.Add("TABLE_HANDLING");
@@ -6086,7 +6086,7 @@ app.MapPost("/api/prompts/generate", (McpChatWeb.Models.GeneratePromptRequest re
 				features.Add("CICS_SCREEN");
 			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"EXEC\s+CICS\s+RECEIVE\s+MAP", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
 				features.Add("CICS_SCREEN");
-			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\bCOPY\s+\w+", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"(?<![\w-])COPY\s+\w+", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
 				features.Add("COPYBOOK_REF");
 			if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\bCALL\s+['""]", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
 				features.Add("CALL_PROGRAM");
@@ -6270,7 +6270,7 @@ app.MapGet("/api/source/analyze", () =>
 					features.Add("BATCH_LOOP");
 				if (System.Text.RegularExpressions.Regex.IsMatch(text, @"COMPUTE|MULTIPLY|DIVIDE|ADD\s+\w+\s+TO", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
 					features.Add("ARITHMETIC");
-				if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\bCOPY\s+\w+", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+				if (System.Text.RegularExpressions.Regex.IsMatch(text, @"(?<![\w-])COPY\s+\w+", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
 					features.Add("COPYBOOK_REF");
 
 				var complexity = allLines.Length switch

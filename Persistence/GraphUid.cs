@@ -4,8 +4,8 @@ using System.Text;
 
 namespace CobolToQuarkusMigration.Persistence;
 
-// The graph populator keys nodes by uuid5(NAMESPACE_URL, "/".join(parts)). The CLI derives the
-// same uid so both writers MERGE into one node rather than creating two copies of it.
+// graph-ingest keys REKT nodes by uuid5(NAMESPACE_URL, "/".join(parts)), as the Python populator did. The
+// migration writer derives the same uid so both MERGE into one node rather than creating two copies of it.
 public static class GraphUid
 {
     // RFC 4122 URL namespace, 6ba7b811-9dad-11d1-80b4-00c04fd430c8, in network byte order.

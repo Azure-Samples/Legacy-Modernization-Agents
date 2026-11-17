@@ -2,13 +2,14 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using CobolToQuarkusMigration.Agents.Infrastructure.Rekt;
 using CobolToQuarkusMigration.Helpers;
 
 namespace CobolToQuarkusMigration.Agents.Infrastructure.Facts;
 
 public sealed partial class DependencyEvidenceGate
 {
-    // Mirrors tools/rekt_dependency_evidence.py evidence_current: an unchanged closure file can still be stale
+    // Same staleness rule as RektEvidence.EvidenceCurrent: an unchanged closure file can still be stale
     // when an estate participant was added or changed, so participants and slot proofs are rechecked here.
     private void ValidateCommareaClosures(
         string identity, DependencyEvidence evidence, string exportPath, string sourceRoot, List<string> issues)
@@ -77,7 +78,7 @@ public sealed partial class DependencyEvidenceGate
             var mode = Text(participant, "mode");
             if (mode == "lexical" ? inventory is not null
                 : mode != "inventory" || inventory is null
-                  || !string.Equals(Text(participant, "inventorySha256"), Sha256(Encoding.UTF8.GetBytes(PythonJson(inventory.Value))),
+                  || !string.Equals(Text(participant, "inventorySha256"), Sha256(Encoding.UTF8.GetBytes(PyJson.Dumps(PyJson.Parse(inventory.Value.GetRawText()), sortKeys: true))),
                       StringComparison.OrdinalIgnoreCase))
                 return $"participant {relative} inventory differs";
         }
@@ -141,68 +142,4 @@ public sealed partial class DependencyEvidenceGate
     }
 
     private static string Sha256(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
-
-    // Python json.dumps(value, sort_keys=True) with default separators and ensure_ascii.
-    private static string PythonJson(JsonElement value)
-    {
-        var builder = new StringBuilder();
-        Write(value);
-        return builder.ToString();
-
-        void Write(JsonElement element)
-        {
-            switch (element.ValueKind)
-            {
-                case JsonValueKind.Object:
-                    builder.Append('{');
-                    var first = true;
-                    foreach (var property in element.EnumerateObject().OrderBy(property => property.Name, StringComparer.Ordinal))
-                    {
-                        if (!first) builder.Append(", ");
-                        first = false;
-                        WriteString(property.Name);
-                        builder.Append(": ");
-                        Write(property.Value);
-                    }
-                    builder.Append('}');
-                    break;
-                case JsonValueKind.Array:
-                    builder.Append('[');
-                    var index = 0;
-                    foreach (var item in element.EnumerateArray())
-                    {
-                        if (index++ > 0) builder.Append(", ");
-                        Write(item);
-                    }
-                    builder.Append(']');
-                    break;
-                case JsonValueKind.String: WriteString(element.GetString()!); break;
-                case JsonValueKind.True: builder.Append("true"); break;
-                case JsonValueKind.False: builder.Append("false"); break;
-                case JsonValueKind.Null: builder.Append("null"); break;
-                default: builder.Append(element.GetRawText()); break;
-            }
-        }
-
-        void WriteString(string text)
-        {
-            builder.Append('"');
-            foreach (var character in text)
-            {
-                builder.Append(character switch
-                {
-                    '"' => "\\\"",
-                    '\\' => "\\\\",
-                    '\n' => "\\n",
-                    '\r' => "\\r",
-                    '\t' => "\\t",
-                    '\b' => "\\b",
-                    '\f' => "\\f",
-                    _ when character is < ' ' or > '~' => "\\u" + ((int)character).ToString("x4", CultureInfo.InvariantCulture),
-                    _ => character.ToString()
-                });
-            }
-            builder.Append('"');
-        }
-    }
 }

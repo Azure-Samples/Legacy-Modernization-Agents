@@ -34,7 +34,7 @@ comment "If the aid or Pf12 is pressed" was updated to match.
 
 The parser still reports `UNRESOLVED_CICS_AID_SEMANTIC` for any remaining
 standalone `DFHAID` comparison. Regression coverage is in
-`tools/tests/test_bank_of_z_source_corrections.py`.
+`CobolToQuarkusMigration.Tests/Samples/BankOfZSourceCorrectionTests.cs`.
 
 ## Mixed ENTER conditions in BNK1DCS
 
