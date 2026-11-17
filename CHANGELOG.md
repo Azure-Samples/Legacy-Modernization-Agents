@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Docker bind folders** - `./doctor.sh setup` now creates missing `Logs`, `output` and `output/rekt` folders and asks before repairing a folder the current user does not own; Compose no longer creates missing bind sources as root. A running parser container that does not use the host UID/GID is recreated, and the staging check verifies that the container can read every staged file.
+
 ### Added
 - **Ask the Report and saved chats** (#29) - Chat with RE Report answers only the question asked, from the selected report. Large reports are cut to the sections that match the question plus an outline, and **Latest report** is the default. Every question and answer is saved in the browser under **Saved Chats**, where chats can be searched, resumed and deleted. Recent turns are sent with follow-up questions. Settings are in the new `PortalChat` section; `GET /api/chat/settings` is new. See [docs/ask-the-report.md](docs/ask-the-report.md).
 - **Source-backed Java validation** - Direct and chunked conversions now scaffold ordinary Java projects without requiring JCL, preserve user POMs and the existing Java 17 target, and use Maven's actual exit status. Bounded compiler/parity repairs retain source and writer identities, roll back non-improving compiler changes, preserve diagnostic history and remeasure final parity. Missing or diagnostic-only output cannot become a completed conversion merely because compilation succeeds. See [docs/using-generated-output.md](docs/using-generated-output.md).

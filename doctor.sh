@@ -1273,9 +1273,9 @@ prepare_bind_directories() {
             echo "Bind directory is still not accessible to host user $uid:$gid: $path" >&2
             return 1
         fi
-        echo "Bind directory ready: $path"
     done
-    echo "Bind directories prepared. Existing file permissions were not changed."
+    echo -e "${GREEN}✅ Docker bind folders ready${NC}"
+    echo ""
 }
 
 run_setup() {
@@ -1283,42 +1283,20 @@ run_setup() {
     echo "========================================"
     echo ""
 
-    local setup_choice
-    echo "1) Complete setup: Docker bind directories and AI configuration (default)"
-    echo "2) Prepare or repair Docker bind directories only"
-    echo "3) AI configuration only"
-    if ! read -r -p "Choice [1]: " setup_choice; then
-        echo "Setup selection could not be read." >&2
-        return 1
-    fi
-    case "${setup_choice:-1}" in
-        1) prepare_bind_directories || return 1 ;;
-        2) prepare_bind_directories; return $? ;;
-        3) ;;
-        *) echo "Invalid setup choice: $setup_choice" >&2; return 1 ;;
-    esac
+    prepare_bind_directories || return 1
 
+    # Check if local config already exists
     LOCAL_CONFIG="$REPO_ROOT/Config/ai-config.local.env"
     if [ -f "$LOCAL_CONFIG" ]; then
-        echo "Existing AI configuration found: $LOCAL_CONFIG"
-        echo "You can keep it and skip AI configuration/authentication."
+        echo -e "${YELLOW}⚠️  Local configuration already exists:${NC} $LOCAL_CONFIG"
         echo ""
-        local reconfigure_ai
-        if ! read -r -p "Rerun AI configuration/authentication? [y/N]: " reconfigure_ai; then
-            echo "AI setup selection could not be read." >&2
-            return 1
-        fi
+        read -p "Do you want to overwrite it? (y/N): " -r
         echo ""
-        if [[ ! "$reconfigure_ai" =~ ^[Yy]$ ]]; then
-            echo "Reusing existing AI configuration without changing it. Authentication has not been revalidated."
-            [[ "${setup_choice:-1}" == "3" ]] && return 0
-            ensure_neo4j_image || return 1
-            echo "Remaining setup completed. Run ./doctor.sh test to validate your configuration."
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            echo -e "${BLUE}ℹ️  Setup cancelled. Your existing configuration is preserved.${NC}"
             return 0
         fi
     fi
-
-    ensure_copilot_cli_for_build
 
     # Create local config from template
     echo -e "${BLUE}📁 Creating local configuration file...${NC}"
@@ -4804,10 +4782,9 @@ show_dry_run() {
 
 # Main command routing
 main() {
-    if [[ "${1:-doctor}" != "setup" ]]; then
-        mkdir -p "$REPO_ROOT/source" "$REPO_ROOT/output" "$REPO_ROOT/Logs"
-        ensure_copilot_cli_for_build
-    fi
+    # Setup checks these itself so a missing tracked folder is reported, not silently recreated.
+    [[ "${1:-doctor}" == "setup" ]] || mkdir -p "$REPO_ROOT/source" "$REPO_ROOT/output" "$REPO_ROOT/Logs"
+    ensure_copilot_cli_for_build
 
     # Selector flags are pre-parsed so they may appear in any position. Repeating
     # --program selects more programs; the flags are removed before command routing.

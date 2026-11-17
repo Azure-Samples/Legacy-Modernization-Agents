@@ -184,6 +184,7 @@ fi
 
 if (
     REPO_ROOT="$mount_dir/setup"
+    GREEN="" NC=""
     mkdir -p "$REPO_ROOT"/{Data,Config,tools/cobol-rekt/contracts}
     prepare_bind_directories >"$mount_dir/setup-missing.log" 2>&1 && exit 1
     grep -q "Repository-provided bind directory is missing: $REPO_ROOT/source" "$mount_dir/setup-missing.log" &&
