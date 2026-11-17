@@ -447,6 +447,11 @@ az login                 #    or: copilot login (GitHub Copilot SDK)
 ./doctor.sh run          # 4. migrate, then open the portal
 ```
 
+Setup first prepares the Docker bind folders: it creates missing runtime folders
+(`Logs`, `output`, `output/rekt`) and asks before repairing a folder you do not own
+(`sudo` only when ownership must change; files inside are not touched). Tracked
+folders (`Data`, `Config`, `source`, `tools/cobol-rekt/contracts`) must already exist.
+
 <details>
 <summary>Manual setup without the setup wizard</summary>
 

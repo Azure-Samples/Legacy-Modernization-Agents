@@ -1213,11 +1213,77 @@ SQL
     echo -e "${CYAN}📄 Location: $report_file${NC}"
 }
 
-# Function for interactive setup
+prepare_bind_directories() {
+    local uid gid relative path ancestor reply
+    uid="$(id -u)" || return 1
+    gid="$(id -g)" || return 1
+
+    for relative in Data Logs Config source output output/rekt tools/cobol-rekt/contracts; do
+        path="$REPO_ROOT/$relative"
+        ancestor="$path"
+        # Privileged repairs must not follow bind paths outside this checkout.
+        while [[ "$ancestor" != "$REPO_ROOT" ]]; do
+            if [[ -L "$ancestor" ]]; then
+                echo "Cannot prepare a symlinked bind path: $ancestor. Prepare it manually." >&2
+                return 1
+            fi
+            ancestor="${ancestor%/*}"
+        done
+
+        case "$relative" in
+            Data|Config|source|tools/cobol-rekt/contracts)
+                if [[ ! -d "$path" ]]; then
+                    echo "Repository-provided bind directory is missing: $path. Restore it from the repository; setup will not create an empty replacement." >&2
+                    return 1
+                fi
+                ;;
+            *)
+                if ! mkdir -p "$path"; then
+                    echo "Cannot create bind directory: $path. Check its parent directory permissions." >&2
+                    return 1
+                fi
+                ;;
+        esac
+
+        if [[ ! -O "$path" || ! -r "$path" || ! -w "$path" || ! -x "$path" ]]; then
+            echo "Directory needs ownership or access repair: $path"
+            echo "Only this directory will change; existing files and subdirectories are left untouched."
+            if ! read -r -p "Repair for host user $uid:$gid? [y/N]: " reply ||
+                [[ ! "$reply" =~ ^[Yy]$ ]]; then
+                echo "Directory preparation stopped without repairing: $path" >&2
+                return 1
+            fi
+            if [[ ! -O "$path" ]]; then
+                if ! command -v sudo >/dev/null 2>&1; then
+                    echo "sudo is required to change ownership of: $path" >&2
+                    return 1
+                fi
+                if ! sudo chown "$uid:$gid" "$path"; then
+                    echo "Cannot change bind directory ownership: $path" >&2
+                    return 1
+                fi
+            fi
+            if ! chmod u+rwx "$path"; then
+                echo "Cannot grant host-user access to bind directory: $path" >&2
+                return 1
+            fi
+        fi
+
+        if [[ ! -O "$path" || ! -r "$path" || ! -w "$path" || ! -x "$path" ]]; then
+            echo "Bind directory is still not accessible to host user $uid:$gid: $path" >&2
+            return 1
+        fi
+    done
+    echo -e "${GREEN}✅ Docker bind folders ready${NC}"
+    echo ""
+}
+
 run_setup() {
     echo -e "${CYAN}🚀 COBOL to Java Migration Tool - Setup${NC}"
     echo "========================================"
     echo ""
+
+    prepare_bind_directories || return 1
 
     # Check if local config already exists
     LOCAL_CONFIG="$REPO_ROOT/Config/ai-config.local.env"
@@ -2709,6 +2775,13 @@ run_compose() {
     # Bind-mounted reports must be owned by the host user for relocation and cleanup.
     local REKT_UID="${REKT_UID:-$(id -u)}" REKT_GID="${REKT_GID:-$(id -g)}"
     export REKT_UID REKT_GID
+
+    # Docker creates missing bind sources as root regardless of the container's user.
+    if ! mkdir -p "$REPO_ROOT/output/rekt"; then
+        echo "Cannot prepare REKT output directory. Check ownership and permissions: $REPO_ROOT/output/rekt" >&2
+        return 1
+    fi
+
     if docker compose version >/dev/null 2>&1; then
         docker compose -f "$REPO_ROOT/docker-compose.yml" "$@"
     else
@@ -2867,6 +2940,16 @@ ensure_rekt_containers() {
         echo "  Parser container $REKT_CONTAINER runs $rekt_image; switching to $REKT_IMAGE (built from tools/cobol-rekt patches, first build takes several minutes)."
         services=("$REKT_SERVICE")
         already_running=false
+    fi
+    if [[ "$already_running" == true && "${1:-}" != "neo4j-only" ]]; then
+        local expected_user rekt_user
+        expected_user="${REKT_UID:-$(id -u)}:${REKT_GID:-$(id -g)}"
+        rekt_user="$(docker inspect --format '{{.Config.User}}' "$REKT_CONTAINER")" || return 1
+        if [[ "$rekt_user" != "$expected_user" ]]; then
+            echo "  Parser container $REKT_CONTAINER uses '${rekt_user:-root}'; switching to host user $expected_user."
+            services=("$REKT_SERVICE")
+            already_running=false
+        fi
     fi
     if [[ "$already_running" == true ]]; then
         echo "  Reusing running named services; checking health, credentials and output access."
@@ -3635,19 +3718,27 @@ run_rekt_parse_impl() {
 
     # Restart stale Docker Desktop bind mounts before they produce empty parser output.
     if [[ "$staged_cbl" -gt 0 ]]; then
-        local container_visible
-        container_visible=$(container_exec "$REKT_CONTAINER" sh -c "ls /source/.rekt-staging 2>/dev/null | wc -l" 2>/dev/null | tr -d ' ')
-        if [[ -z "$container_visible" || "$container_visible" -eq 0 ]]; then
-            echo -e "  ${YELLOW}⚠️  Container can't see /source/.rekt-staging — bind mount is stale. Restarting $REKT_CONTAINER…${NC}"
-            run_compose restart "$REKT_SERVICE" >/dev/null 2>&1 || true
+        local staged_files staging_check
+        staged_files=$(cd "$staging_base" && find . -type f -print) || return 1
+        staging_check='while IFS= read -r path; do
+            if [ ! -f "/source/.rekt-staging/$path" ] || [ ! -r "/source/.rekt-staging/$path" ]; then
+                printf "Cannot read expected staged file: %s\n" "$path" >&2
+                exit 1
+            fi
+        done'
+        if ! container_exec -i "$REKT_CONTAINER" sh -c "$staging_check" <<< "$staged_files"; then
+            echo -e "  ${YELLOW}⚠️  Container can't read expected staging files — bind mount may be stale. Restarting $REKT_CONTAINER…${NC}"
+            if ! run_compose restart "$REKT_SERVICE"; then
+                echo -e "  ${RED}❌ Could not restart $REKT_CONTAINER.${NC}" >&2
+                return 1
+            fi
             sleep 3
-            container_visible=$(container_exec "$REKT_CONTAINER" sh -c "ls /source/.rekt-staging 2>/dev/null | wc -l" 2>/dev/null | tr -d ' ')
-            if [[ -z "$container_visible" || "$container_visible" -eq 0 ]]; then
+            if ! container_exec -i "$REKT_CONTAINER" sh -c "$staging_check" <<< "$staged_files"; then
                 echo -e "  ${RED}❌ Container still can't see staging files after restart.${NC}"
                 echo -e "     Try: ${BLUE}docker compose down && docker compose up -d${NC} from the repo root."
                 return 1
             fi
-            echo -e "  ${GREEN}✅ Container now sees ${container_visible} staged file(s).${NC}"
+            echo -e "  ${GREEN}✅ Container can read all expected staging files.${NC}"
         fi
     fi
 
@@ -4823,8 +4914,8 @@ show_dry_run() {
 
 # Main command routing
 main() {
-    # Create required directories if they don't exist
-    mkdir -p "$REPO_ROOT/source" "$REPO_ROOT/output" "$REPO_ROOT/Logs"
+    # Setup checks these itself so a missing tracked folder is reported, not silently recreated.
+    [[ "${1:-doctor}" == "setup" ]] || mkdir -p "$REPO_ROOT/source" "$REPO_ROOT/output" "$REPO_ROOT/Logs"
     ensure_copilot_cli_for_build
 
     # Selector flags are pre-parsed so they may appear in any position. Repeating

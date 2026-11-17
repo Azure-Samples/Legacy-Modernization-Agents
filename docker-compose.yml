@@ -8,9 +8,22 @@ services:
     env_file:
       - ./Config/ai-config.local.env
     volumes:
-      - ./Data:/app/Data
-      - ./Logs:/app/Logs
-      - ./Config:/app/Config
+      # Fail on missing host directories instead of letting Docker create them as root.
+      - type: bind
+        source: ./Data
+        target: /app/Data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./Logs
+        target: /app/Logs
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./Config
+        target: /app/Config
+        bind:
+          create_host_path: false
     environment:
       - MIGRATION_DB_PATH=/app/Data/migration.db
       - Mcp__DotnetExecutable=dotnet
@@ -78,9 +91,23 @@ services:
     container_name: ${REKT_CONTAINER:-cobol-rekt}
     restart: unless-stopped
     volumes:
-      - ./source:/source:ro
-      - ./output/rekt:/output
-      - ./tools/cobol-rekt/contracts:${REKT_CONTRACTS_DIR:-/contracts}:ro
+      - type: bind
+        source: ./source
+        target: /source
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./output/rekt
+        target: /output
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./tools/cobol-rekt/contracts
+        target: ${REKT_CONTRACTS_DIR:-/contracts}
+        read_only: true
+        bind:
+          create_host_path: false
     entrypoint: ["tail", "-f", "/dev/null"]
 
 volumes:
