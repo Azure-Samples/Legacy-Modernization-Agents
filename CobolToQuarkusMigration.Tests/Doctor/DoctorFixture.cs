@@ -22,6 +22,7 @@ public sealed class DoctorFixture : IDisposable
     [
         "doctor.sh",
         "tools/lib/ports.sh",
+        "tools/lib/lma-cli.sh",
     ];
 
     private static readonly string[] ScrubbedPrefixes =

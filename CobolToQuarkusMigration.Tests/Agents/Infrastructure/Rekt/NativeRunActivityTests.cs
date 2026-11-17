@@ -359,7 +359,9 @@ public sealed class NativeRunActivityTests : IDisposable
         from.Should().BeGreaterThanOrEqualTo(0, start);
         var to = doctor.IndexOf(end, from, StringComparison.Ordinal);
         to.Should().BeGreaterThan(from, end);
-        return Section(doctor, "\nensure_lma_cli() {") + Section(doctor, "\nlma_cli() {") + doctor[from..to];
+        // lma_cli runs every helper through the shared crash guard.
+        var library = File.ReadAllText(Path.Join(RepoRoot(), "tools", "lib", "lma-cli.sh"));
+        return library + "\n" + Section(doctor, "\nensure_lma_cli() {") + Section(doctor, "\nlma_cli() {") + doctor[from..to];
     }
 
     private static string Section(string doctor, string start)

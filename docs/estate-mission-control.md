@@ -1,4 +1,4 @@
-**Last updated**: 2026-11-16
+**Last updated**: 2026-11-17
 
 # Estate Mission Control and the AI Loop
 
@@ -143,7 +143,10 @@ are authoritative. The UI converts these to the browser timezone.
 
 Future `./doctor.sh rekt-parse`, `rekt-full` and `rekt-ingest` operations create an
 atomic metadata-only `doctor-<uuid>/scan.json` lifecycle journal and `native.log`, with the
-actual operation recorded in `command`. Parse-only owns its parsing/JCL lifecycle.
+actual operation recorded in `command`. If an internal .NET helper crashes (an unhandled exception or
+a runtime abort), the crash and its stack trace go to `helper-crashes.log` beside `scan.json`
+and to `Logs/doctor-helpers.log`, and the operation fails even when the step that called the
+helper carried on. A helper that exits non-zero with a handled error is not a crash. Parse-only owns its parsing/JCL lifecycle.
 **Full owns one operation identity across parsing, JCL and graph ingestion**, with no
 duplicate child scan/ingest journal and no terminal finish until the entire command returns.
 An ingestion failure leaves successfully parsed program results intact but the full operation

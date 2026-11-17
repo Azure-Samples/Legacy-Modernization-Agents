@@ -40,6 +40,10 @@ resolve_sqlite3() {
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=tools/lib/ports.sh
 source "$REPO_ROOT/tools/lib/ports.sh"
+# shellcheck source=tools/lib/lma-cli.sh
+source "$REPO_ROOT/tools/lib/lma-cli.sh"
+# Helper crashes outlive the terminal; a scan also records its own (see run_native_activity).
+export LMA_HELPER_LOG="${LMA_HELPER_LOG:-$REPO_ROOT/Logs/doctor-helpers.log}"
 
 # Read a single key from the local config, without quotes, empty when absent.
 # Neo4j fixes each instance's password in its data volume on first start and ignores the
@@ -2775,7 +2779,8 @@ ensure_lma_cli() {
 }
 
 lma_cli() {
-    "${DOTNET_CMD:-dotnet}" "$_LMA_CLI_ASSEMBLY" "$@"
+    [[ -n "${_LMA_CLI_ASSEMBLY:-}" ]] || ensure_lma_cli || return 1
+    lma_cli_run "$_LMA_CLI_ASSEMBLY" "$@"
 }
 
 # Random version-4 UUID as 32 lowercase hex digits. Git Bash for Windows may lack
@@ -3122,8 +3127,18 @@ run_native_activity() (
     trap 'rc=$?; lma_cli rekt-activity finish "$_REKT_ACTIVITY_PATH" --exit-code "$rc"' EXIT
     local native_log
     native_log="$(dirname "$_REKT_ACTIVITY_PATH")/native.log"
+    export LMA_HELPER_CRASH_LOG
+    LMA_HELPER_CRASH_LOG="$(dirname "$_REKT_ACTIVITY_PATH")/helper-crashes.log"
     # Both streams go to the log, but stderr stays stderr for callers.
     "$implementation" > >(tee -a "$native_log") 2> >(tee -a "$native_log" >&2)
+    local rc=$?
+    # A crashed helper means missing evidence even when its caller carried on.
+    if [[ -s "$LMA_HELPER_CRASH_LOG" ]]; then
+        echo -e "${RED}❌ $(grep -c '^=== ' "$LMA_HELPER_CRASH_LOG") internal helper crash(es) in this run; its results are incomplete. Details: $LMA_HELPER_CRASH_LOG${NC}" \
+            | tee -a "$native_log" >&2
+        (( rc != 0 )) || rc=1
+    fi
+    return "$rc"
 )
 
 run_rekt_parse() {
@@ -3341,8 +3356,12 @@ run_rekt_parse_impl() {
         # Preprocess files that need IMS/DLI or dialect compatibility transformations
         echo -e "${BLUE}  [$estate] Running preprocessor for IMS/DLI and dialect compatibility...${NC}"
         if [[ -x "$REPO_ROOT/tools/preprocess-for-rekt.sh" ]]; then
-            REKT_SOURCE_TOP_LEVEL_ONLY="$estate_top_only" \
-                "$REPO_ROOT/tools/preprocess-for-rekt.sh" "$estate_dir" 2>/dev/null
+            # A failed preprocess leaves stale or partial sources that would still parse.
+            if ! REKT_SOURCE_TOP_LEVEL_ONLY="$estate_top_only" \
+                "$REPO_ROOT/tools/preprocess-for-rekt.sh" "$estate_dir"; then
+                echo -e "${RED}❌ [$estate] Preprocessing failed; not parsing stale sources.${NC}" >&2
+                return 1
+            fi
             if [[ -d "$preprocessed_dir" ]]; then
                 local preproc_count=0
                 local pp_p
@@ -3497,7 +3516,8 @@ run_rekt_parse_impl() {
     # Report missing copybooks before parsing so reduced coverage is explicit.
     local missing_report="$REPO_ROOT/output/rekt/missing-copybooks.txt"
     mkdir -p "$REPO_ROOT/output/rekt"
-    lma_cli doctor-report missing-copybook-report "$staging_base" "$missing_report" >/dev/null 2>&1 || true
+    lma_cli doctor-report missing-copybook-report "$staging_base" "$missing_report" >/dev/null \
+        || echo -e "${YELLOW}⚠️  Missing-copybook report failed; coverage below may be overstated.${NC}" >&2
 
     if [[ -s "$missing_report" ]]; then
         local miss_summary
@@ -3847,7 +3867,10 @@ run_rekt_parse_impl() {
     local -a closure_pids=()
     for estate in "${rekt_estates[@]}"; do
         lma_cli rekt-evidence commarea-closure \
-            --source-root "$REPO_ROOT/source" --output-root "$REPO_ROOT/output/rekt" --estate "$estate" 2>/dev/null || return 1
+            --source-root "$REPO_ROOT/source" --output-root "$REPO_ROOT/output/rekt" --estate "$estate" || {
+            echo -e "${RED}❌ COMMAREA closure failed for estate '$estate'.${NC}" >&2
+            return 1
+        }
     done
     rekt_commarea_pass=true
     while IFS=$'\t' read -r closure_result closure_program; do
@@ -4301,8 +4324,13 @@ expand_callees() {
 
     local identity
     for identity in "${SELECTED_PROGRAMS[@]}"; do
+        # A failed closure read would silently convert callers without their callees.
         curl -s --max-time 10 "$(portal_base)/api/modernization/program/${identity}" \
-            | lma_cli doctor-report call-closure >> "$expanded_file" 2>/dev/null
+            | lma_cli doctor-report call-closure >> "$expanded_file" || {
+            echo -e "${RED}❌ Could not read the call closure of $identity.${NC}" >&2
+            rm -f "$expanded_file"
+            return 1
+        }
     done
 
     local before=${#SELECTED_PROGRAMS[@]}
@@ -4619,7 +4647,7 @@ run_program_list() {
     echo -e "${BOLD}Convertible programs${NC}"
     echo ""
     ensure_lma_cli || return 1
-    curl -s --max-time 15 "$(portal_base)/api/modernization/programs" | lma_cli doctor-report program-list 2>/dev/null || {
+    curl -s --max-time 15 "$(portal_base)/api/modernization/programs" | lma_cli doctor-report program-list || {
         echo -e "${RED}❌ Could not read the program list from the portal.${NC}"
         return 1
     }

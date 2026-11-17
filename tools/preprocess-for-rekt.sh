@@ -30,8 +30,11 @@ if [[ ! -f "$LMA_CLI_ASSEMBLY" ]]; then
     echo "  ⚠️  Migration CLI assembly not found: ${LMA_CLI_ASSEMBLY:-unresolved}" >&2
     exit 1
 fi
+# shellcheck source=lib/lma-cli.sh
+source "$SCRIPT_DIR/lib/lma-cli.sh"
+export LMA_HELPER_LOG="${LMA_HELPER_LOG:-$(cd "$SCRIPT_DIR/.." && pwd)/Logs/doctor-helpers.log}"
 lma_cli() {
-    "${DOTNET_CMD:-dotnet}" "$LMA_CLI_ASSEMBLY" "$@"
+    lma_cli_run "$LMA_CLI_ASSEMBLY" "$@"
 }
 
 # Old shadows cannot override changed originals, including files no longer needing a rewrite.
