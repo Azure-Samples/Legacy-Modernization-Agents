@@ -2981,6 +2981,115 @@ rekt_log_excerpt() {
     echo -e "      ${BLUE}Full log: ${log#"$REPO_ROOT"/}${NC}"
 }
 
+# The parser repeats one warning per data item, so show each kind once with a count.
+rekt_parser_notes() {
+    local log="$1" kinds count message
+    kinds=$(grep -aE '^\[[^]]*\] \[(SEVERE|WARNING)\] ' "$log" 2>/dev/null \
+        | sed -E 's/^\[[^]]*\] \[(SEVERE|WARNING)\] *//; s/[[:space:]]+$//' | cut -c1-140 \
+        | sort | uniq -c | sort -rn)
+    [[ -n "$kinds" ]] || return 0
+    while read -r count message; do
+        if (( count > 1 )); then
+            echo -e "    ${YELLOW}⚠ parser: $message (×$count)${NC}"
+        else
+            echo -e "    ${YELLOW}⚠ parser: $message${NC}"
+        fi
+    done < <(printf '%s\n' "$kinds" | head -n 3)
+    local total
+    total=$(printf '%s\n' "$kinds" | wc -l | tr -d ' ')
+    if (( total > 3 )); then
+        echo -e "    ${BLUE}… $((total - 3)) more kind(s) — ${log#"$REPO_ROOT"/}${NC}"
+    fi
+}
+
+rekt_duration() {
+    if (( $1 >= 60 )); then
+        printf '%dm %02ds' $(($1 / 60)) $(($1 % 60))
+    else
+        printf '%ds' "$1"
+    fi
+}
+
+# One start line and one finish line per stage, so long runs show where time goes.
+rekt_stage() {
+    rekt_stage_end
+    _REKT_STAGE="$1"
+    _REKT_STAGE_START=$(date +%s)
+    echo -e "\n${CYAN}▶ $1${NC}"
+}
+
+rekt_stage_end() {
+    [[ -n "${_REKT_STAGE:-}" ]] || return 0
+    echo -e "${CYAN}✓ ${_REKT_STAGE} · $(rekt_duration $(( $(date +%s) - _REKT_STAGE_START )))${NC}"
+    _REKT_STAGE=""
+}
+
+# Result line for one program. Counts come from marker files because parallel jobs
+# finish out of order; the estimate assumes the remaining programs take the average so far.
+rekt_program_line() {
+    local result="$1" rel="$2" started="$3" progress="$4" total="$5"
+    local outcome="Failed" icon color label
+    [[ -f "$result.status" ]] && IFS=$'\t' read -r outcome _ < "$result.status"
+    case "$outcome" in
+        Full) icon="✅" color="$GREEN" label="Full" ;;
+        NoDialect) icon="✅" color="$GREEN" label="Full (no dialect)" ;;
+        Partial) icon="⚠️ " color="$YELLOW" label="Partial" ;;
+        RawAst) icon="⚠️ " color="$YELLOW" label="Raw AST only" ;;
+        DepsOnly) icon="⚠️ " color="$YELLOW" label="Dependencies only" ;;
+        *) icon="❌" color="$RED" label="Failed" ;;
+    esac
+    local report="$REPO_ROOT/output/rekt/$rel.report" artifacts="" part
+    for part in AST:flow_ast CFG:cfg data:data_structures; do
+        if [[ -n "$(find "$report/${part#*:}" -type f -size +0 -print -quit 2>/dev/null)" ]]; then
+            artifacts+=" ${part%%:*} ✓"
+        else
+            artifacts+=" ${part%%:*} ✗"
+        fi
+    done
+    local now finished begun progress_text
+    now=$(date +%s)
+    finished=$(find "$progress" -name '*.done' 2>/dev/null | wc -l | tr -d ' ')
+    begun=$(find "$progress" -name '*.start' 2>/dev/null | wc -l | tr -d ' ')
+    progress_text="$finished/$total"
+    if (( begun > finished )); then
+        progress_text+=" · $((begun - finished)) running"
+    fi
+    if (( finished > 0 && finished < total )); then
+        progress_text+=" · ~$(rekt_duration $(( (now - _REKT_STAGE_START) * (total - finished) / finished ))) left"
+    fi
+    echo -e "  ${color}${icon} ${label}${NC}  ${rel}  ${BLUE}$(rekt_duration $((now - started))) ·${artifacts}  [${progress_text}]${NC}"
+}
+
+# Runs one program and prints its block in one piece so parallel output stays readable.
+rekt_parse_job() {
+    local result="$1" cbl_file="$2" rel="$3" progress="$4" total="$5" lock="$6"
+    local started rc
+    started=$(date +%s)
+    # Sequential verbose runs stream the parser live instead of buffering it.
+    if [[ "${REKT_VERBOSE:-false}" == "true" && "${_REKT_STREAM_PROGRAM:-false}" == "true" ]]; then
+        rekt_parse_program "$result" "$cbl_file"
+        rc=$?
+        : > "$result.log"
+    else
+        rekt_parse_program "$result" "$cbl_file" > "$result.log" 2>&1
+        rc=$?
+    fi
+    : > "$progress/${result##*/}.done"
+    until mkdir "$lock" 2>/dev/null; do sleep 0.2; done
+    rekt_program_line "$result" "$rel" "$started" "$progress" "$total"
+    cat "$result.log"
+    rmdir "$lock"
+    return "$rc"
+}
+
+rekt_parse_start_line() {
+    local rel="$1" progress="$2" result="$3" lock="$4"
+    : > "$progress/${result##*/}.start"
+    until mkdir "$lock" 2>/dev/null; do sleep 0.2; done
+    echo -e "  ${BLUE}⋯ parsing ${rel}${NC}"
+    rmdir "$lock"
+}
+
 # Each top-level folder of source/ is an independent estate; loose files at the source/
 # root form the ".root" estate. Estates are preprocessed and staged separately so one
 # estate's copybooks or platform contract snapshot can never change another's evidence.
@@ -3112,7 +3221,7 @@ export_rekt_dependencies() {
     fi
     if lma_cli rekt-evidence dependency-search-view \
         --staging-root "$estate_staging" --relative-path "$rel_program" 2>>"$err_log"; then
-        echo "  Exporting dependencies: $rel_program"
+        [[ "${REKT_VERBOSE:-false}" != "true" ]] || echo "  Exporting dependencies: $rel_program"
         run_rekt_logged "$err_log" container_exec "${resource_environment[@]}" -w "$work_dir" "$REKT_CONTAINER" java -jar /app/smojol-cli.jar dependency "$(basename "$rel_program")" \
             --srcDir="$dependency_src_dir" --copyBooksDir="/source/.rekt-staging/$estate" \
             --dialectJarPath=/app/dialect-idms.jar \
@@ -3236,11 +3345,14 @@ run_rekt_parse_impl() {
             return 1
         fi
         echo -e "${BLUE}  No COBOL programs; scanning JCL only.${NC}"
+        rekt_stage "JCL scan"
         scan_rekt_jcl || return 1
+        rekt_stage_end
         return 0
     fi
 
     validate_rekt_jcl_source || return 1
+    rekt_stage "Prepare sources (containers, preprocessing, staging)"
     detect_docker_api_version
     ensure_rekt_containers || return 1
     ensure_lma_cli || return 1
@@ -3715,7 +3827,6 @@ run_rekt_parse_impl() {
         local report_work_rel=".work/reports/$parser_run_identity/$rel_program"
         mkdir -p "$REPO_ROOT/output/rekt/$report_work_rel"
         : > "$err_log"
-        echo -e "  Parsing $rel_program..."
         local parse_outcome="Failed"
         # The CLI resolves program names recursively by basename. Give it exactly one
         # program rather than allowing a same-named source in another estate to win.
@@ -3740,7 +3851,6 @@ run_rekt_parse_impl() {
             --dialectJarPath=/app/dialect-idms.jar \
             --reportDir="/output/$report_work_rel" \
             --generation=PROGRAM && rekt_structure_written "$report_work_rel/$fname"; then
-            echo -e " ${GREEN}✅${NC}"
             parse_outcome="Full"
         else
             # Attempt 2: Retry without dialect JAR (for IMS/DL/I and other dialects)
@@ -3749,7 +3859,6 @@ run_rekt_parse_impl() {
                 --srcDir="$parser_src_dir" --copyBooksDir="$parser_copybooks_dir" \
                 --reportDir="/output/$report_work_rel" \
                 --generation=PROGRAM && rekt_structure_written "$report_work_rel/$fname"; then
-                echo -e " ${GREEN}✅${NC} (no-dialect mode)"
                 parse_outcome="NoDialect"
             else
                 # Attempt 3: Raw AST only (tolerates more parse errors)
@@ -3758,7 +3867,6 @@ run_rekt_parse_impl() {
                     --srcDir="$parser_src_dir" --copyBooksDir="$parser_copybooks_dir" \
                     --reportDir="/output/$report_work_rel" \
                     --generation=PROGRAM; then
-                    echo -e " ${YELLOW}⚠️${NC} (raw AST only — complex copybooks)"
                     parse_outcome="RawAst"
                 else
                     # Also try validate (may report warnings but still useful)
@@ -3781,10 +3889,8 @@ run_rekt_parse_impl() {
         fi
         if [[ "$parse_outcome" == "Failed" ]]; then
             if [[ "$dep_ok" == true ]]; then
-                echo -e " ${YELLOW}⚠️${NC} (dependency export only — coverage remains separately qualified)"
                 parse_outcome="DepsOnly"
             else
-                echo -e " ${RED}❌${NC}"
                 rekt_log_excerpt "$err_log"
             fi
         fi
@@ -3812,6 +3918,7 @@ run_rekt_parse_impl() {
             fi
             echo -e "    ${YELLOW}↳ incomplete dependency evidence: $stub_warnings${NC}"
         fi
+        [[ "$parse_outcome" == "Failed" ]] || rekt_parser_notes "$err_log"
 
         # Outcomes are merged in program order after all workers finish.
         if [[ -n "$rekt_manifest" ]]; then
@@ -3826,26 +3933,21 @@ run_rekt_parse_impl() {
         echo -e "${RED}❌ REKT_PARSE_JOBS must be a whole number from 1 to 16 (got '$parse_jobs').${NC}"
         return 1
     fi
-    if (( parse_jobs > 1 )); then
-        echo -e "  ${BLUE}Parallel parsing: up to $parse_jobs programs at once (REKT_PARSE_JOBS).${NC}"
-    fi
     local parse_results
     parse_results=$(mktemp -d "${TMPDIR:-/tmp}/rekt-parse.XXXXXX") || return 1
-    local parse_index=0
-    local -a parse_pids=()
+    local parse_index=0 parse_lock="$parse_results/.print"
+    local -a parse_pids=() parse_queue=()
+    local _REKT_STREAM_PROGRAM=false
+    (( parse_jobs > 1 )) || _REKT_STREAM_PROGRAM=true
 
-    # Use process substitution so succeeded/failed counters persist outside the loop
+    # Decide what to parse first, so the counter and estimate know the total.
     while IFS= read -r cbl_file; do
         [[ -e "$cbl_file" ]] || continue
         local fname
         fname=$(basename "$cbl_file")
         local estate_rel="${cbl_file#"$staging_base"/}"
         local rel_program="${estate_rel#*/}"
-        # Strip any recognised program extension (case-insensitive) to get the stem.
-        local stem="${fname%.*}"
-        local rel_log_path="${rel_program}.parse.log"
-        local err_log="$REPO_ROOT/output/rekt/$rel_log_path"
-        mkdir -p "$(dirname "$err_log")"
+        mkdir -p "$(dirname "$REPO_ROOT/output/rekt/${rel_program}.parse.log")"
 
         # Skip files outside the requested program filter.
         if [[ "$rekt_filter_active" == "true" ]] && ! grep -Fqx "$rel_program" "$rekt_filter_file"; then
@@ -3857,18 +3959,33 @@ run_rekt_parse_impl() {
         if [[ "$rekt_inc" == "true" ]] && [[ " $rekt_skip_set " == *" $fname "* ]] \
             && lma_cli rekt-evidence validate \
                 --source-root "$REPO_ROOT/source" --relative-path "$rel_program" --output-root "$REPO_ROOT/output/rekt"; then
-            echo -e "  Skipping $rel_program ${GREEN}(cached)${NC}"
+            echo -e "  ${GREEN}⏭  cached${NC}  $rel_program"
             succeeded=$((succeeded + 1))
             skipped=$((skipped + 1))
             native_activity_program "$rel_program" cached
             continue
         fi
+        parse_queue+=("$cbl_file")
+    done < <(for estate in "${rekt_estates[@]}"; do
+            find "$staging_base/$estate" \( -name .parser-input -o -name .dependency-input \) -prune -o -type f \( -name "*.cbl" -o -name "*.CBL" -o -name "*.cob" -o -name "*.COB" \) -print
+        done | sort)
 
+    local parse_total=${#parse_queue[@]} parse_progress="$parse_results/progress-parse"
+    mkdir -p "$parse_progress"
+    if (( parse_jobs > 1 )); then
+        rekt_stage "Parse programs ($parse_total, up to $parse_jobs at once — REKT_PARSE_JOBS)"
+    else
+        rekt_stage "Parse programs ($parse_total)"
+    fi
+    local result
+    for cbl_file in ${parse_queue[@]+"${parse_queue[@]}"}; do
+        local estate_rel="${cbl_file#"$staging_base"/}"
+        local rel_program="${estate_rel#*/}"
         parse_index=$((parse_index + 1))
-        local result
         result="$parse_results/$(printf '%06d' "$parse_index")"
         if (( parse_jobs == 1 )); then
-            if ! rekt_parse_program "$result" "$cbl_file"; then
+            rekt_parse_start_line "$rel_program" "$parse_progress" "$result" "$parse_lock"
+            if ! rekt_parse_job "$result" "$cbl_file" "$rel_program" "$parse_progress" "$parse_total" "$parse_lock"; then
                 rm -rf "$parse_results"
                 return 1
             fi
@@ -3878,19 +3995,10 @@ run_rekt_parse_impl() {
         while [[ $(jobs -rp | wc -l) -ge $parse_jobs ]]; do
             sleep 1
         done
-        (
-            rekt_parse_program "$result" "$cbl_file" > "$result.log" 2>&1
-            rc=$?
-            # Print each program's output as one block so parallel logs stay readable.
-            until mkdir "$parse_results/.print" 2>/dev/null; do sleep 0.2; done
-            cat "$result.log"
-            rmdir "$parse_results/.print"
-            exit "$rc"
-        ) &
+        rekt_parse_start_line "$rel_program" "$parse_progress" "$result" "$parse_lock"
+        rekt_parse_job "$result" "$cbl_file" "$rel_program" "$parse_progress" "$parse_total" "$parse_lock" &
         parse_pids+=("$!")
-    done < <(for estate in "${rekt_estates[@]}"; do
-            find "$staging_base/$estate" \( -name .parser-input -o -name .dependency-input \) -prune -o -type f \( -name "*.cbl" -o -name "*.CBL" -o -name "*.cob" -o -name "*.COB" \) -print
-        done | sort)
+    done
     local parse_pid
     for parse_pid in ${parse_pids[@]+"${parse_pids[@]}"}; do
         wait "$parse_pid" || true
@@ -3898,7 +4006,7 @@ run_rekt_parse_impl() {
 
     # Pass 2: XCTL targets carried in a COMMAREA slot need every program's slot writes. Build the
     # estate closure from pass-1 exports, then re-export the programs that asked for it (or used an older one).
-    local estate closure_result closure_program closure_file
+    local estate closure_result closure_program closure_file closure_pending
     local -a closure_pids=()
     for estate in "${rekt_estates[@]}"; do
         lma_cli rekt-evidence commarea-closure \
@@ -3907,31 +4015,34 @@ run_rekt_parse_impl() {
             return 1
         }
     done
+    closure_pending=$(lma_cli doctor-report commarea-pending "$parse_results" "$REPO_ROOT/output/rekt")
+    if [[ -n "$closure_pending" ]]; then
+        local closure_total closure_progress="$parse_results/progress-closure"
+        closure_total=$(printf '%s\n' "$closure_pending" | wc -l | tr -d ' ')
+        mkdir -p "$closure_progress"
+        rekt_stage "COMMAREA closure: re-export $closure_total program(s) that pass data through COMMAREA"
+    fi
     rekt_commarea_pass=true
     while IFS=$'\t' read -r closure_result closure_program; do
         [[ -n "$closure_program" ]] || continue
         closure_file="$staging_base/$(rekt_estate_of "$closure_program")/$closure_program"
-        echo -e "  ${BLUE}COMMAREA closure:${NC} re-exporting $closure_program"
         if (( parse_jobs == 1 )); then
-            rekt_parse_program "$closure_result" "$closure_file" || { rm -rf "$parse_results"; return 1; }
+            rekt_parse_start_line "$closure_program" "$closure_progress" "$closure_result" "$parse_lock"
+            rekt_parse_job "$closure_result" "$closure_file" "$closure_program" "$closure_progress" "$closure_total" "$parse_lock" \
+                || { rm -rf "$parse_results"; return 1; }
             continue
         fi
         while [[ $(jobs -rp | wc -l) -ge $parse_jobs ]]; do
             sleep 1
         done
-        (
-            rekt_parse_program "$closure_result" "$closure_file" > "$closure_result.log" 2>&1
-            rc=$?
-            until mkdir "$parse_results/.print" 2>/dev/null; do sleep 0.2; done
-            cat "$closure_result.log"
-            rmdir "$parse_results/.print"
-            exit "$rc"
-        ) &
+        rekt_parse_start_line "$closure_program" "$closure_progress" "$closure_result" "$parse_lock"
+        rekt_parse_job "$closure_result" "$closure_file" "$closure_program" "$closure_progress" "$closure_total" "$parse_lock" &
         closure_pids+=("$!")
-    done < <(lma_cli doctor-report commarea-pending "$parse_results" "$REPO_ROOT/output/rekt")
+    done <<< "$closure_pending"
     for parse_pid in ${closure_pids[@]+"${closure_pids[@]}"}; do
         wait "$parse_pid" || true
     done
+    rekt_stage "Record outcomes and program facts"
     rekt_commarea_pass=false
 
     local parse_fatal=false parse_i parse_status_outcome parse_status_program
@@ -4042,7 +4153,9 @@ run_rekt_parse_impl() {
     rm -rf "$staging_base"
     rm -f "$shadowed_copybooks_file" "$rekt_programs_file" ${rekt_filter_file:+"$rekt_filter_file"}
 
+    rekt_stage "JCL scan"
     scan_rekt_jcl || return 1
+    rekt_stage_end
 
     echo -e "\n${GREEN}  Parsed: $succeeded succeeded ($skipped from cache), $failed failed${NC}"
     if [[ "$rekt_filter_active" == "true" && "$filtered_out" -gt 0 ]]; then
@@ -4129,6 +4242,7 @@ run_rekt_ingest_impl() {
         echo -e "${RED}❌ JCL refresh did not complete; rerun rekt-parse before ingestion.${NC}"
         return 1
     fi
+    rekt_stage "Graph ingest"
     detect_docker_api_version
     ensure_rekt_containers neo4j-only || return 1
 
@@ -4188,6 +4302,7 @@ run_rekt_ingest_impl() {
         echo -e "  ${GREEN}✅ ${ast_files} program AST(s) linked in the graph${NC}"
     fi
     echo -e "  ${GREEN}✅ ${ingested} node(s) ingested for run ${run_id}${NC}"
+    rekt_stage_end
 
     echo -e "\n${GREEN}  Neo4j Browser: http://localhost:$NEO4J_HTTP_PORT${NC}"
     echo -e "${GREEN}  Connection URL: neo4j://localhost:$NEO4J_BOLT_PORT${NC}"

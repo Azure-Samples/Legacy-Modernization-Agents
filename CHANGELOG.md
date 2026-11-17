@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Live `rekt-full` progress** - The terminal shows each stage with its duration and one line per program: result, time, whether AST/CFG/data were written, and `[done/total · running · ~time left]`. Repeated parser warnings are shown once with a count. The AI Loop page shows the same counter with an estimate, and its live activity feed (the scan's `native.log`) sits above the program table, opens while a scan runs and follows new lines.
 - **Quiet `rekt-full` output** - Java parser logging (often 40k+ lines per large program) now goes only to `output/rekt/**/*.parse.log` instead of the terminal and `native.log`. A program that fails without evidence prints its last `SEVERE`/`ERROR`/`Exception` lines and the log path. `REKT_VERBOSE=true` restores streaming.
 
 ### Added

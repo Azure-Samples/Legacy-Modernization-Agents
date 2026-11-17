@@ -529,3 +529,27 @@ test('lifecycle and successful call event labels do not invent failure', () => {
   assert.match(html, /succeeded/);
   assert.doesNotMatch(html, /failed call/);
 });
+
+test('native progress counts finished programs and estimates time left from parsed ones only', () => {
+  const f = fixture(() => Promise.resolve(response({})));
+  const summary = { status: 'running', startedAt: '2026-01-01T00:00:00Z' };
+  const native = { expectedPrograms: 10, programs: [
+    { status: 'cached', startedAt: '2026-01-01T00:00:00Z', finishedAt: '2026-01-01T00:00:00Z' },
+    { status: 'Full', startedAt: '2026-01-01T00:00:00Z', finishedAt: '2026-01-01T00:01:00Z' },
+    { status: 'Partial', startedAt: '2026-01-01T00:00:30Z', finishedAt: '2026-01-01T00:02:00Z' },
+    { status: 'running', startedAt: '2026-01-01T00:02:00Z' }
+  ] };
+  const now = Date.parse('2026-01-01T00:02:00Z');
+  // 2 parsed in 120 s → 60 s each; 7 programs remain.
+  assert.equal(f.view.nativeProgress(summary, native, now), '3/10 programs finished · 1 running · about 7m 0s left (estimate)');
+  assert.equal(f.view.nativeProgress({ ...summary, status: 'completed' }, native, now), '3/10 programs finished · 1 running');
+});
+
+test('the native activity feed opens by default only while the scan is running', () => {
+  const f = fixture(() => Promise.resolve(response({})));
+  const d = status => ({ ...detail('native-feed'), summary: { runId: 'native-feed', activityKind: 'native-rekt', status }, native: { programs: [] } });
+  assert.match(f.view.renderNative(d('running')), /<details id="ail-native-log" data-ail-open="true">/);
+  assert.match(f.view.renderNative(d('completed')), /<details id="ail-native-log" data-ail-open="false">/);
+  assert.ok(f.view.renderNative(d('running')).indexOf('ail-native-log') < f.view.renderNative(d('running')).indexOf('Program results'),
+    'the live feed sits above the program table');
+});

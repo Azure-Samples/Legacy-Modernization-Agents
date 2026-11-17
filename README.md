@@ -556,6 +556,8 @@ Read the summary at the end before converting:
 
 A missing copybook remains an unresolved dependency: its fields and layout must not be inferred or fabricated. Missing-copybook-only parser recovery can retain partial evidence with diagnostics; it does not establish a complete AST or make conversion ready. Add the real copybooks and parse again. Parser output for each program goes to `output/rekt/**/*.parse.log`, not the terminal; a failed program prints its last errors and the log path. Set `REKT_VERBOSE=true` to stream the parser output as well.
 
+While it runs, each stage prints its duration and each program gets one line, for example `✅ Full  cbl/COSGN00C.cbl  14s · AST ✓ CFG ✓ data ✓  [12/46 · 3 running · ~4m left]`. The AI Loop tab in the portal shows the same progress and a live feed of these lines.
+
 The parser bundles declared SQLCA and SQLDA reference inputs when no accepted
 source definition exists. See [bundled system copybooks](docs/bundled-system-copybooks.md)
 for provenance, licensing and the distinction from a customer's installed SDK.
