@@ -18,6 +18,7 @@ public sealed class GraphIngestion(IGraphTarget target, TextWriter log)
     public const string JclScanFailedMessage = "JCL refresh did not complete; rerun jcl-facts before ingestion.";
 
     private static readonly string[] SkippedDirectories = [".previous", ".work"];
+    private readonly SortedDictionary<string, long> _skippedByType = new(StringComparer.Ordinal);
 
     public static bool JclScanFailed(string rektOutput) => Path.Exists(Path.Combine(rektOutput, JclScanFailedMarker));
 
@@ -47,6 +48,7 @@ public sealed class GraphIngestion(IGraphTarget target, TextWriter log)
 
             log.WriteLine("Ingesting rekt outputs...");
             var counts = await IngestRektOutputsAsync(options.RektOutput, options.SourceDir, options.RunId);
+            ReportSkippedRelationships();
             foreach (var (label, count) in counts) log.WriteLine($"  {label}: {count}");
             if (scanStarted)
             {
@@ -112,10 +114,20 @@ public sealed class GraphIngestion(IGraphTarget target, TextWriter log)
             total += matched;
             if (matched < batch.Length)
             {
-                log.WriteLine($"Skipped {batch.Length - matched} {relationships.Type} relationship rows with missing endpoints");
+                _skippedByType[relationships.Type] = _skippedByType.GetValueOrDefault(relationships.Type) + batch.Length - matched;
             }
         }
         return total;
+    }
+
+    // Per-program ingest skips a row or two each; one total per type keeps the scan output readable.
+    public void ReportSkippedRelationships()
+    {
+        foreach (var (type, count) in _skippedByType)
+        {
+            log.WriteLine($"Skipped {count} {type} relationship rows with missing endpoints");
+        }
+        _skippedByType.Clear();
     }
 
     public async Task<long> IngestAstAsync(string program, JsonElement ast, long runId)

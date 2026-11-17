@@ -239,6 +239,7 @@ public sealed class DoctorJclScanTests : IDisposable
 
         result.ShouldSucceed();
         result.StdOut.Should().Contain("Missing copybooks: 1 unresolved COPY target(s)");
+        result.StdOut.Should().Contain("REKT program filter: 1 program(s): PROGRAM.cbl");
         var reports = _doctor.Calls("dotnet").Where(args => args.Contains("doctor-report")).Select(args => args.SkipWhile(arg => arg != "doctor-report").ElementAt(1));
         reports.Should().Contain(["program-filter", "program-duplicates", "missing-copybook-report", "commarea-pending"]);
     }

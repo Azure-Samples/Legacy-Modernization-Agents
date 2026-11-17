@@ -20,15 +20,19 @@ public sealed class GraphIngestionTests : IDisposable
     public void Dispose() => Directory.Delete(_root, recursive: true);
 
     [Fact]
-    public async Task MissingEndpointsAreReportedAndNotCountedAsMerged()
+    public async Task MissingEndpointsAreReportedOnceAsATotalAndNotCountedAsMerged()
     {
         await _ingestion.MergeNodesAsync("ASTNode", [Row("uid", "start"), Row("uid", "end")], "uid");
 
         var matched = await _ingestion.MergeRelationshipsAsync(RelationshipBatch.ByUid("ASTNode", "FOLLOWED_BY", "ASTNode",
             [RektGraphRows.Link("start", "end"), RektGraphRows.Link("missing", "end")]));
+        await _ingestion.MergeRelationshipsAsync(RelationshipBatch.ByUid("ASTNode", "FOLLOWED_BY", "ASTNode",
+            [RektGraphRows.Link("start", "gone")]));
+        _ingestion.ReportSkippedRelationships();
 
         matched.Should().Be(1);
-        _log.ToString().Should().Contain("Skipped 1 FOLLOWED_BY relationship rows with missing endpoints");
+        _log.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Should().ContainSingle().Which.Should().Be("Skipped 2 FOLLOWED_BY relationship rows with missing endpoints");
     }
 
     [Fact]

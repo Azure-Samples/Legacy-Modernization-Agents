@@ -3494,7 +3494,14 @@ run_rekt_parse_impl() {
         fi
         rekt_filter_file="$REPO_ROOT/output/rekt/.work/rekt-program-filter-$$.txt"
         printf '%s\n' "$filter_resolution_output" > "$rekt_filter_file"
-        echo -e "  ${BLUE}REKT program filter: ${_REKT_PROGRAM_FILTER}${NC}"
+        local filter_count filter_summary
+        filter_count=$(grep -c . "$rekt_filter_file")
+        filter_summary="$filter_count program(s)"
+        # Long filters (a whole estate) would flood the log; short ones stay readable in full.
+        if (( filter_count <= 5 )); then
+            filter_summary+=": $(paste -sd, - < "$rekt_filter_file" | sed 's/,/, /g')"
+        fi
+        echo -e "  ${BLUE}REKT program filter: ${filter_summary}${NC}"
         if [[ -n "${_REKT_ACTIVITY_PATH:-}" ]]; then
             local selected_count
             selected_count=$(wc -l < "$rekt_filter_file" | tr -d '[:space:]')
