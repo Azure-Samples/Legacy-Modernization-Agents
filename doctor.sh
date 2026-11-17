@@ -40,6 +40,10 @@ resolve_sqlite3() {
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=tools/lib/ports.sh
 source "$REPO_ROOT/tools/lib/ports.sh"
+# shellcheck source=tools/lib/lma-cli.sh
+source "$REPO_ROOT/tools/lib/lma-cli.sh"
+# Helper crashes outlive the terminal; a scan also records its own (see run_native_activity).
+export LMA_HELPER_LOG="${LMA_HELPER_LOG:-$REPO_ROOT/Logs/doctor-helpers.log}"
 
 # Read a single key from the local config, without quotes, empty when absent.
 # Neo4j fixes each instance's password in its data volume on first start and ignores the
@@ -111,36 +115,6 @@ detect_dotnet_cli() {
 }
 
 DOTNET_CMD="$(detect_dotnet_cli)"
-# Accept a Python only if it runs. On Windows, `python`/`python3` on PATH can be the
-# WindowsApps "App execution alias" stub, which prints a Microsoft Store prompt instead of
-# running anything and would silently corrupt every parse that assumes real Python ran.
-verify_python_candidate() {
-    local candidate="$1"
-    command -v "$candidate" >/dev/null 2>&1 || return 1
-    [[ "$("$candidate" -c 'import sys; sys.stdout.write("ok")' 2>/dev/null)" == "ok" ]]
-}
-
-detect_python() {
-    if verify_python_candidate python3; then
-        echo python3
-        return
-    fi
-
-    if verify_python_candidate python; then
-        echo python
-        return
-    fi
-
-    echo ""
-}
-
-PYTHON_CMD="$(detect_python)"
-
-# Windows Python defaults to the ANSI code page for files and pipes, which fails on the
-# non-ASCII text in COBOL comments and in our own output.
-case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) export PYTHONUTF8=1 ;;
-esac
 
 # The Copilot SDK package downloads its own Copilot CLI from the npm registry on the first
 # build. Where a proxy, firewall or VPN blocks the registry, every build fails with MSB3923
@@ -310,6 +284,8 @@ show_usage() {
     echo -e "  ${GREEN}rekt-full${NC}       Run parse then ingest"
     echo -e "                  ${CYAN}--parallel N${NC} parses N programs at once (1-16, default 1 or REKT_PARSE_JOBS)"
     echo -e "  ${GREEN}rekt-status${NC}     Show REKT container, graph, and export status"
+    echo -e "  ${GREEN}verify-ai-loop${NC}  Check the running portal's AI Loop catalogues native scans:"
+    echo -e "                  ${CYAN}--scan <name>${NC} (repeatable, under output/rekt-scans) ${CYAN}[--model-run <id>]${NC}"
     echo
     echo -e "${BOLD}Examples:${NC}"
     echo -e "  $0                   ${CYAN}# Run configuration doctor${NC}"
@@ -350,93 +326,16 @@ show_usage() {
 
 # Resolve the migration database path (absolute) from config or environment
 get_migration_db_path() {
-    local base_dir="$REPO_ROOT"
-
-    if [[ -n "$MIGRATION_DB_PATH" ]]; then
-        if [[ -z "$PYTHON_CMD" ]]; then
-            echo "$MIGRATION_DB_PATH"
-            return
-        fi
-
-        PY_BASE="$base_dir" PY_DB_PATH="$MIGRATION_DB_PATH" "$PYTHON_CMD" - <<'PY'
-import os
-base = os.environ["PY_BASE"]
-path = os.environ["PY_DB_PATH"]
-if not os.path.isabs(path):
-    path = os.path.abspath(os.path.join(base, path))
-else:
-    path = os.path.abspath(path)
-print(path)
-PY
-        return
-    fi
-
-    if [[ -z "$PYTHON_CMD" ]]; then
-        if [[ -f "$base_dir/Data/migration.db" ]]; then
-            echo "$base_dir/Data/migration.db"
-        else
-            echo ""
-        fi
-        return
-    fi
-
-    PY_BASE="$base_dir" "$PYTHON_CMD" - <<'PY'
-import json
-import os
-
-base = os.environ["PY_BASE"]
-config_path = os.path.join(base, "Config", "appsettings.json")
-fallback = "Data/migration.db"
-try:
-    with open(config_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-        path = data.get("ApplicationSettings", {}).get("MigrationDatabasePath") or fallback
-except FileNotFoundError:
-    path = fallback
-
-if not os.path.isabs(path):
-    path = os.path.abspath(os.path.join(base, path))
-else:
-    path = os.path.abspath(path)
-
-print(path)
-PY
+    ensure_lma_cli || return 1
+    lma_cli doctor-report db-path --repo-root "$REPO_ROOT"
 }
 
 # Fetch the latest migration run summary from SQLite (if available)
 get_latest_run_summary() {
     local db_path="$1"
-    if [[ -z "$db_path" || ! -f "$db_path" ]]; then
-        return 1
-    fi
-
-    if [[ -z "$PYTHON_CMD" ]]; then
-        return 1
-    fi
-
-    PY_DB_PATH="$db_path" "$PYTHON_CMD" - <<'PY'
-import os
-import sqlite3
-
-db_path = os.environ["PY_DB_PATH"]
-if not os.path.exists(db_path):
-    raise SystemExit
-
-query = """
-SELECT id, status, coalesce(completed_at, started_at)
-FROM runs
-ORDER BY started_at DESC
-LIMIT 1
-"""
-
-with sqlite3.connect(db_path) as conn:
-    row = conn.execute(query).fetchone()
-
-if row:
-    run_id, status, completed_at = row
-    completed_at = completed_at or ""
-    print(f"{run_id}|{status}|{completed_at}")
-PY
+    [[ -n "$db_path" && -f "$db_path" ]] || return 1
+    ensure_lma_cli || return 1
+    lma_cli doctor-report latest-run "$db_path"
 }
 
 open_url_in_browser() {
@@ -1676,7 +1575,6 @@ EOF
         echo -e "   Config file: ${BLUE}$LOCAL_CONFIG${NC}"
         echo ""
         ensure_neo4j_image || return 1
-        ensure_graph_populator_environment || return 1
         echo ""
         echo -e "${BLUE}Next steps:${NC}"
         echo "1. Run: ./doctor.sh test"
@@ -1748,7 +1646,6 @@ EOF
     echo -e "${GREEN}✅ Configuration completed!${NC}"
     echo ""
     ensure_neo4j_image || return 1
-    ensure_graph_populator_environment || return 1
     echo ""
     echo -e "${BLUE}🔍 Testing configuration...${NC}"
     
@@ -2666,7 +2563,6 @@ NEO4J_CONTAINER="$(resolve_runtime_setting NEO4J_CONTAINER cobol-migration-neo4j
 NEO4J_HTTP_PORT="$(resolve_runtime_setting NEO4J_HTTP_PORT 7474)"
 NEO4J_BOLT_PORT="$(resolve_runtime_setting NEO4J_BOLT_PORT 7687)"
 REKT_CONTAINER="$(resolve_runtime_setting REKT_CONTAINER cobol-rekt)"
-REKT_POPULATOR_CONTAINER="$(resolve_runtime_setting REKT_POPULATOR_CONTAINER cobol-graph-populator)"
 PORTAL_CONTAINER="$(resolve_runtime_setting PORTAL_CONTAINER cobol-migration-portal)"
 REKT_GENERATED_COPYBOOK_DIRS="$(resolve_runtime_setting REKT_GENERATED_COPYBOOK_DIRS copy-generated)"
 # The parser image tag is a digest of everything the Dockerfile builds from, so adding or
@@ -2685,7 +2581,7 @@ rekt_image_digest() {
 REKT_IMAGE="$(resolve_runtime_setting REKT_IMAGE "rekt-oss-mma:$(rekt_image_digest)")"
 # Contract profiles are bound into evidence by host path, so the parser sees them at that path.
 REKT_CONTRACTS_DIR="$REPO_ROOT/tools/cobol-rekt/contracts"
-export NEO4J_CONTAINER NEO4J_HTTP_PORT NEO4J_BOLT_PORT REKT_CONTAINER REKT_POPULATOR_CONTAINER PORTAL_CONTAINER \
+export NEO4J_CONTAINER NEO4J_HTTP_PORT NEO4J_BOLT_PORT REKT_CONTAINER PORTAL_CONTAINER \
     REKT_GENERATED_COPYBOOK_DIRS REKT_IMAGE REKT_CONTRACTS_DIR
 # Optional dependency inputs preserve an explicitly empty shell override.
 if [[ "${REKT_CICS_RESOURCE_DEFINITIONS+x}" != x ]]; then
@@ -2862,61 +2758,47 @@ ensure_neo4j_image() {
     echo -e "${GREEN}✅ Neo4j image downloaded: $NEO4J_IMAGE${NC}"
 }
 
-# Interpreter inside the graph populator venv: bin/python on Linux/macOS, Scripts/python.exe on Windows.
-graph_populator_python() {
-    local venv="$REPO_ROOT/tools/graph-populator/.venv"
-    if [[ -x "$venv/Scripts/python.exe" ]]; then
-        echo "$venv/Scripts/python.exe"
-    elif [[ -x "$venv/bin/python" ]]; then
-        echo "$venv/bin/python"
-    else
-        case "$(uname -s)" in
-            MINGW*|MSYS*|CYGWIN*) echo "$venv/Scripts/python.exe" ;;
-            *) echo "$venv/bin/python" ;;
-        esac
+# Resolves the CLI assembly once so per-program checks launch it directly: dotnet run
+# re-evaluates the project on every call, which a large estate multiplies.
+ensure_lma_cli() {
+    [[ -n "${_LMA_CLI_ASSEMBLY:-}" ]] && return 0
+    local assembly="${MIGRATION_CLI_ASSEMBLY:-}"
+    # An explicit prebuilt assembly is used as is; building from source would replace it.
+    if [[ -z "$assembly" ]]; then
+        if ! (cd "$REPO_ROOT" && "$DOTNET_CMD" build CobolToQuarkusMigration.csproj -v q -nologo >/dev/null 2>&1); then
+            echo -e "${RED}❌ Build failed. Run: dotnet build CobolToQuarkusMigration.csproj${NC}" >&2
+            return 1
+        fi
+        assembly="$(cd "$REPO_ROOT" && "$DOTNET_CMD" build CobolToQuarkusMigration.csproj -nologo -getProperty:TargetPath 2>/dev/null)"
     fi
+    if [[ ! -f "$assembly" ]]; then
+        echo -e "${RED}❌ Migration CLI assembly not found: ${assembly:-unresolved}${NC}" >&2
+        return 1
+    fi
+    export _LMA_CLI_ASSEMBLY="$assembly"
 }
 
-ensure_graph_populator_environment() {
-    local populator_dir="$REPO_ROOT/tools/graph-populator"
-    local requirements_file="$populator_dir/requirements.txt"
-    local venv_python
-    venv_python="$(graph_populator_python)"
+lma_cli() {
+    [[ -n "${_LMA_CLI_ASSEMBLY:-}" ]] || ensure_lma_cli || return 1
+    lma_cli_run "$_LMA_CLI_ASSEMBLY" "$@"
+}
 
-    if [[ ! -f "$populator_dir/populator.py" || ! -f "$requirements_file" ]]; then
-        echo -e "${RED}❌ Graph populator sources are incomplete: $populator_dir${NC}"
-        return 1
+# Random version-4 UUID as 32 lowercase hex digits. Git Bash for Windows may lack
+# both /proc/sys/kernel/random/uuid and uuidgen, so /dev/urandom is the fallback.
+new_run_identity() {
+    local id=""
+    if [[ -r /proc/sys/kernel/random/uuid ]]; then
+        id=$(cat /proc/sys/kernel/random/uuid 2>/dev/null)
+    elif command -v uuidgen >/dev/null 2>&1; then
+        id=$(uuidgen 2>/dev/null)
     fi
-
-    if [[ -z "$PYTHON_CMD" ]]; then
-        echo -e "${RED}❌ Python is required for the REKT graph populator.${NC}"
-        return 1
+    id=$(printf '%s' "$id" | tr -d '-' | tr 'A-F' 'a-f')
+    if [[ ! "$id" =~ ^[0-9a-f]{32}$ ]]; then
+        id=$(od -An -tx1 -N16 /dev/urandom 2>/dev/null | tr -d ' \n')
+        [[ "$id" =~ ^[0-9a-f]{32}$ ]] || return 1
+        id="${id:0:12}4${id:13:3}$(printf '%x' $(( (16#${id:16:1} & 3) | 8 )))${id:17}"
     fi
-
-    if [[ ! -x "$venv_python" ]]; then
-        echo -e "${BLUE}🐍 Creating graph populator virtual environment...${NC}"
-        local venv_output
-        if ! venv_output=$("$PYTHON_CMD" -m venv "$populator_dir/.venv" 2>&1); then
-            echo -e "${RED}❌ Failed to create graph populator virtual environment:${NC}"
-            printf '%s\n' "$venv_output" | sed 's/^/  /'
-            return 1
-        fi
-    fi
-
-    if ! "$venv_python" -c 'import click, neo4j, networkx, orjson, rich' >/dev/null 2>&1; then
-        echo -e "${BLUE}📦 Installing graph populator dependencies...${NC}"
-        local install_output
-        if ! install_output=$("$venv_python" -m pip install -r "$requirements_file" 2>&1); then
-            echo -e "${RED}❌ Failed to install graph populator dependencies:${NC}"
-            printf '%s\n' "$install_output" | sed 's/^/  /'
-            echo ""
-            echo -e "${YELLOW}Retry with:${NC}"
-            echo "  $venv_python -m pip install -r $requirements_file"
-            return 1
-        fi
-    fi
-
-    echo -e "${GREEN}✅ Graph populator environment is ready${NC}"
+    printf '%s\n' "$id"
 }
 
 ensure_rekt_containers() {
@@ -3010,7 +2892,7 @@ ensure_rekt_containers() {
     echo -e " ${GREEN}✅${NC}"
 
     # The loop above authenticates inside the container, which always agrees with itself.
-    # The populator connects from the host, so verify that credential separately: Neo4j keeps
+    # graph-ingest connects from the host, so verify that credential separately: Neo4j keeps
     # the password in its data volume, so a reused volume silently outranks NEO4J_AUTH.
     if ! container_exec "$NEO4J_CONTAINER" \
         cypher-shell -u neo4j -p "$NEO4J_PASSWORD" "RETURN 1" >/dev/null 2>&1; then
@@ -3153,16 +3035,8 @@ rekt_vsam_definitions_for() {
 }
 
 rekt_source_programs() {
-    "$PYTHON_CMD" - "$REPO_ROOT/source" <<'PYEOF'
-import os, sys
-root = sys.argv[1]
-for base, dirs, files in os.walk(root):
-    dirs[:] = sorted(d for d in dirs
-                     if d not in (".rekt-staging", ".preprocessed") and not d.startswith(".convert-"))
-    for name in sorted(files):
-        if name.lower().endswith((".cbl", ".cob")):
-            print(os.path.relpath(os.path.join(base, name), root).replace(os.sep, "/"))
-PYEOF
+    ensure_lma_cli || return 1
+    lma_cli doctor-report source-programs "$REPO_ROOT/source"
 }
 
 rekt_programs_in_estate() {
@@ -3203,7 +3077,7 @@ export_rekt_dependencies() {
     if [[ "${REKT_SQL_DECLARATIONS+x}" == x ]]; then
         resource_environment+=(-e "REKT_SQL_DECLARATIONS=$REKT_SQL_DECLARATIONS")
     fi
-    if "$PYTHON_CMD" "$REPO_ROOT/tools/rekt_dependency_evidence.py" dependency-search-view \
+    if lma_cli rekt-evidence dependency-search-view \
         --staging-root "$estate_staging" --relative-path "$rel_program" 2>>"$err_log"; then
         echo "  Exporting dependencies: $rel_program"
         run_rekt_logged "$err_log" container_exec "${resource_environment[@]}" -w "$work_dir" "$REKT_CONTAINER" java -jar /app/smojol-cli.jar dependency "$(basename "$rel_program")" \
@@ -3213,44 +3087,59 @@ export_rekt_dependencies() {
     else
         export_status=24
     fi
-    local -a host_platform_environment=()
-    if [[ "${REKT_PLATFORM_CONTRACTS+x}" == x ]]; then
-        host_platform_environment=(env "REKT_PLATFORM_CONTRACTS=$(rekt_platform_contracts_for "$estate" host)")
-    fi
-    if [[ -n "$dependency_profile" ]]; then
-        host_platform_environment=(env ${host_platform_environment[@]+"${host_platform_environment[@]:1}"} "REKT_DEPENDENCY_PROFILE=$dependency_profile")
-    fi
-    ${host_platform_environment[@]+"${host_platform_environment[@]}"} "$PYTHON_CMD" "$REPO_ROOT/tools/rekt_dependency_evidence.py" write \
-        --source-root "$REPO_ROOT/source" --relative-path "$rel_program" \
-        --staging-root "$estate_staging" --output-root "$REPO_ROOT/output/rekt" \
-        --export-exit-code "$export_status" || return 1
+    # The subshell scopes the host-side contract and profile to this one helper call.
+    (
+        if [[ "${REKT_PLATFORM_CONTRACTS+x}" == x ]]; then
+            export REKT_PLATFORM_CONTRACTS="$(rekt_platform_contracts_for "$estate" host)"
+        fi
+        if [[ -n "$dependency_profile" ]]; then
+            export REKT_DEPENDENCY_PROFILE="$dependency_profile"
+        fi
+        lma_cli_run "$_LMA_CLI_ASSEMBLY" rekt-evidence write \
+            --source-root "$REPO_ROOT/source" --relative-path "$rel_program" \
+            --staging-root "$estate_staging" --output-root "$REPO_ROOT/output/rekt" \
+            --export-exit-code "$export_status"
+    ) || return 1
     return "$export_status"
 }
 
 native_activity_program() {
     [[ -n "${_REKT_ACTIVITY_PATH:-}" ]] || return 0
-    "$PYTHON_CMD" "$REPO_ROOT/tools/native_run_activity.py" program "$_REKT_ACTIVITY_PATH" \
+    ensure_lma_cli || return 1
+    lma_cli rekt-activity program "$_REKT_ACTIVITY_PATH" \
         --program "$1" --status "$2" --source-root "$REPO_ROOT/source" \
         --output-root "$REPO_ROOT/output/rekt" || echo "Warning: native program journal update failed" >&2
 }
 
 native_activity_stage() {
     [[ -n "${_REKT_ACTIVITY_PATH:-}" ]] || return 0
-    "$PYTHON_CMD" "$REPO_ROOT/tools/native_run_activity.py" stage "$_REKT_ACTIVITY_PATH" --stage "$1"
+    ensure_lma_cli || return 1
+    lma_cli rekt-activity stage "$_REKT_ACTIVITY_PATH" --stage "$1"
 }
 
 run_native_activity() (
     # Subshell confines signal/exit traps and journal identity to this invocation.
     local operation="$1" stage="$2" implementation="$3"
-    _REKT_ACTIVITY_PATH=$("$PYTHON_CMD" "$REPO_ROOT/tools/native_run_activity.py" start \
+    ensure_lma_cli || return 1
+    _REKT_ACTIVITY_PATH=$(lma_cli rekt-activity start \
         "$REPO_ROOT/output/rekt-scans" --command "$operation" --stage "$stage") || return 1
     trap 'exit 130' INT
     trap 'exit 143' TERM
-    trap 'rc=$?; "$PYTHON_CMD" "$REPO_ROOT/tools/native_run_activity.py" finish "$_REKT_ACTIVITY_PATH" --exit-code "$rc"' EXIT
+    trap 'rc=$?; lma_cli rekt-activity finish "$_REKT_ACTIVITY_PATH" --exit-code "$rc"' EXIT
     local native_log
     native_log="$(dirname "$_REKT_ACTIVITY_PATH")/native.log"
+    export LMA_HELPER_CRASH_LOG
+    LMA_HELPER_CRASH_LOG="$(dirname "$_REKT_ACTIVITY_PATH")/helper-crashes.log"
     # Both streams go to the log, but stderr stays stderr for callers.
     "$implementation" > >(tee -a "$native_log") 2> >(tee -a "$native_log" >&2)
+    local rc=$?
+    # A crashed helper means missing evidence even when its caller carried on.
+    if [[ -s "$LMA_HELPER_CRASH_LOG" ]]; then
+        echo -e "${RED}❌ $(grep -c '^=== ' "$LMA_HELPER_CRASH_LOG") internal helper crash(es) in this run; its results are incomplete. Details: $LMA_HELPER_CRASH_LOG${NC}" \
+            | tee -a "$native_log" >&2
+        (( rc != 0 )) || rc=1
+    fi
+    return "$rc"
 )
 
 run_rekt_parse() {
@@ -3298,7 +3187,7 @@ run_rekt_parse_impl() {
 
     echo -e "${BLUE}  Found: ${cobol_count} programs, ${copy_count} copybooks${NC}"
     if [[ -n "${_REKT_ACTIVITY_PATH:-}" && -z "${_REKT_PROGRAM_FILTER:-}" ]]; then
-        "$PYTHON_CMD" "$REPO_ROOT/tools/native_run_activity.py" stage "$_REKT_ACTIVITY_PATH" \
+        lma_cli rekt-activity stage "$_REKT_ACTIVITY_PATH" \
             --stage "Native parsing" --expected-programs "$cobol_count" || return 1
     fi
 
@@ -3321,21 +3210,14 @@ run_rekt_parse_impl() {
     validate_rekt_jcl_source || return 1
     detect_docker_api_version
     ensure_rekt_containers || return 1
+    ensure_lma_cli || return 1
 
     # Use the same exclusion policy for preprocessing, identity checks and staging.
     # Unproven generated definitions remain missing, even when no genuine replacement exists.
     local shadowed_copybooks_file
     mkdir -p "$REPO_ROOT/output/rekt/.work"
     shadowed_copybooks_file="$REPO_ROOT/output/rekt/.work/shadowed-copybooks-$$.txt"
-    "$PYTHON_CMD" - "$REPO_ROOT/source" "$REPO_ROOT/tools" > "$shadowed_copybooks_file" <<'PYEOF'
-import os, sys
-sys.path.insert(0, sys.argv[2])
-from rekt_dependency_evidence import original_files, definition_problem
-
-for path in original_files(sys.argv[1]):
-    if path.suffix.lower() in ('.cpy', '.cpb') and definition_problem(path):
-        print(path)
-PYEOF
+    lma_cli rekt-evidence shadowed-copybooks --source-root "$REPO_ROOT/source" > "$shadowed_copybooks_file" || return 1
     export REKT_SHADOWED_COPYBOOKS_FILE="$shadowed_copybooks_file"
     if [[ -s "$shadowed_copybooks_file" ]]; then
         echo -e "  ${YELLOW}Excluded placeholder/unverified definitions (genuine input still required):${NC}"
@@ -3374,70 +3256,7 @@ PYEOF
     if [[ -n "${_REKT_PROGRAM_FILTER:-}" ]]; then
         rekt_filter_active=true
         local filter_resolution_output=""
-        if ! filter_resolution_output=$("$PYTHON_CMD" - "$rekt_programs_file" "$_REKT_PROGRAM_FILTER" <<'PYEOF'
-import os, sys
-from collections import defaultdict
-
-with open(sys.argv[1], encoding='utf-8') as handle:
-    programs = [line.strip() for line in handle if line.strip()]
-selectors = sys.argv[2]
-
-exact = {p.lower(): p for p in programs}
-by_basename = defaultdict(list)
-by_stem = defaultdict(list)
-for rel in programs:
-    basename = os.path.basename(rel)
-    by_basename[basename.lower()].append(rel)
-    by_stem[os.path.splitext(basename)[0].lower()].append(rel)
-
-resolved = []
-for raw in selectors.split(','):
-    selector = raw.strip()
-    if not selector:
-        continue
-    normalized = selector.replace('\\', '/').lstrip('./').lstrip('/')
-    match = exact.get(normalized.lower())
-    if match:
-        if match not in resolved:
-            resolved.append(match)
-        continue
-
-    basename_matches = by_basename.get(os.path.basename(normalized).lower(), [])
-    if len(basename_matches) == 1:
-        match = basename_matches[0]
-        if match not in resolved:
-            resolved.append(match)
-        continue
-    if len(basename_matches) > 1:
-        print(
-            "Program selector '%s' matched multiple programs by basename: %s. Use a source-relative path."
-            % (selector, ", ".join(sorted(basename_matches)))
-        )
-        sys.exit(1)
-
-    stem_matches = by_stem.get(os.path.splitext(os.path.basename(normalized))[0].lower(), [])
-    if len(stem_matches) == 1:
-        match = stem_matches[0]
-        if match not in resolved:
-            resolved.append(match)
-        continue
-    if len(stem_matches) > 1:
-        print(
-            "Program selector '%s' matched multiple programs by stem: %s. Use a source-relative path."
-            % (selector, ", ".join(sorted(stem_matches)))
-        )
-        sys.exit(1)
-
-    print("Program selector '%s' did not match any program." % selector)
-    sys.exit(1)
-
-if not resolved:
-    print("Program filter did not resolve to any programs.")
-    sys.exit(1)
-
-print("\n".join(resolved))
-PYEOF
-); then
+        if ! filter_resolution_output=$(printf '%s' "$_REKT_PROGRAM_FILTER" | lma_cli doctor-report program-filter "$rekt_programs_file"); then
             echo -e "${RED}❌ Invalid _REKT_PROGRAM_FILTER.${NC}"
             while IFS= read -r line; do
                 [[ -z "$line" ]] && continue
@@ -3451,7 +3270,7 @@ PYEOF
         if [[ -n "${_REKT_ACTIVITY_PATH:-}" ]]; then
             local selected_count
             selected_count=$(wc -l < "$rekt_filter_file" | tr -d '[:space:]')
-            "$PYTHON_CMD" "$REPO_ROOT/tools/native_run_activity.py" stage "$_REKT_ACTIVITY_PATH" \
+            lma_cli rekt-activity stage "$_REKT_ACTIVITY_PATH" \
                 --stage "Native parsing" --expected-programs "$selected_count" || return 1
         fi
     fi
@@ -3471,19 +3290,7 @@ PYEOF
 
     # The scan cache is keyed by basename, so duplicates are checked across all estates.
     local program_duplicates_output
-    program_duplicates_output=$("$PYTHON_CMD" - "$rekt_programs_file" <<'PYEOF'
-import os, sys
-from collections import defaultdict
-paths = defaultdict(list)
-for line in open(sys.argv[1], encoding='utf-8'):
-    rel = line.strip()
-    if rel:
-        paths[os.path.basename(rel).lower()].append(rel)
-for name, rels in sorted(paths.items()):
-    if len(rels) > 1:
-        print("\t".join(["program-duplicate", name] + rels))
-PYEOF
-)
+    program_duplicates_output=$(lma_cli doctor-report program-duplicates "$rekt_programs_file")
     local duplicate_program_basenames=""
     while IFS=$'\t' read -r issue basename _paths; do
         if [[ "$issue" == "program-duplicate" ]]; then
@@ -3507,7 +3314,7 @@ PYEOF
     fi
     mkdir -p "$staging_base"
     local parser_run_identity
-    parser_run_identity=$("$PYTHON_CMD" -c 'import uuid; print(uuid.uuid4().hex)') || return 1
+    parser_run_identity=$(new_run_identity) || return 1
 
     local estate estate_dir estate_staging preprocessed_dir estate_top_only
     local -a estate_find=()
@@ -3517,7 +3324,7 @@ PYEOF
         local file_name
         file_name="$(basename "$src_file")"
         local target="$estate_staging/$file_name"
-        "$PYTHON_CMD" "$REPO_ROOT/tools/rekt_dependency_evidence.py" stage \
+        lma_cli rekt-evidence stage \
             --source "$src_file" --target "$target" --transformed "$preprocessed_dir/$file_name" || true
     }
 
@@ -3530,7 +3337,7 @@ PYEOF
         local transformed="$preprocessed_dir/${src_file#"$estate_dir/"}"
         [[ -f "$transformed" ]] || transformed="$preprocessed_dir/$file_name"
         mkdir -p "$(dirname "$target")"
-        "$PYTHON_CMD" "$REPO_ROOT/tools/rekt_dependency_evidence.py" stage \
+        lma_cli rekt-evidence stage \
             --source "$src_file" --target "$target" --transformed "$transformed" || return 1
     }
 
@@ -3550,8 +3357,12 @@ PYEOF
         # Preprocess files that need IMS/DLI or dialect compatibility transformations
         echo -e "${BLUE}  [$estate] Running preprocessor for IMS/DLI and dialect compatibility...${NC}"
         if [[ -x "$REPO_ROOT/tools/preprocess-for-rekt.sh" ]]; then
-            REKT_SOURCE_TOP_LEVEL_ONLY="$estate_top_only" \
-                "$REPO_ROOT/tools/preprocess-for-rekt.sh" "$estate_dir" 2>/dev/null
+            # A failed preprocess leaves stale or partial sources that would still parse.
+            if ! REKT_SOURCE_TOP_LEVEL_ONLY="$estate_top_only" \
+                "$REPO_ROOT/tools/preprocess-for-rekt.sh" "$estate_dir"; then
+                echo -e "${RED}❌ [$estate] Preprocessing failed; not parsing stale sources.${NC}" >&2
+                return 1
+            fi
             if [[ -d "$preprocessed_dir" ]]; then
                 local preproc_count=0
                 local pp_p
@@ -3569,8 +3380,7 @@ PYEOF
         fi
 
         local estate_identity=""
-        if ! estate_identity=$(REKT_SOURCE_TOP_LEVEL_ONLY="$estate_top_only" "$PYTHON_CMD" \
-            "$REPO_ROOT/tools/rekt_source_identity.py" \
+        if ! estate_identity=$(REKT_SOURCE_TOP_LEVEL_ONLY="$estate_top_only" lma_cli rekt-source-identity \
             "$estate_dir" "$preprocessed_dir" "$shadowed_copybooks_file"); then
             echo -e "${RED}❌ Source identity collisions in estate '$estate' prevent safe REKT staging.${NC}"
             local -a _fields
@@ -3627,7 +3437,7 @@ PYEOF
                 alias_name="$(basename "$alias_cpy")"
                 local alias_target="$estate_staging/$alias_name"
                 if [[ ! -f "$alias_target" ]]; then
-                    "$PYTHON_CMD" "$REPO_ROOT/tools/rekt_dependency_evidence.py" stage --derived \
+                    lma_cli rekt-evidence stage --derived \
                         --source "$alias_cpy" --target "$alias_target" || true
                 fi
             done < <(find "$preprocessed_dir/aliases" -maxdepth 1 \( -name "*.cpy" -o -name "*.CPY" \) -type f 2>/dev/null)
@@ -3647,7 +3457,7 @@ PYEOF
                 local stub_target="$estate_staging/$stub_name"
                 # Don't overwrite a real copybook that was already staged
                 if [[ ! -f "$stub_target" ]]; then
-                    "$PYTHON_CMD" "$REPO_ROOT/tools/rekt_dependency_evidence.py" stage --derived \
+                    lma_cli rekt-evidence stage --derived \
                         --source "$stub_cpy" --target "$stub_target" || true
                 fi
             done < <(find "$preprocessed_dir" -maxdepth 1 \( -name "*.cpy" -o -name "*.CPY" \) -type f 2>/dev/null)
@@ -3707,93 +3517,13 @@ PYEOF
     # Report missing copybooks before parsing so reduced coverage is explicit.
     local missing_report="$REPO_ROOT/output/rekt/missing-copybooks.txt"
     mkdir -p "$REPO_ROOT/output/rekt"
-    "$PYTHON_CMD" - "$staging_base" "$missing_report" >/dev/null 2>&1 <<'PYEOF' || true
-import os, re, sys
-from collections import defaultdict
-
-staging_base = sys.argv[1]
-report_path = sys.argv[2]
-
-# Match COPY / -COPY directives in non-comment lines.
-# Handles: COPY NAME., COPY 'NAME'., COPY NAME REPLACING ...
-copy_pat = re.compile(
-    r"^[^*]{0,6}[^*\n].*?\bCOPY\s+['\"]?([A-Z][A-Z0-9_-]*)['\"]?",
-    re.IGNORECASE,
-)
-
-referenced_by = defaultdict(set)  # copybook_name → set(referencing_files)
-# COPY resolves only within the program's own estate staging directory.
-for estate in sorted(os.listdir(staging_base)):
-    staging_dir = os.path.join(staging_base, estate)
-    if not os.path.isdir(staging_dir):
-        continue
-    # Names that exist in staging only because a placeholder was synthesised for them would
-    # otherwise be reported as present precisely because they were missing.
-    stubs_path = os.path.join(staging_dir, '.generated-stubs')
-    synthesised = set()
-    if os.path.exists(stubs_path):
-        with open(stubs_path, encoding='utf-8') as handle:
-            synthesised = {line.strip().upper() for line in handle if line.strip()}
-    available = set()
-    staged_sources = []
-    for root, _, files in os.walk(staging_dir):
-        for name in files:
-            stem, ext = os.path.splitext(name)
-            if ext.lower() == '.cpy':
-                available.add(stem.upper())
-            if name.lower().endswith(('.cbl', '.cob', '.cpy')):
-                path = os.path.join(root, name)
-                rel = os.path.relpath(path, staging_dir).replace(os.sep, '/')
-                staged_sources.append((rel, path))
-    available -= synthesised
-
-    for rel_name, path in sorted(staged_sources):
-        try:
-            with open(path, 'r', encoding='latin-1') as f:
-                for line in f:
-                    # Skip comments (col 7 = '*') and lines too short
-                    if len(line) > 6 and line[6] == '*':
-                        continue
-                    m = copy_pat.match(line.rstrip())
-                    if m:
-                        cpy = m.group(1).upper()
-                        if cpy not in available:
-                            referenced_by[cpy].add(rel_name)
-        except OSError:
-            continue
-
-if not referenced_by:
-    # Truncate the report so stale entries don't linger.
-    open(report_path, 'w').close()
-    sys.exit(0)
-
-with open(report_path, 'w', encoding='utf-8') as out:
-    out.write('# Missing copybooks referenced by staged sources\n')
-    out.write('# These COPY targets were not found in source/. The parser will\n')
-    out.write('# still attempt the file but may emit MISSING_COPYBOOK errors and\n')
-    out.write('# produce reduced AST/data coverage for affected programs.\n\n')
-    for cpy in sorted(referenced_by):
-        refs = ', '.join(sorted(referenced_by[cpy]))
-        out.write(f'{cpy}\treferenced by: {refs}\n')
-
-# Stdout: short, colorized-friendly summary (no ANSI here; caller decorates)
-total = len(referenced_by)
-unique_files = set()
-for refs in referenced_by.values():
-    unique_files.update(refs)
-print(f'{total}|{len(unique_files)}')
-for cpy in sorted(referenced_by):
-    print(f'  {cpy} ← {", ".join(sorted(referenced_by[cpy]))}')
-PYEOF
+    lma_cli doctor-report missing-copybook-report "$staging_base" "$missing_report" >/dev/null \
+        || echo -e "${YELLOW}⚠️  Missing-copybook report failed; coverage below may be overstated.${NC}" >&2
 
     if [[ -s "$missing_report" ]]; then
         local miss_summary
-        miss_summary=$("$PYTHON_CMD" -c "
-import sys
-with open(sys.argv[1]) as f:
-    lines = [l.rstrip() for l in f if l.strip() and not l.startswith('#')]
-print(len(lines))
-" "$missing_report" 2>/dev/null || echo 0)
+        # Counts non-comment lines with any non-whitespace character, as str.strip() would.
+        miss_summary=$(awk '!/^#/ && /[^ \t\v\f\r\034\035\036\037]/ { n++ } END { print n + 0 }' "$missing_report" 2>/dev/null || echo 0)
         if [[ "$miss_summary" -gt 0 ]]; then
             echo -e "  ${YELLOW}⚠️  Missing copybooks: ${miss_summary} unresolved COPY target(s)${NC}"
             # Show the first few inline for quick scanning
@@ -3816,6 +3546,8 @@ print(len(lines))
     local skipped=0
     local filtered_out=0
     local failed_files=""
+    local degraded=0
+    local degraded_files=""
 
     # Incremental scanning is opt-in to preserve full-scan behavior by default.
     local rekt_inc=false
@@ -3923,7 +3655,7 @@ print(len(lines))
     # would report a program as fully parsed when consumers will find no structure for it.
     rekt_structure_written() {
         local report="$REPO_ROOT/output/rekt/${1}.report"
-        "$PYTHON_CMD" "$REPO_ROOT/tools/rekt_parse_diagnostics.py" --structure "$report"
+        lma_cli rekt-diagnostics structure "$report"
     }
 
     # One program: parse, dependency export and evidence. It records its outcome in
@@ -3945,7 +3677,7 @@ print(len(lines))
         native_activity_program "$rel_program" running
         local rel_output_dir="$REPO_ROOT/output/rekt/$(dirname "$rel_program")"
         mkdir -p "$rel_output_dir"
-        "$PYTHON_CMD" "$REPO_ROOT/tools/rekt_dependency_evidence.py" quarantine \
+        lma_cli rekt-evidence quarantine \
             --output-root "$REPO_ROOT/output/rekt" --relative-path "$rel_program" || return 1
         local report_work_rel=".work/reports/$parser_run_identity/$rel_program"
         mkdir -p "$REPO_ROOT/output/rekt/$report_work_rel"
@@ -3965,31 +3697,7 @@ print(len(lines))
         fi
         local stub_warnings=""
         if [[ -s "$generated_stubs_file" ]]; then
-            stub_warnings=$("$PYTHON_CMD" - "$cbl_file" "$generated_stubs_file" <<'PYEOF'
-import re
-import sys
-
-source_path, stubs_path = sys.argv[1:3]
-with open(stubs_path, encoding="utf-8") as handle:
-    stubs = {line.strip().upper() for line in handle if line.strip()}
-
-copy_pattern = re.compile(
-    r"\bCOPY\s+['\"]?([A-Z][A-Z0-9_-]*)['\"]?",
-    re.IGNORECASE,
-)
-used = set()
-with open(source_path, encoding="latin-1") as handle:
-    for line in handle:
-        stripped = line.lstrip()
-        if stripped.startswith("*>") or (len(line) > 6 and line[6] in ("*", "/")):
-            continue
-        match = copy_pattern.search(line)
-        if match and match.group(1).upper() in stubs:
-            used.add(match.group(1).upper())
-
-print("|".join(f"generated-copybook-stub:{name}" for name in sorted(used)))
-PYEOF
-)
+            stub_warnings=$(lma_cli doctor-report stub-warnings "$cbl_file" "$generated_stubs_file")
         fi
 
         # Attempt 1: Standard dialect (handles CICS, SQL, standard COBOL)
@@ -4047,12 +3755,7 @@ PYEOF
             fi
         fi
         local dependency_warnings
-        dependency_warnings=$("$PYTHON_CMD" - "$REPO_ROOT/output/rekt/${rel_program}.report/dependency-evidence.json" <<'PYEOF'
-import json, sys
-evidence = json.load(open(sys.argv[1], encoding="utf-8"))
-print("|".join(str(item).replace("|", "/").replace("\n", " ") for item in evidence["unresolvedDiagnostics"]))
-PYEOF
-) || return 1
+        dependency_warnings=$(lma_cli doctor-report dependency-warnings "$REPO_ROOT/output/rekt/${rel_program}.report/dependency-evidence.json") || return 1
         if [[ -n "$dependency_warnings" ]]; then
             stub_warnings="${stub_warnings:+$stub_warnings|}$dependency_warnings"
         fi
@@ -4060,7 +3763,7 @@ PYEOF
         local diagnostic_path="$REPO_ROOT/output/rekt/${rel_program}.report/parse-diagnostics.json"
         if [[ -f "$diagnostic_path" ]]; then
             local missing_warnings
-            missing_warnings=$("$PYTHON_CMD" "$REPO_ROOT/tools/rekt_parse_diagnostics.py" "$diagnostic_path") || return 1
+            missing_warnings=$(lma_cli rekt-diagnostics missing-copybooks "$diagnostic_path") || return 1
             if [[ -n "$missing_warnings" ]]; then
                 stub_warnings="${stub_warnings:+$stub_warnings|}$missing_warnings"
                 if [[ "$parse_outcome" == "Full" || "$parse_outcome" == "NoDialect" ]]; then
@@ -4118,7 +3821,7 @@ PYEOF
 
         # Honor the incremental planner's skip decision.
         if [[ "$rekt_inc" == "true" ]] && [[ " $rekt_skip_set " == *" $fname "* ]] \
-            && "$PYTHON_CMD" "$REPO_ROOT/tools/rekt_dependency_evidence.py" validate \
+            && lma_cli rekt-evidence validate \
                 --source-root "$REPO_ROOT/source" --relative-path "$rel_program" --output-root "$REPO_ROOT/output/rekt"; then
             echo -e "  Skipping $rel_program ${GREEN}(cached)${NC}"
             succeeded=$((succeeded + 1))
@@ -4164,8 +3867,11 @@ PYEOF
     local estate closure_result closure_program closure_file
     local -a closure_pids=()
     for estate in "${rekt_estates[@]}"; do
-        "$PYTHON_CMD" "$REPO_ROOT/tools/rekt_dependency_evidence.py" commarea-closure \
-            --source-root "$REPO_ROOT/source" --output-root "$REPO_ROOT/output/rekt" --estate "$estate" 2>/dev/null || return 1
+        lma_cli rekt-evidence commarea-closure \
+            --source-root "$REPO_ROOT/source" --output-root "$REPO_ROOT/output/rekt" --estate "$estate" || {
+            echo -e "${RED}❌ COMMAREA closure failed for estate '$estate'.${NC}" >&2
+            return 1
+        }
     done
     rekt_commarea_pass=true
     while IFS=$'\t' read -r closure_result closure_program; do
@@ -4188,25 +3894,7 @@ PYEOF
             exit "$rc"
         ) &
         closure_pids+=("$!")
-    done < <("$PYTHON_CMD" - "$parse_results" "$REPO_ROOT/output/rekt" <<'PYEOF'
-import hashlib, json, sys
-from pathlib import Path
-results, output = Path(sys.argv[1]), Path(sys.argv[2])
-for status in sorted(results.glob("*.status")):
-    program = status.read_text(encoding="utf-8").rstrip("\n").split("\t")[1]
-    try:
-        evidence = json.loads((output / (program + ".report") / "dependency-evidence.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError, IndexError):
-        continue
-    closure = output / program.split("/")[0] / ".commarea-closure.json"
-    pending = any(str(item).removeprefix("native:").startswith("cics-commarea-closure-") for item in evidence.get("unresolvedDiagnostics", []))
-    stale = any(item.get("kind") == "COMMAREA_CLOSURE" and (not closure.is_file()
-                or item.get("sha256") != hashlib.sha256(closure.read_bytes()).hexdigest())
-                for item in evidence.get("definitions", []))
-    if pending or stale:
-        print(f"{str(status)[:-len('.status')]}\t{program}")
-PYEOF
-)
+    done < <(lma_cli doctor-report commarea-pending "$parse_results" "$REPO_ROOT/output/rekt")
     for parse_pid in ${closure_pids[@]+"${closure_pids[@]}"}; do
         wait "$parse_pid" || true
     done
@@ -4226,6 +3914,12 @@ PYEOF
         else
             succeeded=$((succeeded + 1))
         fi
+        case "$parse_status_outcome" in
+            Partial|DepsOnly|RawAst)
+                degraded=$((degraded + 1))
+                degraded_files="${degraded_files} ${parse_status_program}(${parse_status_outcome})"
+                ;;
+        esac
         if [[ -n "$rekt_manifest" && -f "$result.manifest" ]]; then
             cat "$result.manifest" >> "${rekt_manifest%.txt}-$(rekt_estate_of "$parse_status_program").txt"
         fi
@@ -4320,13 +4014,12 @@ PYEOF
     if [[ "$rekt_filter_active" == "true" && "$filtered_out" -gt 0 ]]; then
         echo -e "  ${BLUE}Filter active: $filtered_out program(s) outside _REKT_PROGRAM_FILTER were skipped.${NC}"
     fi
-    # Count degraded outputs (succeeded with warnings — deps-only or raw-AST fallbacks).
-    local degraded
-    degraded=$(find "$REPO_ROOT/output/rekt" -name '*.parse.log' 2>/dev/null | wc -l | tr -d ' ')
+    # Every program writes a parse log, so count this run's outcomes rather than log files.
     if [[ "$degraded" -gt 0 ]]; then
-        echo -e "${YELLOW}  ⚠️  ${degraded} program(s) parsed with reduced fidelity (partial / dependencies-only / raw AST).${NC}"
+        echo -e "${YELLOW}  ⚠️  ${degraded} program(s) parsed with reduced fidelity (partial / dependencies-only / raw AST):${NC}"
+        echo -e "${YELLOW}     ${degraded_files}${NC}"
         echo -e "${YELLOW}      These usually mean missing copybooks or smojol parser limitations.${NC}"
-        echo -e "${YELLOW}      Inspect: output/rekt/**/*.parse.log${NC}"
+        echo -e "${YELLOW}      Inspect: output/rekt/<program>.parse.log${NC}"
     fi
     if [[ -s "$missing_report" ]]; then
         local miss_count
@@ -4395,7 +4088,7 @@ run_rekt_ingest() {
 
 run_rekt_ingest_impl() {
     echo -e "${CYAN}╔══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}║   Graph Populator: Ingest into Neo4j                        ║${NC}"
+    echo -e "${CYAN}║   Graph Ingest: Load into Neo4j                             ║${NC}"
     echo -e "${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
 
     if [[ -f "$REPO_ROOT/output/rekt/.jcl-scan-failed" ]]; then
@@ -4420,11 +4113,8 @@ run_rekt_ingest_impl() {
 
     echo -e "${BLUE}  Ingesting into $NEO4J_CONTAINER (bolt://localhost:$NEO4J_BOLT_PORT)${NC}"
 
-    # Use the local Python environment so ingestion does not depend on a
-    # separately running graph-populator container.
-    local populator_dir="$REPO_ROOT/tools/graph-populator"
-    ensure_graph_populator_environment || return 1
-    if ! (cd "$populator_dir" && "$(graph_populator_python)" populator.py ingest \
+    ensure_lma_cli || return 1
+    if ! (cd "$REPO_ROOT" && lma_cli graph-ingest \
         --source-dir "$REPO_ROOT/source" \
         --rekt-output "$REPO_ROOT/output/rekt" \
         --run-id "$run_id" \
@@ -4433,7 +4123,7 @@ run_rekt_ingest_impl() {
         return 1
     fi
 
-    # A populator that exits clean having written nothing is indistinguishable from success
+    # An ingest that exits clean having written nothing is indistinguishable from success
     # at the console, and the portal then reports an empty estate as a finding.
     local ingested
     ingested=$(container_exec "$NEO4J_CONTAINER" cypher-shell -u neo4j \
@@ -4496,7 +4186,7 @@ run_rekt_status() {
     echo -e "${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
 
     # Check containers
-    local containers=("$NEO4J_CONTAINER" "$REKT_CONTAINER" "$REKT_POPULATOR_CONTAINER")
+    local containers=("$NEO4J_CONTAINER" "$REKT_CONTAINER")
     for c in "${containers[@]}"; do
         local state
         state=$(docker inspect --format='{{.State.Status}}' "$c" 2>/dev/null || echo "not found")
@@ -4628,22 +4318,20 @@ require_portal_for_selection() {
 # Expands the selection to every program reachable by CALL. Without this a converted
 # program can call something that was never converted.
 expand_callees() {
+    ensure_lma_cli || return 1
     local expanded_file
     expanded_file="$(mktemp)"
     printf '%s\n' "${SELECTED_PROGRAMS[@]}" > "$expanded_file"
 
     local identity
     for identity in "${SELECTED_PROGRAMS[@]}"; do
+        # A failed closure read would silently convert callers without their callees.
         curl -s --max-time 10 "$(portal_base)/api/modernization/program/${identity}" \
-            | "$PYTHON_CMD" -c "
-import json,sys
-try:
-    d = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
-for p in d.get('callClosure') or []:
-    print(p)
-" >> "$expanded_file" 2>/dev/null
+            | lma_cli doctor-report call-closure >> "$expanded_file" || {
+            echo -e "${RED}❌ Could not read the call closure of $identity.${NC}" >&2
+            rm -f "$expanded_file"
+            return 1
+        }
     done
 
     local before=${#SELECTED_PROGRAMS[@]}
@@ -4689,6 +4377,12 @@ validate_selection() {
 
 # Clusters and waves from the source alone; with a cluster id, that cluster's slice and the command
 # that converts it.
+# Read-only acceptance of the running portal's AI Loop; see docs/estate-mission-control.md.
+run_verify_ai_loop() {
+    ensure_lma_cli || return 1
+    lma_cli ai-loop-check --url "http://localhost:${DEFAULT_MCP_PORT}" --repo-root "$REPO_ROOT" "$@"
+}
+
 run_estate_graph() {
     local cluster="${1:-}"
     local src
@@ -4726,11 +4420,8 @@ run_estate_graph() {
     }
     echo "$slice"
     local selectors
-    if [[ -z "$PYTHON_CMD" ]]; then
-        echo -e "${YELLOW}⚠️  Python is required to list the slice selectors.${NC}"
-        return 0
-    fi
-    selectors="$(printf '%s' "$slice" | "$PYTHON_CMD" -c 'import json,sys; s=json.load(sys.stdin); print(",".join(s["programSelectors"]+s["needSelectors"]))')"
+    ensure_lma_cli || return 1
+    selectors="$(printf '%s' "$slice" | lma_cli doctor-report slice-selectors)" || return 1
     echo ""
     echo -e "  Convert this slice:  ${CYAN}./doctor.sh convert-only --program ${selectors}${NC}"
 }
@@ -4839,44 +4530,8 @@ resolve_job_selection() {
 print_jcl_job_summary() {
     local manifest="${1:-}/jobs-manifest.json"
     [[ -n "${1:-}" && -f "$manifest" ]] || return 0
-    "$PYTHON_CMD" - "$manifest" "$(IFS=','; echo "${SELECTED_JOBS[*]}")" <<'PYEOF'
-import json, os, re, sys
-
-entries = json.load(open(sys.argv[1]))
-typed = {n.strip().lower(): n.strip() for n in sys.argv[2].split(",") if n.strip()}
-wanted = set(typed)
-
-def names(e):
-    # A repeated job name runs as NAME_2; the member name is what the source folder shows.
-    job = e["job"].lower()
-    return {job, re.sub(r"_\d+$", "", job), os.path.splitext(os.path.basename(e["file"]))[0].lower()}
-
-if wanted:
-    for name in sorted(wanted - set().union(*(names(e) for e in entries))):
-        print(f"⚠️  No JCL job is named {typed[name]}.")
-    entries = [e for e in entries if names(e) & wanted]
-
-ready = 0
-print()
-print(f"🧾 JCL jobs ({len(entries)}): see {sys.argv[1]}")
-for e in entries:
-    missing, blocked = e.get("programsMissing") or [], e.get("stepsNotRunnable") or []
-    if not missing and not blocked:
-        ready += 1
-        count = len(e.get("programs") or [])
-        print(f"  ✅ {e['job']:<10} " + (f"all {count} program(s) converted" if count else "runs utilities only, every step runnable"))
-        continue
-    programs = e.get("programs") or []
-    print(f"  ⚠️  {e['job']:<10} " + "; ".join(filter(None, [
-        (f"{len(e.get('programsImplemented') or [])}/{len(programs)} program(s) converted"
-         + (f", not yet: {', '.join(missing)}" if missing else "")) if programs else "no resolved estate programs",
-        f"{len(blocked)} step(s) cannot run (missing procedure, unsupported utility or unreadable condition)" if blocked else "",
-    ])))
-print(f"  {ready} of {len(entries)} job(s) have every program and step they need.")
-if ready < len(entries):
-    print("  A missing procedure or INCLUDE member is named in the manifest's diagnostics: add it to the source.")
-print("  Utilities other than IEFBR14 and IDCAMS (a sort, a Db2 unload) stop the job until implemented: docs/jcl-jobs.md")
-PYEOF
+    ensure_lma_cli || return 0
+    lma_cli doctor-report jcl-jobs "$manifest" --jobs "$(IFS=','; echo "${SELECTED_JOBS[*]}")"
 }
 
 # Jobs from the JCL alone: parse, generate, and for C# build, without a model. The jobs run the
@@ -4992,20 +4647,8 @@ run_program_list() {
 
     echo -e "${BOLD}Convertible programs${NC}"
     echo ""
-    curl -s --max-time 15 "$(portal_base)/api/modernization/programs" | "$PYTHON_CMD" -c "
-import json,sys
-d = json.load(sys.stdin)
-progs = d.get('programs') or []
-print(f\"{'PROGRAM':<24}{'LINES':>8}  {'PARSE':<10}{'CALLS':>6}{'CALLED BY':>11}  PATH\")
-print('-' * 96)
-for p in progs:
-    warn = '  ⚠ %d missing cpy' % p['missingCopybookCount'] if p.get('missingCopybookCount') else ''
-    print(f\"{p['basename']:<24}{p['linesOfCode']:>8}  {p['parseFidelity']:<10}\"
-          f\"{p['callClosureCount']:>6}{p['calledByCount']:>11}  {p['relativePath']}{warn}\")
-print()
-print(f\"{d.get('totalPrograms',0)} programs, {d.get('totalCopybooks',0)} copybooks.\")
-print('Copybooks are always included in a conversion and are not selected directly.')
-" 2>/dev/null || {
+    ensure_lma_cli || return 1
+    curl -s --max-time 15 "$(portal_base)/api/modernization/programs" | lma_cli doctor-report program-list || {
         echo -e "${RED}❌ Could not read the program list from the portal.${NC}"
         return 1
     }
@@ -5221,6 +4864,9 @@ main() {
             ;;
         "rekt-status")
             run_rekt_status
+            ;;
+        "verify-ai-loop")
+            run_verify_ai_loop "${@:2}"
             ;;
         "help"|"-h"|"--help")
             show_usage

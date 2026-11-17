@@ -163,6 +163,29 @@ public class ProgramSelectionTests
             .Should().BeEquivalentTo(new[] { "copy/REAL.cpy" });
     }
 
+    // COBOL names contain hyphens: REQ-COPY GHOST is a data name followed by a word, not a COPY.
+    [Fact]
+    public void ADataNameEndingInCopyIsNotFollowed()
+    {
+        var estate = new List<CobolFile>
+        {
+            new()
+            {
+                FileName = "ORDER.cbl",
+                FilePath = "billing/ORDER.cbl",
+                Content = "       COPY REAL.\n           INITIALIZE REQ-COPY GHOST.",
+                IsCopybook = false,
+            },
+            Copybook("copy/REAL.cpy"),
+            Copybook("copy/GHOST.cpy"),
+        };
+
+        var kept = ProgramSelection.Apply(estate, new[] { "ORDER" }, out _);
+
+        kept.Where(f => f.IsCopybook).Select(f => f.FilePath)
+            .Should().BeEquivalentTo(new[] { "copy/REAL.cpy" });
+    }
+
     [Fact]
     public void SeveralProgramsCanBeSelectedAsOneService()
     {

@@ -171,10 +171,10 @@ public sealed class ProgramFactsExtractorTests : IDisposable
         Directory.CreateDirectory(stagingDir);
         await File.WriteAllTextAsync(
             Path.Combine(stagingDir, "PROGRAM.cbl"),
-            "       COPY MISSING.");
+            "       COPY MISSING.\n           INITIALIZE WS-COPY OTHER.");
         await File.WriteAllTextAsync(
             Path.Combine(stagingDir, ".generated-stubs"),
-            "MISSING\n");
+            "MISSING\nOTHER\n");
 
         var extractor = new ProgramFactsExtractor(
             repoRoot: _root,
@@ -185,7 +185,8 @@ public sealed class ProgramFactsExtractorTests : IDisposable
 
         var facts = ProgramFactsArtifactLocator.TryLoad(outputDir, "PROGRAM.cbl");
         facts.Should().NotBeNull();
-        facts!.Warnings.Should().Contain("generated-copybook-stub:MISSING");
+        facts!.Warnings.Should().Contain("generated-copybook-stub:MISSING")
+            .And.NotContain("generated-copybook-stub:OTHER");
         facts.Confidence.Should().NotBe(FactConfidence.High);
     }
 

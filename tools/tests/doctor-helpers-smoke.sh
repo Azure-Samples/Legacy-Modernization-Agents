@@ -1,5 +1,5 @@
 #!/bin/bash
-# Smoke-tests the platform helpers in doctor.sh (port lookup, Python detection, venv paths).
+# Smoke-tests the platform helpers in doctor.sh (port lookup, setup config merge).
 # Runs on Linux, macOS and Git Bash on Windows; CI runs it on each.
 
 set -uo pipefail
@@ -12,9 +12,6 @@ fail() { echo "FAIL - $1"; failures=$((failures + 1)); }
 
 # Load only the helper functions; running doctor.sh itself would start its menu.
 eval "$(sed -n \
-    -e '/^verify_python_candidate()/,/^}/p' \
-    -e '/^detect_python()/,/^}/p' \
-    -e '/^graph_populator_python()/,/^}/p' \
     -e '/^read_local_config_value()/,/^}/p' \
     -e '/^SETUP_OWNED_KEYS=/p' \
     -e '/^restore_unowned_config_keys()/,/^}/p' \
@@ -22,7 +19,7 @@ eval "$(sed -n \
 # shellcheck source=../lib/ports.sh
 source "$REPO_ROOT/tools/lib/ports.sh"
 
-for fn in verify_python_candidate detect_python port_listen_pids kill_port_listeners port_in_use graph_populator_python \
+for fn in port_listen_pids kill_port_listeners port_in_use \
     read_local_config_value restore_unowned_config_keys; do
     declare -F "$fn" >/dev/null || fail "doctor.sh or tools/lib/ports.sh defines $fn"
 done
@@ -34,41 +31,12 @@ else
     pass "doctor.sh is checked out with LF line endings"
 fi
 
-# Python detection rejects a command that is on PATH but does not run Python.
-stub_dir="$(mktemp -d)"
-printf '#!/bin/sh\necho "Python was not found; run without arguments to install from the Microsoft Store"\n' \
-    >"$stub_dir/python-stub"
-chmod +x "$stub_dir/python-stub"
-if PATH="$stub_dir:$PATH" verify_python_candidate python-stub; then
-    fail "verify_python_candidate rejects a Store-style stub"
-else
-    pass "verify_python_candidate rejects a Store-style stub"
-fi
-rm -rf "$stub_dir"
-
-PYTHON_CMD="$(detect_python)"
-if [[ -n "$PYTHON_CMD" ]] && verify_python_candidate "$PYTHON_CMD"; then
-    pass "detect_python found a working interpreter ($PYTHON_CMD)"
-else
-    fail "detect_python found a working interpreter"
-fi
-
-# Venv interpreter path follows the platform layout.
-venv_python="$(graph_populator_python)"
-case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) expected="Scripts/python.exe" ;;
-    *) expected="bin/python" ;;
-esac
-if [[ "$venv_python" == *"/tools/graph-populator/.venv/$expected" ]]; then
-    pass "graph_populator_python uses .venv/$expected"
-else
-    fail "graph_populator_python uses .venv/$expected (got $venv_python)"
-fi
-
 # Port lookup and cleanup work with lsof or, on Git Bash, netstat/taskkill.
 port="${DOCTOR_SMOKE_PORT:-58731}"
-if [[ -n "$PYTHON_CMD" ]]; then
-    "$PYTHON_CMD" -m http.server "$port" --bind 127.0.0.1 >/dev/null 2>&1 &
+# Perl ships with Linux, macOS and Git for Windows, so it gives a listener everywhere.
+if command -v perl >/dev/null 2>&1; then
+    perl -MIO::Socket::INET -e '$s = IO::Socket::INET->new(LocalAddr => "127.0.0.1", LocalPort => $ARGV[0], Listen => 1, ReuseAddr => 1) or die; sleep 60' \
+        "$port" >/dev/null 2>&1 &
     server_pid=$!
     for _ in $(seq 1 50); do
         [[ -n "$(port_listen_pids "$port")" ]] && break

@@ -24,7 +24,7 @@ services:
       - neo4j
 
   # One graph for everything: the migration dependency graph the CLI writes and the REKT
-  # AST/CFG/data graph the populator writes share a schema (nodes keyed by run-scoped uid).
+  # AST/CFG/data graph that graph-ingest writes share a schema (nodes keyed by run-scoped uid).
   # Names and host ports can be overridden (see Config/ai-config.env.example) to run two
   # checkouts side by side.
   neo4j:
@@ -64,7 +64,7 @@ services:
       start_period: 30s
 
   # Cobol-REKT Java CLI — parses COBOL into AST/CFG/Data JSON exports.
-  # Stays alive as a sidecar; the Python populator calls it via docker exec.
+  # Stays alive as a sidecar; doctor.sh runs the parser in it via docker exec.
   # Image: rekt-oss-mma — our patched, MIT-licensed re-distribution of
   # smojol's COBOL toolkit (https://github.com/avishek-sen-gupta/cobol-rekt).
   # See tools/cobol-rekt/LICENSE and tools/cobol-rekt/NOTICE for attribution.
@@ -80,28 +80,6 @@ services:
       - ./source:/source:ro
       - ./output/rekt:/output
       - ./tools/cobol-rekt/contracts:${REKT_CONTRACTS_DIR:-/contracts}:ro
-    entrypoint: ["tail", "-f", "/dev/null"]
-
-  # Python graph populator — ingests rekt JSON + MMA metadata into Neo4j.
-  graph-populator:
-    build:
-      context: ./tools/graph-populator
-      dockerfile: Dockerfile
-    container_name: ${REKT_POPULATOR_CONTAINER:-cobol-graph-populator}
-    environment:
-      - NEO4J_URI=bolt://neo4j:7687
-      - NEO4J_USER=neo4j
-      - NEO4J_PASSWORD=${NEO4J_PASSWORD:?Run ./doctor.sh setup and set NEO4J_PASSWORD in Config/ai-config.local.env}
-      - REKT_CONTAINER=${REKT_CONTAINER:-cobol-rekt}
-      - REKT_OUTPUT_DIR=/output
-      - SOURCE_DIR=/source
-    volumes:
-      - ./source:/source:ro
-      - ./output/rekt:/output
-      - ./Data:/data
-    depends_on:
-      neo4j:
-        condition: service_healthy
     entrypoint: ["tail", "-f", "/dev/null"]
 
 volumes:

@@ -29,6 +29,19 @@ public sealed class SharedTypeRegistryTests : IDisposable
         registry.IsShared("CustomerData").Should().BeTrue();
     }
 
+    [Fact]
+    public void Scan_IgnoresDataNamesEndingInCopy()
+    {
+        Directory.CreateDirectory(_root);
+        File.WriteAllText(Path.Combine(_root, "FIRST.cbl"), "           INITIALIZE WS-COPY CUSTOMER-DATA.");
+        File.WriteAllText(Path.Combine(_root, "SECOND.cbl"), "           INITIALIZE WS-COPY CUSTOMER-DATA.");
+
+        var registry = new SharedTypeRegistry();
+        registry.Scan(_root);
+
+        registry.IsShared("CUSTOMER-DATA").Should().BeFalse();
+    }
+
     // A copybook used by several programs describes one layout. Nesting it inside each caller,
     // which is what this prompt used to ask for, produced four copies of the same record that
     // could drift apart independently. It is now declared once, where both callers can reach it.

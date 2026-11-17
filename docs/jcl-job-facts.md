@@ -1,4 +1,4 @@
-**Last updated**: 2026-10-22
+**Last updated**: 2026-11-16
 
 # JCL job facts
 
@@ -57,8 +57,8 @@ empty JCL subset. Direct `jcl-facts` calls reject zero jobs unless that option i
 explicitly supplied; configured JCL libraries must contain a job.
 
 JCL evidence is retained across failed extraction instead of broadly deleting
-`output/rekt/`. `.jcl-scan-failed` marks incomplete refreshes; both `rekt-ingest` and
-the Python ingestion consumer refuse them before writing graph data. Fix the input
+`output/rekt/`. `.jcl-scan-failed` marks incomplete refreshes; `rekt-ingest` (the .NET
+`graph-ingest` command) refuses them before writing graph data. Fix the input
 and rerun `rekt-parse`/`rekt-full` (or `jcl-facts`) to refresh successfully. Do not
 remove the marker to present old evidence as current. Other retained artifacts are
 not removed by the JCL-only path; COBOL full scans retain their existing COBOL cleanup.
@@ -151,8 +151,8 @@ The inferred order comes from data only. A scheduler may enforce more, and it ca
 | `READS`, `CREATES`, `APPENDS`, `OPENS_EXCLUSIVE`, `DELETES` | Step → dataset, from the lineage above |
 | `FEEDS` | Job → job, labelled with the datasets that connect them |
 
-A fact file written by a newer schema than the populator knows is skipped with a warning rather than loaded wrongly.
-For external libraries the populator reads source blocks from the fact's `sourceRoot`,
+A fact file written by a newer schema than `graph-ingest` knows is skipped with a warning rather than loaded wrongly.
+For external libraries `graph-ingest` reads source blocks from the fact's `sourceRoot`,
 not an unrelated same-relative-name file under `source/`. Older facts without this
 field retain the `--source-dir` fallback; regenerate them when moving JCL externally.
 

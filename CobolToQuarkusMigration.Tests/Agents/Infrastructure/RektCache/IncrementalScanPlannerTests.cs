@@ -15,7 +15,7 @@ public sealed class IncrementalScanPlannerTests
         {
             var database = Path.Combine(root, "scan.db");
             var graph = new RektCopybookGraph();
-            graph.AddFile("RECOVERY.cbl", "       COPY ABSENT.", isCopybook: false);
+            graph.AddFile("RECOVERY.cbl", "       COPY ABSENT.\n           INITIALIZE MSG-COPY  REPLACING NUMERIC BY ZEROES.", isCopybook: false);
             var planner = new IncrementalScanPlanner(new SqliteRektScanCache(database), graph, "v1-basename");
             var decision = (await planner.PlanAsync(new[] { "RECOVERY.cbl" })).ToParse.Should().ContainSingle().Which;
             decision.MissingCopybooks.Should().Equal("ABSENT");

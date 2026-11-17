@@ -372,8 +372,9 @@ After building an isolated image tag, run the native opt-in checks from the
 repository root, setting `REKT_TEST_IMAGE` to that tag:
 
 ```bash
-REKT_TEST_IMAGE=rekt-oss-mma:latest python3 -m unittest \
-  tools.tests.test_rekt_dependency_evidence.NativeDependencyExportTests
+REKT_TEST_IMAGE=rekt-oss-mma:latest dotnet test \
+  CobolToQuarkusMigration.Tests/CobolToQuarkusMigration.Tests.csproj \
+  --filter FullyQualifiedName~RektNativeDependencyExportTests
 ```
 
 The checks create declared synthetic inputs, mount them read-only in disposable
@@ -402,10 +403,11 @@ exports remain partial after a rebuild until current evidence is regenerated.
 Keep a fresh scan's artifacts and source snapshot in a separate directory, such
 as `output/rekt-scans/estate-v2/`, rather than replacing earlier output. After
 generating the structural exports with the first parser, ingest just that
-snapshot using the usual Neo4j environment settings:
+snapshot with the migration CLI and the usual Neo4j environment settings
+(`NEO4J_PASSWORD`, plus `NEO4J_URI` or `NEO4J_BOLT_PORT`):
 
 ```bash
-python3 tools/graph-populator/populator.py ingest \
+dotnet run --project CobolToQuarkusMigration.csproj -- graph-ingest \
   --source-dir output/rekt-scans/estate-v2/inputs/parsed-source \
   --rekt-output output/rekt-scans/estate-v2/artifacts \
   --run-id "$(date +%s)" --scan-name estate-v2

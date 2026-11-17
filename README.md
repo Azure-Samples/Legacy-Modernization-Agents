@@ -152,9 +152,9 @@ flowchart LR
     subgraph HOST["💻 Your machine"]
         direction TB
         DOCTOR["doctor.sh"]
-        CLI["Migration CLI (.NET)<br/>agents · estate-graph<br/>jcl-facts · jcl-jobs<br/>compile gate: dotnet build"]
+        CLI["Migration CLI (.NET)<br/>agents · estate-graph · graph-ingest<br/>jcl-facts · jcl-jobs<br/>compile gate: dotnet build"]
         WEB["Portal · McpChatWeb<br/>localhost:5028<br/>+ MCP server child process"]
-        PRE["Preprocess + graph populator<br/>(bash, Python)"]
+        PRE["Preprocess<br/>(bash, .NET)"]
         FILES[("source/ · output/<br/>Data/migration.db")]
         DOCTOR --> PRE
         DOCTOR --> CLI
@@ -174,9 +174,8 @@ flowchart LR
     end
 
     PRE -->|docker exec| REKT
-    PRE -->|load parse| NEO
     CLI <--> FILES
-    CLI -->|REKT facts, dependencies| NEO
+    CLI -->|parse graph, REKT facts, dependencies| NEO
     WEB <--> FILES
     WEB --> NEO
     CLI ==>|prompts| CLOUD
@@ -264,13 +263,12 @@ Shown here with the public IBM Bank-of-Z sample in `source/`.
 
 | | Git Bash | WSL2 |
 |---|---|---|
-| Install | Git for Windows, .NET 10 SDK for Windows, Docker Desktop, Python 3 from python.org or `winget install Python.Python.3.12` | .NET 10 SDK and Python 3 inside the distribution; Docker Desktop with WSL integration |
+| Install | Git for Windows, .NET 10 SDK for Windows, Docker Desktop | .NET 10 SDK inside the distribution; Docker Desktop with WSL integration |
 | Clone into | Any Windows folder | The Linux file system (`~/...`), not `/mnt/c/...`, which is slow and loses file permissions |
 | Optional | `winget install jqlang.jq SQLite.SQLite` | `sudo apt install jq sqlite3` |
 
 Notes for Git Bash:
 - Scripts, patches and Dockerfiles are checked out with LF line endings whatever `core.autocrlf` says. If a clone made before this setting still fails with `$'\r': command not found`, refresh it once: `git rm --cached -r -q . && git reset --hard`.
-- The `python` and `python3` commands that Windows ships are Microsoft Store shortcuts, not Python. `doctor.sh` skips them, so install a real Python, or turn the shortcuts off under *Settings → Apps → Advanced app settings → App execution aliases*.
 - `doctor.sh` uses `netstat` and `taskkill` in place of `lsof`, and turns off Git Bash path conversion for commands run inside containers.
 - The projects build without a native `.exe` launcher (`UseAppHost=false`), so endpoint security that blocks newly built executables does not stop `dotnet run`.
 
@@ -524,7 +522,8 @@ Read the summary at the end before converting:
 
 ```
   Parsed: 117 succeeded (0 from cache), 0 failed
-  ⚠️  5 program(s) parsed with reduced fidelity (deps-only / raw-AST fallback).
+  ⚠️  2 program(s) parsed with reduced fidelity (partial / dependencies-only / raw AST):
+      cbl/ACCT01.cbl(DepsOnly) cbl/RPT07.cbl(Partial)
   ⚠️  38 missing copybook(s) — see output/rekt/missing-copybooks.txt
 ```
 
@@ -707,7 +706,7 @@ Open **🌳 AST Explorer** and choose a program from the list at the top. JCL jo
 
 Changing snapshots cancels the previous inventory request; an inventory taking
 longer than 15 seconds shows a timeout rather than an indefinite loading state.
-The graph-populator schema includes a program/snapshot AST index for these lookups;
+The `graph-ingest` schema includes a program/snapshot AST index for these lookups;
 existing graphs need the updated schema applied, not just a portal rebuild.
 
 - The bar under the list counts the program's sections, paragraphs, statements and PERFORM calls.

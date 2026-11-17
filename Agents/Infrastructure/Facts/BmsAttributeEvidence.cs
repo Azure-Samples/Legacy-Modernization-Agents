@@ -59,7 +59,7 @@ public sealed partial class DependencyEvidenceGate
     private static string OverlayToken(string token) =>
         Regex.IsMatch(token.ToUpperInvariant(), "^FIL-R[0-9]+$") ? "FILLER" : token.ToUpperInvariant();
 
-    // Mirrors BmsOverlayLayout.java / overlay_layout: DISPLAY X fields, binary halfwords, plain groups, group
+    // Same rule as BmsOverlayLayout.java, shared with PlatformCopybookContracts: DISPLAY X fields, binary halfwords, plain groups, group
     // REDEFINES of an earlier named sibling and exactly one group OCCURS above the one-byte target.
     internal static (string Redefined, int Base, int Stride, int Count)? BmsOverlayLayout(
         IReadOnlyList<string> record, IReadOnlyList<IReadOnlyList<string>> members, int target)

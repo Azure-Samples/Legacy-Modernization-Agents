@@ -258,7 +258,7 @@ requirements; no numeric response codes are manufactured.
 The versioned `contracts/bank-of-z-spring-h2-v2.json` profile adds CEEDAYS and
 CEELOCT using IBM's documented parameter and feedback contracts. It preserves
 the original profile file so existing hash-bound evidence remains verifiable.
-The native parser, Python evidence producer and .NET gate recognize these service
+The native parser, .NET evidence producer (`rekt-evidence`) and conversion gate recognize these service
 contracts together. The original runtime time zone, century window and compiler
 date options are not guessed. Target adapters still need implementation and
 behavioral verification.
@@ -280,7 +280,7 @@ hash-bound `SQL_DECLARATION` inputs; merely finding a file is not a binding.
 Generated symbolic COPY definitions can bind a supported
 `bms-symbolic-map/layout-v1` manifest and original BMS snapshot. The native
 export retains their hashes alongside the actual parsed COPY hash in
-`dependencyDerivedInputs`. The Python producer independently regenerates the
+`dependencyDerivedInputs`. The `rekt-evidence` producer independently regenerates the
 supported recipe from the original BMS; cache checks use persistent inputs,
 not deleted staging snapshots. The conversion gate requires matching
 `BMS`, `BMS_LAYOUT`, COPY and native derivation bindings.
@@ -301,7 +301,8 @@ run the opt-in dependency integration tests against an isolated image before
 trusting native coverage metadata:
 
 ```bash
-REKT_TEST_IMAGE=<isolated-image-tag> python3 -m unittest tools.tests.test_rekt_dependency_evidence.NativeDependencyExportTests
+REKT_TEST_IMAGE=<isolated-image-tag> dotnet test CobolToQuarkusMigration.Tests/CobolToQuarkusMigration.Tests.csproj \
+  --filter FullyQualifiedName~RektNativeDependencyExportTests
 ```
 
 These tests use declared synthetic COPY/static CALL, dynamic CALL, missing COPY,
@@ -316,7 +317,8 @@ and remove patches whose fixes are already available upstream.
 After rebuilding the parser image, run the opt-in integration regression:
 
 ```bash
-REKT_TEST_IMAGE=rekt-oss-mma:latest python3 -m unittest tools.tests.test_rekt_terminal_parser tools.tests.test_rekt_missing_copybook_parser
+REKT_TEST_IMAGE=rekt-oss-mma:latest dotnet test CobolToQuarkusMigration.Tests -p:CopilotSkipCliDownload=true \
+  --filter "FullyQualifiedName~RektParserImageTests"
 ```
 
 It starts disposable containers over synthetic fixtures only; it does not use a
