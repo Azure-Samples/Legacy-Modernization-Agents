@@ -691,6 +691,9 @@ class CommareaClosureTests(DependencyFixture):
             "carrier-issue": lambda: self.participant(
                 "CARRIER", [self.record([None], False)], [self.send("carrier", carrier="WS-COMMAREA")],
                 [{"name": "WS-COMMAREA", "record": "CARDDEMO-COMMAREA", "issues": ["carrier-write:Other"]}]),
+            "carrier-without-record": lambda: self.participant(
+                "CARRIER", [self.record([None], False)], [self.send("carrier", carrier="COMMUNICATION-AREA")],
+                [{"name": "COMMUNICATION-AREA", "issues": ["carrier-shape", "carrier-sources:0"]}]),
             "unparsed-sender": lambda: self.participant(
                 "LOST", None, source="       PROCEDURE DIVISION.\n           EXEC CICS XCTL COMMAREA(X) END-EXEC.\n"),
         }
