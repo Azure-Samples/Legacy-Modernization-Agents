@@ -65,7 +65,8 @@ public static partial class RektEvidence
 
     internal static bool IsHex64(JsonNode? node) => Full("[0-9a-f]{64}", PyJson.PyStr(node)) is not null;
 
-    internal static bool IsAbsolute(string? path) => path is not null && Path.IsPathFullyQualified(path);
+    // Exports come from the Linux parser container, so /source/... is absolute on a Windows host too.
+    internal static bool IsAbsolute(string? path) => path is not null && (path.StartsWith('/') || Path.IsPathFullyQualified(path));
 
     internal static string PyKey(JsonNode? node) => node is JsonValue && PyJson.Str(node) is { } text ? "s:" + text
         : node is null || PyJson.Scalar(node) is null ? "n" : "o:" + PyJson.Dumps(node, sortKeys: true);
