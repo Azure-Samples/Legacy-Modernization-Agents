@@ -153,12 +153,19 @@ flowchart LR
         direction TB
         DOCTOR["doctor.sh"]
         CLI["Migration CLI (.NET)<br/>agents · estate-graph · graph-ingest<br/>jcl-facts · jcl-jobs<br/>compile gate: dotnet build"]
+        HELPERS["Scan helpers (same .NET CLI)<br/>rekt-preprocess · rekt-evidence<br/>rekt-diagnostics · doctor-report<br/>ai-loop-check · rekt-activity"]
+        GUARD["Helper guard<br/>tools/lib/lma-cli.sh"]
         WEB["Portal · McpChatWeb<br/>localhost:5028<br/>+ MCP server child process"]
         PRE["Preprocess<br/>(bash, .NET)"]
         FILES[("source/ · output/<br/>Data/migration.db")]
+        LOGS[("Logs/doctor-helpers.log<br/>scan helper-crashes.log")]
         DOCTOR --> PRE
         DOCTOR --> CLI
         DOCTOR --> WEB
+        DOCTOR --> GUARD
+        PRE --> GUARD
+        GUARD --> HELPERS
+        GUARD -.->|crash| LOGS
     end
 
     subgraph DOCKER["🐳 Docker"]
@@ -186,6 +193,23 @@ flowchart LR
 - **One Neo4j instance** (`:7687`) holds both the REKT graph (parse trees and control flow) and the migration graph (dependencies found during a run). Every node is keyed by its run, so runs and scans sit side by side without overwriting each other. The port and container name can be changed in `Config/ai-config.local.env`.
 - **The portal runs on the host** (`dotnet run --project McpChatWeb`). `docker-compose.yml` also has a `portal` service if you want it in a container.
 - **Estate Mission Control and `jcl`** need neither a model nor Docker.
+- **No Python.** The prerequisites are the .NET SDK, Docker and Bash. Every helper `doctor.sh` and `tools/*.sh` call is a command of the same .NET CLI.
+
+### Inside `rekt-full`
+
+```mermaid
+flowchart TB
+    SRC["📁 source/<br/>COBOL · copybooks · BMS · JCL"] --> ID["rekt-source-identity<br/>name collisions, shadowed copybooks"]
+    ID --> STAGE["rekt-evidence stage<br/>+ rekt-preprocess<br/>BMS symbolic maps, platform copybook contracts"]
+    STAGE --> PARSE["cobol-rekt container<br/>REKT parser (Java), one AST per program"]
+    PARSE --> EVID["rekt-evidence validate · quarantine · write<br/>rekt-diagnostics · doctor-report<br/>missing copybooks, call and COMMAREA closure"]
+    EVID --> INGEST["graph-ingest<br/>ASTs + JCL facts → Neo4j"]
+    INGEST --> DONE["output/rekt/&lt;scan&gt;/scan.json<br/>Full · Partial · Failed per program"]
+    EVID -.->|helper crash| FAIL["Scan marked failed<br/>helper-crashes.log + Logs/doctor-helpers.log"]
+    INGEST -.->|helper crash| FAIL
+```
+
+Every helper runs through `lma_cli_run` in `tools/lib/lma-cli.sh`. A helper that crashes (an unhandled .NET exception or a runtime abort) fails the scan even when the calling step would have tolerated an ordinary non-zero exit, and its stack trace is kept in both logs. Run `./doctor.sh` to check prerequisites and rerun the scan. See [Estate Mission Control](docs/estate-mission-control.md) for the scan record.
 
 ### Inside a conversion
 
@@ -200,12 +224,14 @@ flowchart TB
     GATE -->|errors| REPAIR["CompileRepairAgent<br/>fixes file by file,<br/>up to CompileGate.MaxRepairRounds,<br/>undoes rounds that make it worse"]
     REPAIR --> GATE
     GATE -->|builds, or rounds used up| PARITY["Conversion parity check<br/>procedures · fields · calls · SQL<br/>vs the COBOL (deterministic)"]
-    PARITY --> JOBS["Jobs from JCL, if any<br/>.NET jobs or Spring Batch"]
+    PARITY -->|gaps| PREPAIR["ParityRepairAgent<br/>source-backed fixes, up to PARITY_REPAIR_MAX_ROUNDS;<br/>kept only if rescoring improves"]
+    PREPAIR --> PARITY
+    PARITY -->|passes, or rounds used up| JOBS["Jobs from JCL, if any<br/>.NET jobs or Spring Batch"]
     JOBS --> OUT["output/{language}/{run}/<br/>compile-status.json · conversion-parity.json<br/>jobs-manifest.json · migration report"]
     OUT --> LOOP["Portal: 🔁 AI Loop tab<br/>model calls, retries, gates"]
 ```
 
-Java output has no compile gate yet: build it with `mvn compile` in the output folder. The parity check reports and can stop the run (`ON_LOW_SCORE=stop`), but does not repair. See [Conversion parity](docs/conversion-parity-validation.md) and [Using the generated output](docs/using-generated-output.md).
+Java output has no compile gate yet: build it with `mvn compile` in the output folder. The parity check can stop the run (`ON_LOW_SCORE=stop`); its score is always measured again from the files on disk after repairs. See [Conversion parity](docs/conversion-parity-validation.md) and [Using the generated output](docs/using-generated-output.md).
 
 ### 🛰 Estate Mission Control at a glance
 
@@ -228,6 +254,7 @@ Shown here with the public IBM Bank-of-Z sample in `source/`.
 ## 📋 Table of Contents
 - [How it fits together](#-how-it-fits-together)
   - [What runs where](#what-runs-where)
+  - [Inside rekt-full](#inside-rekt-full)
   - [Inside a conversion](#inside-a-conversion)
 - [Quick Start](#-quick-start)
 - [Usage: doctor.sh](#-usage-doctorsh)
@@ -1330,42 +1357,46 @@ flowchart TD
 
 ### 🔄 Agent Flowchart
 
+Seven agents call the model. Everything between them (parsing, chunking, the output guard, the compile gate and the parity score) is deterministic.
+
 ```mermaid
 flowchart TD
-  CLI[["CLI / doctor.sh\n- Loads AI config\n- Selects target language"]]
-  PORTAL_SETUP[["Portal Setup Modal\n- Connect to Azure / Copilot\n- Discover & select models\n- Save config"]]
-  
-  subgraph ANALYZE_PHASE["PHASE 1: Deep Analysis"]
-      REGEX["Regex Parsing\n(Fast SQL/Variable Extraction)"]
-      ANALYZER["CobolAnalyzerAgent\n(Structure & Logic)"]
-      SQLITE[("SQLite Storage")]
-  end
-  
-  subgraph DEPENDENCY_PHASE["PHASE 2: Dependencies"]
-      MAPPER["DependencyMapperAgent\n(Builds Graph)"]
-      NEO4J[("Neo4j Graph DB")]
-  end
-  
-  subgraph CONVERT_PHASE["PHASE 3: Conversion"]
-      FETCHER["Context Fetcher\n(Aggregates Dependencies)"]
-      CONVERTER["CodeConverterAgent\n(Java/C# Generation)"]
-      OUTPUT["Output Files"]
+  CLI[["doctor.sh run / convert-only / reverse-eng<br/>or Portal Mission Control"]]
+  FACTS["REKT program facts, copybooks,<br/>call contracts (no model)"]
+
+  subgraph RE_PHASE["Reverse engineering (optional)"]
+      ANALYZER["CobolAnalyzerAgent<br/>structure and logic"]
+      BIZ["BusinessLogicExtractorAgent<br/>use cases, rules, glossary"]
   end
 
-  CLI --> REGEX
-  PORTAL_SETUP -.->|configures| CLI
-  REGEX --> SQLITE
-  REGEX --> ANALYZE_PHASE
-  
+  subgraph DEP_PHASE["Dependencies"]
+      MAPPER["DependencyMapperAgent<br/>CALL / COPY / file / SQL"]
+  end
+
+  subgraph CONVERT_PHASE["Conversion"]
+      CONVERTER["JavaConverterAgent / CSharpConverterAgent<br/>chunk-aware for large programs"]
+      OGUARD["Output guard (no model)"]
+      CGATE{"C# compile gate"}
+      CREPAIR["CompileRepairAgent"]
+      PSCORE{"Parity score (no model)"}
+      PREPAIR["ParityRepairAgent"]
+  end
+
+  SQLITE[("SQLite<br/>Data/migration.db")]
+  NEO4J[("Neo4j")]
+  OUT["output/{language}/{run}/"]
+
+  CLI --> FACTS --> ANALYZER --> BIZ
   ANALYZER --> SQLITE
-  
-  SQLITE --> MAPPER
-  MAPPER --> NEO4J
-  
-  SQLITE --> FETCHER
-  NEO4J --> FETCHER
-  FETCHER --> CONVERTER
-  CONVERTER --> OUTPUT
+  BIZ --> SQLITE
+  FACTS --> MAPPER --> NEO4J
+  SQLITE --> CONVERTER
+  NEO4J --> CONVERTER
+  CONVERTER --> OGUARD --> CGATE
+  CGATE -->|errors| CREPAIR --> CGATE
+  CGATE -->|builds| PSCORE
+  PSCORE -->|gaps| PREPAIR --> PSCORE
+  PSCORE --> OUT
 ```
 
 ### 🔀 Agent Responsibilities & Interactions
@@ -1462,6 +1493,16 @@ sequenceDiagram
 - **Interactions:**
   - Concurrency guards (pipeline slots vs. AI calls) ensure Azure OpenAI limits respected.
   - Results pushed to portal via repositories for browsing/download.
+
+#### CompileRepairAgent
+- **Purpose:** Fix C# compiler errors in generated files, one file at a time.
+- **Inputs:** `dotnet build` diagnostics and the affected files.
+- **Outputs:** Repaired files; a round that increases the error count is undone. Limited by `CompileGate.MaxRepairRounds`.
+
+#### ParityRepairAgent
+- **Purpose:** Close gaps the deterministic parity check found between the COBOL and the generated code.
+- **Inputs:** The COBOL source, the generated files, the measured gaps and read-only compiler context.
+- **Outputs:** Replacement files, accepted only when rescoring shows higher coverage without loss on another axis. Limited by `PARITY_REPAIR_MAX_ROUNDS` (`0` measures only). See [Conversion parity](docs/conversion-parity-validation.md#bounded-repair-and-final-measurement).
 
 ### ⚡ Concurrency Notes
 - **Pipeline concurrency (`--max-parallel`)** controls how many files/chunks run simultaneously (e.g., 8).
@@ -1658,6 +1699,7 @@ See [Parallel Jobs Formula](#parallel-jobs-formula) for chunking configuration d
 | Azure API error | Check `Config/ai-config.local.env` credentials or run `az login` |
 | No output generated | Ensure COBOL files are in `source/` |
 | Portal won't start | `lsof -ti :5028 \| xargs kill -9` then retry |
+| A scan or command reports *Internal helper crashed* | A .NET helper threw an unhandled exception. The stack trace is in `Logs/doctor-helpers.log` and, for scans, in `helper-crashes.log` beside `scan.json`. Run `./doctor.sh` to check prerequisites, then rerun |
 | Build fails with `MSB3923 Failed to download file … registry.npmjs.org`, or setup says *Could not fetch user-specific models* | The network blocks the npm registry the Copilot SDK downloads its CLI from. `doctor.sh` falls back to your npm mirror or your installed Copilot CLI automatically; for plain `dotnet` commands, see [Building behind an NPM registry block](docs/building-behind-an-npm-registry-block.md) |
 | `rekt-full` stops with *Source identity collisions prevent safe REKT staging* | REKT reads copybooks by name from one folder, so it stops only when two copybooks share a name, differ, and a `COPY` or `INCLUDE` uses that name. The message lists the copies and the files that use them. Rename one copy, or move the estate you are not parsing out of `source/`. Copies with the same text, or that nothing uses, are staged and reported as a note |
 
@@ -1686,7 +1728,7 @@ See [Parallel Jobs Formula](#parallel-jobs-formula) for chunking configuration d
 
 | Workflow / Agent | Trigger | Description |
 |---|---|---|
-| [Documentation Updater](.github/workflows/documentation-updater.lock.yml) | Push / PR to `main` | Checks documentation completeness and reports gaps via issues or PR comments |
+| [Documentation Updater](.github/workflows/documentation-updater.lock.yml) | Push to `main` | Checks documentation completeness and reports gaps via issues or PR comments |
 | [Documentation Audit](.github/workflows/documentation-audit.lock.yml) | Weekly schedule | Performs a full audit of project documentation for accuracy and completeness |
 | [Test Enhancer](.github/workflows/test-enhancer.lock.yml) | On demand | Agentic workflow that analyzes the codebase and proposes improvements to test coverage |
 | [Branch Reviewer](.github/agents/pr-review.agent.md) | On demand (Copilot CLI) | Reviews branch changes, summarizes commits, and detects breaking changes vs. `main` |
