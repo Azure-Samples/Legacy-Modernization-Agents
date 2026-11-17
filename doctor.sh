@@ -3790,19 +3790,27 @@ PYEOF
 
     # Restart stale Docker Desktop bind mounts before they produce empty parser output.
     if [[ "$staged_cbl" -gt 0 ]]; then
-        local container_visible
-        container_visible=$(container_exec "$REKT_CONTAINER" sh -c "ls /source/.rekt-staging 2>/dev/null | wc -l" 2>/dev/null | tr -d ' ')
-        if [[ -z "$container_visible" || "$container_visible" -eq 0 ]]; then
-            echo -e "  ${YELLOW}⚠️  Container can't see /source/.rekt-staging — bind mount is stale. Restarting $REKT_CONTAINER…${NC}"
-            run_compose restart "$REKT_SERVICE" >/dev/null 2>&1 || true
+        local staged_files staging_check
+        staged_files=$(cd "$staging_base" && find . -type f -print) || return 1
+        staging_check='while IFS= read -r path; do
+            if [ ! -f "/source/.rekt-staging/$path" ] || [ ! -r "/source/.rekt-staging/$path" ]; then
+                printf "Cannot read expected staged file: %s\n" "$path" >&2
+                exit 1
+            fi
+        done'
+        if ! container_exec -i "$REKT_CONTAINER" sh -c "$staging_check" <<< "$staged_files"; then
+            echo -e "  ${YELLOW}⚠️  Container can't read expected staging files — bind mount may be stale. Restarting $REKT_CONTAINER…${NC}"
+            if ! run_compose restart "$REKT_SERVICE"; then
+                echo -e "  ${RED}❌ Could not restart $REKT_CONTAINER.${NC}" >&2
+                return 1
+            fi
             sleep 3
-            container_visible=$(container_exec "$REKT_CONTAINER" sh -c "ls /source/.rekt-staging 2>/dev/null | wc -l" 2>/dev/null | tr -d ' ')
-            if [[ -z "$container_visible" || "$container_visible" -eq 0 ]]; then
+            if ! container_exec -i "$REKT_CONTAINER" sh -c "$staging_check" <<< "$staged_files"; then
                 echo -e "  ${RED}❌ Container still can't see staging files after restart.${NC}"
                 echo -e "     Try: ${BLUE}docker compose down && docker compose up -d${NC} from the repo root."
                 return 1
             fi
-            echo -e "  ${GREEN}✅ Container now sees ${container_visible} staged file(s).${NC}"
+            echo -e "  ${GREEN}✅ Container can read all expected staging files.${NC}"
         fi
     fi
 
