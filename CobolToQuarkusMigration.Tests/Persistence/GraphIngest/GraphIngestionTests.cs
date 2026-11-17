@@ -247,6 +247,26 @@ public sealed class GraphIngestionTests : IDisposable
     }
 
     [Fact]
+    public async Task UnrelatedJsonIsSummarisedOnceAndInternalDotFilesAreIgnored()
+    {
+        var (source, output) = Layout();
+        WriteFile(output, "verification/old/bin/appsettings.json", "{}");
+        WriteFile(output, "verification/old/package.json", "{}");
+        WriteFile(output, "stray.json", "{}");
+        WriteFile(output, "estate/.commarea-closure.json", "{}");
+        WriteFile(output, ".scratch/out.json", "{}");
+
+        await _ingestion.IngestRektOutputsAsync(output, source, 1);
+
+        var listPath = Path.Combine(output, GraphIngestion.UnmatchedArtifactsFile);
+        _log.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Should().ContainSingle().Which.Should().Be(
+                $"Not loaded: 3 JSON file(s) in output/rekt match no source program (verification/ ×2, (top level) ×1). List: {listPath}");
+        File.ReadAllLines(listPath).Select(line => line.Split(':')[0])
+            .Should().BeEquivalentTo("verification/old/bin/appsettings.json", "verification/old/package.json", "stray.json");
+    }
+
+    [Fact]
     public async Task JclJobsAreIngestedWithTheirSourceAndNewerSchemasAreSkipped()
     {
         var output = Directory.CreateDirectory(Path.Join(_root, "out")).FullName;
