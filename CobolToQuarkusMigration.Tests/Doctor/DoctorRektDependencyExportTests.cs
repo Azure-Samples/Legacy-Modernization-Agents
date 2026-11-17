@@ -326,7 +326,8 @@ public sealed class DoctorRektDependencyExportTests : IDisposable
         has() { local a; for a in "${args[@]}"; do [[ "$a" == "$1" ]] && return 0; done; return 1; }
         value_of() { local a; for a in "${args[@]}"; do [[ "$a" == "$1="* ]] && { printf '%s' "${a#*=}"; return 0; }; done; return 1; }
         fail() { echo "parser container: $*" >&2; exit 97; }
-        sha256() { { sha256sum "$1" 2>/dev/null || shasum -a 256 "$1"; } | cut -d' ' -f1; }
+        # Stdin, because sha256sum prefixes the hash with \ for a name holding backslashes (Windows).
+        sha256() { { sha256sum < "$1" 2>/dev/null || shasum -a 256 < "$1"; } | cut -d' ' -f1; }
         # name kind host-file container-path complete call-coverage diagnostics dependencies
         node() {
             printf '{"callTarget":{"name":"%s","programReferenceType":"STATIC"},"dependencyKind":"%s","sourcePath":"%s","sourceSha256":"%s",' \
