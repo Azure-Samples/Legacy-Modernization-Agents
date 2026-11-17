@@ -3121,6 +3121,9 @@ rekt_program_line() {
         DepsOnly) icon="⚠️ " color="$YELLOW" label="Dependencies only" ;;
         *) icon="❌" color="$RED" label="Failed" ;;
     esac
+    if [[ "$outcome" == Partial && -f "$result.closure-pending" ]]; then
+        icon="⏳" color="$CYAN" label="COMMAREA pending"
+    fi
     local report="$REPO_ROOT/output/rekt/$rel.report" artifacts="" part
     for part in AST:flow_ast CFG:cfg data:data_structures; do
         if [[ -n "$(find "$report/${part#*:}" -type f -size +0 -print -quit 2>/dev/null)" ]]; then
@@ -4014,7 +4017,14 @@ run_rekt_parse_impl() {
             if [[ "$parse_outcome" == "Full" || "$parse_outcome" == "NoDialect" ]]; then
                 parse_outcome="Partial"
             fi
-            echo -e "    ${YELLOW}↳ incomplete dependency evidence: $stub_warnings${NC}"
+            # The closure stage re-exports these with the caller's COMMAREA layout, so the
+            # pass-1 gap list is noise; the closure pass prints the final outcome.
+            if [[ "${rekt_commarea_pass:-false}" != true && "$stub_warnings" == *cics-commarea-closure-pending* ]]; then
+                : > "$result.closure-pending"
+                echo -e "    ${CYAN}↳ waiting for the caller's COMMAREA layout; re-checked in the COMMAREA closure stage${NC}"
+            else
+                echo -e "    ${YELLOW}↳ incomplete dependency evidence: $stub_warnings${NC}"
+            fi
         fi
         [[ "$parse_outcome" == "Failed" ]] || rekt_parser_notes "$err_log"
 

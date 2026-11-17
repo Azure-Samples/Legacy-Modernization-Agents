@@ -51,4 +51,21 @@ public class RequiresAiSettingsTests
     {
         Program.RequiresAiSettings(["migrate"]).Should().BeTrue();
     }
+
+    [Theory]
+    [InlineData("program-facts")]
+    [InlineData("jcl-facts")]
+    [InlineData("rekt-scan-cache")]
+    [InlineData("mcp")]
+    public void OfflineHelpersAndMcp_DoNotCaptureTheLiveLog(string command)
+    {
+        Program.CapturesLiveLog([command, "--output", "out"]).Should().BeFalse();
+    }
+
+    [Fact]
+    public void ConversionRuns_CaptureTheLiveLog()
+    {
+        Program.CapturesLiveLog(["--source", "source", "--java-output", "out"]).Should().BeTrue();
+        Program.CapturesLiveLog(["reverse-engineer", "--source", "source"]).Should().BeTrue();
+    }
 }

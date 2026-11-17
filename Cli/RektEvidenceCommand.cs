@@ -96,8 +96,26 @@ public static class RektEvidenceCommand
     private static int CommareaClosure(string sourceRoot, string outputRoot, string estate)
     {
         var closure = RektEvidence.WriteCommareaClosure(sourceRoot, outputRoot, estate);
-        foreach (var error in closure["errors"]!.AsArray())
-            Console.Error.WriteLine($"REKT COMMAREA closure: {PyJson.PyStr(error)}");
+        var errors = closure["errors"]!.AsArray().Select(error => PyJson.PyStr(error)).ToList();
+        if (errors.Count > 0)
+            Console.Error.WriteLine($"COMMAREA closure not applied for {estate}: {string.Join("; ", errors.Select(DescribeClosureError))} (details: .commarea-closure.json)");
         return 0;
+    }
+
+    // The raw tokens stay in .commarea-closure.json; the console gets one sentence a person can act on.
+    internal static string DescribeClosureError(string error)
+    {
+        var parts = error.Split(':');
+        string At(int i) => i < parts.Length ? parts[i] : "?";
+        return parts[0] switch
+        {
+            "commarea-closure-carrier-unsupported" => $"{At(1)} passes {At(2)} in a form the closure cannot follow",
+            "commarea-closure-send-unsupported" => $"{At(1)} sends {At(2)} in a form the closure cannot follow",
+            "commarea-closure-foreign-send" => $"{At(1)} sends {At(2)} (line {At(3)}) to a program outside the estate",
+            "commarea-closure-incompatible-layouts" => $"{At(1)} different COMMAREA layouts share the record",
+            "commarea-closure-participant-unavailable" => $"no dependency evidence yet for {At(1)}",
+            "commarea-closure-participant-invalid" => $"unreadable dependency evidence for {At(1)}",
+            _ => error,
+        };
     }
 }

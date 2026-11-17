@@ -138,7 +138,7 @@ public sealed class GraphIngestion(IGraphTarget target, TextWriter log)
             .Select(g => $"{g.Key} ×{g.Count()}")
             .ToList();
         var shown = string.Join(", ", folders.Take(3)) + (folders.Count > 3 ? $", +{folders.Count - 3} more" : "");
-        log.WriteLine($"Not loaded: {unmatched.Count} JSON file(s) in output/rekt match no source program ({shown}). List: {listPath}");
+        log.WriteLine($"Not loaded: {unmatched.Count} JSON file(s) in output/rekt match no source program ({shown}). List: {Path.GetRelativePath(Directory.GetCurrentDirectory(), listPath)}");
     }
 
     // Per-program ingest skips a row or two each; one total per type keeps the scan output readable.

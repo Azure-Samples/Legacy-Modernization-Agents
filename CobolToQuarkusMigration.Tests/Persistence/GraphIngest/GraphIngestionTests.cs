@@ -261,7 +261,7 @@ public sealed class GraphIngestionTests : IDisposable
         var listPath = Path.Combine(output, GraphIngestion.UnmatchedArtifactsFile);
         _log.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Should().ContainSingle().Which.Should().Be(
-                $"Not loaded: 3 JSON file(s) in output/rekt match no source program (verification/ ×2, (top level) ×1). List: {listPath}");
+                $"Not loaded: 3 JSON file(s) in output/rekt match no source program (verification/ ×2, (top level) ×1). List: {Path.GetRelativePath(Directory.GetCurrentDirectory(), listPath)}");
         File.ReadAllLines(listPath).Select(line => line.Split(':')[0])
             .Should().BeEquivalentTo("verification/old/bin/appsettings.json", "verification/old/package.json", "stray.json");
     }

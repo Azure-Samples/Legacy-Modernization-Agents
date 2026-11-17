@@ -193,6 +193,26 @@ public sealed class DoctorRektDependencyExportTests : IDisposable
     }
 
     [Fact]
+    public void ProgramLine_ShowsCommareaPendingInsteadOfPartial_OnlyWhenTheClosurePassWillRecheckIt()
+    {
+        var function = Between("rekt_duration() {", "\n# Runs one program and prints its block");
+        var env = DoctorFixture.ScrubbedEnvironment();
+        env["REPO_ROOT"] = DoctorFixture.Posix(Root);
+        Directory.CreateDirectory(Path.Join(Root, "progress"));
+        File.WriteAllText(Path.Join(Root, "pending.status"), "Partial\tPROG.cbl\n");
+        File.WriteAllText(Path.Join(Root, "pending.closure-pending"), "");
+        File.WriteAllText(Path.Join(Root, "partial.status"), "Partial\tPROG.cbl\n");
+
+        var output = Bash(env, function + "\n_REKT_STAGE_START=$(date +%s)\n"
+            + "rekt_program_line pending PROG.cbl \"$_REKT_STAGE_START\" progress 1\n"
+            + "rekt_program_line partial PROG.cbl \"$_REKT_STAGE_START\" progress 1");
+
+        output.Select(line => Regex.Replace(line, @"\x1b\[[0-9;]*m|\\033\[[0-9;]*m", "")).Should().SatisfyRespectively(
+            pending => pending.Should().StartWith("  ⏳ COMMAREA pending  PROG.cbl"),
+            partial => partial.Should().StartWith("  ⚠️  Partial  PROG.cbl"));
+    }
+
+    [Fact]
     public void Doctor_RektVerbose_StreamsParserOutput()
     {
         RunDoctor(structuralSuccess: true, verbose: true);
