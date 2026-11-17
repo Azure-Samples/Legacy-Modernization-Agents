@@ -4319,7 +4319,7 @@ scan_rekt_jcl() {
     fi
     mkdir -p "$REPO_ROOT/output/rekt" || return 1
     : > "$REPO_ROOT/output/rekt/.jcl-scan-failed" || return 1
-    echo -e "${BLUE}  Parsing JCL from $jcl_dir → output/rekt/${NC}"
+    echo -e "${BLUE}  Parsing JCL from ${jcl_dir#"$REPO_ROOT"/} → output/rekt/${NC}"
     local cli_command=("${DOTNET_CMD:-dotnet}" run --project CobolToQuarkusMigration.csproj --)
     if [[ -n "${MIGRATION_CLI_ASSEMBLY:-}" ]]; then
         cli_command=("${DOTNET_CMD:-dotnet}" "$MIGRATION_CLI_ASSEMBLY")

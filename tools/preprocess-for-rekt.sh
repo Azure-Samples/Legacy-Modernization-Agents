@@ -69,13 +69,20 @@ done < <(find "$SOURCE_DIR" ${FIND_DEPTH[@]+"${FIND_DEPTH[@]}"} \
     ! -path "*/.convert-*/*" \
     -print0)
 
+# Messages show paths relative to the caller's folder; absolute paths bury the useful part.
+display_path() {
+    local from="/tools/../" to="/"
+    local path="${1//"$from"/$to}"
+    printf '%s' "${path#"$PWD"/}"
+}
+
 # Optional estate-specific rewrites (git-ignored). Validated once so a malformed file
 # is reported instead of silently skipping every program below.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REKT_PREPROCESS_RULES="${REKT_PREPROCESS_RULES:-$SCRIPT_DIR/../Config/rekt-preprocess.local.json}"
 if [[ -f "$REKT_PREPROCESS_RULES" ]]; then
     if lma_cli rekt-preprocess check-rules --rules "$REKT_PREPROCESS_RULES" 2>/dev/null; then
-        echo "  Using local preprocess rules: $REKT_PREPROCESS_RULES"
+        echo "  Using local preprocess rules: $(display_path "$REKT_PREPROCESS_RULES")"
         export REKT_PREPROCESS_RULES
     else
         echo "  ⚠️  Ignoring $REKT_PREPROCESS_RULES: not valid JSON with a programRewrites list"
@@ -170,7 +177,7 @@ if [[ -d "$SYS_CPY_DIR" ]]; then
     done < <(find "$SYS_CPY_DIR" -maxdepth 1 -type f \( -name "*.cpy" -o -name "*.CPY" \) -print0)
 fi
 if [[ "$sys_count" -gt 0 ]]; then
-    echo "  Shipped $sys_count bundled system copybook(s) (e.g. SQLCA) → $PREPROC_DIR/"
+    echo "  Shipped $sys_count bundled system copybook(s) (e.g. SQLCA) → $(display_path "$PREPROC_DIR")/"
 fi
 
 # Bind this estate to a snapshot of the configured platform contract. Later edits to the shared

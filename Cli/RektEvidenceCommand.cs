@@ -98,7 +98,7 @@ public static class RektEvidenceCommand
         var closure = RektEvidence.WriteCommareaClosure(sourceRoot, outputRoot, estate);
         var errors = closure["errors"]!.AsArray().Select(error => PyJson.PyStr(error)).ToList();
         if (errors.Count > 0)
-            Console.Error.WriteLine($"COMMAREA closure not applied for {estate}: {string.Join("; ", errors.Select(DescribeClosureError))} (details: .commarea-closure.json)");
+            Console.Error.WriteLine($"  ⚠ COMMAREA closure not applied for {estate}: {string.Join("; ", errors.Select(DescribeClosureError))} (details: .commarea-closure.json)");
         return 0;
     }
 
