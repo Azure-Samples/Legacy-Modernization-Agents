@@ -1,10 +1,92 @@
-**Last updated**: 2026-02-23
+**Last updated**: 2026-11-18
 
 # Reverse Engineering Process Architecture
 
 ## Overview
 
 The reverse engineering process extracts business logic from COBOL source code, generating comprehensive documentation. Version 0.2 introduces **Smart Chunking** for large files (>150K chars or >3000 lines), enabling analysis of enterprise-scale codebases.
+
+## Reverse engineering reports
+
+**Reverse Engineering (RE)** extracts business knowledge from COBOL code **before** any conversion happens. This is the "understand first" phase.
+
+### What It Does
+
+The `BusinessLogicExtractorAgent` analyzes COBOL source code and produces human-readable documentation that captures:
+
+| Output | Description | Example |
+|--------|-------------|---------|
+| **Business Purpose** | What problem does this program solve? | "Processes monthly customer billing statements" |
+| **Use Cases** | CRUD operations identified | CREATE customer, UPDATE balance, VALIDATE account |
+| **Business Rules** | Validation logic as requirements | "Account number must be 10 digits" |
+| **Data Dictionary** | Field meanings in business terms | `WS-CUST-BAL` → "Customer Current Balance" |
+| **Dependencies** | What other programs/copybooks it needs | CALLS: PAYMENT.cbl, COPIES: COMMON.cpy |
+
+### Why This Helps
+
+| Benefit | How |
+|---------|-----|
+| **Knowledge Preservation** | Documents tribal knowledge before COBOL experts retire |
+| **Migration Planning** | Understand complexity before estimating conversion effort |
+| **Validation** | Business team can verify extracted rules match expectations |
+| **Onboarding** | New developers understand legacy systems without reading COBOL |
+| **Compliance** | Audit trail of business rules for regulatory requirements |
+
+### Running Reverse Engineering Only
+
+```bash
+./doctor.sh reverse-eng    # Extract business logic, persist to DB, launch portal
+```
+
+This generates `output/reverse-engineering-details.md` and persists the extracted business logic to the SQLite database. Results can be reused in a later `convert-only` run (see [Business Logic Persistence and --reuse-re](doctor-commands.md#business-logic-persistence-and---reuse-re)).
+
+### Sample Output
+
+```markdown
+# Reverse Engineering Report: CUSTOMER.cbl
+
+## Business Purpose
+Manages customer account lifecycle including creation, 
+balance updates, and account closure with audit trail.
+
+## Use Cases
+
+### Use Case 1: Create Customer Account
+**Trigger:** New customer registration request
+**Key Steps:**
+1. Validate customer data (name, address, tax ID)
+2. Generate unique account number
+3. Initialize balance to zero
+4. Write audit record
+
+### Use Case 2: Update Balance
+**Trigger:** Transaction posted to account
+**Business Rules:**
+- Balance cannot go negative without overdraft flag
+- Transactions > $10,000 require manager approval code
+
+## Business Rules
+| Rule ID | Description | Field |
+|---------|-------------|-------|
+| BR-001 | Account number must be exactly 10 digits | WS-ACCT-NUM |
+| BR-002 | Customer name is required (non-blank) | WS-CUST-NAME |
+```
+
+### Glossary Integration
+
+Add business terms to `Data/glossary.json` for better translations:
+
+```json
+{
+  "terms": [
+    { "term": "WS-CUST-BAL", "translation": "Customer Current Balance" },
+    { "term": "CALC-INT-RT", "translation": "Calculate Interest Rate" },
+    { "term": "PRCS-PMT", "translation": "Process Payment" }
+  ]
+}
+```
+
+The extractor uses these translations to produce more readable reports.
 
 ## AI Models Used
 

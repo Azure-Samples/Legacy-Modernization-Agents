@@ -1,9 +1,28 @@
 # Smart Chunking & Token Strategy Architecture
 
-> **Last updated**: 2026-04-28  
+> **Last updated**: 2026-11-18  
 > This document describes the token management and smart chunking architecture used by the Legacy Modernization Agents to process COBOL source files for migration to Java/C#.
 
 ---
+
+## Automatic chunking
+
+Large COBOL files (>3,000 lines or >150K characters) are automatically split at semantic boundaries (DIVISION → SECTION → paragraph) and processed with content-aware reasoning effort. A three-tier complexity scoring system analyzes each file's COBOL patterns (EXEC SQL, CICS, REDEFINES, etc.) to dynamically allocate reasoning effort and output tokens — simple files get fast processing while complex files get thorough analysis.
+
+> [!NOTE]
+> **Chunking is fully automatic. You do not choose chunks, sizes or boundaries.** Each file is measured and planned before any model call to keep requests within the configured line and token budgets. Token counts are estimates, so treat this as a target rather than a hard size guarantee.
+>
+> | Step | What the framework does automatically | Default (`Config/appsettings.json` → `ChunkingSettings`) |
+> |---|---|---|
+> | **1. Decide** | Measures each file and chunks it only when it is too large for one request; smaller files go through whole | `AutoChunkLineThreshold` 3,000 lines · `AutoChunkCharThreshold` 150,000 chars |
+> | **2. Split on meaning** | Finds DIVISIONs, SECTIONs and paragraphs and cuts at the highest-level boundary that fits, so logic is never cut mid-paragraph | Priority DIVISION > SECTION > paragraph |
+> | **3. Bound each chunk** | Caps every chunk by both lines and estimated tokens | `MaxLinesPerChunk` 1,500 · `MaxTokensPerChunk` 28,000 |
+> | **4. Fall back safely** | If a single unit is still too large, it switches to line-based chunks with overlap so no statement loses its surroundings | `OverlapLines` 300 |
+> | **5. Carry context, not the whole file** | Keeps the last chunks in full, compresses older ones, and passes signatures and type mappings forward | `FullDetailChunkWindow` 3 · `CompressionRatio` 0.3 |
+> | **6. Size the answer** | Scores COBOL complexity (SQL, CICS, REDEFINES…) to pick reasoning effort and output-token budget per file | Low / medium / high tiers |
+> | **7. Pace and reassemble** | Converts different files in parallel within the TPM/RPM budget; one file's chunks run in order, each seeing the end of the previous chunk's output. Then reassembles them in order and checks for gaps, duplicates and syntax errors | `MaxParallelChunks` 6 |
+>
+> Run `./doctor.sh chunking-health` to see which files will be chunked. To tune, change the settings above; the split itself stays automatic.
 
 ## Mermaid Diagram
 
@@ -72,15 +91,22 @@ flowchart TD
     end
 
     subgraph API_CALL["🤖 API CALL + ESCALATION"]
-        AD --> AE[Azure OpenAI Responses API]
-        AE --> AF{Response Status}
-        AF -->|"Complete"| AG[✅ Success]
+        AD --> AE{Provider Routing}
+        AE -->|"Azure Codex<br>(ResponsesApiClient)"| AE1[Responses API Call]
+        AE -->|"GitHub/Claude/Grok/GPT<br>(IChatClient)"| AE2["Chat Completions Call<br>+ ApplyModelSpecificOptions"]
+        AE1 --> AF{Response Status}
+        AE2 --> AF2{Truncation Check}
+        AF2 -->|"FinishReason=Stop<br>No truncation signals"| AG[✅ Success]
+        AF2 -->|"FinishReason=Length<br>or text signals<br>or unclosed code blocks"| AH2["OutputTruncationException<br>① Double maxTokens<br>② Promote effort<br>③ Thrash guard"]
+        AH2 -->|"Max 2 retries"| AE2
+        AH2 -->|"All retries failed"| AI["Adaptive Re-Chunking<br>Split at semantic midpoint<br>50-line overlap"]
+        AF -->|"Complete"| AG
         AF -->|"Reasoning Exhaustion<br>reasoning ≥ 90% of output"| AH["Escalation Loop<br>① Double maxTokens<br>② Promote effort<br>③ Thrash guard"]
-        AH -->|"Max 2 retries"| AE
-        AH -->|"All retries failed"| AI["Adaptive Re-Chunking<br>Split at semantic midpoint<br>50-line overlap"]
+        AH -->|"Max 2 retries"| AE1
+        AH -->|"All retries failed"| AI
         AI --> AE
         AF -->|"429 Rate Limited"| AJ["Shared cooldown for all agents<br>wait Retry-After (≤ RateLimitMaxWaitSeconds)<br>or back off 8s → 16s"]
-        AJ --> AE
+        AJ --> AE1
     end
 
     subgraph RECONCILE["🔗 RECONCILIATION"]
