@@ -1,0 +1,67 @@
+# Customizing agent behavior
+
+**Last updated**: 2026-11-18
+
+Each agent has a **system prompt** loaded from an external Markdown template. To customize output (e.g., DDD patterns, specific frameworks), edit the corresponding file in `Agents/Prompts/`:
+
+## Prompt Template System
+
+Prompt files use two conventions:
+
+- **`## SECTION: Name`** delimiters split the file into `System` and `User` message parts. Sections not prefixed with `## SECTION:` are treated as the system prompt.
+- **`{{CodebaseProfile}}`** is an auto-injected variable replaced at runtime with a summary of the COBOL codebase being processed (detected features, file stats, SQL usage, etc.). Do not remove this placeholder.
+
+## Agent Prompt Locations
+
+| Agent | Prompt File | What It Does |
+|-------|-------------|--------------|
+| **CobolAnalyzerAgent** | `Agents/Prompts/CobolAnalyzer.md` | Extracts structure, variables, paragraphs, SQL |
+| **BusinessLogicExtractorAgent** | `Agents/Prompts/BusinessLogicExtractor.md` | Extracts user stories, features, business rules |
+| **JavaConverterAgent** | `Agents/Prompts/JavaConverter.md` | Converts to Java Quarkus |
+| **CSharpConverterAgent** | `Agents/Prompts/CSharpConverter.md` | Converts to C# .NET |
+| **DependencyMapperAgent** | `Agents/Prompts/DependencyMapper.md` | Maps CALL/COPY/PERFORM relationships |
+| **ChunkAwareJavaConverter** | `Agents/Prompts/ChunkAwareJavaConverter.md` | Large file chunked conversion (Java) |
+| **ChunkAwareCSharpConverter** | `Agents/Prompts/ChunkAwareCSharpConverter.md` | Large file chunked conversion (C#) |
+
+## Example: Adding DDD Patterns
+
+To make the Java converter generate Domain-Driven Design code, edit `Agents/Prompts/JavaConverter.md`:
+
+```markdown
+## SECTION: System
+
+You are an expert in converting COBOL programs to Java with Quarkus framework.
+
+{{CodebaseProfile}}
+
+DOMAIN-DRIVEN DESIGN REQUIREMENTS:
+- Identify bounded contexts from COBOL program sections
+- Create Aggregate Roots for main business entities
+- Use Value Objects for immutable data (PIC X fields)
+- Implement Repository pattern for data access
+- Create Domain Events for state changes
+- Separate Application Services from Domain Services
+
+OUTPUT STRUCTURE:
+- domain/        → Entities, Value Objects, Aggregates
+- application/   → Application Services, DTOs
+- infrastructure/→ Repositories, External Services
+- ports/         → Interfaces (Ports & Adapters)
+
+...existing prompt content...
+```
+
+Similarly for C#, edit `Agents/Prompts/CSharpConverter.md`.
+
+> [!NOTE]
+> **Microservice-style output is set in the prompts. It is not a separate mode.** By default each COBOL program becomes one program-level unit (for example a `@Service`), which is **not** automatically a deployed microservice. To get output organized by service boundaries:
+>
+> | Step | How |
+> |---|---|
+> | **1. Choose Spring** | Pass `--java-framework Spring` to the conversion command (or set both `TARGET_LANGUAGE=Java` and `JAVA_FRAMEWORK=Spring`, or pick option 3, *Java (Spring Boot)*, at the prompt). `JAVA_FRAMEWORK` alone is not enough: without `TARGET_LANGUAGE` the target prompt still appears and its default is Quarkus. The whole-file converter then uses `Agents/Prompts/JavaSpringConverter.md`, and chunked files also apply its `StructuralPolicy` section. That prompt already separates local constructor injection from real cross-service HTTP clients |
+> | **2. Open Prompt Studio** | Portal (http://localhost:5028) → **Prompt Studio** → `JavaSpringConverter` (and `ChunkAwareJavaConverter` for large files). Saved edits are written back to `Agents/Prompts/<Id>.md`, so CLI runs use them too |
+> | **3. Supply the service boundaries** | In the `System` section, add your domain map: which COBOL programs belong to which service (for example *Customers*, *Accounts*, *Transfers*). Use Mission Control clusters and waves as the starting point. The prompt groups programs behind business-capability classes instead of one service per COBOL file |
+> | **4. State the cross-service rules** | Name the request/response contracts, service URLs, timeouts, error propagation and commit/rollback policy. Calls inside a service stay injected beans; calls across services become configured HTTP clients. `@Transactional` never spans HTTP, and missing contracts are reported as blockers, not invented |
+> | **5. Score and run** | Use the **Score** action in Prompt Studio to check the edited prompts. Do not use **Generate with AI Enhancement** here: it rebuilds the prompt from scratch (Quarkus-oriented) and discards your domain map and rules. Then convert one Mission Control slice with `./doctor.sh convert-only --java-framework Spring` |
+>
+> The prompts shape the code. Separate deployments, API gateways and the browser front end still need an explicit application-assembly step, and the readiness gate still applies: generating services does not prove behavioural equivalence.
