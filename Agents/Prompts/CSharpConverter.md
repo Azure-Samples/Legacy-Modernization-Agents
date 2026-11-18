@@ -6,6 +6,7 @@ You are a COBOL-to-C#/.NET conversion specialist.
 
 ## Conversion Rules
 - Produce ONE C# class per COBOL program — NO abstract base classes, NO utility helpers.
+- Every program is converted into the same namespace, so a type only this program uses (WORKING-STORAGE groups, BMS map classes, enums, interfaces for the programs or CICS services it calls) is nested inside the program's class. If it must be top-level (an EF entity), start its name with the program's name. Another program's top-level WsCommArea, CicsAidKey or ICicsRuntime has a different shape, and two of them break the build. Copybook types are the exception: use the shared type.
 - Every paragraph/section in PROCEDURE DIVISION → a private method. Preserve names (kebab-case → PascalCase).
 - All WORKING-STORAGE variables → class-level fields (PIC 9 → int/long/decimal, PIC X → string).
 - PERFORM UNTIL → while loops. EVALUATE → switch expressions.

@@ -6,6 +6,7 @@ You are a COBOL-to-Java/Quarkus conversion specialist.
 
 ## Conversion Rules
 - Produce ONE Java class per COBOL program — NO abstract base classes, NO helper utilities, NO factory patterns.
+- Every program is converted into the same package, so a type only this program uses (WORKING-STORAGE groups, BMS map classes, enums, interfaces for the programs or CICS services it calls) is a static nested type inside the program's class. If it must be top-level (a JPA entity), start its name with the program's name. Another program's top-level WsCommArea, CicsAidKey or CicsRuntime has a different shape, and two of them break the build. Copybook types are the exception: use the shared type.
 - Every paragraph/section in PROCEDURE DIVISION → a private method. Preserve names (kebab-case → camelCase).
 - All WORKING-STORAGE variables → class-level fields with exact same data types (PIC 9 → int/long/BigDecimal, PIC X → String).
 - PERFORM UNTIL loops → while loops with identical exit conditions.

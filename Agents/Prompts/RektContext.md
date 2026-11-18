@@ -285,7 +285,8 @@ TARGET NAMESPACE (assigned — do not invent one):
 ## SECTION: DataStructureGuidance
 
 
-  Each top-level group (01-level) should become a separate class/record.
+  Each top-level group (01-level) should become a separate class/record, nested inside this
+  program's class (every program shares one namespace, and two programs' WsCommArea classes collide).
   Use the field names and PIC clauses below to derive the correct types.
   If a group comes from a COPY (copybook), name the class after the copybook.
 
