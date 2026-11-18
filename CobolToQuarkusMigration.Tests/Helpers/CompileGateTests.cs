@@ -282,6 +282,19 @@ public class CompileGateTests : IDisposable
         remaining.Should().ContainSingle().Which.Message.Should().Contain("Nowhere");
     }
 
+    // Bank-of-Z BNK1CCS and BNK1CRA: the main class was `public sealed class …Service`, which the old
+    // `StartsWith("public class ")` check skipped, so both files were named after a nested
+    // WsCicsWorkArea and collided on one output file.
+    [Fact]
+    public void TheFileIsNamedAfterTheFirstTopLevelClassNeverANestedOne()
+    {
+        const string code = "namespace M.Bz;\npublic interface ICicsRuntime { }\npublic enum AidKey { Enter }\n"
+            + "public sealed class Bnk1ccsService(ICicsRuntime cics)\n{\n    public class WsCicsWorkArea { }\n}\n";
+
+        GeneratedTypeIndex.PrimaryClassName(code).Should().Be("Bnk1ccsService");
+        GeneratedTypeIndex.PrimaryClassName("namespace M;\npublic interface I { }\n").Should().BeNull();
+    }
+
     [Fact]
     public void ATypeNestedInAnotherClassIsImportedWithUsingStatic()
     {

@@ -28,6 +28,21 @@ public sealed class GeneratedTypeIndex
 
     public IReadOnlyList<TypeDeclaration> Declarations => _declarations;
 
+    private static readonly Regex ClassDeclaration = new(
+        @"^[ \t]*(?:\[[^\]\r\n]*\][ \t]*)*(?:(?:public|internal|file|static|sealed|abstract|partial)[ \t]+)*(?:record[ \t]+)?class[ \t]+(?<name>[A-Za-z_][A-Za-z0-9_]*)",
+        RegexOptions.Multiline | RegexOptions.Compiled);
+
+    /// <summary>
+    /// The first top-level class in <paramref name="code"/>, which names the output file. A nested class is
+    /// never chosen: two programs nesting the same WsCicsWorkArea would otherwise collide on one file.
+    /// </summary>
+    public static string? PrimaryClassName(string code)
+    {
+        var topLevel = FromSources(new Dictionary<string, string> { [""] = code }).Declarations
+            .Where(d => d.Container is null).Select(d => d.Name).ToHashSet(StringComparer.Ordinal);
+        return ClassDeclaration.Matches(code).Select(m => m.Groups["name"].Value).FirstOrDefault(topLevel.Contains);
+    }
+
     /// <summary>Indexes every <c>.cs</c> file under <paramref name="runFolder"/>, outside bin and obj.</summary>
     public static GeneratedTypeIndex Build(string runFolder)
     {
