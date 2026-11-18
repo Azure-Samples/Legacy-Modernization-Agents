@@ -470,6 +470,21 @@ public sealed class PreprocessForRektScriptTests : IDisposable
         result.StdOut.Should().Contain("Ignoring").And.Contain("Preprocessed 1 program(s)");
     }
 
+    [Fact]
+    public void Messages_ShowPathsRelativeToTheCallersFolder()
+    {
+        var script = File.ReadAllText(Path.Join(DoctorFixture.RepoRoot, "tools", "preprocess-for-rekt.sh"));
+        var from = script.IndexOf("display_path() {", StringComparison.Ordinal);
+        var function = script[from..(script.IndexOf("\n}\n", from, StringComparison.Ordinal) + 3)];
+
+        var result = DoctorFixture.RunProcess(DoctorFixture.Bash,
+            ["-c", function + "cd /tmp && display_path /tmp/repo/tools/../Config/rules.json && echo && display_path /elsewhere/x"],
+            DoctorFixture.RepoRoot, DoctorFixture.ScrubbedEnvironment(), TimeSpan.FromSeconds(30));
+
+        result.ShouldSucceed();
+        result.StdOut.ReplaceLineEndings("\n").Should().Be("repo/Config/rules.json\n/elsewhere/x");
+    }
+
     private DoctorRun RunPreprocessor(bool stubs = false, string? rules = null, string? shadowed = null)
     {
         var env = DoctorFixture.ScrubbedEnvironment();

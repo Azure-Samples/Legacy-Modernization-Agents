@@ -20,15 +20,19 @@ public sealed class GraphIngestionTests : IDisposable
     public void Dispose() => Directory.Delete(_root, recursive: true);
 
     [Fact]
-    public async Task MissingEndpointsAreReportedAndNotCountedAsMerged()
+    public async Task MissingEndpointsAreReportedOnceAsATotalAndNotCountedAsMerged()
     {
         await _ingestion.MergeNodesAsync("ASTNode", [Row("uid", "start"), Row("uid", "end")], "uid");
 
         var matched = await _ingestion.MergeRelationshipsAsync(RelationshipBatch.ByUid("ASTNode", "FOLLOWED_BY", "ASTNode",
             [RektGraphRows.Link("start", "end"), RektGraphRows.Link("missing", "end")]));
+        await _ingestion.MergeRelationshipsAsync(RelationshipBatch.ByUid("ASTNode", "FOLLOWED_BY", "ASTNode",
+            [RektGraphRows.Link("start", "gone")]));
+        _ingestion.ReportSkippedRelationships();
 
         matched.Should().Be(1);
-        _log.ToString().Should().Contain("Skipped 1 FOLLOWED_BY relationship rows with missing endpoints");
+        _log.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Should().ContainSingle().Which.Should().Be("Skipped 2 FOLLOWED_BY relationship rows with missing endpoints");
     }
 
     [Fact]
@@ -240,6 +244,26 @@ public sealed class GraphIngestionTests : IDisposable
         _log.ToString().Should().NotContain("Skipping");
         counts.Select(c => c.Key).Should().Equal("CobolFile", "ASTNode", "CFGEdge", "DataStructure", "JclNode");
         counts.Skip(1).Should().OnlyContain(c => c.Value == 0);
+    }
+
+    [Fact]
+    public async Task UnrelatedJsonIsSummarisedOnceAndInternalDotFilesAreIgnored()
+    {
+        var (source, output) = Layout();
+        WriteFile(output, "verification/old/bin/appsettings.json", "{}");
+        WriteFile(output, "verification/old/package.json", "{}");
+        WriteFile(output, "stray.json", "{}");
+        WriteFile(output, "estate/.commarea-closure.json", "{}");
+        WriteFile(output, ".scratch/out.json", "{}");
+
+        await _ingestion.IngestRektOutputsAsync(output, source, 1);
+
+        var listPath = Path.Combine(output, GraphIngestion.UnmatchedArtifactsFile);
+        _log.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Should().ContainSingle().Which.Should().Be(
+                $"Not loaded: 3 JSON file(s) in output/rekt match no source program (verification/ ×2, (top level) ×1). List: {Path.GetRelativePath(Directory.GetCurrentDirectory(), listPath)}");
+        File.ReadAllLines(listPath).Select(line => line.Split(':')[0])
+            .Should().BeEquivalentTo("verification/old/bin/appsettings.json", "verification/old/package.json", "stray.json");
     }
 
     [Fact]

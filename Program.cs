@@ -28,11 +28,9 @@ internal static class Program
         // Start live log capture for portal's Live Run Log panel
         var logsDirectory = Path.Combine(Directory.GetCurrentDirectory(), "Logs");
 
-        // Only enable live logging for migration runs (not MCP server or conversation modes)
-        var isMigrationRun = !args.Contains("mcp") && !args.Contains("conversation") && !args.Contains("estate-graph") && !args.Contains("dependency-plan") && !args.Contains("rekt-diagnostics") && !args.Contains("graph-ingest") && !args.Contains("ai-loop-check") && !args.Contains("doctor-report") && !args.Contains("rekt-evidence") && !args.Contains("rekt-activity") && !args.Contains("rekt-source-identity") && !args.Contains("rekt-bms-map") && !args.Contains("rekt-platform-contracts") && !args.Contains("rekt-preprocess");
         LiveLogWriter? liveLogWriter = null;
 
-        if (isMigrationRun)
+        if (CapturesLiveLog(args))
         {
             // Offline helpers run from arbitrary directories and must not leave a Logs folder behind.
             Directory.CreateDirectory(logsDirectory);
@@ -1429,6 +1427,11 @@ internal static class Program
                 or "jcl-facts" or "jcl-jobs" or "jcl-programs" or "rekt-diagnostics" or "graph-ingest" or "ai-loop-check" or "doctor-report"
                 or "rekt-evidence" or "rekt-activity" or "rekt-source-identity" or "rekt-bms-map" or "rekt-platform-contracts" or "rekt-preprocess");
     }
+
+    // The live log is the portal's view of a conversion run. Offline helpers (program-facts,
+    // jcl-facts, …) run during scans and must neither truncate it nor print its header.
+    internal static bool CapturesLiveLog(string[] args) =>
+        RequiresAiSettings(args) && args.FirstOrDefault(a => !a.StartsWith('-')) is not "mcp";
 
     // Matched against the literals shipped in ai-config.env.example. An unedited placeholder that
     // passes validation resurfaces as a DNS or auth failure, not as "you have not configured this".

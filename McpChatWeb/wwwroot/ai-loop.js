@@ -203,10 +203,12 @@ class AiLoopView {
         const body = this.root?.querySelector('#ail-native-log-body');
         const previous = body?.querySelector('pre');
         const top = previous?.scrollTop || 0, left = previous?.scrollLeft || 0;
+        // Follow new lines like a terminal unless the reader has scrolled up.
+        const follow = !previous || top + previous.clientHeight >= previous.scrollHeight - 8;
         if (body) {
           body.innerHTML = this.renderNativeLogBody(runId);
           const pre = body.querySelector('pre');
-          if (pre) { pre.scrollTop = top; pre.scrollLeft = left; }
+          if (pre) { pre.scrollTop = follow ? pre.scrollHeight : top; pre.scrollLeft = left; }
         }
         if (this.nativeLogs.size > 20) this.nativeLogs.delete(this.nativeLogs.keys().next().value);
       }
@@ -400,7 +402,7 @@ class AiLoopView {
       this.render();
     });
     [...root.querySelectorAll('details')].forEach((el, index) => {
-      el.open = state?.details[el.id || el.dataset?.ailDetail || 'detail-' + index] || false;
+      el.open = state?.details[el.id || el.dataset?.ailDetail || 'detail-' + index] ?? el.dataset?.ailOpen === 'true';
     });
     for (const scroll of state?.scroll || []) {
       const element = [...root.querySelectorAll('[data-ail-scroll]')].find(el => el.dataset.ailScroll === scroll.key);
@@ -485,6 +487,22 @@ class AiLoopView {
       ${d.outputFolder ? `<div class="emc-dim" style="margin-top:10px">Output: <code>${this.esc(d.outputFolder)}</code></div>` : ''}`;
   }
 
+  // Estimate from the average time per parsed program so far; cached programs finish instantly.
+  nativeProgress(s, n, now = Date.now()) {
+    const programs = n.programs || [];
+    const finished = programs.filter(p => p.finishedAt);
+    const parsed = finished.filter(p => String(p.status).toLowerCase() !== 'cached').length;
+    const running = programs.filter(p => p.startedAt && !p.finishedAt).length;
+    const expected = Number(n.expectedPrograms) || null;
+    const parts = [expected ? `${finished.length}/${expected} programs finished` : `${finished.length} programs finished`];
+    if (running) parts.push(`${running} running`);
+    const started = new Date(s.startedAt).getTime();
+    if (s.status === 'running' && expected && parsed && expected > finished.length && !isNaN(started)) {
+      parts.push(`about ${this.dur(Math.round((now - started) / parsed * (expected - finished.length)))} left (estimate)`);
+    }
+    return parts.join(' · ');
+  }
+
   renderNative(d) {
     const s = d.summary, n = d.native || {};
     const completed = (n.programs || []).filter(p => p.finishedAt).length;
@@ -517,6 +535,12 @@ class AiLoopView {
         Native completion does not prove dependency completeness, migration acceptance or equivalence.</p></section></div>
       ${unmeasuredArtifacts ? `<p class="emc-dim">${this.esc(unmeasuredArtifacts)} program records have unrecorded artifact flags. This does not establish that their AST, CFG or data artifacts are absent.</p>` : ''}
       ${n.truncated ? '<p class="emc-warn">Program display is bounded; consult the original manifest for complete results.</p>' : ''}
+      <p class="ail-native-progress" role="status"><strong>${this.esc(this.nativeProgress(s, n))}</strong>
+        ${s.currentStage ? ' · ' + this.esc(s.currentStage) : ''}</p>
+      <details id="ail-native-log" data-ail-open="${s.status === 'running'}"><summary>Live activity feed · same lines as the terminal</summary>
+        <p class="emc-dim">This scan's native.log (last 64 KiB), refreshed while open and following new lines unless you scroll up. Full logs remain on disk.</p>
+        <div id="ail-native-log-body">${this.renderNativeLogBody(s.runId)}</div>
+      </details>
       <label>Program results <select id="ail-native-filter">
         ${[['all', 'All recorded programs'], ['failures', 'Structural failures'], ['dependencies', 'Dependency gaps']].map(([value, label]) =>
           `<option value="${value}" ${this.nativeProgramFilter === value ? 'selected' : ''}>${label}</option>`).join('')}
@@ -536,10 +560,6 @@ class AiLoopView {
         <td>${p.strictDependencyComplete == null ? 'not recorded' : p.strictDependencyComplete ? 'complete' : 'incomplete'}</td>
         <td>${this.esc(p.structureExitCode ?? 'not recorded')} / ${this.esc(p.dependencyExitCode ?? 'not recorded')}</td>
         <td>${this.esc(this.when(p.startedAt))} / ${this.esc(this.when(p.finishedAt))} / ${this.esc(this.when(p.updatedAt))}</td></tr>`).join('')}</tbody></table></div>
-      <details id="ail-native-log"><summary>Original native operation log · bounded read-only tail</summary>
-        <p class="emc-dim">Only this scan's original native.log. Read while expanded on normal activity refresh; full logs remain on disk. No model conversation or other source/configuration files are opened.</p>
-        <div id="ail-native-log-body">${this.renderNativeLogBody(s.runId)}</div>
-      </details>
       <details id="ail-native-evidence"><summary>Original evidence paths</summary>
       <p class="emc-dim">References only; evidence files are not opened by this viewer.</p>
       ${(d.logs || []).map(log => `<div><code>${this.esc(log.path)}</code> · ${this.esc(log.kind)} · ${log.available ? 'available' : 'not available'}</div>`).join('')}

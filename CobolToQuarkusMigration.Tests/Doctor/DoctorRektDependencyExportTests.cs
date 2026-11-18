@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text.RegularExpressions;
 using System.Text.Json.Nodes;
 using FluentAssertions;
 using Xunit;
@@ -175,6 +176,40 @@ public sealed class DoctorRektDependencyExportTests : IDisposable
         RunDoctor(structuralSuccess: false, exportSuccess: false);
 
         _lastStdOut.Should().Contain("[SEVERE] structural parse unavailable").And.Contain("Full log: output/rekt/" + Relative + ".parse.log");
+    }
+
+    [Fact]
+    public void Doctor_PrintsOneResultLinePerProgramWithStagesAndGroupedParserWarnings()
+    {
+        RunDoctor(structuralSuccess: true);
+
+        var output = Regex.Replace(_lastStdOut, @"\x1b\[[0-9;]*m", "");
+        output.Should().NotContain("Parsing " + Relative);
+        output.Should().MatchRegex(@"\n  (✅ Full|⚠️  Partial)  estate/PROG\.cbl  \d+s · AST ✓ CFG ✓ data ✗  \[1/1\]\n");
+        output.Should().Contain("⋯ parsing " + Relative);
+        output.Should().Contain("▶ Parse programs (1)").And.MatchRegex(@"✓ Parse programs \(1\) · \d+s");
+        Regex.Matches(output, "⚠ parser: Could not convert ' ' to a number").Should().ContainSingle();
+        output.Should().Contain("⚠ parser: Could not convert ' ' to a number (×2)");
+    }
+
+    [Fact]
+    public void ProgramLine_ShowsCommareaPendingInsteadOfPartial_OnlyWhenTheClosurePassWillRecheckIt()
+    {
+        var function = Between("rekt_duration() {", "\n# Runs one program and prints its block");
+        var env = DoctorFixture.ScrubbedEnvironment();
+        env["REPO_ROOT"] = DoctorFixture.Posix(Root);
+        Directory.CreateDirectory(Path.Join(Root, "progress"));
+        File.WriteAllText(Path.Join(Root, "pending.status"), "Partial\tPROG.cbl\n");
+        File.WriteAllText(Path.Join(Root, "pending.closure-pending"), "");
+        File.WriteAllText(Path.Join(Root, "partial.status"), "Partial\tPROG.cbl\n");
+
+        var output = Bash(env, function + "\n_REKT_STAGE_START=$(date +%s)\n"
+            + "rekt_program_line pending PROG.cbl \"$_REKT_STAGE_START\" progress 1\n"
+            + "rekt_program_line partial PROG.cbl \"$_REKT_STAGE_START\" progress 1");
+
+        output.Select(line => Regex.Replace(line, @"\x1b\[[0-9;]*m|\\033\[[0-9;]*m", "")).Should().SatisfyRespectively(
+            pending => pending.Should().StartWith("  ⏳ COMMAREA pending  PROG.cbl"),
+            partial => partial.Should().StartWith("  ⚠️  Partial  PROG.cbl"));
     }
 
     [Fact]
@@ -403,6 +438,8 @@ public sealed class DoctorRektDependencyExportTests : IDisposable
                 mkdir -p "$path/$kind"
                 printf '{"id":"PROGRAM"}' > "$path/$kind/program.json"
             done
+            echo "[2026-01-01 00:00:00] [WARNING] Could not convert ' ' to a number" >&2
+            echo "[2026-01-01 00:00:01] [WARNING] Could not convert ' ' to a number" >&2
             exit 0
         fi
         echo "[SEVERE] structural parse unavailable" >&2

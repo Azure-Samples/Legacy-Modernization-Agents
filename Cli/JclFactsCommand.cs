@@ -25,7 +25,7 @@ public static class JclFactsCommand
             try
             {
                 var written = JclEstate.Write(sourceDir, output, allowEmpty);
-                Console.Error.WriteLine($"jcl-facts: wrote {written} job fact file(s) and {JclEstate.LineageFileName} to {output}");
+                Console.Error.WriteLine($"jcl-facts: wrote {written} job fact file(s) and {JclEstate.LineageFileName} to {Path.GetRelativePath(Directory.GetCurrentDirectory(), output)}");
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
             {

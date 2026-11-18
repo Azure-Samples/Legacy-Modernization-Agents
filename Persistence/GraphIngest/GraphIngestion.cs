@@ -17,7 +17,8 @@ public sealed class GraphIngestion(IGraphTarget target, TextWriter log)
     public const string JclScanFailedMarker = ".jcl-scan-failed";
     public const string JclScanFailedMessage = "JCL refresh did not complete; rerun jcl-facts before ingestion.";
 
-    private static readonly string[] SkippedDirectories = [".previous", ".work"];
+    public const string UnmatchedArtifactsFile = ".work/ingest-unmatched.txt";
+    private readonly SortedDictionary<string, long> _skippedByType = new(StringComparer.Ordinal);
 
     public static bool JclScanFailed(string rektOutput) => Path.Exists(Path.Combine(rektOutput, JclScanFailedMarker));
 
@@ -47,6 +48,7 @@ public sealed class GraphIngestion(IGraphTarget target, TextWriter log)
 
             log.WriteLine("Ingesting rekt outputs...");
             var counts = await IngestRektOutputsAsync(options.RektOutput, options.SourceDir, options.RunId);
+            ReportSkippedRelationships();
             foreach (var (label, count) in counts) log.WriteLine($"  {label}: {count}");
             if (scanStarted)
             {
@@ -112,10 +114,41 @@ public sealed class GraphIngestion(IGraphTarget target, TextWriter log)
             total += matched;
             if (matched < batch.Length)
             {
-                log.WriteLine($"Skipped {batch.Length - matched} {relationships.Type} relationship rows with missing endpoints");
+                _skippedByType[relationships.Type] = _skippedByType.GetValueOrDefault(relationships.Type) + batch.Length - matched;
             }
         }
         return total;
+    }
+
+    // Dot-prefixed files and folders (.work, .previous, .commarea-closure.json, scratch copies) are
+    // internal working state, never parse output.
+    private static bool IsInternal(string[] parts) => parts.Any(part => part.StartsWith('.'));
+
+    // Unrelated JSON under output/rekt (old test copies, build folders) can number in the hundreds;
+    // one summary line keeps the scan readable and the full list stays on disk.
+    private void ReportUnmatchedArtifacts(string rektOutputDir, List<(string[] Parts, string Line)> unmatched)
+    {
+        if (unmatched.Count == 0) return;
+        var listPath = Path.Combine(rektOutputDir, UnmatchedArtifactsFile);
+        Directory.CreateDirectory(Path.GetDirectoryName(listPath)!);
+        File.WriteAllLines(listPath, unmatched.Select(u => u.Line));
+        var folders = unmatched
+            .GroupBy(u => u.Parts.Length > 1 ? u.Parts[0] + "/" : "(top level)")
+            .OrderByDescending(g => g.Count()).ThenBy(g => g.Key, StringComparer.Ordinal)
+            .Select(g => $"{g.Key} ×{g.Count()}")
+            .ToList();
+        var shown = string.Join(", ", folders.Take(3)) + (folders.Count > 3 ? $", +{folders.Count - 3} more" : "");
+        log.WriteLine($"Not loaded: {unmatched.Count} JSON file(s) in output/rekt match no source program ({shown}). List: {Path.GetRelativePath(Directory.GetCurrentDirectory(), listPath)}");
+    }
+
+    // Per-program ingest skips a row or two each; one total per type keeps the scan output readable.
+    public void ReportSkippedRelationships()
+    {
+        foreach (var (type, count) in _skippedByType)
+        {
+            log.WriteLine($"Skipped {count} {type} relationship rows with missing endpoints");
+        }
+        _skippedByType.Clear();
     }
 
     public async Task<long> IngestAstAsync(string program, JsonElement ast, long runId)
@@ -201,6 +234,7 @@ public sealed class GraphIngestion(IGraphTarget target, TextWriter log)
         }
 
         long astTotal = 0, cfgTotal = 0, dsTotal = 0;
+        var unmatched = new List<(string[] Parts, string Line)>();
         var sourceFiles = fileNodes.Select(n => (string)n["fileName"]!).ToList();
         // Native cfg/ sorts before flow_ast/; load AST endpoints before CFG relationships.
         var artifacts = WalkFiles(rektOutputDir)
@@ -212,7 +246,7 @@ public sealed class GraphIngestion(IGraphTarget target, TextWriter log)
 
         foreach (var (artifact, parts) in artifacts)
         {
-            if (parts.Any(part => SkippedDirectories.Contains(part))) continue;
+            if (IsInternal(parts)) continue;
             var name = Path.GetFileName(artifact);
             var nameLower = name.ToLowerInvariant();
             // Facts and diagnostics describe evidence; they are not structural graph artifacts.
@@ -225,7 +259,7 @@ public sealed class GraphIngestion(IGraphTarget target, TextWriter log)
             var program = GraphSourcePaths.ArtifactSourcePath(artifact, rektOutputDir, sourceFiles);
             if (program is null)
             {
-                log.WriteLine($"Skipping {relative}: {GraphSourcePaths.UnresolvedArtifactReason(artifact, rektOutputDir, sourceFiles)}");
+                unmatched.Add((parts, $"{relative}: {GraphSourcePaths.UnresolvedArtifactReason(artifact, rektOutputDir, sourceFiles)}"));
                 continue;
             }
 
@@ -258,6 +292,7 @@ public sealed class GraphIngestion(IGraphTarget target, TextWriter log)
             }
         }
 
+        ReportUnmatchedArtifacts(rektOutputDir, unmatched);
         counts.Add(new("ASTNode", astTotal));
         counts.Add(new("CFGEdge", cfgTotal));
         counts.Add(new("DataStructure", dsTotal));
@@ -277,7 +312,7 @@ public sealed class GraphIngestion(IGraphTarget target, TextWriter log)
             .OrderBy(f => f.Parts, PartsComparer.Instance);
         foreach (var (factsFile, parts) in factsFiles)
         {
-            if (parts.Any(part => SkippedDirectories.Contains(part))) continue;
+            if (IsInternal(parts)) continue;
             var relative = string.Join('/', parts);
             JsonDocument document;
             try
