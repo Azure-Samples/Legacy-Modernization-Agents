@@ -97,3 +97,19 @@ Your previous response was truncated mid-output. Here are the LAST 10 lines you 
 ```
 
 Continue from EXACTLY where you left off. Return ONLY the remaining Java code — no package declaration, no class declaration, no imports. Start with the next line after the fragment above and end with the final closing brace '}' of the class.
+
+## SECTION: SharedTypeShadowing
+
+Your conversion declares a type with the same name as a shared copybook type it must
+reference: {{Names}}. A local type with that name hides the imported shared one, so every
+use of the copybook's fields resolves against the wrong class and the file cannot compile.
+
+Return the complete corrected Java file. Rename your own type (name an entity after its table
+or record, for example PROCTRAN → ProctranEntity) and update its uses. Keep referencing the
+shared type for the copybook layout. Change nothing else.
+
+Your previous conversion:
+
+```java
+{{Code}}
+```

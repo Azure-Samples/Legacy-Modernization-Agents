@@ -207,6 +207,27 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
             csharpCode = GeneratedCSharpSyntax.FixAccessorTerminators(GeneratedCodeEntities.DecodeInCode(csharpCode));
             csharpCode = ValidateCSharpCode(csharpCode, endedNormally);
 
+            if (Settings?.ConversionSettings.DependencyMode != "partial")
+                csharpCode = await SharedTypeShadowingRepair.RepairAsync(
+                    csharpCode,
+                    SharedTypeShadowingRepair.SharedNamesFor(cobolFile.FileName, SourceDirectory, RepositoryRoot, Logger),
+                    async names =>
+                    {
+                        var fixPrompt = PromptLoader.LoadSectionValidated(
+                            "CSharpConverter", "SharedTypeShadowing", new Dictionary<string, string>
+                            {
+                                ["Names"] = string.Join(", ", names),
+                                ["Code"] = csharpCode
+                            });
+                        var (fixedCode, fixFallback, _) = await ExecuteWithFallbackAsync(
+                            systemPrompt, fixPrompt, $"{cobolFile.FileName} [shadowing-fix]");
+                        return fixFallback || string.IsNullOrWhiteSpace(fixedCode)
+                            ? null
+                            : GeneratedCSharpSyntax.FixAccessorTerminators(GeneratedCodeEntities.DecodeInCode(ExtractCSharpCode(fixedCode)));
+                    },
+                    cobolFile.FileName,
+                    Logger);
+
             // Extract AI's semantic class name (based on domain/action/type pattern)
             string aiClassName = ExtractClassNameFromCode(csharpCode);
             string namespaceName = GetNamespaceName(csharpCode) ?? AssignedNamespace(cobolFile, "C#");

@@ -11,6 +11,18 @@ using CobolToQuarkusMigration.Agents;
 
 public static class RektPromptInjector
 {
+    /// <summary>The given root, or the nearest folder above the binaries that holds doctor.sh.</summary>
+    public static DirectoryInfo? ResolveRepositoryRoot(string? repositoryRoot)
+    {
+        var d = new DirectoryInfo(repositoryRoot ?? AppContext.BaseDirectory);
+        if (repositoryRoot is null)
+            while (d != null && !File.Exists(Path.Combine(d.FullName, "doctor.sh"))) d = d.Parent;
+        return d;
+    }
+
+    public static string ResolveSourceFolder(string? sourceDirectory) =>
+        sourceDirectory ?? Environment.GetEnvironmentVariable("COBOL_SOURCE_FOLDER") ?? "source";
+
     public static async Task InjectAsync(
         StringBuilder sb,
         string targetLanguage,
@@ -24,9 +36,7 @@ public static class RektPromptInjector
         string javaFramework = "Quarkus")
     {
         var repoRoot = repositoryRoot ?? AppContext.BaseDirectory;
-        var d = new DirectoryInfo(repoRoot);
-        if (repositoryRoot is null)
-            while (d != null && !File.Exists(Path.Combine(d.FullName, "doctor.sh"))) d = d.Parent;
+        var d = ResolveRepositoryRoot(repositoryRoot);
         if (d == null)
         {
             if (verifiedDraftContext)
@@ -35,7 +45,7 @@ public static class RektPromptInjector
             return;
         }
 
-        var srcFolder = sourceDirectory ?? Environment.GetEnvironmentVariable("COBOL_SOURCE_FOLDER") ?? "source";
+        var srcFolder = ResolveSourceFolder(sourceDirectory);
 
         // On by default. Measured on a 36-program estate with reverse engineering held constant
         // and only this varying: mean parity rose from 0.859 to 0.957, 28 of 32 scored programs

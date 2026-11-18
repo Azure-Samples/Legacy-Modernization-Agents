@@ -205,4 +205,34 @@ public sealed class CopybookOwnershipRegistryTests : IDisposable
         block.Should().NotContain("THIS FILE IS A COPYBOOK");
         block.Should().Contain("Inqaccs — declared by the conversion of INQACCS");
     }
+
+    // INQTRANL.cbl copies INQTRANL.cpy. Its C# conversion named the PROCTRAN entity Inqtranl,
+    // which hid the shared commarea type and left 36 compile errors in one file.
+    [Fact]
+    public void AProgramSharingACopybooksNameMustReferenceThatName()
+    {
+        Program("INQTRANL", "INQTRANL");
+        Copybook("INQTRANL");
+
+        Build().ReferencedTypeNames("INQTRANL.cbl").Should().Equal("Inqtranl");
+        Build().ReferencedTypeNames("INQTRANL.cpy").Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("namespace Modernized.BankOfZ;\npublic class Inqtranl\n{\n}")]
+    [InlineData("namespace Modernized.BankOfZ;\npublic class InqtranlService\n{\n    private sealed record Inqtranl(string Id);\n}")]
+    [InlineData("package modernized.bankofz;\n@Entity\npublic final class Inqtranl {\n}")]
+    [InlineData("package modernized.bankofz;\npublic class InqtranlService {\n    static final class Inqtranl {}\n}")]
+    public void AnyDeclarationUnderASharedNameHidesTheSharedType(string code) =>
+        CopybookOwnershipRegistry.ShadowedSharedTypes(code, ["Inqtranl", "Custrec"]).Should().Equal("Inqtranl");
+
+    [Fact]
+    public void UsingTheSharedTypeOrMentioningItIsNotShadowing()
+    {
+        const string code = "namespace Modernized.BankOfZ;\nusing Modernized.Shared;\n"
+            + "// class Inqtranl comes from the copybook\npublic class ProctranEntity\n{\n"
+            + "    public Inqtranl Commarea { get; } = new();\n    string Note = \"class Inqtranl\";\n}";
+
+        CopybookOwnershipRegistry.ShadowedSharedTypes(code, ["Inqtranl"]).Should().BeEmpty();
+    }
 }

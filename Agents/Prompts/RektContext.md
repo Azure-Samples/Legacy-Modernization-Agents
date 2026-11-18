@@ -217,6 +217,11 @@ REFERENCE these and do NOT declare them — another file owns them:
         instance of the same type, named after its replacement text; members never
         carry the replaced placeholder.
   • Reference through the shared namespace (Java: import; C#: using).
+  • The names under REFERENCE are taken. Do not give any other type you write (an entity,
+    table row, request, response, service, nested class) one of those names, even for a
+    different purpose: a local type with that name hides the shared one, and every use of
+    the copybook's fields then fails against the wrong class. Name entities after their
+    table or record instead (PROCTRAN → ProctranEntity).
   • If you need a field from a referenced type, read it from that type rather than
     re-declaring the layout locally.
 {{Scope}}

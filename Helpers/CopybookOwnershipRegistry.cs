@@ -40,6 +40,14 @@ public sealed class CopybookOwnershipRegistry
         @"(?<![A-Za-z0-9_-])COPY\s+[""']?([A-Za-z][A-Za-z0-9_-]*)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    // C# and Java type declarations, nested ones included. Anchored at line start so comments
+    // and strings that merely mention "class X" are not read as declarations.
+    private static readonly Regex TypeDeclaration = new(
+        @"^[ \t]*(?:(?:\[[^\]\r\n]*\]|@[A-Za-z_][\w.]*(?:\([^)\r\n]*\))?)[ \t]*)*" +
+        @"(?:(?:public|internal|private|protected|file|static|sealed|non-sealed|abstract|partial|readonly|ref|unsafe|new|final|strictfp)[ \t]+)*" +
+        @"(?:record[ \t]+(?:class|struct)|class|record|struct|interface|enum|@interface)[ \t]+(?<name>[A-Za-z_][A-Za-z0-9_]*)",
+        RegexOptions.Multiline | RegexOptions.Compiled);
+
     private readonly Dictionary<string, CopybookOwnership> _byCopybook =
         new(StringComparer.OrdinalIgnoreCase);
 
@@ -96,13 +104,7 @@ public sealed class CopybookOwnershipRegistry
         return registry;
     }
 
-    /// <summary>
-    /// What the file being converted owns, and what it must reference instead of declaring.
-    /// Pass the file name with its extension: a program and a copybook can share a stem, and
-    /// only the extension says which one is being converted. A bare stem is read as a copybook
-    /// only when no program has that name.
-    /// </summary>
-    public string ToPromptBlock(string file, string targetLanguage)
+    private (List<CopybookOwnership> Owned, List<CopybookOwnership> Referenced, bool IsCopybook) Classify(string file)
     {
         var name = Path.GetFileName(file);
         var stem = Path.GetFileNameWithoutExtension(name);
@@ -119,6 +121,35 @@ public sealed class CopybookOwnershipRegistry
             .Where(o => !o.IsOwnedBy(stem, isCopybook) && o.IsUsedBy(stem, isCopybook))
             .OrderBy(o => o.TypeName, StringComparer.OrdinalIgnoreCase)
             .ToList();
+        return (owned, referenced, isCopybook);
+    }
+
+    /// <summary>Type names the converted <paramref name="file"/> must reference from the shared namespace.</summary>
+    public IReadOnlyList<string> ReferencedTypeNames(string file) =>
+        Classify(file).Referenced.Select(o => o.TypeName).ToList();
+
+    /// <summary>
+    /// Types <paramref name="code"/> declares under a shared copybook type's name. Any such declaration,
+    /// whatever it is for, hides the shared type from the whole file, so every use of a copybook field
+    /// then fails against the wrong class.
+    /// </summary>
+    public static IReadOnlyList<string> ShadowedSharedTypes(string code, IEnumerable<string> sharedTypeNames)
+    {
+        var shared = sharedTypeNames.ToHashSet(StringComparer.Ordinal);
+        return TypeDeclaration.Matches(code).Select(m => m.Groups["name"].Value).Where(shared.Contains).Distinct().OrderBy(n => n, StringComparer.Ordinal).ToList();
+    }
+
+    public static bool DeclaresAnyType(string code) => TypeDeclaration.IsMatch(code);
+
+    /// <summary>
+    /// What the file being converted owns, and what it must reference instead of declaring.
+    /// Pass the file name with its extension: a program and a copybook can share a stem, and
+    /// only the extension says which one is being converted. A bare stem is read as a copybook
+    /// only when no program has that name.
+    /// </summary>
+    public string ToPromptBlock(string file, string targetLanguage)
+    {
+        var (owned, referenced, isCopybook) = Classify(file);
 
         if (owned.Count == 0 && referenced.Count == 0 && !isCopybook) return string.Empty;
 
