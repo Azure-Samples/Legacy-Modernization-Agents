@@ -57,7 +57,8 @@ public sealed record AiLoopAgentStats(
     int CallsWithTokenUsage = 0,
     int CallsWithDuration = 0);
 
-public sealed record AiLoopGate(string Id, string Title, string Status, string Headline, IReadOnlyList<string> Details, string? Source);
+public sealed record AiLoopGate(string Id, string Title, string Status, string Headline, IReadOnlyList<string> Details, string? Source,
+    string? Hint = null);
 
 public sealed record AiLoopEvent(DateTime Ts, string Kind, string? Agent, string? Context, string? Reason,
     string? RequestId = null, string? Outcome = null, int? Iteration = null);
@@ -606,11 +607,12 @@ public sealed partial class AiLoopReader
         if (s.Calls == 0)
             return s.OutstandingRequests > 0
                 ? new("model", "Model loop", "warn", "Recorded requests have no outcomes",
-                    [$"{s.OutstandingRequests} outstanding; run status: {s.Status}"], null)
+                    [$"{s.OutstandingRequests} outstanding; run status: {s.Status}"], null, IncompleteCallsHint(s))
                 : new("model", "Model loop", "not-run", "No model outcomes recorded", [], null);
         if (s.UnknownCalls > 0 || s.CancelledCalls > 0 || s.OutstandingRequests > 0)
             return new("model", "Model loop", "warn", "The recorded calls do not establish successful completion",
-                [$"{s.CancelledCalls} cancelled, {s.UnknownCalls} unknown, {s.OutstandingRequests?.ToString() ?? "unrecorded"} outstanding; run status: {s.Status}"], null);
+                [$"{s.CancelledCalls} cancelled, {s.UnknownCalls} unknown, {s.OutstandingRequests?.ToString() ?? "unrecorded"} outstanding; run status: {s.Status}"],
+                null, IncompleteCallsHint(s));
 
         var details = new List<string>
         {
@@ -635,6 +637,22 @@ public sealed partial class AiLoopReader
             : $"{s.Fallbacks} fallback(s), {s.FailedCalls} failed call(s)";
         return new("model", "Model loop", status, headline, details, null);
     }
+
+    private static string IncompleteCallsHint(AiLoopRunSummary s)
+    {
+        var outstanding = s.OutstandingRequests ?? 0;
+        if (s.Status == "running" && s.CancelledCalls == 0 && s.UnknownCalls == 0)
+            return $"The run is still going: {Plural(outstanding, "call is", "calls are")} still waiting for an answer from the model. " +
+                   "Not every call has finished, so the gate cannot pass yet. This is not an error; it settles when the run ends.";
+        var reasons = new List<string>();
+        if (s.CancelledCalls > 0) reasons.Add($"{Plural(s.CancelledCalls, "call was", "calls were")} cancelled before finishing");
+        if (s.UnknownCalls > 0) reasons.Add($"{Plural(s.UnknownCalls, "call", "calls")} ended without a recorded result");
+        if (outstanding > 0) reasons.Add($"{Plural(outstanding, "request", "requests")} never got an answer");
+        return $"Not every model call finished cleanly: {string.Join("; ", reasons)}. " +
+               "The output may be incomplete, so check the affected files before trusting it.";
+    }
+
+    private static string Plural(int count, string one, string many) => $"{count} {(count == 1 ? one : many)}";
 
     private string? ResolveOutputFolder(string? folder, out string? note)
     {

@@ -207,6 +207,27 @@ public class CSharpConverterAgent : AgentBase, ICodeConverterAgent
             csharpCode = GeneratedCSharpSyntax.FixAccessorTerminators(GeneratedCodeEntities.DecodeInCode(csharpCode));
             csharpCode = ValidateCSharpCode(csharpCode, endedNormally);
 
+            if (Settings?.ConversionSettings.DependencyMode != "partial")
+                csharpCode = await SharedTypeShadowingRepair.RepairAsync(
+                    csharpCode,
+                    SharedTypeShadowingRepair.SharedNamesFor(cobolFile.FileName, SourceDirectory, RepositoryRoot, Logger),
+                    async names =>
+                    {
+                        var fixPrompt = PromptLoader.LoadSectionValidated(
+                            "CSharpConverter", "SharedTypeShadowing", new Dictionary<string, string>
+                            {
+                                ["Names"] = string.Join(", ", names),
+                                ["Code"] = csharpCode
+                            });
+                        var (fixedCode, fixFallback, _) = await ExecuteWithFallbackAsync(
+                            systemPrompt, fixPrompt, $"{cobolFile.FileName} [shadowing-fix]");
+                        return fixFallback || string.IsNullOrWhiteSpace(fixedCode)
+                            ? null
+                            : GeneratedCSharpSyntax.FixAccessorTerminators(GeneratedCodeEntities.DecodeInCode(ExtractCSharpCode(fixedCode)));
+                    },
+                    cobolFile.FileName,
+                    Logger);
+
             // Extract AI's semantic class name (based on domain/action/type pattern)
             string aiClassName = ExtractClassNameFromCode(csharpCode);
             string namespaceName = GetNamespaceName(csharpCode) ?? AssignedNamespace(cobolFile, "C#");
@@ -428,29 +449,8 @@ public class {{className}}
     /// </summary>
     private string ExtractClassNameFromCode(string csharpCode)
     {
-        try
-        {
-            var lines = csharpCode.Split('\n');
-            foreach (var line in lines)
-            {
-                var trimmedLine = line.Trim();
-                if (trimmedLine.StartsWith("public class ") || trimmedLine.StartsWith("internal class ") || trimmedLine.StartsWith("class "))
-                {
-                    var classIndex = trimmedLine.IndexOf("class ", StringComparison.Ordinal);
-                    if (classIndex >= 0)
-                    {
-                        var afterClass = trimmedLine.Substring(classIndex + "class ".Length);
-                        var className = afterClass.Split('{', ' ', '\t', '\r', '\n', ':')[0].Trim();
-                        if (NamingHelper.IsValidIdentifier(className)) return className;
-                    }
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            Logger.LogWarning(ex, "Error extracting class name from C# code");
-        }
-        return "ConvertedCobolProgram";
+        var name = GeneratedTypeIndex.PrimaryClassName(csharpCode);
+        return name is not null && NamingHelper.IsValidIdentifier(name) ? name : "ConvertedCobolProgram";
     }
 
     private string? GetNamespaceName(string csharpCode)

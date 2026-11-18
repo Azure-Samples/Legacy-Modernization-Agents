@@ -49,20 +49,25 @@ public static class CompileRepairPlanner
         foreach (var error in errors)
         {
             var match = error.Code == "CS0246" ? NotFound.Match(error.Message) : Match.Empty;
-            var namespaces = match.Success
-                ? index.Find(match.Groups["name"].Value).Select(d => d.Namespace).Where(n => n.Length > 0).Distinct().ToList()
+            // A nested type is reachable through `using static Outer;`, which a namespace import does not give.
+            var imports = match.Success
+                ? index.Find(match.Groups["name"].Value)
+                    .Where(d => d.Container is null ? d.Namespace.Length > 0 : d.VisibleOutside)
+                    .Select(d => d.Container is null ? $"using {d.Namespace};"
+                        : $"using static {(d.Namespace.Length > 0 ? d.Namespace + "." : "")}{d.Container};")
+                    .Distinct().ToList()
                 : [];
             var source = fixedSources.TryGetValue(error.File, out var f) ? f : sources.GetValueOrDefault(error.File);
-            if (namespaces.Count != 1 || source is null) { remaining.Add(error); continue; }
+            if (imports.Count != 1 || source is null) { remaining.Add(error); continue; }
 
-            var ns = namespaces[0];
+            var import = imports[0];
             var lines = source.Split('\n').ToList();
-            if (!lines.Any(l => l.Trim() == $"using {ns};"))
+            if (!lines.Any(l => l.Trim() == import))
             {
                 var firstNamespace = lines.FindIndex(l => l.TrimStart().StartsWith("namespace ", StringComparison.Ordinal));
                 var searchEnd = firstNamespace < 0 ? lines.Count : firstNamespace;
                 var lastUsing = lines.Take(searchEnd).ToList().FindLastIndex(l => TopLevelUsing.IsMatch(l));
-                lines.Insert(lastUsing + 1, $"using {ns};");
+                lines.Insert(lastUsing + 1, import);
                 fixedSources[error.File] = string.Join('\n', lines);
             }
         }

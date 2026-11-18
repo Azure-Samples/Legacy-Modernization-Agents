@@ -215,6 +215,27 @@ public class JavaConverterAgent : AgentBase, IJavaConverterAgent, ICodeConverter
             javaCode = GeneratedCodeEntities.DecodeInCode(javaCode);
             javaCode = ValidateJavaCode(javaCode);
 
+            if (Settings?.ConversionSettings.DependencyMode != "partial")
+                javaCode = await SharedTypeShadowingRepair.RepairAsync(
+                    javaCode,
+                    SharedTypeShadowingRepair.SharedNamesFor(cobolFile.FileName, SourceDirectory, RepositoryRoot, Logger),
+                    async names =>
+                    {
+                        var fixPrompt = PromptLoader.LoadSectionValidated(
+                            "JavaConverter", "SharedTypeShadowing", new Dictionary<string, string>
+                            {
+                                ["Names"] = string.Join(", ", names),
+                                ["Code"] = javaCode
+                            });
+                        var (fixedCode, fixFallback, _) = await ExecuteWithFallbackAsync(
+                            systemPrompt, fixPrompt, $"{cobolFile.FileName} [shadowing-fix]");
+                        return fixFallback || string.IsNullOrWhiteSpace(fixedCode)
+                            ? null
+                            : GeneratedCodeEntities.DecodeInCode(ExtractJavaCode(fixedCode));
+                    },
+                    cobolFile.FileName,
+                    Logger);
+
             // Extract AI's semantic class name (based on domain/action/type pattern)
             string aiClassName = ExtractClassNameFromCode(javaCode);
             string packageName = JavaSourceLexical.PackageName(javaCode) ?? AssignedNamespace(cobolFile, "Java");

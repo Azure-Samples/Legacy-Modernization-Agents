@@ -146,6 +146,11 @@ html[data-theme="dark"], [data-portal-theme="dark"] {
 .ail .ail-fail .ail-gate-icon { color: var(--cp-danger); }
 .ail .ail-warn .ail-gate-icon { color: var(--cp-warning); }
 .ail .ail-not-run .ail-gate-icon { color: var(--cp-text-muted); }
+.ail .ail-gate-hint { display: flex; gap: 8px; align-items: flex-start; margin: 6px 0; padding: 8px 10px;
+  border-radius: 0.625rem; background: var(--cp-surface-soft); border: 1px solid var(--cp-border);
+  color: var(--cp-text-soft); font-size: 12px; line-height: 1.45; }
+.ail .ail-gate-hint b { color: var(--cp-text); }
+.ail .ail-gate-hint-icon { color: var(--cp-link); font-weight: 700; }
 .ail .emc-bar { background: var(--cp-border); }
 .ail .emc-bar-fill { background: var(--cp-border-strong); }
 .ail .ail-stage-current { color: var(--cp-accent); }

@@ -217,6 +217,12 @@ REFERENCE these and do NOT declare them — another file owns them:
         instance of the same type, named after its replacement text; members never
         carry the replaced placeholder.
   • Reference through the shared namespace (Java: import; C#: using).
+  • The names under REFERENCE are taken. Do not give any other type you write (an entity,
+    table row, request, response, service, nested class) one of those names, even for a
+    different purpose: a local type with that name hides the shared one, and every use of
+    the copybook's fields then fails against the wrong class. Other programs convert the
+    same tables, so start each such type with this program's name (INQTRANL's PROCTRAN
+    entity → InqtranlProctranEntity); a bare table name like ProctranEntity collides with theirs.
   • If you need a field from a referenced type, read it from that type rather than
     re-declaring the layout locally.
 {{Scope}}
@@ -279,7 +285,8 @@ TARGET NAMESPACE (assigned — do not invent one):
 ## SECTION: DataStructureGuidance
 
 
-  Each top-level group (01-level) should become a separate class/record.
+  Each top-level group (01-level) should become a separate class/record, nested inside this
+  program's class (every program shares one namespace, and two programs' WsCommArea classes collide).
   Use the field names and PIC clauses below to derive the correct types.
   If a group comes from a COPY (copybook), name the class after the copybook.
 

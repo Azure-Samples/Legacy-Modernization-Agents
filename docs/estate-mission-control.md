@@ -1,4 +1,4 @@
-**Last updated**: 2026-11-17
+**Last updated**: 2026-11-18
 
 # Estate Mission Control and the AI Loop
 
@@ -315,7 +315,7 @@ results and log references, with model calls **not applicable**. For model attem
   - Motion uses CSS only and the existing serialized polling. It stops on terminal/interrupted/unknown status, refresh error (stale activity is labelled), tab deactivation or a hidden document. Reduced-motion preferences disable all pulses while preserving the same visible text and SVG descriptions. No new polling, parser or model calls are introduced.
 - **KPIs**: status, duration, recorded outcomes, request starts when available, failures, cancellations, unknown outcomes, retries and fallbacks
 - **Quality gates**, one card each:
-  - **Model loop**: warns when there are more than `MaxFallbacks` fallbacks, or when the failed-call rate is above `MaxFailedCallRate`
+  - **Model loop**: warns when there are more than `MaxFallbacks` fallbacks, or when the failed-call rate is above `MaxFailedCallRate`. When the recorded calls do not establish successful completion, a **What this means** note under the headline counts the calls still running, cancelled or with unknown outcome; while a run is in progress this is expected
   - **Compile gate**: read from `compile-status.json` for C#, or the Java gate's structured `java-compile-status.json`. An unmeasured build warns; measured compilation failure fails. Raw build logs are not parsed
   - **Conversion parity**: read from `conversion-parity.json`. A run below the threshold warns or fails, following `OnLowScore`
   - **JCL jobs**: read from `jobs-manifest.json`; shows the steps that cannot run yet

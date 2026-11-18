@@ -306,8 +306,12 @@ public sealed partial class DependencyEvidenceGate(string factsDirectory)
         var copies = export.Where(edge => edge.Kind == "COPY").Select(edge => edge.Name);
         var calls = export.Where(edge => edge.Kind == "CALL")
             .Select(edge => ResolveCallTarget(edge.Name, evidence, sourceRoot, catalog));
+        // A bare callee name is the same callee as its unique bound path; a path must still match exactly.
+        var factCalls = facts.Callees.Select(callee => callee.Contains('/') || Path.HasExtension(callee)
+            ? callee
+            : ResolveCallTarget(callee, evidence, sourceRoot, catalog));
         if (!Values(copies).SequenceEqual(Values(facts.Data.CopybooksUsed), StringComparer.OrdinalIgnoreCase)
-            || !Values(calls).SequenceEqual(Values(facts.Callees), StringComparer.OrdinalIgnoreCase))
+            || !Values(calls).SequenceEqual(Values(factCalls), StringComparer.OrdinalIgnoreCase))
             issues.Add($"{identity}: existing program facts dependency entries differ from the bound parser export.");
         if (facts.Warnings.Any(warning => warning.StartsWith("generated-copybook-stub:", StringComparison.OrdinalIgnoreCase)
                 || warning.StartsWith("missing-copybook:", StringComparison.OrdinalIgnoreCase)))

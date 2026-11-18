@@ -975,6 +975,24 @@ public sealed class AiLoopReaderTests : IDisposable
         Assert.Equal("unknown", unmatched.Status);
         Assert.Equal(1, Assert.Single(detail.Agents).CancelledCalls);
         Assert.Equal("warn", Gate(detail, "model").Status);
+        Assert.Contains("1 call was cancelled", Gate(detail, "model").Hint);
+        Assert.Contains("1 call ended without a recorded result", Gate(detail, "model").Hint);
+    }
+
+    [Fact]
+    public async Task ARunningAttemptExplainsThatWaitingCallsAreNotAnError()
+    {
+        Metrics("7",
+            Line(0, new { @event = "run_started", telemetryVersion = 2 }),
+            Line(1, new { @event = "llm_request_started", requestId = "done", agent = "A" }),
+            Line(2, new { @event = "llm_request_started", requestId = "waiting", agent = "A" }),
+            Line(3, new { @event = "llm_call", requestId = "done", agent = "A", success = true }));
+
+        var gate = Gate((await Reader().GetRunAsync("7"))!, "model");
+
+        Assert.Equal("warn", gate.Status);
+        Assert.Contains("still going: 1 call is still waiting", gate.Hint);
+        Assert.Contains("not an error", gate.Hint);
     }
 
     [Theory]
@@ -1033,6 +1051,8 @@ public sealed class AiLoopReaderTests : IDisposable
 
         Assert.Equal(1, detail.Summary.OutstandingRequests);
         Assert.Equal("warn", Gate(detail, "model").Status);
+        Assert.Contains("1 request never got an answer", Gate(detail, "model").Hint);
+        Assert.DoesNotContain("not an error", Gate(detail, "model").Hint);
         Assert.Equal("unknown", Assert.Single(detail.Requests).Status);
         Assert.Null(Assert.Single(detail.Agents).AvgMs);
         Assert.Null(Assert.Single(detail.Agents).InputTokens);

@@ -195,6 +195,22 @@ flowchart LR
 - **Estate Mission Control and `jcl`** need neither a model nor Docker.
 - **No Python.** The prerequisites are the .NET SDK, Docker and Bash. Every helper `doctor.sh` and `tools/*.sh` call is a command of the same .NET CLI.
 
+### Docker containers
+
+`docker-compose.yml` defines three services. `doctor.sh` starts the ones a command needs; you rarely run `docker compose` yourself.
+
+| Service (default container name) | Image | Job | Started by | Ports | Data |
+|---|---|---|---|---|---|
+| `neo4j` (`cobol-migration-neo4j`) | `neo4j:5.15.0` with APOC and Graph Data Science | The single graph database. Holds the REKT graph (parse trees, control flow, data layout, JCL facts) written by `graph-ingest`, and the dependency graph (CALL, COPY, file and SQL edges) written during a conversion. The portal's graph tabs, the AST Explorer and the conversion's REKT context read from it. | `setup` (pull), `rekt-full`, `run`, `convert-only`, `reverse-eng` | `127.0.0.1:7474` (browser), `127.0.0.1:7687` (Bolt) | Volumes `graph_data`, `graph_logs`, `graph_import` |
+| `cobol-rekt` (`cobol-rekt`) | `rekt-oss-mma`, built locally from `tools/cobol-rekt/` | The COBOL parser: a patched build of [cobol-rekt](https://github.com/avishek-sen-gupta/cobol-rekt) (Java 21). It idles and `doctor.sh` runs the parser in it with `docker exec`, one JVM per program, producing AST, control-flow and data JSON. It makes no model calls and has no network port. | `rekt-full` / `rekt-parse`, only when COBOL is present | None | Reads `source/` (read-only); writes `output/rekt/` |
+| `portal` (`cobol-migration-portal`) | Built from the root `Dockerfile` (.NET 10 CLI + `McpChatWeb`) | Optional containerized portal. By default the portal runs on the host instead (`./doctor.sh portal`); use this service only to run it in Docker. | `docker compose up -d portal` | `5028` | Mounts `Data/`, `Logs/` and `Config/` |
+
+- **The model is never in a container.** Prompts go from the host CLI (or the portal) to the configured provider.
+- **Passwords and names** come from `Config/ai-config.local.env`: `NEO4J_PASSWORD` is required, and container names and host ports can be overridden (`NEO4J_CONTAINER`, `NEO4J_HTTP_PORT`, `NEO4J_BOLT_PORT`, `REKT_CONTAINER`, `MCP_WEB_PORT`) to run two checkouts side by side.
+- **Rebuilds:** `doctor.sh` tags the parser image with a digest of its Dockerfile and patches, so changing either rebuilds it automatically.
+- **Status:** `./doctor.sh rekt-status` shows container, graph and export status; `docker compose ps` lists them.
+- **Dev container:** `.devcontainer/` is a separate VS Code development environment (.NET 10, Node, Azure CLI, GitHub CLI, Docker-in-Docker) that runs the services above inside it. See [.devcontainer/README.md](.devcontainer/README.md).
+
 ### Inside `rekt-full`
 
 ```mermaid

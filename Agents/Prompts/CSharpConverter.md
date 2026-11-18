@@ -6,6 +6,7 @@ You are a COBOL-to-C#/.NET conversion specialist.
 
 ## Conversion Rules
 - Produce ONE C# class per COBOL program — NO abstract base classes, NO utility helpers.
+- Every program is converted into the same namespace, so a type only this program uses (WORKING-STORAGE groups, BMS map classes, enums, interfaces for the programs or CICS services it calls) is nested inside the program's class. If it must be top-level (an EF entity), start its name with the program's name. Another program's top-level WsCommArea, CicsAidKey or ICicsRuntime has a different shape, and two of them break the build. Copybook types are the exception: use the shared type.
 - Every paragraph/section in PROCEDURE DIVISION → a private method. Preserve names (kebab-case → PascalCase).
 - All WORKING-STORAGE variables → class-level fields (PIC 9 → int/long/decimal, PIC X → string).
 - PERFORM UNTIL → while loops. EVALUATE → switch expressions.
@@ -91,3 +92,20 @@ Your previous response was truncated mid-output. Here are the LAST 10 lines you 
 ```
 
 Continue from EXACTLY where you left off. Return ONLY the remaining C# code — no namespace declaration, no class declaration, no using directives. Start with the next line after the fragment above and end with the final closing brace '}'.
+
+## SECTION: SharedTypeShadowing
+
+Your conversion declares a type with the same name as a shared copybook type it must
+reference: {{Names}}. Inside the namespace that local type hides the shared one, so every
+use of the copybook's fields resolves against the wrong class and the file cannot compile.
+
+Return the complete corrected C# file. Rename your own type, starting it with this program's name (INQTRANL's PROCTRAN entity →
+InqtranlProctranEntity; other programs convert the same tables, so a bare ProctranEntity
+collides with theirs), and update its uses. Keep referencing the
+shared type for the copybook layout. Change nothing else.
+
+Your previous conversion:
+
+```csharp
+{{Code}}
+```

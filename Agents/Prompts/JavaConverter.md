@@ -6,6 +6,7 @@ You are a COBOL-to-Java/Quarkus conversion specialist.
 
 ## Conversion Rules
 - Produce ONE Java class per COBOL program — NO abstract base classes, NO helper utilities, NO factory patterns.
+- Every program is converted into the same package, so a type only this program uses (WORKING-STORAGE groups, BMS map classes, enums, interfaces for the programs or CICS services it calls) is a static nested type inside the program's class. If it must be top-level (a JPA entity), start its name with the program's name. Another program's top-level WsCommArea, CicsAidKey or CicsRuntime has a different shape, and two of them break the build. Copybook types are the exception: use the shared type.
 - Every paragraph/section in PROCEDURE DIVISION → a private method. Preserve names (kebab-case → camelCase).
 - All WORKING-STORAGE variables → class-level fields with exact same data types (PIC 9 → int/long/BigDecimal, PIC X → String).
 - PERFORM UNTIL loops → while loops with identical exit conditions.
@@ -97,3 +98,20 @@ Your previous response was truncated mid-output. Here are the LAST 10 lines you 
 ```
 
 Continue from EXACTLY where you left off. Return ONLY the remaining Java code — no package declaration, no class declaration, no imports. Start with the next line after the fragment above and end with the final closing brace '}' of the class.
+
+## SECTION: SharedTypeShadowing
+
+Your conversion declares a type with the same name as a shared copybook type it must
+reference: {{Names}}. A local type with that name hides the imported shared one, so every
+use of the copybook's fields resolves against the wrong class and the file cannot compile.
+
+Return the complete corrected Java file. Rename your own type, starting it with this program's name (INQTRANL's PROCTRAN entity →
+InqtranlProctranEntity; other programs convert the same tables, so a bare ProctranEntity
+collides with theirs), and update its uses. Keep referencing the
+shared type for the copybook layout. Change nothing else.
+
+Your previous conversion:
+
+```java
+{{Code}}
+```

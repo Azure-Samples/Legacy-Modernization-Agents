@@ -1,6 +1,6 @@
 # Working with generated output
 
-**Last updated**: 2026-10-22
+**Last updated**: 2026-11-18
 
 The conversion agents write their output to a dated run folder under the target language:
 
@@ -86,6 +86,9 @@ Most defects are prevented or fixed without a model:
 | Completion signal | A complete response with one syntax defect being mistaken for truncation. Asked to "continue" a finished file, the model invented code for other programs. Continuation now happens only when the provider did not report a normal end |
 | Same-name copies | A file declaring its own copy of a shared type in another namespace, which fails as "cannot convert from `A.X` to `B.X`". The file is allowed to remove its copy |
 | Accessor terminators, missing `using` | `get => a + b,` rewritten to `;`, and a namespace imported when the missing type is declared in exactly one place |
+| Nested types | A type declared inside another class (`Bnk1DacService.ParmsSubpgm`) imported with `using static Namespace.Outer;`. Only public or internal nested types are imported; a private one is left to the repair agent, because importing it turns CS0246 into CS0122 |
+
+Two further rules act during conversion, before the gate. Types only one program uses are nested in that program's class or prefixed with the program name, so programs sharing one namespace do not each declare a top-level `WsCommArea` in a different shape. A declaration under a shared copybook type name is detected and the model is asked once to rename it; see [Program-local and shared types](source-reading-and-output-ownership.md#program-local-and-shared-types).
 
 Measured on the same five programs and 65 copybooks (70 generated files), errors per gate round:
 

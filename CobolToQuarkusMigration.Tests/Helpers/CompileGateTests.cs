@@ -282,6 +282,71 @@ public class CompileGateTests : IDisposable
         remaining.Should().ContainSingle().Which.Message.Should().Contain("Nowhere");
     }
 
+    // Bank-of-Z BNK1CCS and BNK1CRA: the main class was `public sealed class …Service`, which the old
+    // `StartsWith("public class ")` check skipped, so both files were named after a nested
+    // WsCicsWorkArea and collided on one output file.
+    [Fact]
+    public void TheFileIsNamedAfterTheFirstTopLevelClassNeverANestedOne()
+    {
+        const string code = "namespace M.Bz;\npublic interface ICicsRuntime { }\npublic enum AidKey { Enter }\n"
+            + "public sealed class Bnk1ccsService(ICicsRuntime cics)\n{\n    public class WsCicsWorkArea { }\n}\n";
+
+        GeneratedTypeIndex.PrimaryClassName(code).Should().Be("Bnk1ccsService");
+        GeneratedTypeIndex.PrimaryClassName("namespace M;\npublic interface I { }\n").Should().BeNull();
+    }
+
+    [Fact]
+    public void ATypeNestedInAnotherClassIsImportedWithUsingStatic()
+    {
+        var sources = new Dictionary<string, string>
+        {
+            ["Bz/Bnk1dcs.cs"] = "namespace M.Bz;\npublic class Bnk1dcsService(int a)\n{\n    private string s = \"}\"; // }\n" +
+                                "    public interface IInqcustService { void Run(); }\n}\npublic sealed record Loose(int X);\n",
+            ["Bz/Creacc.cs"] = "using M.Shared;\nnamespace M.Bz;\npublic class Creacc(IInqcustService inq) { }\n",
+        };
+        var index = GeneratedTypeIndex.FromSources(sources);
+        index.Find("IInqcustService").Should().ContainSingle().Which.Container.Should().Be("Bnk1dcsService");
+        index.Find("Loose").Should().ContainSingle().Which.Container.Should().BeNull();
+
+        var errors = new[]
+        {
+            new CompilerDiagnostic("Bz/Creacc.cs", 3, 21, "CS0246", "The type or namespace name 'IInqcustService' could not be found"),
+        };
+        var (imported, remaining) = CompileRepairPlanner.ImportUniqueNamespaces(errors, index, sources);
+
+        imported.Should().ContainKey("Bz/Creacc.cs").WhoseValue.Should()
+            .StartWith("using M.Shared;\nusing static M.Bz.Bnk1dcsService;\nnamespace M.Bz;");
+        remaining.Should().BeEmpty();
+    }
+
+    // Bank-of-Z: Inqacccu used CicsAbendException, which only existed as a private class nested in
+    // InqaccService. Importing it turned CS0246 into CS0122, which the repair agent could not fix.
+    [Theory]
+    [InlineData("private sealed class", false)]
+    [InlineData("sealed class", false)]
+    [InlineData("protected class", false)]
+    [InlineData("private protected class", false)]
+    [InlineData("internal sealed class", true)]
+    [InlineData("protected internal class", true)]
+    [InlineData("public class", true)]
+    public void OnlyANestedTypeOtherFilesMayUseIsImported(string declaration, bool imported)
+    {
+        var sources = new Dictionary<string, string>
+        {
+            ["Bz/Inqacc.cs"] = $"namespace M.Bz;\npublic class InqaccService\n{{\n    {declaration} CicsAbendException : System.Exception {{ }}\n}}\n",
+            ["Bz/Inqacccu.cs"] = "namespace M.Bz;\npublic class Inqacccu { CicsAbendException e; }\n",
+        };
+        var errors = new[]
+        {
+            new CompilerDiagnostic("Bz/Inqacccu.cs", 2, 25, "CS0246", "The type or namespace name 'CicsAbendException' could not be found"),
+        };
+
+        var (fixedSources, remaining) = CompileRepairPlanner.ImportUniqueNamespaces(errors, GeneratedTypeIndex.FromSources(sources), sources);
+
+        fixedSources.ContainsKey("Bz/Inqacccu.cs").Should().Be(imported);
+        remaining.Should().HaveCount(imported ? 0 : 1);
+    }
+
     [Fact]
     public void FixingTheLastBlockingErrorIsProgressEvenWhenItRevealsBodyErrors()
     {
