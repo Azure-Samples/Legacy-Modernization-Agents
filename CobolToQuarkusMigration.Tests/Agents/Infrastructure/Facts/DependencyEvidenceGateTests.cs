@@ -828,6 +828,8 @@ public sealed class DependencyEvidenceGateTests : IDisposable
 
     [Theory]
     [InlineData("support/SUB.cbl", true)]
+    [InlineData("SUB", true)]
+    [InlineData("OTHER", false)]
     [InlineData("other/SUB.cbl", false)]
     public void CallerOnlySelectionUsesEstateIdentitiesWithoutAcceptingAnIncorrectFactsPath(
         string factsTarget, bool valid)
