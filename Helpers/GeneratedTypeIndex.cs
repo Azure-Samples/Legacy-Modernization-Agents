@@ -7,7 +7,9 @@ using System.Text.RegularExpressions;
 namespace CobolToQuarkusMigration.Helpers;
 
 /// <param name="Container">The dotted enclosing type for a nested type (<c>Outer.Inner</c>); null when top-level.</param>
-public sealed record TypeDeclaration(string Name, string Namespace, string File, string? Container = null);
+/// <param name="VisibleOutside">False for a nested type other files cannot use: no modifier (nested types default to
+/// private), private, protected or private protected.</param>
+public sealed record TypeDeclaration(string Name, string Namespace, string File, string? Container = null, bool VisibleOutside = true);
 
 public sealed class GeneratedTypeIndex
 {
@@ -16,7 +18,7 @@ public sealed class GeneratedTypeIndex
         RegexOptions.Multiline | RegexOptions.Compiled);
 
     private static readonly Regex Declaration = new(
-        @"^[ \t]*(?:\[[^\]\r\n]*\][ \t]*)*(?:(?:public|internal|private|protected|file|static|sealed|abstract|partial|readonly|ref|unsafe|new)[ \t]+)*" +
+        @"^[ \t]*(?:\[[^\]\r\n]*\][ \t]*)*(?<mods>(?:(?:public|internal|private|protected|file|static|sealed|abstract|partial|readonly|ref|unsafe|new)[ \t]+)*)" +
         @"(?:record[ \t]+(?:class|struct)|class|record|struct|interface|enum)[ \t]+(?<name>[A-Za-z_][A-Za-z0-9_]*)",
         RegexOptions.Multiline | RegexOptions.Compiled);
 
@@ -53,8 +55,11 @@ public sealed class GeneratedTypeIndex
                 for (var j = 0; j < i; j++)
                     if (bodies[j] is var (start, end) && start < match.Index && match.Index < end)
                         outer.Add(matches[j].Groups["name"].Value);
+                var mods = match.Groups["mods"].Value.Split((char[])[' ', '\t'], StringSplitOptions.RemoveEmptyEntries);
+                var visible = outer.Count == 0
+                    || mods.Contains("public") || (mods.Contains("internal") && !mods.Contains("private"));
                 declarations.Add(new TypeDeclaration(match.Groups["name"].Value, ns, file,
-                    outer.Count == 0 ? null : string.Join('.', outer)));
+                    outer.Count == 0 ? null : string.Join('.', outer), visible));
             }
         }
 

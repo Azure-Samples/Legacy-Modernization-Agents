@@ -306,6 +306,34 @@ public class CompileGateTests : IDisposable
         remaining.Should().BeEmpty();
     }
 
+    // Bank-of-Z: Inqacccu used CicsAbendException, which only existed as a private class nested in
+    // InqaccService. Importing it turned CS0246 into CS0122, which the repair agent could not fix.
+    [Theory]
+    [InlineData("private sealed class", false)]
+    [InlineData("sealed class", false)]
+    [InlineData("protected class", false)]
+    [InlineData("private protected class", false)]
+    [InlineData("internal sealed class", true)]
+    [InlineData("protected internal class", true)]
+    [InlineData("public class", true)]
+    public void OnlyANestedTypeOtherFilesMayUseIsImported(string declaration, bool imported)
+    {
+        var sources = new Dictionary<string, string>
+        {
+            ["Bz/Inqacc.cs"] = $"namespace M.Bz;\npublic class InqaccService\n{{\n    {declaration} CicsAbendException : System.Exception {{ }}\n}}\n",
+            ["Bz/Inqacccu.cs"] = "namespace M.Bz;\npublic class Inqacccu { CicsAbendException e; }\n",
+        };
+        var errors = new[]
+        {
+            new CompilerDiagnostic("Bz/Inqacccu.cs", 2, 25, "CS0246", "The type or namespace name 'CicsAbendException' could not be found"),
+        };
+
+        var (fixedSources, remaining) = CompileRepairPlanner.ImportUniqueNamespaces(errors, GeneratedTypeIndex.FromSources(sources), sources);
+
+        fixedSources.ContainsKey("Bz/Inqacccu.cs").Should().Be(imported);
+        remaining.Should().HaveCount(imported ? 0 : 1);
+    }
+
     [Fact]
     public void FixingTheLastBlockingErrorIsProgressEvenWhenItRevealsBodyErrors()
     {

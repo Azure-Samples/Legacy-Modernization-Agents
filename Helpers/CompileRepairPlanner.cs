@@ -52,7 +52,7 @@ public static class CompileRepairPlanner
             // A nested type is reachable through `using static Outer;`, which a namespace import does not give.
             var imports = match.Success
                 ? index.Find(match.Groups["name"].Value)
-                    .Where(d => d.Container is not null || d.Namespace.Length > 0)
+                    .Where(d => d.Container is null ? d.Namespace.Length > 0 : d.VisibleOutside)
                     .Select(d => d.Container is null ? $"using {d.Namespace};"
                         : $"using static {(d.Namespace.Length > 0 ? d.Namespace + "." : "")}{d.Container};")
                     .Distinct().ToList()
