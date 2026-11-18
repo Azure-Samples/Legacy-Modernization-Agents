@@ -649,6 +649,7 @@ class AiLoopView {
       <div class="ail-gate ail-${this.esc(g.status)}">
         <div class="ail-gate-head"><span class="ail-gate-icon">${icon}</span><b>${this.esc(g.title)}</b><span class="ail-gate-status">${this.esc(g.status)}</span></div>
         <div class="ail-gate-headline">${this.esc(g.headline)}</div>
+        ${g.hint ? `<div class="ail-gate-hint"><span class="ail-gate-hint-icon" aria-hidden="true">ⓘ</span><span><b>What this means:</b> ${this.esc(g.hint)}</span></div>` : ''}
         ${g.details?.length ? `<details><summary class="emc-dim">details</summary>${g.details.map(x => `<div class="emc-src"><code>${this.esc(x)}</code></div>`).join('')}</details>` : ''}
         ${g.source ? `<div class="emc-dim">${this.esc(g.source)}</div>` : ''}
       </div>`;
