@@ -104,8 +104,9 @@ Your conversion declares a type with the same name as a shared copybook type it 
 reference: {{Names}}. A local type with that name hides the imported shared one, so every
 use of the copybook's fields resolves against the wrong class and the file cannot compile.
 
-Return the complete corrected Java file. Rename your own type (name an entity after its table
-or record, for example PROCTRAN → ProctranEntity) and update its uses. Keep referencing the
+Return the complete corrected Java file. Rename your own type, starting it with this program's name (INQTRANL's PROCTRAN entity →
+InqtranlProctranEntity; other programs convert the same tables, so a bare ProctranEntity
+collides with theirs), and update its uses. Keep referencing the
 shared type for the copybook layout. Change nothing else.
 
 Your previous conversion:
