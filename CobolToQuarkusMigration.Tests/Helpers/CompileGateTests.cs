@@ -283,6 +283,30 @@ public class CompileGateTests : IDisposable
     }
 
     [Fact]
+    public void ATypeNestedInAnotherClassIsImportedWithUsingStatic()
+    {
+        var sources = new Dictionary<string, string>
+        {
+            ["Bz/Bnk1dcs.cs"] = "namespace M.Bz;\npublic class Bnk1dcsService(int a)\n{\n    private string s = \"}\"; // }\n" +
+                                "    public interface IInqcustService { void Run(); }\n}\npublic sealed record Loose(int X);\n",
+            ["Bz/Creacc.cs"] = "using M.Shared;\nnamespace M.Bz;\npublic class Creacc(IInqcustService inq) { }\n",
+        };
+        var index = GeneratedTypeIndex.FromSources(sources);
+        index.Find("IInqcustService").Should().ContainSingle().Which.Container.Should().Be("Bnk1dcsService");
+        index.Find("Loose").Should().ContainSingle().Which.Container.Should().BeNull();
+
+        var errors = new[]
+        {
+            new CompilerDiagnostic("Bz/Creacc.cs", 3, 21, "CS0246", "The type or namespace name 'IInqcustService' could not be found"),
+        };
+        var (imported, remaining) = CompileRepairPlanner.ImportUniqueNamespaces(errors, index, sources);
+
+        imported.Should().ContainKey("Bz/Creacc.cs").WhoseValue.Should()
+            .StartWith("using M.Shared;\nusing static M.Bz.Bnk1dcsService;\nnamespace M.Bz;");
+        remaining.Should().BeEmpty();
+    }
+
+    [Fact]
     public void FixingTheLastBlockingErrorIsProgressEvenWhenItRevealsBodyErrors()
     {
         static CompilerDiagnostic E(string code) => new("A.cs", 1, 1, code, "x");
