@@ -24,7 +24,7 @@ Prompt files use two conventions:
 <!-- prompt-studio:end -->
 ```
 
-- The notes list the COBOL features found in `source/`, phrased for the agent's job (converter, repair, analyzer, business logic, dependency mapper, REKT context). AI mode appends the model's observations from sampled programs to the same block.
+- The notes list the COBOL features found in `source/`. Scratch folders (`.preprocessed`, `.rekt-staging`, `.convert-*`) are skipped, so only the real estate is read. The notes are phrased for the agent's job (converter, repair, analyzer, business logic, dependency mapper, REKT context). AI mode appends the model's observations from sampled programs to the same block.
 - Running again replaces the block; it does not stack. Delete the block to remove the notes.
 - The marker lines are not sent to the model. `{{...}}` placeholders and `## SECTION:` headings in generated notes are neutralised, so a run cannot remove or add placeholders or sections.
 
