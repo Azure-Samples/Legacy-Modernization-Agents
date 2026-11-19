@@ -41,7 +41,7 @@ flowchart TD
         E -->|"General: chars ÷ 3.5"| F
     end
 
-    subgraph COMPLEXITY["🎯 THREE-TIER COMPLEXITY SCORING"]
+    subgraph COMPLEXITY["THREE-TIER COMPLEXITY SCORING"]
         F --> G[Complexity Score Calculation]
         G -->|"Σ regex×weight + density bonuses"| H{Score Threshold}
         H -->|"< 5"| I["🟢 LOW<br>effort: low<br>multiplier: 1.5×"]
@@ -178,7 +178,7 @@ flowchart TD
                │                           │    │         │            │              │
                ▼                           │  ≤ Max    Semantic     No units/         │
 ┌─────────────────────────────────────┐    │  Lines    Units OK     Oversized         │
-│  🎯 THREE-TIER COMPLEXITY SCORING   │    │    │         │            │              │
+│  THREE-TIER COMPLEXITY SCORING      │    │    │         │            │              │
 │                                     │    │  Single   Semantic    Line-Based         │
 │  Score = Σ(regex × weight)          │    │  Chunk    Boundary    Fallback           │
 │        + PIC density bonus (+3)     │    │    │      Split         │               │

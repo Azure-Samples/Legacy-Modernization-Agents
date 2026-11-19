@@ -1,8 +1,8 @@
 # Getting started
 
-**Last updated**: 2026-11-18
+**Last updated**: 2026-11-19
 
-Reference for the [Quick Start](../README.md#-quick-start) in the README: prerequisites, Windows, AI providers and sign-in, manual setup, the folder layout and what a run generates.
+Reference for the [Quick Start](../README.md#quick-start) in the README: prerequisites, Windows, AI providers and sign-in, manual setup, the folder layout and what a run generates.
 
 ## Prerequisites
 
@@ -46,6 +46,11 @@ The Copilot SDK runs its own bundled Copilot runtime, which signs in one of two 
 | `login` | The account from `copilot login` | `GH_TOKEN` and `GITHUB_TOKEN` in your shell are ignored, so an unrelated token cannot take over. |
 | `token` | `COPILOT_GITHUB_TOKEN` | A fine-grained token (`github_pat_`) on your personal account with the **Copilot Requests** account permission. Classic `ghp_` tokens are rejected. Create one at github.com/settings/personal-access-tokens/new. |
 | unset | `COPILOT_GITHUB_TOKEN` if set, otherwise the Copilot CLI's own order (`GH_TOKEN`, `GITHUB_TOKEN`, `copilot login`) | Classic `ghp_` tokens in `GH_TOKEN`/`GITHUB_TOKEN` are skipped. |
+
+> [!NOTE]
+> **`login` needs a completed `copilot login`.** Setup option 1 runs `copilot login` (with `--host` for a custom host) and waits for the browser sign-in; the model list it shows next comes from that account. Install the Copilot CLI beforehand (`npm install -g @github/copilot`). If the sign-in was skipped, failed or has expired, run `copilot login` and then `./doctor.sh setup` again. Running only `gh auth login` is not enough.
+
+If a Copilot call fails with `SDK protocol version mismatch`, the SDK started a different Copilot CLI from the one it bundles. This happens when `COPILOT_CLI_PATH` is set, for example in a shell opened from a Copilot CLI session. Unset it, or start `doctor.sh` and the portal from a normal terminal.
 
 Runs print the credential they use (`🔐 GitHub Copilot auth: ...`), and `dotnet run -- list-models` shows it before listing the models your account can use. `GITHUB_COPILOT_TOKEN`, written by older versions of setup, is still read.
 
