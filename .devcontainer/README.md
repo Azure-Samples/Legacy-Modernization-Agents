@@ -109,7 +109,7 @@ This will:
 - Find latest migration run
 - Start web portal at http://localhost:5028
 
-## 🎯 Quick Commands
+## Quick Commands
 
 The dev container includes helpful aliases:
 

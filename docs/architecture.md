@@ -2,7 +2,7 @@
 
 **Last updated**: 2026-11-18
 
-> For the overview of what runs where and the Docker containers, see [How it fits together](../README.md#-how-it-fits-together) in the README. This page goes deeper into the scan, the conversion loop, storage, agents and concurrency.
+> For the overview of what runs where and the Docker containers, see [How it fits together](../README.md#how-it-fits-together) in the README. This page goes deeper into the scan, the conversion loop, storage, agents and concurrency.
 
 ## Inside `rekt-full`
 

@@ -3,13 +3,24 @@
 This open source migration framework was developed to demonstrate AI Agents capabilities for converting legacy code like COBOL to Java or C# .NET. Each Agent has a persona that can be edited depending on the desired outcome.
 The migration uses Microsoft Agent Framework with a multi-provider architecture supporting **Azure OpenAI** (Responses API + Chat Completions), **GitHub Copilot** (PAT or CLI-based SDK), and **direct OpenAI** to analyze COBOL code and its dependencies, then convert to either Java Quarkus or C# .NET (user's choice).
 
-## 🎬 Portal demo
+## Portal demo
 
-The portal (`./doctor.sh portal`, http://localhost:5028) shows your estate, what the agents did, and what the parser saw. Both recordings use the public Bank-of-Z sample; all demos with full descriptions are in [Portal demo](docs/portal.md#portal-demo).
+The portal (`./doctor.sh portal`, http://localhost:5028) shows your estate, what the agents did, and what the parser saw. The recordings use the public Bank-of-Z sample; all demos with full descriptions are in [Portal demo](docs/portal.md#portal-demo).
 
 ![Estate Mission Control showing the Bank-of-Z estate](docs/images/bank-of-z-estate-mission-control.gif)
 
 *Estate Mission Control: every program, CICS transaction, API, DB2 table and data store in the estate, built deterministically from source with no model calls.*
+
+![AST Explorer showing the Structure view and the Raw AST view](docs/images/ast-explorer-raw-ast.gif)
+
+*AST Explorer: the parsed structure of each COBOL program beside its source.*
+
+> [!NOTE]
+> - **Structure view:** expand a section and click a paragraph. The source jumps to it, and the Inspector shows its statement mix (MOVE, IF, PERFORM and so on).
+> - **Raw AST view:** the parser's own nodes. Hover a node for its type, name and parser ID. Click a statement to see the exact COBOL the parser captured, or a paragraph to open its source range.
+> - **Why it matters:** check for parse gaps before you convert. A statement missing from the AST was not parsed, so structure-based evidence (call graphs, readiness checks, structural context) cannot account for it. The conversion prompt still carries the source text, so a gap is a verification risk rather than proof the model never saw the line.
+>
+> See [AST Explorer](docs/portal.md#ast-explorer).
 
 ![Converted Bank-of-Z running in a 3270-style terminal, then COBOL and Java side by side](docs/images/bank-of-z-80s-terminal-and-code.gif)
 
@@ -17,21 +28,24 @@ The portal (`./doctor.sh portal`, http://localhost:5028) shows your estate, what
 
 ---
 
-## 📋 Table of Contents
-- [Quick Start](#-quick-start)
-- [doctor.sh commands](#-doctorsh-commands)
-- [How it fits together](#-how-it-fits-together)
+## Table of Contents
+- [Quick Start](#quick-start)
+  - [Step by step](#step-by-step)
+- [doctor.sh commands](#doctorsh-commands)
+- [How it fits together](#how-it-fits-together)
   - [What runs where](#what-runs-where)
+  - [Agent flowchart](#agent-flowchart)
   - [Docker containers](#docker-containers)
-- [Portal](#-portal)
-- [Configuration](#-configuration)
-- [Troubleshooting](#-troubleshooting)
-- [Documentation](#-documentation)
-- [Workflows](#-workflows)
+- [Portal](#portal)
+- [Configuration](#configuration)
+- [Troubleshooting](#troubleshooting)
+- [Documentation](#documentation)
+- [Workflows](#workflows)
+- [License](#license)
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 
@@ -43,59 +57,163 @@ The portal (`./doctor.sh portal`, http://localhost:5028) shows your estate, what
 
 On Windows, `doctor.sh` runs in Git Bash or WSL2; see [Windows](docs/getting-started.md#windows).
 
-### Setup
+### Step by step
+
+```mermaid
+flowchart LR
+    A["./doctor.sh setup<br/>Azure OpenAI or GitHub Copilot"] --> B["Copy COBOL, copybooks,<br/>BMS, JCL into source/"]
+    B --> C["./doctor.sh rekt-full<br/>parse + load graph<br/><i>no model</i>"]
+    C --> D["./doctor.sh portal<br/>explore the code"]
+    D --> E["Pick programs<br/>Estate Mission Control /<br/>Convert Programs"]
+    E --> R["./doctor.sh reverse-eng<br/>business logic report"]
+    R --> F["Optional: edit<br/>Agents/Prompts/*.md"]
+    F --> G["./doctor.sh convert-only<br/>or ./doctor.sh run"]
+    G --> H["output/csharp or output/java<br/>review in the AI Loop"]
+```
+
+Run every command from the repository root. **Always use `./doctor.sh`, not `dotnet run`**: it checks prerequisites and starts the containers each step needs.
+
+#### 1. Configure the AI endpoint
 
 ```bash
 git clone https://github.com/Azure-Samples/Legacy-Modernization-Agents.git
 cd Legacy-Modernization-Agents
-
-./doctor.sh setup        # 1. configure the AI provider and credentials
-cp -r /path/to/your/cobol/* source/   # 2. COBOL, copybooks and JCL
-az login                 #    or: copilot login (GitHub Copilot SDK)
-./doctor.sh rekt-full    # 3. parse COBOL + JCL (no model) - run before converting
-./doctor.sh run          # 4. migrate, then open the portal
+./doctor.sh setup
 ```
 
-> [!IMPORTANT]
-> **The clone does not contain your estate. Add your source files to `source/` before scanning.**
-> Copy COBOL, copybooks, JCL jobs and their procedures/INCLUDE members into that folder
-> (subfolders are supported), or set `JCL_SOURCE_FOLDER` for an external JCL library.
-> `bash ./doctor.sh rekt-full` discovers COBOL, JCL, or both and loads the graph;
-> it does **not** generate executable jobs. `bash ./doctor.sh jcl` is the separate
-> job-scaffolding command. See [JCL discovery and facts](docs/jcl-job-facts.md).
+> [!NOTE]
+> **GitHub Copilot: `copilot login` is part of setup.** Install the Copilot CLI first (`npm install -g @github/copilot`). When setup asks how to authenticate, choose **1) Copilot CLI sign-in**; it runs `copilot login` and you finish the sign-in in the browser. Setup then lists only the models your Copilot plan allows. If the sign-in fails or you cancel it, run `copilot login` yourself and run `./doctor.sh setup` again. See [Copilot sign-in](docs/getting-started.md#copilot-sign-in).
+
+The wizard asks for the provider, credentials, models and the Neo4j password, and writes them to `Config/ai-config.local.env` (git-ignored):
+
+| Provider | Choose in setup | Then sign in |
+|---|---|---|
+| **Azure OpenAI / Azure AI Foundry** | Endpoint and deployment names; Entra ID (recommended) or an API key | `az login` |
+| **GitHub Copilot (GHCP)** | GitHub Copilot SDK; the wizard lists the models your licence can use | `copilot login`, or a fine-grained token with **Copilot Requests** in `COPILOT_GITHUB_TOKEN` |
 
 > [!IMPORTANT]
 > **Sign in before you run anything that calls a model.** The framework takes its token from your local sign-in; it does not prompt for one.
 >
-> | Provider | Sign in with | Then |
-> |---|---|---|
-> | Azure OpenAI / Azure AI Foundry (Entra ID) | `az login` (add `--tenant <id>` if the resource is in another tenant) | Your account needs the **Cognitive Services OpenAI User** role on the resource. See [az login authentication](docs/az-login-auth-guide.md) |
-> | GitHub Copilot SDK | `copilot login` (the Copilot CLI, not `gh`), or a fine-grained token with the **Copilot Requests** permission in `COPILOT_GITHUB_TOKEN` | `./doctor.sh setup` asks which and records it as `COPILOT_AUTH`. Classic `ghp_` tokens do not work. The account needs a Copilot licence. See [Copilot sign-in](docs/getting-started.md#copilot-sign-in) |
+> - **Azure (Entra ID):** add `--tenant <id>` to `az login` if the resource is in another tenant. Your account needs the **Cognitive Services OpenAI User** role on the resource. See [az login authentication](docs/az-login-auth-guide.md).
+> - **GitHub Copilot:** use the Copilot CLI's `copilot login`, not `gh`. Classic `ghp_` tokens do not work, and the account needs a Copilot licence. `./doctor.sh setup` records the choice as `COPILOT_AUTH`. See [Copilot sign-in](docs/getting-started.md#copilot-sign-in).
 >
-> Without a valid sign-in (or an API key in `Config/ai-config.local.env`), conversion and reverse engineering fail on the first model call. `./doctor.sh rekt-full`, `./doctor.sh estate` and `./doctor.sh jcl` call no model and need no sign-in.
+> Without a valid sign-in (or an API key in `Config/ai-config.local.env`), conversion and reverse engineering fail on the first model call. `rekt-full`, `estate` and `jcl` call no model and need no sign-in.
 
-### First run
+#### 2. Copy your COBOL into `source/`
 
-Run these in order from the repository root:
+> [!IMPORTANT]
+> **The clone does not contain your estate. Copy your files into `source/` before scanning**, and again whenever they change: COBOL programs (`.cbl`), copybooks (`.cpy`), BMS maps (`.bms`), CICS definitions and JCL jobs (`.jcl`) with their procedures and INCLUDE members (`.proc`, `.prc`, `.inc`). Subfolders are fine; each top-level folder of `source/` is treated as its own estate. Set `JCL_SOURCE_FOLDER` for an external JCL library.
 
-| Step | Command | What it does |
-|---|---|---|
-| 1 | *(copy files)* | **Put your sources in `source/`**: COBOL programs (`.cbl`), copybooks (`.cpy`), BMS maps (`.bms`), CICS definitions, and JCL jobs (`.jcl`) with their procedures and INCLUDE members (`.proc`, `.prc`, `.inc`). Subfolders are fine |
-| 2 | `./doctor.sh setup` | **Configure the framework**: AI provider, credentials, models and local services |
-| 3 | `./doctor.sh rekt-full` | **Discover and scan COBOL, JCL, or both**: parses COBOL with REKT, extracts JCL facts into `output/rekt/`, and ingests both into Neo4j. JCL-only input is supported; no executable jobs or model calls. See [Parse first: rekt-full](docs/doctor-commands.md#parse-first-rekt-full) |
-| 4 | `./doctor.sh portal` | **Open the portal** at http://localhost:5028 |
-| 5 | *(portal)* | **Pick what to migrate in 🛰 Estate Mission Control**: switch to **✂️ Carve-out plan**, click a cluster, and press **📦 Stage slice**. The panel lists the programs, what they call, and what is missing from `source/`, and gives the exact command to run. **🔁 Send to AI loop** starts the conversion from the portal instead. See [Estate Mission Control](docs/portal.md#estate-mission-control) |
-| 6 | *(the suggested command)* | **Convert the slice**, for example `./doctor.sh convert-only --program ORDER01.cbl,ORDER02.cbl` |
+```bash
+cp -r /path/to/your/cobol/* source/
+```
 
-Estate Mission Control builds from `source/` alone. The portal's chat and report pages need at least one run (`./doctor.sh reverse-eng`, `convert-only` or `run`).
+#### 3. Scan the source with REKT
 
-**Always use `./doctor.sh run` to run migrations, not `dotnet run` directly.** The doctor script checks dependencies and starts the services it needs.
+```bash
+./doctor.sh rekt-full                 # parse every program, then load the graph into Neo4j
+./doctor.sh rekt-full --parallel 4    # parse 4 programs at once (large estates)
+```
 
-[Getting started](docs/getting-started.md) covers supported AI providers, Copilot sign-in, manual setup without the wizard, the folder layout and what a run generates.
+`rekt-full` calls no model and needs no sign-in. It parses COBOL with the REKT parser in the `cobol-rekt` container, extracts JCL facts, records each program's parse fidelity, lists copybooks that are referenced but missing (`output/rekt/missing-copybooks.txt`), and loads everything into Neo4j. Each program prints one progress line with stage times and an estimate of the time left.
+
+| Option | Effect |
+|---|---|
+| `--parallel N` (or `REKT_PARSE_JOBS=N`) | Parse 1–16 programs at once. 2–4 is a good choice; allow about 1 GB of Docker memory per job. Results are identical to a sequential scan |
+| `./doctor.sh rekt-parse` / `rekt-ingest` | Run only the parse half or only the Neo4j load |
+| `./doctor.sh rekt-status` | Container, graph and export status |
+| `REKT_VERBOSE=true` | Also stream the parser's own output (normally kept in `output/rekt/**/*.parse.log`) |
+| `REKT_NO_BMS_MAPS=true` | Do not generate symbolic map copybooks from BMS mapsets |
+
+Unchanged programs are skipped as `(cached)`, so a rerun after a small change takes minutes. Add any missing copybooks to `source/` and run `rekt-full` again before converting. See [Parse first: rekt-full](docs/doctor-commands.md#parse-first-rekt-full).
+
+#### 4. Explore the code in the portal
+
+```bash
+./doctor.sh portal                    # http://localhost:5028
+```
+
+**🛰 Estate Mission Control** maps every program, transaction, table and data store; **AST Explorer** shows what the parser saw for each program; **Convert Programs** lists programs by parse fidelity with their call closure. See [Portal](docs/portal.md).
+
+#### 5. Pick the programs to convert
+
+- **Estate Mission Control → ✂️ Carve-out plan**: click a cluster and press **📦 Stage slice**. The panel lists the programs, what they call and what is missing from `source/`, and gives the exact command. **🔁 Send to AI loop** starts the conversion from the portal instead.
+- **Convert Programs**: tick programs and copy the generated `convert-only` command.
+- **Terminal**: `./doctor.sh estate` prints the wave plan; `./doctor.sh estate C01` prints one cluster and its command.
+
+#### 6. Reverse engineer the business logic
+
+```bash
+./doctor.sh reverse-eng                              # every program in source/
+./doctor.sh reverse-eng --program ORDMAIN.cbl,ORDDATE.cbl   # only the selected programs
+```
+
+**This is the step that explains the estate.** `CobolAnalyzerAgent` and `BusinessLogicExtractorAgent` read each program and write `output/reverse-engineering-details.md`: the business purpose, use cases, business rules and a glossary, with technical details per program. Nothing is converted. The results are also saved to `Data/migration.db`, so you can:
+
+- read them in the portal (each run card has **🔬 RE Results**) and ask questions with **Ask the Report**;
+- reuse them in a later conversion: `./doctor.sh convert-only` asks whether to load the saved results from the last reverse-engineering run over the same source folder (answer **Y**).
+
+Reusing them is off by default, because converters given only a summary tend to skip paragraphs; the COBOL source and the REKT facts always take precedence over the report. See [Reverse engineering reports](docs/REVERSE_ENGINEERING_ARCHITECTURE.md#reverse-engineering-reports) and [Business logic persistence](docs/doctor-commands.md#business-logic-persistence-and---reuse-re).
+
+#### 7. Optional: tune the agent prompts
+
+Each agent's instructions are a Markdown file in `Agents/Prompts/`. Edit them to change the output, for example to add Domain-Driven Design patterns or a naming convention, or use **Prompt Studio** in the portal to generate, AI-enhance and score them.
+
+| Agent | Prompt file |
+|---|---|
+| COBOL analysis | `CobolAnalyzer.md` |
+| Business logic (reverse engineering) | `BusinessLogicExtractor.md` |
+| Java / C# conversion | `JavaConverter.md` / `CSharpConverter.md` |
+| Large programs (chunked) | `ChunkAwareJavaConverter.md` / `ChunkAwareCSharpConverter.md` |
+| Dependency mapping | `DependencyMapper.md` |
+
+Keep the `## SECTION:` headings and placeholders such as `{{CodebaseProfile}}`; they are filled in at run time. See [Customizing agent behavior](docs/customizing-agent-prompts.md).
+
+#### 8. Convert
+
+```bash
+# The whole estate in source/
+./doctor.sh run --language CSharp                          # reverse engineering + conversion + portal
+./doctor.sh convert-only --language Java                   # conversion only
+
+# Selected programs
+./doctor.sh convert-only --language Java --program ORDMAIN.cbl --dry-run    # preview the selection, no model call
+./doctor.sh convert-only --language Java --program ORDMAIN.cbl,ORDDATE.cbl
+./doctor.sh convert-only --language CSharp --program orders/cbl/ORDMAIN.cbl --include-callees --clean-output
+
+# A JCL job and every program it runs
+./doctor.sh run --job NITEJ001 --language CSharp
+```
+
+| Option | Effect |
+|---|---|
+| `--language CSharp` / `Java` | Target language; `--java-framework Spring` or `Quarkus` for Java |
+| `--program A.cbl,B.cbl` | Convert only these programs (repeat or comma-separate; use the path under `source/` when two programs share a name) |
+| `--include-callees` | Also convert every program the selection calls, directly or indirectly. The call closure comes from the REKT scan, so it follows every CALL branch through the estate; the portal must be running |
+| `--job NAME` | Convert the programs a JCL job runs and generate the job; their callees are added when the portal is running |
+| `--dry-run` | Show what would be converted without calling a model |
+| `--clean-output` | Write into an empty output folder |
+
+Copybooks are always carried in by the programs that COPY them. Output goes to `output/<language>/<run>/` with `compile-status.json`, `conversion-parity.json` and a migration report; the **🔁 AI Loop** tab shows each model call, retry and quality gate. See [Working with generated output](docs/using-generated-output.md) and the [doctor.sh command reference](docs/doctor-commands.md).
+
+[Getting started](docs/getting-started.md) covers Windows, Copilot sign-in details, manual setup without the wizard, the folder layout and what a run generates.
 
 ---
 
-## 🎯 doctor.sh commands
+## doctor.sh commands
+
+Which command to run first:
+
+```mermaid
+flowchart TD
+    S["./doctor.sh setup<br/>AI provider and passwords"] --> SRC["Copy COBOL, copybooks, JCL<br/>into source/"]
+    SRC --> REKT["./doctor.sh rekt-full<br/>parse and load the graph · no model"]
+    REKT --> P["./doctor.sh portal<br/>explore, pick programs"]
+    P --> RE["./doctor.sh reverse-eng<br/>business logic report"]
+    RE --> C["./doctor.sh convert-only<br/>convert, optionally reusing the report"]
+    REKT -.->|"all in one"| RUN["./doctor.sh run<br/>reverse-eng + convert + portal"]
+    REKT -.->|"no model"| EST["./doctor.sh estate / jcl"]
+```
 
 | Command | What it does | Calls a model? |
 |---|---|---|
@@ -105,21 +223,21 @@ Estate Mission Control builds from `source/` alone. The portal's chat and report
 | `./doctor.sh portal` | Launches the web portal only (http://localhost:5028) | Only for chat |
 | `./doctor.sh estate [C01]` | Slices and migration waves from the source alone; with a cluster ID, its `convert-only` command | No |
 | `./doctor.sh jcl` | Jobs from the JCL alone: what each job still needs | No |
-| `./doctor.sh reverse-eng` | Extracts business logic, persists it to the database, launches the portal | Yes |
+| **`./doctor.sh reverse-eng`** | **Reverse engineering**: business purpose, use cases, rules and glossary per program in `output/reverse-engineering-details.md`, saved to the database for the portal and for reuse in conversion; launches the portal. Accepts `--program` | Yes |
 | `./doctor.sh convert-only` | Conversion only (`--program`, `--job`, `--include-callees`, `--dry-run`, `--java-framework Spring`) | Yes |
-| `./doctor.sh run` | Full migration: analyze → convert → launch portal | Yes |
+| `./doctor.sh run` | Full migration: reverse engineering → convert → launch portal | Yes |
 
 See [doctor.sh command reference](docs/doctor-commands.md) for every option: interactive prompts, speed profiles, parallel parsing, several estates in one `source/`, JCL, partial conversion and `--reuse-re`.
 
 ---
 
-## 🗺 How it fits together
+## How it fits together
 
 ### What runs where
 
 ```mermaid
 flowchart LR
-    subgraph HOST["💻 Your machine"]
+    subgraph HOST["Your machine"]
         direction TB
         DOCTOR["doctor.sh"]
         CLI["Migration CLI (.NET)<br/>agents · estate-graph · graph-ingest<br/>jcl-facts · jcl-jobs<br/>compile gate: dotnet build"]
@@ -138,13 +256,13 @@ flowchart LR
         GUARD -.->|crash| LOGS
     end
 
-    subgraph DOCKER["🐳 Docker"]
+    subgraph DOCKER["Docker"]
         direction TB
         REKT["cobol-rekt<br/>REKT parser (Java)"]
         NEO[("cobol-migration-neo4j<br/>REKT + dependency graph · :7687")]
     end
 
-    subgraph CLOUD["☁️ Model provider"]
+    subgraph CLOUD["Model provider"]
         direction TB
         AOAI["Azure OpenAI /<br/>AI Foundry"]
         GHCP["GitHub Copilot SDK"]
@@ -164,6 +282,60 @@ flowchart LR
 - **The portal runs on the host** (`dotnet run --project McpChatWeb`). `docker-compose.yml` also has a `portal` service if you want it in a container.
 - **Estate Mission Control and `jcl`** need neither a model nor Docker.
 - **No Python.** The prerequisites are the .NET SDK, Docker and Bash. Every helper `doctor.sh` and `tools/*.sh` call is a command of the same .NET CLI.
+
+### Agent flowchart
+
+Seven agents call the model; everything between them is deterministic code. A conversion moves through the chart top to bottom:
+
+```mermaid
+flowchart TD
+  CLI[["doctor.sh run / convert-only / reverse-eng<br/>or Portal: Send to AI loop"]]
+  FACTS["REKT program facts, copybooks,<br/>call contracts (no model)"]
+
+  subgraph RE_PHASE["Reverse engineering (optional)"]
+      ANALYZER["CobolAnalyzerAgent<br/>structure and logic"]
+      BIZ["BusinessLogicExtractorAgent<br/>use cases, rules, glossary"]
+  end
+
+  subgraph DEP_PHASE["Dependencies"]
+      MAPPER["DependencyMapperAgent<br/>CALL / COPY / file / SQL"]
+  end
+
+  subgraph CONVERT_PHASE["Conversion"]
+      CONVERTER["JavaConverterAgent / CSharpConverterAgent<br/>chunk-aware for large programs"]
+      OGUARD["Output guard (no model)"]
+      CGATE{"Compile gate<br/>dotnet build / mvn compile"}
+      CREPAIR["Compile repair<br/>CompileRepairAgent (C#),<br/>ParityRepairAgent (Java)"]
+      PSCORE{"Parity score (no model)"}
+      PREPAIR["ParityRepairAgent"]
+  end
+
+  SQLITE[("SQLite<br/>Data/migration.db")]
+  NEO4J[("Neo4j")]
+  OUT["output/{language}/{run}/"]
+
+  CLI --> FACTS --> ANALYZER --> BIZ
+  ANALYZER --> SQLITE
+  BIZ --> SQLITE
+  FACTS --> MAPPER --> NEO4J
+  SQLITE --> CONVERTER
+  NEO4J --> CONVERTER
+  CONVERTER --> OGUARD --> CGATE
+  CGATE -->|errors| CREPAIR --> CGATE
+  CGATE -->|builds| PSCORE
+  PSCORE -->|gaps| PREPAIR --> PSCORE
+  PSCORE --> OUT
+```
+
+1. **Facts first.** The selected programs' REKT parse results, copybooks and call signatures are collected without a model. They become the ground truth every agent receives.
+2. **Reverse engineering** (`run` and `reverse-eng`): **CobolAnalyzerAgent** describes each program's structure and logic, and **BusinessLogicExtractorAgent** turns that into use cases, business rules and a glossary. Both are stored in SQLite; `--reuse-re` reuses them in later runs.
+3. **Dependencies:** **DependencyMapperAgent** records CALL, COPY, file and SQL relationships in Neo4j.
+4. **Conversion:** the **Java or C# converter agent** writes the target code, splitting large programs into chunks. The **output guard** rejects empty, truncated or placeholder answers before anything is written.
+5. **Compile gate:** the output is built (`dotnet build` or `mvn compile`). Compiler errors go to a repair agent file by file, for at most `CompileGate.MaxRepairRounds` rounds; a round that makes things worse is undone.
+6. **Parity:** a deterministic check compares procedures, fields, calls and SQL in the output with the COBOL. **ParityRepairAgent** fills the gaps it finds, and a fix is kept only if the re-measured score improves.
+7. **Report:** results land in `output/<language>/<run>/` (`compile-status.json`, `conversion-parity.json`, migration report), and the **🔁 AI Loop** tab shows every call, retry and gate.
+
+See [Architecture](docs/architecture.md) for agent inputs and outputs, storage and data flow.
 
 ### Docker containers
 
@@ -185,7 +357,7 @@ How `rekt-full` and a conversion work inside, storage and the agents: see [Archi
 
 ---
 
-## 🖥 Portal
+## Portal
 
 `./doctor.sh portal` (or the end of `./doctor.sh run`) opens the portal at http://localhost:5028. Its tabs show the dependency graph, the REKT architecture, Estate Mission Control, the AI Loop, modernization intelligence, the AST Explorer, Convert Programs, the Program Explorer and missing copybooks. The tabs that read parse results need `./doctor.sh rekt-full` first.
 
@@ -196,13 +368,13 @@ How `rekt-full` and a conversion work inside, storage and the agents: see [Archi
 
 ---
 
-## 🔧 Configuration
+## Configuration
 
 | File | Purpose | Git Tracked? |
 |------|---------|--------------|
-| `Config/appsettings.json` | **All settings** - models, chunking, Neo4j, output paths | ✅ Yes |
-| `Config/ai-config.env.example` | Copy source for your local config | ✅ Yes |
-| `Config/ai-config.local.env` | **Your secrets** - API keys, endpoints | ❌ No (gitignored) |
+| `Config/appsettings.json` | **All settings** - models, chunking, Neo4j, output paths | Yes |
+| `Config/ai-config.env.example` | Copy source for your local config | Yes |
+| `Config/ai-config.local.env` | **Your secrets** - API keys, endpoints | No (gitignored) |
 
 > **Estate data stays local.** Source, output, logs and estate-specific rules are git-ignored, and a pre-commit guard blocks estate names. Run `tools/check-no-estate-data.sh --install-hook` once per clone. See [Keeping estate data private](docs/keeping-estate-data-private.md).
 
@@ -210,7 +382,7 @@ Values load in the order `appsettings.json` → `ai-config.local.env` → enviro
 
 ---
 
-## 🆘 Troubleshooting
+## Troubleshooting
 
 ```bash
 ./doctor.sh               # Check configuration
@@ -230,7 +402,7 @@ Values load in the order `appsettings.json` → `ai-config.local.env` → enviro
 
 ---
 
-## 📚 Documentation
+## Documentation
 
 | Document | Contents |
 |---|---|
@@ -268,7 +440,7 @@ Values load in the order `appsettings.json` → `ai-config.local.env` → enviro
 
 ---
 
-## ⚙ Workflows
+## Workflows
 
 | Workflow / Agent | Trigger | Description |
 |---|---|---|
@@ -285,3 +457,5 @@ Values load in the order `appsettings.json` → `ai-config.local.env` → enviro
 Collaboration between Microsoft's Global Black Belt team and [Bankdata](https://www.bankdata.dk/). See [blog post](https://aka.ms/cobol-blog).
 
 ## License
+
+MIT License - Copyright (c) Microsoft Corporation. See [LICENSE](LICENSE).
