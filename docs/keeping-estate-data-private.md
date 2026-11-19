@@ -1,6 +1,6 @@
 # Keeping estate data private
 
-**Last updated**: 2026-11-16
+**Last updated**: 2026-11-19
 
 The repository is public. The code you convert, and everything derived from it, is not.
 Three mechanisms keep the two apart.
@@ -9,7 +9,7 @@ Three mechanisms keep the two apart.
 
 | Ignored | Why |
 |---|---|
-| `source/*` (except the three `CUSTOMER-*` samples) | The estate itself |
+| `source/*` (the repository ships only `.gitkeep` and `source/.gitignore`) | The estate itself |
 | `*.cbl *.cpy *.cob *.jcl *.prc *.bms *.csd *.ims *.dbd *.psb *.mfs`, in either case, anywhere | A copy of the estate outside `source/` (a slice, a scratch folder) |
 | `cobol-source/`, `slices/`, `**/.preprocessed/`, `**/.rekt-staging/` | Common staging folders |
 | `output/*`, `java-output/`, `reverse-engineering-output/` | Converted code, reports, REKT facts and graphs, all derived from the estate |
