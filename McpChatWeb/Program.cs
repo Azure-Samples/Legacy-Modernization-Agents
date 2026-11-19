@@ -5017,6 +5017,13 @@ var _promptOverrides = new Dictionary<string, (string? SystemPrompt, string? Use
 // Prompt quality scores — persisted to .prompt-scores.json
 var _promptScores = new Dictionary<string, (int Score, string Observations)>();
 
+// Prompt Studio writes the file; dropping the cached text lets /api/prompts show it while keeping the enabled flag.
+void ClearPromptTextOverride(string id)
+{
+	if (_promptOverrides.TryGetValue(id, out var current))
+		_promptOverrides[id] = (null, null, current.Enabled);
+}
+
 static string GetScoresFilePath(string repoRoot) => Path.Combine(repoRoot, "Agents", "Prompts", ".prompt-scores.json");
 
 static void LoadPromptScores(string repoRoot, Dictionary<string, (int Score, string Observations)> scores)
@@ -5347,92 +5354,19 @@ app.MapPost("/api/prompts/generate-all", () =>
 		foreach (var promptFile in promptFiles)
 		{
 			var id = Path.GetFileNameWithoutExtension(promptFile);
-			var pid = id.ToLowerInvariant();
-
-			string systemPrompt;
-			if (pid.Contains("java") && !pid.Contains("chunk"))
-				systemPrompt = PromptBuilders.BuildJavaPrompt(programs, copybooks, globalFeatures, archPattern, totalLines);
-			else if (pid.Contains("java") && pid.Contains("chunk"))
-				systemPrompt = PromptBuilders.BuildJavaPrompt(programs, copybooks, globalFeatures, archPattern, totalLines, chunked: true);
-			else if (pid.Contains("csharp") && !pid.Contains("chunk"))
-				systemPrompt = PromptBuilders.BuildCSharpPrompt(programs, copybooks, globalFeatures, archPattern, totalLines);
-			else if (pid.Contains("csharp") && pid.Contains("chunk"))
-				systemPrompt = PromptBuilders.BuildCSharpPrompt(programs, copybooks, globalFeatures, archPattern, totalLines, chunked: true);
-			else if (pid.Contains("analyzer") || pid.Contains("cobol"))
-				systemPrompt = PromptBuilders.BuildAnalyzerPrompt(programs, copybooks, globalFeatures, totalLines);
-			else if (pid.Contains("business") || pid.Contains("extractor"))
-				systemPrompt = PromptBuilders.BuildBusinessLogicPrompt(programs, copybooks, globalFeatures);
-			else if (pid.Contains("dependency") || pid.Contains("mapper"))
-				systemPrompt = PromptBuilders.BuildDependencyPrompt(programs, copybooks, globalFeatures);
+			var notes = PromptBuilders.BuildCodebaseNotes(id, programs.Count, copybooks.Count, globalFeatures, archPattern, totalLines);
+			var save = McpChatWeb.Services.PromptStudioWriter.SaveNotes(promptFile, notes);
+			if (save.Saved)
+			{
+				savedCount++;
+				ClearPromptTextOverride(id);
+				Console.WriteLine($"💾 Codebase notes refreshed for '{id}'");
+			}
 			else
-				systemPrompt = PromptBuilders.BuildGenericPrompt(programs, copybooks, globalFeatures, totalLines);
-
-			var userPrompt = PromptBuilders.BuildUserPromptTemplate(pid, globalFeatures, programs.Count, copybooks.Count);
-
-			_promptOverrides[id] = (systemPrompt, userPrompt, true);
-
-			var savedToDisk = false;
-			try
 			{
-				var content = File.ReadAllText(promptFile);
-				var otherSections = new List<(string Header, string Body)>();
-				var parts = System.Text.RegularExpressions.Regex.Split(content, @"^(##\s+SECTION:\s*.+)$", System.Text.RegularExpressions.RegexOptions.Multiline);
-				string? currentHeader = null;
-				foreach (var part in parts)
-				{
-					if (System.Text.RegularExpressions.Regex.IsMatch(part, @"^##\s+SECTION:\s*"))
-					{
-						currentHeader = part.Trim();
-					}
-					else if (currentHeader != null)
-					{
-						var sectionName = currentHeader.Replace("## SECTION:", "").Trim();
-						if (!sectionName.Equals("System", StringComparison.OrdinalIgnoreCase) &&
-						    !sectionName.Equals("User", StringComparison.OrdinalIgnoreCase))
-						{
-							otherSections.Add((currentHeader, part));
-						}
-						currentHeader = null;
-					}
-				}
-
-				var sb = new System.Text.StringBuilder();
-				sb.AppendLine("## SECTION: System");
-				sb.AppendLine();
-				sb.AppendLine(systemPrompt.TrimEnd());
-				sb.AppendLine();
-				sb.AppendLine("## SECTION: User");
-				sb.AppendLine();
-				sb.AppendLine(userPrompt.TrimEnd());
-				sb.AppendLine();
-
-				foreach (var (header, body) in otherSections)
-				{
-					sb.AppendLine(header);
-					sb.Append(body);
-				}
-
-				var droppedOnGenerate = CobolToQuarkusMigration.Helpers.PromptPlaceholders.Dropped(
-					File.Exists(promptFile) ? File.ReadAllText(promptFile) : null,
-					sb.ToString());
-				if (droppedOnGenerate.Count > 0)
-				{
-					Console.WriteLine($"🛑 Skipped '{id}': {CobolToQuarkusMigration.Helpers.PromptPlaceholders.DescribeLoss(id, droppedOnGenerate)}");
-				}
-				else
-				{
-					File.WriteAllText(promptFile, sb.ToString());
-					savedToDisk = true;
-					Console.WriteLine($"💾 Generated prompt for '{id}' saved to disk");
-				}
+				Console.WriteLine($"🛑 Skipped '{id}': {save.Reason}");
 			}
-			catch (Exception ex)
-			{
-				Console.WriteLine($"⚠️ Failed to save '{id}' to disk: {ex.Message}");
-			}
-
-			if (savedToDisk) savedCount++;
-			results.Add(new { promptId = id, savedToDisk, enhanced = false, qualityScore = 0, observations = "" });
+			results.Add(new { promptId = id, savedToDisk = save.Saved, enhanced = false, qualityScore = 0, observations = save.Reason ?? "" });
 		}
 
 		phaseTimings["phase3_save_ms"] = sw.ElapsedMilliseconds;
@@ -5552,37 +5486,16 @@ app.MapPost("/api/prompts/enhance-all", async () =>
 			return Results.Ok(new { success = false, phase = "error", warning = "Agents/Prompts directory not found." });
 
 		var promptFiles = Directory.GetFiles(promptsDir, "*.md");
-		var agentPrompts = new Dictionary<string, (string SystemPrompt, string UserPrompt)>();
+		var agentNotes = new Dictionary<string, string>();
 
 		foreach (var promptFile in promptFiles)
 		{
 			var id = Path.GetFileNameWithoutExtension(promptFile);
-			var pid = id.ToLowerInvariant();
-
-			string systemPrompt;
-			if (pid.Contains("java") && !pid.Contains("chunk"))
-				systemPrompt = PromptBuilders.BuildJavaPrompt(programs, copybooks, globalFeatures, archPattern, totalLines);
-			else if (pid.Contains("java") && pid.Contains("chunk"))
-				systemPrompt = PromptBuilders.BuildJavaPrompt(programs, copybooks, globalFeatures, archPattern, totalLines, chunked: true);
-			else if (pid.Contains("csharp") && !pid.Contains("chunk"))
-				systemPrompt = PromptBuilders.BuildCSharpPrompt(programs, copybooks, globalFeatures, archPattern, totalLines);
-			else if (pid.Contains("csharp") && pid.Contains("chunk"))
-				systemPrompt = PromptBuilders.BuildCSharpPrompt(programs, copybooks, globalFeatures, archPattern, totalLines, chunked: true);
-			else if (pid.Contains("analyzer") || pid.Contains("cobol"))
-				systemPrompt = PromptBuilders.BuildAnalyzerPrompt(programs, copybooks, globalFeatures, totalLines);
-			else if (pid.Contains("business") || pid.Contains("extractor"))
-				systemPrompt = PromptBuilders.BuildBusinessLogicPrompt(programs, copybooks, globalFeatures);
-			else if (pid.Contains("dependency") || pid.Contains("mapper"))
-				systemPrompt = PromptBuilders.BuildDependencyPrompt(programs, copybooks, globalFeatures);
-			else
-				systemPrompt = PromptBuilders.BuildGenericPrompt(programs, copybooks, globalFeatures, totalLines);
-
-			var userPrompt = PromptBuilders.BuildUserPromptTemplate(pid, globalFeatures, programs.Count, copybooks.Count);
-			agentPrompts[id] = (systemPrompt, userPrompt);
+			agentNotes[id] = PromptBuilders.BuildCodebaseNotes(id, programs.Count, copybooks.Count, globalFeatures, archPattern, totalLines);
 		}
 
 		phaseTimings["phase2_prompts_ms"] = sw.ElapsedMilliseconds;
-		Console.WriteLine($"✅ Phase 2 complete: {sw.ElapsedMilliseconds}ms — {agentPrompts.Count} base prompts generated");
+		Console.WriteLine($"✅ Phase 2 complete: {sw.ElapsedMilliseconds}ms — {agentNotes.Count} base notes generated");
 
 		// ── PHASE 3: AI Enhancement ───────────────────────────────────────────
 		sw.Restart();
@@ -5626,26 +5539,26 @@ app.MapPost("/api/prompts/enhance-all", async () =>
 
 		// Build the AI enhancement request — ONE call for all agents
 		var aiRequestSb = new System.Text.StringBuilder();
-		aiRequestSb.AppendLine("You are a COBOL modernization expert. Review the following COBOL source code samples and the regex-generated prompt skeletons below. Your job is to enhance each prompt with domain-specific insights you observe in the actual code.");
+		aiRequestSb.AppendLine("You are a COBOL modernization expert. Review the following COBOL source code samples and the regex-generated codebase notes for each agent below. Your job is to add domain-specific insights you observe in the actual code to each agent's notes.");
 		aiRequestSb.AppendLine();
 		aiRequestSb.AppendLine("## COBOL Source Samples");
 		aiRequestSb.AppendLine("```cobol");
 		aiRequestSb.AppendLine(cobolSample);
 		aiRequestSb.AppendLine("```");
 		aiRequestSb.AppendLine();
-		aiRequestSb.AppendLine("## Current Regex-Generated Prompts");
-		foreach (var (id, (sys, usr)) in agentPrompts)
+		aiRequestSb.AppendLine("## Agents and their current codebase notes");
+		foreach (var (id, notes) in agentNotes)
 		{
-			aiRequestSb.AppendLine($"### Agent: {id}");
-			aiRequestSb.AppendLine("**System Prompt (full):**");
-			aiRequestSb.AppendLine(sys);
+			aiRequestSb.AppendLine($"### Agent: {id} (role: {PromptBuilders.RoleOf(id)})");
+			aiRequestSb.AppendLine(notes);
 			aiRequestSb.AppendLine();
 		}
+		aiRequestSb.AppendLine("Each agent already has hand-written instructions for naming, target framework and output format. Your additions must not repeat or contradict them, and must not contain {{...}} placeholders or '## SECTION:' headings.");
 		aiRequestSb.AppendLine();
 		aiRequestSb.AppendLine("## Your Task");
 		aiRequestSb.AppendLine("For EACH agent listed above, provide a JSON array with enhancement suggestions. Each entry must have:");
 		aiRequestSb.AppendLine("- `agent`: the agent id");
-		aiRequestSb.AppendLine("- `additions`: a string block to APPEND to the end of the system prompt (domain-specific rules, naming conventions, error patterns, data format observations from the actual code). Be thorough — include variable naming patterns, data structures, COBOL idioms, copybook relationships, screen maps, SQL table names, and anything else specific to this codebase.");
+		aiRequestSb.AppendLine("- `additions`: a string block to APPEND to the agent's codebase notes (domain-specific rules, naming conventions, error patterns, data format observations from the actual code). Be thorough — include variable naming patterns, data structures, COBOL idioms, copybook relationships, screen maps, SQL table names, and anything else specific to this codebase.");
 		aiRequestSb.AppendLine("- `quality_score`: 1-10 rating of the FINAL prompt quality AFTER your additions are applied. Score 8-10 means the prompt is comprehensive and production-ready for code conversion. Score 5-7 means it covers the basics but may miss edge cases. Score 1-4 means the prompt is insufficient.");
 		aiRequestSb.AppendLine("- `observations`: brief note on what you found in the code that the regex missed");
 		aiRequestSb.AppendLine();
@@ -5720,10 +5633,9 @@ app.MapPost("/api/prompts/enhance-all", async () =>
 						var qualityScore = item.TryGetProperty("quality_score", out var qs) ? qs.GetInt32() : 0;
 						var observations = item.TryGetProperty("observations", out var obs) ? obs.GetString() : "";
 
-						if (agentPrompts.ContainsKey(agentId) && !string.IsNullOrWhiteSpace(additions))
+						if (agentNotes.TryGetValue(agentId, out var existingNotes) && !string.IsNullOrWhiteSpace(additions))
 						{
-							var (existingSys, existingUsr) = agentPrompts[agentId];
-							agentPrompts[agentId] = (existingSys + "\n\n" + additions.TrimEnd(), existingUsr);
+							agentNotes[agentId] = existingNotes + "\n\n" + additions.TrimEnd();
 							aiEnhanced = true;
 						}
 
@@ -5761,69 +5673,12 @@ app.MapPost("/api/prompts/enhance-all", async () =>
 		foreach (var promptFile in promptFiles)
 		{
 			var id = Path.GetFileNameWithoutExtension(promptFile);
-			if (!agentPrompts.ContainsKey(id)) continue;
+			if (!agentNotes.TryGetValue(id, out var notes)) continue;
 
-			var (systemPrompt, userPrompt) = agentPrompts[id];
-			_promptOverrides[id] = (systemPrompt, userPrompt, true);
-
-			var savedToDisk = false;
-			try
-			{
-				var content = File.ReadAllText(promptFile);
-				var otherSections = new List<(string Header, string Body)>();
-				var parts = System.Text.RegularExpressions.Regex.Split(content, @"^(##\s+SECTION:\s*.+)$", System.Text.RegularExpressions.RegexOptions.Multiline);
-				string? currentHeader = null;
-				foreach (var part in parts)
-				{
-					if (System.Text.RegularExpressions.Regex.IsMatch(part, @"^##\s+SECTION:\s*"))
-					{
-						currentHeader = part.Trim();
-					}
-					else if (currentHeader != null)
-					{
-						var sectionName = currentHeader.Replace("## SECTION:", "").Trim();
-						if (!sectionName.Equals("System", StringComparison.OrdinalIgnoreCase) &&
-						    !sectionName.Equals("User", StringComparison.OrdinalIgnoreCase))
-						{
-							otherSections.Add((currentHeader, part));
-						}
-						currentHeader = null;
-					}
-				}
-
-				var sb = new System.Text.StringBuilder();
-				sb.AppendLine("## SECTION: System");
-				sb.AppendLine();
-				sb.AppendLine(systemPrompt.TrimEnd());
-				sb.AppendLine();
-				sb.AppendLine("## SECTION: User");
-				sb.AppendLine();
-				sb.AppendLine(userPrompt.TrimEnd());
-				sb.AppendLine();
-
-				foreach (var (header, body) in otherSections)
-				{
-					sb.AppendLine(header);
-					sb.Append(body);
-				}
-
-				var droppedOnEnhance = CobolToQuarkusMigration.Helpers.PromptPlaceholders.Dropped(
-					File.Exists(promptFile) ? File.ReadAllText(promptFile) : null,
-					sb.ToString());
-				if (droppedOnEnhance.Count > 0)
-				{
-					Console.WriteLine($"🛑 Skipped '{id}': {CobolToQuarkusMigration.Helpers.PromptPlaceholders.DescribeLoss(id, droppedOnEnhance)}");
-				}
-				else
-				{
-					File.WriteAllText(promptFile, sb.ToString());
-					savedToDisk = true;
-				}
-			}
-			catch (Exception ex)
-			{
-				Console.WriteLine($"⚠️ Failed to save '{id}': {ex.Message}");
-			}
+			var save = McpChatWeb.Services.PromptStudioWriter.SaveNotes(promptFile, notes);
+			var savedToDisk = save.Saved;
+			if (savedToDisk) ClearPromptTextOverride(id);
+			else Console.WriteLine($"🛑 Skipped '{id}': {save.Reason}");
 
 			if (savedToDisk) savedCount++;
 
