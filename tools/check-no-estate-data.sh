@@ -30,8 +30,8 @@ case "${1:-}" in
     *) echo "Unknown option: $1" >&2; exit 2 ;;
 esac
 
-# The three bundled samples and the shipped system copybooks are public by design.
-ALLOWED_SOURCE='^(source/CUSTOMER-(DATA\.cpy|DISPLAY\.cbl|INQUIRY\.cbl)|tools/system-copybooks/[^/]+\.cpy)$'
+# The shipped system copybooks are public by design; source/ ships empty.
+ALLOWED_SOURCE='^tools/system-copybooks/[^/]+\.cpy$'
 MAINFRAME_EXT='\.(cbl|cpy|cob|cobol|jcl|prc|bms|csd|ims|dbd|psb|mfs)$'
 
 if [[ "$MODE" == "staged" ]]; then

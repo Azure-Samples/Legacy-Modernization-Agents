@@ -1,0 +1,5 @@
+# Put the estate to convert here (for the demo: bank-of-z/ and carddemo/).
+# Nothing in this folder is committed except this file and .gitkeep.
+*
+!.gitignore
+!.gitkeep

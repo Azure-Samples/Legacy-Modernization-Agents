@@ -83,11 +83,9 @@ Config/appsettings.secrets.json
 # COBOL Source Files (Contains proprietary business logic)
 source/*
 !source/.gitkeep
-!source/CUSTOMER-DATA.cpy
-!source/CUSTOMER-DISPLAY.cbl
-!source/CUSTOMER-INQUIRY.cbl
+!source/.gitignore
 
-# Ignore mainframe sources everywhere (except the sample files above). A copy of an
+# Ignore mainframe sources everywhere. A copy of an
 # estate outside source/ (a slice, a scratch folder, a test drop) must not be committable.
 # Upper-case variants matter on case-sensitive file systems such as Linux CI.
 *.cbl
@@ -113,9 +111,6 @@ source/*
 *.PSB
 *.mfs
 *.MFS
-!source/CUSTOMER-DATA.cpy
-!source/CUSTOMER-DISPLAY.cbl
-!source/CUSTOMER-INQUIRY.cbl
 !tools/system-copybooks/*.cpy
 
 # Other places estate code is commonly staged
