@@ -755,10 +755,10 @@ async function runPromptStudio(mode) {
       summaryEl.style.display = 'block';
     }
 
-    // ── Phase 2: Base Prompt Generation ──────────────────────────────────
+    // ── Phase 2: Codebase Notes ──────────────────────────────────
     setPhaseState(2, 'done');
     document.getElementById('phase-2-detail').textContent =
-      `Generated base prompts for ${data.totalAgents} agents`;
+      `Built codebase notes for ${data.totalAgents} agents`;
     document.getElementById('phase-2-timing').textContent = `${timings.phase2_prompts_ms || '—'}ms`;
 
     // ── Phase 3: AI Enhancement (only in AI mode) ────────────────────────
@@ -812,7 +812,7 @@ async function runPromptStudio(mode) {
       const avgScore = scores.length > 0 ? (scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(1) : '—';
       const avgClass = avgScore >= 8 ? 'high' : avgScore >= 5 ? 'medium' : avgScore > 0 ? 'low' : 'none';
 
-      cardsEl.innerHTML = `<div class="enhance-cards-title">${isAi ? `Agent Enhancement Quality <span class="quality-score avg ${avgClass}"  title="Average across all agents">avg ${avgScore}/10</span>` : 'Generated Prompts'}</div>` +
+      cardsEl.innerHTML = `<div class="enhance-cards-title">${isAi ? `Agent Enhancement Quality <span class="quality-score avg ${avgClass}"  title="Average across all agents">avg ${avgScore}/10</span>` : 'Refreshed Agent Prompts'}</div>` +
         data.results.map(r => {
           const score = r.qualityScore || 0;
           const scoreClass = score >= 8 ? 'high' : score >= 5 ? 'medium' : score > 0 ? 'low' : 'none';
@@ -825,8 +825,8 @@ async function runPromptStudio(mode) {
               ${badge}
               ${(isAi && score > 0) ? `<span class="quality-score ${scoreClass}">${score}/10</span>` : ''}
             </div>
-            ${r.observations ? `<div class="agent-card-obs">${r.observations}</div>` : ''}
-            <div class="agent-card-status">${r.savedToDisk ? '💾 Saved to disk' : '⚠️ Save failed'}</div>
+            ${r.observations ? `<div class="agent-card-obs">${escapeHtml(r.observations)}</div>` : ''}
+            <div class="agent-card-status">${r.savedToDisk ? '💾 Saved to disk' : '⚠️ Not saved'}</div>
           </div>`;
         }).join('');
       cardsEl.style.display = 'block';

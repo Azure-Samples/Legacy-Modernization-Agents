@@ -88,7 +88,7 @@ public static class PromptLoader
                 currentSection = line["## SECTION: ".Length..].Trim();
                 buffer.Clear();
             }
-            else if (currentSection != null)
+            else if (currentSection != null && !PromptStudioNotes.IsMarker(line))
             {
                 buffer.Add(line);
             }

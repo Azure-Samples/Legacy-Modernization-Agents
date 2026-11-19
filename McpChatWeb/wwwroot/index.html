@@ -1078,11 +1078,11 @@ curl http://localhost:5028/api/data-retrieval-guide</code></pre>
               <div class="mode-card-title">Quick Generate <span class="mode-card-tag tag-fast">Instant</span> <span class="mode-card-tag tag-free">Free</span></div>
               <div class="mode-card-desc">
                 Scans your source files with <strong>regex pattern matching</strong> to detect COBOL features
-                (EXEC SQL, CICS screens, file I/O, copybooks, etc.) and builds tailored prompts from templates.
+                (EXEC SQL, CICS screens, file I/O, copybooks, etc.) and adds codebase notes to every agent's prompt.
               </div>
               <ul class="mode-card-details">
                 <li>Detects architecture pattern (online-interactive, batch, file-processing)</li>
-                <li>Generates system + user prompts for all agents</li>
+                <li>Refreshes a marked notes block in every agent's System prompt; hand-written instructions and placeholders stay as they are</li>
                 <li>No AI model needed — pure code analysis</li>
                 <li>Completes in under 1 second</li>
               </ul>
@@ -1140,8 +1140,8 @@ curl http://localhost:5028/api/data-retrieval-guide</code></pre>
             <div id="enhance-phase-2" class="enhance-phase">
               <div class="phase-indicator pending"><span class="phase-number">2</span></div>
               <div class="phase-info">
-                <div class="phase-title">Base Prompt Generation</div>
-                <div class="phase-detail" id="phase-2-detail">Building prompts from detected features...</div>
+                <div class="phase-title">Codebase Notes</div>
+                <div class="phase-detail" id="phase-2-detail">Building codebase notes from detected features...</div>
               </div>
               <div class="phase-timing" id="phase-2-timing"></div>
             </div>
