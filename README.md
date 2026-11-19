@@ -1,4 +1,10 @@
-# Legacy Modernization Agents - COBOL to Java/C# Migration
+<p align="center">
+  <img src="docs/images/project-starforge.jpg" alt="Project Starforge" width="720">
+</p>
+
+# Project Starforge - COBOL to Java/C# Migration
+
+Project Starforge is the new name for Legacy Modernization Agents; the repository name and URLs are unchanged.
 
 This open source migration framework was developed to demonstrate AI Agents capabilities for converting legacy code like COBOL to Java or C# .NET. Each Agent has a persona that can be edited depending on the desired outcome.
 The migration uses Microsoft Agent Framework with a multi-provider architecture supporting **Azure OpenAI** (Responses API + Chat Completions), **GitHub Copilot** (PAT or CLI-based SDK), and **direct OpenAI** to analyze COBOL code and its dependencies, then convert to either Java Quarkus or C# .NET (user's choice).
