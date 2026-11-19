@@ -36,6 +36,17 @@ public static class PromptBuilders
 		("IMS_DB", "IMS DL/I calls"),
 	];
 
+	private static readonly HashSet<string> CobolExtensions = new(StringComparer.OrdinalIgnoreCase)
+		{ ".cbl", ".cob", ".cpy", ".pco", ".sqb", ".copy" };
+
+	// Scratch folders (.preprocessed, .rekt-staging, .convert-*) hold copies and stale estates;
+	// reading them would put other code into prompts and AI requests.
+	public static List<string> EstateSourceFiles(string sourceDir) =>
+		Directory.EnumerateFiles(sourceDir, "*", SearchOption.AllDirectories)
+			.Where(f => !CobolToQuarkusMigration.Helpers.SourceTypeRegistry.IsScratchPath(Path.GetRelativePath(sourceDir, f)))
+			.Where(f => CobolExtensions.Contains(Path.GetExtension(f)))
+			.ToList();
+
 	// Facts and focus areas only: the hand-written System section owns naming, framework and output rules.
 	public static string BuildCodebaseNotes(string promptId, int programCount, int copybookCount, HashSet<string> features, string archPattern, int totalLines)
 	{

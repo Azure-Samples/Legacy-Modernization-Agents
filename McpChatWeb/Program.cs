@@ -5282,12 +5282,7 @@ app.MapPost("/api/prompts/generate-all", () =>
 		if (!Directory.Exists(sourceDir))
 			return Results.Ok(new { success = false, warning = "Source folder not found.", results = Array.Empty<object>() });
 
-		var cobolExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-			{ ".cbl", ".cob", ".cpy", ".pco", ".sqb", ".copy" };
-
-		var sourceFiles = Directory.GetFiles(sourceDir, "*", SearchOption.AllDirectories)
-			.Where(f => cobolExtensions.Contains(Path.GetExtension(f)))
-			.ToList();
+		var sourceFiles = McpChatWeb.Services.PromptBuilders.EstateSourceFiles(sourceDir);
 
 		if (sourceFiles.Count == 0)
 			return Results.Ok(new { success = false, warning = "No COBOL files found in source folder.", results = Array.Empty<object>() });
@@ -5422,12 +5417,7 @@ app.MapPost("/api/prompts/enhance-all", async () =>
 		if (!Directory.Exists(sourceDir))
 			return Results.Ok(new { success = false, phase = "error", warning = "Source folder not found." });
 
-		var cobolExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-			{ ".cbl", ".cob", ".cpy", ".pco", ".sqb", ".copy" };
-
-		var sourceFiles = Directory.GetFiles(sourceDir, "*", SearchOption.AllDirectories)
-			.Where(f => cobolExtensions.Contains(Path.GetExtension(f)))
-			.ToList();
+		var sourceFiles = McpChatWeb.Services.PromptBuilders.EstateSourceFiles(sourceDir);
 
 		if (sourceFiles.Count == 0)
 			return Results.Ok(new { success = false, phase = "error", warning = "No COBOL files found in source folder." });
@@ -5788,9 +5778,7 @@ app.MapPost("/api/prompts/score/{promptId}", async (string promptId) =>
 		var cobolSample = "";
 		if (Directory.Exists(sourceDir))
 		{
-			var cobolExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ".cbl", ".cob", ".cpy", ".pco", ".sqb", ".copy" };
-			var sourceFiles = Directory.GetFiles(sourceDir, "*", SearchOption.AllDirectories)
-				.Where(f => cobolExtensions.Contains(Path.GetExtension(f)))
+			var sourceFiles = McpChatWeb.Services.PromptBuilders.EstateSourceFiles(sourceDir)
 				.OrderByDescending(f => new FileInfo(f).Length)
 				.Take(3)
 				.ToList();
@@ -5907,12 +5895,7 @@ app.MapPost("/api/prompts/generate", (McpChatWeb.Models.GeneratePromptRequest re
 		if (!Directory.Exists(sourceDir))
 			return Results.Ok(new { generatedPrompt = "", warning = "Source folder not found." });
 
-		var cobolExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-			{ ".cbl", ".cob", ".cpy", ".pco", ".sqb", ".copy" };
-
-		var sourceFiles = Directory.GetFiles(sourceDir, "*", SearchOption.AllDirectories)
-			.Where(f => cobolExtensions.Contains(Path.GetExtension(f)))
-			.ToList();
+		var sourceFiles = McpChatWeb.Services.PromptBuilders.EstateSourceFiles(sourceDir);
 
 		if (sourceFiles.Count == 0)
 			return Results.Ok(new { generatedPrompt = "", warning = "No COBOL files found in source folder." });

@@ -76,6 +76,31 @@ public sealed class PromptStudioWriterTests : IDisposable
         Assert.Contains("file I/O (SELECT/ASSIGN, FD records, FILE STATUS)", notes);
     }
 
+    [Fact]
+    public void EstateSourceFiles_SkipsScratchCopiesAndNonCobolFiles()
+    {
+        var sourceDir = Path.Combine(_promptsDirectory, "source");
+        void Write(string relative)
+        {
+            var path = Path.Combine(sourceDir, relative);
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllText(path, "       IDENTIFICATION DIVISION.");
+        }
+        Write(Path.Combine("demo", "cobol", "PROG1.cbl"));
+        Write(Path.Combine("demo", "copy", "REC1.cpy"));
+        Write(Path.Combine("demo", "README.md"));
+        Write(Path.Combine(".preprocessed", ".previous", "other", "OLDPROG.cbl"));
+        Write(Path.Combine("demo", ".preprocessed", "PROG1.cbl"));
+        Write(Path.Combine(".rekt-staging", "STAGED.cbl"));
+        Write(Path.Combine("demo", ".convert-1", "COPY.cpy"));
+
+        var found = PromptBuilders.EstateSourceFiles(sourceDir)
+            .Select(f => Path.GetRelativePath(sourceDir, f).Replace('\\', '/'))
+            .OrderBy(f => f, StringComparer.Ordinal);
+
+        Assert.Equal(new[] { "demo/cobol/PROG1.cbl", "demo/copy/REC1.cpy" }, found);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_promptsDirectory))
