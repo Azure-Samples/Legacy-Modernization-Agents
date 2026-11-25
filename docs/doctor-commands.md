@@ -1,6 +1,6 @@
 # doctor.sh command reference
 
-**Last updated**: 2026-11-18
+**Last updated**: 2026-11-25
 
 **Always use `./doctor.sh run` to run migrations, not `dotnet run` directly.**
 
@@ -282,3 +282,20 @@ dotnet build
 ```bash
 ./doctor.sh portal   # Opens http://localhost:5028
 ```
+
+## Helper scripts
+
+`helper-scripts/` holds small shell scripts for checking on and resetting a local install. `./doctor.sh run` stays the way to start a migration; these scripts do not replace it. Run them from the repository root, because several use relative paths such as `Data/migration.db`.
+
+| Script | What it does |
+|---|---|
+| `./helper-scripts/status.sh` | Checks whether the portal port and the Neo4j container are running and prints the URLs. |
+| `./helper-scripts/track-progress.sh [--watch] [--run-id N]` | Reads the SQLite database and shows migration progress. `--watch` refreshes every 3 seconds; `--run-id N` selects a run. |
+| `./helper-scripts/monitor-progress.sh [source-dir]` | Live view of chunking and file progress for large inputs. The source directory defaults to `source`. |
+| `./helper-scripts/demo.sh` | Starts Neo4j and the portal without running a new migration, to browse existing data. Needs `docker` and `dotnet`. |
+| `./helper-scripts/open-portal.sh` | Opens the portal in a browser when it is running, trying VS Code, `xdg-open`, `open` and `$BROWSER` in turn. |
+| `./helper-scripts/verify-data-persistence.sh` | Checks that `Data/migration.db` exists, that the Neo4j Docker volumes exist, and that `Data/` is gitignored. |
+| `./helper-scripts/verify-port-standardization.sh` | Searches the repository for leftover references to the old port 5250 (the portal port is 5028) and runs a few related port checks. |
+| `./helper-scripts/cleanup-databases.sh` | Asks for confirmation, then deletes `Data/migration.db` (and its journal/WAL files) and removes the Neo4j containers and volumes. This cannot be undone. |
+
+`helper-scripts/test_mcp_communication.sh` is a developer test script that changes into a hard-coded local path (line 4); edit that path before using it.
